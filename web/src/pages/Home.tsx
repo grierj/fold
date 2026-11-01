@@ -5,7 +5,7 @@ import type { EventOccurrence } from "../types";
 import { DateBadge } from "../components/DateBadge";
 import { GroupDirectory } from "../components/GroupDirectory";
 import { ComingUp } from "../components/ComingUp";
-import { formatTime, greeting } from "../lib/when";
+import { dayOf, formatTime, greeting } from "../lib/when";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useAuth } from "../auth";
 
@@ -43,6 +43,10 @@ export function Home() {
   const name = user ? user.displayName || (user.name ?? "").trim().split(/\s+/)[0] : "";
   const ready = !authLoading && (user ? agendaReady : !!site && eventsReady);
 
+  // The continuation includes every preview date, even when the first one is
+  // ongoing or the whole schedule starts beyond the calendar's usual 30 days.
+  const churchFrom = openEvents.length ? dayOf(openEvents[0].startsAt) : "";
+  const churchDays = openEvents.length ? Math.max(30, (Date.parse(dayOf(openEvents[openEvents.length - 1].startsAt)) - Date.parse(churchFrom)) / 86_400_000 + 1) : 30;
   return (
     <div className="fold-page">
       {user ? (
@@ -70,9 +74,13 @@ export function Home() {
         {user && <ComingUp onReady={onAgendaReady} />}
         {openEvents.length > 0 && !user && (
           <section className="min-w-0">
-            <h2 className="text-xl font-bold mb-4">Church events</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <h2 className="text-xl font-bold">Church events</h2>
+              <ButtonLink to={`/calendar?church=1&days=${churchDays}&date=${churchFrom}`} variant="link">See all church events</ButtonLink>
+            </div>
+            <p className="text-sm text-text-muted mb-3">{openEvents.length} upcoming {openEvents.length === 1 ? "date" : "dates"} in the next 90 days{openEvents.length > 4 ? "; showing the next 4" : ""}</p>
             <div className="fold-list">
-              {openEvents.map((ev) => (
+              {openEvents.slice(0, 4).map((ev) => (
                 <Link key={`${ev.eventId}-${ev.date}`} to={ev.dateUrl || `/events/${ev.eventId}`} className="fold-list-row flex gap-4 rounded-sm hover:bg-sunken">
                   <DateBadge at={ev.startsAt} />
                   <div className="min-w-0">

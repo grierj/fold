@@ -14,6 +14,8 @@ import { ApiError, Events, GroupCover, Groups } from "../api";
 import type { DepartureConfirmation, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
+import { PeopleList } from "../components/PeopleList";
+import { CompactDates } from "../components/CompactDates";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { composePath, EMAIL_GOING, EMAIL_MEMBERS } from "../components/messages/composeLinks";
@@ -902,11 +904,6 @@ function GroupDetailContent() {
                     }
                   />
                 )}
-                {detail.hasMore && (
-                  <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>
-                    {loadingMore ? "Loading dates…" : "Load more dates"}
-                  </Button>
-                )}
                 {detail.truncated && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <span className="text-sm text-text-muted">Showing the next {events.length} dates.</span>
@@ -917,8 +914,8 @@ function GroupDetailContent() {
                 )}
                 {error && <ErrorNotice message={error} onRetry={() => void load({ quiet: true })} />}
                 {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
-          {nextDates.map((m) => (
-                  <EventRow
+                <CompactDates dates={nextDates} loadedOnly={detail.hasMore} noun="events">
+                  {(m) => <EventRow
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
@@ -936,8 +933,9 @@ function GroupDetailContent() {
                     onTerminalRefresh={() => void load({ quiet: true, failClosed: true })}
                     onCancelled={handleCancelled}
                     onChanged={() => void load({ quiet: true })}
-                  />
-                ))}
+                  />}
+                </CompactDates>
+                {detail.hasMore && <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>{loadingMore ? "Loading dates…" : "Load more dates"}</Button>}
                 {group.visibility === "public" && group.status === "active" && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
@@ -1007,9 +1005,15 @@ function GroupDetailContent() {
                 ) : (
                   <>
                     {memberError && <FormError layout="mb-3">{memberError}</FormError>}
-                    {members && members.length > 0 ? (
-                      <ul className="fold-list">
-                        {members.map((m) => (
+                    {canManage && <div className="mb-4"><AddPeople
+                      groupId={group.id} groupName={group.name} memberCount={group.memberCount} memberLimit={group.memberLimit}
+                      canSearch={user?.status === "active" && user.accountType === "adult"} onAdded={() => load({ quiet: true })}
+                    /></div>}
+                    <PeopleList rows={members ?? []} noun="members" filters={[
+                      { value: "leader", label: "Leaders", matches: (m) => m.role === "leader" },
+                      { value: "member", label: "Members", matches: (m) => m.role === "member" },
+                    ]}>
+                        {(m) => (
                           <li key={m.id} className="fold-list-row">
                             <div className="flex items-center gap-3">
                               <Avatar
@@ -1050,21 +1054,8 @@ function GroupDetailContent() {
                             </div>
                             {canManage && isLeader && group.status === "active" && user?.status === "active" && user.accountType === "adult" && m.id !== user.id && m.email === undefined && m.phone === undefined && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
                           </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-text-muted">No members yet.</p>
-                    )}
-                    {canManage && (
-                      <AddPeople
-                        groupId={group.id}
-                        groupName={group.name}
-                        memberCount={group.memberCount}
-                        memberLimit={group.memberLimit}
-                        canSearch={user?.status === "active" && user.accountType === "adult"}
-                        onAdded={() => load({ quiet: true })}
-                      />
-                    )}
+                        )}
+                    </PeopleList>
                     {isLeader && (
                       <div className="mt-6 border-t border-border pt-4">
                         {group.memberCount <= 1 ? (

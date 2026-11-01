@@ -1,10 +1,30 @@
 # Fold redesign verification
 
 Branch: `design/hallmark-fold`. Baseline: `82323bf`. User approved proceeding after pre-flight.
-No backend, schema, deployment, API, route or permission-policy changes. Initial redesign through `e71a8e7` changed no test source. The user then explicitly requested fixing the three deferred failures and thumbnail performance: that follow-up updates two exact copy expectations and adds nine regression cases without weakening behavior assertions.
+The initial redesign and directory phases changed no backend, schema, deployment, API, route or permission policy. The latest busy-list phase adds backward-compatible calendar/message query options; it changes no schema, deployment, route or permission policy. Initial redesign through `e71a8e7` changed no test source. The user then explicitly requested fixing the three deferred failures and thumbnail performance: that follow-up updates two exact copy expectations and adds nine regression cases without weakening behavior assertions.
 `ui-ratchet.json` allowances only decreased. No project dependency added.
 
-## Latest: directory implementation and busy-church experiment
+## Latest: busy-church list implementation
+
+The user approved implementing the follow-on recommendations. Event browsing,
+people lists, admin lists, My groups, messages and rooms now use bounded,
+searchable presentation; message history has server-side cursor continuation.
+Full scope, API compatibility, draft/focus safeguards, comparisons and reproduction
+are in [`busy-lists.md`](busy-lists.md).
+
+Final proof: **140 Vitest files / 1,404 tests**, the **full Go suite against
+isolated Postgres**, and **172 browser checks** (27 baseline, 109 busy-list,
+36 directory), all passing. Build, TypeScript, Knip, Go lint, contrast and guards
+pass. Eager bundle: **175.7KB gzip / 180KB**. Rendered Hallmark: **0 FAIL,
+0 WARN, 9 WAIVED, 22 ANSWERED, 6 DISMISSED**, 144 production files/five URLs.
+The final 320/375px scan also verifies non-wrapping compact date controls.
+
+Correctness/security/simplicity and UI/UX have independent read-only approval;
+reports are `reviews/scale-*.md`. Test execution was the parent's. Final proof:
+`/tmp/fold-verify-proof/20261101T232904Z-1083168/`. Full Playwright and production
+verification were not run. No push or merge is claimed.
+
+## Earlier: directory implementation and busy-church experiment
 
 All five recommendations in `directory-50.md` are implemented: URL-backed search
 and expanded count with Back/position restoration, compact Filters and announced
@@ -15,10 +35,10 @@ changes and related interaction-test updates. No backend or permission changes.
 A fresh isolated run seeded 100 users, 50 groups, 149 events/191 dates, 25 church
 wide events, a 60-person group, a 49-person attendee list, 25 personal memberships,
 30 notifications, 40 drafts and 18 rooms. Further roster/calendar/admin design
-recommendations are **not implemented**. Full measurements, priorities and
-reproduction: [`busy-church.md`](busy-church.md).
+recommendations were **not implemented at that stage**; they are delivered in
+the latest phase above. Historical measurements, priorities and reproduction: [`busy-church.md`](busy-church.md).
 
-Latest verification: **138 Vitest files / 1,388 tests**, **99 browser checks**
+This phase's verification: **138 Vitest files / 1,388 tests**, **99 browser checks**
 (six baseline + 36 directory + 57 busy-church), no recorded hard failures.
 Build/types/Knip/Go lint/selected guards/contrast pass; eager bundle **173.6KB gzip**
 against 180KB. Rendered Hallmark: **0 FAIL, 0 WARN, 9 WAIVED, 22 ANSWERED,
@@ -30,8 +50,9 @@ fixes and the current UI/UX/correctness. Reports:
 `reviews/directory-initial.md`, `reviews/directory-final.md`. The reviewer inspected
 source and supplied screenshots/results; test execution was the parent's.
 Final evidence: `/tmp/fold-verify-proof/20261101T214745Z-294686/`.
-Full Go database and full Playwright suites remain unrun; no production benchmark,
-push or merge is claimed. Both verification instances have been stopped.
+At that stage the full Go database and full Playwright suites had not run; the
+latest phase now includes the full Go suite. No production benchmark, push or
+merge is claimed. Both of that phase's verification instances were stopped.
 
 ## Earlier delivered direction
 
@@ -85,7 +106,7 @@ Full reports are retained in `.hallmark/reviews/`. Older reviews describe their 
 - Browser checks include axe moderate/serious/critical findings, horizontal overflow, clipped controls and sub-24px targets. Main 390px checks found no sub-44px controls. These checks are not proof of every possible state; the date-editor issue required visual review.
 - Hallmark rendered five public routes at 1280, 1440 and 1920 folds plus 1440/375 full pages. Kept-content check: **98/98 links, 19/19 fields, 547/547 handlers, 1/1 test hooks, 13/13 headings, 3/3 figures**.
 - All verification used isolated `fold_verify_*` databases; never the shared development database.
-- **Not run:** the full Go database suite, full Playwright end-to-end suite, production deployment or production-network performance benchmarks.
+- **Not run at that earlier stage:** the full Go database suite, full Playwright end-to-end suite, production deployment or production-network performance benchmarks. The latest busy-list phase above now includes the full Go suite.
 
 The standard verifier has a stale profile-requests heading locator. It was excluded there and covered by the supplemental runner without changing tests or adding duplicate headings.
 

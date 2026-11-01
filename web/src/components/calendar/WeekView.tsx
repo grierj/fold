@@ -1,13 +1,18 @@
+import { useState } from "react";
+import { Chip } from "../ui/Chip";
 import type { CalendarOccurrence } from "../../types";
 import { formatDayHeading, formatWeekday } from "../../lib/when";
 import { DaySection, EventChip } from "./EventRow";
 
 // A week as a list of 7 days, not an hour grid (DEC-67): 7 columns of chips
-// from sm up; on phones, the days that have events, stacked like Agenda.
+// from sm up; on phones, a day picker keeps a busy week bounded.
 // From sm up an empty day shrinks to a narrow column (DEC-99) so the busy
 // days keep the room: flex-1 with a zero basis shares what the empty days
 // leave, and min-w-0 keeps long titles from forcing sideways scroll.
-export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<string, CalendarOccurrence[]>; today: string }) {
+export function WeekView({ days, byDay, today, selected, onSelect }: { days: string[]; byDay: Map<string, CalendarOccurrence[]>; today: string; selected?: string; onSelect?: (day: string) => void }) {
+  const [local, setLocal] = useState(today);
+  const picked = selected ?? local;
+  const day = days.includes(picked) ? picked : days[0];
   return (
     <>
       <div className="hidden sm:flex gap-0 border-y border-border">
@@ -42,11 +47,10 @@ export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<st
         })}
       </div>
       <div className="space-y-4 sm:hidden">
-        {days
-          .filter((d) => byDay.has(d))
-          .map((d) => (
-            <DaySection key={d} heading={formatDayHeading(d)} occs={byDay.get(d)!} sticky />
-          ))}
+        <div role="group" aria-label="Choose a day" className="flex flex-wrap gap-2">
+          {days.map((d) => <Chip key={d} selected={d === day} onClick={() => { setLocal(d); onSelect?.(d); }}>{formatWeekday(d)} ({byDay.get(d)?.length ?? 0})</Chip>)}
+        </div>
+        <DaySection heading={formatDayHeading(day)} occs={byDay.get(day) ?? []} />
       </div>
     </>
   );

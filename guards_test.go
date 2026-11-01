@@ -148,6 +148,7 @@ var tsContracts = []struct {
 	{householdAttendeeJSON{}, "HouseholdAttendee"},
 	{calendarFeedJSON{}, "CalendarFeed"},
 	{messageJSON{}, "Message"},
+	{messageListJSON{}, "MessageListResponse"},
 	{audienceJSON{}, "MessageAudience"},
 	{audienceSummaryJSON{}, "AudienceSummary"},
 	{audienceRecipientJSON{}, "AudienceRecipient"},

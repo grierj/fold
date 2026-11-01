@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -686,14 +687,51 @@ func (a *App) apiGetMessage(c *gin.Context) {
 	}
 }
 
-// apiListMessages lists the viewer's messages (an admin's list has
-// everyone's), newest first, at most 200. ?category=announcement or
-// reminder lists only that kind, with its own 200, so an admin's
-// automatic reminders can't crowd announcements out (M3.6b); without it,
-// both kinds share the 200.
+type messageListJSON struct {
+	Messages   []messageJSON `json:"messages"`
+	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+type messageListCursor struct {
+	UpdatedAt time.Time `json:"updatedAt"`
+	ID        uint      `json:"id"`
+}
+
+// Keyset pages retain the original author/category boundary on every read.
+// Cursors are positions, never authority. Existing clients still get 200 rows.
 func (a *App) apiListMessages(c *gin.Context) {
 	me := apiUser(c)
-	q := a.DB.Order("updated_at DESC, id DESC").Limit(200)
+	limit := 200
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			jsonError(c, http.StatusBadRequest, "invalid request")
+			return
+		}
+		limit = n
+	}
+	q := a.DB.Order("updated_at DESC, id DESC").Limit(limit + 1)
+	if raw := c.Query("cursor"); raw != "" {
+		var cursor messageListCursor
+		data, err := base64.RawURLEncoding.DecodeString(raw)
+		if len(raw) > 512 || err != nil || json.Unmarshal(data, &cursor) != nil || cursor.ID == 0 || cursor.UpdatedAt.IsZero() {
+			jsonError(c, http.StatusBadRequest, "invalid request")
+			return
+		}
+		q = q.Where("(updated_at, id) < (?, ?)", cursor.UpdatedAt, cursor.ID)
+	}
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		q = q.Where("LOWER(subject) LIKE ? ESCAPE '\\'", likeContains(strings.ToLower(search)))
+	}
+	if status := c.Query("status"); status != "" {
+		switch status {
+		case models.MessageDraft, models.MessageScheduled, models.MessageSending, models.MessageSent, models.MessageFailed, models.MessageCancelled:
+			q = q.Where("status = ?", status)
+		default:
+			jsonError(c, http.StatusBadRequest, "invalid request")
+			return
+		}
+	}
 	switch cat := c.Query("category"); cat {
 	case "":
 	case models.MessageCategoryAnnouncement, models.MessageCategoryReminder:
@@ -710,6 +748,13 @@ func (a *App) apiListMessages(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list messages")
 		return
 	}
+	nextCursor := ""
+	if len(rows) > limit {
+		rows = rows[:limit]
+		last := rows[len(rows)-1]
+		data, _ := json.Marshal(messageListCursor{UpdatedAt: last.UpdatedAt, ID: last.ID})
+		nextCursor = base64.RawURLEncoding.EncodeToString(data)
+	}
 	facts, err := a.loadMessageFacts(rows)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list messages")
@@ -719,7 +764,7 @@ func (a *App) apiListMessages(c *gin.Context) {
 	for i := range rows {
 		out = append(out, toMessageJSON(&rows[i], me, facts))
 	}
-	c.JSON(http.StatusOK, gin.H{"messages": out})
+	c.JSON(http.StatusOK, messageListJSON{Messages: out, NextCursor: nextCursor})
 }
 
 // editable reports whether m can still change; false means 409 was sent.

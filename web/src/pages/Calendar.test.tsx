@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarOccurrence } from "../types";
@@ -29,6 +30,26 @@ beforeEach(() => {
   site.mockReset();
   site.mockResolvedValue({ roomsEnabled: false });
   auth.mockReturnValue({ user: { id: 1 }, isAdmin: false });
+});
+
+it("bounds a busy agenda and preserves a URL page without refetching", async () => {
+  show(Array.from({ length: 60 }, (_, i) => occ(i + 1)), "/calendar?date=2026-10-21&page=2&church=1");
+  expect(await screen.findByText("Event 26")).toBeInTheDocument();
+  expect(screen.queryByText("Event 1")).not.toBeInTheDocument();
+  expect(screen.queryByText("Event 51")).not.toBeInTheDocument();
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ church: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Next events" }));
+  expect(screen.getByText("Event 60")).toBeInTheDocument();
+  expect(list).toHaveBeenCalledTimes(1);
+  await userEvent.selectOptions(screen.getByRole("combobox"), "");
+  expect(await screen.findByText("Event 1")).toBeInTheDocument();
+  expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ church: false }));
+});
+
+it("uses a safe first page for a malformed or negative page", async () => {
+  show(Array.from({ length: 30 }, (_, i) => occ(i + 1)), "/calendar?date=2026-10-21&page=-4");
+  expect(await screen.findByText("Event 1")).toBeInTheDocument();
+  expect(screen.queryByText("Event 26")).not.toBeInTheDocument();
 });
 
 describe("filter chips (DEC-99)", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
 import { Messages } from "../messages-api";
@@ -6,10 +6,12 @@ import type { ComposeOptions, Message } from "../types";
 import { errorText } from "../lib/errors";
 import { audienceLabel, statusLabel } from "../lib/messages";
 import { reminderAudience, reminderRowTitle } from "../lib/reminders";
-import { browserTimeZone, formatWhen } from "../lib/when";
+import { browserTimeZone, dayOf, formatDayHeading, formatWhen } from "../lib/when";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { ButtonLink } from "../components/ui/Button";
+import { SearchBox } from "../components/ui/SearchBox";
+import { Field, Select } from "../components/ui/Field";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { Chip } from "../components/ui/Chip";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -22,29 +24,55 @@ import { Skeleton } from "../components/ui/Skeleton";
 // date, under their own chip so they can't crowd announcements out; a
 // leader's list has only what they wrote, with no chips.
 
-// GET /messages answers at most this many of each kind, newest first.
-const LIST_LIMIT = 200;
+const LIST_LIMIT = 25;
+const STATUSES = ["draft", "scheduled", "sending", "sent", "failed", "cancelled"];
 export function MessagesPage() {
   const { user, canCompose, isAdmin } = useAuth();
   const church = useChurchZoneLoad();
   const zone = church.zone ?? browserTimeZone();
   const [params, setParams] = useSearchParams();
+  const search = params.get("search") ?? "";
+  const status = STATUSES.includes(params.get("status") ?? "") ? params.get("status")! : "";
+  const cursor = params.get("cursor") ?? "";
+  const [debounced, setDebounced] = useState(search);
+  const [nextCursor, setNextCursor] = useState("");
+  const [resolvedKey, setResolvedKey] = useState("");
+  const count = useRef<HTMLParagraphElement>(null);
+  const paging = useRef(false);
+  useEffect(() => { const timer = setTimeout(() => setDebounced(search), 300); return () => clearTimeout(timer); }, [search]);
+  function change(key: string, value: string) {
+    paging.current = false;
+    setParams((old) => { const next = new URLSearchParams(old); next.delete("cursor"); if (value) next.set(key, value); else next.delete(key); return next; }, { replace: true });
+  }
+  function move(cursor: string) {
+    if (cursor && !canPage) return;
+    paging.current = true;
+    setParams((old) => { const next = new URLSearchParams(old); if (cursor) next.set("cursor", cursor); else next.delete("cursor"); return next; });
+  }
   const reminders = isAdmin && params.get("show") === "reminders";
   // A leader's list is theirs alone: no category to choose.
   const category = isAdmin ? (reminders ? "reminder" : "announcement") : undefined;
+  const requestKey = JSON.stringify([category, debounced, status, cursor]);
   const [messages, setMessages] = useState<Message[] | null>(null);
+  const canPage = !!messages && search === debounced && resolvedKey === JSON.stringify([category, search, status, cursor]);
   const [options, setOptions] = useState<ComposeOptions | null>(null);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let alive = true;
-    setMessages(null);
-    Promise.all([Messages.list(category), Messages.options()])
-      .then(([{ messages: list }, o]) => { if (alive) { setMessages(list); setOptions(o); } })
+    setMessages(null); setError("");
+    Promise.all([Messages.list(category, { limit: LIST_LIMIT, cursor, search: debounced, status }), Messages.options()])
+      .then(([{ messages: list, nextCursor }, o]) => { if (alive) { setMessages(list); setNextCursor(nextCursor ?? ""); setOptions(o); setResolvedKey(requestKey); } })
       .catch((e) => { if (alive) setError(errorText(e, "We couldn't load your messages.")); });
     return () => { alive = false; };
-  }, [reload, category]);
+  }, [reload, category, cursor, debounced, status, requestKey]);
+  useEffect(() => {
+    if (!messages || !paging.current) return;
+    paging.current = false;
+    count.current?.scrollIntoView?.({ block: "start" });
+    count.current?.focus({ preventScroll: true });
+  }, [messages]);
 
   const me = user?.displayName || user?.name;
   const allowed = canCompose || options?.canCompose;
@@ -58,19 +86,24 @@ export function MessagesPage() {
       </div>
       {isAdmin && (
         <div className="flex flex-wrap gap-2" role="group" aria-label="Show">
-          <Chip selected={!reminders} onClick={() => setParams({})}>Announcements</Chip>
-          <Chip selected={reminders} onClick={() => setParams({ show: "reminders" })}>Automatic reminders</Chip>
+          <Chip selected={!reminders} onClick={() => change("show", "")}>Announcements</Chip>
+          <Chip selected={reminders} onClick={() => change("show", "reminders")}>Automatic reminders</Chip>
         </div>
       )}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-48 flex-1"><SearchBox label="Search message subjects" value={search} onChange={(v) => change("search", v)} /></div>
+        <Field label="Message status"><Select value={status} onChange={(e) => change("status", e.target.value)} options={[{ value: "", label: "All statuses" }, ...STATUSES.map((s) => ({ value: s, label: s[0].toUpperCase() + s.slice(1) }))]} /></Field>
+      </div>
       {error && <ErrorNotice message={error} onRetry={() => { setError(""); setReload((n) => n + 1); }} />}
       {!error && (!messages || !church.done) && <Skeleton kind="lines" count={4} label="Loading your messages…" />}
-      {messages && messages.length === 0 && reminders && (
+      {messages && messages.length === 0 && (search || status || cursor) && <EmptyState title="No messages match" body="Try another subject, choose another status, or return to the newest messages." />}
+      {messages && messages.length === 0 && !search && !status && !cursor && reminders && (
         <EmptyState
           title="No automatic reminders yet"
           body="Event reminders show up here once they go out, with who they reached. Each event's reminder time is in its Edit series form."
         />
       )}
-      {messages && messages.length === 0 && !reminders && (allowed ? (
+      {messages && messages.length === 0 && !search && !status && !cursor && !reminders && (allowed ? (
         <EmptyState
           title="No messages yet"
           body="Emails you write to your groups and events show up here: drafts, scheduled ones and sent ones."
@@ -83,13 +116,12 @@ export function MessagesPage() {
           action={<ButtonLink variant="secondary" to="/my-groups">Go to my groups</ButtonLink>}
         />
       ))}
-      {church.done && messages && messages.length >= LIST_LIMIT && (
-        <p className="text-sm text-text-muted">{isAdmin ? `Showing the latest ${LIST_LIMIT} messages.` : `Showing your latest ${LIST_LIMIT} messages.`}</p>
-      )}
+      {messages && <p ref={count} tabIndex={-1} role="status" className="scroll-mt-24 text-sm text-text-muted">{messages.length} {messages.length === 1 ? "message" : "messages"} on this page{nextCursor ? "; older messages available" : ""}</p>}
       {church.done && messages && messages.length > 0 && (
         <ul className="fold-list">
-          {messages.map((m) => (
+          {messages.map((m, index) => (
             <li key={m.id}>
+              {(index === 0 || dayOf(messages[index - 1].updatedAt) !== dayOf(m.updatedAt)) && <h2 className="pt-4 font-semibold">Updated {formatDayHeading(dayOf(m.updatedAt))}</h2>}
               <Link to={`/messages/${m.id}`} className="fold-list-row grid gap-x-6 rounded-sm px-3 hover:bg-sunken sm:grid-cols-[minmax(0,1fr)_auto]">
                 <span className="text-sm font-semibold text-text-muted sm:col-start-2 sm:row-start-1 sm:max-w-60 sm:text-right">{statusLabel(m, zone)}</span>
                 {m.category === "reminder" ? <>
@@ -109,6 +141,10 @@ export function MessagesPage() {
           ))}
         </ul>
       )}
+      {(cursor || (messages && nextCursor)) && <nav aria-label="Message pages" className="flex flex-wrap gap-3">
+        {cursor && <Button variant="secondary" onClick={() => move("")}>Newest messages</Button>}
+        {messages && nextCursor && <Button variant="secondary" disabled={!canPage} onClick={() => move(nextCursor)}>Older messages</Button>}
+      </nav>}
     </div>
   );
 }

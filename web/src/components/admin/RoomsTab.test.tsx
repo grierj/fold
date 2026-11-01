@@ -42,13 +42,13 @@ describe("room list", () => {
     ]} />);
     expect(screen.getByText("Fellowship Hall")).toBeInTheDocument();
     expect(screen.getByText("Main · Seats 80 · kitchen, projector")).toBeInTheDocument();
-    const nursery = screen.getByText("Nursery").closest("div.bg-surface") as HTMLElement;
+    const nursery = screen.getByRole("group", { name: "Nursery" });
     expect(within(nursery).getByText("Restricted")).toBeInTheDocument();
     expect(within(nursery).queryByText("Inactive")).not.toBeInTheDocument();
-    const annex = screen.getByText("Old Annex").closest("div.bg-surface") as HTMLElement;
+    const annex = screen.getByRole("group", { name: "Old Annex" });
     expect(within(annex).getByText("Inactive")).toBeInTheDocument();
     expect(within(annex).queryByText("Restricted")).not.toBeInTheDocument();
-    expect(within(screen.getByText("Fellowship Hall").closest("div.bg-surface") as HTMLElement).queryByText("Restricted")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Fellowship Hall" })).queryByText("Restricted")).not.toBeInTheDocument();
   });
 
   it("puts active rooms first", () => {
@@ -235,12 +235,12 @@ describe("editing a room", () => {
 });
 
 describe("deactivating and reactivating", () => {
-  it("deactivates with one plain button and no confirmation", async () => {
+  it("deactivates from More without a confirmation", async () => {
     vi.mocked(AdminRooms.update).mockResolvedValue({ room: { ...hall, active: false } });
     const confirmSpy = vi.spyOn(window, "confirm");
     render(<Harness initial={[hall]} />);
-    expect(screen.queryByRole("button", { name: /^More for/ })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Deactivate Fellowship Hall" }));
+    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Deactivate Fellowship Hall" }));
     expect(AdminRooms.update).toHaveBeenCalledWith(1, { active: false });
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(await screen.findByText("“Fellowship Hall” deactivated.")).toBeInTheDocument();
@@ -252,8 +252,9 @@ describe("deactivating and reactivating", () => {
     const off = { ...hall, active: false };
     vi.mocked(AdminRooms.update).mockResolvedValue({ room: hall });
     render(<Harness initial={[off]} />);
-    expect(screen.queryByRole("button", { name: "Deactivate Fellowship Hall" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Reactivate Fellowship Hall" }));
+    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
+    expect(screen.queryByRole("menuitem", { name: "Deactivate Fellowship Hall" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Reactivate Fellowship Hall" }));
     expect(AdminRooms.update).toHaveBeenCalledWith(1, { active: true });
     expect(await screen.findByText("“Fellowship Hall” reactivated.")).toBeInTheDocument();
     expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
@@ -262,7 +263,8 @@ describe("deactivating and reactivating", () => {
   it("says so when it can't change the room", async () => {
     vi.mocked(AdminRooms.update).mockRejectedValue(new ApiError(500, "x"));
     render(<Harness initial={[hall]} />);
-    await userEvent.click(screen.getByRole("button", { name: "Deactivate Fellowship Hall" }));
+    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Deactivate Fellowship Hall" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't deactivate that room.");
     expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
   });
@@ -272,14 +274,17 @@ describe("room calendar feed (M2.2b)", () => {
   it("active rooms get a Calendar feed panel; Done gives focus back", async () => {
     vi.mocked(AdminRooms.getFeed).mockResolvedValue({ feed: { hasToken: false, createdAt: null } });
     render(<Harness initial={[hall, room(3, "Old Annex", { active: false })]} />);
-    expect(screen.queryByRole("button", { name: "Calendar feed for Old Annex" })).toBeNull();
-    const opener = screen.getByRole("button", { name: "Calendar feed for Fellowship Hall" });
+    await userEvent.click(screen.getByRole("button", { name: "More for Old Annex" }));
+    expect(screen.queryByRole("menuitem", { name: "Calendar feed for Old Annex" })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    const opener = screen.getByRole("button", { name: "More for Fellowship Hall" });
     await userEvent.click(opener);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Calendar feed for Fellowship Hall" }));
     const panel = screen.getByRole("region", { name: "Calendar feed for Fellowship Hall" });
     expect(await within(panel).findByRole("button", { name: "Create calendar link" })).toBeInTheDocument();
     expect(AdminRooms.getFeed).toHaveBeenCalledWith(1);
     await userEvent.click(within(panel).getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("region", { name: "Calendar feed for Fellowship Hall" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Calendar feed for Fellowship Hall" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "More for Fellowship Hall" })).toHaveFocus();
   });
 });

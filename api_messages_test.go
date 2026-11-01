@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -379,6 +380,87 @@ func TestMessageDraftScheduleCancel(t *testing.T) {
 	decodeJSON(t, f.leader.do("GET", "/api/v1/messages", nil, false), &list)
 	if len(list.Messages) != 2 {
 		t.Fatalf("my messages: %d", len(list.Messages))
+	}
+}
+
+func TestMessageListPagesFiltersAndAuthorScope(t *testing.T) {
+	f := newComposeFixture(t)
+	create := func(client *apiClient, groupID uint, subject string) messageJSON {
+		t.Helper()
+		w := client.do("POST", "/api/v1/messages", map[string]any{"subject": subject, "bodyHtml": "<p>Draft only</p>", "audience": map[string]any{"type": "group", "groupId": groupID}}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Message messageJSON `json:"message"`
+		}
+		decodeJSON(t, w, &out)
+		return out.Message
+	}
+	for i := 0; i < 205; i++ {
+		create(f.leader, f.group.ID, "History")
+	}
+	create(f.host, f.otherGroup.ID, "Other author's history")
+	// Equal timestamps exercise the ID tie-breaker, not just timestamp paging.
+	if err := f.app.DB.Model(&models.Message{}).Where("author_id = ?", f.leaderUser.ID).UpdateColumn("updated_at", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)).Error; err != nil {
+		t.Fatal(err)
+	}
+	get := func(client *apiClient, query string) messageListJSON {
+		t.Helper()
+		w := client.do("GET", "/api/v1/messages?"+query, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var out messageListJSON
+		decodeJSON(t, w, &out)
+		return out
+	}
+	first := get(f.leader, "limit=25")
+	if len(first.Messages) != 25 || first.NextCursor == "" {
+		t.Fatalf("first page: %+v", first)
+	}
+	create(f.leader, f.group.ID, "New after page one") // must not shift the next page
+	seen := map[uint]bool{}
+	page := first
+	for {
+		for _, m := range page.Messages {
+			if seen[m.ID] || m.Subject != "History" {
+				t.Fatalf("duplicate or wrong author/page: %+v", m)
+			}
+			seen[m.ID] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		page = get(f.leader, "limit=25&cursor="+url.QueryEscape(page.NextCursor))
+	}
+	if len(seen) != 205 {
+		t.Fatalf("history lost: got %d", len(seen))
+	}
+	if got := get(f.leader, ""); len(got.Messages) != 200 || got.NextCursor == "" {
+		t.Fatal("default limit changed or history has no continuation")
+	}
+	create(f.leader, f.group.ID, "Literal 100% match")
+	create(f.leader, f.group.ID, "Literal 100X match")
+	if got := get(f.leader, "search=100%25&status=draft"); len(got.Messages) != 1 || got.Messages[0].Subject != "Literal 100% match" {
+		t.Fatalf("literal search: %+v", got)
+	}
+	if got := get(f.leader, "search=100%25&status=sent"); len(got.Messages) != 0 {
+		t.Fatal("status filter ignored")
+	}
+	if got := get(f.admin, "search=Other+author"); len(got.Messages) != 1 {
+		t.Fatal("admin cannot browse all authors")
+	}
+	if got := get(f.leader, "search=Other+author&cursor="+url.QueryEscape(first.NextCursor)); len(got.Messages) != 0 {
+		t.Fatal("cursor widened author access")
+	}
+	if got := get(f.leader, "category=reminder&cursor="+url.QueryEscape(first.NextCursor)); len(got.Messages) != 0 {
+		t.Fatal("cursor widened category access")
+	}
+	for _, query := range []string{"limit=0", "limit=201", "limit=no", "cursor=bad", "cursor=e30", "status=unknown"} {
+		if w := f.leader.do("GET", "/api/v1/messages?"+query, nil, false); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d", query, w.Code)
+		}
 	}
 }
 

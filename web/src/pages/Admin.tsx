@@ -34,6 +34,8 @@ import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErr
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Chip } from "../components/ui/Chip";
+import { usePage } from "../lib/usePage";
+import { PageCount, Pagination } from "../components/ui/Pagination";
 import { SearchBox } from "../components/ui/SearchBox";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -604,6 +606,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
   onDeleted: (id: number) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -637,18 +640,22 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
     }
   }
 
-  if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
-
   const needle = query.trim().toLowerCase();
-  const shown = sortGroups(groups).filter((g) => !needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle));
+  const shown = sortGroups(groups ?? []).filter((g) => (!statusFilter || g.status === statusFilter) && (!needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle)));
+  const paging = usePage(shown, query + statusFilter);
+  if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   return (
     <div className="space-y-3">
-      {groups.length > 0 && <SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} />}
+      {groups.length > 0 && <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-48 flex-1"><SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} disabled={openMembers !== null} /></div>
+        <Field label="Group status"><Select value={statusFilter} disabled={openMembers !== null} onChange={(e) => setStatusFilter(e.target.value)} options={[{ value: "", label: "All statuses" }, { value: "pending", label: "Pending" }, { value: "active", label: "Active" }, { value: "archived", label: "Archived" }]} /></Field>
+      </div>}
+      <PageCount paging={paging} noun="groups" />
       {deleteError && <FormError>{deleteError}</FormError>}
       {/* Always rendered so screen readers announce the text when it arrives; empty, it takes no room. */}
       <p ref={deletedRef} role="status" tabIndex={-1} className={deleted ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{deleted}</p>
-      {shown.map((g) => (
+      {paging.rows.map((g) => (
         <div key={g.id} className="fold-list-row bg-surface border-b border-border px-4">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
@@ -696,6 +703,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
             fallbackFocus={() => manageMemberButtons.current.get(g.id)?.focus()} />}
         </div>
       ))}
+      <Pagination paging={paging} noun="groups" disabled={openMembers !== null} />
       {groups.length === 0 && (
         <EmptyState title="No groups yet" body="Groups people start, and groups you add, show up here." />
       )}
@@ -703,7 +711,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
         <EmptyState
           title="No groups match"
           body="Try a different name, or clear the search."
-          action={<Button variant="secondary" onClick={() => setQuery("")}>Clear search</Button>}
+          action={<Button variant="secondary" onClick={() => { setQuery(""); setStatusFilter(""); }}>Clear search</Button>}
         />
       )}
     </div>
@@ -1010,6 +1018,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   const needle = query.trim().toLowerCase();
   const shown = users.filter((u) => matchesUserFilter(u, filter) && (!needle || [u.name, u.displayName, u.email].some((v) => v.toLowerCase().includes(needle))));
+  const paging = usePage(shown, query + filter);
+  const editingRow = creating || editingId !== null || resetId !== null || consentId !== null || leaving !== null;
 
   return (
     <div>
@@ -1030,14 +1040,15 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       )}
       {users.length > 0 && (
         <div className="mb-4 space-y-3">
-          <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} />
+          <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} disabled={editingRow} />
           <div role="group" aria-label="Filter users" className="flex flex-wrap gap-2">
             {USER_FILTERS.filter((f) => f.id !== "email" || filter === "email" || users.some((u) => u.emailSuppression)).map((f) => (
-              <Chip key={f.id} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
+              <Chip key={f.id} disabled={editingRow} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
             ))}
           </div>
         </div>
       )}
+      <PageCount paging={paging} noun="users" />
       {users.length > 0 && shown.length === 0 && (
         <EmptyState
           title="No one matches"
@@ -1059,7 +1070,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
             </tr>
           </thead>
           <tbody className="block md:table-row-group divide-y divide-border">
-            {shown.map((u) => (
+            {paging.rows.map((u) => (
               <tr key={u.id} className="block md:table-row">
                 <td className="block md:table-cell px-4 pt-3 md:py-3">
                   <div className="flex items-center gap-2">
@@ -1157,6 +1168,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           </tbody>
         </table>
       </div>}
+      <Pagination paging={paging} noun="users" disabled={editingRow} />
     </div>
   );
 }

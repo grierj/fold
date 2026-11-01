@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Groups } from "../api";
 import type { GroupSummary } from "../types";
+import { usePage } from "../lib/usePage";
+import { PageCount, Pagination } from "../components/ui/Pagination";
+import { SearchBox } from "../components/ui/SearchBox";
 import { GroupCard } from "../components/GroupCard";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
@@ -50,6 +53,8 @@ function MeetingSoon() {
 export function MyGroups() {
   const { user, loading: authLoading } = useAuth();
   const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const query = params.get("search") ?? "";
   const departureStatus = (location.state as { departureStatus?: string } | null)?.departureStatus;
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +86,9 @@ export function MyGroups() {
       alive = false;
     };
   }, [user, authLoading, retry]);
+
+  const matching = groups.filter((g) => `${g.name} ${g.description}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const paging = usePage(matching, query, 12, { page: Number(params.get("page")) || 1, onChange: (page) => setParams((old) => { const next = new URLSearchParams(old); next.set("page", String(page)); return next; }) });
 
   if (!authLoading && !user) {
     return (
@@ -129,11 +137,17 @@ export function MyGroups() {
           <MeetingSoon />
         </>
       )}
-      {!loading && groups.length > 0 && (
-        <div className="fold-list">
-          {groups.map((g, index) => (
+      {!loading && !error && groups.length > 0 && (
+        <div>
+          <SearchBox label="Search your groups" value={query} onChange={(value) => setParams((old) => { const next = new URLSearchParams(old); if (value) next.set("search", value); else next.delete("search"); next.delete("page"); return next; }, { replace: true })} />
+          <PageCount paging={paging} noun="groups" size={12} />
+          {matching.length === 0 && <EmptyState title="No groups match" body="Try another group name or a shorter search." />}
+          <div className="fold-list">
+          {paging.rows.map((g, index) => (
             <GroupCard key={g.id} group={g} headingLevel={2} showRole={false} priority={index === 0} />
           ))}
+          </div>
+          <Pagination paging={paging} noun="groups" />
         </div>
       )}
     </div>

@@ -90,7 +90,7 @@ export function MonthView({
                   if (label) stateCounts.set(label.toLowerCase(), (stateCounts.get(label.toLowerCase()) ?? 0) + 1);
                 }
                 const states = [...stateCounts].map(([state, count]) => `${count} ${state}`).join(", ");
-                const label = `${formatDayLong(d)}${isToday ? ", today" : ""}, ${occs.length} ${occs.length === 1 ? "event" : "events"}${states ? `, ${states}` : ""}`;
+                const label = `${formatDayLong(d)}, ${occs.length} ${occs.length === 1 ? "event" : "events"}${isToday ? ", today" : ""}${states ? `, ${states}` : ""}`;
                 const number = (
                   <span
                     className={`inline-flex h-7 w-7 items-center justify-center text-sm ${isToday ? "rounded-full bg-primary text-primary-foreground" : ""}`}
@@ -109,7 +109,8 @@ export function MonthView({
                       focusable={d === focusDay}
                       layout="flex min-h-11 w-full flex-col items-center justify-center gap-0.5 sm:hidden"
                     >
-                      {number}
+                      {number}{" "}
+                      {occs.length > MAX_CHIPS && <span aria-hidden="true" className="text-xs">{occs.length} events</span>}
                       <span aria-hidden="true" className="flex h-1.5 gap-0.5">
                         {occs.slice(0, MAX_CHIPS).map((o) => {
                           const state = calendarState(o);

@@ -338,13 +338,14 @@ export const AdminAccountRequests = {
 };
 
 export const Calendar = {
-  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean; remote?: boolean; childcare?: boolean }) => {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean; remote?: boolean; childcare?: boolean; church?: boolean }) => {
     const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
     if (q.mine) p.set("mine", "1");
     if (q.group) p.set("group", q.group);
     if (q.deleted) p.set("deleted", "1");
     if (q.remote) p.set("remote", "1");
     if (q.childcare) p.set("childcare", "1");
+    if (q.church) p.set("church", "1");
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
   },
   // The by-room view (M2.2a): one day or the Sunday-to-Saturday week holding

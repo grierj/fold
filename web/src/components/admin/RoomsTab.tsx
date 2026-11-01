@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { AdminRooms, type RoomInput } from "../../api";
 import type { Room } from "../../types";
+import { usePage } from "../../lib/usePage";
+import { PageCount, Pagination } from "../ui/Pagination";
+import { SearchBox } from "../ui/SearchBox";
+import { Menu } from "../ui/Menu";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Checkbox, Field, FormError, focusFirstInvalid, Input, Textarea } from "../ui/Field";
+import { Checkbox, Field, FormError, focusFirstInvalid, Input, Select, Textarea } from "../ui/Field";
 import { Form } from "../ui/Form";
 import { FormActions } from "../ui/FormActions";
 import { ErrorNotice } from "../ErrorNotice";
@@ -163,6 +167,8 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
 }) {
   // "new" is the add form; a number is the room being edited.
   const [open, setOpen] = useState<"new" | number | null>(null);
+  const [query, setQuery] = useState("");
+  const [building, setBuilding] = useState("");
   const [status, setStatus] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -177,7 +183,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
 
   useEffect(() => {
     if (feedReturn === null || feedOpen !== null) return;
-    rootEl.current?.querySelector<HTMLElement>(`[data-feed-opener="${feedReturn}"]`)?.focus();
+    rootEl.current?.querySelector<HTMLElement>(`[data-feed-opener="${feedReturn}"] button`)?.focus();
     setFeedReturn(null);
   }, [feedReturn, feedOpen]);
 
@@ -223,6 +229,9 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
     }
   }
 
+  const ordered = [...(rooms ?? [])].sort((a, b) => a.building.localeCompare(b.building) || Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+  const matching = ordered.filter((r) => (!building || r.building === building) && `${r.name} ${r.building} ${r.features}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const paging = usePage(matching, query + building);
   if (!rooms) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   function startAdding() {
@@ -241,10 +250,18 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
         // While another room's form is open, switching would drop its edits, so the openers wait.
         <div><Button variant="secondary" data-opener="new" disabled={open !== null || feedOpen !== null} onClick={startAdding}>Add room</Button></div>
       )}
-      {sortRooms(rooms).map((r) => open === r.id ? (
+      {rooms.length > 0 && <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-48 flex-1"><SearchBox label="Search rooms" value={query} onChange={setQuery} disabled={open !== null || feedOpen !== null} /></div>
+        <Field label="Building"><Select value={building} onChange={(e) => setBuilding(e.target.value)} disabled={open !== null || feedOpen !== null} options={[{ value: "", label: "All buildings" }, ...[...new Set(rooms.map((r) => r.building).filter(Boolean))].sort().map((b) => ({ value: b, label: b }))]} /></Field>
+      </div>}
+      <PageCount paging={paging} noun="rooms" />
+      {rooms.length > 0 && matching.length === 0 && <EmptyState title="No rooms match" body="Try another name or choose another building." />}
+      {paging.rows.map((r, index) => <Fragment key={r.id}>
+        {(index === 0 || paging.rows[index - 1].building !== r.building) && <h3 className="pt-4 font-bold">{r.building || "Other rooms"}</h3>}
+        {open === r.id ? (
         <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={cancel} />
       ) : (
-        <div key={r.id} className="bg-surface rounded-lg border border-border p-5">
+        <div key={r.id} role="group" aria-label={r.name} className="border-b border-border py-3">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -256,16 +273,15 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
             </div>
             <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null || feedOpen !== null}
               onClick={() => { setStatus(""); setOpen(r.id); }}>Edit</Button>
-            {r.active && (
-              <Button variant="secondary" data-feed-opener={r.id} aria-label={`Calendar feed for ${r.name}`}
-                disabled={feedOpen !== null || open !== null} onClick={() => { setStatus(""); setFeedOpen(r.id); }}>Calendar feed</Button>
-            )}
-            <Button variant="secondary" aria-label={`${r.active ? "Deactivate" : "Reactivate"} ${r.name}`} disabled={busyId === r.id}
-              onClick={() => void setActive(r, !r.active)}>{r.active ? "Deactivate" : "Reactivate"}</Button>
+            <div data-feed-opener={r.id}><Menu tone="quiet" label={`More for ${r.name}`} items={[
+              ...(r.active ? [{ label: `Calendar feed for ${r.name}`, disabled: feedOpen !== null || open !== null, onSelect: () => { setStatus(""); setFeedOpen(r.id); } }] : []),
+              { label: `${r.active ? "Deactivate" : "Reactivate"} ${r.name}`, disabled: busyId === r.id || open !== null || feedOpen !== null, onSelect: () => void setActive(r, !r.active) },
+            ]} /></div>
           </div>
           {feedOpen === r.id && r.active && <div className="mt-4"><RoomFeedPanel room={r} onClose={closeFeed} /></div>}
         </div>
-      ))}
+      )}</Fragment>)}
+      <Pagination paging={paging} noun="rooms" disabled={open !== null || feedOpen !== null} />
       {rooms.length === 0 && open !== "new" && (
         <EmptyState
           title="No rooms yet"

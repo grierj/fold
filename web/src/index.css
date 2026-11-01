@@ -243,8 +243,9 @@
   /* One segment of a joined control (RSVP, DEC-63). The chosen one is
      filled and, like chips, leads with a check so color isn't the only cue. */
   .segment { @apply inline-flex flex-1 items-center justify-center gap-1 min-h-11 px-2 whitespace-nowrap text-sm font-semibold border border-border-strong bg-surface text-text -ml-px first:ml-0 first:rounded-l-lg last:rounded-r-lg hover:text-primary disabled:opacity-50; }
-  .segment[aria-current="page"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
-  .segment[aria-pressed="true"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
+  /* Raise a selected border above its neighbors, not above the sticky shell. */
+  .segment[aria-current="page"] { @apply relative z-[1] border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
+  .segment[aria-pressed="true"] { @apply relative z-[1] border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
   .segment[aria-pressed="true"]::before { content: "✓" / ""; }
 }
 

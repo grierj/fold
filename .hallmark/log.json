@@ -3,6 +3,34 @@
   "mode": "redesign",
   "scope": "app",
   "theme": "Fold brand (approved product system)",
+  "prompt": "Sounds good, please implement: busy-church list recommendations.",
+  "base": "5c0f919",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "bounded visitor church preview, calendar agenda and compact group/series dates",
+   "searchable paged people, admin and personal group lists with draft/focus preservation",
+   "server-cursor message history, subject/status filters and date grouping",
+   "building-grouped compact room list and responsive calendar/admin navigation",
+   "additive calendar church filter and compatible message cursor/search/status API"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "warnings": 0,
+   "tests": 1404,
+   "fullGoSuite": "passed against isolated Postgres",
+   "browserChecks": 172,
+   "eagerGzipKB": 175.7,
+   "independentReview": "correctness/security/simplicity and UI/UX explicitly approved after fixes",
+   "evidence": "/tmp/fold-verify-proof/20261101T232904Z-1083168",
+   "details": ".hallmark/busy-lists.md",
+   "furtherListRecommendationsImplemented": true
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
   "prompt": "Implement all five directory recommendations, then evaluate a busy church and recommend further improvements.",
   "base": "54717aa",
   "branch": "design/hallmark-fold",

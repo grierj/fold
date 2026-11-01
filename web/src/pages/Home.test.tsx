@@ -219,6 +219,24 @@ describe("Home signed out (DEC-94)", () => {
     expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
   });
 
+  it("previews four church dates and links to their filtered calendar", async () => {
+    openEvents.mockResolvedValue({ events: Array.from({ length: 25 }, (_, i) => ({ eventId: i + 1, date: "2030-01-01", startsAt: "2030-01-01T18:00:00Z", title: `Church event ${i + 1}`, location: "Hall", description: "" })) });
+    renderHome();
+    expect(await screen.findByText("25 upcoming dates in the next 90 days; showing the next 4")).toBeInTheDocument();
+    expect(screen.getByText("Church event 4")).toBeInTheDocument();
+    expect(screen.queryByText("Church event 5")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "See all church events" })).toHaveAttribute("href", "/calendar?church=1&days=30&date=2030-01-01");
+  });
+
+  it("continues through all preview dates even beyond a thirty-day calendar window", async () => {
+    openEvents.mockResolvedValue({ events: [
+      { eventId: 1, date: "2030-01-15", startsAt: "2030-01-15T18:00:00Z", title: "First distant date", location: "", description: "" },
+      { eventId: 2, date: "2030-03-15", startsAt: "2030-03-15T18:00:00Z", title: "Last distant date", location: "", description: "" },
+    ] });
+    renderHome();
+    expect(await screen.findByRole("link", { name: "See all church events" })).toHaveAttribute("href", "/calendar?church=1&days=60&date=2030-01-15");
+  });
+
   it("lists church events", async () => {
     openEvents.mockResolvedValue({ events: [{ eventId: 9, date: "2030-01-01", startsAt: "2030-01-01T18:00:00Z", title: "Potluck", location: "Hall", description: "" }] });
     renderHome();

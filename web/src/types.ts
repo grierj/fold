@@ -1128,6 +1128,11 @@ export interface MessageAudience {
   roles?: AudienceRole[];
 }
 
+export interface MessageListResponse {
+  messages: Message[];
+  nextCursor?: string;
+}
+
 export interface Message {
   id: number;
   // push: an automatic push reminder (M3.13d3); never one the composer writes.

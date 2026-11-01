@@ -1,10 +1,15 @@
 # Directory improvements and busy-church experiment
 
-## Delivered versus recommended
+## Historical snapshot: directory delivery and subsequent experiment
 
-All five recommendations from `directory-50.md` are implemented. The subsequent
-busy-church findings below are **recommendations, not additional shipped changes**.
-No backend, schema, permissions, dependency, or deployment changes were made.
+This document records `5c0f919`. The user subsequently approved implementing
+these busy-church recommendations; see [`busy-lists.md`](busy-lists.md) for the
+completed implementation, comparisons and latest proof.
+
+At this snapshot, all five recommendations from `directory-50.md` were implemented.
+The busy-church findings below were **recommendations, not shipped changes yet**.
+This historical phase made no backend, schema, permissions, dependency, or
+deployment changes.
 
 - Search, selected tags, and expanded result count are URL-backed. Detail → Back
   restores the originating row and its viewport position, after both the agenda

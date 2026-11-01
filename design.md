@@ -41,7 +41,14 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
   and contrast contract; below it, tabs and sections use the shared page measure.
 - Events: date, place and response form a coherent unit; dates read as an agenda, not tiles.
   Per-date editors stay one column even on desktop: viewport width is not their available width.
-- Calendar: compact header and wrapping filters; keep the selected-day result close to the grid.
+- Long group/series schedules: 12 compact summaries per page with one expanded response
+  area; short schedules retain direct answers. Keep mounted drafts across browsing.
+- Calendar: 25-event agenda pages with date navigation and persistent filters. Page focus
+  clears the measured toolbar. Phone Week selects one day; busy Month cells show counts.
+- People/admin lists: search and truthful counts above 25-row pages; Add above results,
+  secondary actions in menus. Preserve contact-request drafts and distinct permission rules.
+- My groups: 12-row pages and URL search. Messages: 25-row cursor pages with subject/status
+  filters and a real older-history path. Rooms: building groups and compact management rows.
 - Admin/settings: quiet navigation, visible section titles, horizontal rules, no card piles.
 
 ## Controls and states
@@ -67,5 +74,5 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - `web/src/index.css`, `web/src/tokens.css`, `web/src/base.css`; existing Tailwind role names.
 - Baseline and route inventory: `.hallmark/preflight.json`, `.hallmark/routes.md`.
 - Verification, remaining flags and independent review: `.hallmark/verification.md`.
-- Directory implementation and larger-list recommendations: `.hallmark/busy-church.md`.
-  The latter's roster/calendar/admin recommendations are not yet implemented designs.
+- Historical directory implementation and scale experiment: `.hallmark/busy-church.md`.
+- Delivered roster/calendar/admin/message/room list patterns and proof: `.hallmark/busy-lists.md`.

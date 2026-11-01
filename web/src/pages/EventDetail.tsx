@@ -7,6 +7,7 @@ import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
 import { EventIntro } from "../components/EventIntro";
+import { CompactDates } from "../components/CompactDates";
 import { Attendance } from "../components/Attendance";
 import { DateEditor } from "../components/DateEditor";
 import { NeedsRoomList } from "../components/NeedsRoomList";
@@ -229,8 +230,8 @@ function EventDetailContent() {
         <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />
       )}
       <div className={single ? "mt-6 fold-list" : "fold-list"}>
-        {occurrences.map((m) => (
-          <DateRow
+        <CompactDates dates={occurrences} requested={pickRequest?.date ?? (canManage ? manageDate ?? undefined : undefined)} requestVersion={pickRequest?.seq}>
+          {(m) => <DateRow
             key={`${m.eventId}-${m.date}`}
             instance={m}
             single={single}
@@ -248,8 +249,8 @@ function EventDetailContent() {
             onTerminalRefresh={() => void load(true, true)}
             onChanged={() => { setRoomsRevision((n) => n + 1); void load(true); }}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
-          />
-        ))}
+          />}
+        </CompactDates>
       </div>
     </div>
   );

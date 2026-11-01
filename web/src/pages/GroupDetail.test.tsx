@@ -209,7 +209,7 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   vi.spyOn(window, "confirm").mockReturnValue(true);
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.click(screen.getByRole("button", { name: "Add people" }));
-  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  await userEvent.type(within(screen.getByRole("region", { name: "Add people" })).getByRole("combobox"), "Pat"); await userEvent.click(await within(screen.getByRole("region", { name: "Add people" })).findByRole("option"));
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
   expect(Groups.addMember).toHaveBeenNthCalledWith(1, 1, { selectionId: "opaque" });
   if (code === "group_full") expect(Groups.addMember).toHaveBeenLastCalledWith(1, { selectionId: "opaque" }, true);
@@ -222,7 +222,7 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.click(screen.getByRole("button", { name: "Add people" }));
-  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  await userEvent.type(within(screen.getByRole("region", { name: "Add people" })).getByRole("combobox"), "Pat"); await userEvent.click(await within(screen.getByRole("region", { name: "Add people" })).findByRole("option"));
   expect(screen.getByText(/Adding a teen needs their approval/)).toHaveAttribute("role", "status");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));

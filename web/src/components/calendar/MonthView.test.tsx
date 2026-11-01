@@ -29,9 +29,10 @@ describe("MonthView", () => {
     );
     expect(screen.getByRole("table", { name: "October 2026" })).toBeInTheDocument();
     const [phone] = screen.getAllByRole("button", { name: "Wednesday, October 21, 4 events, 1 going, 1 maybe, 1 not answered, 1 waitlisted" });
+    expect(phone).toHaveTextContent("21 4 events");
     await userEvent.click(phone);
     expect(onSelect).toHaveBeenCalledWith("2026-10-21");
-    expect(screen.getAllByRole("button", { name: /^Monday, October 19, today, 0 events$/ })[0]).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("button", { name: /^Monday, October 19, 0 events, today$/ })[0]).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Nothing on this day.")).toBeInTheDocument();
     const more = screen.getByRole("button", { name: "+1 more" });
     expect(more).not.toHaveAttribute("tabindex", "-1");

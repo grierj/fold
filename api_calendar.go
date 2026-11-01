@@ -97,6 +97,11 @@ func (a *App) apiCalendar(c *gin.Context) {
 	if onlyGroup != nil {
 		q = q.Where("group_id = ?", *onlyGroup)
 	}
+	// Filter candidates before the date cap; ordinary visibility policy still
+	// applies below, including to private church-wide events.
+	if c.Query("church") == "1" {
+		q = q.Where("group_id IS NULL")
+	}
 	// remote=1 keeps only events that offer remote attendance (M1.8
 	// slice 2). Filtering on the event row here means a hidden event is
 	// dropped by eventCandidates exactly as without the filter.
