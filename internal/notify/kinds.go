@@ -139,8 +139,11 @@ type Kind struct {
 	// Default off.
 	AllowPush  bool
 	PushRender func(Vars) (title, body string)
-	// PushSoon marks a change to a dated event: its push is urgent (a short
-	// TTL, high urgency) when the date starts within 24 hours.
+	// PushSoon marks a change to a dated event, whose rows carry the
+	// occurrence as their subject (SubjectType "occurrence"). When that
+	// date starts within 24 hours its push is urgent (a short TTL, high
+	// urgency) and goes at once whatever the hour, outside the hourly
+	// limit (DEC-126); otherwise it is an ordinary optional push.
 	PushSoon bool
 }
 

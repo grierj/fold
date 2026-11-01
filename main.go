@@ -66,6 +66,11 @@ type App struct {
 	// pushRender overrides renderPush in tests (a rendering past the
 	// payload cap); nil uses the stored push text.
 	pushRender func(*models.Notification) (push.Notification, bool)
+	// pushClock and pushWindow fix the time and the quiet hours in push
+	// tests (DEC-126). Production leaves them unset: the current time and
+	// push.DefaultWindow.
+	pushClock  func() time.Time
+	pushWindow *push.Window
 }
 
 const sessionName = "fold-session"

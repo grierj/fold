@@ -214,12 +214,26 @@ func safeRun(ctx context.Context, k Kind, payload json.RawMessage) (err error) {
 	return k.Run(ctx, payload)
 }
 
+// Later is what a handler returns when its work isn't due yet (a push
+// waiting for quiet hours to end, DEC-126): the job is queued again to run
+// at at, without using an attempt or recording an error. The handler runs
+// again from the top then, so it rechecks everything.
+func Later(at time.Time) error { return laterError{at: at} }
+
+type laterError struct{ at time.Time }
+
+func (e laterError) Error() string { return "not due until " + e.at.UTC().Format(time.RFC3339) }
+
 // finish records the outcome, but only while this worker still holds the
 // job: if its lease ran out and another worker took it, that one decides.
 func (r *Runner) finish(job claimed, worker string, runErr error, final bool) error {
 	var updates map[string]any
 	msg := ""
+	var later laterError
 	switch {
+	case errors.As(runErr, &later) && !final:
+		updates = map[string]any{"status": models.JobQueued, "attempts": gorm.Expr("attempts - 1"), "locked_at": nil,
+			"last_error": "", "run_at": later.at.UTC(), "updated_at": time.Now()}
 	case runErr == nil:
 		updates = map[string]any{"status": models.JobDone, "locked_at": nil, "last_error": "", "updated_at": time.Now()}
 	case final || job.Attempts >= job.MaxAttempts:

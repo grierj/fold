@@ -77,6 +77,8 @@ func (f *fakePush) total() int {
 }
 
 // pushTestApp is a test App with VAPID keys and the fake push service.
+// Quiet hours are off, so a test's result never depends on the hour it
+// runs; the quiet-hours tests (push_quiet_test.go) turn them on.
 func pushTestApp(t *testing.T) (*App, *fakePush) {
 	t.Helper()
 	app := testApp(t)
@@ -85,6 +87,8 @@ func pushTestApp(t *testing.T) (*App, *fakePush) {
 	}
 	f := &fakePush{status: map[string]int{}, err: map[string]bool{}, sent: map[string]int{}}
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
+	open := push.AlwaysOpen
+	app.pushWindow = &open
 	return app, f
 }
 
@@ -542,7 +546,11 @@ func TestPushOptionsFollowTheKind(t *testing.T) {
 	} {
 		k, _ := notify.Lookup(c.kind)
 		n := &models.Notification{ID: 42, Kind: c.kind, SubjectType: "occurrence", SubjectID: c.subject}
-		got := app.pushOptions(context.Background(), k, n)
+		soon, err := app.startsSoon(context.Background(), k, n, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := pushOptions(k, n, soon)
 		if got.TTL != c.ttl || got.Urgency != c.urgency || got.Topic != "n42" {
 			t.Errorf("%s: %+v", c.kind, got)
 		}
@@ -665,5 +673,288 @@ func TestPushDeliverIsABackgroundKind(t *testing.T) {
 	app := testApp(t)
 	if _, ok := app.jobKinds()[kindPushDeliver]; !ok {
 		t.Fatal("push.deliver isn't registered with the runner")
+	}
+}
+
+// quietClock is a push test's fake time (DEC-126): quiet hours on, the
+// clock at 11 PM in Denver on a night in the real future, so a job that
+// waits for 8 AM is never due by the database's clock until a test says
+// so (makeDue).
+type quietClock struct{ at time.Time }
+
+var denverZone = func() *time.Location {
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}()
+
+func quietHours(app *App) *quietClock {
+	c := &quietClock{at: time.Date(2030, 1, 15, 23, 0, 0, 0, denverZone)}
+	w := push.DefaultWindow
+	app.pushWindow = &w
+	app.pushClock = func() time.Time { return c.at }
+	return c
+}
+
+func (c *quietClock) set(h, m int, day int) { c.at = time.Date(2030, 1, day, h, m, 0, 0, denverZone) }
+
+// makeDue moves every waiting push job's run_at into the database's past.
+func makeDue(app *App) {
+	app.DB.Model(&models.Job{}).Where("kind = ? AND status = ?", kindPushDeliver, models.JobQueued).Update("run_at", time.Now().Add(-time.Second))
+}
+
+func denverMember(t *testing.T, app *App, name string) *models.User {
+	t.Helper()
+	u := pushMember(t, app, name)
+	if err := app.DB.Model(u).Update("timezone", "America/Denver").Error; err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func pushJobFor(t *testing.T, app *App, notificationID uint, device testDevice) models.Job {
+	t.Helper()
+	var j models.Job
+	if err := app.DB.Where("unique_key = ?", fmt.Sprintf("push:n:%d:d:%d", notificationID, device.ID)).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+
+// An optional push at 11 PM in the recipient's zone waits, without using
+// an attempt, and sends at 8 AM; running it again in the night still
+// waits, and it never sends twice. A person with no zone of their own
+// waits for the church's 8 AM.
+func TestOptionalPushWaitsForTheMorning(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Denver"})
+	pat := denverMember(t, app, "pat")
+	lee := pushMember(t, app, "lee") // no zone of their own: the church's
+	phone, leePhone := newPushDevice(t, app, pat, "phone"), newPushDevice(t, app, lee, "lee-phone")
+	n := sendNotice(t, app, notify.GroupApproved, pat)
+	m := sendNotice(t, app, notify.GroupApproved, lee)
+	runPushJobs(t, app, n, phone)
+	runPushJobs(t, app, m, leePhone)
+	morning := time.Date(2030, 1, 16, 8, 0, 0, 0, denverZone)
+	for _, c := range []struct {
+		id  uint
+		dev testDevice
+	}{{n, phone}, {m, leePhone}} {
+		j := pushJobFor(t, app, c.id, c.dev)
+		if j.Status != models.JobQueued || !j.RunAt.Equal(morning) || j.Attempts != 0 || j.LastError != "" {
+			t.Fatalf("waiting job %+v, want queued for %s", j, morning)
+		}
+		if status, _ := pushDelivery(t, app, c.id); status != "" {
+			t.Fatalf("a waiting push has a delivery row %q", status)
+		}
+	}
+	// Due again at 11:30 PM (a clock or a lease, say): it waits again.
+	clock.set(23, 30, 15)
+	makeDue(app)
+	drainJobs(t, app)
+	if f.total() != 0 {
+		t.Fatalf("sent in the night: %v", f.sent)
+	}
+	if j := pushJobFor(t, app, n, phone); !j.RunAt.Equal(morning) || j.Status != models.JobQueued {
+		t.Fatalf("after a second run in the night: %+v", j)
+	}
+	clock.set(8, 0, 16)
+	makeDue(app)
+	drainJobs(t, app)
+	if f.count(phone.path) != 1 || f.count(leePhone.path) != 1 {
+		t.Fatalf("sends at 8 AM %v", f.sent)
+	}
+	if status, reason := pushDelivery(t, app, n); status != models.DeliverySent || reason != "" {
+		t.Fatalf("delivery %q %q", status, reason)
+	}
+	// Queuing and running it again sends nothing more.
+	runPushJobs(t, app, n, phone)
+	makeDue(app)
+	drainJobs(t, app)
+	if f.count(phone.path) != 1 {
+		t.Fatalf("phone got it %d times", f.count(phone.path))
+	}
+}
+
+// Quiet hours are the recipient's own: 11 PM in Denver is mid-afternoon
+// in Tokyo.
+func TestQuietHoursAreTheRecipients(t *testing.T) {
+	app, f := pushTestApp(t)
+	quietHours(app)
+	app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Denver"})
+	kenji := pushMember(t, app, "kenji")
+	app.DB.Model(kenji).Update("timezone", "Asia/Tokyo")
+	phone := newPushDevice(t, app, kenji, "phone")
+	n := sendNotice(t, app, notify.GroupApproved, kenji)
+	runPushJobs(t, app, n, phone)
+	if f.count(phone.path) != 1 {
+		t.Fatalf("sends %v", f.sent)
+	}
+}
+
+// A required kind, and a change to a date starting within 24 hours, go at
+// 11 PM; a change to a date three days away waits for 8 AM.
+func TestUrgentPushesSkipQuietHours(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	pat := denverMember(t, app, "pat")
+	phone := newPushDevice(t, app, pat, "phone")
+
+	required := sendNotice(t, app, notify.AccountTurned18, pat)
+	runPushJobs(t, app, required, phone)
+	if status, reason := pushDelivery(t, app, required); status != models.DeliverySent || reason != pushSentRequired || f.count(phone.path) != 1 {
+		t.Fatalf("required: %q %q after %d sends", status, reason, f.count(phone.path))
+	}
+
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	_, tonight := seedEvent(t, app, g, leader.ID, clock.at.Add(3*time.Hour))
+	_, later := seedEvent(t, app, g, leader.ID, clock.at.Add(72*time.Hour))
+	change := func(occ models.EventOccurrence) uint {
+		ids, err := notify.Send(app.DB, notify.Msg{Kind: notify.EventChanged, To: []uint{pat.ID}, SubjectType: "occurrence", SubjectID: occ.ID,
+			Link: "/events/1", Vars: notify.Vars{Event: "Supper club", Change: "time"}})
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("notify: %v %v", ids, err)
+		}
+		return ids[0]
+	}
+	soon := change(tonight)
+	runPushJobs(t, app, soon, phone)
+	if status, reason := pushDelivery(t, app, soon); status != models.DeliverySent || reason != pushSentSoon || f.count(phone.path) != 2 {
+		t.Fatalf("3 hours away: %q %q after %d sends", status, reason, f.count(phone.path))
+	}
+	if h := f.headers[len(f.headers)-1]; h.Get("Urgency") != "high" {
+		t.Fatalf("3 hours away is urgent: %v", h)
+	}
+	waits := change(later)
+	runPushJobs(t, app, waits, phone)
+	if f.count(phone.path) != 2 {
+		t.Fatalf("3 days away sent in the night: %v", f.sent)
+	}
+	if j := pushJobFor(t, app, waits, phone); j.Status != models.JobQueued || !j.RunAt.Equal(time.Date(2030, 1, 16, 8, 0, 0, 0, denverZone)) {
+		t.Fatalf("3 days away: %+v", j)
+	}
+	// Cancelled and restored dates are event changes too; a "you're in"
+	// isn't (it waits).
+	for kind, exempt := range map[string]bool{notify.OccurrenceCancelled: true, notify.OccurrenceRestored: true, notify.RegistrationPromoted: false} {
+		k, _ := notify.Lookup(kind)
+		got, err := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &tonight.ID}, clock.at)
+		if err != nil || got != exempt {
+			t.Errorf("%s 3 hours away: soon %v (%v), want %v", kind, got, err, exempt)
+		}
+	}
+}
+
+// A push that waited the night rechecks everything at 8 AM: push turned
+// off, a device gone, an item read, archived or expired since sends
+// nothing, and the delivery row says why (a device that's gone leaves the
+// row alone, as before quiet hours).
+func TestWaitingPushRechecksInTheMorning(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	off, gone, reader := denverMember(t, app, "off"), denverMember(t, app, "gone"), denverMember(t, app, "reader")
+	offPhone, gonePhone, readerPhone := newPushDevice(t, app, off, "off-phone"), newPushDevice(t, app, gone, "gone-phone"), newPushDevice(t, app, reader, "reader-phone")
+	nOff := sendNotice(t, app, notify.GroupApproved, off)
+	nGone := sendNotice(t, app, notify.GroupApproved, gone)
+	nRead := sendNotice(t, app, notify.GroupApproved, reader)
+	nArchived := sendNotice(t, app, notify.GroupApproved, reader)
+	nExpired := sendNotice(t, app, notify.GroupApproved, reader)
+	runPushJobs(t, app, nOff, offPhone)
+	runPushJobs(t, app, nGone, gonePhone)
+	for _, id := range []uint{nRead, nArchived, nExpired} {
+		runPushJobs(t, app, id, readerPhone)
+	}
+	if f.total() != 0 {
+		t.Fatalf("sent in the night: %v", f.sent)
+	}
+	// Overnight.
+	pushConsentRow(t, app, off, "all", models.ConsentOptedOut)
+	app.DB.Delete(&models.PushSubscription{}, gonePhone.ID)
+	app.DB.Model(&models.Notification{}).Where("id = ?", nRead).Update("read_at", clock.at)
+	app.DB.Model(&models.Notification{}).Where("id = ?", nArchived).Update("archived_at", clock.at)
+	app.DB.Model(&models.Notification{}).Where("id = ?", nExpired).Update("expires_at", clock.at.Add(time.Hour))
+
+	clock.set(8, 0, 16)
+	makeDue(app)
+	drainJobs(t, app)
+	if f.total() != 0 {
+		t.Fatalf("sends %v", f.sent)
+	}
+	for id, want := range map[uint]string{nOff: pushWhyNotOn, nRead: pushWhyRead, nArchived: pushWhyStale, nExpired: pushWhyStale} {
+		if status, reason := pushDelivery(t, app, id); status != models.DeliverySuppressed || reason != want {
+			t.Errorf("notification %d: %q %q, want suppressed %q", id, status, reason, want)
+		}
+	}
+	if status, _ := pushDelivery(t, app, nGone); status != "" {
+		t.Errorf("a device gone overnight: %q", status)
+	}
+	var notDone int64
+	app.DB.Model(&models.Job{}).Where("kind = ? AND status <> ?", kindPushDeliver, models.JobDone).Count(&notDone)
+	if notDone != 0 {
+		t.Fatalf("%d push jobs not done", notDone)
+	}
+}
+
+// At most 20 optional pushes an hour: one notification on two devices
+// counts once, the 21st is suppressed "hourly limit" with its bell row
+// untouched, required kinds and urgent event changes still go and aren't
+// counted, and an hour later pushes flow again.
+func TestPushHourlyLimit(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	clock.set(10, 0, 16)
+	pat := denverMember(t, app, "pat")
+	phone, laptop := newPushDevice(t, app, pat, "phone"), newPushDevice(t, app, pat, "laptop")
+	required := sendNotice(t, app, notify.AccountTurned18, pat)
+	runPushJobs(t, app, required, phone, laptop)
+	for i := 1; i <= pushHourlyLimit; i++ {
+		clock.at = clock.at.Add(time.Minute)
+		n := sendNotice(t, app, notify.GroupApproved, pat)
+		runPushJobs(t, app, n, phone, laptop)
+		if status, _ := pushDelivery(t, app, n); status != models.DeliverySent {
+			t.Fatalf("push %d: %q", i, status)
+		}
+	}
+	if f.count(phone.path) != pushHourlyLimit+1 || f.count(laptop.path) != pushHourlyLimit+1 {
+		t.Fatalf("both devices get the first 20 and the required one: %v", f.sent)
+	}
+	over := sendNotice(t, app, notify.GroupApproved, pat)
+	runPushJobs(t, app, over, phone, laptop)
+	if status, reason := pushDelivery(t, app, over); status != models.DeliverySuppressed || reason != pushWhyHourly {
+		t.Fatalf("21st: %q %q", status, reason)
+	}
+	if f.count(phone.path) != pushHourlyLimit+1 || f.count(laptop.path) != pushHourlyLimit+1 {
+		t.Fatalf("the 21st was sent: %v", f.sent)
+	}
+	var bell models.Notification
+	if err := app.DB.First(&bell, over).Error; err != nil || bell.ReadAt != nil || bell.ArchivedAt != nil {
+		t.Fatalf("the bell row: %+v (%v)", bell, err)
+	}
+	// Not limited: a required kind, and a change to a date tonight.
+	again := sendNotice(t, app, notify.AccountTurned18, pat)
+	runPushJobs(t, app, again, phone)
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	_, tonight := seedEvent(t, app, g, leader.ID, clock.at.Add(3*time.Hour))
+	ids, err := notify.Send(app.DB, notify.Msg{Kind: notify.OccurrenceCancelled, To: []uint{pat.ID}, SubjectType: "occurrence", SubjectID: tonight.ID,
+		Link: "/events/1", Vars: notify.Vars{Event: "Supper club"}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("notify: %v %v", ids, err)
+	}
+	runPushJobs(t, app, ids[0], phone)
+	for _, id := range []uint{again, ids[0]} {
+		if status, _ := pushDelivery(t, app, id); status != models.DeliverySent {
+			t.Fatalf("exempt push %d: %q", id, status)
+		}
+	}
+	// An hour after the first optional push, one slot is free again.
+	clock.at = clock.at.Add(41 * time.Minute)
+	later := sendNotice(t, app, notify.GroupApproved, pat)
+	runPushJobs(t, app, later, phone)
+	if status, _ := pushDelivery(t, app, later); status != models.DeliverySent {
+		t.Fatalf("an hour later: %q", status)
 	}
 }

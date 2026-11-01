@@ -1915,7 +1915,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [ ] A reminder push creates no `notifications` row (DEC-44); a cancelled occurrence cancels its pending reminder push
   - [x] With `push_enabled` off, no job sends, the card and `/notifications/setup` are hidden, and subscribe answers 403 (`push_enabled` stays default on)
   - [x] Playwright with a stubbed `PushManager`: the card moves ready → on, posts the right body, offers the test notification, and turns off; the blocked state shows the undo steps; `/notifications/setup` and the card pass a11y and layout at 390 and 1280 px
-  - [ ] Optional pushes outside the recipient's window wait for it; required kinds and changes to events starting within 24 hours go at once; past 20 optional pushes an hour the extras are `suppressed` "hourly limit" and the bell still has them
+  - [x] Optional pushes outside the recipient's window wait for it; required kinds and changes to events starting within 24 hours go at once; past 20 optional pushes an hour the extras are `suppressed` "hourly limit" and the bell still has them
   - [x] Logout deletes this browser's device in the same request (`TestLogoutEndsSession` has a case); disabling the account, a password change and revoked sessions delete the user's devices
   - [x] An endpoint posted by a second user is rebound to that user
   - [x] `/sw.js` is served `Cache-Control: no-cache`, and the CSP carries `worker-src 'self'; manifest-src 'self'`
