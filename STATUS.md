@@ -91,7 +91,8 @@ Claim a milestone here before starting, as usual.
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
 | M7.1 Setup takeover verify/close (SEC1) | done (`28268b3`, merged in [#241](https://github.com/grierj/fold/pull/241)); [#240](https://github.com/grierj/fold/issues/240) closed; brief verify checklist is the record | Grier | `fix/secure-first-run-setup` |
-| M7.2 Privacy/session hardening (R5) | not started; brief ready | | |
+| M7.2 Privacy/session hardening (R5) | done (merged Nov 2, 2026 in [#243](https://github.com/grierj/fold/pull/243)–[#250](https://github.com/grierj/fold/pull/250)) | Claude | `fix/m7.2*` (#243–#250) |
+| M5.1 Published image + CI compose smoke (R1 slices 1–2) | in progress (slice 1) | Claude | `feat/m5.1a-publish-image` |
 | M7.3 Secret rotation + expiring links (R12) | not started; brief ready | | |
 | M7.4 Account erasure (R4) | not started; brief ready (inventory first) | | |
 | M7.5 Notification outbox (R6) | not started; brief ready | | |
