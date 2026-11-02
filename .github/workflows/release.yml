@@ -8,16 +8,20 @@ name: release
 # workflow) for the cases below.
 #
 # Jobs: plan (version and inputs) -> publish (build and push the version) ->
-# finalize (SHA alias, build provenance attestation) -> notes (GitHub release).
-# Publishing and finalizing are separate so a failure after the push can be
-# retried without rebuilding: "Re-run failed jobs" reuses publish's digest.
+# smoke (boot that digest) -> finalize (SHA alias, build provenance
+# attestation) -> notes (GitHub release). Publishing and finalizing are
+# separate so a failure after the push can be retried without rebuilding:
+# "Re-run failed jobs" reuses publish's digest. Finalize waits for smoke, so
+# a release whose image fails the smoke is not attested or announced.
 #
 # Manual runs:
-#   finalize_only  Finish a release whose image was pushed but whose finalize
-#                  or notes job failed and cannot be re-run from the original
-#                  run. Needs version, and must be run on the tag ref v<version>.
-#                  Looks up the pushed version's digest (fails if there is
-#                  none) and runs only finalize and notes. Never rebuilds.
+#   finalize_only  Finish a release whose image was pushed but whose smoke,
+#                  finalize, or notes job failed and cannot be re-run from
+#                  the original run. Needs version, and must be run on the
+#                  tag ref v<version>. Looks up the pushed version's digest
+#                  (fails if there is none) and runs smoke, finalize, and
+#                  notes against that digest. Never rebuilds. Smoke still
+#                  has to pass.
 #   first_release  Skips the "already published" checks for the version and the
 #                  SHA alias. For the very first release only: GHCR can answer
 #                  "denied" instead of "not found" for a package that does not
@@ -208,12 +212,48 @@ jobs:
           provenance: false
           sbom: false
 
-  # The SHA alias and the attestation, against the digest that publish pushed
-  # (or, for finalize_only, the digest the version tag already has). Safe to
-  # re-run: it never builds and never moves the version tag.
-  finalize:
+  # The image just pushed is the image we boot. Its own job so a smoke
+  # failure is obvious, and this token can only pull, not push. finalize_only
+  # has no publish output: look the digest up the same way finalize does.
+  smoke:
     needs: [plan, publish]
     if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read # pull ghcr.io/grierj/fold
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke the published image
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUBLISHED_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${PUBLISHED_DIGEST}"
+          if [[ -z "$digest" ]]; then
+            digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::No digest for ${IMAGE}:${VERSION}. Nothing to smoke."
+            exit 1
+          fi
+          scripts/compose-smoke.sh --image "${IMAGE}@${digest}"
+
+  # The SHA alias and the attestation, against the digest that publish pushed
+  # (or, for finalize_only, the digest the version tag already has). Safe to
+  # re-run: it never builds and never moves the version tag. Waits for smoke
+  # so a failing image is not attested.
+  finalize:
+    needs: [plan, publish, smoke]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') && needs.smoke.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

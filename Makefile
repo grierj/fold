@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run deadcode
+.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run compose-smoke deadcode
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -62,7 +62,8 @@ deadcode:
 lint-web:
 	cd web && npx knip
 
-# Shell scripts under deploy/digitalocean, scripts and web/e2e. -x follows source= directives.
+# Shell scripts under deploy/digitalocean, scripts (go-test.sh, compose-smoke.sh) and web/e2e.
+# -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
 	shellcheck -x deploy/digitalocean/*.sh scripts/*.sh web/e2e/*.sh
@@ -70,3 +71,8 @@ lint-sh:
 # provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
 provision-dry-run:
 	bash deploy/digitalocean/dry-run-test.sh
+
+# Boot the shipped Compose stack (app + Postgres) and smoke /healthz and /setup.
+# Builds ghcr.io/grierj/fold:ci. The release workflow passes --image instead.
+compose-smoke:
+	bash scripts/compose-smoke.sh

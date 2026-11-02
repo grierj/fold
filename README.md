@@ -68,7 +68,7 @@ warning and records who ran it.
   or notes failed): use "Re-run failed jobs" on the run, which reuses the
   pushed digest. If that is no longer possible, run the workflow by hand on
   the tag `v<version>` with `version` and `finalize_only` set. It looks up
-  the existing digest and never rebuilds.
+  the existing digest, smokes that image, and never rebuilds.
 
 ## Upgrade notes
 
