@@ -23,9 +23,10 @@ else
 fi
 
 # Production by default. The invitation scenarios use dev mode's outbox.
-# Cookies work over plain http on 127.0.0.1 in either mode.
+# Secure cookies still work over plain http on 127.0.0.1 (browsers treat it as
+# secure), so COOKIE_SECURE stays at its default: prod refuses COOKIE_SECURE=false.
 export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}" \
-  SESSION_SECRET=e2e-only-session-secret-0123456789abcdef COOKIE_SECURE=false \
+  SESSION_SECRET=e2e-only-session-secret-0123456789abcdef \
   FOLD_SETUP_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   UPLOAD_DIR="$work/uploads"
 export APP_ENV="${E2E_APP_ENV:-prod}"

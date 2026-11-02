@@ -93,9 +93,9 @@ Useful env vars:
 | `SESSION_SECRET` | — | **Required** unless `APP_ENV=dev`; at least 32 characters |
 | `FOLD_SETUP_TOKEN` | generated at startup | Optional shared setup code, generated with `openssl rand -hex 32`; all app processes must use the same value |
 | `DATABASE_URL` | — | Postgres DSN. **Required** everywhere |
-| `FOLD_TRUSTED_PROXIES` | `172.30.0.0/24` | Proxies allowed to set `X-Forwarded-For` (the compose subnet) |
-| `COOKIE_SECURE` | true in prod | Set `false` only for plain-http local testing |
-| `SITE_URL` | — | Public base URL, e.g. `https://groups.example.org` |
+| `FOLD_TRUSTED_PROXIES` | `172.30.0.0/24` | Proxies allowed to set `X-Forwarded-For` (the compose subnet). A `/0` range (`0.0.0.0/0`, `::/0`) is refused at startup, in dev too |
+| `COOKIE_SECURE` | true in prod | `false` is accepted only with `APP_ENV=dev` (plain-http local testing); prod refuses to start with it |
+| `SITE_URL` | — | Public base URL, e.g. `https://groups.example.org`. Outside `APP_ENV=dev` it must be an `https://` URL with a host or the server refuses to start |
 
 ### Schema downgrades
 
