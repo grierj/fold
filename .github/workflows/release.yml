@@ -1,0 +1,138 @@
+name: release
+
+# Publishes the app image to GHCR (PLAN C10, M5.1). Separate from test.yml so
+# the test jobs keep their read-only token: only this workflow can write
+# packages. Never pushes a floating `latest`; churches pin an exact version.
+#
+# A `v*` tag push builds that tag. Run it by hand (Actions > release > Run
+# workflow) to rebuild a version whose build failed after the tag was pushed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, such as 0.5.0 (no leading v). Built from the ref you pick."
+        required: true
+        type: string
+
+# Least privilege for every job by default; the one job below asks for more.
+permissions:
+  contents: read
+
+# One publish per ref at a time; never cancel a half-pushed release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/grierj/fold
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/grierj/fold
+      id-token: write # sign the build provenance attestation
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Work out the version and tags
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            version="${REF_NAME#v}"
+          else
+            version="${INPUT_VERSION#v}"
+          fi
+          re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$'
+          if [[ ! "$version" =~ $re ]]; then
+            echo "::error::'$version' is not a version like 0.5.0 or 0.5.0-rc.1"
+            exit 1
+          fi
+          # <x.y.z> and the full commit SHA always; <x.y> only for a final
+          # release, so a release candidate never moves a church's minor pin.
+          tags="${IMAGE}:${version}"$'\n'"${IMAGE}:${GITHUB_SHA}"
+          if [[ -z "${BASH_REMATCH[4]}" ]]; then
+            tags+=$'\n'"${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          fi
+          {
+            echo "version=${version}"
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A released version is immutable: a second publish of the same number
+      # would change what churches already pinned.
+      - name: Refuse to overwrite a published version
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:${VERSION} is already published. Pick a new version."
+            exit 1
+          fi
+
+      - name: Build and push (linux/amd64, linux/arm64)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            FOLD_VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          # The attest step below records provenance for the index digest.
+          provenance: false
+          sbom: false
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record the digest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "## Fold ${VERSION}"
+            echo
+            echo "Image: \`${IMAGE}:${VERSION}\`"
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo "Tags pushed:"
+            echo
+            while IFS= read -r tag; do echo "- \`${tag}\`"; done <<<"$TAGS"
+            echo
+            echo "Paste the digest into the GitHub release notes. To check an image:"
+            echo
+            echo '```'
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

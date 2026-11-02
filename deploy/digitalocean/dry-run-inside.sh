@@ -31,6 +31,7 @@ needles=(
   'unattended-upgrades'
   'docker-ce'
   'ghcr.io/grierj/fold:0.0.0-dry-run'
+  'FOLD_VERSION=0.0.0-dry-run'
   'backup.sh'
   'values not shown'
   'smoke.sh'
@@ -75,6 +76,18 @@ status=$?
 set -e
 [[ "$status" -eq 0 ]]
 grep -qF -- '--build' <<<"$build_out"
+# The build path copies the build override and points COMPOSE_FILE at it; the
+# pull path never mentions it.
+grep -qF -- 'docker-compose.build.yml' <<<"$build_out"
+grep -qF -- 'COMPOSE_FILE' <<<"$build_out"
+if grep -qF -- 'COMPOSE_FILE' <<<"$out"; then
+  echo "image dry-run mentioned COMPOSE_FILE" >&2
+  exit 1
+fi
+if grep -qF -- 'docker-compose.build.yml' <<<"$out" && ! grep -qF -- 'remove any docker-compose.build.yml' <<<"$out"; then
+  echo "image dry-run copies the build override" >&2
+  exit 1
+fi
 
 set +e
 run_provision --dry-run \
@@ -132,6 +145,17 @@ status=$?
 set -e
 [[ "$status" -ne 0 ]]
 grep -q 'latest' /tmp/fold-latest.out
+
+# A tag-less reference is refused, including a registry port that looks like one.
+set +e
+run_provision --dry-run \
+  --domain groups.example.org \
+  --ssh-pubkey-file "$pub" \
+  --image localhost:5000/fold >/tmp/fold-notag.out 2>&1
+status=$?
+set -e
+[[ "$status" -ne 0 ]]
+grep -q 'no tag' /tmp/fold-notag.out
 
 dns_out="$(bash deploy/digitalocean/email-dns.sh --dry-run --domain groups.example.org 2>&1)"
 grep -q 'dig +short' <<<"$dns_out"

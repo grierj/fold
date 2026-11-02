@@ -34,6 +34,53 @@ func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
 	}
 }
 
+// C10 (M5.1): the shipped Compose file pulls a pinned release and never builds;
+// the build lives in the developer override.
+func TestShippedComposePullsAPinnedImage(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, app, ok := strings.Cut(string(data), "\n  app:\n")
+	if !ok {
+		t.Fatal("no app service")
+	}
+	app, _, _ = strings.Cut(app, "\n  caddy:\n")
+	if !strings.Contains(app, "\n    image: ghcr.io/grierj/fold:${FOLD_VERSION") {
+		t.Error("app service must pull ghcr.io/grierj/fold:${FOLD_VERSION...}")
+	}
+	if !strings.Contains(app, "${FOLD_VERSION:?") {
+		t.Error("FOLD_VERSION must be required, so Compose never guesses a release")
+	}
+	if strings.Contains(app, "\n    build:") {
+		t.Error("the shipped compose file must not build; put build: . in docker-compose.build.yml")
+	}
+	for _, line := range strings.Split(app, "\n") {
+		if strings.Contains(line, "image:") && strings.Contains(line, "latest") {
+			t.Errorf("app image must not float on latest: %q", line)
+		}
+	}
+
+	build, err := os.ReadFile("docker-compose.build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(build), "\n    build: .\n") {
+		t.Error("docker-compose.build.yml must carry the app's build: .")
+	}
+
+	env, err := os.ReadFile(".env.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "\nFOLD_VERSION=\n") {
+		t.Error(".env.example must list FOLD_VERSION= for operators to fill in")
+	}
+	if strings.Contains(string(env), "FOLD_VERSION=latest") {
+		t.Error(".env.example must not suggest a floating tag")
+	}
+}
+
 func TestSetupTokenConfiguration(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")
 	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")

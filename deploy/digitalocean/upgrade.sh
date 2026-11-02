@@ -40,9 +40,10 @@ Usage: upgrade.sh --image ghcr.io/grierj/fold:1.2.3
        upgrade.sh --rollback
        [--deploy-dir /opt/fold] [--domain groups.example.org] [--dry-run]
 
-Pins the new release to an image tag or a git commit, after a pg_dump.
+Pins the new release to an image tag (FOLD_VERSION in <deploy-dir>/.env) or a
+git commit (build with docker-compose.build.yml), after a pg_dump.
 --rollback restores the dump and the previous tag or commit recorded in
-<deploy-dir>/release.prev. :latest is refused.
+<deploy-dir>/release.prev. :latest is refused, as is a FOLD_VERSION of latest.
 EOF
 }
 
@@ -184,8 +185,12 @@ newest_dump() {
   printf '%s' "$found"
 }
 
+# What the deploy dir runs now (plan C10). Order: an explicit --image pin from
+# another repository (the marker line in the compose file), then a source
+# build (the build override is present, or an older compose file still has
+# `build: .`), else a pulled release named by FOLD_VERSION in .env.
 current_release() {
-  local compose="$DEPLOY_DIR/docker-compose.yml"
+  local compose="$DEPLOY_DIR/docker-compose.yml" version
   REL_MODE=""
   REL_IMAGE=""
   REL_COMMIT=""
@@ -195,10 +200,19 @@ current_release() {
     [[ -n "$REL_IMAGE" ]] || die "could not read the current image from ${compose}"
     return 0
   fi
-  REL_MODE="build"
-  git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || die "${SOURCE_DIR} is not a git checkout; cannot record the current commit"
-  REL_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+  if [[ -f "$DEPLOY_DIR/docker-compose.build.yml" ]] \
+    || { [[ -f "$compose" ]] && grep -q '^    build: \.$' "$compose"; }; then
+    REL_MODE="build"
+    git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "${SOURCE_DIR} is not a git checkout; cannot record the current commit"
+    REL_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+    return 0
+  fi
+  version="$(env_value "$DEPLOY_DIR/.env" FOLD_VERSION || true)"
+  [[ -n "$version" ]] || die "${DEPLOY_DIR}/.env has no FOLD_VERSION; cannot tell which release is running"
+  assert_pinned_version "$version" || exit 1
+  REL_MODE="image"
+  REL_IMAGE="${FOLD_IMAGE_REPO}:${version}"
 }
 
 write_release() {
@@ -253,6 +267,9 @@ load_release() {
   [[ "$REL_SOURCE" == /* && "$REL_SOURCE" != *..* && "$REL_SOURCE" != *[[:space:]]* ]] \
     || die "release.prev source_dir is invalid"
   if [[ "$REL_MODE" == "image" ]]; then
+    # Written by current_release as FOLD_IMAGE_REPO:FOLD_VERSION (or a fork's
+    # explicit pin); provision.sh turns the tag back into FOLD_VERSION.
+    [[ "$REL_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die "release.prev previous_image is invalid"
     assert_pinned_image "$REL_IMAGE" || exit 1
   else
     [[ "$REL_COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || die "release.prev commit is invalid"

@@ -35,16 +35,45 @@ env_value() {
   return 1
 }
 
+# The image every deploy pulls unless a fork or hotfix passes its own --image.
+FOLD_IMAGE_REPO="ghcr.io/grierj/fold"
+
+# assert_pinned_version LABEL: a release label Compose may put after the colon.
+# Refuses empty and "latest" (a floating tag moves under the church).
+assert_pinned_version() {
+  local version="$1"
+  [[ -n "$version" ]] || { check_fail "FOLD_VERSION is empty. Pin an exact release such as 0.5.0." || return; }
+  if [[ "$version" == latest ]]; then
+    check_fail "FOLD_VERSION is latest. Refusing a floating tag; pin an exact release such as 0.5.0." || return
+  fi
+  [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] \
+    || { check_fail "FOLD_VERSION '${version}' is not a valid image tag." || return; }
+}
+
+# assert_pinned_image REF: the --image path. Same refusals as the version path.
 assert_pinned_image() {
-  local image="$1"
+  local image="$1" label
   case "$image" in
     *:latest|*/latest)
       check_fail "${image} is not a pinned tag. Refusing :latest." || return
       ;;
   esac
-  if [[ "$image" != *:* ]]; then
-    check_fail "${image} has no tag. Example: ghcr.io/grierj/fold:1.2.3" || return
+  label="${image##*:}"
+  if [[ "$image" != *:* || "$label" == */* ]]; then
+    check_fail "${image} has no tag. Example: ${FOLD_IMAGE_REPO}:1.2.3" || return
   fi
+  assert_pinned_version "$label" || return
+}
+
+# assert_deploy_pinned DIR: the FOLD_VERSION a deploy dir's .env will pull.
+# Skipped for an explicit --image pin (the marker line) and for a source build.
+assert_deploy_pinned() {
+  local dir="$1" version
+  if [[ -f "$dir/docker-compose.yml" ]] && grep -q ' # fold-app-image$' "$dir/docker-compose.yml"; then
+    return 0
+  fi
+  version="$(env_value "$dir/.env" FOLD_VERSION || true)"
+  assert_pinned_version "$version" || return
 }
 
 assert_env_mode() {
