@@ -122,10 +122,11 @@ func TestRoomFeedContents(t *testing.T) {
 	// opened to public is described; a public series' date made private is
 	// Reserved.
 	members := newTestGroup(t, f.app, f.leaderUser, "Members circle", models.GroupActive)
-	f.app.DB.Model(members).Update("visibility", models.VisibilityPrivate)
+	f.app.DB.Model(members).Updates(map[string]any{"visibility": models.VisibilityPrivate, "location": "Members' den"})
 	membersNight := createFeedEvent(t, f.leader, members.ID, "Members night", f.startOn.Add(-9*time.Hour), "")
 	f.app.DB.Model(&models.Event{}).Where("id = ?", membersNight.ID).Update("description", "Members notes")
 	membersOpened := createFeedEvent(t, f.leader, members.ID, "Members opened night", f.startOn.Add(-12*time.Hour), "")
+	f.app.DB.Model(&models.Event{}).Where("id = ?", membersOpened.ID).Update("description", "Members series secret")
 	pubNarrowed := createFeedEvent(t, f.leader, f.group, "Members only date", f.startOn.Add(-15*time.Hour), "")
 	for _, ev := range []eventJSON{membersNight, membersOpened, pubNarrowed} {
 		if code, body := f.book(t, f.leader, ev, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
@@ -150,7 +151,7 @@ func TestRoomFeedContents(t *testing.T) {
 		t.Errorf("want 4 Reserved bookings, got %d:\n%s", n, body)
 	}
 	for _, leak := range []string{"Quiet circle", "Private notes", "Narrowed night", "Pastor's study", "Series secret",
-		"Members night", "Members notes", "Members only date",
+		"Members night", "Members notes", "Members only date", "Members series secret", "Members' den",
 		"/events/" + itoa(membersNight.ID) + "/", "/events/" + itoa(pubNarrowed.ID) + "/",
 		"event-" + itoa(secret.ID) + "-", "/events/" + itoa(secret.ID) + "/", "/events/" + itoa(narrowed.ID) + "/"} {
 		if strings.Contains(body, leak) {

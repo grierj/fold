@@ -271,16 +271,17 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 				grp = groups[*ev.GroupID]
 			}
 			groupLoc := ""
-			if grp != nil && grp.Visibility != models.VisibilityInviteOnly {
-				groupLoc = grp.Location // group-ok: the group is not invite-only, so its place isn't hidden
+			if grp != nil && grp.Visibility == models.VisibilityPublic {
+				groupLoc = grp.Location // group-ok: the group is public, so its place isn't hidden
 			}
 			eff := occurrenceToJSON(ev, occ, groupLoc)
 			single.Title = eff.Title
 			single.Location = placeLine(&occurrenceRoomJSON{ID: room.ID, Name: room.Name, Building: room.Building}, eff.Location)
 			single.URL = a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate)
 			single.UpdatedAt = laterTime(laterTime(ev.UpdatedAt, occ.UpdatedAt), b.UpdatedAt)
-			// A hidden series contributes no description to an opened date.
-			if ev.Visibility != models.VisibilityInviteOnly {
+			// Only a public series contributes its description; a private or hidden
+			// series opened for one date shows the title alone.
+			if ev.Visibility == models.VisibilityPublic {
 				single.Description = ev.Description
 			}
 		}
