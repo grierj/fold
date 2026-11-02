@@ -196,6 +196,10 @@ together, or changes 3+ tables. Smaller work is exempt.
 vet/gofmt/staticcheck, web), `make e2e` (Playwright in parallel shards on fresh databases),
 `cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded). Run the
 build once before `make dev` to try push: the Go server serves `/sw.js` from `web/dist`.
+`make compose-smoke` boots the shipped Compose stack (app and Postgres) and checks `/healthz`,
+the redirect to `/setup`, and that 5432 and 8080 are not published off loopback. CI's `compose`
+job runs it on pull requests and on `master`. Caddy and real-domain TLS stay a hand check
+(`docs/FIRST-CHURCH-CHECKS.md`).
 
 There is no fallback database: `fold serve` without `DATABASE_URL` exits with a "start the dev
 database" message, in dev too. Env vars: `config.go`, `.env.example`; `SESSION_SECRET` is required

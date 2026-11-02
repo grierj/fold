@@ -120,3 +120,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make lint-sh
       - run: make provision-dry-run
+
+  # Boots the shipped Compose stack (app + Postgres) and smokes /healthz and
+  # /setup. Branch protection does not require this job until Grier adds it.
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make compose-smoke
