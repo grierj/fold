@@ -162,6 +162,120 @@ func sendNotice(t *testing.T, app *App, kind string, u *models.User) uint {
 	return ids[0]
 }
 
+func TestQueuePushForSkipsNoticesThatDoNotPush(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{"email only", notify.MembershipLeft},
+		{"empty push title", notify.GroupApproved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testApp(t)
+			u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+			newPushDevice(t, app, u, "phone")
+			newPushDevice(t, app, u, "laptop")
+			id := sendNotice(t, app, tc.kind, u)
+			if tc.kind == notify.GroupApproved {
+				if err := app.DB.Model(&models.Notification{}).Where("id = ?", id).Update("push_title", "").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var n models.Notification
+			if err := app.DB.First(&n, id).Error; err != nil {
+				t.Fatal(err)
+			}
+			// A nil database proves the skip does not issue any statement.
+			if err := queuePushFor(nil, &n); err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Transaction(func(tx *gorm.DB) error { return queuePushFor(tx, &n) }); err != nil {
+				t.Fatal(err)
+			}
+			if rows := pushJobsFor(t, app, id); len(rows) != 0 {
+				t.Fatalf("queued %d push jobs", len(rows))
+			}
+			if err := app.DB.Create(&models.NotificationDelivery{
+				NotificationID: id, Channel: models.DeliveryEmail, UserID: u.ID, Status: models.DeliveryQueued,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.deliverOneNotification(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if d := emailDeliveryOf(t, app, id); d.Status != models.DeliverySent {
+				t.Fatalf("email status %q", d.Status)
+			}
+			if rows := pushJobsFor(t, app, id); len(rows) != 0 {
+				t.Fatalf("queued %d push jobs after email delivery", len(rows))
+			}
+		})
+	}
+}
+
+func TestQueuePushForQueuesOneJobPerDeviceOnce(t *testing.T) {
+	t.Run("repeated fan-out", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+		phone := newPushDevice(t, app, u, "phone")
+		laptop := newPushDevice(t, app, u, "laptop")
+		other := newTestUser(t, app, "other", "password123456", models.RoleMember)
+		newPushDevice(t, app, other, "other-phone")
+		id, _ := seedNotifyDeliver(t, app, u, notifyDeliverAttempts)
+		var n models.Notification
+		if err := app.DB.First(&n, id).Error; err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := app.DB.Transaction(func(tx *gorm.DB) error { return queuePushFor(tx, &n) }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := app.deliverOneNotification(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		assertOnePushEach(t, app, id, phone.ID, laptop.ID)
+		for _, row := range pushJobsFor(t, app, id) {
+			var payload pushJob
+			if err := json.Unmarshal([]byte(row.Payload), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.NotificationID != id || (payload.DeviceID != phone.ID && payload.DeviceID != laptop.ID) ||
+				*row.UniqueKey != fmt.Sprintf("push:n:%d:d:%d", id, payload.DeviceID) {
+				t.Fatalf("unexpected push payload %+v for key %s", payload, *row.UniqueKey)
+			}
+		}
+		var count int64
+		if err := app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Fatalf("push job count %d, want 2", count)
+		}
+	})
+	t.Run("cancelled context", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+		newPushDevice(t, app, u, "phone")
+		id := sendNotice(t, app, notify.GroupApproved, u)
+		var n models.Notification
+		if err := app.DB.First(&n, id).Error; err != nil {
+			t.Fatal(err)
+		}
+		err := app.DB.Transaction(func(tx *gorm.DB) error {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return queuePushFor(tx.WithContext(ctx), &n)
+		})
+		if err == nil {
+			t.Fatal("cancelled device query succeeded")
+		}
+		if rows := pushJobsFor(t, app, id); len(rows) != 0 {
+			t.Fatalf("queued %d push jobs with cancelled context", len(rows))
+		}
+	})
+}
+
 func pushDelivery(t *testing.T, app *App, notificationID uint) (status, reason string) {
 	t.Helper()
 	var d models.NotificationDelivery

@@ -136,14 +136,8 @@ func (a *App) queuePushDeliveries(ids []uint) {
 	if len(ids) == 0 {
 		return
 	}
-	var pairs []struct {
-		NotificationID uint
-		DeviceID       uint
-		Kind           string
-	}
-	if err := a.DB.Raw(`SELECT n.id AS notification_id, d.id AS device_id, n.kind FROM notifications n
-		JOIN push_subscriptions d ON d.user_id = n.user_id
-		WHERE n.id IN ? AND n.push_title <> '' ORDER BY n.id, d.id`, ids).Scan(&pairs).Error; err != nil {
+	pairs, err := pushTargets(a.DB, ids)
+	if err != nil {
 		log.Printf("push: finding devices for %d notifications: %v", len(ids), err)
 		return
 	}
@@ -151,20 +145,70 @@ func (a *App) queuePushDeliveries(ids []uint) {
 		return
 	}
 	now := time.Now()
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		for _, p := range pairs {
-			if k, ok := notify.Lookup(p.Kind); !ok || !k.AllowPush {
-				continue
-			}
-			if err := enqueuePushDelivery(tx, p.NotificationID, p.DeviceID, now); err != nil {
-				return err
-			}
-		}
-		return nil
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		return enqueuePushTargets(tx, pairs, now)
 	})
 	if err != nil {
 		log.Printf("push: queuing %d deliveries: %v", len(pairs), err)
 	}
+}
+
+// pushTarget is one device a notification can be pushed to.
+type pushTarget struct {
+	NotificationID uint
+	DeviceID       uint
+	Kind           string
+}
+
+// pushTargets is the device query for queuePushDeliveries:
+// rows with push text, one pair per device, in id order.
+func pushTargets(tx *gorm.DB, ids []uint) ([]pushTarget, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var pairs []pushTarget
+	err := tx.Raw(`SELECT n.id AS notification_id, d.id AS device_id, n.kind FROM notifications n
+		JOIN push_subscriptions d ON d.user_id = n.user_id
+		WHERE n.id IN ? AND n.push_title <> '' ORDER BY n.id, d.id`, ids).Scan(&pairs).Error
+	return pairs, err
+}
+
+// enqueuePushTargets queues one push.deliver per pair whose kind pushes,
+// with the keys enqueuePushDelivery already uses (push:n:<id>:d:<dev>).
+func enqueuePushTargets(tx *gorm.DB, pairs []pushTarget, now time.Time) error {
+	for _, p := range pairs {
+		if k, ok := notify.Lookup(p.Kind); !ok || !k.AllowPush {
+			continue
+		}
+		if err := enqueuePushDelivery(tx, p.NotificationID, p.DeviceID, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// queuePushFor queues one push.deliver per device for a single notice.
+// It skips kinds without push or push text, then reads devices by user_id
+// for the loaded notice. Errors are returned so the job retries; nothing
+// is logged.
+func queuePushFor(tx *gorm.DB, n *models.Notification) error {
+	if n == nil || n.ID == 0 {
+		return nil
+	}
+	k, ok := notify.Lookup(n.Kind)
+	if !ok || !k.AllowPush || n.PushTitle == "" {
+		return nil
+	}
+	var devices []uint
+	if err := tx.Model(&models.PushSubscription{}).Where("user_id = ?", n.UserID).Order("id").Pluck("id", &devices).Error; err != nil {
+		return err
+	}
+	for _, deviceID := range devices {
+		if err := enqueuePushDelivery(tx, n.ID, deviceID, time.Now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderPush is a notification's lock-screen text (DEC-124): the kind's
@@ -557,7 +601,7 @@ func recordPushIn(db *gorm.DB, n models.Notification, status, reason string, now
 	}
 	return db.Exec(`INSERT INTO notification_deliveries (notification_id, user_id, channel, status, reason, sent_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (notification_id, channel) DO UPDATE SET status = excluded.status, reason = excluded.reason, sent_at = excluded.sent_at
+		ON CONFLICT (notification_id, channel) DO UPDATE SET status = excluded.status, reason = excluded.reason, sent_at = excluded.sent_at, updated_at = now()
 		WHERE excluded.status = 'sent' AND notification_deliveries.status <> 'sent'`,
 		n.ID, n.UserID, models.DeliveryPush, status, reason, sentAt).Error
 }

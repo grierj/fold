@@ -31,6 +31,11 @@ const (
 	KeepUnread = 180 * 24 * time.Hour
 )
 
+// DeliverKind is the job that sends one stored notice by email and to the
+// recipient's devices. The handler lives in the server; this package only
+// names the kind.
+const DeliverKind = "notify.deliver"
+
 // Msg is one notification to write, for every recipient in To.
 type Msg struct {
 	Kind        string
