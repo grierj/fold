@@ -120,7 +120,6 @@ var errorCodes = map[string]string{
 	"enter a valid email address":                                      "invalid_email",
 	"a valid email is required":                                        "invalid_email",
 	"an account with that email already exists":                        "email_taken",
-	"that email already has an account":                                "email_taken",
 	"that email already has an account; sign in to register":           "email_taken_sign_in",
 	"that email was already invited":                                   "already_invited",
 	"invitation limit reached (20 per day)":                            "invite_limit",
