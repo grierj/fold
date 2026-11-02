@@ -10,6 +10,8 @@ import (
 	"fold/internal/providers"
 	"fold/models"
 	"github.com/gin-gonic/gin"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -128,6 +130,48 @@ func TestHealthz(t *testing.T) {
 	}
 	if w.Body.Len() != 0 {
 		t.Fatalf("healthz body: %q", w.Body.String())
+	}
+}
+
+func TestNewHTTPServerTimeouts(t *testing.T) {
+	srv := newHTTPServer(Config{Port: "9090"}, http.NotFoundHandler())
+	if srv.Addr != ":9090" || srv.Handler == nil {
+		t.Fatalf("addr/handler: %q %v", srv.Addr, srv.Handler)
+	}
+	if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 60*time.Second ||
+		srv.WriteTimeout != 60*time.Second || srv.IdleTimeout != 120*time.Second ||
+		srv.MaxHeaderBytes != 1<<20 {
+		t.Fatalf("timeouts: header %v read %v write %v idle %v maxHeader %d",
+			srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout, srv.MaxHeaderBytes)
+	}
+}
+
+// A client that sends part of its headers and stalls is cut off at
+// ReadHeaderTimeout instead of holding a connection open forever.
+func TestHTTPServerDropsStalledHeaders(t *testing.T) {
+	srv := newHTTPServer(Config{Port: "0"}, http.NotFoundHandler())
+	srv.ReadHeaderTimeout = 200 * time.Millisecond // production value is pinned above
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Config = srv
+	ts.Start()
+	defer ts.Close()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n")); err != nil { // no blank line
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_ = conn.SetReadDeadline(start.Add(5 * time.Second))
+	_, err = io.ReadAll(conn) // returns once the server closes the connection
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("server never dropped the stalled connection")
+	}
+	if d := time.Since(start); d < 50*time.Millisecond || d > 5*time.Second {
+		t.Fatalf("dropped after %v, want between 50ms and 5s", d)
 	}
 }
 
