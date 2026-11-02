@@ -124,7 +124,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 
 - Avatars and covers go through `storage.Store` (`storage/storage.go`, `App.Uploads`), never raw
   paths. Keys are server-generated, never client filenames. Uploads are content-sniffed
-  (JPEG/PNG/GIF/WebP only), at most 5MB, served at `/uploads/<key>` with `nosniff`. For S3,
+  (JPEG/PNG/GIF only; WebP is refused), re-encoded on the server so no EXIF or text chunk is stored, at most 5MB, served at `/uploads/<key>` with `nosniff`. For S3,
   implement `storage.Store` and make `serveUpload` redirect (PLAN 5.7); `UPLOAD_DIR` is the local
   path (`/data/uploads` in compose).
 - Docker: the image pins `WORKDIR /` and pre-creates `/data/uploads` with `--chown=65532:65532` so

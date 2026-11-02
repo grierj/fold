@@ -81,7 +81,7 @@ export function ImageUpload({
       <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={busy}>
         {busy ? "Processing…" : preview ? "Choose different image" : "Choose photo"}
       </Button>
-      <HiddenFileInput ref={inputRef} accept="image/jpeg,image/png,image/gif,image/webp" onChange={pick} />
+      <HiddenFileInput ref={inputRef} accept="image/jpeg,image/png,image/gif" onChange={pick} />
     </>
   );
 
