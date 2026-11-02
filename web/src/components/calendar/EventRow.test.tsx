@@ -55,10 +55,13 @@ describe("EventRow", () => {
   });
 
   it.each([
-    ["going", "Going"], ["maybe", "Maybe"], ["waitlisted", "Waitlisted"], ["declined", "Can't go"],
-  ] as const)("labels the viewer's %s answer", (myStatus, label) => {
+    ["going", "Going"], ["maybe", "Maybe"], ["waitlisted", "Waitlisted"], ["declined", "Can't go"], [null, "Not answered"],
+  ] as const)("stacks the viewer's %s answer below the time", (myStatus, label) => {
     wrap(<EventRow occ={occ({ myStatus, ownScope: true })} />);
-    expect(screen.getByText(label)).toBeInTheDocument();
+    const status = screen.getByLabelText(label);
+    expect(status).toHaveTextContent(label);
+    expect(status.parentElement).toHaveClass("flex-col", "items-start");
+    expect(status.previousElementSibling).toHaveTextContent("7:00 PM to 8:30 PM");
   });
 
   it("labels unanswered own-scope dates and ghosts them without fading text", () => {
@@ -97,7 +100,7 @@ describe("EventChip", () => {
     expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
   });
   it.each([
-    ["going", "Going", "bg-primary"],
+    ["going", "Going", "bg-primary-subtle"],
     ["maybe", "Maybe", "border-dashed"],
     ["waitlisted", "Waitlisted", "border-dashed"],
     [null, "Not answered", "border-dashed"],
@@ -170,9 +173,11 @@ describe("StatusBadge (DEC-99: quiet text, DEC-71 words kept)", () => {
     expect(badge.querySelector("svg")).not.toBeNull();
   });
 
-  it("takes the card's own foreground on a solid Going card", () => {
-    render(<StatusBadge state="going" solid />);
-    expect(screen.getByLabelText("Going")).toHaveClass("text-primary-foreground");
+  it.each([EventRow, EventChip])("uses a quiet tint and accent for Going, never a solid violet card", (Component) => {
+    wrap(<Component occ={occ({ myStatus: "going", ownScope: true })} />);
+    expect(screen.getByRole("link")).toHaveClass("bg-primary-subtle", "border-primary", "text-text");
+    expect(screen.getByRole("link")).not.toHaveClass("bg-primary", "text-primary-foreground");
+    expect(screen.getByText("Going")).toBeInTheDocument();
   });
 
   it("keeps the clock on Waitlisted and renders nothing without a state", () => {

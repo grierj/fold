@@ -6,7 +6,8 @@ import { signIn } from "./helpers";
 test("an admin makes a room's calendar link, it serves ICS, and turning it off stops it", async ({ page, request }) => {
   await signIn(page, "grier");
   await page.goto("/admin?tab=rooms");
-  await page.getByRole("button", { name: "Calendar feed for Fellowship Hall" }).click();
+  await page.getByRole("button", { name: "More for Fellowship Hall" }).click();
+  await page.getByRole("menuitem", { name: "Calendar feed for Fellowship Hall" }).click();
   const panel = page.getByRole("region", { name: "Calendar feed for Fellowship Hall" });
   // A link from an earlier run on this server may already be on; a new one works either way.
   const make = panel.getByRole("button", { name: "Create calendar link" });
@@ -33,5 +34,5 @@ test("an admin makes a room's calendar link, it serves ICS, and turning it off s
   expect((await request.get(url.pathname)).status()).toBe(404);
 
   await panel.getByRole("button", { name: "Done" }).click();
-  await expect(page.getByRole("button", { name: "Calendar feed for Fellowship Hall" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "More for Fellowship Hall" })).toBeFocused();
 });

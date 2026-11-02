@@ -53,7 +53,13 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 
 ## Controls and states
 - Keep existing `components/ui` APIs and their validation, disabled/loading/error semantics.
-- Inputs and touch targets at least 44px. Focus is immediate, visible, never clipped.
+- Inputs and touch targets at least 44px in both dimensions, including prose links and
+  short text actions. Focus is immediate, visible, never clipped.
+- Calendar Going rows use a quiet primary tint, solid accent and check-mark label, not a
+  solid violet fill. Every agenda answer label sits below the time (PLAN DEC-71 / #228).
+- Heading levels follow the host page: single-event and full Alerts sections start at h2;
+  series dates sit under Upcoming dates, and the bell's sections under its own h2.
+- Alert Archive uses an outlined 44px control with a prominent glyph, separate from its row link.
 - One primary action per view; selected RSVP and chips remain explicit in text and state.
 - New copy has no uppercase/tracked labels, glued arrows, decorative dots or middle-dot strings.
   Product-approved event/date wording remains (PLAN DEC-92). The user authorized fixing
@@ -76,3 +82,4 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - Verification, remaining flags and independent review: `.hallmark/verification.md`.
 - Historical directory implementation and scale experiment: `.hallmark/busy-church.md`.
 - Delivered roster/calendar/admin/message/room list patterns and proof: `.hallmark/busy-lists.md`.
+- PR #225 review issues #226–#229 and CI follow-up: `.hallmark/pr225-followup.md`.

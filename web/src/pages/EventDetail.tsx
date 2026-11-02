@@ -340,7 +340,7 @@ function DateRow({
   }
 
   return (
-    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"} compact={single}
+    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"} compact={single} headingLevel={single ? 2 : 3}
       notice={canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
       meta={single ? (
         // Only what this date changed from the header.
@@ -378,11 +378,11 @@ function DateRow({
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
-        <Attendance instance={instance} />
+        <Attendance instance={instance} headingLevel={single ? 3 : 4} />
     <div>
         <div>
           {loggedIn ? (
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
+            <RsvpButtons instance={instance} people={people} headingLevel={single ? 3 : 4} onChange={onRsvp} seriesFeedback={seriesFeedback}
               mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
@@ -412,7 +412,7 @@ function DateRow({
           />
           </div>
         )}
-        {canManage && managing && <div ref={manageRef} className="scroll-mt-4"><Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense></div>}
+        {canManage && managing && <div ref={manageRef} className="scroll-mt-4"><Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} headingLevel={single ? 3 : 4} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense></div>}
     </div>
         {!single && (
           <DateActions eventId={instance.eventId} date={instance.date} sharePath={`/events/${instance.eventId}/dates/${instance.date}`}

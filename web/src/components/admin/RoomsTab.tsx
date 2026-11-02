@@ -257,7 +257,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
       <PageCount paging={paging} noun="rooms" />
       {rooms.length > 0 && matching.length === 0 && <EmptyState title="No rooms match" body="Try another name or choose another building." />}
       {paging.rows.map((r, index) => <Fragment key={r.id}>
-        {(index === 0 || paging.rows[index - 1].building !== r.building) && <h3 className="pt-4 font-bold">{r.building || "Other rooms"}</h3>}
+        {(index === 0 || paging.rows[index - 1].building !== r.building) && <h2 className="pt-4 font-bold">{r.building || "Other rooms"}</h2>}
         {open === r.id ? (
         <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={cancel} />
       ) : (

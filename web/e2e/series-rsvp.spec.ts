@@ -247,7 +247,7 @@ test("non-household sibling fields refresh after a series answer and Undo withou
   await signInTo(page, "sam", `/events/${event.id}`);
   await expect(page.getByRole("form", { name: "Household answers" })).toHaveCount(0);
   await expect(answerGroups(page)).toHaveCount(2);
-  const cards = page.locator(".bg-surface.rounded-lg.border-border");
+  const cards = page.getByRole("article");
   const first = cards.first();
   const second = cards.nth(1);
 
@@ -325,7 +325,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   }
   await signInTo(page, "sam", `/events/${solo.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
-  const cards = page.locator(".bg-surface.rounded-lg.border-border");
+  const cards = page.getByRole("article");
   const firstCard = cards.first();
   const siblingCard = cards.nth(1);
   await firstCard.getByRole("radio", { name: "Remote" }).click();
@@ -440,7 +440,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
   });
   await signInTo(page, "sam", `/events/${soloApply.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
-  let cards = page.locator(".bg-surface.rounded-lg.border-border");
+  let cards = page.getByRole("article");
   let firstCard = cards.first();
   let siblingCard = cards.nth(1);
   const soloApplyRefresh = await holdNextEventRefresh(page, soloApply.id);

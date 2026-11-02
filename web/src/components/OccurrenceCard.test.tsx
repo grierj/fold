@@ -33,6 +33,14 @@ it("compact drops the tile and visible heading but keeps the name, notice and me
   expect(screen.getByText("Attendance and answers")).toBeInTheDocument();
 });
 
+it.each([false, true])("can sit directly under the page heading when compact=%s", (compact) => {
+  render(<OccurrenceCard at="2026-12-01T19:00:00Z" title="Study" meta={null} compact={compact} headingLevel={2}>
+    <p>Attendance and answers</p>
+  </OccurrenceCard>);
+  expect(screen.getByRole("heading", { name: "Study", level: 2 })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: "Study" })).toBeInTheDocument();
+});
+
 it("compact has no top row when there is nothing for it", () => {
   render(<OccurrenceCard at="2026-12-01T19:00:00Z" title="Study" meta={null} compact>
     <p>Attendance and answers</p>

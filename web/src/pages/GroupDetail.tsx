@@ -950,20 +950,20 @@ function GroupDetailContent() {
             {tab === "about" && (
               <div className="grid max-w-3xl gap-8 sm:grid-cols-2">
                 <div>
-                  <h3 className="font-bold mb-1">About this group</h3>
+                  <h2 className="font-bold mb-1">About this group</h2>
                   <p className="text-text-muted whitespace-pre-wrap">
                     {group.description || "No description yet."}
                   </p>
                 </div>
                 {group.location && (
                   <div>
-                    <h3 className="font-bold mb-1">Location</h3>
+                    <h2 className="font-bold mb-1">Location</h2>
                     <p className="text-text-muted">{group.location}</p>
                   </div>
                 )}
                 {group.tags.length > 0 && (
                   <div>
-                    <h3 className="font-bold mb-1">Tags</h3>
+                    <h2 className="font-bold mb-1">Tags</h2>
                     <div className="flex flex-wrap gap-2">
                       {group.tags.map((t) => (
                         <Link
@@ -978,7 +978,7 @@ function GroupDetailContent() {
                   </div>
                 )}
                 <div>
-                  <h3 className="font-bold mb-1">Next event</h3>
+                  <h2 className="font-bold mb-1">Next event</h2>
                   <p className="text-text-muted">
                     {group.nextEventAt ? (
                       formatWhen(group.nextEventAt)

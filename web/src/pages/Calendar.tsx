@@ -189,7 +189,7 @@ export function CalendarPage() {
       {!user && (
         <p className="mt-4 text-sm text-text-muted">
           Showing public events.{" "}
-          <Link to="/login" className="font-semibold text-primary hover:underline">
+          <Link to="/login" className="text-link">
             Log in
           </Link>{" "}
           to see your groups' events too.

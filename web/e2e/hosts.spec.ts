@@ -7,7 +7,14 @@ function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-test("an admin schedules a church-wide event in the church time zone", async ({ page }) => {
+test("an admin schedules a church-wide event in the church time zone", async ({ page, request }) => {
+  // Make this date fall outside the four-date preview without relying on
+  // another spec having seeded earlier church events.
+  const admin = await apiAs(request, "grier");
+  for (let i = 0; i < 5; i++) await admin("POST", "/events", {
+    title: `Earlier church gathering ${i + 1}`, startsLocal: `${futureDate(2 + i)}T18:00`,
+    durationMinutes: 60, tzid: "UTC", visibility: "public",
+  });
   await signIn(page, "grier");
   await page.goto("/events/new");
   await page.getByRole("button", { name: "Change time zone" }).click();
@@ -30,8 +37,15 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   // the date reaches people through "Coming up for you".
   await signOut(page);
   await expect(page.getByRole("heading", { name: "Church events" })).toBeVisible();
+  const preview = page.locator('main a[href^="/events/"]');
+  await expect(preview).toHaveCount(4);
+  await expect(page.getByRole("link", { name: /Church potluck/ })).toHaveCount(0);
+  // Home lists these under "Church events", so the preview names no host (DEC-99).
+  expect((await preview.allTextContents()).join(" ")).not.toContain("Hosted by");
+  await page.getByRole("link", { name: "See all church events" }).click();
+  await expect(page.getByLabel("Group", { exact: true })).toHaveValue("church");
+  await page.getByLabel("From date", { exact: true }).fill(futureDate(18));
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
-  // Home lists these under "Church events", so the card names no host (DEC-99).
   await expect(page.getByRole("link", { name: /Church potluck/ })).not.toContainText("Hosted by");
 });
 

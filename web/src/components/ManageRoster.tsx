@@ -14,7 +14,9 @@ import { Button } from "./ui/Button";
 import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
 
-export function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void }) {
+export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void; headingLevel?: 3 | 4 }) {
+  const Heading = headingLevel === 3 ? "h3" : "h4";
+  const Subheading = headingLevel === 3 ? "h4" : "h5";
   const { user } = useAuth();
   const [busy, setBusy] = useState<number | "add" | null>(null);
   const [email, setEmail] = useState("");
@@ -83,7 +85,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
 
   const roster = (instance.attendees ?? []).filter((a) => ["going", "maybe", "waitlisted"].includes(a.status));
   return <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
-    <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Manage sign-ups</h3><Button variant="link" onClick={onClose}>Close</Button></div>
+    <div className="flex items-center justify-between gap-3"><Heading className="font-semibold">Manage sign-ups</Heading><Button variant="link" onClick={onClose}>Close</Button></div>
     {error && <FormError>{error}</FormError>}
     <div className="my-3"><Button variant="secondary" aria-expanded={adding} onClick={() => setAdding(!adding)}>{adding ? "Close add person" : "Add person"}</Button></div>
     <div hidden={!adding} className="mb-4">
@@ -109,7 +111,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
       </div>
     </li>}</PeopleList>}
     {(instance.removedRegistrations?.length ?? 0) > 0 && <section aria-label="Removed or left out" className="my-4">
-      <h4 className="font-semibold">Removed or left out</h4>
+      <Subheading className="font-semibold">Removed or left out</Subheading>
       <PeopleList rows={instance.removedRegistrations ?? []} noun="removed sign-ups">{(a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={false} showAccountType /></div><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
       </li>}</PeopleList>

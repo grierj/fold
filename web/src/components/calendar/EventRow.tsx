@@ -38,12 +38,11 @@ function ghosted(state: CalendarState) {
 // The viewer's answer as quiet text, not a pill (DEC-99; DEC-71 keeps the
 // words, and the dashed card shape on ghosted rows carries the state too, so
 // it is never color alone). Going is the one answer with a check and the
-// success tone; on a solid card (`solid`) it takes the card's own
-// foreground, since green on the primary fill would not read.
-export function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
+// success tone. Going cards use a quiet tint, never a solid primary fill.
+export function StatusBadge({ state }: { state: CalendarState }) {
   if (!state) return null;
   const label = STATUS[state];
-  const tone = solid ? "text-primary-foreground" : state === "going" ? "text-success-on-subtle" : "text-text-muted";
+  const tone = state === "going" ? "text-success-on-subtle" : "text-text-muted";
   return (
     <span className={`inline-flex items-center gap-1 text-xs font-semibold ${tone}`} aria-label={label}>
       {state === "going" && <CheckIcon className="h-3 w-3" />}
@@ -58,9 +57,8 @@ export function StatusBadge({ state, solid = false }: { state: CalendarState; so
 // text is never faded with opacity.
 export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   const state = calendarState(occ);
-  const solid = state === "going";
-  const stateClass = solid
-    ? "border-primary bg-primary text-primary-foreground"
+  const stateClass = state === "going"
+    ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
       ? "border-primary border-dashed bg-sunken text-text"
       : "border-border bg-surface text-text";
@@ -69,16 +67,18 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
       to={occurrenceLink(occ)}
       className={`grid min-h-11 gap-x-6 gap-y-1 border-l-2 px-4 py-3 hover:border-border-strong sm:grid-cols-[12rem_minmax(0,1fr)] ${stateClass}`}
     >
-      <span className="flex flex-wrap items-center gap-2 sm:row-span-2 sm:content-start">
-        <span className={`tabular-nums text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
+      <span className="flex flex-col items-start gap-1 sm:row-span-2">
+        <span className="tabular-nums text-sm text-text-muted">
           {formatTime(occ.startsAt)} to {formatTime(occ.endsAt)}
         </span>
-        <StatusBadge state={state} solid={solid} />
-        {occ.remoteAvailable && <RemoteBadge />}
-        {occ.childcareAvailable && <ChildcareBadge />}
+        <StatusBadge state={state} />
+        {(occ.remoteAvailable || occ.childcareAvailable) && <span className="flex flex-wrap gap-2">
+          {occ.remoteAvailable && <RemoteBadge />}
+          {occ.childcareAvailable && <ChildcareBadge />}
+        </span>}
       </span>
-      <span className={`min-w-0 wrap-anywhere font-semibold ${solid ? "text-primary-foreground" : "text-text"}`}>{occ.title || occ.groupName}</span>
-      <span className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
+      <span className="min-w-0 wrap-anywhere font-semibold text-text">{occ.title || occ.groupName}</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-text-muted">
         {occ.churchWide ? (
           <span className="shrink-0 rounded-sm bg-inverse px-2 py-0.5 text-xs font-semibold text-inverse-foreground">
             Church-wide
@@ -112,7 +112,7 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
     .filter(Boolean)
     .join(", ");
   const stateClass = state === "going"
-    ? "border-primary bg-primary text-primary-foreground"
+    ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
       ? "border-primary border-dashed bg-sunken text-text"
       : state === "declined"
@@ -126,7 +126,7 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
     >
       {stacked ? (
         <>
-          <span className={`flex items-center gap-1 text-xs tabular-nums ${state === "going" ? "text-primary-foreground" : "text-text-muted"}`}>
+          <span className="flex items-center gap-1 text-xs tabular-nums text-text-muted">
             {state === "going" && <CheckIcon className="h-3 w-3 shrink-0" />}
             {time}
           </span>

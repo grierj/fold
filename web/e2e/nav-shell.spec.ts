@@ -62,6 +62,8 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
   await page.getByRole("main").getByRole("link", { name: "Admin", exact: true }).click();
   await page.getByRole("tablist", { name: "Admin sections", exact: true }).getByRole("tab", { name: /^Users/ }).click();
+  const search = page.getByRole("searchbox", { name: "Search by name or email" });
+  await search.fill("grier@example.com");
   const own = page.getByRole("row").filter({ hasText: "grier@" });
   await expect(own.getByRole("button", { name: "Edit" })).toBeVisible();
   await own.getByRole("button", { name: /^More for/ }).click();
@@ -69,6 +71,8 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await expect(own.getByRole("menuitem", { name: "Disable" })).toHaveCount(0);
   await expect(own.getByRole("menuitem", { name: "Delete" })).toHaveCount(0);
   await page.keyboard.press("Escape");
+  // The bounded list need not put Sam on the first page of a busy church.
+  await search.fill("sam@example.com");
   const other = page.getByRole("row").filter({ hasText: "sam@" }).first();
   await other.scrollIntoViewIfNeeded();
   await expect(other.getByRole("button", { name: "Edit" })).toBeInViewport({ ratio: 1 });

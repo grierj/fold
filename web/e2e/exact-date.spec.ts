@@ -164,7 +164,8 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     const saved = page.waitForRequest((r) => r.method() === "PUT" && r.url().endsWith(`${path}/registration`));
     await page.getByRole("button", { name: "Going", exact: true }).focus(); await page.keyboard.press("Enter");
     expect((await saved).postDataJSON()).toEqual({ status: "going", attendanceMode: "remote", guestCount: 1 });
-    await expect(page.getByText("Attending: Remote · Guests: 1", { exact: true })).toBeVisible();
+    await expect(page.getByText("Attending: Remote", { exact: false })).toBeVisible();
+    await expect(page.getByText("Guests: 1", { exact: true })).toBeVisible();
     await capture(page, `${scenario}-remote-answer`);
     const grants = await (await page.request.get("/api/v1/contact-grants")).json(); expect(grants.grants).toEqual([]);
 

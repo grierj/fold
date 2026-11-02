@@ -114,15 +114,15 @@ function NotificationRow({
         </button>
       )}
       {!n.waiting && !n.archived && (
-        <button
-          className="absolute right-1 top-1 w-11 h-11 flex items-center justify-center text-text-muted hover:text-text rounded-full"
+        <Button variant="secondary"
+          layout="absolute right-1 top-1 h-11 w-11 p-0 rounded-full"
           aria-label={`Archive: ${n.title}`}
           disabled={feed.offline}
           title={feed.offline ? "Reconnect to do this" : "Archive"}
           onClick={() => feed.archive(n).then(() => onArchived(n)).catch(() => {})}
         >
-          <span aria-hidden="true">×</span>
-        </button>
+          <span aria-hidden="true" className="text-2xl font-semibold leading-none">×</span>
+        </Button>
       )}
     </li>
   );
@@ -196,7 +196,7 @@ function FeedEmpty({ text, action }: { text?: string; action?: ReactNode }) {
 
 // FeedBody renders loading, error, and the rows of one feed.
 export function FeedBody({
-  feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false,
+  feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false, headingLevel = 3,
 }: {
   feed: Feed;
   onArchived: (n: Notification) => void;
@@ -205,8 +205,10 @@ export function FeedBody({
   emptyAction?: ReactNode; // shown with the default empty message only
   sections?: boolean;
   dayHeadings?: boolean; // the full page splits Recent into Today and Earlier (6.5)
+  headingLevel?: 2 | 3; // page sections follow h1; bell sections follow its h2
 }) {
   const headingId = useId();
+  const Heading = headingLevel === 2 ? "h2" : "h3";
   if (feed.loading && !feed.loadedAt) return <Skeleton />;
   if (feed.error && !feed.loadedAt) {
     return (
@@ -227,9 +229,9 @@ export function FeedBody({
       <StatusLine feed={feed} />
       {feed.waiting.length > 0 && (
         <section aria-labelledby={`${headingId}-w`}>
-          <h3 id={`${headingId}-w`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
+          <Heading id={`${headingId}-w`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
             Waiting on you
-          </h3>
+          </Heading>
           <ul className="divide-y divide-border">{feed.waiting.map(row)}</ul>
           {feed.waitingTotal > feed.waiting.length && (
             <Link to="/notifications?filter=waiting" onClick={onNavigate} className="flex min-h-11 items-center gap-2 px-4 py-2 text-sm text-primary font-semibold hover:underline">
@@ -243,9 +245,9 @@ export function FeedBody({
           <>
             {splitByDay(feed.items).map(([label, rows]) => (
               <section key={label} aria-labelledby={`${headingId}-${label}`}>
-                <h3 id={`${headingId}-${label}`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
+                <Heading id={`${headingId}-${label}`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
                   {label}
-                </h3>
+                </Heading>
                 <ul className="divide-y divide-border">{rows.map(row)}</ul>
               </section>
             ))}
@@ -253,9 +255,9 @@ export function FeedBody({
         ) : (
           <section aria-labelledby={`${headingId}-r`}>
             {sections && feed.waiting.length > 0 && (
-              <h3 id={`${headingId}-r`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
+              <Heading id={`${headingId}-r`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
                 Recent
-              </h3>
+              </Heading>
             )}
             <ul className="divide-y divide-border">{feed.items.map(row)}</ul>
           </section>

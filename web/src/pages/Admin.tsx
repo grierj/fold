@@ -228,7 +228,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
 
   return (
-    <div ref={ref} className="fold-list-row bg-surface border-b border-border px-4">
+    <div ref={ref} role="group" aria-label={`Account request from ${request.name}`} className="fold-list-row bg-surface border-b border-border px-4">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="grow min-w-0">
           <span className="text-xl font-bold">{request.name}</span>

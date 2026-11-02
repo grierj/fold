@@ -93,7 +93,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   await expect(page.getByText(`Conversion ${kind}`, { exact: true }).first()).toBeVisible();
   await signIn(page, "grier");
   await page.goto("/admin");
-  const card = page.getByText(`Conversion ${kind}`, { exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
+  const card = page.getByRole("group", { name: `Account request from Conversion ${kind}`, exact: true });
   await card.getByRole("button", { name: "Approve" }).click();
   await expect(card).toHaveCount(0);
   await signIn(page, `conversion-${kind}-own`);

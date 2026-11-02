@@ -75,7 +75,7 @@ test("admin approves a teen request and records account consent together", async
   await page.getByRole("button", { name: "Request an account" }).click();
   await expect(page.getByText(/check your email/i)).toBeVisible();
   await signInTo(page, "grier", "/admin");
-  const card = page.getByText("Approval Jordan", { exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
+  const card = page.getByRole("group", { name: "Account request from Approval Jordan", exact: true });
   await card.getByRole("checkbox", { name: /Grant account consent with approval/ }).check();
   await card.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(card.getByLabel("Consent evidence")).toBeFocused();

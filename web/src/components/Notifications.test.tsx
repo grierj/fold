@@ -72,6 +72,12 @@ it("includes the phone tab's visible count and caption in its accessible name", 
 });
 
 describe("NotificationBell", () => {
+  it("keeps section headings under the bell's second-level title", async () => {
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
+    expect(await screen.findByRole("heading", { name: "Waiting on you", level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recent", level: 3 })).toBeInTheDocument();
+  });
   it("includes its visible summed count and describes both numbers", async () => {
     renderBell();
     const bell = await screen.findByRole("button", { name: "2 Alerts, 1 unread, 1 waiting on you" });

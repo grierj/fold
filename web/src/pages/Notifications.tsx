@@ -58,6 +58,7 @@ export function NotificationsPage() {
       </div>
       <div className="bg-surface border border-border rounded-lg overflow-hidden divide-y divide-border">
         <FeedBody
+          headingLevel={2}
           feed={feed}
           onArchived={onArchived}
           dayHeadings

@@ -7,19 +7,21 @@ import { DateBadge } from "./DateBadge";
 // (a single-date event, DEC-92): the tile and heading go, the title stays as
 // the card's accessible name, and `notice`, `meta` and `menu` keep a quiet
 // top row only when there is something to put in it.
-export function OccurrenceCard({ at, title, meta, menu, notice, compact, children }: {
+export function OccurrenceCard({ at, title, meta, menu, notice, compact, headingLevel = 3, children }: {
   at: string;
   title: ReactNode;
   meta: ReactNode;
   menu?: ReactNode;
   notice?: ReactNode;
   compact?: boolean;
+  headingLevel?: 2 | 3;
   children: ReactNode;
 }) {
   const heading = useId();
+  const Heading = headingLevel === 2 ? "h2" : "h3";
   if (compact) {
     return <article aria-labelledby={heading} className="fold-list-row border-t border-border wrap-anywhere">
-      <h3 id={heading} className="sr-only">{title}</h3>
+      <Heading id={heading} className="sr-only">{title}</Heading>
       {(notice || meta || menu) && <div className="mb-3 flex items-start justify-between gap-2">
         <div className="min-w-0 grow">{notice}{meta}</div>
         {menu && <div className="shrink-0">{menu}</div>}
@@ -33,7 +35,7 @@ export function OccurrenceCard({ at, title, meta, menu, notice, compact, childre
       <div className="grow min-w-0">
         {notice}
         <div className="flex items-start justify-between gap-2">
-          <h3 id={heading} className="min-w-0 text-base font-semibold wrap-anywhere">{title}</h3>
+          <Heading id={heading} className="min-w-0 text-base font-semibold wrap-anywhere">{title}</Heading>
           {menu && <div className="shrink-0">{menu}</div>}
         </div>
         {meta}

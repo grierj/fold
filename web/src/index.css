@@ -234,12 +234,9 @@
   .chip[aria-pressed="true"]::before, .chip[aria-selected="true"]::before { content: "✓" / ""; }
   /* A plain violet text action ("Show who's coming"), 44px tall like the
      other text links. */
-  .btn-link      { @apply inline-flex items-center min-h-11 text-sm font-medium text-primary hover:underline; }
-  /* A link inside a running sentence (DEC-99). Inline keeps the line height
-     even; the padding gives a 24px-tall hit area without opening a gap
-     between wrapped lines (inline boxes ignore vertical margin and padding
-     when lines are laid out). */
-  .text-link     { @apply inline py-1.5 -my-1.5 font-semibold text-primary hover:underline focus-visible:underline; }
+  .btn-link      { @apply inline-flex items-center justify-center min-h-11 min-w-11 text-sm font-medium text-primary hover:underline; }
+  /* Actionable prose links keep the same 44px target as other controls. */
+  .text-link     { @apply inline-flex items-center align-middle min-h-11 min-w-11 font-semibold text-primary hover:underline focus-visible:underline; }
   /* One segment of a joined control (RSVP, DEC-63). The chosen one is
      filled and, like chips, leads with a check so color isn't the only cue. */
   .segment { @apply inline-flex flex-1 items-center justify-center gap-1 min-h-11 px-2 whitespace-nowrap text-sm font-semibold border border-border-strong bg-surface text-text -ml-px first:ml-0 first:rounded-l-lg last:rounded-r-lg hover:text-primary disabled:opacity-50; }

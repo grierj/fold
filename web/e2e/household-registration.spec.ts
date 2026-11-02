@@ -61,10 +61,13 @@ test("household profile, pending link, independent answers, privacy and recovery
   const fullNotes = page.getByRole("button", { name: "Show full care notes for Kit" });
   await fullNotes.click(); await expect(page.getByRole("button", { name: "Hide care notes" })).toHaveAttribute("aria-expanded", "true");
   page.on("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Remove Kit" }).click();
+  await page.getByRole("button", { name: "More for Kit" }).click();
+  await page.getByRole("menuitem", { name: "Remove Kit" }).click();
   await expect(page.getByRole("region", { name: "Removed or left out" })).toBeVisible();
   await page.getByRole("button", { name: "Add back Kit" }).click();
-  await expect(page.getByRole("button", { name: "Remove Kit" })).toBeVisible();
+  await page.getByRole("button", { name: "More for Kit" }).click();
+  await expect(page.getByRole("menuitem", { name: "Remove Kit" })).toBeVisible();
+  await page.keyboard.press("Escape");
   // Leave the admin bell as later specs expect (notifications.spec.ts).
   await (await apiAs(request, "grier"))("POST", "/notifications/read-all", {});
 });
