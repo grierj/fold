@@ -1729,6 +1729,9 @@ func TestRegistrationReadBudget(t *testing.T) {
 	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(5), true)
 	_, c, spouse, child := householdFamily(t, app, admin, "readholder")
 	batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	// The test client drains queued notices after each request; that drain is
+	// harness work, not handler reads, so measured requests leave them queued.
+	admin.holdNotices, c.holdNotices = true, true
 	n := 0
 	cb := func(*gorm.DB) { n++ }
 	_ = app.DB.Callback().Query().Before("gorm:query").Register("zz:q", cb)
@@ -1746,6 +1749,7 @@ func TestRegistrationReadBudget(t *testing.T) {
 	}
 	_ = newTestUser(t, app, "solo", "password1234", "member")
 	solo := loginAPI(t, app, "solo", "password1234")
+	solo.holdNotices = true
 	n = 0
 	apiDo(t, solo, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "going"}, http.StatusOK)
 	if n > 12 {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/models"
 	"gorm.io/gorm"
@@ -262,7 +263,9 @@ func TestApproveTeenAndGrantConsentAtomically(t *testing.T) {
 	if granted, err := latestTeenConsentIn(app.DB, teen.ID, "account"); err != nil || !granted {
 		t.Fatalf("missing consent: %t %v", granted, err)
 	}
-	message := latestEmail(t, app, req.Email)
+	// The queued consent notice is drained after the synchronous approval email,
+	// so the newest email is not necessarily the approval one.
+	message := approvalEmailTo(t, app, req.Email)
 	if strings.Contains(message.Body, "also needs a parent") {
 		t.Fatal("consented approval email still asks for consent")
 	}
@@ -396,4 +399,21 @@ func TestTeenConsentPreservesAdministrativeSuspension(t *testing.T) {
 	if teen.Status != models.UserPendingConsent || teen.AdministrativelyDisabled {
 		t.Fatalf("enable without valid consent: %+v", teen)
 	}
+}
+
+// approvalEmailTo returns the newest "account is approved" email to address,
+// whatever notices were queued after it.
+func approvalEmailTo(t *testing.T, app *App, address string) mail.OutboxMessage {
+	t.Helper()
+	msgs, err := devOutbox(t, app).List(200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if m.To == address && strings.HasSuffix(m.Subject, " account is approved") {
+			return m
+		}
+	}
+	t.Fatalf("no approval email to %s among %d emails", address, len(msgs))
+	return mail.OutboxMessage{}
 }

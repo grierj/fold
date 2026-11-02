@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -104,21 +102,43 @@ func waitSeriesOccurrenceWaiter(t *testing.T, app *App) {
 	t.Fatal("timed out waiting for series occurrence lock contender")
 }
 
-type blockingSeriesMailer struct {
-	next    mail.Sender
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
-}
-
-func (m *blockingSeriesMailer) Send(ctx context.Context, msg mail.Message) error {
-	m.once.Do(func() { close(m.started) })
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-m.release:
-		return m.next.Send(ctx, msg)
+// blockSeriesReceiptFinalization stops the first series registration that
+// reaches receipt finalization (the locked read of its Undo receipt) just
+// before that read, after the answer has committed and before the response
+// is ready. Mail is no longer sent in the request, so it cannot be the
+// synchronization point; this uses a test-only GORM callback on the receipt
+// lock instead. Later requests pass through. The returned release is
+// idempotent and also runs at cleanup so a failed test cannot leave a handler
+// blocked.
+func blockSeriesReceiptFinalization(t *testing.T, app *App) (started <-chan struct{}, release func()) {
+	t.Helper()
+	startedCh, releaseCh := make(chan struct{}), make(chan struct{})
+	var first, once sync.Once
+	const name = "series:block-receipt-finalization"
+	err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(db *gorm.DB) {
+		if db.Statement.Table != "series_undo_receipts" {
+			return
+		}
+		if _, locked := db.Statement.Clauses["FOR"]; !locked {
+			return
+		}
+		first.Do(func() {
+			close(startedCh)
+			select {
+			case <-releaseCh:
+			case <-time.After(30 * time.Second):
+			}
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	release = func() { once.Do(func() { close(releaseCh) }) }
+	t.Cleanup(func() {
+		release()
+		_ = app.DB.Callback().Query().Remove(name)
+	})
+	return startedCh, release
 }
 
 func awaitSeriesSignal(t *testing.T, ch <-chan struct{}, what string) {
@@ -500,8 +520,7 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	mailer := &blockingSeriesMailer{next: app.Mailer, started: make(chan struct{}), release: make(chan struct{})}
-	app.Mailer = mailer
+	finalizing, release := blockSeriesReceiptFinalization(t, app)
 
 	gate := holdContactGate(t, app)
 	client := loginAPI(t, app, "undo-window-actor", "password1234")
@@ -513,9 +532,9 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	if err := gate.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
-	awaitSeriesSignal(t, mailer.started, "promotion email delivery")
+	awaitSeriesSignal(t, finalizing, "receipt finalization")
 	clock.Advance(30 * time.Second)
-	close(mailer.release)
+	release()
 	w := awaitContactResponse(t, response)
 	if w.Code != http.StatusOK {
 		t.Fatalf("series answer=%d %s", w.Code, w.Body.String())
@@ -570,19 +589,18 @@ func TestSeriesReceiptFinalizationDoesNotResurrectReplacedUndo(t *testing.T) {
 	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	mailer := &blockingSeriesMailer{next: app.Mailer, started: make(chan struct{}), release: make(chan struct{})}
-	app.Mailer = mailer
+	finalizing, release := blockSeriesReceiptFinalization(t, app)
 	firstClient := loginAPI(t, app, "undo-replace-actor", "password1234")
 	firstResponse := queueContact(func() *httptest.ResponseRecorder {
 		return firstClient.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
 	})
-	awaitSeriesSignal(t, mailer.started, "first action email delivery")
+	awaitSeriesSignal(t, finalizing, "first action receipt finalization")
 
 	second := postSeriesAnswer(loginAPI(t, app, "undo-replace-actor", "password1234"), ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
 	if second == nil || second.UndoToken == "" {
 		t.Fatalf("replacement receipt=%+v", second)
 	}
-	close(mailer.release)
+	release()
 	w := awaitContactResponse(t, firstResponse)
 	if w.Code != http.StatusOK {
 		t.Fatalf("first action=%d %s", w.Code, w.Body.String())
