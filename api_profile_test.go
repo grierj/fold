@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fold/internal/audit"
 	"fold/models"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1143,4 +1149,117 @@ func TestProfileNameLimitCountsCharactersNotBytes(t *testing.T) {
 	long := strings.Repeat("é", 100) // 200 bytes, 100 characters
 	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"displayName": long}, http.StatusOK)
 	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"displayName": long + "é"}, http.StatusBadRequest)
+}
+
+// uploadedBytes fetches a stored upload back through the public route.
+func uploadedBytes(t *testing.T, app *App, url string) []byte {
+	t.Helper()
+	w := httptest.NewRecorder()
+	app.setupRouter().ServeHTTP(w, httptest.NewRequest("GET", url, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d", url, w.Code)
+	}
+	return w.Body.Bytes()
+}
+
+func TestAvatarUploadStripsEXIF(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+
+	// Orientation 6 on a 64 x 96 JPEG with GPS tags in the EXIF block.
+	in := withEXIF(jpegBytes(t, blockImage(2, 3, gridColors)), exifBlock(6))
+	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.jpg", in)
+	if w.Code != http.StatusOK {
+		t.Fatalf("avatar upload: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AvatarURL string `json:"avatarUrl"`
+	}
+	decodeJSON(t, w, &resp)
+	stored := uploadedBytes(t, app, resp.AvatarURL)
+	for name, pat := range map[string][]byte{"Exif marker": []byte("Exif"), "maker string": gpsMarker, "GPS latitude": gpsLatitude} {
+		if bytes.Contains(stored, pat) {
+			t.Errorf("stored avatar still contains the %s", name)
+		}
+	}
+	img, err := jpeg.Decode(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatalf("stored avatar is not a JPEG: %v", err)
+	}
+	// Turned upright: 3 blocks wide, 2 tall.
+	assertGrid(t, img, 3, 2, []color.RGBA{cMagenta, cBlue, cRed, cCyan, cYellow, cGreen})
+}
+
+func TestGroupCoverUploadStripsPNGText(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "grier", "password1234", "member")
+	g := newTestGroup(t, app, leader, "Test Group", models.GroupActive)
+	c := loginAPI(t, app, "grier", "password1234")
+
+	coverPath := "/api/v1/groups/" + strconv.Itoa(int(g.ID)) + "/cover"
+	w := c.doMultipart("POST", coverPath, "cover", "cover.png", pngWithText(t, blockImage(2, 3, gridColors)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cover upload: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ImageURL string `json:"imageUrl"`
+	}
+	decodeJSON(t, w, &resp)
+	stored := uploadedBytes(t, app, resp.ImageURL)
+	if bytes.Contains(stored, []byte("tEXt")) || bytes.Contains(stored, gpsMarker) {
+		t.Fatal("stored cover still has its text chunk")
+	}
+	if _, err := png.Decode(bytes.NewReader(stored)); err != nil {
+		t.Fatalf("stored cover is not a PNG: %v", err)
+	}
+}
+
+func TestAnimatedGIFAvatarStaysAnimated(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+
+	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.gif", animatedGIF(t, 3))
+	if w.Code != http.StatusOK {
+		t.Fatalf("avatar upload: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AvatarURL string `json:"avatarUrl"`
+	}
+	decodeJSON(t, w, &resp)
+	g, err := gif.DecodeAll(bytes.NewReader(uploadedBytes(t, app, resp.AvatarURL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Image) != 3 || !reflect.DeepEqual(g.Delay, []int{10, 20, 30}) {
+		t.Fatalf("animation changed: %d frames, delays %v", len(g.Image), g.Delay)
+	}
+}
+
+func TestImageUploadRefusalsAreActionable(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+
+	webp := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 "), make([]byte, 32)...)
+	for name, tc := range map[string]struct {
+		data []byte
+		code string
+	}{
+		"webp":         {webp, "image_unsupported"},
+		"huge header":  {pngHeaderOnly(100000, 100000), "image_too_large"},
+		"many frames":  {animatedGIF(t, maxGIFFrames+1), "image_too_large"},
+		"corrupt jpeg": {[]byte("\xFF\xD8\xFF\xE0 not really a jpeg at all"), "file_unreadable"},
+	} {
+		w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.img", tc.data)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"`+tc.code+`"`) {
+			t.Errorf("%s: got %d %s, want 400 with code %s", name, w.Code, w.Body.String(), tc.code)
+		}
+	}
+	var u models.User
+	app.DB.Where("email = ?", testEmail("grier")).First(&u)
+	if u.AvatarKey != "" {
+		t.Error("a refused upload must not set an avatar")
+	}
 }

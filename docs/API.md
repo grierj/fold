@@ -182,7 +182,7 @@ is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is
 
 Teen accounts cannot upload public avatars (`403 teen_avatar`), and group roster responses never expose a teen avatar URL.
 
-Avatar uploads must be JPEG, PNG, GIF, or WebP (content-sniffed, not by
+Avatar uploads must be JPEG, PNG, or GIF (content-sniffed, not by
 extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
 deleted. Pictures are upload-only; the server never fetches a URL (Oct 14
 decision). The CSRF token goes in the
