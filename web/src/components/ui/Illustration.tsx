@@ -6,6 +6,9 @@ import requestSent from "../../assets/illustrations/request-sent.svg";
 import linkExpired from "../../assets/illustrations/link-expired.svg";
 import noEvents from "../../assets/illustrations/no-events.svg";
 import firstGroup from "../../assets/illustrations/first-group.svg";
+import emptyAlerts from "../../assets/illustrations/empty-alerts.svg";
+import emptyMessages from "../../assets/illustrations/empty-messages.svg";
+import emptyMyGroups from "../../assets/illustrations/empty-my-groups.svg";
 
 export type IllustrationName =
   | "empty-groups"
@@ -15,7 +18,10 @@ export type IllustrationName =
   | "request-sent"
   | "link-expired"
   | "no-events"
-  | "first-group";
+  | "first-group"
+  | "empty-alerts"
+  | "empty-messages"
+  | "empty-my-groups";
 
 const SOURCES: Record<IllustrationName, string> = {
   "empty-groups": emptyGroups,
@@ -26,6 +32,9 @@ const SOURCES: Record<IllustrationName, string> = {
   "link-expired": linkExpired,
   "no-events": noEvents,
   "first-group": firstGroup,
+  "empty-alerts": emptyAlerts,
+  "empty-messages": emptyMessages,
+  "empty-my-groups": emptyMyGroups,
 };
 
 export function Illustration({ name, size = "md" }: { name: IllustrationName; size?: "sm" | "md" }) {

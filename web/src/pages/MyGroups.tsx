@@ -117,7 +117,7 @@ export function MyGroups() {
       {!loading && !error && groups.length === 0 && (
         <>
           <EmptyState
-            illustration={<Illustration name="empty-groups" />}
+            illustration={<Illustration name="empty-my-groups" />}
             title="You're not in any groups yet"
             body="Groups you join show up here, with their next event."
             action={
