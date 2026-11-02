@@ -160,7 +160,7 @@ type pushTarget struct {
 	Kind           string
 }
 
-// pushTargets is the device query queuePushDeliveries and queuePushFor share:
+// pushTargets is the device query for queuePushDeliveries:
 // rows with push text, one pair per device, in id order.
 func pushTargets(tx *gorm.DB, ids []uint) ([]pushTarget, error) {
 	if len(ids) == 0 {
@@ -188,17 +188,27 @@ func enqueuePushTargets(tx *gorm.DB, pairs []pushTarget, now time.Time) error {
 }
 
 // queuePushFor queues one push.deliver per device for a single notice.
-// It uses the same device query and keys as queuePushDeliveries. A write
-// error is returned so the caller can retry; nothing is logged.
+// It skips kinds without push or push text, then reads devices by user_id
+// for the loaded notice. Errors are returned so the job retries; nothing
+// is logged.
 func queuePushFor(tx *gorm.DB, n *models.Notification) error {
 	if n == nil || n.ID == 0 {
 		return nil
 	}
-	pairs, err := pushTargets(tx, []uint{n.ID})
-	if err != nil {
+	k, ok := notify.Lookup(n.Kind)
+	if !ok || !k.AllowPush || n.PushTitle == "" {
+		return nil
+	}
+	var devices []uint
+	if err := tx.Model(&models.PushSubscription{}).Where("user_id = ?", n.UserID).Order("id").Pluck("id", &devices).Error; err != nil {
 		return err
 	}
-	return enqueuePushTargets(tx, pairs, time.Now())
+	for _, deviceID := range devices {
+		if err := enqueuePushDelivery(tx, n.ID, deviceID, time.Now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderPush is a notification's lock-screen text (DEC-124): the kind's
