@@ -287,10 +287,15 @@ func (a *App) apiChangePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// apiLogout ends the session: the cookie is expired (MaxAge -1), so the
-// browser drops it along with its CSRF token. The SPA then reloads. A body
-// of {pushEndpoint} also deletes this browser's push device in the same
-// request (M3.13b): a separate call after logout would have no CSRF token.
+// apiLogout ends the session everywhere: it bumps the account's
+// logout_version, so this cookie and any copy of it, and every other
+// device's session for the account, stop working (one epoch per account;
+// M7.2 slice b). It leaves session_version, the credential epoch, alone, so
+// emailed links and push devices survive an ordinary sign-out. The cookie
+// is also expired (MaxAge -1), so the browser drops it along with its CSRF
+// token. The SPA then reloads. A body of {pushEndpoint} deletes this
+// browser's push device in the same request (M3.13b): a separate call after
+// logout would have no CSRF token.
 func (a *App) apiLogout(c *gin.Context) {
 	var body struct {
 		PushEndpoint string `json:"pushEndpoint"`
@@ -299,13 +304,31 @@ func (a *App) apiLogout(c *gin.Context) {
 		_ = c.ShouldBindJSON(&body) // the body is optional
 	}
 	a.endPushDeviceAtLogout(body.PushEndpoint)
+	bumpErr := a.endSessionsAtLogout(c)
 	session, _ := a.Store.Get(c.Request, sessionName)
 	session.Values = map[any]any{}
 	opts := *a.Store.Options
 	opts.MaxAge = -1
 	session.Options = &opts
 	_ = session.Save(c.Request, c.Writer)
+	if bumpErr != nil {
+		log.Printf("logout: ending sessions: %v", bumpErr)
+		jsonError(c, http.StatusInternalServerError, "could not sign out everywhere")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{})
+}
+
+// endSessionsAtLogout bumps logout_version for the signed-in account, so a
+// copied cookie can't be replayed after logout. A cookie that is already
+// stale changes nothing.
+func (a *App) endSessionsAtLogout(c *gin.Context) error {
+	user, ok := a.authenticatedSessionUser(c)
+	if !ok {
+		return nil
+	}
+	return a.DB.Model(&models.User{}).Where("id = ? AND logout_version = ?", user.ID, user.LogoutVersion).
+		Update("logout_version", gorm.Expr("logout_version + 1")).Error
 }
 
 func (a *App) apiMe(c *gin.Context) {
@@ -558,18 +581,24 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 
 // signInSession stores only an eligible login. Password setup/reset can also
 // reach here for pending teens: clear authentication (including a previous
-// account's login), while keeping CSRF so public browsing remains available.
+// account's login). Both branches drop the CSRF token; the next request mints
+// a fresh one, so public browsing keeps working.
 func (a *App) signInSession(c *gin.Context, u *models.User) error {
 	session, err := a.Store.Get(c.Request, sessionName)
 	if err != nil {
 		return err
 	}
+	// A token fixed or leaked before sign-in must not outlive it: drop it, and
+	// the next request mints a fresh one (csrfToken; M7.2 slice b).
+	delete(session.Values, csrfSessionKey)
 	if u.CanSignIn() {
 		session.Values["userID"] = u.ID
 		session.Values["sessionVersion"] = u.SessionVersion
+		session.Values["logoutVersion"] = u.LogoutVersion
 	} else {
 		delete(session.Values, "userID")
 		delete(session.Values, "sessionVersion")
+		delete(session.Values, "logoutVersion")
 	}
 	return session.Save(c.Request, c.Writer)
 }

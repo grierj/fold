@@ -742,3 +742,29 @@ func TestPushEnabledSetting(t *testing.T) {
 		t.Fatal("each change is audited")
 	}
 }
+
+// Logout signs the account out everywhere (M7.2 slice b), but devices belong
+// to the person: only this browser's device ends, the phone keeps pushing,
+// and no "turned off" notice is queued (logout moves logout_version, not
+// the session_version the 00059 trigger watches).
+func TestLogoutKeepsThePersonsOtherPushDevices(t *testing.T) {
+	app, _ := pushTestApp(t)
+	u := pushMember(t, app, "pat")
+	here, phone := newPushDevice(t, app, u, "this-browser"), newPushDevice(t, app, u, "phone")
+	pat := loginAPI(t, app, "pat", "password123456")
+	apiDo(t, pat, "POST", "/api/v1/auth/logout", map[string]string{"pushEndpoint": here.Endpoint}, http.StatusOK)
+	if deviceExists(app, here.ID) || !deviceExists(app, phone.ID) {
+		t.Fatalf("this browser's device kept %v, the phone's %v", deviceExists(app, here.ID), deviceExists(app, phone.ID))
+	}
+	var queued int64
+	app.DB.Table("jobs").Where("kind = ?", kindPushDevicesOff).Count(&queued)
+	if queued != 0 {
+		t.Fatalf("logout queued %d devices-off jobs", queued)
+	}
+	// The exemption is only for logout: a password change still ends them.
+	pat = loginAPI(t, app, "pat", "password123456")
+	apiDo(t, pat, "POST", "/api/v1/me/password", map[string]string{"current": "password123456", "password": "a-new-password-1"}, http.StatusOK)
+	if deviceExists(app, phone.ID) {
+		t.Fatal("a password change kept the phone")
+	}
+}

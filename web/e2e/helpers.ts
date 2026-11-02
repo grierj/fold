@@ -43,6 +43,9 @@ export async function signOut(page: Page) {
 }
 
 // A signed-in JSON API client for seeding (cookie session + CSRF header).
+// Clients made from one request context share its cookie jar, and each
+// sign-in replaces the session and rotates the CSRF token: finish with one
+// user's client before calling apiAs for the next.
 export async function apiAs(request: APIRequestContext, name: string) {
   const csrf = async () => (await (await request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
   const login = await request.post("/api/v1/auth/login", {

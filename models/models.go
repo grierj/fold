@@ -160,6 +160,10 @@ type User struct {
 	// SessionVersion is bumped when the password, email, role or status
 	// changes, so older cookies stop working (10.1).
 	SessionVersion int `gorm:"not null;default:0"`
+	// LogoutVersion is bumped at logout, which signs the account out on every
+	// device (M7.2). Only the session cookie check reads it, so logging out
+	// leaves emailed links and push devices alone.
+	LogoutVersion int `gorm:"not null;default:0"`
 	// Timezone is the IANA zone for this person's emails and notices
 	// (DEC-58). "" means the church's zone; see recipientZone.
 	Timezone  string `gorm:"not null;default:''"`

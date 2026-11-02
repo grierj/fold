@@ -232,6 +232,11 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 	for _, ck := range w.Result().Cookies() {
 		c.jar[ck.Name] = ck
 	}
+	// Like the SPA (api.ts signsIn), refetch the token after a sign-in path:
+	// the server rotates it there (M7.2 slice b).
+	if csrf && signInPaths[path] && setsCookie(w, sessionName) {
+		c.fetchCSRF()
+	}
 	return w
 }
 
@@ -856,4 +861,22 @@ func countSiteNameReads(t *testing.T, db *gorm.DB) *int {
 	}
 	t.Cleanup(func() { _ = db.Callback().Query().Remove(name) })
 	return n
+}
+
+// signInPaths are the routes that call signInSession, which rotates the CSRF
+// token; web/src/api.ts marks the same calls signsIn.
+var signInPaths = map[string]bool{
+	"/api/v1/auth/login":                  true,
+	"/api/v1/auth/password-reset/confirm": true,
+	"/api/v1/account-requests/confirm":    true,
+	"/api/v1/invitations/accept":          true,
+}
+
+func setsCookie(w *httptest.ResponseRecorder, name string) bool {
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name == name {
+			return true
+		}
+	}
+	return false
 }

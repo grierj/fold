@@ -39,6 +39,9 @@ interface RequestOptions {
   // anonymousOK: a 401 just means "not signed in" (the boot-time session
   // check), so don't send the visitor to /login; public pages stay public.
   anonymousOK?: boolean;
+  // signsIn: the server rotates the CSRF token when it signs someone in, so
+  // the next unsafe request fetches a fresh one (M7.2 slice b).
+  signsIn?: boolean;
 }
 
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -58,6 +61,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     body,
     credentials: "include",
   });
+  if (opts.signsIn) csrfToken = null;
   const text = await res.text();
   let raw: unknown = {};
   try {
@@ -170,7 +174,7 @@ import type {
 export const Auth = {
   me: () => api<{ user: User; canCompose?: boolean }>("/auth/me", { anonymousOK: true }),
   login: (email: string, password: string) =>
-    api<{ user: User; canCompose?: boolean }>("/auth/login", { method: "POST", body: { email, password } }),
+    api<{ user: User; canCompose?: boolean }>("/auth/login", { method: "POST", body: { email, password }, signsIn: true }),
   // The logout request carries this browser's push endpoint, if it has
   // one, so the server deletes the device in the same request (M3.13b).
   logout: (pushEndpoint?: string) =>
@@ -180,7 +184,7 @@ export const Auth = {
   requestPasswordReset: (email: string) =>
     api<{ message: string }>("/auth/password-reset", { method: "POST", body: { email } }),
   confirmPasswordReset: (token: string, password: string) =>
-    api<{ user: User }>("/auth/password-reset/confirm", { method: "POST", body: { token, password } }),
+    api<{ user: User }>("/auth/password-reset/confirm", { method: "POST", body: { token, password }, signsIn: true }),
 };
 
 export const People = {
@@ -317,6 +321,7 @@ export const AccountRequests = {
     api<{ user: User; pendingConsent?: boolean }>("/account-requests/confirm", {
       method: "POST",
       body: { token, password },
+      signsIn: true,
     }),
 };
 
@@ -508,7 +513,7 @@ export const Invitations = {
   get: (token: string) =>
     api<InvitationContext>(`/invitations/${encodeURIComponent(token)}`),
   accept: (data: { token: string; name: string; password: string; ageBand: AgeBand; birthDate?: string }) =>
-    api<InvitationAcceptance>(`/invitations/accept`, { method: "POST", body: data }),
+    api<InvitationAcceptance>(`/invitations/accept`, { method: "POST", body: data, signsIn: true }),
 };
 
 export const Admin = {

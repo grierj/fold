@@ -189,11 +189,13 @@ func TestCredentialTokenMigrationRevokesUnsafePendingLinks(t *testing.T) {
 			t.Errorf("restore latest migrations: %v", err)
 		}
 	})
+	// Create the user with the current model before migrating down: later
+	// migrations add users columns (logout_version, 00063) that 39 lacks.
+	user := newTestUser(t, app, "token-migration", "password1234", models.RoleMember)
 	if _, err := provider.DownTo(context.Background(), 39); err != nil {
 		t.Fatal(err)
 	}
 
-	user := newTestUser(t, app, "token-migration", "password1234", models.RoleMember)
 	usedAt := time.Now().UTC()
 	expiresAt := usedAt.Add(time.Hour)
 	create := func(kind, raw, payload string, used *time.Time) string {

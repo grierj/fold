@@ -330,8 +330,14 @@ type eventJSON struct {
 
 // sessionVersion reads the password generation stored at login.
 // A cookie issued before this field existed has no value and counts as 0.
-func sessionVersion(s *sessions.Session) int {
-	switch v := s.Values["sessionVersion"].(type) {
+func sessionVersion(s *sessions.Session) int { return sessionInt(s, "sessionVersion") }
+
+// logoutVersion reads the logout generation stored at login (M7.2); an
+// older cookie has none and counts as 0, the column's default.
+func logoutVersion(s *sessions.Session) int { return sessionInt(s, "logoutVersion") }
+
+func sessionInt(s *sessions.Session, key string) int {
+	switch v := s.Values[key].(type) {
 	case int:
 		return v
 	case int64:
@@ -362,7 +368,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion || !user.CanSignIn() {
+	if sessionVersion(session) != user.SessionVersion || logoutVersion(session) != user.LogoutVersion || !user.CanSignIn() {
 		return nil, false
 	}
 	c.Set("sessionUser", &user)
