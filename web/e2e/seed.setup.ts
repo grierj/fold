@@ -9,6 +9,18 @@ import { apiAs, email, PASSWORD } from "./helpers";
 // re-enabling them left both out of the group (DEC-47).
 setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+    expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `setup code at ${width}px`).toEqual([]);
+    if (process.env.SCREENS_DIR) await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-code-${width}.png`, fullPage: true });
+  }
+  await page.getByLabel("Setup code").fill("wrong");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("alert")).toContainText("doesn't match");
+  await page.getByLabel("Setup code").fill("a".repeat(64));
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.locator("[name=site_name]")).toBeVisible();
   // The setup page is only reachable now, so its axe scan and screenshots
   // (when SCREENS_DIR is set, as in screens.spec.ts) happen here.
   for (const width of [390, 1280]) {
