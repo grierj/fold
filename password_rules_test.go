@@ -22,6 +22,13 @@ func TestPasswordRuleError(t *testing.T) {
 		// 36 two-byte letters are 72 bytes; 37 are 74.
 		{"72 bytes of accents", strings.Repeat("é", 36), ""},
 		{"74 bytes of accents", strings.Repeat("é", 37), "password must be at most 72 bytes"},
+		// The minimum counts characters, not bytes.
+		{"9 emoji is 36 bytes", strings.Repeat("😀", 9), "password must be at least 10 characters"},
+		{"9 three-byte letters is 27 bytes", strings.Repeat("あ", 9), "password must be at least 10 characters"},
+		{"10 emoji is 40 bytes", strings.Repeat("😀", 10), ""},
+		{"10 accents is 20 bytes", strings.Repeat("é", 10), ""},
+		{"18 emoji is 72 bytes", strings.Repeat("😀", 18), ""},
+		{"19 emoji is 76 bytes", strings.Repeat("😀", 19), "password must be at most 72 bytes"},
 	} {
 		if got := passwordRuleError(tc.pw); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

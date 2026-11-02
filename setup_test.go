@@ -283,6 +283,7 @@ func TestSetupInputValidation(t *testing.T) {
 		{"empty email", func(in *setupInput) { in.Email = "" }, "email"},
 		{"invalid email", func(in *setupInput) { in.Email = "not-an-email" }, "email"},
 		{"short password", func(in *setupInput) { in.Password, in.Confirm = "tiny!", "tiny!" }, "password"},
+		{"nine emoji are not ten characters", func(in *setupInput) { in.Password, in.Confirm = strings.Repeat("😀", 9), strings.Repeat("😀", 9) }, "password"},
 		{"empty confirmation", func(in *setupInput) { in.Confirm = "" }, "password_confirm"},
 		{"mismatch", func(in *setupInput) { in.Confirm = "another1234" }, "password_confirm"},
 		{"adult affirmation", func(in *setupInput) { in.Adult = false }, "age_band"},
