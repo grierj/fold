@@ -211,7 +211,7 @@ func (a *App) apiSearchPeople(c *gin.Context) {
 				item.SharedGroups = append(item.SharedGroups, g.Name)
 			} else {
 				item.OtherGroups = append(item.OtherGroups, g.Name)
-			} // group-ok: peopleSearchGroups applies current viewer visibility
+			} // group-ok: peopleSearchGroups applies the roster rule
 		}
 		out.People = append(out.People, item)
 	}
@@ -228,8 +228,10 @@ type peopleSearchGroup struct {
 }
 
 // One bounded lateral query for all ten subjects, at most ten visible labels
-// per subject. Filtering before LIMIT prevents hidden groups crowding out safe
-// labels; the pure policy check below remains the disclosure authority.
+// per subject. A person's groups are roster information (policy.CanSeeRoster):
+// only the viewer's own groups, or any group for an admin. Filtering before
+// LIMIT keeps hidden groups from crowding out shared labels; the pure policy
+// check below remains the disclosure authority.
 func (a *App) peopleSearchGroups(db *gorm.DB, actor *models.User, ids []uint) (map[uint][]peopleSearchGroup, error) {
 	out := map[uint][]peopleSearchGroup{}
 	if len(ids) == 0 {
@@ -250,16 +252,16 @@ func (a *App) peopleSearchGroups(db *gorm.DB, actor *models.User, ids []uint) (m
  FROM memberships target JOIN groups g ON g.id=target.group_id
  LEFT JOIN memberships viewer ON viewer.group_id=g.id AND viewer.user_id=?
  WHERE target.user_id=subjects.id AND target.status='active' AND g.deleted_at IS NULL
- AND (? OR (g.status='active' AND (g.visibility IN ('public','private') OR viewer.status='active')) OR (viewer.status='active' AND viewer.role='leader'))
+ AND (? OR (viewer.status='active' AND (g.status='active' OR viewer.role='leader')))
  ORDER BY shared DESC, lower(g.name), g.id LIMIT 10
  ) labels WHERE subjects.id IN ?`, actor.ID, asPerson(actor).Admin, ids).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
-		if policy.CanSeeGroup(asPerson(actor), policy.Group{Status: r.Status, Visibility: r.Visibility}, policy.Rel{Member: r.Shared, Leader: r.Leader}) {
+		if policy.CanSeeRoster(asPerson(actor), policy.Group{Status: r.Status, Visibility: r.Visibility}, policy.Rel{Member: r.Shared, Leader: r.Leader}) {
 			out[r.SubjectID] = append(out[r.SubjectID], peopleSearchGroup{r.Name, r.Shared})
 		}
-	} // group-ok: pure visibility check before labels leave the API
+	} // group-ok: membership is roster information, so CanSeeRoster gates each label
 	return out, nil
 }
