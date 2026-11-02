@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-134.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-137.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-134; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-137; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-134) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-137) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1200,6 +1200,7 @@ FOLD_TRUSTED_PROXIES=172.30.0.0/24      # the compose network subnet (C17)
 Steps:
 
 1. **Church and admin**: church name, time zone, first admin's name, email, and password (email is the login, DEC-23). The admin confirms they are 18 or older. Also sets the account policy: self-signup `request` (default; every self-signup and member "invite a friend" waits for admin approval) or `off` (DEC-4).
+- **`branding`** (optional/skippable; M4.2b): church logo, accent color, and header style. Stable `SetupState` id `branding` after step 1 (church identity) and before step 2 (Address and site); well before Safeguarding (step 8). Skipping branding must not skip safeguarding.
 2. **Address and site**: postal address (for email footers and legal pages) and contact email. Checks that `SITE_URL` loads over HTTPS from inside the app.
 3. **Email** (required for anything beyond a demo):
    - Pick a provider (Postmark is preselected, DEC-21; SMTP is the fallback) and paste an API key, or SMTP details.
@@ -1530,7 +1531,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
 | v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
 | v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 (if v0.4 is already cut, M3.13 goes in v0.5, still before v0.7 SMS) |
-| v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
+| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
 | v0.8 Storage and CLI | S3 and private assets, `fold setup` | M4.7, M4.8 |
@@ -1950,7 +1951,45 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Later task (DEC-77): an admin setting `calendar_unanswered_window_days` (30, 60 or 90; default 30) for how far ahead unanswered public and church-wide dates show in Just mine, personal feeds and Everything. Audited like other settings; M1.14 ships the fixed 30-day default.
 - Follow-ups carried here (from UI makeover PR 8, Oct 18, 2026):
   - Keep the new wizard lazy-loaded and within the bundle budget. Admin and other less-used pages are already lazy-loaded; the original code-splitting follow-up is complete.
-  - Preserve the single header attribution when adding logo/brand settings; the old duplicate footer attribution is gone.
+  - Preserve the single header attribution when adding logo/brand settings; the old duplicate footer attribution is gone. Logo, accent color and header-style settings are owned by **M4.2b**.
+
+**M4.2b Branding and asset customization** (draft; product DEC-137; Warden + Wright settled; `x/image` approved)
+- Depends on: M4.2 (wizard and settings), existing public `storage.Store` uploads. S3 (M4.7) is not required; logos stay public like covers. Gilder's Fold-wide defaults (OG image, email header, category covers, favicon, push badge, signed-out hero, setup welcome) ship first and stay the fallback under `public/assets/brand/` (DEC-66).
+- Scope: let each church brand Fold with its own logo, an optional accent color, and a header style, without breaking CSP or same-origin rules and without a CDN. Admins only. Expand-and-contract via additive `Setting` keys (14.1). Thin slices (14.1): settings keys → upload/API and derivatives → admin UI and header → email / OG / manifest / favicon wiring → optional wizard step.
+  - **Settings** (Wright, Nov 1): additive `Setting` keys only — `brand_logo_revision`, `brand_header_style`, `brand_accent` — no `BrandSettings` table. Missing keys mean today's look. Values are not stored in `SetupState` except step progress.
+  - **Church logo (admin upload).** One source file. Server validates type and size (Warden rules below), generates the derivatives Fold needs, and serves them from versioned public upload keys. Email templates that show the logo use `alt` = the church name (`site_name`). Clearing the logo (clear revision) falls every surface back to Gilder's defaults. No remote image URLs (DEC-49).
+  - **Derivative paths and replace** (Wright, Nov 1): write under `/uploads/brand/site/<rev>-*.png` (header, email, `og-1200x630`, icon sizes including maskable / apple-touch / favicon via the same store). Never overwrite a key; bump `brand_logo_revision` on each replace so long-cache is safe. Bundled DEC-66 files under `public/assets/brand/` remain Fold defaults only.
+  - **Synchronous derivatives** (Wright, Nov 1): on upload, decode once, write all derivative blobs, then commit the new revision and audit in one short DB transaction. Commit the revision only after the files exist. On failure, leave the old revision live and delete orphan blobs. No job/queue for this rare admin path.
+  - **Server resize** (Wright, Nov 1): there is no server-side resize path today (avatars/covers store the upload as-is; the browser helper must not be the logo path). Add a small server helper with the standard library plus `golang.org/x/image/draw` only (proportional fit with padding, PNG-encode; compose the 1200×630 OG on a fixed background). **Approved** (Grier, Nov 1, 2026, 8:44 PM MT: "totally fine"; DEC-137). Do not pull a bigger imaging framework, ImageMagick/CGO, or refactor avatar/cover uploads in this milestone.
+  - **Logo upload security** (Warden review, Nov 1): v1 accepts PNG and JPEG only (WebP optional); no SVG. A later SVG path, if ever added, must rasterize on the server to PNG and store only that PNG. Cap uploads at 2 MB with the request body limit before parse. Sniff the type from bytes, never from `Content-Type` or the filename. Read dimensions from the image header before a full decode; reject anything over `4096×4096` or over 16 megapixels. Always re-encode on the server (strips EXIF, GPS and other payloads); store only the re-encoded bytes and the resized derivatives Fold actually uses. Rate-limit about 10 uploads per admin per hour, plus a per-church cap. Admin-only writes with CSRF like other admin forms.
+  - **Optional accent color** (DEC-137; Grier, Nov 1, 2026; wiring Wright, Nov 1): Admin may set one. Server checks WCAG AA contrast against white and against stone. A color that fails is auto-darkened until it passes, and the admin is shown the adjusted color. If unset, Fold Violet (`#7f47c7`) stays. The accent colors buttons, links and focus rings. Extend `GET /site` with accent (and logo / header style as needed). The client applies it with CSSOM `document.documentElement.style.setProperty` on the existing role tokens (`--color-primary` and related, plus focus if in scope), the same pattern as `--fold-header-height` in Layout; clearing restores Fold Violet. No `<style>` injection, no `unsafe-inline`, CSP unchanged.
+  - **Header style** (Grier, Oct 14 direction; DEC-137): (1) church name only, with a tiny Fold credit kept in the footer; (2) church name with a quiet "powered by Fold" subscript (today's default); (3) big Fold mark with the church name. Manifest `name` / `short_name` rules stay as today (church name from `site_name`, DEC-124); only the icons swap when a logo is present.
+  - **What is church-configurable vs Fold-wide.** Configurable: logo (and its derivatives), accent color, header style. Fold-wide defaults (Gilder, DEC-66): category covers, empty/error/setup illustrations, push badge, default favicon and OG image. No credentials in assets.
+  - **Admin UI and wizard** (Wright, Nov 1): Settings live on an Admin branding page (or a Branding card on Admin Settings). Upload, preview, remove logo; pick header style; pick or clear accent. Optional skippable `SetupState` step `branding` right after church identity (after first-admin / §11.3 step 1 material), before Address and site, and well before Safeguarding (step 8); skipping branding must not skip safeguarding. Keep the first-admin form free of uploads.
+  - **OG priority** (Wright, Nov 1): when those exist, content cover → church OG derivative → Fold default (`/assets/brand/og-default-1200x630.png`). **M4.2b only** wires the event-shell injector's fallback to church derivative → Fold default; it does not invent event covers or pull group covers into this milestone.
+  - **Serving and CSP** (Warden review, Nov 1): same-origin under the versioned upload keys; correct image `Content-Type`; `X-Content-Type-Options: nosniff`; `Content-Disposition: inline` with a safe filename. Keeps CSP `img-src 'self'` and `style-src 'self'`. No CDN.
+  - **Audit log** (Warden review, Nov 1): every logo or branding change records actor, church, time, old and new content hashes, size, dimensions and type — never file bytes.
+  - **Review gate:** when the code lands, Warden does a backend security review of the upload, re-encode, serving and audit path before merge.
+- Acceptance:
+  - [ ] With no logo and no accent, every surface matches today's Fold defaults (header, email, OG, favicon, manifest icons, push badge)
+  - [ ] Branding uses `Setting` keys `brand_logo_revision`, `brand_header_style`, `brand_accent` (no new table); missing keys keep today's look
+  - [ ] An admin can upload a logo; derivatives land at versioned `/uploads/brand/site/<rev>-*.png` and are never overwritten; revision commits only after files exist; `alt` on the email logo is the church name
+  - [ ] Clearing the logo revision restores Gilder defaults on every surface without a redeploy
+  - [ ] Accent unset → Fold Violet; a failing accent is auto-darkened until AA passes against white and stone, and the admin sees the adjusted color
+  - [ ] Accent colors buttons, links and focus rings via CSS variables set from JS (Layout `/site` pattern); CSP unchanged
+  - [ ] Each of the three header styles renders at 390 / 768 / 1280 without clipping the church name or breaking the 44px targets; style (1) still shows a tiny Fold credit in the footer
+  - [ ] Non-admins cannot change branding (403); CSRF required on writes
+  - [ ] Uploads reject SVG, oversize bodies (>2 MB), wrong sniffed types, and images over `4096×4096` or 16 MP; only re-encoded PNG/JPEG (or optional WebP) are stored
+  - [ ] Served brand files are same-origin with correct `Content-Type`, `nosniff`, and safe inline `Content-Disposition`; CSP `img-src 'self'` holds
+  - [ ] Rate limit (~10 uploads/admin/hour) and the per-church cap refuse excess uploads
+  - [ ] Audit rows record actor, church, time, old/new content hash, size, dimensions and type, and never bytes
+  - [ ] Wizard `branding` step is optional/skippable after church identity and before Address / Safeguarding, and resumes correctly after a browser close
+  - [ ] OG fallback for M4.2b is church derivative → Fold default (content covers stay out of this milestone)
+  - [ ] No CSP / CDN regression; `npm run build` and typecheck stay green
+  - [ ] Warden backend security review of the landed upload/serve/audit path is done before merge
+  - [ ] `golang.org/x/image` (`draw`) is the only new Go dependency for logo resize (approved Grier, Nov 1, 2026; DEC-137)
+- Tests: upload reject/accept tests (SVG, type sniff vs spoofed headers, 2 MB body limit, dimension and megapixel caps, non-admin, CSRF, rate limit); re-encode strips EXIF/GPS; derivative smoke tests (revision not committed if a write fails); settings round-trip; header-style component tests at the three widths; email template golden or render test with logo `alt`; accent contrast unit tests and CSSOM apply/clear; OG fallback order; audit-log assertions (hashes present, no bytes); wizard step order.
+- **Open questions:** none for M4.2b planning. `golang.org/x/image` is approved (Grier, Nov 1, 2026; DEC-137). Settled: DEC-137 product rules; Warden upload/serve/audit rules (Nov 1); Wright architecture (PR #236 comment, Nov 1). Remaining Warden work is the backend review when code lands.
 
 **M4.3 Legal pages**
 - Depends on: M4.2
@@ -2239,6 +2278,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-134 | **Push follow-ups from the M3.13 review** (Grier, Oct 31, 2026; M3.13 review). (A) Registration cancelled, room lost and leadership changes push too; waitlist cutoff doesn't. (B) A push that can't say what it's about is titled with the church's name. (C) Revoking someone's sessions also turns off notifications on all their devices, and a bell notice tells them so. | 5.12, M3.13 |
 | DEC-135 | **Who reads an announcement, and who sees push per person** (Grier, Oct 31, 2026; M3.13d2 review). (A) Anyone an announcement was sent to can read it in Fold at `/messages/:id/read` (the page its push opens), even when their email was skipped (they turned off email from leaders, or it bounces): a direct `message_recipients` row in any channel on a message that is sending or sent. Guardian copies, automatic reminders and failed messages stay out. (B) Leaders and hosts see, per person, who also gets a push: the composer's "Push too" mark and each person's push in the history, with the missed reasons counted as email's `skippedBy` is. Push itself follows push consent, not the email row (DEC-122), so someone skipped for an email reason still gets the push and lands on that page. | 7.1, 7.3, M3.13d |
 | DEC-136 | **The push reminder never shows the place** (Grier, Nov 1, 2026; M3.13d3 review). A lock screen is public (DEC-124) and small groups often meet in homes, so the 2-hour push reminder reads only "Reminder: <title>" and "Starts at 7:00 PM" (or "Starts tomorrow at 9:00 AM"); tapping it opens the date page, which shows the place to those who may see it. No other push carries a place either (`event.changed` says only that the place changed). | 5.12, 7.7, M3.13d |
+| DEC-137 | **Church branding: accent, header credit, and logo resize dep** (Grier, Nov 1, 2026; M4.2b). An admin-chosen accent that fails WCAG AA against white or stone is auto-darkened until it passes, and the admin is shown the adjusted color; unset keeps Fold Violet. The accent colors buttons, links and focus rings. Of the three header styles, "church name only" still keeps a tiny Fold credit in the footer. **`golang.org/x/image` (`draw`) is approved** as the only new Go dependency for server-side logo resize (Grier, Nov 1, 2026, 8:44 PM MT: "totally fine"; Wright M4.2b architecture). Logo upload security for v1 is in M4.2b (Warden review, Nov 1), not this DEC. | M4.2b, DEC-62, DEC-66 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
@@ -2428,3 +2468,4 @@ databases:
 - Whether Render Postgres storage pricing includes the first GB (the estimate in 12.5 assumes it does not)
 - Whether an empty `ipAllowList` in `render.yaml` blocks all outside access to the database (check the Blueprint spec in M5.5)
 - Whether Render API keys can be limited in scope (assume a key has the creating user's full access)
+
