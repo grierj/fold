@@ -25,8 +25,10 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await admin("POST", `/admin/groups/${destination.id}/members`, { userId: leader.id, role: "leader" });
   const shared = await group("Picker Choir");
   for (const userId of [leader.id, adult.id]) await admin("POST", `/admin/groups/${shared.id}/members`, { userId, role: "member" });
-  const visible = await group("Picker Walking");
-  await admin("POST", `/admin/groups/${visible.id}/members`, { userId: adult.id });
+  // A public group the leader is not in: its roster, and so this label, stays
+  // hidden from them (policy.CanSeeRoster, M7.2 slice a).
+  const notShared = await group("Picker Walking");
+  await admin("POST", `/admin/groups/${notShared.id}/members`, { userId: adult.id });
   const hidden = await group("Hidden care circle", "invite_only");
   await admin("POST", `/admin/groups/${hidden.id}/members`, { userId: other.id });
   await admin("PUT", `/groups/${destination.id}`, { memberLimit: 2 });
@@ -76,10 +78,10 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   expect(search.people).toHaveLength(2);
   for (const person of search.people) {
     expect(person).not.toHaveProperty("email"); expect(person).not.toHaveProperty("phone"); expect(person).not.toHaveProperty("id");
-    expect(JSON.stringify(person)).not.toContain(hidden.name);
+    expect(JSON.stringify(person)).not.toContain(hidden.name); expect(JSON.stringify(person)).not.toContain(notShared.name);
   }
   await expect(page.getByRole("status").filter({ hasText: "people found" })).toContainText("2 people found");
-  await expect(page.getByRole("listbox", { name: "People" }).getByRole("option").filter({ hasText: shared.name })).toContainText(visible.name);
+  await expect(page.getByRole("listbox", { name: "People" }).getByRole("option").filter({ hasText: shared.name })).toContainText(`Shared groups: ${shared.name}`);
   await picker.press("ArrowDown");
   await expect(picker).toHaveAttribute("aria-activedescendant", /person-0$/);
   await capture("group-picker-keyboard");
