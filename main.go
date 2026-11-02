@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -305,6 +306,13 @@ func serveMemberHelp(c *gin.Context) {
 // stylesheetRe finds the CSS bundle Vite links from index.html.
 var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)
 
+var (
+	eventPageRe   = regexp.MustCompile(`^/events/[0-9]+$`)
+	closingHeadRe = regexp.MustCompile(`(?i)</head>`)
+)
+
+const defaultOGImagePath = "/assets/brand/og-default-1200x630.png"
+
 // builtStylesheet returns the path of the SPA's CSS bundle, which the
 // server-rendered pages (setup, dev outbox) share so they use the same
 // tokens and font. It is empty when web/dist is not built; those pages
@@ -328,11 +336,11 @@ func (a *App) serveSPA() gin.HandlerFunc {
 	if err != nil {
 		sub = nil
 	}
-	return serveSPAFrom(sub)
+	return serveSPAFrom(sub, a.emailBaseURL())
 }
 
 // serveSPAFrom serves a built bundle: web/dist, or a test's files.
-func serveSPAFrom(sub fs.FS) gin.HandlerFunc {
+func serveSPAFrom(sub fs.FS, origin string) gin.HandlerFunc {
 	built := sub != nil
 	if built {
 		if _, err := fs.Stat(sub, "index.html"); err != nil {
@@ -353,47 +361,75 @@ func serveSPAFrom(sub fs.FS) gin.HandlerFunc {
 				"Frontend not built. Run `npm run build` in web/ and restart.")
 			return
 		}
-		path := strings.TrimPrefix(c.Request.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
+		servedPath := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if servedPath == "" {
+			servedPath = "index.html"
 		}
-		if _, err := fs.Stat(sub, path); err != nil {
-			if path == serviceWorkerPath {
+		if _, err := fs.Stat(sub, servedPath); err != nil {
+			if servedPath == serviceWorkerPath {
 				// Never the shell in the worker's place: registering
 				// HTML as a script fails in a confusing way.
 				jsonError(c, http.StatusNotFound, "not found")
 				return
 			}
+			if path.Ext(path.Base(servedPath)) != "" {
+				// A missing static asset must not receive the SPA shell.
+				jsonError(c, http.StatusNotFound, "not found")
+				return
+			}
 			// Client-side route — let the SPA router handle it.
-			path = "index.html"
+			servedPath = "index.html"
 		}
 		// ServeContent, not http.FileServer: FileServer 301-redirects
 		// index.html serves to "./", which breaks the SPA fallback.
-		data, err := fs.ReadFile(sub, path)
+		data, err := fs.ReadFile(sub, servedPath)
 		if err != nil {
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
-		info, err := fs.Stat(sub, path)
+		info, err := fs.Stat(sub, servedPath)
 		if err != nil || info.IsDir() {
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
-		if path == "index.html" {
+		if servedPath == "index.html" {
 			// no-store: always fetch the shell fresh (a rebuilt image is what
 			// runs), and keep the page out of the back/forward cache, so going
 			// back after logout never shows the previous session's screen.
 			c.Header("Cache-Control", "no-store")
-		} else if path == serviceWorkerPath {
+			if eventPageRe.MatchString(c.Request.URL.Path) {
+				data = eventImageMeta(data, origin+defaultOGImagePath)
+			}
+		} else if servedPath == serviceWorkerPath {
 			// no-cache: the browser checks for a new worker on every
 			// registration and update instead of guessing a lifetime for
 			// a root file with no header (research 2.3).
 			c.Header("Cache-Control", "no-cache")
-		} else if strings.HasPrefix(path, "assets/") {
+		} else if strings.HasPrefix(servedPath, "assets/") {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		}
-		http.ServeContent(c.Writer, c.Request, path, info.ModTime(), bytes.NewReader(data))
+		http.ServeContent(c.Writer, c.Request, servedPath, info.ModTime(), bytes.NewReader(data))
 	}
+}
+
+// eventImageMeta adds the default social image to a public event shell.
+func eventImageMeta(index []byte, imageURL string) []byte {
+	head := closingHeadRe.FindIndex(index)
+	if head == nil {
+		return index
+	}
+	escapedURL := template.HTMLEscapeString(imageURL)
+	meta := []byte(fmt.Sprintf(`<meta property="og:image" content="%s">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="%s">
+`, escapedURL, escapedURL))
+	withMeta := make([]byte, 0, len(index)+len(meta))
+	withMeta = append(withMeta, index[:head[0]]...)
+	withMeta = append(withMeta, meta...)
+	withMeta = append(withMeta, index[head[0]:]...)
+	return withMeta
 }
 
 // contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
