@@ -125,9 +125,14 @@ jobs:
   # /setup. Branch protection does not require this job until Grier adds it.
   compose:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     permissions:
       contents: read
+      actions: write # buildx type=gha cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: make compose-smoke
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Smoke the shipped Compose stack
+        env:
+          FOLD_SMOKE_CACHE: gha
+        run: make compose-smoke

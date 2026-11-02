@@ -1,14 +1,21 @@
-# CI-only override for scripts/compose-smoke.sh. Not a church install.
+# CI override for scripts/compose-smoke.sh. Not a church install.
 #
 # Publishes the app on loopback so the smoke can curl it. 5432 stays
 # unpublished. Caddy is in profile "never", which Compose does not start
 # unless that profile is named: Let's Encrypt cannot issue for localhost,
 # and an internal CA would need a second Caddyfile. Real-domain TLS stays
-# a first-church hand check (docs/FIRST-CHURCH-CHECKS.md).
+# a first-church hand check (docs/FIRST-CHURCH-CHECKS.md). The script
+# validates the shipped Caddyfile before the stack starts.
 #
-# Own subnet so this project can run beside a stack already using the
-# shipped 172.30.0.0/24. Caddy is off, so the smoke does not exercise
-# FOLD_TRUSTED_PROXIES (that default still matches the shipped subnet).
+# config.go refuses to boot outside APP_ENV=dev when COOKIE_SECURE is
+# false or SITE_URL is not https with a host. The shipped file sets
+# APP_ENV=prod, COOKIE_SECURE=true, and SITE_URL=https://${DOMAIN}.
+# DOMAIN=localhost in the smoke env yields https://localhost, so this
+# file does not override SITE_URL.
+#
+# The shipped network is left alone so CI exercises it, including the
+# default FOLD_TRUSTED_PROXIES CIDR. A machine that already uses that
+# subnet opts into deploy/compose.smoke-local.yml.
 services:
   app:
     # The script builds or tags ghcr.io/grierj/fold:ci on this machine.
@@ -16,16 +23,5 @@ services:
     pull_policy: never
     ports:
       - "127.0.0.1:18080:8080"
-    environment:
-      # config.go refuses to boot outside APP_ENV=dev when COOKIE_SECURE
-      # is false or SITE_URL is not https with a host. Keep the shipped
-      # APP_ENV=prod and COOKIE_SECURE=true. https://localhost passes.
-      SITE_URL: https://localhost
   caddy:
     profiles: ["never"]
-
-networks:
-  default:
-    ipam:
-      config: !override
-        - subnet: 10.216.30.0/24
