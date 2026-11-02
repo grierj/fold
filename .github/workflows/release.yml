@@ -155,6 +155,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Warn that the already-published checks are skipped
+        if: ${{ needs.plan.outputs.first_release == 'true' }}
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          echo "::warning title=first_release::Skipping the already-published check for ${IMAGE}:${VERSION}. This is only for the very first release; if the version exists it will be overwritten."
+          {
+            echo "## first_release is on"
+            echo
+            echo "The already-published checks for the version and the SHA alias are skipped."
+            echo
+            echo "- first_release: true"
+            echo "- actor: \`${ACTOR}\`"
+            echo "- ref: \`${REF}\`"
+            echo "- version: \`${VERSION}\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
       # A released version is immutable: a second publish of the same number
       # would change what churches already pinned. Only a confirmed "not
       # found" lets the run go on; a login, permission or network error is

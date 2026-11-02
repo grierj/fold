@@ -53,7 +53,10 @@ process remembers that setup finished until it exits.
 Push a tag such as `v0.5.0`. The `release` workflow builds `linux/amd64` and
 `linux/arm64`, pushes `ghcr.io/grierj/fold:0.5.0` (and `:0.5` for a final
 release), attests the build, and writes the image digest into the GitHub
-release notes. A published version is never overwritten.
+release notes. A published version is never overwritten, with one exception:
+a maintainer's manual run with `first_release` skips the existence check
+(see below). It is for the very first release only, and the run logs a
+warning and records who ran it.
 
 - **The very first release:** GHCR can answer "denied" instead of "not found"
   for a package that does not exist yet, and the workflow stops on that
