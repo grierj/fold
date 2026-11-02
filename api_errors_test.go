@@ -104,7 +104,7 @@ func TestErrorBody(t *testing.T) {
 	}{
 		{http.StatusUnauthorized, "invalid email or password", "bad_credentials"},
 		{http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes", "locked_out"},
-		{http.StatusConflict, "that email already has an account", "email_taken"},
+		{http.StatusConflict, "an account with that email already exists", "email_taken"},
 		{http.StatusConflict, errConversionConsent.Error(), "household_conversion_consent"},
 		{http.StatusNotFound, "group not found", "not_found"},
 		{http.StatusBadRequest, "invalid request body", "invalid"},
