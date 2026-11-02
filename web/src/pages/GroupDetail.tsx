@@ -807,7 +807,7 @@ function GroupDetailContent() {
                   />
                   <HiddenFileInput
                     ref={coverRef}
-                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    accept="image/jpeg,image/png,image/gif"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) uploadCover(f);

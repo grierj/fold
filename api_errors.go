@@ -216,7 +216,9 @@ var errorCodes = map[string]string{
 	// Uploads
 	"file too large (max 5MB)":                         "file_too_large",
 	"request too large":                                "file_too_large",
-	"only JPEG, PNG, GIF, and WebP images are allowed": "file_type",
+	"only JPEG, PNG, and GIF images are allowed":       "file_type",
+	"WebP images are not supported; use a JPEG or PNG": "image_unsupported",
+	"that image is too large to process":               "image_too_large",
 	"empty file":                                       "file_unreadable",
 	"missing file":                                     "file_unreadable",
 	"cannot read file":                                 "file_unreadable",
