@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -114,13 +115,41 @@ func parseTrustedProxies(s string) ([]string, error) {
 		if p == "" {
 			continue
 		}
-		if _, _, err := net.ParseCIDR(p); err != nil && net.ParseIP(p) == nil {
+		_, network, err := net.ParseCIDR(p)
+		if err != nil && net.ParseIP(p) == nil {
 			return nil, fmt.Errorf("FOLD_TRUSTED_PROXIES: %q is not an IP or CIDR", p)
+		}
+		// A /0 makes Gin believe X-Forwarded-For from the whole internet, so
+		// every per-IP throttle can be dodged by sending a header.
+		if err == nil {
+			if ones, _ := network.Mask.Size(); ones == 0 {
+				return nil, fmt.Errorf("FOLD_TRUSTED_PROXIES: %q trusts every sender, which lets anyone forge their IP address. "+
+					"Fix: list only your reverse proxy's address or subnet (the shipped Compose default is %s), "+
+					"in .env next to docker-compose.yml or in the environment of `fold serve`", p, defaultTrustedProxies)
+			}
 		}
 		out = append(out, p)
 	}
 	return out, nil
 }
+
+// isHTTPSURL reports whether s is an https URL with a host. SITE_URL
+// (outside dev) and the web push contact claim (vapidSubject) both need it.
+func isHTTPSURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Host != ""
+}
+
+// siteURLMessage is the startup error for a SITE_URL that email links
+// cannot safely be built from.
+const siteURLMessage = "SITE_URL must be an https URL with a host: password-reset and invitation emails link to it, " +
+	"and an http:// link sends them in cleartext. Fix: set SITE_URL=https://<your domain> " +
+	"(docker-compose.yml builds it from DOMAIN in .env), or remove SITE_URL. Plain-HTTP testing belongs in APP_ENV=dev"
+
+// cookieSecureMessage is the startup error for COOKIE_SECURE=false outside dev.
+const cookieSecureMessage = "COOKIE_SECURE=false is not allowed when APP_ENV is not dev: session cookies would travel " +
+	"without the Secure flag and the HSTS header would be dropped. Fix: remove COOKIE_SECURE or set it to true; " +
+	"plain-HTTP testing belongs in APP_ENV=dev"
 
 // LoadConfig reads everything `fold serve` needs.
 // shortSecretMessage is the one startup error for a short secret: what is
@@ -181,6 +210,15 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	siteURL := os.Getenv("SITE_URL")
+	if !isDev && siteURL != "" && !isHTTPSURL(siteURL) {
+		return Config{}, errors.New(siteURLMessage)
+	}
+	cookieSecure := getEnvBool("COOKIE_SECURE", !isDev)
+	if !isDev && !cookieSecure {
+		return Config{}, errors.New(cookieSecureMessage)
+	}
+
 	// The webhook secret is the only guard on a public endpoint (M3.2b).
 	if s := os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"); s != "" && len(s) < minWebhookSecretLen {
 		return Config{}, fmt.Errorf("FOLD_POSTMARK_WEBHOOK_SECRET must be at least %d characters; make one with `openssl rand -hex 24`", minWebhookSecretLen)
@@ -204,8 +242,8 @@ func LoadConfig() (Config, error) {
 		SessionSecret:         []byte(secret),
 		SetupToken:            setupToken,
 		DatabaseURL:           dbURL,
-		CookieSecure:          getEnvBool("COOKIE_SECURE", !isDev),
-		SiteURL:               os.Getenv("SITE_URL"),
+		CookieSecure:          cookieSecure,
+		SiteURL:               siteURL,
 		UploadDir:             getEnv("UPLOAD_DIR", "./data/uploads"),
 		TrustedProxies:        proxies,
 		SMTPURL:               os.Getenv("FOLD_SMTP_URL"),

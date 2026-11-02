@@ -396,6 +396,7 @@ func historyCSVRecord(e contactHistoryEntry) []string {
 // Query/encoding/disk/audit/commit failures precede any protected HTTP headers
 // or bytes. Only the final authorization check locks the actor, never the
 // contact mutation gate or live context rows.
+// The server's 60 s WriteTimeout (newHTTPServer) bounds how long this export may take to send.
 func (a *App) apiExportContactHistory(c *gin.Context) {
 	f, ok := a.contactHistoryFilter(c, true)
 	if !ok {

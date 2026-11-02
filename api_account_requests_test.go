@@ -621,6 +621,51 @@ func TestAccountRequestListReadBudgetAndInviterNames(t *testing.T) {
 	}
 }
 
+// DEC-52: a signed-in member cannot test addresses for church membership.
+// An address that already has an account gets the same 200 and thanks as a
+// new one, stores no request, tells no admin, and is emailed the hint.
+func TestInviteFriendExistingEmailIsUniform(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	newTestUser(t, app, "sam", "pw", models.RoleMember)
+	taken := newTestUser(t, app, "taken", "pw", models.RoleMember)
+	sam := loginAPI(t, app, "sam", "pw")
+
+	fresh := sam.do("POST", "/api/v1/account-requests/invite-friend",
+		signupBody("Friend Fran", "fran@example.com", "adult", ""), true)
+	if fresh.Code != http.StatusOK || requestCount(t, app, "fran@example.com") != 1 {
+		t.Fatalf("new email: %d %s", fresh.Code, fresh.Body.String())
+	}
+	var adminNotes int64
+	app.DB.Model(&models.Notification{}).Where("user_id = ?", admin.ID).Count(&adminNotes)
+	if adminNotes == 0 {
+		t.Fatal("a new request should reach the admin bell")
+	}
+
+	w := sam.do("POST", "/api/v1/account-requests/invite-friend",
+		signupBody("Taken Name", strings.ToUpper(taken.Email), "adult", ""), true)
+	if w.Code != fresh.Code || w.Body.String() != fresh.Body.String() {
+		t.Fatalf("answers differ: %d %s vs %d %s", fresh.Code, fresh.Body.String(), w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "an admin will review it") {
+		t.Fatalf("not the door's usual thanks: %s", w.Body.String())
+	}
+	if n := requestCount(t, app, taken.Email); n != 0 {
+		t.Fatalf("stored %d requests for an existing account", n)
+	}
+	var after int64
+	app.DB.Model(&models.Notification{}).Where("user_id = ?", admin.ID).Count(&after)
+	if after != adminNotes {
+		t.Fatalf("admin notifications went from %d to %d", adminNotes, after)
+	}
+	if n := mailsTo(app, taken.Email); n != 1 {
+		t.Fatalf("hint emails to %s: %d, want 1", taken.Email, n)
+	}
+	if m := latestEmail(t, app, taken.Email); !strings.Contains(m.Subject, "already have") {
+		t.Fatalf("hint subject: %q", m.Subject)
+	}
+}
+
 // A rate-limited invite-a-friend gets the door's own message, never the
 // self-signup text, so the limit stays invisible (DEC-52).
 func TestRateLimitedInviteFriendAnswersWithItsOwnMessage(t *testing.T) {

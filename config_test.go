@@ -160,3 +160,67 @@ func TestWebhookSecretMustBeLong(t *testing.T) {
 		t.Fatalf("24 characters: %v", err)
 	}
 }
+
+// TestDangerousConfigRefusedAtStartup: three values that LoadConfig used to
+// accept make the server unsafe (SEC1 slice e). Each refusal names the
+// variable and the fix, and none echoes SESSION_SECRET.
+func TestDangerousConfigRefusedAtStartup(t *testing.T) {
+	const secret = "test-session-secret-at-least-32-bytes"
+	cases := []struct {
+		name    string
+		env     string
+		vars    map[string]string
+		wantVar string // "" means the config must load
+		wantFix string
+	}{
+		{"shipped combination", "prod", map[string]string{
+			"COOKIE_SECURE": "true", "SITE_URL": "https://groups.example.org",
+			"FOLD_TRUSTED_PROXIES": "172.30.0.0/24"}, "", ""},
+		{"nothing set", "prod", nil, "", ""},
+		{"bare IPs stay fine", "prod", map[string]string{"FOLD_TRUSTED_PROXIES": "10.0.0.1,::1"}, "", ""},
+		{"ipv4 /0 prod", "prod", map[string]string{"FOLD_TRUSTED_PROXIES": "0.0.0.0/0"}, "FOLD_TRUSTED_PROXIES", "172.30.0.0/24"},
+		{"ipv4 /0 dev", "dev", map[string]string{"FOLD_TRUSTED_PROXIES": "0.0.0.0/0"}, "FOLD_TRUSTED_PROXIES", "172.30.0.0/24"},
+		{"ipv6 /0 prod", "prod", map[string]string{"FOLD_TRUSTED_PROXIES": "::/0"}, "FOLD_TRUSTED_PROXIES", "172.30.0.0/24"},
+		{"ipv6 /0 dev", "dev", map[string]string{"FOLD_TRUSTED_PROXIES": "::/0"}, "FOLD_TRUSTED_PROXIES", "172.30.0.0/24"},
+		{"/0 hidden in a list", "prod", map[string]string{"FOLD_TRUSTED_PROXIES": "172.30.0.0/24, 0.0.0.0/0"}, "FOLD_TRUSTED_PROXIES", "172.30.0.0/24"},
+		{"a /8 is still a choice", "prod", map[string]string{"FOLD_TRUSTED_PROXIES": "10.0.0.0/8"}, "", ""},
+		{"http SITE_URL prod", "prod", map[string]string{"SITE_URL": "http://groups.example.org"}, "SITE_URL", "https://"},
+		{"hostless SITE_URL prod", "prod", map[string]string{"SITE_URL": "https://"}, "SITE_URL", "https://"},
+		{"schemeless SITE_URL prod", "prod", map[string]string{"SITE_URL": "groups.example.org"}, "SITE_URL", "https://"},
+		{"http SITE_URL dev", "dev", map[string]string{"SITE_URL": "http://localhost:8080"}, "", ""},
+		{"hostless SITE_URL dev", "dev", map[string]string{"SITE_URL": "https://"}, "", ""},
+		{"COOKIE_SECURE=false prod", "prod", map[string]string{"COOKIE_SECURE": "false"}, "COOKIE_SECURE", "APP_ENV=dev"},
+		{"COOKIE_SECURE=false dev", "dev", map[string]string{"COOKIE_SECURE": "false"}, "", ""},
+		{"COOKIE_SECURE=true prod", "prod", map[string]string{"COOKIE_SECURE": "true"}, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("APP_ENV", tc.env)
+			t.Setenv("SESSION_SECRET", secret)
+			t.Setenv("DATABASE_URL", "postgres://unused")
+			for _, k := range []string{"COOKIE_SECURE", "SITE_URL", "FOLD_TRUSTED_PROXIES"} {
+				t.Setenv(k, tc.vars[k])
+			}
+			cfg, err := LoadConfig()
+			if tc.wantVar == "" {
+				if err != nil {
+					t.Fatalf("want it to load, got %v", err)
+				}
+				if tc.vars["SITE_URL"] != "" && cfg.SiteURL != tc.vars["SITE_URL"] {
+					t.Fatalf("SiteURL = %q", cfg.SiteURL)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want a refusal naming %s, got config %+v", tc.wantVar, cfg)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantVar) || !strings.Contains(msg, tc.wantFix) {
+				t.Errorf("message should name %s and the fix %q: %s", tc.wantVar, tc.wantFix, msg)
+			}
+			if strings.Contains(msg, secret) || strings.Contains(msg, "\n") {
+				t.Errorf("message leaks the secret or spans lines: %s", msg)
+			}
+		})
+	}
+}
