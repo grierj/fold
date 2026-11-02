@@ -841,11 +841,30 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 	if len(userIDs) == 0 {
 		return
 	}
-	// Each recipient comes with the email consent scopes they opted out of
-	// (DEC-97) and its address's open suppressions (DEC-112), in the same
-	// read, so a batch stays at two reads.
+	// One read for every recipient (DEC-97, DEC-112), shared with the
+	// single-notice job. A failure marks nothing: without a delivery
+	// record the rows stay pending, so a later pass can still send them.
+	users, err := readEmailRecipients(a.DB, userIDs)
+	if err != nil {
+		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
+		return
+	}
+	byID, optOuts, suppressed, footer := indexEmailRecipients(users)
+	for i := range rows {
+		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID], footer)
+	}
+}
+
+// readEmailRecipients loads each account with the email consent scopes they
+// opted out of (DEC-97), the address's open suppressions (DEC-112), and the
+// church name and address for optional-mail footers. One query for the
+// whole set, so a batch stays at two reads.
+func readEmailRecipients(db *gorm.DB, userIDs []uint) ([]emailRecipient, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
 	var users []emailRecipient
-	if err := a.DB.Model(&models.User{}).Select(`users.*, COALESCE((
+	err := db.Model(&models.User{}).Select(`users.*, COALESCE((
 		SELECT string_agg(latest.scope, ',') FROM (
 			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
 			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
@@ -855,15 +874,36 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		COALESCE((SELECT value FROM settings WHERE key = 'site_name'), '') AS site_name,
 		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`,
 		models.ConsentEmail, models.ConsentOptedOut, settingChurchAddress).
-		Where("users.id IN ?", userIDs).Find(&users).Error; err != nil {
-		// Mark nothing suppressed: without a delivery record the rows stay
-		// pending, so a later delivery pass can still send them.
-		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
-		return
+		Where("users.id IN ?", userIDs).Find(&users).Error
+	return users, err
+}
+
+// readEmailRecipient is that read for one person. A missing account returns
+// a nil user and no error. A database error returns the error and nothing
+// else, so the caller records no delivery.
+func readEmailRecipient(db *gorm.DB, userID uint) (u *models.User, optedOut map[string]bool, suppressions []string, footer footerFacts, err error) {
+	users, err := readEmailRecipients(db, []uint{userID})
+	if err != nil {
+		return nil, nil, nil, footerFacts{}, err
 	}
-	byID := make(map[uint]*models.User, len(users))
-	suppressed := make(map[uint][]string, len(users))
-	optOuts := make(map[uint]map[string]bool, len(users))
+	byID, optOuts, suppressed, footer := indexEmailRecipients(users)
+	return byID[userID], optOuts[userID], suppressed[userID], footer, nil
+}
+
+// indexEmailRecipients splits the joined read into the maps the sender uses.
+// The footer comes from the first row; site name and address are the same
+// on every row.
+func indexEmailRecipients(users []emailRecipient) (byID map[uint]*models.User, optOuts map[uint]map[string]bool, suppressed map[uint][]string, footer footerFacts) {
+	byID = make(map[uint]*models.User, len(users))
+	suppressed = make(map[uint][]string, len(users))
+	optOuts = make(map[uint]map[string]bool, len(users))
+	footer = footerFacts{site: "Fold"}
+	if len(users) > 0 {
+		if users[0].SiteName != "" {
+			footer.site = users[0].SiteName
+		}
+		footer.address = users[0].ChurchAddress
+	}
 	for i := range users {
 		byID[users[i].ID] = &users[i].User
 		if users[i].EmailSuppressions != "" {
@@ -879,16 +919,7 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 			optOuts[users[i].ID][scope] = true
 		}
 	}
-	footer := footerFacts{site: "Fold"}
-	if len(users) > 0 {
-		if users[0].SiteName != "" {
-			footer.site = users[0].SiteName
-		}
-		footer.address = users[0].ChurchAddress
-	}
-	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID], footer)
-	}
+	return byID, optOuts, suppressed, footer
 }
 
 // emailRecipient is a notification email recipient with the comma-joined
@@ -946,24 +977,11 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active", "")
 		return
 	}
-	text := n.EmailTitle
-	if n.EmailBody != "" {
-		text += "\n\n" + n.EmailBody
-	}
-	text += "\n\n" + a.emailLink(n.Link)
-	// A spam complaint stops optional mail, not required notices (DEC-112).
-	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
-	if !k.Required {
-		// Optional mail says how to stop it, with a one-click link for mail
-		// clients (RFC 8058, M3.3); required mail never offers one.
-		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
-		msg.ListUnsubscribe = a.oneClickURL(token)
-		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
-	}
-	// The provider's id for the message lets its delivery and bounce reports
-	// find this row (M3.2).
 	// The suppressions came with the recipient, so the send skips the
 	// wrapper's own read (one per batch, not one per person).
+	msg := a.notificationEmailMessage(n, u, k, footer)
+	// The provider's id for the message lets its delivery and bounce reports
+	// find this row (M3.2).
 	var providerID string
 	err := mail.Blocked(suppressions, msg)
 	sender := mail.Unwrap(a.Mailer)
@@ -984,6 +1002,25 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		return
 	}
 	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "", providerID)
+}
+
+// notificationEmailMessage is the mail deliverNotificationEmail sends: the
+// stored email text, the absolute link, and, for an optional kind, the
+// footer and one-click unsubscribe. A spam complaint stops optional mail,
+// not required notices (DEC-112). Required mail never offers an unsubscribe.
+func (a *App) notificationEmailMessage(n *models.Notification, u *models.User, k notify.Kind, footer footerFacts) mail.Message {
+	text := n.EmailTitle
+	if n.EmailBody != "" {
+		text += "\n\n" + n.EmailBody
+	}
+	text += "\n\n" + a.emailLink(n.Link)
+	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
+	if !k.Required {
+		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
+		msg.ListUnsubscribe = a.oneClickURL(token)
+		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
+	}
+	return msg
 }
 
 // recordDelivery writes one notification_deliveries row. The unique
