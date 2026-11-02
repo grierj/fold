@@ -46,6 +46,14 @@ Follow the directions page at `/notifications/setup` literally, on each device b
 - [ ] **A big send's history.** Send to everyone at church (or a group of 200 or more). You should see the page count up ("Sending… 40 of 230 so far") and settle as Sent without a reload, "See who got it" list 200 names and "And 30 more", and, after Postmark's delivery reports arrive, people move from Sent to Delivered (M3.5b).
 - [ ] **A guardian copy in a real inbox.** Turn on Admin → Settings → "Send guardians a copy of messages to their teens", then send to a group with a teen whose guardian is confirmed. You should see the guardian get "Copy: <subject>" with the line "Copy: sent to <teen> because your church sends guardian copies", the teen get the message as usual, and the history show an admin the guardian with "Copy for <teen>" while the leader sees only "1 guardian copy sent" (M3.5b, DEC-19, DEC-132).
 
+
+## UI on real browsers (PR #225 follow-up)
+
+Listed when #232 merged (DEC-128). An agent can shoot Chromium and WebKit in CI; these need a real Safari stack and a real inbox.
+
+- [ ] **Real iPhone Safari and desktop Safari.** Walk through home, an event, the calendar (including the filter disclosure), the Admin Users More menu, and setup, at phone size and at desktop size. You should see no layout breaks, visible focus, and taps landing on the right control.
+- [ ] **Emailed-link pages from a real inbox.** Open invite (`/invite`), password reset (`/reset-password`), guardian consent (`/guardian-consent`), and the other emailed-token pages in the SPA: set password (`/set-password`), verify email (`/verify-email`), cancel email change (`/cancel-email-change`), guest confirm (`/guest/confirm`), guest manage (`/guest/manage/:token`), and email settings (`/email-settings/:token`). For each, try a valid link, an already-used link, and an expired link. You should see the right page and clear wording for each.
+
 ## SMS (when M3.7 lands)
 
 Nothing yet. M3.7 adds: a real Telnyx send and receive on a registered number, STOP and START from a real phone, the delivery and inbound webhooks with their signatures, and the 10DLC or toll-free registration status.
