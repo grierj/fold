@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"image"
-	"image/draw"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -125,20 +125,30 @@ func normalizeGIF(out *bytes.Buffer, data []byte) error {
 // scanGIF walks a GIF's blocks without decoding any pixels and returns the
 // number of frames and the total area of their rectangles, so an animation
 // can be refused before DecodeAll allocates for it.
+//
+// It must never read a file differently from image/gif in the permissive
+// direction, or a crafted file could hide frames from this count. So it
+// follows image/gif's reader block for block and fails closed (ok false) on
+// anything it does not fully understand: plain text extensions, unknown
+// extension labels, a graphic control block whose size is not 4, an
+// application extension whose size is not 11, and frames outside the screen.
 func scanGIF(b []byte) (frames, pixels int, ok bool) {
-	if len(b) < 13 {
+	if len(b) < 13 || (string(b[:6]) != "GIF87a" && string(b[:6]) != "GIF89a") {
 		return 0, 0, false
 	}
+	screenW := int(binary.LittleEndian.Uint16(b[6:]))
+	screenH := int(binary.LittleEndian.Uint16(b[8:]))
 	pos := 13
 	if b[10]&0x80 != 0 {
 		pos += 3 << (b[10]&7 + 1)
 	}
-	skipSub := func() bool { // sub-blocks up to the zero terminator
+	// skipSub skips data sub-blocks up to and including the zero terminator.
+	skipSub := func() bool {
 		for pos < len(b) {
 			n := int(b[pos])
 			pos += 1 + n
 			if n == 0 {
-				return true
+				return pos <= len(b)
 			}
 		}
 		return false
@@ -147,18 +157,45 @@ func scanGIF(b []byte) (frames, pixels int, ok bool) {
 		switch b[pos] {
 		case 0x3B: // trailer
 			return frames, pixels, frames > 0
-		case 0x21: // extension: label, then sub-blocks
+		case 0x21: // extension
+			if pos+2 > len(b) {
+				return 0, 0, false
+			}
+			label := b[pos+1]
 			pos += 2
-			if !skipSub() {
+			switch label {
+			case 0xF9: // graphic control: size 4, four bytes, terminator
+				if pos+6 > len(b) || b[pos] != 4 || b[pos+5] != 0 {
+					return 0, 0, false
+				}
+				pos += 6
+			case 0xFE: // comment
+				if !skipSub() {
+					return 0, 0, false
+				}
+			case 0xFF: // application: size 11, identifier and code, then sub-blocks
+				if pos+12 > len(b) || b[pos] != 11 {
+					return 0, 0, false
+				}
+				pos += 12
+				if !skipSub() {
+					return 0, 0, false
+				}
+			default: // plain text (0x01) and anything unknown
 				return 0, 0, false
 			}
 		case 0x2C: // image descriptor
 			if pos+10 > len(b) {
 				return 0, 0, false
 			}
+			left := int(binary.LittleEndian.Uint16(b[pos+1:]))
+			top := int(binary.LittleEndian.Uint16(b[pos+3:]))
 			w := int(binary.LittleEndian.Uint16(b[pos+5:]))
 			h := int(binary.LittleEndian.Uint16(b[pos+7:]))
 			flags := b[pos+9]
+			if left+w > screenW || top+h > screenH {
+				return 0, 0, false
+			}
 			pos += 10
 			if flags&0x80 != 0 {
 				pos += 3 << (flags&7 + 1)
@@ -248,11 +285,21 @@ func exifOrientation(p []byte) int {
 		if bo.Uint16(t[e:]) != 0x0112 {
 			continue
 		}
-		// type 3 (SHORT), one value, stored in the first two bytes of the value field
-		if bo.Uint16(t[e+2:]) != 3 || bo.Uint32(t[e+4:]) != 1 {
+		// One value, stored in the value field: a SHORT (3) in its first two
+		// bytes, or a LONG (4) across all four.
+		if bo.Uint32(t[e+4:]) != 1 {
 			return 0
 		}
-		if v := int(bo.Uint16(t[e+8:])); v >= 1 && v <= 8 {
+		v := 0
+		switch bo.Uint16(t[e+2:]) {
+		case 3:
+			v = int(bo.Uint16(t[e+8:]))
+		case 4:
+			if n := bo.Uint32(t[e+8:]); n <= 8 {
+				v = int(n)
+			}
+		}
+		if v >= 1 && v <= 8 {
 			return v
 		}
 		return 0
@@ -261,18 +308,27 @@ func exifOrientation(p []byte) int {
 }
 
 // applyOrientation turns img upright for an EXIF orientation value. 1 (and
-// anything unknown) returns img untouched.
+// anything unknown) returns img untouched, with no copy. Otherwise pixels are
+// read straight from img into the rotated image.
 func applyOrientation(img image.Image, orientation int) image.Image {
 	if orientation < 2 || orientation > 8 {
 		return img
 	}
 	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
-	src := image.NewRGBA(image.Rect(0, 0, sw, sh))
-	draw.Draw(src, src.Bounds(), img, b.Min, draw.Src)
 	dw, dh := sw, sh
 	if orientation >= 5 {
 		dw, dh = sh, sw
+	}
+	pixel := func(x, y int) (uint8, uint8, uint8, uint8) {
+		x, y = x+b.Min.X, y+b.Min.Y
+		if yc, ok := img.(*image.YCbCr); ok { // what a color JPEG decodes to; avoids boxing
+			c := yc.YCbCrAt(x, y)
+			r, g, bl := color.YCbCrToRGB(c.Y, c.Cb, c.Cr)
+			return r, g, bl, 0xFF
+		}
+		r, g, bl, a := img.At(x, y).RGBA()
+		return uint8(r >> 8), uint8(g >> 8), uint8(bl >> 8), uint8(a >> 8)
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
 	for dy := 0; dy < dh; dy++ {
@@ -294,9 +350,9 @@ func applyOrientation(img image.Image, orientation int) image.Image {
 			case 8: // rotate 90 counterclockwise
 				sx, sy = sw-1-dy, dx
 			}
-			si := src.PixOffset(sx, sy)
+			r, g, bl, a := pixel(sx, sy)
 			di := dst.PixOffset(dx, dy)
-			copy(dst.Pix[di:di+4], src.Pix[si:si+4])
+			dst.Pix[di], dst.Pix[di+1], dst.Pix[di+2], dst.Pix[di+3] = r, g, bl, a
 		}
 	}
 	return dst

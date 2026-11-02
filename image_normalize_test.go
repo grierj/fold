@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/lzw"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -409,5 +410,119 @@ func TestNormalizeRefusesCorruptImages(t *testing.T) {
 	}
 	if _, _, err := normalizeBytes(t, good, "image/webp"); err == nil {
 		t.Error("WebP must never be normalized")
+	}
+}
+
+// gifSubBlocks wraps data in GIF data sub-blocks with the zero terminator.
+func gifSubBlocks(data []byte) []byte {
+	var out []byte
+	for len(data) > 0 {
+		n := min(len(data), 255)
+		out = append(append(out, byte(n)), data[:n]...)
+		data = data[n:]
+	}
+	return append(out, 0)
+}
+
+// gifFrame is an image descriptor for a w x h frame with a two-color local table.
+func gifFrame(w, h int, lzwData []byte) []byte {
+	f := []byte{0x2C, 0, 0, 0, 0, byte(w), byte(w >> 8), byte(h), byte(h >> 8), 0x80}
+	f = append(f, 0, 0, 0, 255, 255, 255) // local color table
+	f = append(f, 2)                      // LZW minimum code size
+	return append(f, gifSubBlocks(lzwData)...)
+}
+
+func gifHeader(w, h int) []byte {
+	return append([]byte("GIF89a"), byte(w), byte(w>>8), byte(h), byte(h>>8), 0, 0, 0)
+}
+
+// hiddenFrameGIF is a GIF where image/gif sees `hidden` frames that a reader
+// treating every extension as plain sub-blocks would miss: after "21 01" (plain
+// text) Go skips a fixed 13 bytes, while a naive scanner reads the following
+// "21 FE" comment and swallows the frames as comment data.
+func hiddenFrameGIF(t *testing.T, hidden int) []byte {
+	t.Helper()
+	var lz bytes.Buffer
+	zw := lzw.NewWriter(&lz, lzw.LSB, 2)
+	zw.Write(make([]byte, 20*20))
+	zw.Close()
+	frame := gifFrame(20, 20, lz.Bytes())
+	prefix := 10 + 6 + 1 // descriptor, color table and code size before the first sub-block
+	unit := []byte{0x21, 0x01, 0x00, 0x21, 0xFE, byte(10 + prefix)}
+	unit = append(unit, make([]byte, 9)...)
+	unit = append(unit, 0x00)
+	unit = append(unit, frame...)
+	out := gifHeader(20, 20)
+	for i := 0; i < hidden; i++ {
+		out = append(out, unit...)
+	}
+	out = append(out, frame...)
+	return append(out, 0x3B)
+}
+
+func TestNormalizeGIFRefusesFramesHiddenFromTheScan(t *testing.T) {
+	in := hiddenFrameGIF(t, 12)
+	g, err := gif.DecodeAll(bytes.NewReader(in))
+	if err != nil || len(g.Image) <= 1 {
+		t.Fatalf("fixture should show image/gif several frames; got %v, %v", g, err)
+	}
+	if _, _, ok := scanGIF(in); ok {
+		t.Fatal("scanGIF accepted a file it reads differently from image/gif")
+	}
+	if _, _, err := normalizeBytes(t, in, "image/gif"); !errors.Is(err, errImageUnreadable) {
+		t.Fatalf("hidden frames: %v, want errImageUnreadable", err)
+	}
+}
+
+func TestScanGIFFailsClosed(t *testing.T) {
+	good := animatedGIF(t, 2)
+	if f, p, ok := scanGIF(good); !ok || f != 2 || p != 128 {
+		t.Fatalf("plain animation: %d frames, %d pixels, ok %v", f, p, ok)
+	}
+	body := good[:len(good)-1] // without the trailer
+	extra := func(b ...byte) []byte {
+		return append(append(append([]byte(nil), body...), b...), 0x3B)
+	}
+	for name, in := range map[string][]byte{
+		"empty":            nil,
+		"truncated":        good[:len(good)-20],
+		"no trailer":       body,
+		"not a gif":        append([]byte("GIF90a"), good[6:]...),
+		"unknown label":    extra(0x21, 0x77, 0),
+		"bad control size": extra(0x21, 0xF9, 5, 0, 0, 0, 0, 0, 0),
+		"bad app size":     extra(0x21, 0xFF, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+		"plain text":       extra(0x21, 0x01, 0),
+	} {
+		if _, _, ok := scanGIF(in); ok {
+			t.Errorf("%s: scanGIF accepted it", name)
+		}
+	}
+}
+
+func TestNormalizeGIFPixelBudget(t *testing.T) {
+	// Five full-screen 5000 x 5000 frames: 125 million pixels, over the budget.
+	// Only the structure is valid; refusal must come before any decoding.
+	in := gifHeader(5000, 5000)
+	for i := 0; i < 5; i++ {
+		in = append(in, gifFrame(5000, 5000, []byte{0x4C, 0x01})...)
+	}
+	in = append(in, 0x3B)
+	if _, _, err := normalizeBytes(t, in, "image/gif"); !errors.Is(err, errImageTooLarge) {
+		t.Fatalf("over the pixel budget: %v, want errImageTooLarge", err)
+	}
+}
+
+func TestJPEGOrientationAcceptsLong(t *testing.T) {
+	base := jpegBytes(t, blockImage(2, 3, gridColors))
+	payload := exifBlock(6)
+	const entry = 6 + 8 + 2 + 12 // the orientation entry follows the maker entry
+	binary.LittleEndian.PutUint16(payload[entry+2:], 4)
+	binary.LittleEndian.PutUint32(payload[entry+8:], 6)
+	if got := jpegOrientation(withEXIF(base, payload)); got != 6 {
+		t.Errorf("LONG orientation read as %d, want 6", got)
+	}
+	binary.LittleEndian.PutUint32(payload[entry+8:], 0x00010006) // high bytes set: not a valid value
+	if got := jpegOrientation(withEXIF(base, payload)); got != 1 {
+		t.Errorf("oversized LONG orientation read as %d, want 1", got)
 	}
 }
