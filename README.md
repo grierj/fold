@@ -48,6 +48,28 @@ image (or rebuilding one) keeps both. Fold runs only on PostgreSQL and refuses t
 To run the setup wizard again, delete the users and restart the app. The
 process remembers that setup finished until it exits.
 
+## Publishing a release (maintainers)
+
+Push a tag such as `v0.5.0`. The `release` workflow builds `linux/amd64` and
+`linux/arm64`, pushes `ghcr.io/grierj/fold:0.5.0` (and `:0.5` for a final
+release), attests the build, and writes the image digest into the GitHub
+release notes. A published version is never overwritten, with one exception:
+a maintainer's manual run with `first_release` skips the existence check
+(see below). It is for the very first release only, and the run logs a
+warning and records who ran it.
+
+- **The very first release:** GHCR can answer "denied" instead of "not found"
+  for a package that does not exist yet, and the workflow stops on that
+  rather than guess. If the tag push fails at "Refuse to overwrite a
+  published version", run the workflow by hand (Actions, release, Run
+  workflow) on the tag with `version` and `first_release` set. Tag pushes
+  never skip the check. Then make the package public.
+- **A release that was pushed but not finished** (the SHA alias, attestation
+  or notes failed): use "Re-run failed jobs" on the run, which reuses the
+  pushed digest. If that is no longer possible, run the workflow by hand on
+  the tag `v<version>` with `version` and `finalize_only` set. It looks up
+  the existing digest and never rebuilds.
+
 ## Upgrade notes
 
 - **Nov 2026 (M5.1): Compose pulls a published image.** `docker-compose.yml` no

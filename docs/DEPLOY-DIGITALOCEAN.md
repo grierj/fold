@@ -166,7 +166,9 @@ plain `docker compose` commands include it, and Compose builds the image
 on the droplet. Once `ghcr.io/grierj/fold` has a release, drop that flag
 and pass `--image ghcr.io/grierj/fold:x.y.z` instead; the tag becomes
 `FOLD_VERSION` in `.env`, the build override is removed, and nothing builds
-on the droplet. Pin the tag. Do not deploy `:latest`.
+on the droplet. Pin the exact version (`0.5.0`, not the moving `0.5`; the
+scripts refuse it). Do not deploy `:latest`. Each GitHub release lists the
+image digest and a link to its build provenance.
 
 Apply it:
 

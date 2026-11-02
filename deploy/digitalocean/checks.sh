@@ -38,8 +38,9 @@ env_value() {
 # The image every deploy pulls unless a fork or hotfix passes its own --image.
 FOLD_IMAGE_REPO="ghcr.io/grierj/fold"
 
-# assert_pinned_version LABEL: a release label Compose may put after the colon.
-# Refuses empty and "latest" (a floating tag moves under the church).
+# assert_pinned_version LABEL: a tag Compose may put after the colon. This is
+# the loose, shared rule: not empty, not "latest", and a valid tag. Local build
+# labels (dev, ci) and fork tags go through it alone.
 assert_pinned_version() {
   local version="$1"
   [[ -n "$version" ]] || { check_fail "FOLD_VERSION is empty. Pin an exact release such as 0.5.0." || return; }
@@ -50,7 +51,20 @@ assert_pinned_version() {
     || { check_fail "FOLD_VERSION '${version}' is not a valid image tag." || return; }
 }
 
-# assert_pinned_image REF: the --image path. Same refusals as the version path.
+# assert_release_version LABEL: what a pull of ${FOLD_IMAGE_REPO} may name. An
+# exact release (x.y.z, optionally -prerelease) or a full 40-hex commit SHA.
+# Never a moving alias such as 0.5 or a label such as dev.
+assert_release_version() {
+  local version="$1"
+  assert_pinned_version "$version" || return
+  if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ || "$version" =~ ^[0-9a-f]{40}$ ]]; then
+    return 0
+  fi
+  check_fail "FOLD_VERSION '${version}' is not an exact release. Use x.y.z (such as 0.5.0) or a full commit SHA, not a moving tag like 0.5." || return
+}
+
+# assert_pinned_image REF: the --image path. The official image needs an exact
+# release; another repository (a fork or hotfix) only the loose rule.
 assert_pinned_image() {
   local image="$1" label
   case "$image" in
@@ -62,18 +76,29 @@ assert_pinned_image() {
   if [[ "$image" != *:* || "$label" == */* ]]; then
     check_fail "${image} has no tag. Example: ${FOLD_IMAGE_REPO}:1.2.3" || return
   fi
-  assert_pinned_version "$label" || return
+  if [[ "$image" == "${FOLD_IMAGE_REPO}:"* ]]; then
+    assert_release_version "$label" || return
+  else
+    assert_pinned_version "$label" || return
+  fi
 }
 
 # assert_deploy_pinned DIR: the FOLD_VERSION a deploy dir's .env will pull.
-# Skipped for an explicit --image pin (the marker line) and for a source build.
+# An explicit --image pin (the marker line) was checked when it was written. A
+# source build (COMPOSE_FILE names the build override) only needs a local
+# label; a pulled deploy needs an exact release.
 assert_deploy_pinned() {
-  local dir="$1" version
+  local dir="$1" version compose_file
   if [[ -f "$dir/docker-compose.yml" ]] && grep -q ' # fold-app-image$' "$dir/docker-compose.yml"; then
     return 0
   fi
   version="$(env_value "$dir/.env" FOLD_VERSION || true)"
-  assert_pinned_version "$version" || return
+  compose_file="$(env_value "$dir/.env" COMPOSE_FILE || true)"
+  if [[ "$compose_file" == *docker-compose.build.yml* ]]; then
+    assert_pinned_version "$version" || return
+  else
+    assert_release_version "$version" || return
+  fi
 }
 
 assert_env_mode() {

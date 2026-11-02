@@ -438,6 +438,19 @@ cur_out="$(bash deploy/digitalocean/upgrade.sh --dry-run \
   --deploy-dir /opt/fold \
   --source-dir /src 2>&1)"
 grep -qF 'mode=image image=ghcr.io/grierj/fold:0.0.0-dry-run' <<<"$cur_out"
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.5 \
+  --deploy-dir /tmp/fold-up \
+  --source-dir /src
+mkdir -p /tmp/fold-moving-env
+cp /opt/fold/docker-compose.yml /tmp/fold-moving-env/docker-compose.yml
+printf 'DOMAIN=groups.example.org\nFOLD_VERSION=0.5\n' >/tmp/fold-moving-env/.env
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.5.1 \
+  --deploy-dir /tmp/fold-moving-env \
+  --source-dir /src
 mkdir -p /tmp/fold-latest-env
 cp /opt/fold/docker-compose.yml /tmp/fold-latest-env/docker-compose.yml
 printf 'DOMAIN=groups.example.org\nFOLD_VERSION=latest\n' >/tmp/fold-latest-env/.env
@@ -524,5 +537,28 @@ if env_value "$build_dir/.env" COMPOSE_FILE >/dev/null; then
   echo "idempotency: COMPOSE_FILE survived a move to a pulled release" >&2
   exit 1
 fi
+
+# Rollback reads release.prev: an exact version passes, a moving alias fails.
+rb_dir=/tmp/fold-rollback
+mkdir -p "$rb_dir" /var/backups/fold
+rb_dump=/var/backups/fold/fold-20260101-0000.dump
+: >"$rb_dump"
+write_release_prev() {
+  cat >"$rb_dir/release.prev" <<EOF
+mode=image
+previous_image=$1
+previous_commit=
+dump=$rb_dump
+source_dir=/src
+domain=groups.example.org
+EOF
+}
+write_release_prev ghcr.io/grierj/fold:0.4.0
+rb_out="$(bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir" 2>&1)"
+grep -qF 'rolling back mode=image' <<<"$rb_out"
+write_release_prev ghcr.io/grierj/fold:0.4
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir"
+write_release_prev ghcr.io/grierj/fold:latest
+expect_fail 'latest' bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir"
 
 echo "idempotency: ok"
