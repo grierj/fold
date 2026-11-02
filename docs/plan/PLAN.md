@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-137.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-145 (DEC-137 branding; DEC-138–DEC-145 audit 2026-11).
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-137; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-145; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -44,7 +44,7 @@ How to use this document:
 3. Single-tenant. One deployment serves one church. Fold is free, open-source (MIT) give-away software (DEC-11). "Hosted" means someone (Grier, rarely, or anyone) runs one deployment per church. Hosting terms and any fee are agreed case by case and are not meant to make money (DEC-10). The church brings and owns its own email, SMS, and hosting accounts, even when hosted, unless there is a special agreement (DEC-2).
 4. Few external dependencies. Only email, the host, and (for texting) SMS are needed outside the box. The only database is PostgreSQL, run by Docker Compose in production, development, and tests (DEC-1, DEC-24). Everything else (object storage, video, DNS automation) is optional. **Self-contained by default (DEC-43):** Fold builds what it needs itself and adds an outside service only when that keeps deployments simple or a church asks for it. Notifications, for example, are built in Fold with no vendor (DEC-42, 5.12).
 5. Every external dependency can be set up by API: by the app's setup wizard, by the `fold` CLI, or by an AI agent following `AGENTS.md`. A power user can still do every step by hand.
-6. Every proprietary dependency sits behind an adapter interface. Build one real adapter per kind first (plus the `devoutbox` for tests), and add the second when it is needed. By v1.0 each kind has at least two working options (for example SMTP and Postmark for email; Telnyx and Twilio for SMS).
+6. Every proprietary dependency sits behind an adapter interface. Build one real adapter per kind (plus the `devoutbox` for tests), and add a second only when a church demands it (DEC-140). For example SMTP and Postmark for email exist because the first churches need both a generic fallback and a deliverability default; SMS v1 is Telnyx only, and Twilio waits for a church that asks.
 7. Familiar UI. Meetup is the primary UI and design reference: copy its patterns (group cards, date badges, RSVP buttons), as the repo already does. ChurchTrac is the secondary reference, for church-admin screens Meetup has no equivalent for (people and households, rooms, attendance, consent, setup).
 
 ### Non-goals
@@ -80,7 +80,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | D5 | No added deployment complexity; a power user can do it by hand | 11, 12.5, docs/DEPLOY.md (M5.4) |
 | D6 | External deps limited to text, email, simple hosting where possible | 5.1, 12 |
 | D7 | Every dependency has API configuration; the app does as much setup as it can | 11.3, M4.x |
-| D8 | Proprietary deps have multiple options via adapters (one first, the second when needed; at least two per kind by v1.0) | 5.6, 12 |
+| D8 | Proprietary deps sit behind adapters: one real adapter per kind, a second only when a church demands it (DEC-140) | 5.6, 12 |
 | F1 | Events and groups with public / private / invite-only visibility; leaders have broad powers over their groups' events (DEC-6, DEC-17); admins see everything (DEC-5); self-signup needs admin approval (DEC-4, DEC-30); teens need consent and are badged (DEC-8, DEC-20); leaders reach teens and hidden adults through Fold (DEC-31); links of minors to adults need admin approval (DEC-32); log in by email (DEC-23) | 5.3, 5.10, 5.11, 6, M0.2, M0.3, M1.1a, M1.1b, M1.2, M1.3, M1.9, M1.10, M1.11 |
 | F2 | All events on a timeline and by room, plus ICS feeds | 8, M1.6, M1.7, M2.2 |
 | F3 | Room management, optional | 9, M2.1 |
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-137) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-145) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1261,6 +1261,8 @@ All commands print plain text by default and JSON with `--json`, so agents can r
 - Provider accounts (email, SMS, and optionally storage and the VPS itself) belong to the church, even when hosted, unless there is a special agreement (DEC-2). The church pays vendors directly. The host may help set the accounts up, for example by joining the church's provider account as a user. This also keeps the host from being an ISV or reseller in Twilio's or Telnyx's sense, so the host has no sub-account or brand-registration duties.
 - Terms and any fee are agreed case by case, and hosting is not meant to make money (DEC-10). Fold has no billing code, and none is planned.
 - An ops repo keeps per-church `.env` files encrypted with SOPS or `age`. There is no shared control plane.
+- **Fleet trigger (DEC-139):** when one operator hosts about five churches, build fleet tooling before hosting a sixth: one script or small Go program in the ops repo that, per church, pins and bumps `FOLD_VERSION`, runs the upgrade and reads `/healthz` plus the backup `LAST_OK` age, and reports version, health and last-backup as one table. It drives the same per-church compose stacks over SSH or the VPS provider's API. It is not part of the `fold` binary, holds no church data, and adds no church-to-church anything: no shared database, no shared login, no cross-church view. Each church still owns its accounts and can leave with its database and uploads (DEC-2).
+- Multi-tenancy (one database serving many churches) stays out (DEC-139). Fleet pain is an operations problem and gets an operations answer; mixing teen, consent and contact data from many churches behind row filters would spend the isolation that makes the safeguarding rules simple to reason about.
 
 ### 11.7 Upgrades
 
@@ -1379,6 +1381,8 @@ All of these work with one S3-compatible adapter, so switching is a config chang
 ### 12.5 Hosting
 
 Fold runs on one VPS with Docker Compose. That is the only recommended deployment for now (DEC-26). The step-by-step guide is [`docs/DEPLOY-DIGITALOCEAN.md`](../DEPLOY-DIGITALOCEAN.md) (one droplet; Ubuntu 24.04 and 26.04 tested), with `deploy/digitalocean/provision.sh`, `smoke.sh`, `upgrade.sh`, and `backup.sh` (#53).
+
+**Audit recheck (DEC-142, Nov 2026).** Cloudflare was evaluated as a host and rejected: Workers cannot run the Go binary, D1 is not PostgreSQL, and Containers leave PostgreSQL/uploads on snapshot disk or add a second vendor. Cloudflare's roles stay narrow: optional DNS (app record DNS-only), R2 as one encrypted offsite-backup target, Tunnel later for church-owned boxes; authenticated responses are never cached. Full comparison with vendor pages fetched 2026-11-02: [`briefs/audit-2026-11/R1-deployment.md`](briefs/audit-2026-11/R1-deployment.md) Part 1.
 
 | Option | Price (cited) | API setup | Notes |
 |---|---|---|---|
@@ -1531,13 +1535,13 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
 | v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
 | v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 (if v0.4 is already cut, M3.13 goes in v0.5, still before v0.7 SMS) |
-| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4 |
+| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs, plus the audit 2026-11 first-church floor (setup token, privacy bundle, delivery outbox, baseline squash, erasure, perf fixes, secret rotation): the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4, M7.1–M7.7 (14.10) |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
-| v0.8 Storage and CLI | S3 and private assets, `fold setup` | M4.7, M4.8 |
-| v1.0 | Twilio adapter, hardening, sign-up sheets, attendance, security review | M3.10, M6.2, M6.3 + fixes |
-| v1.x and later | Community features; the durable audit log (DEC-33) | Rest of M6, including M6.14 |
-| Future, on request (not committed) | Render Blueprint (DEC-26) | M5.5 |
+| v0.8 CLI | `fold setup` (S3/private-assets adapter cut until a church asks, DEC-140) | M4.8 |
+| v1.0 | Hardening, sign-up sheets, attendance, security review (Twilio deferred until demanded, DEC-140) | M6.2, M6.3 + fixes |
+| v1.x and later | Community features | Rest of M6 |
+| Future, on request (not committed) | Render Blueprint, Twilio adapter, S3 adapter, ChMS sync, durable audit log — each re-enters only as a new milestone for a named church (DEC-140) | — |
 
 Rooms (M2) can be built in parallel with M3 once M1.1a is merged.
 
@@ -1861,6 +1865,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Tests: API and concurrency tests.
 
 **M3.10 Twilio adapter**
+- Status: deferred until a church demands it (DEC-140). Kept below as the scope record for that future milestone.
 - Depends on: M3.8
 - Scope: a second SMS adapter behind the same interface, including Twilio's sole-proprietor and toll-free paths in the registration flow.
 - Acceptance:
@@ -2008,6 +2013,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Tests: fakes for Postmark and Cloudflare.
 
 **M4.5 People CSV import**
+- Brief: [`briefs/audit-2026-11/R2-R3-R4-people.md`](briefs/audit-2026-11/R2-R3-R4-people.md) (R2; generic spreadsheet first per DEC-143, ChurchTrac preset later).
 - Depends on: M4.2, M1.10
 - Scope: 11.3 step 9.
 - Acceptance:
@@ -2029,6 +2035,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Tests: fakes for Telnyx.
 
 **M4.7 S3 storage and private assets**
+- Status: cut until a church asks (DEC-140). Private assets, when needed, land on local disk behind `storage.Store` first. Kept below as the scope record.
 - Depends on: M4.1
 - Scope: 5.7 and C9: `Asset` table, private `/files/<key>` handler, S3Store, `fold storage migrate`.
 - Acceptance:
@@ -2047,6 +2054,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Tests: CLI golden-output tests.
 
 **M4.9 Admin two-factor sign-in (TOTP)**
+- Brief: [`briefs/audit-2026-11/R2-R3-R4-people.md`](briefs/audit-2026-11/R2-R3-R4-people.md) (R3, including people/own-data export).
 - Depends on: M4.1, M1.2
 - Scope: TOTP (RFC 6238) for every admin account, required from v0.5 (final review, finding 7). Ten one-time recovery codes, stored hashed. The TOTP secret is encrypted like provider secrets (C8). An admin without TOTP can reach only the enrollment page. Another admin can reset a lost device; a sole admin uses a recovery code or `fold user reset-2fa` on the server.
 - Acceptance:
@@ -2059,6 +2067,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 ### 14.8 Phase 5: Release engineering
 
 **M5.1 Prebuilt images**
+- Brief: [`briefs/audit-2026-11/R1-deployment.md`](briefs/audit-2026-11/R1-deployment.md) (R1; hosting verdict DEC-142).
 - Depends on: M0.1
 - Scope: GitHub Actions builds `linux/amd64` and `linux/arm64` images of `fold` and `fold-backup` and pushes them to GHCR on tags (C10). The deploy compose uses `image:`; a `docker-compose.build.yml` override keeps local builds for developers.
 - Acceptance:
@@ -2099,7 +2108,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Tests: docs link check.
 
 **M5.5 Render Blueprint (optional, future; not committed)**
-- Status: not in any release. Start only when a church asks, or when Grier wants an easy path to host for others (DEC-26).
+- Status: cut from the roadmap (DEC-140, DEC-142); the 12.5 evaluation stays as reference. Re-enters only as a new milestone for a named church. Was: start only when a church asks (DEC-26).
 - Depends on: M5.4, M4.1
 - Scope: `deploy/render.yaml` (the Render reference in Appendix A), `docs/DEPLOY-RENDER.md`, and the app details Render needs: `PORT`, the Render value for `FOLD_TRUSTED_PROXIES`, a way to skip the Compose backup check where Render's PITR covers upgrades, base64 secrets.
 - Acceptance:
@@ -2114,8 +2123,8 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 Each item is one milestone. Each still needs acceptance criteria written into this file before work starts.
 
 - M6.1 Directory with per-field privacy (10.2)
-- M6.2 Sign-up sheets: volunteer, potluck, supplies (one model: sheets, slots, claims)
-- M6.3 Attendance roll for leaders
+- M6.2 Sign-up sheets: volunteer, potluck, supplies (one model: sheets, slots, claims). Brief ready: [`briefs/audit-2026-11/R10-R14-features.md`](briefs/audit-2026-11/R10-R14-features.md) (R14; after M6.3)
+- M6.3 Attendance roll for leaders. Brief ready: [`briefs/audit-2026-11/R10-R14-features.md`](briefs/audit-2026-11/R10-R14-features.md) (R10; pulled ahead of the rest of Phase 6, DEC-145)
 - M6.4 QR / self check-in
 - M6.5 Prayer requests
 - M6.6 Group discussions
@@ -2123,14 +2132,74 @@ Each item is one milestone. Each still needs acceptance criteria written into th
 - M6.8 Background-check status flags on slots
 - M6.9 Photo galleries (private by default)
 - M6.10 (moved to M4.9: admin TOTP is required from v0.5)
-- M6.11 ChurchTrac CSV import (blocked until someone provides a real sample ChurchTrac export, DEC-15; becomes the first step of M6.15)
+- M6.11 ChurchTrac CSV mapping preset (a column preset on the generic M4.5 pipeline; still wants a real sample export, DEC-143)
 - M6.12 Custom registration questions
 - M6.13 (dropped: no translations or i18n framework, DEC-13)
-- M6.14 Durable, tamper-evident audit log for the most important events (10.7, DEC-33): append-only storage, hash chaining, a write-once offsite export (for example B2 Object Lock), retention rules, and an admin export for legal requests. Later, not v1 scope; the regular `AuditLog` covers these events until then
-- M6.15 Roster sync with church management software (DEC-40, research/chms-sync.md). Far future, not committed. `chms` adapter kind; One-way only (ChMS into Fold, never write-back). CSV import with admin review first, then Planning Center People, Breeze and ChMeetings read adapters. First design which local management features lock for synced fields and which stay (DEC-40). Re-verify the research's unverified items (Planning Center webhook events, vendor terms, rate limits) before starting
+- M6.14 (cut, DEC-140) Durable, tamper-evident audit log: the regular `AuditLog` is the answer; re-enters only for a named church with a legal retention need. Reasoning record stays at 10.7 / DEC-33.
+- M6.15 (cut, DEC-140) Roster sync with church management software: generic CSV import (M4.5) is the answer; re-enters only for a named church. Research record stays at `research/chms-sync.md` / DEC-40.
 - M6.16 Notification email digests (DEC-44). Later, not v1. A once-a-day email (7 AM recipient-local) of unread, unresolved notifications not already emailed: the `notification.digest` job, a `notification_settings` table with per-user `email_mode immediate|daily`, and the email-timing choice on the settings page. Weekly stays cut.
 
-Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS adapter, a Zoom video adapter, and a moderator role (DEC-17).
+Built only when a church asks: Resend and Mailgun email adapters, a Twilio or Plivo SMS adapter, an S3 storage adapter, a Zoom video adapter, and a moderator role (DEC-17, DEC-140).
+
+### 14.10 Phase 7: First-church hardening (Audit 2026-11, DEC-145)
+
+Approved Nov 1, 2026. Every milestone below has a coding-agent brief in
+[`briefs/audit-2026-11/`](briefs/audit-2026-11/00-index.md): slices, files,
+API shapes, tests and acceptance checklists live there; this section is the
+claim list and the order. Claim in [STATUS.md](../../STATUS.md) before
+starting, one reviewable PR per slice (14.1). Waves: M7.1 first; then
+M7.2/M7.5 with the M5.1 image work; **M7.7 (baseline) before any brief that
+adds schema** (M4.5, M4.9, M6.2, M6.3, parts of M7.4/M7.5) unless its table
+folds into the baseline; then the rest. No new surface beyond these briefs
+and existing milestones until a first church is live (DEC-145).
+
+**M7.1 Setup takeover: verify and close (SEC1)**
+- Status: done Nov 1, 2026 (`28268b3`, merged in [#241](https://github.com/grierj/fold/pull/241); setup token + locked first-admin transaction; [issue #240](https://github.com/grierj/fold/issues/240) closed).
+- Brief: [`SEC1-R5-R12-security.md`](briefs/audit-2026-11/SEC1-R5-R12-security.md) (SEC1).
+
+**M7.2 Privacy and session hardening bundle (R5)**
+- Scope: people-search roster gating, logout session revocation + CSRF rotation, EXIF strip on upload (covers the M4.2b logo path too, whichever lands second), room-feed "Reserved" for non-public dates, prod config refusals, uniform invite-friend answer, HTTP timeouts. One slice per leak.
+- Brief: [`SEC1-R5-R12-security.md`](briefs/audit-2026-11/SEC1-R5-R12-security.md) (R5).
+
+**M7.3 Secret rotation and expiring email links (R12)**
+- Scope: dual-key verification for unsubscribe tokens only, scoped expiring email-settings tokens, `SESSION_SECRET` rotation runbook. Sessions never get dual-key acceptance.
+- Brief: [`SEC1-R5-R12-security.md`](briefs/audit-2026-11/SEC1-R5-R12-security.md) (R12).
+
+**M7.4 Account erasure (R4, DEC-144)**
+- Scope: reviewed 38-model inventory first, then anonymise/delete so deletion erases the person; backups note in the admin screen.
+- Brief: [`R2-R3-R4-people.md`](briefs/audit-2026-11/R2-R3-R4-people.md) (R4).
+
+**M7.5 Notification delivery outbox (R6)**
+- Scope: transactional delivery intent with retries/backoff/dead state on the existing delivery ledger, dead-job admin alerts, password-reset mail onto jobs.
+- Brief: [`R6-R11-reliability-perf.md`](briefs/audit-2026-11/R6-R11-reliability-perf.md) (R6).
+
+**M7.6 Query ceilings and pool cap (R11)**
+- Scope: incremental occurrence `Extend` (DEC-91 preserved), batched reminder readers, jobs lease index, SQL fast paths only where visibility semantics are identical, explicit DB pool cap. Acceptance needs the seeded EXPLAIN proof in the brief; today's numbers are estimates.
+- Brief: [`R6-R11-reliability-perf.md`](briefs/audit-2026-11/R6-R11-reliability-perf.md) (R11).
+
+**M7.7 Baseline squash (R9, DEC-138)**
+- Scope: one generated baseline replacing 61 migrations, real `date` types where the brief allows, provenance folded into `registrations`, additive-first rule replacing expand/contract. Preconditions gate in the brief is a hard stop.
+- Brief: [`R9-baseline-squash.md`](briefs/audit-2026-11/R9-baseline-squash.md).
+
+**M7.8 People and own-data export (R3 export half)**
+- Scope: admin people CSV export (round-trips M4.5 import columns) and a person's own-data export, audited. TOTP itself is M4.9.
+- Brief: [`R2-R3-R4-people.md`](briefs/audit-2026-11/R2-R3-R4-people.md) (R3).
+
+**M7.9 Frontend speed and discoverability (R15)**
+- Scope: lazy detail pages + tighter bundle budget, small `api.ts` query cache that dies on logout, shared directory/calendar filters, `ConfirmDialog` everywhere, phone/tablet Messages nav, directory-first signed-out Home.
+- Brief: [`R15-R16-frontend.md`](briefs/audit-2026-11/R15-R16-frontend.md) (R15).
+
+**M7.10 Generated web types (R16)**
+- Scope: Go generator emits `web/src/types.ts`; CI diff check; contract guard shrinks to auto-discovery.
+- Brief: [`R15-R16-frontend.md`](briefs/audit-2026-11/R15-R16-frontend.md) (R16).
+
+**M7.11 Contact locks inside the freeze (R19, DEC-141)**
+- Scope: per-request row locks replace the global contact advisory lock, concurrency tests included; no API/schema/policy change.
+- Brief: [`R13-R17-R18-R19-governance.md`](briefs/audit-2026-11/R13-R17-R18-R19-governance.md) (R19).
+
+**M7.12 Cut execution and maintenance tax (R17 code half, R18)**
+- Scope: delete the dead Go SMS counter (TS stays the one live counter), tier `guards_test.go` without weakening security/privacy/contract guards, finish the UI ratchet, `go:embed` templates, shrink STATUS/SUMMARY. The wording half of R17 landed with DEC-140.
+- Brief: [`R13-R17-R18-R19-governance.md`](briefs/audit-2026-11/R13-R17-R18-R19-governance.md) (R17.1, R18).
 
 ---
 
@@ -2142,7 +2211,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
-| DEC-1 | **PostgreSQL only.** No SQLite in production, development, or tests. Fold builds on Postgres features (SKIP LOCKED, exclusion constraints, citext, jsonb, advisory locks). Confirmed by DEC-24. | 1, 3.1–3.4, C1, C7, C14, 5.3, 5.5, 9.2, 11.9, 14.1, M0.1, M2.1, M3.1 |
+| DEC-1 | **PostgreSQL only.** No SQLite in production, development, or tests. Fold builds on Postgres features (SKIP LOCKED, exclusion constraints, citext, jsonb, advisory locks). Confirmed by DEC-24. Reaffirmed by DEC-139. | 1, 3.1–3.4, C1, C7, C14, 5.3, 5.5, 9.2, 11.9, 14.1, M0.1, M2.1, M3.1 |
 | DEC-2 | **Churches bring their own provider and hosting accounts**, even when hosted, unless there is a special agreement. Fold is open-source give-away software. Grier may help a church set its accounts up. | 1, 2 (D2), 11.3, 11.5, 11.6, 12 intro, 12.5, Appendix A |
 | DEC-3 | **Assume churches are not 501(c)(3)s.** SMS registration plans for an EIN-based standard brand or toll-free verification, never asks for 501(c)(3) proof, and avoids donation asks in SMS. With no EIN: get a free IRS EIN (required on Telnyx); Twilio's sole-proprietor path is the only fallback. | 5.3, 7.3, 10.4, 11.3, 12.2, M3.4, M3.8, M4.6, Appendix A |
 | DEC-4 | **Self-signup creates an account request that an admin approves.** Leader and admin invitations skip approval. A member's invitation still creates a request that an admin must approve. There is no "open" signup mode. | C15, 5.3, 5.10, 6, 11.3, M1.2, M1.3, M4.2, 10.1 |
@@ -2156,7 +2225,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-12 | **Rename to `fold`**: done upstream in PR #7 (merged 2026-10-09). | 3.1, 3.4, C13 |
 | DEC-13 | **No non-English version.** Spanish and i18n are out of scope; plain English strings are fine; don't build an i18n framework. | 1, 13.2, M6.13 (dropped) |
 | DEC-14 | **Lawyer review is case by case.** The hope is that Grier won't host for others. Legal pages are templates the church owns. | 7.5, 10.3, 10.4 |
-| DEC-15 | **ChurchTrac import stays Later** and needs a real sample export first. Nobody has export details yet. | 13.2, M6.11 |
+| DEC-15 | **ChurchTrac import stays Later** and needs a real sample export first. Nobody has export details yet. Gate reversed by DEC-143: the generic CSV pipeline (M4.5) ships first; only the ChurchTrac mapping preset still waits for a sample. | 13.2, M4.5, M6.11 |
 | DEC-16 | **No embedded video for now.** Link-out or a generated Jitsi link only. Revisit embedding in a later revision if requested. | 1, 2 (F11), 5.8, 12.4, 13.2, M1.8 |
 | DEC-17 (A) | **Leaders have broad powers over their own groups' events.** A leader may set a group event to any visibility, for example an invite-only group's event to `private` (members only) or `public`. More-open changes are audited and notified; the reason is optional. Hosts may switch church-wide events between public and private. A future **moderator** role between member and leader is a note only; don't build it. | 2 (F1), 5.3, 6, 9.3 (case 13), 13.2, 14.9, M1.1b |
 | DEC-18 (B) | **Teens cannot co-lead groups or host events.** | 1, 5.3, 5.10, 6, 10.3, M0.2, M1.10 |
@@ -2165,7 +2234,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-21 (E) | **Email: Postmark is the default.** AWS email is removed as a recommendation (Grier avoids using AWS directly because of lock-in; see DEC-26); independent alternatives are Resend and Mailgun, with SMTP as the generic fallback. Nothing in Fold depends on AWS. B2 and R2 stay. | 1, 5.6, 7.4, 11.3, 12.1, 12.5, 12.7, M3.2, M4.4 |
 | DEC-22 (F) | **Clean break.** No church runs Fold, so there are no legacy-data migrations or old-data fixture tests. Anything in the skeleton may change for a better product if it meets the agreed requirements. Language and frameworks are open if they are not Python and stay very simple to deploy; Go + Gin + GORM + React is kept by default (stack note in 3.3). | Header, 1, 3.3, 3.4, 4, 5.3, 14.1, M0.1, M0.2, M1.1a |
 | DEC-23 (G) | **Log in by email** instead of username; the email is unique. A shared email is one account; that person brings the others as household people on RSVPs. Guidance for churches and members is documented. | 3.1, 3.4, C16, 5.3, 5.10, 6, 10.1, 11.3, M0.3, M1.9, M4.5 |
-| DEC-24 (H) | **Postgres for dev and tests too**, via Docker Compose; SQLite dropped entirely. Confirms DEC-1. | 1, 3.1, 3.3, C14, 11.9, 14.1, M0.1 |
+| DEC-24 (H) | **Postgres for dev and tests too**, via Docker Compose; SQLite dropped entirely. Confirms DEC-1. Reaffirmed by DEC-139. | 1, 3.1, 3.3, C14, 11.9, 14.1, M0.1 |
 | DEC-25 (I) | **Quiet hours use the recipient's time zone**: default 8 AM to 8 PM, configurable, with a warning outside TCPA's 8 AM to 9 PM, falling back to the church time zone when the recipient hasn't set one. Confirms DEC-9. | 5.3, 5.9, 7.1, 7.5, 11.3, M3.8 |
 | DEC-26 | **Hosting: VPS only for now.** Vendors that run on AWS underneath are fine; the objection is to using AWS services directly, because of vendor lock-in. A VPS with Docker Compose is the only recommended deployment. Render stays as a reference evaluation and `render.yaml` outline; M5.5 is optional and future, added when a church asks or when Grier wants an easy path to host for others. | 1, 2 (D4), 5.1, 11, 12 intro, 12.5, 12.7, 14.2, M5.5, Appendix A |
 | DEC-27 | **Opt-outs are automatic and immediate, always.** STOP-type keywords and any reply that reasonably reads as an opt-out (FCC rules or plain wording) opt the person out at once, and Fold sends the confirmation text. No review queue, no timer, no human work. Admins get a read-only opt-out log; a person opts back in with `START`. | 5.3, 5.5, 6, 7.4, 10.4, M3.7 |
@@ -2279,8 +2348,16 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-135 | **Who reads an announcement, and who sees push per person** (Grier, Oct 31, 2026; M3.13d2 review). (A) Anyone an announcement was sent to can read it in Fold at `/messages/:id/read` (the page its push opens), even when their email was skipped (they turned off email from leaders, or it bounces): a direct `message_recipients` row in any channel on a message that is sending or sent. Guardian copies, automatic reminders and failed messages stay out. (B) Leaders and hosts see, per person, who also gets a push: the composer's "Push too" mark and each person's push in the history, with the missed reasons counted as email's `skippedBy` is. Push itself follows push consent, not the email row (DEC-122), so someone skipped for an email reason still gets the push and lands on that page. | 7.1, 7.3, M3.13d |
 | DEC-136 | **The push reminder never shows the place** (Grier, Nov 1, 2026; M3.13d3 review). A lock screen is public (DEC-124) and small groups often meet in homes, so the 2-hour push reminder reads only "Reminder: <title>" and "Starts at 7:00 PM" (or "Starts tomorrow at 9:00 AM"); tapping it opens the date page, which shows the place to those who may see it. No other push carries a place either (`event.changed` says only that the place changed). | 5.12, 7.7, M3.13d |
 | DEC-137 | **Church branding: accent, header credit, and logo resize dep** (Grier, Nov 1, 2026; M4.2b). An admin-chosen accent that fails WCAG AA against white or stone is auto-darkened until it passes, and the admin is shown the adjusted color; unset keeps Fold Violet. The accent colors buttons, links and focus rings. Of the three header styles, "church name only" still keeps a tiny Fold credit in the footer. **`golang.org/x/image` (`draw`) is approved** as the only new Go dependency for server-side logo resize (Grier, Nov 1, 2026, 8:44 PM MT: "totally fine"; Wright M4.2b architecture). Logo upload security for v1 is in M4.2b (Warden review, Nov 1), not this DEC. | M4.2b, DEC-62, DEC-66 |
+| DEC-138 | **One baseline before the first church; additive-first after** (Grier, Nov 1, 2026; audit R9). While DEC-22 holds and no church has data in Fold, the 61-file migration chain is replaced by a single generated baseline, proved equal to the chain by a `pg_dump` diff. In the same window, `events.rrule_until` and `event_occurrences.original_date` become real `date` columns, while `events.starts_local` and `events.tzid` stay wall-clock text with CHECKs (the wall clock is the truth, C2), and exact-date access provenance moves from `occurrence_accesses` onto `registrations` (`access_*` columns; ended grants live in the audit log; `manager_add_blocks` stays, being organizer-scoped; DEC-74 and DEC-91 behavior unchanged). Editing the baseline is allowed only until the first tagged release or first church deployment, whichever comes first. From then on, schema changes are additive first and contracted in the next release, replacing the Oct 22 14-day expand/contract rule: one binary runs at a time, so no audit triggers or waiting period are needed. No conversion from a pre-squash database is offered; dev databases are recreated. | C1, C2, 5.3, 14.1, M0.1, M1.1a, M1.11, M1.14, M7.7 |
+| DEC-139 | **The big bets stand; fleet tooling at about five hosted churches, still not multi-tenancy** (Grier, Nov 1, 2026; audit R13). Reconsidered and kept: (1) single-tenant, one deployment per church, no `tenant_id` and no billing code (goal 3, 11.6, DEC-2, DEC-10) — hard isolation is the safeguarding story for teen and consent data, and one church's data can be handed over, moved or deleted as one database; (2) PostgreSQL only, in production, development and tests (DEC-1, DEC-24) — Fold builds on SKIP LOCKED, exclusion constraints, citext, jsonb and advisory locks (C14); (3) one Go binary serving the API and the embedded SPA (3.2, 5.1) — a church volunteer runs `docker compose up` and nothing else; (4) every permission check a pure function in `internal/policy` (section 6, C12); (5) stored notifications written in the change's own transaction (5.12), verified guest-link RSVP (C5), and safeguarding depth (5.10, 5.11, DEC-31) as the differentiator. Reversing any one of these before a first church is live is effort L for zero first-church value. When about five churches are hosted by the same operator, the answer is fleet tooling over separate deployments (11.6), not a multi-tenant rewrite. Reopen a bet only on evidence, recorded in a new DEC: for (1), an operator actually running about five hosted churches whose per-church upgrade, backup-check and secret-rotation work is measured and still painful after fleet tooling; for (2), a church that cannot run Docker at all, or a Postgres limit hit at real church scale; for (3), a deployment target the single binary cannot serve; for (4) or (5), a concrete rule the current shape cannot express. | 1, 3.2, 3.3, 5.1, 5.12, 6, 11.6, 11.9, C12, C14 |
+| DEC-140 | **One adapter per kind until a church demands a second; speculative surface cut** (Grier, Nov 1, 2026; audit R17). Goal 6's "two working options per kind by v1.0" is struck: Fold ships one real adapter per kind (plus `devoutbox` for tests) and adds a second only when a church asks for it, brings its own account (DEC-2) and cannot use the first. SMS v1 is therefore **Telnyx only** (M3.7–M3.9 unchanged); the Twilio adapter (old M3.10) is deferred until demanded — Twilio-only registration paths (sole-proprietor, toll-free) arrive with it, and "get a free EIN" stays the default advice until then (DEC-3). Render (old M5.5, DEC-26), the hash-chained durable audit log (old M6.14, DEC-33), ChMS roster sync (old M6.15, DEC-40) and the S3 storage adapter (old M4.7) are cut from the roadmap; DEC-26, DEC-33 and DEC-40 stay as the record of the reasoning, and each item re-enters only as a new milestone with a named church asking. The regular `AuditLog`, generic CSV people import (M4.5) and local-disk uploads behind `storage.Store` are the answers in the meantime. Online giving, fund accounting and contribution statements (13.3) and child check-in kiosks (old M6.4) are confirmed **out**, not later. The unused Go SMS counter is deleted; SMS counting lives in the composer's TypeScript (`web/src/lib/sms.ts`) until M3.7 wires a server caller. | 1, 2 (D8), 5.6, 5.7, 10.7, 12.5, 13.2, 14.2, M3.7, M4.8, M7.12 |
+| DEC-141 | **Room suggestions and direct-contact requests are frozen: no new cases, purposes or schema until a first church is live** (Grier, Nov 1, 2026; audit R19). The room-suggestion rule (9.3) is complete as shipped: Rules 1–5 and cases 1–13 are the whole rule, and it gains no new cases, signals, ranking inputs or `Room`/booking schema for suggestions. The direct-contact machinery (5.11) is likewise complete: `ContactRequest` keeps exactly its three purposes (`contact`, `group_add`, `occurrence_add`), no new purpose, field or lifecycle state is added, and `contact_requests`/`contact_grants` get no schema changes. Bug fixes that keep all 13 suggestion cases and every shipped safeguarding behavior are always in bounds; anything that would add a case, a purpose or a column waits until a first church is live and Grier lifts this freeze in a new DEC. Room conflicts and booking (9.2), `CanSeeContact`, the audited reveal and the admin contact history are not frozen — they are shipped safeguarding and stay maintained. The one structural change allowed inside the freeze is internal: per-request row locks replace the global contact advisory lock (R19), with no API, JSON, policy or schema change. | 5.11, 9.2, 9.3, M2.3, M1.11, M7.11 |
+| DEC-142 | **VPS + Compose stays the recommended deployment; Cloudflare supports, never hosts** (Grier, Nov 1, 2026; audit R1; reaffirms DEC-26). A Droplet-class VPS (DigitalOcean 2 GB in the US, Hetzner CX-class in the EU) running the Compose stack remains the clear winner after a fresh vendor comparison. Cloudflare cannot host Fold as shipped: Workers would mean rewriting the Go binary in another runtime, D1 is not PostgreSQL (DEC-1), and Containers would strand PostgreSQL or uploads on snapshot disk (or add a second database vendor) while an always-on job runner fights scale-to-zero billing. Cloudflare's roles are only: optional DNS host with the app record DNS-only so Caddy owns TLS (plus email-record automation), R2 as one encrypted offsite-backup target beside Backblaze B2, and Tunnel later for a church-owned box. Authenticated responses are never cached by any proxy. Managed platforms stay on-request, never the documented default. Evidence and vendor pages (fetched 2026-11-02): `docs/plan/briefs/audit-2026-11/R1-deployment.md` Part 1. | 11, 12.5, 12.6, 12.7, M5.1–M5.4 |
+| DEC-143 | **Generic people CSV import ships first; ChurchTrac mapping waits for a sample** (Grier, Nov 1, 2026; audit R2; reverses DEC-15's gate). M4.5 builds the generic spreadsheet pipeline now — dry-run preview before anything is created, background processing, imported adults get set-password invitations, never a file password — without waiting for a ChurchTrac export nobody has produced. A ChurchTrac column-mapping preset joins the same pipeline later, when a real sample exists. | M4.5, M6.11 |
+| DEC-144 | **Deleting an account erases the person** (Grier, Nov 1, 2026; audit R4). Account deletion anonymises or deletes every personal field and uploaded blob under a reviewed per-model inventory (all 38 models). Only an anonymous tombstone needed for audit and safeguarding integrity and past head-counts remains, and the inventory names exactly what stays and why. Keeping names, phone numbers, birth dates, photos or password hashes on a soft-deleted row does not meet 10.1's promise. Erasure reaches backups as they expire under retention, and the admin screen says that plainly. | 10.1, M7.4 |
+| DEC-145 | **Audit 2026-11 disposition** (Grier, Nov 1, 2026). The full-project audit (`docs/AUDIT-2026-11-01.md`) is answered: SEC1 and R1–R6, R9–R19 are approved, with coding-agent briefs in `docs/plan/briefs/audit-2026-11/` (start at its `00-index.md`) and milestones in 14.10. **R7 is rejected:** web push is not frozen and SMS stays a headline goal (DEC-121 stands). **R8 is rejected:** there is no open signup mode (DEC-4 stands). No new product surface beyond the approved briefs and existing milestones until a first church is live. SEC1 itself was fixed the same night (setup token + locked first-admin transaction; issue #240 closed). | 14.10, DEC-138–DEC-144 (DEC-137 is PR #236's branding decision) |
 
-The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
+The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56. DEC-138 to DEC-145 (Nov 1, 2026) record the full-project audit answers: baseline squash, reaffirmed big bets, one-adapter rule, rooms/contact freeze, hosting verdict, CSV-first import, erasure standard, and the disposition itself (DEC-145).
 
 ### 15.2 Still open
 

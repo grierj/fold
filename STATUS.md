@@ -2,7 +2,7 @@
 
 Claim a milestone here (in its own PR or commit) before starting it.
 
-Reconciled against merged history through [PR #163](https://github.com/grierj/fold/pull/163) (merge `62629fb`, Oct 29, 2026), plus post-merge source inspected through `6d689bb`. Source follow-ups below are distinguished from protected PR merge receipts; this documentation reconciliation is not a fresh full-suite acceptance or a production deployment. Product decisions run through DEC-87 in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
+Reconciled against merged history through [PR #163](https://github.com/grierj/fold/pull/163) (merge `62629fb`, Oct 29, 2026), plus post-merge source inspected through `6d689bb`. Source follow-ups below are distinguished from protected PR merge receipts; this documentation reconciliation is not a fresh full-suite acceptance or a production deployment. Product decisions run through DEC-145 in [PLAN.md](docs/plan/PLAN.md) (audit DEC-138–145 added Nov 1, 2026); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
@@ -82,6 +82,27 @@ or production-deployment receipts.
 - Query bounds and batching: membership/registration indexes (`bed03ee`), historical name batches (`4718307`), one site-name read per list (`e3af1e4`), bounded group detail dates (`1e3edb9`) and a group-date window control (`0c71791`, `2fe6654`; #176-B).
 - Locked authority: admin account insertion (`84f745b`; #164), group patch state and actor reauthorization (`a360ac6`, `c34215d`, `6236c6c`; #165), guest manage-link date access (`86eed96`; #166), and opened-date public-feed parent-detail privacy (`e10030f`; #167).
 - Abuse budgets and uniform work: shared authenticated password-proof reservations (`2d09ece`; #170), balanced guest signup work/deferred mail (`48eb274`; #168), and shedding throttled password-reset account work (`6d689bb`; #169).
+
+## Audit 2026-11 (Phase 7, approved Nov 1, 2026; DEC-138–DEC-145)
+
+Briefs: `docs/plan/briefs/audit-2026-11/00-index.md` (order and waves there).
+Claim a milestone here before starting, as usual.
+
+| Milestone | Status | Owner | Branch/PR |
+| --- | --- | --- | --- |
+| M7.1 Setup takeover verify/close (SEC1) | done (`28268b3`, merged in [#241](https://github.com/grierj/fold/pull/241)); [#240](https://github.com/grierj/fold/issues/240) closed; brief verify checklist is the record | Grier | `fix/secure-first-run-setup` |
+| M7.2 Privacy/session hardening (R5) | not started; brief ready | | |
+| M7.3 Secret rotation + expiring links (R12) | not started; brief ready | | |
+| M7.4 Account erasure (R4) | not started; brief ready (inventory first) | | |
+| M7.5 Notification outbox (R6) | not started; brief ready | | |
+| M7.6 Query ceilings + pool cap (R11) | not started; brief ready | | |
+| M7.7 Baseline squash (R9) | not started; brief ready; DEC-138 + counters landed in PLAN | | |
+| M7.8 People/own-data export (R3) | not started; brief ready (with M4.9) | | |
+| M7.9 Frontend speed/discoverability (R15) | not started; brief ready | | |
+| M7.10 Generated web types (R16) | not started; brief ready | | |
+| M7.11 Contact row locks (R19) | not started; brief ready; freeze DEC-141 landed | | |
+| M7.12 Cut execution + maintenance tax (R17.1/R18) | not started; brief ready; DEC-139/140 wording landed in PLAN | | |
+| Audit docs: AUDIT + briefs + DEC-138–145 + PLAN 14.10 | written Nov 1–2, 2026; rebased over #236/#241 | Muse | (docs; lands with this change) |
 
 ## Remaining follow-ups
 
