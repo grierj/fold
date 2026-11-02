@@ -173,7 +173,7 @@ func TestUsersTableIsEmailFirst(t *testing.T) {
 	app.DB.Raw(`SELECT column_name FROM information_schema.columns
 		WHERE table_name = 'users' ORDER BY column_name`).Scan(&cols)
 	want := "account_type administratively_disabled avatar_focal_x avatar_focal_y avatar_key birth_date created_at deleted_at display_name email hide_contact_from_leaders id " +
-		"name password_hash phone role session_version status timezone updated_at"
+		"logout_version name password_hash phone role session_version status timezone updated_at"
 	if got := strings.Join(cols, " "); got != want {
 		t.Fatalf("users columns:\n got %s\nwant %s", got, want)
 	}
@@ -896,5 +896,74 @@ func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Logout bumps the account's session_version (M7.2 slice b), so it signs the
+// account out on every device: a copied cookie replayed after logout is
+// refused, and so is another device's own session. Signing in again works.
+func TestLogoutSignsOutEveryDeviceAndCopiedCookies(t *testing.T) {
+	app := testApp(t)
+	sam := newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	laptop := loginAPI(t, app, "sam", "password1234")
+	phone := loginAPI(t, app, "sam", "password1234")
+	copied := newAPIClient(t, app)
+	for name, ck := range laptop.jar {
+		cp := *ck
+		copied.jar[name] = &cp
+	}
+	if w := laptop.do("POST", "/api/v1/auth/logout", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("logout: %d %s", w.Code, w.Body.String())
+	}
+	// Only the logout epoch moves: session_version is the credential epoch
+	// that emailed links (guardian consent) and push devices are bound to.
+	var after models.User
+	app.DB.First(&after, sam.ID)
+	if after.SessionVersion != sam.SessionVersion || after.LogoutVersion != sam.LogoutVersion+1 {
+		t.Fatalf("logout moved session_version %d->%d, logout_version %d->%d", sam.SessionVersion, after.SessionVersion, sam.LogoutVersion, after.LogoutVersion)
+	}
+	for name, c := range map[string]*apiClient{"copied cookie": copied, "other device": phone} {
+		if code := c.do("GET", "/api/v1/auth/me", nil, false).Code; code != http.StatusUnauthorized {
+			t.Fatalf("%s after logout: %d", name, code)
+		}
+	}
+	again := loginAPI(t, app, "sam", "password1234")
+	if code := again.do("GET", "/api/v1/auth/me", nil, false).Code; code != http.StatusOK {
+		t.Fatalf("sign in after logout: %d", code)
+	}
+	// A stale cookie's logout changes nothing: the new session survives it.
+	if w := phone.do("POST", "/api/v1/auth/logout", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("stale logout: %d", w.Code)
+	}
+	if code := again.do("GET", "/api/v1/auth/me", nil, false).Code; code != http.StatusOK {
+		t.Fatalf("a stale cookie's logout ended the new session: %d", code)
+	}
+}
+
+// Sign-in drops the CSRF token minted before it (M7.2 slice b): a token
+// fixed or leaked while signed out stops working once someone signs in.
+func TestLoginRotatesCSRFToken(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	c := newAPIClient(t, app)
+	c.fetchCSRF()
+	before := c.token
+	if w := c.do("POST", "/api/v1/auth/login", map[string]string{"email": testEmail("sam"), "password": "password1234"}, true); w.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	fresh := c.token // the helper refetched it after sign-in, as the SPA does
+	c.token = before
+	if w := c.do("POST", "/api/v1/auth/logout", nil, true); w.Code != http.StatusForbidden {
+		t.Fatalf("pre-login token after login: %d", w.Code)
+	}
+	c.token = fresh
+	if fresh == before {
+		t.Fatal("login kept the pre-login CSRF token")
+	}
+	if code := c.do("GET", "/api/v1/auth/me", nil, false).Code; code != http.StatusOK {
+		t.Fatalf("still signed in: %d", code)
+	}
+	if w := c.do("POST", "/api/v1/auth/logout", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("fresh token: %d %s", w.Code, w.Body.String())
 	}
 }

@@ -49,3 +49,23 @@ it("preserves the event window and opaque cursor when requesting another group e
     vi.unstubAllGlobals();
   }
 });
+
+it("fetches a fresh CSRF token after signing in, because the server rotates it", async () => {
+  vi.resetModules();
+  const { Auth, Groups } = await import("./api");
+  let minted = 0;
+  const sent: string[] = [];
+  const fetcher = vi.fn(async (url: RequestInfo | URL, opts?: RequestInit) => {
+    if (String(url) === "/api/v1/auth/csrf") return new Response(JSON.stringify({ csrfToken: `token-${++minted}` }), { status: 200 });
+    sent.push((opts?.headers as Record<string, string>)["X-CSRF-Token"]);
+    return new Response(JSON.stringify({ user: {} }), { status: 200 });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    await Auth.login("pat@example.com", "password1234");
+    await Groups.join(3);
+    expect(sent).toEqual(["token-1", "token-2"]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
