@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"log"
-	"net/url"
 	"strings"
 	"sync"
 
@@ -266,7 +265,7 @@ func vapidSubject(cfg Config) string {
 		return "mailto:" + from
 	}
 	// RFC 8292: a mailto: or an https: URL, never http.
-	if u, err := url.Parse(cfg.SiteURL); err == nil && u.Scheme == "https" && u.Host != "" {
+	if isHTTPSURL(cfg.SiteURL) {
 		return strings.TrimSuffix(cfg.SiteURL, "/")
 	}
 	return ""

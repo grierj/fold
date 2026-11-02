@@ -125,7 +125,7 @@ EOF
   (
     cd "$ROOT"
     export APP_ENV=prod PORT="$port" DATABASE_URL="$url" \
-      SESSION_SECRET="$secret" COOKIE_SECURE=false UPLOAD_DIR="$work/uploads" \
+      SESSION_SECRET="$secret" UPLOAD_DIR="$work/uploads" \
       FOLD_SETUP_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     exec setsid "$work/fold" serve
   ) >>"$work/server.log" 2>&1 &
