@@ -157,7 +157,7 @@ func serve(stderr io.Writer) int {
 	waitJobs := app.startJobs(ctx)
 	defer waitJobs()
 
-	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
+	srv := newHTTPServer(cfg, r)
 	go func() {
 		log.Printf("Starting server on :%s (env=%s)", cfg.Port, cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -172,6 +172,33 @@ func serve(stderr io.Writer) int {
 		log.Printf("Shutdown: %v", err)
 	}
 	return 0
+}
+
+// HTTP server limits (M7.2g). The largest honest request is a 5 MB photo from
+// a phone on church Wi-Fi, so 60 s to read it is generous. No route streams or
+// long-polls; background work runs through internal/jobs. Handlers that wait on
+// mail or a push service carry their own shorter deadlines (SMTP 30 s,
+// Postmark 15 s, push test 15 s), so none needs a longer server timeout.
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 60 * time.Second
+	httpWriteTimeout      = 60 * time.Second
+	httpIdleTimeout       = 120 * time.Second
+	httpMaxHeaderBytes    = 1 << 20
+)
+
+// newHTTPServer builds the production server with its timeouts, so a slow or
+// stalled client cannot hold a connection and its goroutine forever.
+func newHTTPServer(cfg Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
 }
 
 // newMailer picks the email adapter (5.6, M3.2) from the environment: see
