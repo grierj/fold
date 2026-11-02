@@ -8,6 +8,7 @@ import { ComingUp } from "../components/ComingUp";
 import { dayOf, formatTime, greeting } from "../lib/when";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useAuth } from "../auth";
+import heroSignedOut from "../assets/illustrations/hero-signed-out.svg";
 
 export function Home() {
   const { user, loading: authLoading } = useAuth();
@@ -56,17 +57,20 @@ export function Home() {
         </header>
       ) : (
         <header className="fold-page-header">
-          <div className="min-w-0 max-w-3xl">
-            <h1 className="text-3xl font-bold">Find your people. Grow in faith together.</h1>
-            {church && <p className="mt-2 font-medium">Welcome to {church}</p>}
-            <p className="mt-2 text-text-muted max-w-2xl">Small groups, ministries, and activities for your church. Join a group and show up.</p>
-            {!authLoading && site && (
-              <div className="mt-4 flex flex-wrap gap-3">
-                {site.selfSignup !== "off" && <ButtonLink variant="primary" to="/join" layout="w-full sm:w-auto">Request an account</ButtonLink>}
-                <ButtonLink variant="secondary" to="/calendar" layout="w-full sm:w-auto">Browse public events</ButtonLink>
-                <Button variant="link" onClick={() => setJump(true)}>Browse groups</Button>
-              </div>
-            )}
+          <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 max-w-3xl">
+              <h1 className="text-3xl font-bold">Find your people. Grow in faith together.</h1>
+              {church && <p className="mt-2 font-medium">Welcome to {church}</p>}
+              <p className="mt-2 text-text-muted max-w-2xl">Small groups, ministries, and activities for your church. Join a group and show up.</p>
+              {!authLoading && site && (
+                <div className="mt-4 flex flex-wrap gap-3">
+                  {site.selfSignup !== "off" && <ButtonLink variant="primary" to="/join" layout="w-full sm:w-auto">Request an account</ButtonLink>}
+                  <ButtonLink variant="secondary" to="/calendar" layout="w-full sm:w-auto">Browse public events</ButtonLink>
+                  <Button variant="link" onClick={() => setJump(true)}>Browse groups</Button>
+                </div>
+              )}
+            </div>
+            <img src={heroSignedOut} alt="" aria-hidden="true" width={480} height={280} decoding="async" className="mx-auto w-56 sm:mx-0 sm:w-72 shrink-0 h-auto" />
           </div>
         </header>
       )}
