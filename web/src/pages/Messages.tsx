@@ -14,6 +14,7 @@ import { Field, Select } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { Chip } from "../components/ui/Chip";
 import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 
 // The viewer's messages (M3.4c): drafts, scheduled and sent, newest change
@@ -105,6 +106,7 @@ export function MessagesPage() {
       )}
       {messages && messages.length === 0 && !search && !status && !cursor && !reminders && (allowed ? (
         <EmptyState
+          illustration={<Illustration name="empty-messages" />}
           title="No messages yet"
           body="Emails you write to your groups and events show up here: drafts, scheduled ones and sent ones."
           action={newButton}
