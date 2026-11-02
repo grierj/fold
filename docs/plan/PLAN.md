@@ -1530,7 +1530,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
 | v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
 | v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 (if v0.4 is already cut, M3.13 goes in v0.5, still before v0.7 SMS) |
-| v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
+| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
 | v0.8 Storage and CLI | S3 and private assets, `fold setup` | M4.7, M4.8 |
@@ -1950,7 +1950,32 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Later task (DEC-77): an admin setting `calendar_unanswered_window_days` (30, 60 or 90; default 30) for how far ahead unanswered public and church-wide dates show in Just mine, personal feeds and Everything. Audited like other settings; M1.14 ships the fixed 30-day default.
 - Follow-ups carried here (from UI makeover PR 8, Oct 18, 2026):
   - Keep the new wizard lazy-loaded and within the bundle budget. Admin and other less-used pages are already lazy-loaded; the original code-splitting follow-up is complete.
-  - Preserve the single header attribution when adding logo/brand settings; the old duplicate footer attribution is gone.
+  - Preserve the single header attribution when adding logo/brand settings; the old duplicate footer attribution is gone. Logo, accent color and header-style settings are owned by **M4.2b**.
+
+**M4.2b Branding and asset customization** (draft; decisions pending)
+- Depends on: M4.2 (wizard and settings), existing public `storage.Store` uploads (avatars and covers). S3 (M4.7) is not required; logos stay public like covers. Gilder's Fold-wide defaults (OG image, email header, category covers, favicon, push badge, signed-out hero, setup welcome) ship first and stay the fallback.
+- Scope: let each church brand Fold with its own logo, an optional accent color, and a header style, without breaking CSP or same-origin rules and without a CDN. Admins only. Expand-and-contract for any new settings columns (14.1). Thin slices (14.1): database and settings keys → upload/API and derivatives → admin UI and header → email / OG / manifest / favicon wiring → optional wizard step.
+  - **Church logo (admin upload).** One source file. Server validates type and size (sniff content, same pattern as avatars/covers), stores under a versioned public key (never edit in place; cache-bust like DEC-66's numbered brand files), and generates the sizes Fold needs: header mark, email header (`600×120` @2x), OG fallback (`1200×630`), PWA / manifest icons including maskable, apple-touch, and favicon. Email templates that show the logo use `alt` = the church name (`site_name`). Removing the logo falls every surface back to Gilder's defaults.
+  - **Optional accent color.** Admin may set one. Server checks WCAG AA contrast against white and against stone; reject or auto-adjust (open: which). If unset or invalid, Fold Violet (`#7f47c7`) stays. Accent never becomes a CDN font or remote stylesheet; CSS variables or Tailwind tokens only, same-origin.
+  - **Header style** (Grier, Oct 14 direction; keeps DEC-62's quiet attribution unless the church picks otherwise): (1) church name only; (2) church name with a quiet "powered by Fold" subscript (today's default); (3) big Fold mark with the church name. Manifest `name` / `short_name` rules stay as today (church name from `site_name`, DEC-124); only the icons swap when a logo is present.
+  - **What is church-configurable vs Fold-wide.** Configurable: logo (and its derivatives), accent color, header style. Fold-wide defaults (Gilder, swappable files under `web/src/assets` and `web/public/assets/brand/` per DEC-66): category covers, empty/error/setup illustrations, push badge, default favicon and OG image, until or unless the church logo replaces the brand marks above. No credentials in assets.
+  - **Admin UI and wizard.** Settings live on an Admin branding page (or a Branding card on Admin Settings). Upload, preview, remove logo; pick header style; pick or clear accent. Optional setup-wizard step after the church name so a first admin can upload a logo and pick a header style, skippable, stored in `SetupState`. Every change writes an `AuditLog` row (who, what changed, old → new summary; no binary blobs in the log).
+  - **Serving and CSP.** All brand URLs are same-origin (`/uploads/...` or app-served brand routes). No new CDN, no inline styles, no new npm/Go image dependency unless Wright justifies one and reuses the existing upload resize path first. Uploaded brand files get long-cache headers with cache-busting keys; defaults under `public/assets/` keep the DEC-66 year-cache + new-number rule.
+- Acceptance:
+  - [ ] With no logo and no accent, every surface matches today's Fold defaults (header, email, OG, favicon, manifest icons, push badge)
+  - [ ] An admin can upload a logo; the header, email header, OG fallback, favicon and manifest icons update; `alt` on the email logo is the church name
+  - [ ] Removing the logo restores Gilder defaults on every surface without a redeploy
+  - [ ] Accent unset → Fold Violet; set → passes AA against white and stone or is rejected/adjusted per the decided rule
+  - [ ] Each of the three header styles renders at 390 / 768 / 1280 without clipping the church name or breaking the 44px targets
+  - [ ] Non-admins cannot change branding (403); uploads sniff type and enforce size limits
+  - [ ] Logo and branding setting changes write `AuditLog` rows
+  - [ ] Wizard step is optional/skippable and resumes correctly after a browser close
+  - [ ] No CSP / CDN regression; `npm run build` and typecheck stay green; no new dependency unless justified in the PR
+- Tests: upload reject/accept tests (type sniff, size, non-admin); derivative smoke tests; settings round-trip; header-style component tests at the three widths; email template golden or render test with logo `alt`; accent contrast unit tests; audit-log assertions.
+- **Open questions (decisions pending; not a DEC yet)**
+  - **Wright / Codex (architecture):** where branding settings live (`Setting` keys vs a small `BrandSettings` row); public path shape and cache-busting for derivatives; whether to generate derivatives synchronously on upload or via a job; reuse vs justify any image library; how accent reaches Tailwind without inline styles or a CSP hole; whether the optional wizard step is before or after safeguarding; how OG tags pick church logo vs event/group cover when both exist.
+  - **Warden (security):** allow SVG uploads at all? If yes, which sanitizer and deny-list (scripts, foreign resources, huge paths)? Prefer PNG/JPEG-only for v1? Size and dimension caps; rate limits on replace; confirm logos stay public and never accept a remote image URL (DEC-49); audit fields that must not store file bytes.
+  - **Product (Grier, when needed):** exact accent behavior on reject vs auto-adjust; whether accent recolors buttons only or also links/focus rings; whether header style (3) keeps any "powered by Fold" mark.
 
 **M4.3 Legal pages**
 - Depends on: M4.2
@@ -2247,6 +2272,7 @@ The five questions left open in draft v2 are all answered: intermediate override
 - DEC-76: where and how members discover public events outside their own groups.
 - DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to rename “private” groups. Until decided, active teens and contact-hidden adults remain searchable; private groups remain visible to signed-in members.
 - DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no write-back are already decided.
+- M4.2b branding: logo upload rules (SVG or not), accent reject vs adjust, header-style details, and the architecture notes listed under that milestone. No DEC yet; decisions pending.
 
 The original notification questions and retention are settled by DEC-44/45. Delivery gaps and future consumers are tracked separately, not invented product decisions.
 
