@@ -185,7 +185,9 @@ export const ERROR_COPY = {
 
   // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",
-  file_type: "That file isn't a picture we can use. Try a JPEG, PNG, GIF, or WebP.",
+  file_type: "That kind of image isn't supported. Try a JPEG or PNG.",
+  image_unsupported: "WebP pictures aren't supported yet. Try a JPEG or PNG instead.",
+  image_too_large: "That picture is too big to use. Try a smaller one, or one with fewer animation frames.",
   file_unreadable: "We couldn't read that file. Try another picture.",
 
   // Form fields
