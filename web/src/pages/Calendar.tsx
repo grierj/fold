@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Calendar, Groups } from "../api";
 import { useAuth } from "../auth";
@@ -52,6 +52,9 @@ export function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersId = useId();
+  const filtersButton = useRef<HTMLButtonElement>(null);
 
   const toolbar = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -127,6 +130,14 @@ export function CalendarPage() {
   const showChildcare = childcare || (loaded && anyChildcare);
   const weekCount = weekDays.reduce((n, d) => n + (byDay.get(d)?.length ?? 0), 0);
   const groupName = groups.find((g) => String(g.id) === group)?.name ?? "this group";
+  const filterSummary = [
+    mine && "Just mine",
+    remote && "Remote seats",
+    childcare && "Childcare",
+    deleted && "Show deleted events",
+    view === "agenda" && date !== today && `From ${formatDayHeading(date, zone)}`,
+    church ? "Church-wide events" : group && groupName,
+  ].filter(Boolean).join(" · ") || "No filters";
 
   return (
     <div className="fold-page">
@@ -156,33 +167,42 @@ export function CalendarPage() {
             </Button>
           </div>
         )}
-        <div className="flex flex-wrap items-end gap-3">
-          {user && (
-            <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
-              Just mine
-            </Chip>
-          )}
-          {showRemote && (
-            <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
-              Remote seats
-            </Chip>
-          )}
-          {showChildcare && <Chip selected={childcare} onClick={() => go({ childcare: childcare ? null : "1" })}>Childcare</Chip>}
-          {isAdmin && (
-            <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>
-              Show deleted events
-            </Chip>
-          )}
-          {view === "agenda" && <div className="min-w-40 flex-1 sm:max-w-48"><Field label="From date"><Input type="date" value={date} onChange={(e) => go({ date: e.target.value || null })} /></Field></div>}
-          <div className="min-w-48 flex-1 sm:ml-auto sm:max-w-56">
-            <Field label="Group">
-              <Select
-                value={church ? "church" : group}
-                onChange={(e) => go({ group: e.target.value === "church" ? null : e.target.value || null, church: e.target.value === "church" ? "1" : null })}
-                options={[{ value: "", label: "All groups" }, { value: "church", label: "Church-wide events" }, ...groups.map((g) => ({ value: String(g.id), label: g.name }))]}
-              />
-            </Field>
+        <div className="flex items-center gap-3">
+          <Button ref={filtersButton} variant="secondary" aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(!filtersOpen)}>
+            Filters
+          </Button>
+          {!filtersOpen && <p className="min-w-0 truncate text-sm text-text-muted" title={filterSummary}>{filterSummary}</p>}
+        </div>
+        <div id={filtersId} hidden={!filtersOpen} className="py-4">
+          <div className="flex flex-wrap items-end gap-3">
+            {user && (
+              <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
+                Just mine
+              </Chip>
+            )}
+            {showRemote && (
+              <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
+                Remote seats
+              </Chip>
+            )}
+            {showChildcare && <Chip selected={childcare} onClick={() => go({ childcare: childcare ? null : "1" })}>Childcare</Chip>}
+            {isAdmin && (
+              <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>
+                Show deleted events
+              </Chip>
+            )}
+            {view === "agenda" && <div className="min-w-40 flex-1 sm:max-w-48"><Field label="From date"><Input type="date" value={date} onChange={(e) => go({ date: e.target.value || null })} /></Field></div>}
+            <div className="min-w-48 flex-1 sm:ml-auto sm:max-w-56">
+              <Field label="Group">
+                <Select
+                  value={church ? "church" : group}
+                  onChange={(e) => go({ group: e.target.value === "church" ? null : e.target.value || null, church: e.target.value === "church" ? "1" : null })}
+                  options={[{ value: "", label: "All groups" }, { value: "church", label: "Church-wide events" }, ...groups.map((g) => ({ value: String(g.id), label: g.name }))]}
+                />
+              </Field>
+            </div>
           </div>
+          <Button variant="secondary" layout="mt-4" onClick={() => { setFiltersOpen(false); filtersButton.current?.focus(); }}>Done with filters</Button>
         </div>
       </div>
 

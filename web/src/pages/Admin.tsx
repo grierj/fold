@@ -1056,7 +1056,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           action={<Button variant="secondary" onClick={() => { setQuery(""); setFilter("all"); }}>Clear search and filter</Button>}
         />
       )}
-      {/* Below md each user is a stacked card with Edit and More (PR #65
+      {/* Below md each user is a stacked card with More (PR #65
           review F1); from md up it's a table. */}
       {/* Not overflow-hidden: a row's More menu must be able to open past the card. */}
       {(users.length === 0 || shown.length > 0) && <div className="bg-surface border-y border-border overflow-visible">
@@ -1132,15 +1132,12 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   )}
                 </td>
                 <td className="flex flex-wrap gap-2 px-4 pt-2 pb-3 md:table-cell md:py-3 md:text-right md:whitespace-nowrap">
-                  <Button variant="ghost" size="sm" onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}>
-                    Edit
-                  </Button>
-                  {/* Edit is the row's one action; the rest live in More (DEC-63).
-                      Your own row has no Disable or Delete: the server refuses both. */}
+                  {/* Your own row has no Disable or Delete: the server refuses both. */}
                   <Menu
                     tone="quiet"
                     label={`More for ${u.displayName || u.name}`}
                     items={[
+                      { label: "Edit", onSelect: () => { setEditingId(u.id); setResetId(null); setCreating(false); } },
                       { label: "Contact access history", onSelect: () => void openContactHistory(u), disabled: busy },
                       { label: "Copy person ID", onSelect: () => void copyPersonId(u), disabled: busy },
                       ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
@@ -1151,6 +1148,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                         {
                           label: u.status === "disabled" ? "Enable" : "Disable",
                           onSelect: () => (u.status === "disabled" ? void setStatus(u, "active") : setLeaving({ id: u.id, action: "disable" })),
+                          danger: u.status !== "disabled",
                           disabled: busy,
                         },
                         {
