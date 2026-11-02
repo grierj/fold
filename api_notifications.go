@@ -469,6 +469,7 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 		Data:            map[string]any{"requestId": req.ID},
 		DedupeKey:       fmt.Sprintf("account.requested:%d", req.ID),
 		SuppressActions: !eligible,
+		BellOnly:        flags.Duplicate || flags.Honeypot,
 	})
 }
 
@@ -805,55 +806,15 @@ func (a *App) actorName(id *uint) string {
 }
 
 // ---------------------------------------------------------------------------
-// Email delivery (5.12, M1.2). Kinds marked AllowEmail send a transactional
-// email through the minimal sender right after the writing transaction
-// commits, with no delay. Each send is recorded in
-// notification_deliveries. Sensitive kinds use the link-only RenderEmailSafe
-// variant, which names nobody. The 15-minute "if not seen" escalation waits
-// for the jobs table (M3.1). Delivery failures are logged, never returned:
-// the notification row is already committed.
+// Email delivery (5.12, M1.2). notify.deliver uses these recipient facts and
+// rendering helpers. Sensitive kinds use the link-only RenderEmailSafe
+// variant, which names nobody. The legacy send helpers remain until the
+// post-commit callers have been removed.
 // ---------------------------------------------------------------------------
 
-// deliverNotificationEmails sends email for the AllowEmail kinds among ids,
-// first queuing web push for the AllowPush kinds (M3.13b), so every
-// notify.Send caller gets push from the call it already makes. Call it
-// after the writing transaction committed, never inside it.
-func (a *App) deliverNotificationEmails(ids []uint) {
-	a.queuePushDeliveries(ids)
-	if len(ids) == 0 || a.Mailer == nil {
-		return
-	}
-	ctx := context.Background()
-	// Two reads for the whole batch, not two per recipient (#76 follow-up):
-	// the rows, then their recipients. A row missing here was rolled back
-	// or pruned after commit; there is nothing to send for it.
-	var rows []models.Notification
-	if err := a.DB.Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
-		log.Printf("notification email: loading %d notifications: %v", len(ids), err)
-		return
-	}
-	userIDs := make([]uint, 0, len(rows))
-	for _, n := range rows {
-		if k, ok := notify.Lookup(n.Kind); ok && k.AllowEmail {
-			userIDs = append(userIDs, n.UserID)
-		}
-	}
-	if len(userIDs) == 0 {
-		return
-	}
-	// One read for every recipient (DEC-97, DEC-112), shared with the
-	// single-notice job. A failure marks nothing: without a delivery
-	// record the rows stay pending, so a later pass can still send them.
-	users, err := readEmailRecipients(a.DB, userIDs)
-	if err != nil {
-		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
-		return
-	}
-	byID, optOuts, suppressed, footer := indexEmailRecipients(users)
-	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID], footer)
-	}
-}
+// deliverNotificationEmails remains while callers are migrated. Send now writes
+// durable delivery intent in its transaction; post-commit calls must send nothing.
+func (a *App) deliverNotificationEmails(ids []uint) {}
 
 // readEmailRecipients loads each account with the email consent scopes they
 // opted out of (DEC-97), the address's open suppressions (DEC-112), and the
@@ -938,7 +899,7 @@ type emailRecipient struct {
 
 // emailOptOuts maps each user to the email consent scopes whose latest
 // record opts out (5.12, DEC-97). Delivery reads the same thing alongside
-// each recipient's account (deliverNotificationEmails).
+// each recipient's account (readEmailRecipient).
 func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error) {
 	var rows []models.Consent
 	if err := db.Raw(`SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents

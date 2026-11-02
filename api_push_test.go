@@ -481,7 +481,7 @@ func TestPushNotificationSettings(t *testing.T) {
 	// still pushes (a real notify.Send, queued after commit).
 	optional := sendNotice(t, app, notify.GroupApproved, u)
 	required := sendNotice(t, app, notify.TeenConsentChanged, u)
-	app.deliverNotificationEmails([]uint{optional, required})
+	drainNotices(t, app)
 	drainJobs(t, app)
 	if status, reason := pushDelivery(t, app, optional); status != models.DeliverySuppressed || reason != "push turned off for group updates" {
 		t.Errorf("optional: %q %q", status, reason)
@@ -617,7 +617,7 @@ func TestPushAdminSwitchSkipsLeadershipChanges(t *testing.T) {
 	apiDo(t, admin, "PUT", "/api/v1/me/notification-settings", map[string]any{"channel": "push", "category": "admin", "off": true}, http.StatusOK)
 	leader := sendNotice(t, app, notify.LeadershipChanged, &adminUser)
 	task := sendNotice(t, app, notify.GroupPending, &adminUser)
-	app.deliverNotificationEmails([]uint{leader, task})
+	drainNotices(t, app)
 	drainJobs(t, app)
 	if status, reason := pushDelivery(t, app, leader); status != models.DeliverySuppressed || reason != "push turned off for admin notices" {
 		t.Errorf("leadership change: %q %q", status, reason)

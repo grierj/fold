@@ -2,6 +2,7 @@ package main
 
 import (
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
 	var jobs []func()
 	app.background = func(f func()) { jobs = append(jobs, f) }
 	anon := anonClient(t, app, "10.1.0.1")
+	anon.holdNotices = true
 	for _, email := range []string{member.Email, "new@example.com"} {
 		w := anon.do("POST", "/api/v1/account-requests", signupBody("Person", email, "adult", ""), true)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
@@ -31,6 +33,7 @@ func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
 	for _, job := range jobs {
 		job()
 	}
+	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", admin.Email} {
 		if n := mailsTo(app, email); n != 1 {
 			t.Fatalf("background mail for %s: %d", email, n)
@@ -686,5 +689,63 @@ func TestRateLimitedInviteFriendAnswersWithItsOwnMessage(t *testing.T) {
 	}
 	if n := requestCount(t, app, "fran@example.com"); n != 0 {
 		t.Fatalf("limited invite stored %d rows", n)
+	}
+}
+
+// #91: duplicate and honeypot requests reach the bell, without email or push.
+func TestDuplicateAccountRequestSendsNothing(t *testing.T) {
+	for _, path := range []string{"duplicate", "honeypot"} {
+		t.Run(path, func(t *testing.T) {
+			app, fake := pushTestApp(t)
+			admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			pushConsentRow(t, app, admin, "all", models.ConsentOptedIn)
+			newPushDevice(t, app, admin, "phone")
+			const email = "requester@example.com"
+			if path == "duplicate" {
+				// The original pending request already exists; this submit earns
+				// a separate flagged bell row and no new delivery duty.
+				if err := app.DB.Create(&models.AccountRequest{
+					Name: "Original", Email: email, AccountType: models.AccountAdult,
+					Source: models.RequestSelfSignup, Status: models.RequestPending,
+					ExpiresAt: time.Now().Add(requestLifetime),
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			client := anonClient(t, app, "10.80.0.1")
+			client.holdNotices = true
+			body := signupBody("Requester", email, "adult", "")
+			if path == "honeypot" {
+				body["website"] = "https://spam.example"
+			}
+			w := client.do("POST", "/api/v1/account-requests", body, true)
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
+				t.Fatalf("submit: %d %s", w.Code, w.Body.String())
+			}
+			var req models.AccountRequest
+			if err := app.DB.Where("email = ?", email).Order("id DESC").First(&req).Error; err != nil {
+				t.Fatal(err)
+			}
+			flags := parseRequestFlags(req.Flags)
+			if (path == "duplicate" && !flags.Duplicate) || (path == "honeypot" && !flags.Honeypot) {
+				t.Fatalf("flags: %+v", flags)
+			}
+			note := adminNotification(t, app, admin.ID, req.ID)
+			if note.Actions != "[]" {
+				t.Fatalf("flagged notice actions: %s", note.Actions)
+			}
+			drainNotices(t, app)
+			d := emailDeliveryOf(t, app, note.ID)
+			if d.Status != models.DeliverySuppressed || d.Reason != "bell only" {
+				t.Fatalf("bell-only ledger: %+v", d)
+			}
+			var count int64
+			if err := app.DB.Model(&models.Job{}).Where("kind = ?", notify.DeliverKind).Count(&count).Error; err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 || len(pushJobsFor(t, app, note.ID)) != 0 || mailCount(t, app, "") != 0 || fake.total() != 0 {
+				t.Fatalf("flagged request sent something: %d notify jobs, %d mail, %d pushes", count, mailCount(t, app, ""), fake.total())
+			}
+		})
 	}
 }

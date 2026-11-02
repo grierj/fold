@@ -14,6 +14,8 @@ import (
 	"fold/internal/notify"
 	"fold/internal/providers"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // notifyFailSender is a mailer whose error and call count a test sets.
@@ -60,13 +62,8 @@ func (notifyPlainSender) Send(context.Context, mail.Message) error { return nil 
 func seedNotifyDeliver(t *testing.T, app *App, u *models.User, attempts int) (uint, models.Job) {
 	t.Helper()
 	id := sendNotice(t, app, notify.GroupApproved, u)
-	if err := app.DB.Create(&models.NotificationDelivery{
-		NotificationID: id, Channel: models.DeliveryEmail, UserID: u.ID, Status: models.DeliveryQueued,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	key := "notify.deliver:" + strconv.FormatUint(uint64(id), 10)
-	if _, err := jobs.Enqueue(app.DB, notify.DeliverKind, notifyDeliverJob{NotificationID: id}, time.Now(), key, attempts); err != nil {
+	key := notify.DeliverKey(id)
+	if err := app.DB.Model(&models.Job{}).Where("unique_key = ?", key).Update("max_attempts", attempts).Error; err != nil {
 		t.Fatal(err)
 	}
 	var job models.Job
@@ -575,5 +572,85 @@ func TestNotifyDeliverLedgerCases(t *testing.T) {
 				t.Fatal("missing last error")
 			}
 		})
+	}
+}
+
+func TestNotifyDeliverRunThenMergeKeepsSent(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	id, job := seedNotifyDeliver(t, app, u, 8)
+	runNotifyOnce(t, app)
+	before := emailDeliveryOf(t, app, id)
+	if before.Status != models.DeliverySent || mailCount(t, app, u.Email) != 1 {
+		t.Fatalf("first send: %+v", before)
+	}
+	// Production merge locks the notification, then the delivery row, before
+	// replacing its text. A send that finished first must stay terminal.
+	if err := app.DB.Transaction(func(tx *gorm.DB) error {
+		var n models.Notification
+		if err := tx.Raw("SELECT * FROM notifications WHERE id = ? FOR UPDATE", id).Scan(&n).Error; err != nil {
+			return err
+		}
+		var held uint
+		if err := tx.Raw("SELECT id FROM notification_deliveries WHERE notification_id = ? AND channel = 'email' FOR UPDATE", id).Scan(&held).Error; err != nil {
+			return err
+		}
+		return tx.Model(&n).Update("email_title", "Merged after sending").Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.deliverOneNotification(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	after := emailDeliveryOf(t, app, id)
+	if after.Status != models.DeliverySent || after.ID != before.ID || after.SentAt == nil || !after.SentAt.Equal(*before.SentAt) || mailCount(t, app, u.Email) != 1 {
+		t.Fatalf("after merge: %+v", after)
+	}
+	var count int64
+	if err := app.DB.Model(&models.Job{}).Where("kind = ?", notify.DeliverKind).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || reloadJob(t, app, job.ID).Status != models.JobDone {
+		t.Fatalf("jobs after merge: %d", count)
+	}
+}
+
+func TestDrainNoticesLeavesOtherKindsAndHonorsLater(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	id, job := seedNotifyDeliver(t, app, u, 8)
+	for _, kind := range []string{kindPushDeliver, kindMessageSend} {
+		if _, err := jobs.Enqueue(app.DB, kind, nil, time.Now(), kind+":unrelated", 8); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	var held uint
+	if err := tx.Raw("SELECT id FROM notification_deliveries WHERE notification_id = ? AND channel = 'email' FOR UPDATE", id).Scan(&held).Error; err != nil {
+		t.Fatal(err)
+	}
+	drainNotices(t, app)
+	got := reloadJob(t, app, job.ID)
+	if got.Status != models.JobQueued || got.Attempts != 0 || got.LastError != "" || !got.RunAt.After(time.Now()) {
+		t.Fatalf("Later consumed an attempt or failed: %+v", got)
+	}
+	var unrelated []models.Job
+	if err := app.DB.Where("kind <> ?", notify.DeliverKind).Find(&unrelated).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(unrelated) != 2 {
+		t.Fatalf("unrelated jobs: %+v", unrelated)
+	}
+	for _, j := range unrelated {
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.LockedAt != nil || j.LastError != "" || j.RunAt.After(time.Now()) {
+			t.Fatalf("claimed or postponed another kind: %+v", j)
+		}
+	}
+	if n := mailCount(t, app, ""); n != 0 {
+		t.Fatalf("sent while held: %d", n)
 	}
 }

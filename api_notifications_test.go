@@ -592,16 +592,24 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 		t.Fatalf("notices sent = %d, want 30", len(ids))
 	}
 
-	// Delivering them after commit reads the recipients' push devices once
-	// (M3.13b), then the rows and their recipients once for email: three
-	// reads, not some per person.
-	counter = countDBReads(t, app.DB)
-	app.deliverNotificationEmails(ids)
-	mailReads := counter.Reads()
-	counter.Stop()
-	t.Logf("cancel-date reads %d + delivery reads %d", reads, mailReads)
-	if mailReads > 3 || reads+mailReads > 13 {
-		t.Fatalf("cancel plus delivery used %d + %d reads for 30 registrants, want delivery <= 3 and total <= 13", reads, mailReads)
+	// Delivery now runs once per notice. Keep the cancellation query bound
+	// above, and check the durable fan-out and outcomes separately.
+	var queued int64
+	if err := app.DB.Model(&models.NotificationDelivery{}).
+		Where("notification_id IN ? AND channel = ? AND status = ?", ids, models.DeliveryEmail, models.DeliveryQueued).Count(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if queued != 30 {
+		t.Fatalf("queued delivery intents = %d, want 30", queued)
+	}
+	drainNotices(t, app)
+	var sent int64
+	if err := app.DB.Model(&models.NotificationDelivery{}).
+		Where("notification_id IN ? AND channel = ? AND status = ?", ids, models.DeliveryEmail, models.DeliverySent).Count(&sent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sent != 30 {
+		t.Fatalf("sent deliveries = %d, want 30", sent)
 	}
 
 	var notes []models.Notification
@@ -628,19 +636,12 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 	}
 }
 
-// When the recipients can't be read, delivery stops without recording
-// anything: no email, no "suppressed" row, so the notification stays
-// pending for a later pass (Whittler on #87).
+// A failed recipient read leaves durable queued intent and a failed job.
+// Making that job due again sends without a caller retaining the notice ID.
 func TestDeliveryRecipientsReadFailureLeavesRowsPending(t *testing.T) {
 	app := testApp(t)
 	u := newTestUser(t, app, "pat", "password1234", models.RoleMember)
-	n := models.Notification{
-		UserID: u.ID, Kind: notify.OccurrenceCancelled, Category: notify.CatEvents,
-		Title: "Cancelled", EmailTitle: "Cancelled", Link: "/events/1",
-	}
-	if err := app.DB.Create(&n).Error; err != nil {
-		t.Fatal(err)
-	}
+	id := sendNotice(t, app, notify.OccurrenceCancelled, u)
 	const name = "test:fail_users_read"
 	if err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
 		if tx.Statement.Table == "users" {
@@ -649,24 +650,34 @@ func TestDeliveryRecipientsReadFailureLeavesRowsPending(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	app.deliverNotificationEmails([]uint{n.ID})
+	t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(name) })
+	drainNotices(t, app)
 	_ = app.DB.Callback().Query().Remove(name)
-
-	var deliveries int64
-	app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", n.ID).Count(&deliveries)
-	if deliveries != 0 {
-		t.Fatalf("recipients read failed but %d delivery rows were written", deliveries)
+	if d := emailDeliveryOf(t, app, id); d.Status != models.DeliveryQueued {
+		t.Fatalf("recipient read failed but delivery is %+v", d)
 	}
-	var sent int64
-	app.DB.Model(&models.MailOutbox{}).Count(&sent)
-	if sent != 0 {
-		t.Fatalf("recipients read failed but %d emails went out", sent)
+	var job models.Job
+	if err := app.DB.Where("unique_key = ?", notify.DeliverKey(id)).First(&job).Error; err != nil {
+		t.Fatal(err)
 	}
-	// The row was left pending: the next pass sends it.
-	app.deliverNotificationEmails([]uint{n.ID})
-	app.DB.Model(&models.MailOutbox{}).Count(&sent)
-	if sent != 1 {
-		t.Fatalf("retry after the failure sent %d emails, want 1", sent)
+	if job.Status != models.JobFailed || job.Attempts != 1 || !strings.Contains(job.LastError, "users table unavailable") {
+		t.Fatalf("read failure job: %+v", job)
+	}
+	if n := mailCount(t, app, ""); n != 0 {
+		t.Fatalf("recipient read failed but %d emails went out", n)
+	}
+	if err := app.DB.Model(&job).Update("run_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	drainNotices(t, app)
+	if n := mailCount(t, app, ""); n != 1 {
+		t.Fatalf("retry sent %d emails, want 1", n)
+	}
+	if d := emailDeliveryOf(t, app, id); d.Status != models.DeliverySent {
+		t.Fatalf("retried delivery: %+v", d)
+	}
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.Attempts != 2 {
+		t.Fatalf("retried job: %+v", got)
 	}
 }
 

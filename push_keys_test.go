@@ -137,7 +137,7 @@ func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 		t.Fatal("no audit row")
 	}
 	// The notice goes by email after commit, like other admin notices.
-	app.deliverNotificationEmails(notices)
+	drainNotices(t, app)
 	if m := latestEmail(t, app, admin.Email); !strings.Contains(m.Subject, "Notifications on devices were reset") {
 		t.Fatalf("email %q", m.Subject)
 	}

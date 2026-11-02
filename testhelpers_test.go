@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/testdb"
@@ -17,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -165,17 +169,19 @@ func newTestUser(t *testing.T, app *App, name, password, role string) *models.Us
 
 // apiClient wraps a router with cookie-jar + CSRF handling for API tests.
 type apiClient struct {
-	t      *testing.T
-	router http.Handler
-	jar    map[string]*http.Cookie
-	token  string
-	ip     string // client address for requests; empty uses httptest's default
-	ua     string // User-Agent for requests; empty sends none
+	app         *App
+	holdNotices bool // leave durable notification jobs queued for explicit assertions
+	t           *testing.T
+	router      http.Handler
+	jar         map[string]*http.Cookie
+	token       string
+	ip          string // client address for requests; empty uses httptest's default
+	ua          string // User-Agent for requests; empty sends none
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
 	t.Helper()
-	return &apiClient{t: t, router: app.setupRouter(), jar: map[string]*http.Cookie{}}
+	return &apiClient{t: t, app: app, router: app.setupRouter(), jar: map[string]*http.Cookie{}}
 }
 
 func (c *apiClient) fetchCSRF() {
@@ -236,6 +242,9 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 	// the server rotates it there (M7.2 slice b).
 	if csrf && signInPaths[path] && setsCookie(w, sessionName) {
 		c.fetchCSRF()
+	}
+	if !c.holdNotices && c.app != nil {
+		drainNotices(c.t, c.app)
 	}
 	return w
 }
@@ -709,8 +718,60 @@ func findKind(ns []notificationJSON, kind string) *notificationJSON {
 	return nil
 }
 
+// drainNotices gives handler tests the old immediate outbox behaviour without
+// claiming push, message, or other jobs as unknown kinds. Failures wait an hour
+// so a failing sender cannot keep this loop busy. Later keeps its due time.
+func drainNotices(t *testing.T, app *App) {
+	t.Helper()
+	kinds := map[string]jobs.Kind{}
+	var names []string
+	for _, k := range app.notifyKinds() {
+		kinds[k.Name] = k
+		names = append(names, k.Name)
+	}
+	for {
+		var job models.Job
+		err := app.DB.Raw(`UPDATE jobs SET status = ?, locked_at = now(), locked_by = ?, attempts = attempts + 1, updated_at = now()
+			WHERE id = (SELECT id FROM jobs WHERE kind IN ? AND
+				((status IN (?, ?) AND run_at <= now()) OR (status = ? AND locked_at < now() - make_interval(secs => ?)))
+				ORDER BY run_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
+			RETURNING *`, models.JobRunning, "test:notices", names,
+			models.JobQueued, models.JobFailed, models.JobRunning, jobs.DefaultLease.Seconds()).Scan(&job).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.ID == 0 {
+			return
+		}
+		runErr := kinds[job.Kind].Run(context.Background(), json.RawMessage(job.Payload))
+		updates := map[string]any{"status": models.JobDone, "locked_at": nil, "last_error": "", "updated_at": time.Now()}
+		if runErr != nil {
+			updates["status"] = models.JobFailed
+			updates["last_error"] = jobs.CleanError(runErr)
+			updates["run_at"] = time.Now().Add(time.Hour)
+			// Later's concrete type is private to jobs. Parse its public error
+			// string and confirm its identity, including wrapped errors.
+			for e := runErr; e != nil; e = errors.Unwrap(e) {
+				stamp, ok := strings.CutPrefix(e.Error(), "not due until ")
+				at, parseErr := time.Parse(time.RFC3339, stamp)
+				if ok && parseErr == nil && reflect.TypeOf(e) == reflect.TypeOf(jobs.Later(at)) {
+					updates["status"] = models.JobQueued
+					updates["attempts"] = gorm.Expr("attempts - 1")
+					updates["last_error"] = ""
+					updates["run_at"] = at
+					break
+				}
+			}
+		}
+		if err := app.DB.Model(&models.Job{}).Where("id = ? AND status = ? AND locked_by = ?", job.ID, models.JobRunning, "test:notices").Updates(updates).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func devOutbox(t *testing.T, app *App) *mail.DevOutbox {
 	t.Helper()
+	drainNotices(t, app)
 	ob, ok := mail.Unwrap(app.Mailer).(*mail.DevOutbox)
 	if !ok {
 		t.Fatal("test app has no devoutbox mailer")
@@ -720,6 +781,7 @@ func devOutbox(t *testing.T, app *App) *mail.DevOutbox {
 
 func latestEmail(t *testing.T, app *App, to string) mail.OutboxMessage {
 	t.Helper()
+	drainNotices(t, app)
 	m, err := devOutbox(t, app).LatestTo(to)
 	if err != nil {
 		t.Fatalf("no email to %s: %v", to, err)
@@ -879,4 +941,12 @@ func setsCookie(w *httptest.ResponseRecorder, name string) bool {
 		}
 	}
 	return false
+}
+
+func outboxTo(t *testing.T, app *App, to string) []models.MailOutbox {
+	t.Helper()
+	drainNotices(t, app)
+	var rows []models.MailOutbox
+	app.DB.Where("to_address = ?", to).Find(&rows)
+	return rows
 }

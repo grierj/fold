@@ -343,6 +343,13 @@ func TestPushHourlyLimitCountsAnnouncements(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Those aggregate rows represent past sends. Settle their new outbox
+	// jobs too, so the message runner cannot fan them out as fresh notices.
+	if err := f.app.DB.Model(&models.Job{}).Where("kind = ?", notify.DeliverKind).
+		Update("status", models.JobDone).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	first := f.scheduleNow(t, f.leader, "Twentieth", "<p>Hi</p>", groupAudience(f))
 	runMessageJobs(t, f.app)
 	if r := pushRowsOf(t, f.app, first)[f.teen.Email]; r.Status != models.RecipientSent || fp.count(phone.path) != 1 {

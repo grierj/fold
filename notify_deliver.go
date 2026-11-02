@@ -42,8 +42,7 @@ type notifyDeliverJob struct {
 	NotificationID uint `json:"notificationId"`
 }
 
-// notifyKinds registers notify.deliver. Nothing enqueues it yet; the
-// post-commit path still delivers.
+// notifyKinds registers the delivery jobs queued by notify.Send.
 func (a *App) notifyKinds() []jobs.Kind {
 	return []jobs.Kind{{
 		Name: notify.DeliverKind, MaxAttempts: notifyDeliverAttempts,
