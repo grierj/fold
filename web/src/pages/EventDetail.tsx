@@ -393,7 +393,7 @@ function DateRow({
               </Button>
             </div>
           ) : (
-            <Button variant="secondary" onClick={onNeedLogin} layout="w-full sm:w-auto">
+            <Button variant="primary" onClick={onNeedLogin} layout="w-full sm:w-auto">
               Log in to register
             </Button>
           )}

@@ -68,7 +68,8 @@ describe("EventRow", () => {
     wrap(<EventRow occ={occ({ ownScope: true })} />);
     const link = screen.getByRole("link");
     expect(screen.getByText("Not answered")).toBeInTheDocument();
-    expect(link).toHaveClass("border-dashed", "bg-sunken", "text-text");
+    expect(link).toHaveClass("border-border", "border-dashed", "bg-sunken", "text-text");
+    expect(link).not.toHaveClass("border-primary");
     expect(link.className).not.toMatch(/opacity/);
   });
 
@@ -100,15 +101,16 @@ describe("EventChip", () => {
     expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
   });
   it.each([
-    ["going", "Going", "bg-primary-subtle"],
-    ["maybe", "Maybe", "border-dashed"],
-    ["waitlisted", "Waitlisted", "border-dashed"],
-    [null, "Not answered", "border-dashed"],
-  ] as const)("spells out the %s own-scope state and keeps it in the accessible name", (myStatus, label, style) => {
+    ["going", "Going", ["border-primary", "bg-primary-subtle"]],
+    ["maybe", "Maybe", ["border-border", "border-dashed", "bg-sunken"]],
+    ["waitlisted", "Waitlisted", ["border-border", "border-dashed", "bg-sunken"]],
+    [null, "Not answered", ["border-border", "border-dashed", "bg-sunken"]],
+  ] as const)("spells out the %s own-scope state and keeps it in the accessible name", (myStatus, label, styles) => {
     wrap(<EventChip occ={occ({ myStatus, ownScope: true })} />);
     const link = screen.getByRole("link");
     expect(link).toHaveAccessibleName(new RegExp(`Thursday class.*${label}`));
-    expect(link).toHaveClass(style);
+    expect(link).toHaveClass(...styles);
+    if (myStatus !== "going") expect(link).not.toHaveClass("border-primary");
     expect(link.className).not.toMatch(/opacity/);
   });
 
