@@ -640,6 +640,7 @@ type NotificationDelivery struct {
 	ProviderMessageID *string
 	SentAt            *time.Time
 	CreatedAt         time.Time `gorm:"not null;default:now()"`
+	UpdatedAt         time.Time `gorm:"not null;default:now()"`
 }
 
 // RequestFlags are the abuse warnings stored with an account request at
