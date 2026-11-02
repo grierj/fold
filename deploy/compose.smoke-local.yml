@@ -3,7 +3,8 @@
 # The shipped network is 172.30.0.0/24, which is also the default
 # FOLD_TRUSTED_PROXIES. A second stack on this machine cannot take that
 # subnet. The script adds this file when --local-subnet or FOLD_SMOKE_SUBNET
-# is set, or when 172.30.0.0/24 is already in use by another Docker network.
+# is set, or, off CI, when 172.30.0.0/24 is already in use by another Docker
+# network. CI exits instead, so the smoke boots the shipped network.
 # Caddy stays off, so this run does not exercise the proxy CIDR; the script
 # still checks that the shipped subnet contains that default.
 networks:

@@ -6,9 +6,10 @@
 # Release: --image REF pulls that ref (tag or name@digest), tags it as :ci,
 # and smokes the same files so the published image is the one that boots.
 #
-# CI uses the shipped 172.30.0.0/24 network. --local-subnet, a non-empty
-# FOLD_SMOKE_SUBNET, or another Docker network already holding that subnet
-# adds deploy/compose.smoke-local.yml (10.216.30.0/24).
+# CI uses the shipped 172.30.0.0/24 network and exits if that subnet is
+# already taken, unless --local-subnet or a non-empty FOLD_SMOKE_SUBNET is
+# set. On a laptop those two, or another Docker network already holding the
+# shipped subnet, add deploy/compose.smoke-local.yml (10.216.30.0/24).
 #
 # Prints assert names only. The first-run setup code stays in the container
 # log; this script counts that line and never echoes it.
@@ -19,8 +20,10 @@ cd "$root"
 
 # Compose prefers the shell over --env-file. Drop every name the shipped
 # file interpolates, plus host vars that would change the app if they leaked
-# in. Docker commands also run under env -i (PATH, HOME, DOCKER_* kept) so
-# COMPOSE_FILE and anything not in this list cannot redirect the smoke.
+# in. Docker commands also run under env -i (PATH, HOME, DOCKER_* kept, and
+# XDG_RUNTIME_DIR, SSH_AUTH_SOCK, and HTTP_PROXY, HTTPS_PROXY, NO_PROXY in
+# either case when set) so COMPOSE_FILE and anything else cannot redirect
+# the smoke.
 mapfile -t compose_vars < <(
   grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' docker-compose.yml | sed 's/^\${//' | sort -u
 )
@@ -46,15 +49,23 @@ usage() {
   echo "  default        build ${image_local} from this checkout (FOLD_VERSION=ci)" >&2
   echo "  --image        pull REF and smoke that image instead of building" >&2
   echo "  --local-subnet use deploy/compose.smoke-local.yml instead of the shipped subnet" >&2
-  echo "                 (also when FOLD_SMOKE_SUBNET is set, or that subnet is taken)" >&2
+  echo "                 (also when FOLD_SMOKE_SUBNET is set, or off CI when that subnet is taken)" >&2
 }
 
 # Run a command without the caller's environment. Compose interpolation and
 # COMPOSE_* would otherwise follow the shell that launched this script.
+# Rootless Docker and an ssh DOCKER_HOST need the runtime dir and agent
+# socket. Proxy variables are passed in either case so a pull still works.
 run_clean() {
   local -a env_args=()
   local name
   env_args=(env -i "PATH=${PATH-}" "HOME=${HOME-}")
+  for name in XDG_RUNTIME_DIR SSH_AUTH_SOCK \
+    http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+    if [[ -v $name ]]; then
+      env_args+=("${name}=${!name-}")
+    fi
+  done
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     env_args+=("${name}=${!name-}")
@@ -306,16 +317,8 @@ shipped_config=$(run_clean docker compose -f docker-compose.yml --env-file "$env
 assert_shipped_network "$shipped_config"
 unset shipped_config
 
-echo "compose-smoke: caddy validate with ${caddy_image}"
-if ! run_clean docker run --rm \
-  -v "${PWD}/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  -e DOMAIN=localhost \
-  "$caddy_image" \
-  caddy validate --config /etc/caddy/Caddyfile; then
-  fail "caddy validate"
-fi
-echo "compose-smoke: ok caddy validate (${caddy_image})"
-
+# Decide the network before caddy validate, the image build, or compose up.
+# CI must boot the shipped subnet; a laptop may fall back when it is taken.
 subnet_reason=
 if [[ "$local_subnet_flag" -eq 1 ]]; then
   use_local_subnet=1
@@ -326,6 +329,10 @@ elif [[ -n "${FOLD_SMOKE_SUBNET:-}" ]]; then
 else
   for name in "${shipped_subnets[@]}"; do
     if subnet_in_use "$name"; then
+      if [[ "${CI:-}" == "true" ]]; then
+        echo "compose-smoke: ${name} is already in use on this runner; the smoke must boot the shipped network" >&2
+        exit 1
+      fi
       use_local_subnet=1
       subnet_reason="${name} is already in use"
       break
@@ -342,6 +349,16 @@ if [[ "$use_local_subnet" -eq 1 ]]; then
   echo "compose-smoke: using deploy/compose.smoke-local.yml (${subnet_reason})"
 fi
 
+echo "compose-smoke: caddy validate with ${caddy_image}"
+if ! run_clean docker run --rm \
+  -v "${PWD}/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  -e DOMAIN=localhost \
+  "$caddy_image" \
+  caddy validate --config /etc/caddy/Caddyfile; then
+  fail "caddy validate"
+fi
+echo "compose-smoke: ok caddy validate (${caddy_image})"
+
 refuse_existing_project
 
 if [[ -n "$image_ref" ]]; then
@@ -351,17 +368,6 @@ if [[ -n "$image_ref" ]]; then
     image_id=$(run_clean docker image inspect --format '{{.Id}}' "$image_ref")
     run_clean docker tag "$image_id" "$image_local"
   fi
-elif [[ "${FOLD_SMOKE_CACHE:-}" == "gha" ]]; then
-  # mode=max keeps the node and Go stages. type=gha alone exports only the
-  # final distroless stage, which does not speed the next build.
-  echo "compose-smoke: building ${image_local} (gha cache)"
-  run_clean docker buildx build \
-    --build-arg FOLD_VERSION=ci \
-    --load \
-    --cache-from type=gha \
-    --cache-to type=gha,mode=max \
-    -t "$image_local" \
-    "$root"
 else
   echo "compose-smoke: building ${image_local}"
   run_clean docker build --build-arg FOLD_VERSION=ci -t "$image_local" "$root"
