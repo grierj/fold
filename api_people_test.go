@@ -63,7 +63,7 @@ func TestPeopleSearchSafeProjectionAndExclusions(t *testing.T) {
 	if qc.Reads() > 12 {
 		t.Fatalf("search N+1: %d reads", qc.Reads())
 	}
-	if strings.Contains(w.Body.String(), "SECRET") || strings.Contains(w.Body.String(), "secret-teen") {
+	if strings.Contains(w.Body.String(), "SECRET") || strings.Contains(w.Body.String(), "secret-teen") || strings.Contains(w.Body.String(), "Visible") {
 		t.Fatal(w.Body.String())
 	}
 	var raw map[string]json.RawMessage
@@ -98,7 +98,7 @@ func TestPeopleSearchSafeProjectionAndExclusions(t *testing.T) {
 			t.Fatal(out.People[i])
 		}
 	}
-	if out.People[0].Teen || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Shared"}) || !reflect.DeepEqual(out.People[0].OtherGroups, []string{"Visible"}) {
+	if out.People[0].Teen || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Shared"}) || len(out.People[0].OtherGroups) != 0 {
 		t.Fatal(out.People)
 	}
 	// Search reads never create contact or add audit rows.
@@ -238,5 +238,58 @@ func peopleAddActorRevocations(actor *models.User) []struct {
 		{"session invalidation", map[string]any{"session_version": actor.SessionVersion + 1}},
 		{"underage adult", map[string]any{"birth_date": time.Now().AddDate(-15, 0, 0)}},
 		{"teen account", map[string]any{"account_type": models.AccountTeen, "birth_date": time.Now().AddDate(-15, 0, 0)}},
+	}
+}
+
+// A person's groups are roster information: a leader who searches people sees
+// only the groups they share with each match, never the match's other groups
+// (policy.CanSeeRoster). Admins pass the roster rule everywhere.
+func TestPeopleSearchGroupLabelsFollowRosterRule(t *testing.T) {
+	app, admin, adminClient := peopleTestApp(t)
+	leader := newTestUser(t, app, "roster leader", "pw", models.RoleMember)
+	target := newTestUser(t, app, "roster subject", "pw", models.RoleMember)
+	mine := newTestGroup(t, app, leader, "Leader group A", models.GroupActive)
+	addMember(t, app, target, mine, models.MembershipMember)
+	private := newTestGroup(t, app, admin, "Private recovery B", models.GroupActive)
+	app.DB.Model(private).Update("visibility", models.VisibilityPrivate)
+	addMember(t, app, target, private, models.MembershipMember)
+	leaderClient := loginAPI(t, app, "roster leader", "pw")
+
+	w := leaderClient.do("GET", "/api/v1/people/search?q=roster+subject", nil, false)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "Private recovery B") {
+		t.Fatalf("leader outside B learned the membership: %d %s", w.Code, w.Body.String())
+	}
+	out := searchPeople(t, leaderClient, "roster subject")
+	if len(out.People) != 1 || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Leader group A"}) || len(out.People[0].OtherGroups) != 0 {
+		t.Fatal(out)
+	}
+
+	addMember(t, app, leader, private, models.MembershipMember)
+	out = searchPeople(t, leaderClient, "roster subject")
+	if len(out.People) != 1 || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Leader group A", "Private recovery B"}) || len(out.People[0].OtherGroups) != 0 {
+		t.Fatal(out)
+	}
+
+	out = searchPeople(t, adminClient, "roster subject")
+	if len(out.People) != 1 || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Private recovery B"}) || !reflect.DeepEqual(out.People[0].OtherGroups, []string{"Leader group A"}) {
+		t.Fatal(out)
+	}
+}
+
+// Hidden labels are filtered before the per-subject LIMIT, so ten groups the
+// viewer can't see the roster of never crowd out the one they share.
+func TestPeopleSearchHiddenLabelsDoNotCrowdOutShared(t *testing.T) {
+	app, admin, _ := peopleTestApp(t)
+	leader := newTestUser(t, app, "crowd leader", "pw", models.RoleMember)
+	target := newTestUser(t, app, "crowd subject", "pw", models.RoleMember)
+	for i := 0; i < 10; i++ {
+		g := newTestGroup(t, app, admin, fmt.Sprintf("Aaa public %02d", i), models.GroupActive)
+		addMember(t, app, target, g, models.MembershipMember)
+	}
+	shared := newTestGroup(t, app, leader, "Zzz shared", models.GroupActive)
+	addMember(t, app, target, shared, models.MembershipMember)
+	out := searchPeople(t, loginAPI(t, app, "crowd leader", "pw"), "crowd subject")
+	if len(out.People) != 1 || !reflect.DeepEqual(out.People[0].SharedGroups, []string{"Zzz shared"}) || len(out.People[0].OtherGroups) != 0 {
+		t.Fatal(out)
 	}
 }
