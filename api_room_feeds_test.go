@@ -117,21 +117,41 @@ func TestRoomFeedContents(t *testing.T) {
 	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", narrowed.ID).Update("visibility_override", models.VisibilityInviteOnly)
 	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", opened.ID).Update("visibility_override", models.VisibilityPublic)
 
+	// A private (members-only) group's event is Reserved too: a feed has no
+	// viewer, so only public dates are described. A private series' one date
+	// opened to public is described; a public series' date made private is
+	// Reserved.
+	members := newTestGroup(t, f.app, f.leaderUser, "Members circle", models.GroupActive)
+	f.app.DB.Model(members).Update("visibility", models.VisibilityPrivate)
+	membersNight := createFeedEvent(t, f.leader, members.ID, "Members night", f.startOn.Add(-9*time.Hour), "")
+	f.app.DB.Model(&models.Event{}).Where("id = ?", membersNight.ID).Update("description", "Members notes")
+	membersOpened := createFeedEvent(t, f.leader, members.ID, "Members opened night", f.startOn.Add(-12*time.Hour), "")
+	pubNarrowed := createFeedEvent(t, f.leader, f.group, "Members only date", f.startOn.Add(-15*time.Hour), "")
+	for _, ev := range []eventJSON{membersNight, membersOpened, pubNarrowed} {
+		if code, body := f.book(t, f.leader, ev, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+			t.Fatalf("book %s: %d %s", ev.Title, code, body)
+		}
+	}
+	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", membersOpened.ID).Update("visibility_override", models.VisibilityPublic)
+	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", pubNarrowed.ID).Update("visibility_override", models.VisibilityPrivate)
+
 	w := fetchFeed(t, newAPIClient(t, f.app), f.roomFeed(t, f.hall.ID))
 	if w.Code != http.StatusOK || w.Header().Get("ETag") == "" || w.Header().Get("Cache-Control") != "private, max-age=900" {
 		t.Fatalf("feed: %d %v", w.Code, w.Header())
 	}
 	body := w.Body.String()
-	for _, want := range []string{"SUMMARY:Event A", "DESCRIPTION:Bring a friend", "LOCATION:Fellowship Hall", "SUMMARY:Opened night",
+	for _, want := range []string{"SUMMARY:Event A", "DESCRIPTION:Bring a friend", "LOCATION:Fellowship Hall", "SUMMARY:Opened night", "SUMMARY:Members opened night",
 		"X-WR-CALNAME:Fellowship Hall", "UID:room-" + itoa(f.hall.ID) + "-booking-"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("feed lacks %q:\n%s", want, body)
 		}
 	}
-	if n := strings.Count(body, "SUMMARY:Reserved"); n != 2 {
-		t.Errorf("want 2 Reserved bookings, got %d:\n%s", n, body)
+	if n := strings.Count(body, "SUMMARY:Reserved"); n != 4 {
+		t.Errorf("want 4 Reserved bookings, got %d:\n%s", n, body)
 	}
 	for _, leak := range []string{"Quiet circle", "Private notes", "Narrowed night", "Pastor's study", "Series secret",
+		"Members night", "Members notes", "Members only date",
+		"/events/" + itoa(membersNight.ID) + "/", "/events/" + itoa(pubNarrowed.ID) + "/",
 		"event-" + itoa(secret.ID) + "-", "/events/" + itoa(secret.ID) + "/", "/events/" + itoa(narrowed.ID) + "/"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("feed leaked %q:\n%s", leak, body)
@@ -144,7 +164,7 @@ func TestRoomFeedContents(t *testing.T) {
 	f.app.DB.Model(&models.RoomBooking{}).Where("occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", f.eventA.ID).
 		Update("status", models.BookingRequested)
 	body = fetchFeed(t, newAPIClient(t, f.app), f.roomFeed(t, f.hall.ID)).Body.String()
-	if strings.Contains(body, "Event A") || strings.Contains(body, "Opened night") || strings.Count(body, "SUMMARY:Reserved") != 3 {
+	if strings.Contains(body, "Event A") || strings.Contains(body, "Opened night") || strings.Count(body, "SUMMARY:Reserved") != 5 {
 		t.Errorf("after deleting the group and unconfirming A:\n%s", body)
 	}
 }

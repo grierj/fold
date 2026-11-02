@@ -20,8 +20,9 @@ import (
 // Room feeds (M2.2b, 8.2): an admin-issued secret link per room that
 // exports its confirmed bookings, so the church office or a calendar on
 // the door can follow the room. Only admins make or turn off the link
-// (section 6). The feed shows what an admin would see, except that a date
-// whose own visibility is invite-only is titled "Reserved" with nothing
+// (section 6). The link is the only credential and anyone who can see the
+// screen can read it, so the feed describes only dates whose own
+// visibility is public; every other date is titled "Reserved" with nothing
 // that says whose it is.
 
 // roomFeedTitle names a booking the feed doesn't describe.
@@ -288,12 +289,13 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 	return feed, nil
 }
 
-// roomFeedDescribes: the room feed names a booking's event when its date
-// isn't invite-only (policy.EffectiveVisibility) and its group, if any, is
-// still there. Everything else is Reserved (8.2).
+// roomFeedDescribes: the room feed names a booking's event only when its
+// date is public (policy.EffectiveVisibility) and its group, if any, is
+// still there. A feed has no viewer, so the link holder counts as the
+// public; every private or invite-only date is Reserved (8.2).
 func roomFeedDescribes(ev *models.Event, occ *models.EventOccurrence, groups map[uint]*models.Group) bool {
 	if ev.GroupID != nil && groups[*ev.GroupID] == nil {
 		return false
 	}
-	return policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride) != policy.InviteOnly
+	return policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride) == policy.Public
 }
