@@ -1200,6 +1200,7 @@ FOLD_TRUSTED_PROXIES=172.30.0.0/24      # the compose network subnet (C17)
 Steps:
 
 1. **Church and admin**: church name, time zone, first admin's name, email, and password (email is the login, DEC-23). The admin confirms they are 18 or older. Also sets the account policy: self-signup `request` (default; every self-signup and member "invite a friend" waits for admin approval) or `off` (DEC-4).
+- **`branding`** (optional/skippable; M4.2b): church logo, accent color, and header style. Stable `SetupState` id `branding` after step 1 (church identity) and before step 2 (Address and site); well before Safeguarding (step 8). Skipping branding must not skip safeguarding.
 2. **Address and site**: postal address (for email footers and legal pages) and contact email. Checks that `SITE_URL` loads over HTTPS from inside the app.
 3. **Email** (required for anything beyond a demo):
    - Pick a provider (Postmark is preselected, DEC-21; SMTP is the fallback) and paste an API key, or SMTP details.
@@ -2286,7 +2287,6 @@ The five questions left open in draft v2 are all answered: intermediate override
 - DEC-76: where and how members discover public events outside their own groups.
 - DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to rename “private” groups. Until decided, active teens and contact-hidden adults remain searchable; private groups remain visible to signed-in members.
 - DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no write-back are already decided.
-- M4.2b branding: planning settled (DEC-137, including `golang.org/x/image` approval; Warden upload rules; Wright architecture in PR #236). Remaining work is implementation and Warden's backend review when code lands.
 
 The original notification questions and retention are settled by DEC-44/45. Delivery gaps and future consumers are tracked separately, not invented product decisions.
 
@@ -2468,3 +2468,4 @@ databases:
 - Whether Render Postgres storage pricing includes the first GB (the estimate in 12.5 assumes it does not)
 - Whether an empty `ipAllowList` in `render.yaml` blocks all outside access to the database (check the Blueprint spec in M5.5)
 - Whether Render API keys can be limited in scope (assume a key has the creating user's full access)
+
