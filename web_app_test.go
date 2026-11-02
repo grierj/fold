@@ -23,7 +23,7 @@ func TestServiceWorkerIsServedNoCache(t *testing.T) {
 		"assets/brand/x.p": {Data: []byte("x")},
 	}
 	r := gin.New()
-	r.NoRoute(serveSPAFrom(files))
+	r.NoRoute(serveSPAFrom(files, "https://church.example"))
 	get := func(r *gin.Engine, path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
@@ -49,13 +49,77 @@ func TestServiceWorkerIsServedNoCache(t *testing.T) {
 
 	delete(files, "sw.js")
 	r = gin.New()
-	r.NoRoute(serveSPAFrom(files))
+	r.NoRoute(serveSPAFrom(files, "https://church.example"))
 	if w := get(r, "/sw.js"); w.Code != http.StatusNotFound {
 		t.Fatalf("missing /sw.js: %d %q", w.Code, w.Body.String())
 	}
 	if w := get(r, "/groups/1"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<title>Fold</title>") {
 		t.Fatalf("client route: %d", w.Code)
 	}
+}
+
+func TestSPAServesStaticFilesAndEventImageMeta(t *testing.T) {
+	const shell = "<!doctype html><html><head><title>Fold</title></head><body><div id=\"root\"></div></body></html>"
+	const origin = "https://church.example"
+	files := fstest.MapFS{
+		"index.html":  {Data: []byte(shell)},
+		"favicon.ico": {Data: []byte{0, 0, 1, 0}},
+	}
+	serve := func(path string) *httptest.ResponseRecorder {
+		r := gin.New()
+		r.NoRoute(serveSPAFrom(files, origin))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
+	}
+
+	t.Run("present favicon is an image", func(t *testing.T) {
+		w := serve("/favicon.ico")
+		if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Type"), "image") {
+			t.Fatalf("favicon: %d, Content-Type %q", w.Code, w.Header().Get("Content-Type"))
+		}
+	})
+
+	t.Run("missing favicon is a 404, not the shell", func(t *testing.T) {
+		delete(files, "favicon.ico")
+		w := serve("/favicon.ico")
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "<title>Fold</title>") {
+			t.Fatalf("missing favicon: %d %q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("numeric event gets the default social image", func(t *testing.T) {
+		w := serve("/events/42")
+		body := w.Body.String()
+		imageURL := origin + defaultOGImagePath
+		for _, want := range []string{
+			`property="og:image" content="` + imageURL + `"`,
+			`property="og:image:width" content="1200"`,
+			`property="og:image:height" content="630"`,
+			`name="twitter:card" content="summary_large_image"`,
+			`name="twitter:image" content="` + imageURL + `"`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("/events/42 body missing %q: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("client route still gets the shell", func(t *testing.T) {
+		w := serve("/groups/1")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<title>Fold</title>") {
+			t.Fatalf("client route: %d %q", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("only an exact numeric event gets social image metadata", func(t *testing.T) {
+		for _, path := range []string{"/events/new", "/events/42/edit"} {
+			w := serve(path)
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `property="og:image"`) {
+				t.Errorf("%s: %d %q", path, w.Code, w.Body.String())
+			}
+		}
+	})
 }
 
 // The manifest names the Home Screen app after the church (DEC-124); a

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-hidden="true">
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f5ff"/>
+      <stop offset="1" stop-color="#e2d4ff"/>
+    </linearGradient>
+    <linearGradient id="soft" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#ceb6fc" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#7f47c7" stop-opacity="0.12"/>
+    </linearGradient>
+  </defs>
+  <!-- Page stone -->
+  <rect width="1200" height="630" fill="#faf8f5"/>
+  <!-- Soft violet gathering field -->
+  <ellipse cx="600" cy="330" rx="460" ry="250" fill="url(#wash)"/>
+  <ellipse cx="780" cy="200" rx="140" ry="90" fill="url(#soft)"/>
+  <!-- Accent dots (family language) -->
+  <circle cx="980" cy="140" r="18" fill="#ceb6fc"/>
+  <circle cx="220" cy="480" r="12" fill="#d6d3d1"/>
+  <circle cx="160" cy="200" r="8" fill="#d6d3d1"/>
+  <!-- Abstract calendar card -->
+  <g transform="translate(330 175)" fill="none" stroke="#7f47c7" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="0" y="36" width="220" height="200" rx="28" fill="#ffffff" stroke="#7f47c7"/>
+    <path d="M48 12v48M172 12v48"/>
+    <path d="M0 100h220" stroke="#ceb6fc" stroke-width="6"/>
+    <circle cx="70" cy="150" r="10" fill="#7f47c7" stroke="none"/>
+    <circle cx="110" cy="150" r="10" fill="#ceb6fc" stroke="none"/>
+    <circle cx="150" cy="150" r="10" fill="#d6d3d1" stroke="none"/>
+    <circle cx="70" cy="190" r="10" fill="#ceb6fc" stroke="none"/>
+    <circle cx="110" cy="190" r="10" fill="#7f47c7" stroke="none"/>
+  </g>
+  <!-- Abstract gathering (people marks), calm arc -->
+  <g transform="translate(620 230)" fill="none" stroke="#7f47c7" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- left person -->
+    <circle cx="40" cy="70" r="28"/>
+    <path d="M0 180c8-48 22-72 40-72s32 24 40 72"/>
+    <!-- center person (slightly forward) -->
+    <circle cx="150" cy="50" r="32"/>
+    <path d="M102 190c10-56 28-84 48-84s38 28 48 84"/>
+    <!-- right person -->
+    <circle cx="260" cy="70" r="28"/>
+    <path d="M220 180c8-48 22-72 40-72s32 24 40 72"/>
+  </g>
+  <!-- Quiet Fold mark (brand anchor, no wordmark) -->
+  <g transform="translate(1040 500) scale(2.4)" fill="none" stroke="#7f47c7" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" opacity="0.85">
+    <path d="M4 20 12 4l8 16"/>
+    <path d="M8 20h8"/>
+  </g>
+</svg>

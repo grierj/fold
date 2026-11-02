@@ -23,6 +23,8 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 page.setDefaultTimeout(15_000);
 try {
   await page.goto(url + "/setup");
+  await page.getByLabel("Setup code").fill("a".repeat(64));
+  await page.getByRole("button", { name: "Continue" }).click();
   await page.locator("[name=site_name]").fill("Fold verify");
   await page.locator("[name=timezone]").fill("America/Boise");
   await page.locator("[name=name]").fill(name);

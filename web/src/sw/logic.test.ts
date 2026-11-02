@@ -9,6 +9,8 @@ describe("fromPush", () => {
     const shown = fromPush(payload({ title: "Event updates", body: "Tuesday is cancelled", tag: "n12", navigate: `${origin}/events/4`, app_badge: 3 }), origin);
     expect(shown.title).toBe("Event updates");
     expect(shown.options).toMatchObject({ body: "Tuesday is cancelled", tag: "n12", data: { navigate: `${origin}/events/4` } });
+    expect(shown.options.icon).toBe("/assets/brand/fold-icon-192.png");
+    expect(shown.options.badge).toBe("/assets/brand/fold-badge-96.png");
     expect(shown.appBadge).toBe(3);
   });
 
@@ -18,6 +20,8 @@ describe("fromPush", () => {
     }
     expect(fallback(origin).title).toBe("Open Fold");
     expect(fallback(origin).options.data.navigate).toBe(`${origin}/`);
+    expect(fallback(origin).options.icon).toBe("/assets/brand/fold-icon-192.png");
+    expect(fallback(origin).options.badge).toBe("/assets/brand/fold-badge-96.png");
   });
 
   it("never links off the worker's origin and drops a nonsense badge", () => {

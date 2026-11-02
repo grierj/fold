@@ -11,7 +11,7 @@ Sign in lets the first administrator finish setup, rejects a wrong password, and
 
 ## How to get to it (user POV)
 
-- Open the site before any account exists. Fold shows the setup wizard.
+- Open the site before any account exists. Fold asks for the setup code before showing the wizard.
 - Choose `Log in` in the header.
 - Open `/login`.
 
@@ -23,7 +23,7 @@ Preconditions:
 - No user exists in that instance's database.
 
 - **Run the packaged proof.** This performs the steps below. Run `.cursor/skills/verify-fold/verify-fold drive "$RUN_ID" sign-in`. The command exits 0, and `/tmp/fold-verify-proof/$RUN_ID/sign-in/` contains `bad-password.png`, `after-login.png`, `after-reload.png`, `me.json`, `result.txt`, and `users.csv`.
-- **Create the site.** On `/setup`, fill site name `Fold verify`, time zone `America/Boise`, name `Verify Admin`, email `verify-admin@example.com`, and password `password1234` in both password fields. Choose `Create site`. The browser lands on `/login`. Setup does not start a session. The setup inputs are `[name=site_name]`, `[name=timezone]`, `[name=name]`, `[name=email]`, `[name=password]`, and `[name=password_confirm]`. The button is `getByRole("button", { name: "Create site" })`.
+- **Create the site.** On `/setup`, enter the verify instance's setup code (`a` repeated 64 times) and choose `Continue`. Fill site name `Fold verify`, time zone `America/Boise`, name `Verify Admin`, email `verify-admin@example.com`, and password `password1234` in both password fields. Choose `Create site`. The browser lands on `/login`. Setup does not start a session. The setup inputs are `[name=site_name]`, `[name=timezone]`, `[name=name]`, `[name=email]`, `[name=password]`, and `[name=password_confirm]`. The button is `getByRole("button", { name: "Create site" })`.
 - **Reject a bad password.** The heading reads `Log in to Fold`. Fill `Email` with `verify-admin@example.com` and `Password` with `not-the-password`. Choose `Log in`. The text `That email and password don't match. Check them and try again.` is visible and the URL still contains `/login`. `bad-password.png` shows that form.
 - **Sign in.** Replace `Password` with `password1234` and choose `Log in`. The URL is no longer `/login`. The heading reads `Find your people. Grow in faith together.` The header shows `Verify Admin` and a `Log out` button. `after-login.png` shows that page.
 - **Confirm the session.** `GET /api/v1/auth/me` from the same browser returns 200. `me.json` has `user.email` `verify-admin@example.com` and `user.name` `Verify Admin`.

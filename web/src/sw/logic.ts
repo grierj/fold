@@ -12,13 +12,15 @@ export interface Shown {
 
 // The icon a notification shows beside its text (the manifest's icon).
 const ICON = "/assets/brand/fold-icon-192.png";
+// The monochrome badge shown where the browser supports one.
+const BADGE = "/assets/brand/fold-badge-96.png";
 
 // FALLBACK is what shows when a push can't be read. Something must show:
 // Safari revokes a subscription that receives a silent push.
 export function fallback(origin: string): Shown {
   return {
     title: "Open Fold",
-    options: { body: "You have an update.", icon: ICON, data: { navigate: origin + "/" } },
+    options: { body: "You have an update.", icon: ICON, badge: BADGE, data: { navigate: origin + "/" } },
   };
 }
 
@@ -48,7 +50,7 @@ export function fromPush(text: string | null | undefined, origin: string): Shown
   }
   const n = (msg as { notification?: Record<string, unknown> } | null)?.notification;
   if (!n || typeof n !== "object" || typeof n.title !== "string" || n.title.trim() === "") return fallback(origin);
-  const options: Shown["options"] = { icon: ICON, data: { navigate: sameOrigin(n.navigate, origin) } };
+  const options: Shown["options"] = { icon: ICON, badge: BADGE, data: { navigate: sameOrigin(n.navigate, origin) } };
   if (typeof n.body === "string" && n.body) options.body = n.body;
   if (typeof n.tag === "string" && n.tag) options.tag = n.tag;
   const shown: Shown = { title: n.title, options };

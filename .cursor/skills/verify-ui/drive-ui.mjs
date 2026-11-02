@@ -49,6 +49,8 @@ const seedPage = await newPage();
 await seedPage.goto(url + "/");
 let seed;
 if (new URL(seedPage.url()).pathname === "/setup") {
+  await seedPage.getByLabel("Setup code").fill("a".repeat(64));
+  await seedPage.getByRole("button", { name: "Continue" }).click();
   await seedPage.locator("[name=site_name]").fill("Fold verify");
   await seedPage.locator("[name=timezone]").fill("America/Boise");
   await seedPage.locator("[name=name]").fill(people.admin[1]);

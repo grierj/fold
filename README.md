@@ -14,8 +14,9 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open `https://<DOMAIN>`. The first visit shows a setup wizard to create the
-church site and its admin account.
+Open `https://<DOMAIN>` and enter the setup code from `docker compose logs app`.
+Keep the code private. Then create the church site and its first admin account.
+If the app restarts before setup is complete, use the new code from its logs.
 
 A single DigitalOcean droplet is the recommended production install.
 `docs/DEPLOY-DIGITALOCEAN.md` and `deploy/digitalocean/provision.sh`
@@ -90,6 +91,7 @@ Useful env vars:
 | `APP_ENV` | `prod` | `dev` enables debug logging + insecure cookie defaults |
 | `PORT` | `8080` | |
 | `SESSION_SECRET` | — | **Required** unless `APP_ENV=dev`; at least 32 characters |
+| `FOLD_SETUP_TOKEN` | generated at startup | Optional shared setup code, generated with `openssl rand -hex 32`; all app processes must use the same value |
 | `DATABASE_URL` | — | Postgres DSN. **Required** everywhere |
 | `FOLD_TRUSTED_PROXIES` | `172.30.0.0/24` | Proxies allowed to set `X-Forwarded-For` (the compose subnet) |
 | `COOKIE_SECURE` | true in prod | Set `false` only for plain-http local testing |

@@ -1,13 +1,104 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"fold/internal/events"
+	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
+
+const setupSessionKey = "setupAuthorization"
+
+// A separate lock serializes first-account creation across server processes.
+const setupLockID int64 = 0x466f6c6453657475
+
+var errSetupComplete = errors.New("setup already complete")
+
+func newSetupToken() (string, error) {
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func setupTokenHash(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(hash[:])
+}
+
+func (a *App) setupAuthorized(c *gin.Context) bool {
+	if a.Config.SetupToken == "" {
+		return false
+	}
+	session, err := a.Store.Get(c.Request, sessionName)
+	if err != nil {
+		return false
+	}
+	stored, _ := session.Values[setupSessionKey].(string)
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(setupTokenHash(a.Config.SetupToken))) == 1
+}
+
+func (a *App) unlockSetup(c *gin.Context) {
+	ready, err := a.setupComplete()
+	if err != nil {
+		c.String(http.StatusServiceUnavailable, "Setup isn't available right now. Try again in a moment.")
+		return
+	}
+	if ready {
+		c.Redirect(http.StatusSeeOther, "/")
+		return
+	}
+	if a.Config.SetupToken == "" || subtle.ConstantTimeCompare([]byte(c.PostForm("setup_token")), []byte(a.Config.SetupToken)) != 1 {
+		a.html(c, http.StatusForbidden, "setup-unlock.html", gin.H{"Error": "That setup code doesn't match. Check the code and try again."})
+		return
+	}
+	session, err := a.Store.Get(c.Request, sessionName)
+	if err == nil {
+		session.Values[setupSessionKey] = setupTokenHash(a.Config.SetupToken)
+		err = session.Save(c.Request, c.Writer)
+	}
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Setup isn't available right now. Try again in a moment.")
+		return
+	}
+	c.Redirect(http.StatusSeeOther, "/setup")
+}
+
+func (a *App) createFirstAdmin(ctx context.Context, admin *models.User, in setupInput) error {
+	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", setupLockID).Error; err != nil {
+			return err
+		}
+		var count int64
+		if err := tx.Model(&models.User{}).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 0 {
+			return errSetupComplete
+		}
+		if err := tx.Create(admin).Error; err != nil {
+			return err
+		}
+		for _, setting := range []models.Setting{{Key: "site_name", Value: in.SiteName}, {Key: settingTimezone, Value: in.Timezone}} {
+			if err := tx.Where(models.Setting{Key: setting.Key}).Assign(models.Setting{Value: setting.Value}).FirstOrCreate(&models.Setting{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
 
 // Setup preserves non-secret answers, but never either password. The field
 // order is shared by the summary and native autofocus on the first error.

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Setup code — Fold</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/brand/fold-icon-1.svg">
+    {{with stylesheet}}<link rel="stylesheet" href="{{.}}">{{end}}
+</head>
+<body class="min-h-screen bg-page text-text">
+    <main class="fold-auth wrap-anywhere">
+        <p class="mb-6 text-2xl font-bold text-primary">Fold</p>
+        <h1 class="text-2xl sm:text-3xl font-bold">Enter your setup code</h1>
+        <p class="mt-2 text-text-muted">Find the code in your Fold server log. If you set FOLD_SETUP_TOKEN, use that value instead. Keep the code private.</p>
+        <form method="POST" action="/setup/unlock" novalidate class="fold-form mt-6 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
+            {{.csrfField}}
+            <div>
+                <label class="label" for="setup_token">Setup code</label>
+                <input class="input" id="setup_token" name="setup_token" type="password" autocomplete="off" required {{if .Error}}aria-invalid="true" aria-describedby="setup-token-error" autofocus{{end}}>
+                {{if .Error}}<p class="mt-1 text-sm text-danger" id="setup-token-error" role="alert">{{.Error}}</p>{{end}}
+            </div>
+            <button class="btn-primary w-full" type="submit">Continue</button>
+        </form>
+    </main>
+</body>
+</html>

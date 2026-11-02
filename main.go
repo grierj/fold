@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,6 +124,19 @@ func serve(stderr io.Writer) int {
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
 		Mailer: newMailer(cfg, db),
+	}
+	ready, err := app.setupComplete()
+	if err != nil {
+		fmt.Fprintln(stderr, "fold: check setup availability:", err)
+		return 1
+	}
+	if !ready && app.Config.SetupToken == "" {
+		app.Config.SetupToken, err = newSetupToken()
+		if err != nil {
+			fmt.Fprintln(stderr, "fold: generate setup code:", err)
+			return 1
+		}
+		log.Printf("First-run setup code: %s (enter at /setup; keep this code private)", app.Config.SetupToken)
 	}
 	// Web push keys (M3.13a): made on first boot, and again if
 	// SESSION_SECRET changed. A failure here costs only push, so the
@@ -270,6 +284,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// Setup wizard (only reachable when no users exist; server-rendered).
 	r.GET("/setup", a.showSetup)
 	r.POST("/setup", a.handleSetup)
+	r.POST("/setup/unlock", a.unlockSetup)
 
 	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
@@ -305,6 +320,13 @@ func serveMemberHelp(c *gin.Context) {
 // stylesheetRe finds the CSS bundle Vite links from index.html.
 var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)
 
+var (
+	eventPageRe   = regexp.MustCompile(`^/events/[0-9]+$`)
+	closingHeadRe = regexp.MustCompile(`(?i)</head>`)
+)
+
+const defaultOGImagePath = "/assets/brand/og-default-1200x630.png"
+
 // builtStylesheet returns the path of the SPA's CSS bundle, which the
 // server-rendered pages (setup, dev outbox) share so they use the same
 // tokens and font. It is empty when web/dist is not built; those pages
@@ -328,11 +350,11 @@ func (a *App) serveSPA() gin.HandlerFunc {
 	if err != nil {
 		sub = nil
 	}
-	return serveSPAFrom(sub)
+	return serveSPAFrom(sub, a.emailBaseURL())
 }
 
 // serveSPAFrom serves a built bundle: web/dist, or a test's files.
-func serveSPAFrom(sub fs.FS) gin.HandlerFunc {
+func serveSPAFrom(sub fs.FS, origin string) gin.HandlerFunc {
 	built := sub != nil
 	if built {
 		if _, err := fs.Stat(sub, "index.html"); err != nil {
@@ -353,47 +375,75 @@ func serveSPAFrom(sub fs.FS) gin.HandlerFunc {
 				"Frontend not built. Run `npm run build` in web/ and restart.")
 			return
 		}
-		path := strings.TrimPrefix(c.Request.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
+		servedPath := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if servedPath == "" {
+			servedPath = "index.html"
 		}
-		if _, err := fs.Stat(sub, path); err != nil {
-			if path == serviceWorkerPath {
+		if _, err := fs.Stat(sub, servedPath); err != nil {
+			if servedPath == serviceWorkerPath {
 				// Never the shell in the worker's place: registering
 				// HTML as a script fails in a confusing way.
 				jsonError(c, http.StatusNotFound, "not found")
 				return
 			}
+			if path.Ext(path.Base(servedPath)) != "" {
+				// A missing static asset must not receive the SPA shell.
+				jsonError(c, http.StatusNotFound, "not found")
+				return
+			}
 			// Client-side route — let the SPA router handle it.
-			path = "index.html"
+			servedPath = "index.html"
 		}
 		// ServeContent, not http.FileServer: FileServer 301-redirects
 		// index.html serves to "./", which breaks the SPA fallback.
-		data, err := fs.ReadFile(sub, path)
+		data, err := fs.ReadFile(sub, servedPath)
 		if err != nil {
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
-		info, err := fs.Stat(sub, path)
+		info, err := fs.Stat(sub, servedPath)
 		if err != nil || info.IsDir() {
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
-		if path == "index.html" {
+		if servedPath == "index.html" {
 			// no-store: always fetch the shell fresh (a rebuilt image is what
 			// runs), and keep the page out of the back/forward cache, so going
 			// back after logout never shows the previous session's screen.
 			c.Header("Cache-Control", "no-store")
-		} else if path == serviceWorkerPath {
+			if eventPageRe.MatchString(c.Request.URL.Path) {
+				data = eventImageMeta(data, origin+defaultOGImagePath)
+			}
+		} else if servedPath == serviceWorkerPath {
 			// no-cache: the browser checks for a new worker on every
 			// registration and update instead of guessing a lifetime for
 			// a root file with no header (research 2.3).
 			c.Header("Cache-Control", "no-cache")
-		} else if strings.HasPrefix(path, "assets/") {
+		} else if strings.HasPrefix(servedPath, "assets/") {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		}
-		http.ServeContent(c.Writer, c.Request, path, info.ModTime(), bytes.NewReader(data))
+		http.ServeContent(c.Writer, c.Request, servedPath, info.ModTime(), bytes.NewReader(data))
 	}
+}
+
+// eventImageMeta adds the default social image to a public event shell.
+func eventImageMeta(index []byte, imageURL string) []byte {
+	head := closingHeadRe.FindIndex(index)
+	if head == nil {
+		return index
+	}
+	escapedURL := template.HTMLEscapeString(imageURL)
+	meta := []byte(fmt.Sprintf(`<meta property="og:image" content="%s">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="%s">
+`, escapedURL, escapedURL))
+	withMeta := make([]byte, 0, len(index)+len(meta))
+	withMeta = append(withMeta, index[:head[0]]...)
+	withMeta = append(withMeta, meta...)
+	withMeta = append(withMeta, index[head[0]:]...)
+	return withMeta
 }
 
 // contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
@@ -485,7 +535,7 @@ func (a *App) siteName() string {
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
+		if p == "/setup" || p == "/setup/unlock" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
 			c.Next()
 			return
 		}
@@ -510,17 +560,29 @@ func (a *App) showSetup(c *gin.Context) {
 	ready, err := a.setupComplete()
 	if err != nil {
 		log.Printf("Setup availability check failed: %v", err)
-		a.html(c, http.StatusServiceUnavailable, "setup.html", (setupInput{}).pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		if a.setupAuthorized(c) {
+			a.html(c, http.StatusServiceUnavailable, "setup.html", (setupInput{}).pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		} else {
+			a.html(c, http.StatusServiceUnavailable, "setup-unlock.html", gin.H{"Error": "Setup isn't available right now. Try again in a moment."})
+		}
 		return
 	}
 	if ready {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
 	}
+	if !a.setupAuthorized(c) {
+		a.html(c, http.StatusOK, "setup-unlock.html", nil)
+		return
+	}
 	a.html(c, http.StatusOK, "setup.html", (setupInput{}).pageData(nil, ""))
 }
 
 func (a *App) handleSetup(c *gin.Context) {
+	if !a.setupAuthorized(c) {
+		c.String(http.StatusForbidden, "Enter the setup code first.")
+		return
+	}
 	in := readSetupInput(c)
 	ready, err := a.setupComplete()
 	if err != nil {
@@ -540,20 +602,20 @@ func (a *App) handleSetup(c *gin.Context) {
 	admin := models.User{AccountType: models.AccountAdult, Email: in.Email, Name: in.Name, Role: models.RoleAdmin, Status: models.UserActive}
 	err = admin.SetPassword(in.Password)
 	if err == nil {
-		err = a.DB.Create(&admin).Error
+		err = a.createFirstAdmin(c.Request.Context(), &admin, in)
+	}
+	if err == errSetupComplete {
+		c.Redirect(http.StatusSeeOther, "/")
+		return
 	}
 	if err != nil {
 		log.Printf("Setup failed creating admin: %v", err)
 		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(nil, "We couldn't create your account. Try again."))
 		return
 	}
-	a.DB.Where(models.Setting{Key: "site_name"}).
-		Assign(models.Setting{Value: in.SiteName}).
-		FirstOrCreate(&models.Setting{})
-	a.DB.Where(models.Setting{Key: settingTimezone}).
-		Assign(models.Setting{Value: in.Timezone}).
-		FirstOrCreate(&models.Setting{})
-
+	a.setupMu.Lock()
+	a.setupDone = true
+	a.setupMu.Unlock()
 	log.Printf("Setup complete: site=%q timezone=%q", in.SiteName, in.Timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }
