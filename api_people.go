@@ -252,7 +252,7 @@ func (a *App) peopleSearchGroups(db *gorm.DB, actor *models.User, ids []uint) (m
  FROM memberships target JOIN groups g ON g.id=target.group_id
  LEFT JOIN memberships viewer ON viewer.group_id=g.id AND viewer.user_id=?
  WHERE target.user_id=subjects.id AND target.status='active' AND g.deleted_at IS NULL
- AND (? OR viewer.status='active')
+ AND (? OR (viewer.status='active' AND (g.status='active' OR viewer.role='leader')))
  ORDER BY shared DESC, lower(g.name), g.id LIMIT 10
  ) labels WHERE subjects.id IN ?`, actor.ID, asPerson(actor).Admin, ids).Scan(&rows).Error
 	if err != nil {

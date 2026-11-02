@@ -276,15 +276,18 @@ func TestPeopleSearchGroupLabelsFollowRosterRule(t *testing.T) {
 	}
 }
 
-// Hidden labels are filtered before the per-subject LIMIT, so ten groups the
-// viewer can't see the roster of never crowd out the one they share.
+// Hidden labels are filtered before the per-subject LIMIT. Ten archived groups
+// the viewer and the match are both plain members of sort first (shared, then
+// by name), and the roster rule hides them (only leaders see archived groups);
+// they must not crowd out the active group the viewer shares.
 func TestPeopleSearchHiddenLabelsDoNotCrowdOutShared(t *testing.T) {
 	app, admin, _ := peopleTestApp(t)
 	leader := newTestUser(t, app, "crowd leader", "pw", models.RoleMember)
 	target := newTestUser(t, app, "crowd subject", "pw", models.RoleMember)
 	for i := 0; i < 10; i++ {
-		g := newTestGroup(t, app, admin, fmt.Sprintf("Aaa public %02d", i), models.GroupActive)
+		g := newTestGroup(t, app, admin, fmt.Sprintf("Aaa archived %02d", i), models.GroupArchived)
 		addMember(t, app, target, g, models.MembershipMember)
+		addMember(t, app, leader, g, models.MembershipMember)
 	}
 	shared := newTestGroup(t, app, leader, "Zzz shared", models.GroupActive)
 	addMember(t, app, target, shared, models.MembershipMember)
