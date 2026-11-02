@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
+import { passwordLengthProblem } from "../lib/password";
 import { Button } from "./ui/Button";
 import { Field, FormError, Input, showFieldErrors } from "./ui/Field";
 import { Form } from "./ui/Form";
@@ -85,11 +86,12 @@ export function ProfilePasswordForm() {
     setPasswordError(null);
     setPasswordSaved(false);
     const form = e.currentTarget as HTMLFormElement;
-    if (newPassword.length < 10) {
+    const lengthProblem = passwordLengthProblem(newPassword);
+    if (lengthProblem === "short") {
       showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "Password must be at least 10 characters." }));
       return;
     }
-    if (new TextEncoder().encode(newPassword).length > 72) {
+    if (lengthProblem === "long") {
       showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "That password is too long. Use at most 72 bytes — about 72 letters, fewer with accents or emoji." }));
       return;
     }

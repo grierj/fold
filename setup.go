@@ -145,9 +145,9 @@ func (in setupInput) fieldErrors() map[string]string {
 	}
 	if in.Password == "" {
 		out["password"] = "Enter a password."
-	} else if len(in.Password) < minPasswordLength {
+	} else if verdict := passwordLength(in.Password); verdict == passwordTooShort {
 		out["password"] = fmt.Sprintf("Use at least %d characters.", minPasswordLength)
-	} else if len(in.Password) > maxPasswordBytes {
+	} else if verdict == passwordTooLong {
 		out["password"] = fmt.Sprintf("Use at most %d bytes (accents and emoji take more).", maxPasswordBytes)
 	}
 	if in.Confirm == "" {

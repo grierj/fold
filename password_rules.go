@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -13,13 +14,33 @@ import (
 // in sync. Sign-in is unchanged: it never hashes a new password.
 const maxPasswordBytes = 72
 
-// passwordRuleError returns the message for a new password that breaks the
-// length rules, or "" when it is fine. It never trims or logs the password.
-func passwordRuleError(pw string) string {
+// Password length verdicts. The minimum counts characters (runes), matching
+// the copy beside every field; the maximum counts bytes (bcrypt's limit).
+const (
+	passwordLengthOK = iota
+	passwordTooShort
+	passwordTooLong
+)
+
+// passwordLength is the one place the length rules are decided. Setup shows
+// its own wording but takes its verdict from here. It never trims or logs.
+func passwordLength(pw string) int {
 	switch {
-	case len(pw) < minPasswordLength:
-		return "password must be at least 10 characters"
+	case utf8.RuneCountInString(pw) < minPasswordLength:
+		return passwordTooShort
 	case len(pw) > maxPasswordBytes:
+		return passwordTooLong
+	}
+	return passwordLengthOK
+}
+
+// passwordRuleError returns the message for a new password that breaks the
+// length rules, or "" when it is fine.
+func passwordRuleError(pw string) string {
+	switch passwordLength(pw) {
+	case passwordTooShort:
+		return "password must be at least 10 characters"
+	case passwordTooLong:
 		return "password must be at most 72 bytes"
 	}
 	return ""
