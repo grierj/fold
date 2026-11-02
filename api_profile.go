@@ -44,7 +44,6 @@ var allowedImageTypes = map[string]string{
 	"image/jpeg": ".jpg",
 	"image/png":  ".png",
 	"image/gif":  ".gif",
-	"image/webp": ".webp",
 }
 
 // apiUpdateMe updates the current user's profile. Fields are pointers so
@@ -428,13 +427,23 @@ func readImageUpload(c *gin.Context, field string) (*os.File, string, string, er
 	head := make([]byte, 512)
 	rn, _ := io.ReadFull(tmp, head)
 	mime := http.DetectContentType(head[:rn])
-	ext, ok := allowedImageTypes[mime]
-	if !ok {
+	if mime == "image/webp" {
+		// The standard library can neither read nor write WebP, so its metadata
+		// could not be stripped. Refuse it rather than store it as it came.
 		cleanup()
-		return fail("only JPEG, PNG, GIF, and WebP images are allowed")
+		return nil, "", "", errImageWebP
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+	if _, ok := allowedImageTypes[mime]; !ok {
 		cleanup()
+		return fail("only JPEG, PNG, and GIF images are allowed")
+	}
+	// Re-encode so no metadata (EXIF, text chunks, comments) is stored.
+	ext, mime, err := normalizeImage(tmp, mime)
+	if err != nil {
+		cleanup()
+		if errors.Is(err, errImageTooLarge) || errors.Is(err, errImageUnreadable) {
+			return nil, "", "", err
+		}
 		return fail("server error")
 	}
 	return tmp, ext, mime, nil
@@ -481,7 +490,7 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 func (a *App) saveAvatar(ctx context.Context, u *models.User, r io.Reader, size int64, mime string) (string, error) {
 	ext, ok := allowedImageTypes[mime]
 	if !ok {
-		return "", fmt.Errorf("only JPEG, PNG, GIF, and WebP images are allowed")
+		return "", fmt.Errorf("only JPEG, PNG, and GIF images are allowed")
 	}
 	id, err := randomHex(16)
 	if err != nil {
