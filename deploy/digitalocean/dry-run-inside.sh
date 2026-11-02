@@ -203,9 +203,17 @@ expect_tag_status() {
 }
 expect_tag_status 0 0 'Name: ghcr.io/grierj/fold:0.5.0'
 expect_tag_status 1 1 'ERROR: ghcr.io/grierj/fold:0.5.0: not found'
-expect_tag_status 1 1 'ERROR: manifest unknown'
+expect_tag_status 1 1 'ERROR: ghcr.io/grierj/fold:0.5.0: manifest unknown'
+expect_tag_status 1 1 'ERROR: ghcr.io/grierj/fold:0.5.0: name unknown'
+# Anything else, including text that merely contains "not found", is unknown.
+expect_tag_status 2 1 'ERROR: manifest unknown'
+expect_tag_status 2 1 'ERROR: ghcr.io/grierj/fold:0.4.0: not found'
+expect_tag_status 2 1 'ERROR: failed to authorize: failed to fetch anonymous token: unexpected status from GET request to https://ghcr.io/token?scope=repository%3Agrierj%2Ffold%3Apull: 404 Not Found'
+expect_tag_status 2 1 'error getting credentials - err: exec: "docker-credential-desktop": executable file not found in PATH, out: '
 expect_tag_status 2 1 'ERROR: denied: permission_denied: write_package'
+expect_tag_status 2 1 'ERROR: ghcr.io/grierj/fold:0.5.0: denied'
 expect_tag_status 2 1 'ERROR: Get "https://ghcr.io/v2/": dial tcp: i/o timeout'
+expect_tag_status 2 1 $'ERROR: ghcr.io/grierj/fold:0.5.0: not found\nERROR: also something else'
 rm -rf "$stub_dir"
 
 echo "dry-run ok"

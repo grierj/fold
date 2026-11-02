@@ -5,7 +5,24 @@ name: release
 # packages. Never pushes a floating `latest`; churches pin an exact version.
 #
 # A `v*` tag push builds that tag. Run it by hand (Actions > release > Run
-# workflow) to rebuild a version whose build failed after the tag was pushed.
+# workflow) for the cases below.
+#
+# Jobs: plan (version and inputs) -> publish (build and push the version) ->
+# finalize (SHA alias, build provenance attestation) -> notes (GitHub release).
+# Publishing and finalizing are separate so a failure after the push can be
+# retried without rebuilding: "Re-run failed jobs" reuses publish's digest.
+#
+# Manual runs:
+#   finalize_only  Finish a release whose image was pushed but whose finalize
+#                  or notes job failed and cannot be re-run from the original
+#                  run. Needs version, and must be run on the tag ref v<version>.
+#                  Looks up the pushed version's digest (fails if there is
+#                  none) and runs only finalize and notes. Never rebuilds.
+#   first_release  Skips the "already published" checks for the version and the
+#                  SHA alias. For the very first release only: GHCR can answer
+#                  "denied" instead of "not found" for a package that does not
+#                  exist yet, and the checks fail closed on that. Nothing exists
+#                  to overwrite then. A tag push never skips the checks.
 #
 # Tag policy (a published tag is never overwritten):
 #   <x.y.z>   immutable; the run refuses to publish a version that exists.
@@ -25,6 +42,16 @@ on:
         description: "Version to publish, such as 0.5.0 (no leading v). Built from the ref you pick."
         required: true
         type: string
+      first_release:
+        description: "Very first release only: skip the already-published checks (see the workflow comments)."
+        required: false
+        type: boolean
+        default: false
+      finalize_only:
+        description: "Do not build. Finish a release whose image is already pushed (run on tag v<version>)."
+        required: false
+        type: boolean
+        default: false
 
 # Least privilege for every job by default; each job below asks for its own.
 permissions:
@@ -33,8 +60,9 @@ permissions:
 # One publish at a time for the whole repository, whatever ref asked for it.
 # The existence checks below are only safe because nothing else can push
 # between the check and the push. Never cancel a half-pushed release. GitHub
-# keeps one waiting run per group and cancels older waiting ones: if two
-# releases are queued at once, re-run the cancelled one with workflow_dispatch.
+# keeps one waiting run per group and cancels older waiting ones (actionlint
+# does not accept a queue setting yet): if two releases are queued at once,
+# re-run the cancelled one with workflow_dispatch.
 concurrency:
   group: release-publish
   cancel-in-progress: false
@@ -43,38 +71,51 @@ env:
   IMAGE: ghcr.io/grierj/fold
 
 jobs:
-  image:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      packages: write # push to ghcr.io/grierj/fold
-      id-token: write # sign the build provenance attestation
-      attestations: write # store the attestation
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.meta.outputs.version }}
-      digest: ${{ steps.build.outputs.digest }}
-      attestation_url: ${{ steps.attest.outputs.attestation-url }}
+      tags: ${{ steps.meta.outputs.tags }}
+      first_release: ${{ steps.meta.outputs.first_release }}
+      finalize_only: ${{ steps.meta.outputs.finalize_only }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Work out the version and tags
         id: meta
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_FIRST_RELEASE: ${{ inputs.first_release }}
+          INPUT_FINALIZE_ONLY: ${{ inputs.finalize_only }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          first_release=false
+          finalize_only=false
           if [[ "$EVENT_NAME" == "push" ]]; then
             version="${REF_NAME#v}"
           else
             version="${INPUT_VERSION#v}"
+            [[ "$INPUT_FIRST_RELEASE" == "true" ]] && first_release=true
+            [[ "$INPUT_FINALIZE_ONLY" == "true" ]] && finalize_only=true
           fi
           re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$'
           if [[ ! "$version" =~ $re ]]; then
             echo "::error::'$version' is not a version like 0.5.0 or 0.5.0-rc.1"
             exit 1
+          fi
+          if [[ "$finalize_only" == "true" ]]; then
+            if [[ "$first_release" == "true" ]]; then
+              echo "::error::Pick finalize_only or first_release, not both."
+              exit 1
+            fi
+            # The SHA alias names the commit being run, so it must be the commit
+            # the version was released from.
+            if [[ "$REF" != "refs/tags/v${version}" ]]; then
+              echo "::error::finalize_only must run on the tag v${version} (this run is on ${REF})."
+              exit 1
+            fi
           fi
           # <x.y.z> always; <x.y> only for a final release, so a release
           # candidate never moves a church's minor tag. The SHA alias is
@@ -85,11 +126,27 @@ jobs:
           fi
           {
             echo "version=${version}"
+            echo "first_release=${first_release}"
+            echo "finalize_only=${finalize_only}"
             echo "tags<<EOF"
             echo "$tags"
             echo "EOF"
           } >>"$GITHUB_OUTPUT"
 
+  # Builds and pushes the version tags. Nothing else: whatever can fail
+  # afterwards lives in finalize, so a retry never meets its own version.
+  publish:
+    needs: plan
+    if: ${{ needs.plan.outputs.finalize_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/grierj/fold
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -101,18 +158,19 @@ jobs:
       # A released version is immutable: a second publish of the same number
       # would change what churches already pinned. Only a confirmed "not
       # found" lets the run go on; a login, permission or network error is
-      # not "free to use", so it stops the run.
+      # not "free to use", so it stops the run. (first_release skips this.)
       - name: Refuse to overwrite a published version
+        if: ${{ needs.plan.outputs.first_release != 'true' }}
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
           status=0
           bash scripts/image-tag-exists.sh "${IMAGE}:${VERSION}" || status=$?
           case "$status" in
-            0) echo "::error::${IMAGE}:${VERSION} is already published. Pick a new version."; exit 1 ;;
+            0) echo "::error::${IMAGE}:${VERSION} is already published. Pick a new version, or finish it with finalize_only."; exit 1 ;;
             1) echo "${IMAGE}:${VERSION} is not published yet" ;;
-            *) echo "::error::Could not confirm that ${IMAGE}:${VERSION} is unpublished. Not publishing."; exit 1 ;;
+            *) echo "::error::Could not confirm that ${IMAGE}:${VERSION} is unpublished. Not publishing. For the very first release, run this workflow by hand with first_release."; exit 1 ;;
           esac
 
       - name: Build and push (linux/amd64, linux/arm64)
@@ -123,23 +181,70 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64,linux/arm64
           build-args: |
-            FOLD_VERSION=${{ steps.meta.outputs.version }}
-          tags: ${{ steps.meta.outputs.tags }}
+            FOLD_VERSION=${{ needs.plan.outputs.version }}
+          tags: ${{ needs.plan.outputs.tags }}
           push: true
-          # The attest step below records provenance for the index digest.
+          # The attest step in finalize records provenance for the index digest.
           provenance: false
           sbom: false
+
+  # The SHA alias and the attestation, against the digest that publish pushed
+  # (or, for finalize_only, the digest the version tag already has). Safe to
+  # re-run: it never builds and never moves the version tag.
+  finalize:
+    needs: [plan, publish]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # create the SHA alias, store the attestation
+      id-token: write # sign the build provenance attestation
+      attestations: write # store the attestation
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+      attestation_url: ${{ steps.attest.outputs.attestation-url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find the digest of the published version
+        id: digest
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUBLISHED_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="$PUBLISHED_DIGEST"
+          if [[ -z "$digest" ]]; then
+            # finalize_only: the version must already exist. No answer, no go.
+            digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::No digest for ${IMAGE}:${VERSION}. Nothing to finalize."
+            exit 1
+          fi
+          echo "digest=${digest}" >>"$GITHUB_OUTPUT"
 
       # The full-SHA alias points at the first release of a commit and stays
       # there. Same fail-closed check: unknown means do not touch it.
       - name: Publish the commit SHA alias if it is new
         id: sha_alias
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          FIRST_RELEASE: ${{ needs.plan.outputs.first_release }}
         run: |
           set -euo pipefail
-          status=0
-          bash scripts/image-tag-exists.sh "${IMAGE}:${GITHUB_SHA}" || status=$?
+          status=1
+          if [[ "$FIRST_RELEASE" != "true" ]]; then
+            status=0
+            bash scripts/image-tag-exists.sh "${IMAGE}:${GITHUB_SHA}" || status=$?
+          fi
           case "$status" in
             0) echo "result=kept" >>"$GITHUB_OUTPUT"; echo "${IMAGE}:${GITHUB_SHA} already exists; leaving it alone" ;;
             1)
@@ -154,14 +259,14 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
 
       - name: Record the digest
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          TAGS: ${{ needs.plan.outputs.tags }}
           SHA_ALIAS: ${{ steps.sha_alias.outputs.result }}
           ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
         run: |
@@ -189,7 +294,7 @@ jobs:
   # Writes the digest into the GitHub release. Its own job so the only token
   # that can write releases never holds packages: write.
   notes:
-    needs: image
+    needs: [plan, finalize]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -200,14 +305,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
-          VERSION: ${{ needs.image.outputs.version }}
-          DIGEST: ${{ needs.image.outputs.digest }}
-          ATTESTATION_URL: ${{ needs.image.outputs.attestation_url }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIGEST: ${{ needs.finalize.outputs.digest }}
+          ATTESTATION_URL: ${{ needs.finalize.outputs.attestation_url }}
         run: |
           set -euo pipefail
           tag="v${VERSION}"
+          start='<!-- fold-release:start -->'
+          end='<!-- fold-release:end -->'
           fence='```'
+          # A managed section: a re-run replaces it instead of adding another.
           section="$(
+            echo "$start"
             echo '### Image'
             echo
             echo "\`${IMAGE}:${VERSION}\`"
@@ -221,15 +330,29 @@ jobs:
             echo "$fence"
             echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${REPO}"
             echo "$fence"
+            echo "$end"
           )"
           status=0
           body="$(gh release view "$tag" --repo "$REPO" --json body --jq .body 2>&1)" || status=$?
           if [[ "$status" -eq 0 ]]; then
-            if grep -qF "$DIGEST" <<<"$body"; then
-              echo "release ${tag} already lists this digest"
+            if grep -qF "$start" <<<"$body"; then
+              if ! grep -qF "$end" <<<"$body"; then
+                echo "::error::Release ${tag} has a fold-release start marker but no end marker. Fix the notes by hand."
+                exit 1
+              fi
+              new="$(SECTION="$section" START="$start" END="$end" awk '
+                index($0, ENVIRON["START"]) { print ENVIRON["SECTION"]; skip = 1; next }
+                skip { if (index($0, ENVIRON["END"])) skip = 0; next }
+                { print }
+              ' <<<"$body")"
+            else
+              new="${body}"$'\n\n'"${section}"
+            fi
+            if [[ "$new" == "$body" ]]; then
+              echo "release ${tag} already has this section"
               exit 0
             fi
-            gh release edit "$tag" --repo "$REPO" --notes "${body}"$'\n\n'"${section}"
+            gh release edit "$tag" --repo "$REPO" --notes "$new"
           elif grep -qi 'release not found' <<<"$body"; then
             flags=()
             if [[ "$VERSION" == *-* ]]; then
