@@ -47,7 +47,7 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
 
   if (!open && !done) {
     return (
-      <Button variant="secondary" onClick={() => setOpen(true)}>
+      <Button variant="primary" onClick={() => setOpen(true)}>
         Register as a guest
       </Button>
     );
