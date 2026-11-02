@@ -28,8 +28,10 @@ Follow the directions page at `/notifications/setup` literally, on each device b
 
 ## Live install (M5.1, M5.3; AGENTS.md "Deployment")
 
-- [ ] **`docker compose up` on a real domain.** Fill `.env`, run `docker compose up --build -d`. You should see Caddy get a certificate, `https://<domain>/healthz` answer, and the setup wizard at `/setup`.
-- [ ] **Volumes survive a rebuild.** Upload an avatar, then run `docker compose up --build -d` again. You should see the avatar and all data still there (`pgdata`, `uploads`).
+- [ ] **`docker compose up` on a real domain.** Fill `.env` (set `FOLD_VERSION` to the published release), run `docker compose pull && docker compose up -d`. You should see Caddy get a certificate, `https://<domain>/healthz` answer, and the setup wizard at `/setup`.
+- [ ] **Pull-only install on a machine with no Go and no Node (R1 slice 1, C10).** After the first release is tagged and the `release` workflow is green, make the `ghcr.io/grierj/fold` package public (or `docker login ghcr.io` with a read token), then on a fresh server with only Docker run `docker compose pull && docker compose up -d` with `FOLD_VERSION` set to that exact version. You should see the image pull with no build step (try an `arm64` machine too, if one is around) and the setup page at `/setup`. Also run `gh attestation verify oci://ghcr.io/grierj/fold@<digest> --repo grierj/fold` with the digest from the workflow summary: you should see it verified.
+- [ ] **A 1 GB droplet with swap stays up on the pulled image (R1 slice 1).** Provision an `s-1vcpu-1gb` droplet with `--image ghcr.io/grierj/fold:<version> --swap-mb 1024`. You should see `smoke.sh` pass, the wizard reached, and the app and Postgres still up (`docker compose ps`, `free -m`) after a day of normal use and a week of reminders and push.
+- [ ] **Volumes survive an upgrade.** Upload an avatar, then change `FOLD_VERSION` to the next release and run `docker compose pull && docker compose up -d`. You should see the avatar and all data still there (`pgdata`, `uploads`).
 - [ ] **`deploy/digitalocean/provision.sh` as a real run**, not `--dry-run`, on a fresh droplet the church owns, then `smoke.sh`. You should see health, TLS, and that Postgres and the app are not published. After the first dump, run the backup restore test (`--restore-test`) from `docs/DEPLOY-DIGITALOCEAN.md`.
 - [ ] **Following the deployment docs** on a fresh 2 GB VPS reaches the wizard in under 30 minutes (M5.4).
 

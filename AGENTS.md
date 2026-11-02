@@ -238,9 +238,12 @@ After a merge, merge master into the other open branches (never rebase) and repo
 
 ## Deployment
 
-- `docker compose up --build -d` → app + Postgres 16 + Caddy (auto HTTPS). Fill `.env` from
-  `.env.example` first. Named volumes: `pgdata`, `uploads`. Only a live `docker compose up` checks
-  that Caddy, TLS and the volumes work together.
+- `docker compose pull && docker compose up -d` → app + Postgres 16 + Caddy (auto HTTPS). The app
+  is the published `ghcr.io/grierj/fold:${FOLD_VERSION}` (C10, `release.yml`); `FOLD_VERSION` is an
+  exact release in `.env`, never `latest`. Developers (and anyone before the first release) add the
+  override: `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`. Fill
+  `.env` from `.env.example` first. Named volumes: `pgdata`, `uploads`. Only a live
+  `docker compose up` checks that Caddy, TLS and the volumes work together.
 - The compose subnet `172.30.0.0/24` is the default `FOLD_TRUSTED_PROXIES`; change both together.
 - Dockerfile is multi-stage (node → go → distroless), `CGO_ENABLED=0`; no C compiler.
 - Every `APP_ENV` refuses to boot without `DATABASE_URL`. Migrations run on start under a Postgres

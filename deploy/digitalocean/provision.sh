@@ -90,11 +90,14 @@ is safe. --dry-run prints the plan and does not change the machine.
 
 Required for a deploy (unless --skip-deploy):
   --domain NAME              Public hostname. DNS A/AAAA must point here.
-  --image REF                Pull this pinned tag instead of building.
+  --image REF                Pull this pinned release instead of building. The tag
+                             becomes FOLD_VERSION in .env.
                              Example: ghcr.io/grierj/fold:0.5.0
                              :latest is refused.
-  --allow-onbox-build        Build on this machine (docker compose up --build).
-                             Off by default. A 1 GB droplet will run out of memory.
+  --allow-onbox-build        Build on this machine: also copies
+                             docker-compose.build.yml and sets COMPOSE_FILE in
+                             .env (docker compose up --build). Off by default.
+                             A 1 GB droplet will run out of memory.
 
 Hardening:
   --admin-user NAME          Sudo user. Password locked. Default: deploy
@@ -112,9 +115,10 @@ Deploy:
   --skip-harden              Deploy only.
   --skip-deploy              Harden only.
 
---image and --allow-onbox-build are mutually exclusive. Prebuilt images are
-not published yet (plan C10); until they are, a 2 GB droplet and
---allow-onbox-build is the path that matches this repo's compose file.
+--image and --allow-onbox-build are mutually exclusive. The shipped compose
+file pulls ghcr.io/grierj/fold:${FOLD_VERSION} (plan C10), so a 1 GB droplet
+with swap can run it. Until the first release is published there is nothing
+to pull: use a 2 GB droplet and --allow-onbox-build.
 EOF
 }
 
@@ -288,8 +292,13 @@ validate() {
   fi
   if (( ! SKIP_DEPLOY )); then
     if [[ -z "$IMAGE" && "$ALLOW_BUILD" -eq 0 ]]; then
-      die "pass --image ghcr.io/grierj/fold:TAG to pull, or --allow-onbox-build to build here. Building on a 1–2 GB droplet can run out of memory; published images (plan C10) are not in this repo yet." 2
+      die "pass --image ghcr.io/grierj/fold:TAG to pull a published release, or --allow-onbox-build to build here. Building on a 1–2 GB droplet can run out of memory; use it only until the first release is published." 2
     fi
+  fi
+  if (( ALLOW_BUILD )); then
+    # COMPOSE_FILE in .env lists absolute paths joined by colons.
+    [[ "$DEPLOY_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+      || die "--deploy-dir may use only letters, digits, dot, dash, underscore and slash with --allow-onbox-build"
   fi
   if [[ -z "$SOURCE_DIR" ]]; then
     SOURCE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -647,20 +656,40 @@ copy_tree() {
   rm -rf "$stage"
 }
 
+# The shipped docker-compose.yml pulls ${FOLD_IMAGE_REPO}:${FOLD_VERSION} and
+# has no build key (plan C10). A normal deploy installs it unchanged and
+# pins the release through FOLD_VERSION in .env (ensure_release_pin). Only an
+# --image from another repository (a fork or a hotfix build) rewrites the
+# image line, to an explicit pin that upgrade.sh reads back via the marker.
 write_image_compose() {
   local src="$SOURCE_DIR/docker-compose.yml"
   local dest="$DEPLOY_DIR/docker-compose.yml"
+  local pull_line='^    image: ghcr\.io/grierj/fold:\$\{FOLD_VERSION'
+  grep -Eq "$pull_line" "$src" \
+    || die "docker-compose.yml has no 'image: ${FOLD_IMAGE_REPO}:\${FOLD_VERSION...}' app line. Refusing to guess how to pull a pinned image."
+  if grep -q '^    build:' "$src"; then
+    die "docker-compose.yml has an app build key; the build belongs in docker-compose.build.yml"
+  fi
+  if [[ -z "$IMAGE" || "$IMAGE" == "${FOLD_IMAGE_REPO}:"* ]]; then
+    if (( DRY_RUN )); then
+      echo "dry-run: install $src as $dest unchanged (app pulls ${FOLD_IMAGE_REPO}:\${FOLD_VERSION} from .env)"
+      return 0
+    fi
+    mkdir -p "$DEPLOY_DIR"
+    install -m 644 "$src" "$dest"
+    return 0
+  fi
   if (( DRY_RUN )); then
-    echo "dry-run: write $dest from $src with app image $IMAGE (build: removed)"
+    echo "dry-run: write $dest from $src with app image $IMAGE pinned explicitly"
     return 0
   fi
   local tmp
   tmp="$(mktemp)"
-  if ! awk -v image="$IMAGE" '
+  if ! IMAGE_REF="$IMAGE" PULL_LINE="$pull_line" awk '
     BEGIN { replaced = 0 }
     {
-      if (!replaced && $0 == "    build: .") {
-        print "    image: " image " # fold-app-image"
+      if (!replaced && $0 ~ ENVIRON["PULL_LINE"]) {
+        print "    image: " ENVIRON["IMAGE_REF"] " # fold-app-image"
         replaced = 1
         next
       }
@@ -669,17 +698,16 @@ write_image_compose() {
     END { if (!replaced) exit 3 }
   ' "$src" >"$tmp"; then
     rm -f "$tmp"
-    die "docker-compose.yml has no '    build: .' line. Refusing to guess how to switch it to a pulled image."
-  fi
-  if grep -n '^    build:' "$tmp" >/dev/null; then
-    rm -f "$tmp"
-    die "rewritten compose still has an app build key; refusing to build on the droplet"
+    die "could not pin the app image in docker-compose.yml"
   fi
   mkdir -p "$DEPLOY_DIR"
   mv "$tmp" "$dest"
   chmod 644 "$dest"
 }
 
+# install_runtime_files: plain deploys copy only docker-compose.yml, the
+# Caddyfile and .env.example. --allow-onbox-build copies the whole tree, which
+# carries docker-compose.build.yml and the Dockerfile the build needs.
 install_runtime_files() {
   if (( DRY_RUN )); then
     echo "dry-run: mkdir -p $DEPLOY_DIR mode 755"
@@ -687,16 +715,18 @@ install_runtime_files() {
     mkdir -p "$DEPLOY_DIR"
     chmod 755 "$DEPLOY_DIR"
   fi
-  if [[ -n "$IMAGE" ]]; then
+  if (( ALLOW_BUILD )); then
+    copy_tree "$SOURCE_DIR" "$DEPLOY_DIR"
+  else
     if (( DRY_RUN )); then
-      echo "dry-run: copy Caddyfile and .env.example to $DEPLOY_DIR"
+      echo "dry-run: copy Caddyfile and .env.example to $DEPLOY_DIR; remove any docker-compose.build.yml"
     else
       install -m 644 "$SOURCE_DIR/Caddyfile" "$DEPLOY_DIR/Caddyfile"
       install -m 644 "$SOURCE_DIR/.env.example" "$DEPLOY_DIR/.env.example"
+      # A pulled deploy has no build override to fall back on by accident.
+      rm -f "$DEPLOY_DIR/docker-compose.build.yml"
     fi
     write_image_compose
-  else
-    copy_tree "$SOURCE_DIR" "$DEPLOY_DIR"
   fi
   if (( DRY_RUN )); then
     echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh checks.sh into $DEPLOY_DIR"
@@ -713,6 +743,79 @@ install_runtime_files() {
     chmod 600 "$DEPLOY_DIR/backup.env"
     assert_env_mode "$DEPLOY_DIR/backup.env" || exit 1
   fi
+}
+
+# set_env_value FILE KEY VALUE: set KEY=VALUE, replacing the first uncommented
+# KEY= line or appending. Touches the file only when the value changes, so a
+# second run of provision.sh leaves .env byte for byte the same. Values here
+# are release labels and absolute paths: no quotes, spaces or backslashes.
+set_env_value() {
+  local file="$1" key="$2" value="$3" current tmp
+  current="$(env_value "$file" "$key" || true)"
+  if [[ "$current" == "$value" ]]; then
+    return 0
+  fi
+  if (( DRY_RUN )); then
+    echo "dry-run: set ${key}=${value} in ${file}"
+    return 0
+  fi
+  tmp="$(mktemp "$(dirname "$file")/.tmp.XXXXXX")"
+  ENV_KEY="$key" ENV_VALUE="$value" awk '
+    BEGIN { key = ENVIRON["ENV_KEY"]; done = 0 }
+    index($0, key "=") == 1 { if (!done) print key "=" ENVIRON["ENV_VALUE"]; done = 1; next }
+    { print }
+    END { if (!done) print key "=" ENVIRON["ENV_VALUE"] }
+  ' "$file" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$file"
+}
+
+unset_env_value() {
+  local file="$1" key="$2" tmp
+  [[ -n "$(env_value "$file" "$key" || true)" ]] || return 0
+  if (( DRY_RUN )); then
+    echo "dry-run: remove ${key} from ${file}"
+    return 0
+  fi
+  tmp="$(mktemp "$(dirname "$file")/.tmp.XXXXXX")"
+  ENV_KEY="$key" awk 'index($0, ENVIRON["ENV_KEY"] "=") != 1' "$file" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$file"
+}
+
+# ensure_release_pin: FOLD_VERSION in .env is what Compose pulls (plan C10).
+# --image sets it from the tag; --allow-onbox-build sets a local label and
+# COMPOSE_FILE so plain `docker compose` commands include the build override.
+ensure_release_pin() {
+  local env_file="$DEPLOY_DIR/.env" version existing compose_file
+  if [[ -n "$IMAGE" ]]; then
+    version="${IMAGE##*:}"
+    assert_pinned_version "$version" || exit 1
+    echo "release: pulling ${IMAGE} (FOLD_VERSION=${version})"
+    if (( DRY_RUN )) && [[ ! -f "$env_file" ]]; then
+      echo "dry-run: set FOLD_VERSION=${version} in ${env_file}"
+      return 0
+    fi
+    set_env_value "$env_file" FOLD_VERSION "$version"
+    compose_file="$(env_value "$env_file" COMPOSE_FILE || true)"
+    if [[ "$compose_file" == *docker-compose.build.yml* ]]; then
+      unset_env_value "$env_file" COMPOSE_FILE
+    fi
+    return 0
+  fi
+  if (( DRY_RUN )) && [[ ! -f "$env_file" ]]; then
+    echo "dry-run: set FOLD_VERSION=dev and COMPOSE_FILE=${DEPLOY_DIR}/docker-compose.yml:${DEPLOY_DIR}/docker-compose.build.yml in ${env_file}"
+    return 0
+  fi
+  compose_file="$(env_value "$env_file" COMPOSE_FILE || true)"
+  existing="$(env_value "$env_file" FOLD_VERSION || true)"
+  if [[ "$compose_file" != *docker-compose.build.yml* || -z "$existing" || "$existing" == latest ]]; then
+    # Switching from a pulled release: never label a local build with the
+    # release number it is not.
+    set_env_value "$env_file" FOLD_VERSION dev
+  fi
+  set_env_value "$env_file" COMPOSE_FILE "${DEPLOY_DIR}/docker-compose.yml:${DEPLOY_DIR}/docker-compose.build.yml"
+  echo "release: building on this machine (docker-compose.build.yml, COMPOSE_FILE in .env)"
 }
 
 write_env() {
@@ -809,9 +912,10 @@ deploy_stack() {
 
 verify_before_up() {
   if (( DRY_RUN )); then
-    echo "dry-run: check compose does not publish db/app, and FOLD_TRUSTED_PROXIES matches the subnet"
+    echo "dry-run: check compose does not publish db/app, FOLD_TRUSTED_PROXIES matches the subnet, and FOLD_VERSION is not latest"
     return 0
   fi
+  assert_deploy_pinned "$DEPLOY_DIR" || exit 1
   assert_compose_private "$DEPLOY_DIR/docker-compose.yml" || exit 1
   assert_trusted_proxy "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/.env" || exit 1
 }
@@ -844,7 +948,7 @@ EOF
   if [[ -n "$IMAGE" ]]; then
     echo "  app image: ${IMAGE}"
   elif (( ALLOW_BUILD )); then
-    echo "  app image: built on this machine (--allow-onbox-build)"
+    echo "  app image: built on this machine (--allow-onbox-build, docker-compose.build.yml)"
   fi
   if (( DRY_RUN )); then
     echo "  dry-run:    no files were written and no packages were installed"
@@ -887,6 +991,7 @@ main() {
     install_docker
     install_runtime_files
     write_env
+    ensure_release_pin
     verify_before_up
     install_smoke_cron
     install_backup_cron

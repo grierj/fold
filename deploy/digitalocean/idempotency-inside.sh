@@ -328,6 +328,21 @@ fi
 grep -q 'permitrootlogin no' /tmp/fold-snap-2
 grep -q 'passwordauthentication no' /tmp/fold-snap-2
 
+# A pulled deploy (C10): the shipped compose file goes in unchanged, the
+# release is pinned by FOLD_VERSION in .env, and nothing can build.
+cmp /src/docker-compose.yml /opt/fold/docker-compose.yml
+[[ "$(env_value /opt/fold/.env FOLD_VERSION)" == "0.0.0-dry-run" ]]
+[[ ! -e /opt/fold/docker-compose.build.yml ]]
+[[ ! -e /opt/fold/Dockerfile ]]
+if grep -q '^    build:' /opt/fold/docker-compose.yml; then
+  echo "idempotency: pulled deploy has a build key" >&2
+  exit 1
+fi
+if env_value /opt/fold/.env COMPOSE_FILE >/dev/null; then
+  echo "idempotency: pulled deploy sets COMPOSE_FILE" >&2
+  exit 1
+fi
+
 expect_fail() {
   local needle="$1"
   shift
@@ -415,5 +430,135 @@ expect_fail 'not a commit' bash deploy/digitalocean/upgrade.sh --dry-run \
   --domain groups.example.org \
   --source-dir /src \
   --deploy-dir /tmp/fold-up
+
+# upgrade.sh reads the running release from FOLD_VERSION in .env.
+cur_out="$(bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.0.1-dry-run \
+  --deploy-dir /opt/fold \
+  --source-dir /src 2>&1)"
+grep -qF 'mode=image image=ghcr.io/grierj/fold:0.0.0-dry-run' <<<"$cur_out"
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.5 \
+  --deploy-dir /tmp/fold-up \
+  --source-dir /src
+mkdir -p /tmp/fold-moving-env
+cp /opt/fold/docker-compose.yml /tmp/fold-moving-env/docker-compose.yml
+printf 'DOMAIN=groups.example.org\nFOLD_VERSION=0.5\n' >/tmp/fold-moving-env/.env
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.5.1 \
+  --deploy-dir /tmp/fold-moving-env \
+  --source-dir /src
+mkdir -p /tmp/fold-latest-env
+cp /opt/fold/docker-compose.yml /tmp/fold-latest-env/docker-compose.yml
+printf 'DOMAIN=groups.example.org\nFOLD_VERSION=latest\n' >/tmp/fold-latest-env/.env
+expect_fail 'latest' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.0.1-dry-run \
+  --deploy-dir /tmp/fold-latest-env \
+  --source-dir /src
+expect_fail 'FOLD_VERSION' bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.0.1-dry-run \
+  --deploy-dir /tmp/fold-latest-env \
+  --source-dir /src
+
+# An --image from another repository (a fork or hotfix) pins the image line
+# explicitly; upgrade.sh reads it back from the marker.
+fork_dir=/tmp/fold-fork
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --image registry.example.org/fork/fold:1.0.0 \
+  --source-dir /src \
+  --deploy-dir "$fork_dir" >/tmp/fold-fork.out 2>&1
+grep -q '^    image: registry.example.org/fork/fold:1.0.0 # fold-app-image$' "$fork_dir/docker-compose.yml"
+if grep -q '^    build:' "$fork_dir/docker-compose.yml"; then
+  echo "idempotency: fork deploy has a build key" >&2
+  exit 1
+fi
+[[ "$(env_value "$fork_dir/.env" FOLD_VERSION)" == "1.0.0" ]]
+fork_out="$(bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.0.1-dry-run \
+  --deploy-dir "$fork_dir" \
+  --source-dir /src 2>&1)"
+grep -qF 'mode=image image=registry.example.org/fork/fold:1.0.0' <<<"$fork_out"
+
+# --allow-onbox-build copies the build override and points COMPOSE_FILE at it.
+build_dir=/tmp/fold-build
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --allow-onbox-build \
+  --source-dir /src \
+  --deploy-dir "$build_dir" >/tmp/fold-build.out 2>&1
+cmp /src/docker-compose.build.yml "$build_dir/docker-compose.build.yml"
+[[ -f "$build_dir/Dockerfile" ]]
+[[ "$(env_value "$build_dir/.env" FOLD_VERSION)" == "dev" ]]
+[[ "$(env_value "$build_dir/.env" COMPOSE_FILE)" == "$build_dir/docker-compose.yml:$build_dir/docker-compose.build.yml" ]]
+build_env_sum="$(sha256sum "$build_dir/.env")"
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --allow-onbox-build \
+  --source-dir /src \
+  --deploy-dir "$build_dir" >/tmp/fold-build-2.out 2>&1
+[[ "$build_env_sum" == "$(sha256sum "$build_dir/.env")" ]]
+# upgrade.sh records a commit for a source build, so it needs a real checkout.
+mkdir -p /tmp/fold-srcrepo/deploy/digitalocean
+touch /tmp/fold-srcrepo/deploy/digitalocean/provision.sh
+git -C /tmp/fold-srcrepo init -q
+git -C /tmp/fold-srcrepo add -A
+git -C /tmp/fold-srcrepo -c user.name=test -c user.email=test@example.org commit -q -m fixture
+build_cur="$(bash deploy/digitalocean/upgrade.sh --dry-run \
+  --domain groups.example.org \
+  --image ghcr.io/grierj/fold:0.0.1-dry-run \
+  --deploy-dir "$build_dir" \
+  --source-dir /tmp/fold-srcrepo 2>&1)"
+grep -qF 'mode=build' <<<"$build_cur"
+
+# Moving that deploy to a pulled release drops the override and COMPOSE_FILE.
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --image ghcr.io/grierj/fold:0.0.2-dry-run \
+  --source-dir /src \
+  --deploy-dir "$build_dir" >/tmp/fold-build-to-image.out 2>&1
+[[ ! -e "$build_dir/docker-compose.build.yml" ]]
+[[ "$(env_value "$build_dir/.env" FOLD_VERSION)" == "0.0.2-dry-run" ]]
+if env_value "$build_dir/.env" COMPOSE_FILE >/dev/null; then
+  echo "idempotency: COMPOSE_FILE survived a move to a pulled release" >&2
+  exit 1
+fi
+
+# Rollback reads release.prev: an exact version passes, a moving alias fails.
+rb_dir=/tmp/fold-rollback
+mkdir -p "$rb_dir" /var/backups/fold
+rb_dump=/var/backups/fold/fold-20260101-0000.dump
+: >"$rb_dump"
+write_release_prev() {
+  cat >"$rb_dir/release.prev" <<EOF
+mode=image
+previous_image=$1
+previous_commit=
+dump=$rb_dump
+source_dir=/src
+domain=groups.example.org
+EOF
+}
+write_release_prev ghcr.io/grierj/fold:0.4.0
+rb_out="$(bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir" 2>&1)"
+grep -qF 'rolling back mode=image' <<<"$rb_out"
+write_release_prev ghcr.io/grierj/fold:0.4
+expect_fail 'not an exact release' bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir"
+write_release_prev ghcr.io/grierj/fold:latest
+expect_fail 'latest' bash deploy/digitalocean/upgrade.sh --dry-run --rollback --deploy-dir "$rb_dir"
 
 echo "idempotency: ok"

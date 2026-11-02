@@ -10,9 +10,25 @@ UI). Deployments stay one artifact: `docker compose up`.
 
 ```bash
 cp .env.example .env
-# edit .env: set DOMAIN, SESSION_SECRET (openssl rand -base64 48; at least 32 characters), DB_PASSWORD
-docker compose up --build -d
+# edit .env: set DOMAIN, SESSION_SECRET (openssl rand -base64 48; at least 32 characters),
+# DB_PASSWORD, and FOLD_VERSION (an exact release such as 0.5.0, never "latest")
+docker compose pull && docker compose up -d
 ```
+
+Compose pulls the published image `ghcr.io/grierj/fold:${FOLD_VERSION}`; no Go
+or Node is needed on the server, and a 1 GB machine with swap can run it. Pin
+an exact release and change `FOLD_VERSION` only when you mean to upgrade.
+
+**No release is published yet.** Until the first release exists there is
+nothing to pull, so build from this checkout with the developer override
+instead. Set `FOLD_VERSION` to any label (for example `dev`) and run:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+The build needs about 2 GB of memory. This is also the developer path once
+releases exist.
 
 Open `https://<DOMAIN>` and enter the setup code from `docker compose logs app`.
 Keep the code private. Then create the church site and its first admin account.
@@ -25,15 +41,44 @@ TLS, and that Postgres is not reachable from the internet. The script
 never creates droplets or other DigitalOcean resources.
 
 Postgres data is the `pgdata` volume. Avatars and cover photos are the
-`uploads` volume, mounted at `/data` in the app container. Rebuilding the
-image keeps both. Fold runs only on PostgreSQL and refuses to start without
+`uploads` volume, mounted at `/data` in the app container. Pulling a new
+image (or rebuilding one) keeps both. Fold runs only on PostgreSQL and refuses to start without
 `DATABASE_URL`. Migrations run on start.
 
 To run the setup wizard again, delete the users and restart the app. The
 process remembers that setup finished until it exits.
 
+## Publishing a release (maintainers)
+
+Push a tag such as `v0.5.0`. The `release` workflow builds `linux/amd64` and
+`linux/arm64`, pushes `ghcr.io/grierj/fold:0.5.0` (and `:0.5` for a final
+release), attests the build, and writes the image digest into the GitHub
+release notes. A published version is never overwritten, with one exception:
+a maintainer's manual run with `first_release` skips the existence check
+(see below). It is for the very first release only, and the run logs a
+warning and records who ran it.
+
+- **The very first release:** GHCR can answer "denied" instead of "not found"
+  for a package that does not exist yet, and the workflow stops on that
+  rather than guess. If the tag push fails at "Refuse to overwrite a
+  published version", run the workflow by hand (Actions, release, Run
+  workflow) on the tag with `version` and `first_release` set. Tag pushes
+  never skip the check. Then make the package public.
+- **A release that was pushed but not finished** (the SHA alias, attestation
+  or notes failed): use "Re-run failed jobs" on the run, which reuses the
+  pushed digest. If that is no longer possible, run the workflow by hand on
+  the tag `v<version>` with `version` and `finalize_only` set. It looks up
+  the existing digest and never rebuilds.
+
 ## Upgrade notes
 
+- **Nov 2026 (M5.1): Compose pulls a published image.** `docker-compose.yml` no
+  longer builds; it needs `FOLD_VERSION` in `.env` and refuses to start without
+  it. An older install that built on the box keeps working by adding the
+  build override: set `FOLD_VERSION=dev` and run
+  `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
+  Once a release is published, set `FOLD_VERSION` to that exact version and run
+  `docker compose pull && docker compose up -d`.
 - **Oct 2026 (PR #44): `SESSION_SECRET` must be at least 32 characters.** An older
   install with a shorter secret will not start. `docker compose logs app` shows
   one line naming the problem and its length (never the value). Fix: run

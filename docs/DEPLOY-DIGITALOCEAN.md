@@ -33,16 +33,23 @@ The database is Postgres in the Compose file (`postgres:16-alpine`, user
 
 ## Size
 
-This repo's `docker-compose.yml` builds the image on the droplet
-(`build: .`, `--allow-onbox-build`). Use the 2 GB size for that build.
-A 1 GB droplet is enough only after a published image exists to pull
-(`--image`). Building the Node and Go stages on a 1 GB machine can run
-out of memory. No separate build machine is part of this guide.
+This repo's `docker-compose.yml` pulls the published image
+`ghcr.io/grierj/fold:${FOLD_VERSION}` (`--image`); it does not build.
+With a pulled image the 1 GB size, with swap, is the floor and 2 GB stays
+the recommendation. Building the Node and Go stages on a 1 GB machine can
+run out of memory, so the on-droplet build (`--allow-onbox-build`, which
+also copies `docker-compose.build.yml`) needs the 2 GB size. No separate
+build machine is part of this guide.
+
+**No release is published yet.** Until the first release exists there is
+no image to pull: use the 2 GB size with `--allow-onbox-build`, as the
+commands below do, and switch to `--image ghcr.io/grierj/fold:x.y.z` when
+a release is announced.
 
 | Droplet | Slug | Disk / transfer | When |
 |---|---|---|---|
-| 2 GiB, 1 vCPU, $12/mo | `s-1vcpu-2gb` | 50 GiB, 2,000 GiB | Default. Room for Postgres, Caddy, and the app. |
-| 1 GiB, 1 vCPU, $6/mo | `s-1vcpu-1gb` | 25 GiB, 1,000 GiB | Only after an image exists to pull. Add `--swap-mb 1024`. |
+| 2 GiB, 1 vCPU, $12/mo | `s-1vcpu-2gb` | 50 GiB, 2,000 GiB | Recommended. Room for Postgres, Caddy, the app, and an on-droplet build. |
+| 1 GiB, 1 vCPU, $6/mo | `s-1vcpu-1gb` | 25 GiB, 1,000 GiB | The floor, with a pulled image only. Add `--swap-mb 1024`. Needs a published release, so not before the first one. |
 | 2 GiB, 2 vCPU, $18/mo | `s-2vcpu-2gb` | 60 GiB, 3,000 GiB | When the 1 vCPU size is busy. |
 
 Weekly Droplet Backups add 20% of the droplet price. Daily adds 30%.
@@ -153,10 +160,15 @@ Preview the whole plan:
   --allow-onbox-build
 ```
 
-`--allow-onbox-build` matches this repo today: Compose builds the image
-on the droplet. When `ghcr.io/grierj/fold` is published, drop that flag
-and pass `--image ghcr.io/grierj/fold:x.y.z` instead. Pin the tag. Do
-not deploy `:latest`.
+`--allow-onbox-build` is the path until the first release is published:
+it copies `docker-compose.build.yml`, sets `COMPOSE_FILE` in `.env` so
+plain `docker compose` commands include it, and Compose builds the image
+on the droplet. Once `ghcr.io/grierj/fold` has a release, drop that flag
+and pass `--image ghcr.io/grierj/fold:x.y.z` instead; the tag becomes
+`FOLD_VERSION` in `.env`, the build override is removed, and nothing builds
+on the droplet. Pin the exact version (`0.5.0`, not the moving `0.5`; the
+scripts refuse it). Do not deploy `:latest`. Each GitHub release lists the
+image digest and a link to its build provenance.
 
 Apply it:
 
@@ -176,12 +188,12 @@ The script will:
 5. Enable a fail2ban sshd jail (5 retries, 1 hour ban).
 6. Turn on unattended security upgrades. The machine does not reboot itself. After a kernel update, `/var/run/reboot-required` appears; reboot in a quiet window.
 7. Install Docker Engine and the Compose plugin from Docker's Ubuntu repository when `docker compose version` is not already working.
-8. Copy the stack to `/opt/fold`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
+8. Copy the stack to `/opt/fold` (with `--image`: only `docker-compose.yml`, `Caddyfile` and `.env.example`; with `--allow-onbox-build`: the whole checkout, including `docker-compose.build.yml`), pin `FOLD_VERSION` in `.env`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
 9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone.
 10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. It also runs `fold push check` and warns, without failing, if the app can't reach a browser push service on port 443. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
 11. Read `sshd -T` and fail if root login or password login is still on. Fail if `ufw` is not active.
 
-A second run does not rotate `.env` secrets, does not duplicate SSH keys, and does not replace `/swapfile` or `backup.env`. Pass the same `--domain`. To change the hostname, edit `.env` yourself; the script stops if the flag and the file disagree. `:latest` is refused.
+A second run does not rotate `.env` secrets, does not duplicate SSH keys, and does not replace `/swapfile` or `backup.env`. Pass the same `--domain`. To change the hostname, edit `.env` yourself; the script stops if the flag and the file disagree. `:latest` is refused, both as `--image` and as `FOLD_VERSION` in `.env`.
 
 Set the church's time zone so the 02:30 backup is local. `--swap-mb 1024` adds a swap file on a 1 GiB droplet. `--smtp-url` and `--email-from` are written only when `.env` is first created; editing `.env` avoids leaving the SMTP password in shell history.
 
@@ -366,7 +378,8 @@ Pin every upgrade to an image tag or a git commit. `:latest` is refused.
 Read the release notes first. `README.md` records operator steps (for
 example the `SESSION_SECRET` length).
 
-On a pulled image:
+On a pulled image (this changes `FOLD_VERSION` in `/opt/fold/.env`; there is
+no image to pull until the first release is published):
 
 ```bash
 sudo /root/fold/deploy/digitalocean/upgrade.sh \
@@ -421,6 +434,6 @@ The script does not call the Hetzner API and does not create servers.
 
 ## Decisions
 
-- **Images.** Keep the Compose build on the droplet (`--allow-onbox-build` on the 2 GB size). `--image` is for a later published tag. No separate build setup.
+- **Images.** Pull a published, pinned release (`--image ghcr.io/grierj/fold:x.y.z`, from the GitHub release workflow). Until the first release exists, build on the droplet with `--allow-onbox-build` on the 2 GB size. No separate build setup.
 - **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`). Hetzner uses the same script on those Ubuntu images.
 - **Services.** One recommendation each, and another provider still works. Postmark for email (any SMTP host works). Telnyx for SMS when a church wants texting (Fold runs without it). Backblaze B2 for offsite dumps (any S3-compatible bucket, including DigitalOcean Spaces, works).
