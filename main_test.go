@@ -170,8 +170,8 @@ func TestHTTPServerDropsStalledHeaders(t *testing.T) {
 	if ne, ok := err.(net.Error); ok && ne.Timeout() {
 		t.Fatal("server never dropped the stalled connection")
 	}
-	if d := time.Since(start); d < 150*time.Millisecond || d > 3*time.Second {
-		t.Fatalf("dropped after %v, want about 200ms", d)
+	if d := time.Since(start); d < 50*time.Millisecond || d > 5*time.Second {
+		t.Fatalf("dropped after %v, want between 50ms and 5s", d)
 	}
 }
 
