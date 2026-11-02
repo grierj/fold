@@ -58,7 +58,7 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 
 	// Fetch the setup form to get a CSRF token (form posts need it too).
 	getW := httptest.NewRecorder()
-	r.ServeHTTP(getW, httptest.NewRequest("GET", "/setup", nil))
+	r.ServeHTTP(getW, setupRequest(t, app, "GET", "/setup"))
 	formRe := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
 	m := formRe.FindStringSubmatch(getW.Body.String())
 	if len(m) != 2 {

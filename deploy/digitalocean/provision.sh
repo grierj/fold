@@ -852,7 +852,7 @@ EOF
     cat <<EOF
   next:       confirm a second terminal can 'ssh ${ADMIN_USER}@${DOMAIN}' before closing root
               point DNS at this host if you have not, then open https://${DOMAIN}/
-              the first visit is the setup wizard
+              enter the setup code from docker compose logs app to create the first admin
               smoke.sh already requested https://${DOMAIN}/healthz
               put SMTP in ${DEPLOY_DIR}/.env before inviting people, or re-run with
               POSTMARK_ACCOUNT_TOKEN set so email-dns.sh can create the domain (SMS stays unset)

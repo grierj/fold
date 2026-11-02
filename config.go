@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -23,6 +24,8 @@ type Config struct {
 	// SessionSecret signs session cookies. Required in prod; a loud
 	// insecure default is used for dev only.
 	SessionSecret []byte
+	// SetupToken is an optional 32-byte hex credential shared by app processes.
+	SetupToken string
 	// DatabaseURL is the Postgres DSN, required everywhere (DEC-1, DEC-24),
 	// e.g. "postgres://user:pass@host:5432/dbname?sslmode=disable".
 	DatabaseURL string
@@ -160,6 +163,13 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	setupToken := os.Getenv("FOLD_SETUP_TOKEN")
+	if setupToken != "" {
+		decoded, err := hex.DecodeString(setupToken)
+		if err != nil || len(decoded) != 32 {
+			return Config{}, errors.New("FOLD_SETUP_TOKEN must be 64 hexadecimal characters; generate one with `openssl rand -hex 32`")
+		}
+	}
 
 	dbURL, err := databaseURL()
 	if err != nil {
@@ -192,6 +202,7 @@ func LoadConfig() (Config, error) {
 		Env:                   env,
 		Port:                  getEnv("PORT", "8080"),
 		SessionSecret:         []byte(secret),
+		SetupToken:            setupToken,
 		DatabaseURL:           dbURL,
 		CookieSecure:          getEnvBool("COOKIE_SECURE", !isDev),
 		SiteURL:               os.Getenv("SITE_URL"),

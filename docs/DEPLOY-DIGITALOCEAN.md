@@ -192,7 +192,7 @@ ssh deploy@groups.example.org
 sudo /opt/fold/smoke.sh
 ```
 
-The first browser visit to `https://groups.example.org/` is the setup wizard (site name and the first admin). `GET /healthz` answers only after Postgres is up.
+Open `https://groups.example.org/` and enter the setup code from `sudo docker compose --project-directory /opt/fold logs app`. Keep the code private. Then create the site and first admin. If the app restarts before setup is complete, use the new code from its logs. `GET /healthz` answers only after Postgres is up.
 
 Then set the church's mail. Any SMTP host works. Postmark is the
 recommendation. `email-dns.sh` does nothing unless the tokens are set,

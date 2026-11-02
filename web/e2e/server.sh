@@ -26,6 +26,7 @@ fi
 # Cookies work over plain http on 127.0.0.1 in either mode.
 export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}" \
   SESSION_SECRET=e2e-only-session-secret-0123456789abcdef COOKIE_SECURE=false \
+  FOLD_SETUP_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   UPLOAD_DIR="$work/uploads"
 export APP_ENV="${E2E_APP_ENV:-prod}"
 cd "$root" # templates/ is read from the working directory

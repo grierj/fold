@@ -34,6 +34,23 @@ func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
 	}
 }
 
+func TestSetupTokenConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	for _, value := range []string{"short", strings.Repeat("z", 64), strings.Repeat("a", 63)} {
+		t.Setenv("FOLD_SETUP_TOKEN", value)
+		if _, err := LoadConfig(); err == nil || strings.Contains(err.Error(), value) {
+			t.Fatalf("invalid setup token should fail without exposing it: %v", err)
+		}
+	}
+	want := strings.Repeat("a", 64)
+	t.Setenv("FOLD_SETUP_TOKEN", want)
+	if cfg, err := LoadConfig(); err != nil || cfg.SetupToken != want {
+		t.Fatalf("valid setup token rejected: %v", err)
+	}
+}
+
 func TestSMTPInsecureRequiresExplicitOptOut(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")
 	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")

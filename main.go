@@ -125,6 +125,19 @@ func serve(stderr io.Writer) int {
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
 		Mailer: newMailer(cfg, db),
 	}
+	ready, err := app.setupComplete()
+	if err != nil {
+		fmt.Fprintln(stderr, "fold: check setup availability:", err)
+		return 1
+	}
+	if !ready && app.Config.SetupToken == "" {
+		app.Config.SetupToken, err = newSetupToken()
+		if err != nil {
+			fmt.Fprintln(stderr, "fold: generate setup code:", err)
+			return 1
+		}
+		log.Printf("First-run setup code: %s (enter at /setup; keep this code private)", app.Config.SetupToken)
+	}
 	// Web push keys (M3.13a): made on first boot, and again if
 	// SESSION_SECRET changed. A failure here costs only push, so the
 	// server still starts and the next boot tries again.
@@ -271,6 +284,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// Setup wizard (only reachable when no users exist; server-rendered).
 	r.GET("/setup", a.showSetup)
 	r.POST("/setup", a.handleSetup)
+	r.POST("/setup/unlock", a.unlockSetup)
 
 	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
@@ -521,7 +535,7 @@ func (a *App) siteName() string {
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
+		if p == "/setup" || p == "/setup/unlock" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
 			c.Next()
 			return
 		}
@@ -546,17 +560,29 @@ func (a *App) showSetup(c *gin.Context) {
 	ready, err := a.setupComplete()
 	if err != nil {
 		log.Printf("Setup availability check failed: %v", err)
-		a.html(c, http.StatusServiceUnavailable, "setup.html", (setupInput{}).pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		if a.setupAuthorized(c) {
+			a.html(c, http.StatusServiceUnavailable, "setup.html", (setupInput{}).pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		} else {
+			a.html(c, http.StatusServiceUnavailable, "setup-unlock.html", gin.H{"Error": "Setup isn't available right now. Try again in a moment."})
+		}
 		return
 	}
 	if ready {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
 	}
+	if !a.setupAuthorized(c) {
+		a.html(c, http.StatusOK, "setup-unlock.html", nil)
+		return
+	}
 	a.html(c, http.StatusOK, "setup.html", (setupInput{}).pageData(nil, ""))
 }
 
 func (a *App) handleSetup(c *gin.Context) {
+	if !a.setupAuthorized(c) {
+		c.String(http.StatusForbidden, "Enter the setup code first.")
+		return
+	}
 	in := readSetupInput(c)
 	ready, err := a.setupComplete()
 	if err != nil {
@@ -576,20 +602,20 @@ func (a *App) handleSetup(c *gin.Context) {
 	admin := models.User{AccountType: models.AccountAdult, Email: in.Email, Name: in.Name, Role: models.RoleAdmin, Status: models.UserActive}
 	err = admin.SetPassword(in.Password)
 	if err == nil {
-		err = a.DB.Create(&admin).Error
+		err = a.createFirstAdmin(c.Request.Context(), &admin, in)
+	}
+	if err == errSetupComplete {
+		c.Redirect(http.StatusSeeOther, "/")
+		return
 	}
 	if err != nil {
 		log.Printf("Setup failed creating admin: %v", err)
 		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(nil, "We couldn't create your account. Try again."))
 		return
 	}
-	a.DB.Where(models.Setting{Key: "site_name"}).
-		Assign(models.Setting{Value: in.SiteName}).
-		FirstOrCreate(&models.Setting{})
-	a.DB.Where(models.Setting{Key: settingTimezone}).
-		Assign(models.Setting{Value: in.Timezone}).
-		FirstOrCreate(&models.Setting{})
-
+	a.setupMu.Lock()
+	a.setupDone = true
+	a.setupMu.Unlock()
 	log.Printf("Setup complete: site=%q timezone=%q", in.SiteName, in.Timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }

@@ -2,18 +2,241 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"fold/models"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+func TestSetupRequiresOperatorCredential(t *testing.T) {
+	app := testApp(t)
+	router := app.setupRouter()
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	if strings.Contains(get.Body.String(), `name="site_name"`) {
+		t.Fatal("anonymous visitor can open the setup wizard")
+	}
+	csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(get.Body.String())
+	if len(csrf) != 2 {
+		t.Fatal("missing CSRF token")
+	}
+	values := url.Values{
+		"site_name": {"Taken"}, "timezone": {"America/Denver"},
+		"name": {"Attacker"}, "email": {"attacker@example.com"}, "age_band": {"adult"},
+		"password": {"password123"}, "password_confirm": {"password123"},
+		"csrf_token": {csrf[1]},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(values.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, cookie := range get.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	post := httptest.NewRecorder()
+	router.ServeHTTP(post, req)
+	if post.Code != http.StatusForbidden {
+		t.Fatalf("anonymous POST: %d", post.Code)
+	}
+	var users int64
+	if err := app.DB.Model(&models.User{}).Count(&users).Error; err != nil || users != 0 {
+		t.Fatalf("anonymous setup created %d users (POST %d): %v", users, post.Code, err)
+	}
+}
+
+func TestNewSetupToken(t *testing.T) {
+	first, err := newSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newSetupToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 64 || len(second) != 64 || first == second {
+		t.Fatal("setup codes must be distinct 32-byte hex values")
+	}
+}
+
+// setupRequest gives existing wizard tests a signed authorized session. The
+// unlock flow itself is exercised separately through HTTP.
+func setupRequest(t *testing.T, app *App, method, path string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	session, err := app.Store.Get(req, sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Values[setupSessionKey] = setupTokenHash(app.Config.SetupToken)
+	w := httptest.NewRecorder()
+	if err := session.Save(req, w); err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range w.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	return req
+}
+
+func TestSetupUnlock(t *testing.T) {
+	app := testApp(t)
+	router := app.setupRouter()
+	get := httptest.NewRecorder()
+	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(get.Body.String())[1]
+	post := func(code string, withCSRF bool) *httptest.ResponseRecorder {
+		values := url.Values{"setup_token": {code}}
+		if withCSRF {
+			values.Set("csrf_token", csrf)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/setup/unlock", strings.NewReader(values.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, cookie := range get.Result().Cookies() {
+			req.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	if w := post(app.Config.SetupToken, false); w.Code != http.StatusForbidden {
+		t.Fatalf("unlock without CSRF: %d", w.Code)
+	}
+	if w := post("wrong-code", true); w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), "wrong-code") {
+		t.Fatalf("wrong code: %d", w.Code)
+	}
+	w := post(app.Config.SetupToken, true)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/setup" {
+		t.Fatalf("unlock: %d %s", w.Code, w.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	for _, cookie := range w.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	opened := httptest.NewRecorder()
+	router.ServeHTTP(opened, req)
+	if !strings.Contains(opened.Body.String(), `name="site_name"`) || strings.Contains(opened.Body.String(), app.Config.SetupToken) {
+		t.Fatal("authorized setup form missing or exposed the code")
+	}
+	app.Config.SetupToken = strings.Repeat("b", 64)
+	rotated := httptest.NewRecorder()
+	router.ServeHTTP(rotated, req)
+	if strings.Contains(rotated.Body.String(), `name="site_name"`) {
+		t.Fatal("old setup session remained valid after code changed")
+	}
+}
+
+func TestConcurrentSetupCreatesOneAdmin(t *testing.T) {
+	app := testApp(t)
+	// Separate App instances model processes with separate completion caches.
+	other := testAppForSetup(app)
+	routers := []*gin.Engine{app.setupRouter(), other.setupRouter()}
+	requests := make([]*http.Request, 2)
+	for i, instance := range []*App{app, other} {
+		get := httptest.NewRecorder()
+		routers[i].ServeHTTP(get, setupRequest(t, instance, http.MethodGet, "/setup"))
+		csrf := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(get.Body.String())[1]
+		values := url.Values{
+			"csrf_token": {csrf}, "site_name": {fmt.Sprintf("Church %d", i)}, "timezone": {"America/Denver"},
+			"name": {"Root"}, "email": {fmt.Sprintf("root%d@example.com", i)}, "age_band": {"adult"},
+			"password": {"password123"}, "password_confirm": {"password123"},
+		}
+		requests[i] = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(values.Encode()))
+		requests[i].Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, cookie := range get.Result().Cookies() {
+			requests[i].AddCookie(cookie)
+		}
+	}
+	// Make both requests pass the initial, unlocked count before either can
+	// create an account. The count inside the transaction must decide the race.
+	var count atomic.Int32
+	arrived, release := make(chan struct{}, 2), make(chan struct{})
+	const callback = "test_setup_race"
+	if err := app.DB.Callback().Query().After("gorm:query").Register(callback, func(db *gorm.DB) {
+		if _, ok := db.Statement.Model.(*models.User); ok && count.Add(1) <= 2 {
+			arrived <- struct{}{}
+			<-release
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
+	responses := make([]*httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			responses[i] = httptest.NewRecorder()
+			routers[i].ServeHTTP(responses[i], requests[i])
+		}(i)
+	}
+	<-arrived
+	<-arrived
+	close(release)
+	wg.Wait()
+	var users []models.User
+	if err := app.DB.Find(&users).Error; err != nil || len(users) != 1 || users[0].Role != models.RoleAdmin {
+		t.Fatalf("want one admin, got %+v: %v", users, err)
+	}
+	winner := 0
+	if users[0].Email == "root1@example.com" {
+		winner = 1
+	}
+	if responses[winner].Header().Get("Location") != "/login" || responses[1-winner].Header().Get("Location") != "/" {
+		t.Fatalf("unexpected redirects: %q, %q", responses[0].Header().Get("Location"), responses[1].Header().Get("Location"))
+	}
+	var site models.Setting
+	if err := app.DB.Where("key = ?", "site_name").First(&site).Error; err != nil || site.Value != fmt.Sprintf("Church %d", winner) {
+		t.Fatalf("settings do not belong to winning admin: %+v, %v", site, err)
+	}
+}
+
+func testAppForSetup(app *App) *App {
+	return &App{DB: app.DB, Store: app.Store, Config: app.Config, Uploads: app.Uploads, Mailer: app.Mailer}
+}
+
+func TestSetupRollsBackWhenSettingFails(t *testing.T) {
+	app := testApp(t)
+	var before []models.Setting
+	if err := app.DB.Where("key IN ?", []string{"site_name", settingTimezone}).Order("key").Find(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	var writes atomic.Int32
+	fail := func(db *gorm.DB) {
+		if _, ok := db.Statement.Model.(*models.Setting); ok && writes.Add(1) == 2 {
+			db.AddError(errors.New("forced settings failure"))
+		}
+	}
+	const callback = "test_setup_setting_failure"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, fail); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Callback().Update().Before("gorm:update").Register(callback, fail); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(callback); app.DB.Callback().Update().Remove(callback) })
+	w := postSetupForm(t, app, url.Values{
+		"site_name": {"Grace Church"}, "timezone": {"America/Denver"}, "name": {"Root"},
+		"email": {"root@example.com"}, "age_band": {"adult"}, "password": {"password123"}, "password_confirm": {"password123"},
+	})
+	var users int64
+	if err := app.DB.Model(&models.User{}).Count(&users).Error; err != nil || users != 0 || w.Code != http.StatusBadRequest {
+		t.Fatalf("failed setup left %d users, response %d, error %v", users, w.Code, err)
+	}
+	var after []models.Setting
+	if err := app.DB.Where("key IN ?", []string{"site_name", settingTimezone}).Order("key").Find(&after).Error; err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("settings changed after rollback: %v -> %v, error %v", before, after, err)
+	}
+}
 
 func validSetupInput() setupInput {
 	return setupInput{SiteName: "Grace Church", Timezone: "America/Denver", Name: "Root", Email: "root@example.com", Password: "password123", Confirm: "password123", Adult: true}
@@ -86,7 +309,7 @@ func postSetupForm(t *testing.T, app *App, values url.Values) *httptest.Response
 	t.Helper()
 	router := app.setupRouter()
 	get := httptest.NewRecorder()
-	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	router.ServeHTTP(get, setupRequest(t, app, http.MethodGet, "/setup"))
 	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(get.Body.String())
 	if len(token) != 2 {
 		t.Fatalf("no setup CSRF token: %d %s", get.Code, get.Body.String())
@@ -197,7 +420,7 @@ func TestSetupUnavailableDoesNotCreateAnAdmin(t *testing.T) {
 	}
 	assertSetupGenericErrorRecovery(t, out.Body.String())
 	get := httptest.NewRecorder()
-	app.setupRouter().ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	app.setupRouter().ServeHTTP(get, setupRequest(t, app, http.MethodGet, "/setup"))
 	if get.Code != http.StatusServiceUnavailable {
 		t.Fatalf("setup GET failure: %d", get.Code)
 	}
