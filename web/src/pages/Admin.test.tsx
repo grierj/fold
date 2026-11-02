@@ -405,6 +405,27 @@ it("offers a teen Ask to add without a leader-role shortcut", async () => {
   expect(AdminGroups.addMember).not.toHaveBeenCalled();
 });
 
+it("keeps Edit first in the user's More menu and opens the edit form", async () => {
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [user(2, "Pat")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  const more = await screen.findByRole("button", { name: "More for Pat" });
+  const row = more.closest("tr")!;
+  expect(within(row).getAllByRole("button")).toEqual([more]);
+  await userEvent.click(more);
+  const edit = screen.getByRole("menuitem", { name: "Edit" });
+  expect(screen.getAllByRole("menuitem")[0]).toBe(edit);
+  expect(edit).toHaveFocus();
+  expect(screen.getByRole("menuitem", { name: "Disable" })).toHaveClass("text-danger");
+  expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveClass("text-danger");
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(more).toHaveFocus();
+  await userEvent.click(more);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+  expect(screen.getByRole("textbox", { name: "Full name" })).toHaveValue("Pat");
+  expect(screen.getByRole("button", { name: "Save user" })).toBeInTheDocument();
+});
+
 it("opens person history with the exact ID returned for the current email", async () => {
   const person: User = { id: Number("9007199254740993"), name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
   vi.mocked(AdminUsers.list).mockResolvedValue({ users: [person] });

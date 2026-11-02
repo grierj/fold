@@ -8,7 +8,7 @@
     {{with stylesheet}}<link rel="stylesheet" href="{{.}}">{{end}}
 </head>
 <body class="min-h-screen bg-page text-text">
-    <main class="mx-auto max-w-lg px-gutter py-section sm:px-gutter-lg">
+    <main class="fold-auth wrap-anywhere">
         <p class="mb-6 text-2xl font-bold text-primary">Fold</p>
         <h1 class="text-2xl sm:text-3xl font-bold">Welcome — let's set things up</h1>
         <p class="mt-2 text-text-muted">This only appears once. Create your church's site and its first
@@ -27,7 +27,7 @@
             </ul>
         </div>
         {{end}}
-        <form id="setup-form" tabindex="-1" {{if .Error}}aria-describedby="setup-error" {{end}}method="POST" action="/setup" novalidate class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
+        <form id="setup-form" tabindex="-1" {{if .Error}}aria-describedby="setup-error" {{end}}method="POST" action="/setup" novalidate class="fold-form mt-6 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
             {{ .csrfField }}
             <div>
                 <label class="label" for="site_name">Church name</label>

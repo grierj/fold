@@ -65,8 +65,8 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   const search = page.getByRole("searchbox", { name: "Search by name or email" });
   await search.fill("grier@example.com");
   const own = page.getByRole("row").filter({ hasText: "grier@" });
-  await expect(own.getByRole("button", { name: "Edit" })).toBeVisible();
   await own.getByRole("button", { name: /^More for/ }).click();
+  await expect(own.getByRole("menuitem", { name: "Edit" })).toBeVisible();
   await expect(own.getByRole("menuitem", { name: "Reset password" })).toBeVisible();
   await expect(own.getByRole("menuitem", { name: "Disable" })).toHaveCount(0);
   await expect(own.getByRole("menuitem", { name: "Delete" })).toHaveCount(0);
@@ -75,9 +75,9 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await search.fill("sam@example.com");
   const other = page.getByRole("row").filter({ hasText: "sam@" }).first();
   await other.scrollIntoViewIfNeeded();
-  await expect(other.getByRole("button", { name: "Edit" })).toBeInViewport({ ratio: 1 });
+  await expect(other.getByRole("button", { name: /^More for/ })).toBeInViewport({ ratio: 1 });
   await other.getByRole("button", { name: /^More for/ }).click();
-  for (const name of ["Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
+  for (const name of ["Edit", "Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
 
 });
 

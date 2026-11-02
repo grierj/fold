@@ -73,6 +73,7 @@ test("the calendar shows what sam may see, in all three views", async ({ page, r
 
   // Church-wide dates are standing own scope inside the 30-day window. Just
   // mine retains every state except Can't go.
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByRole("button", { name: "Just mine" }).click();
   await expect(page).toHaveURL(/mine=1/);
   await expect(page.getByRole("link", { name: /Calendar picnic/ }).first()).toContainText("Going");
@@ -106,7 +107,7 @@ test("the calendar shows what sam may see, in all three views", async ({ page, r
     await page.keyboard.press("Tab");
     order.push(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.textContent?.trim() || ""));
   }
-  expect(order.slice(0, 7)).toEqual(["Week", "Month", "Rooms", "Previous month", "Next month", "Today", "Just mine"]);
+  expect(order.slice(0, 7)).toEqual(["Week", "Month", "Rooms", "Previous month", "Next month", "Today", "Filters"]);
   await signOut(page);
 });
 

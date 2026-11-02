@@ -134,7 +134,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     const retainedCare = retained.occurrences[1].attendees.find((a: { userId: number }) => a.userId === user.id);
     expect(retainedCare.childcareCount).toBe(1); expect(retainedCare.childcareAgesNote).toBe("Age 5, keep this care request");
     save(`${scenario}-care-preserved`, retainedCare);
-    await page.goto("/calendar"); await (await soon(page.getByRole("button", { name: "Just mine", exact: true }))).click();
+    await page.goto("/calendar"); await page.getByRole("button", { name: "Filters", exact: true }).click(); await (await soon(page.getByRole("button", { name: "Just mine", exact: true }))).click();
     const selectedLink = page.locator(`main a[href="${path}"]`);
     await expect(selectedLink).toBeVisible(); await expect(page.locator(`main a[href="${otherPath}"]`)).toBeVisible();
     const calendar = await (await page.request.get(`/api/v1/calendar?from=${selected.date}&to=${sibling.date}&tz=UTC&mine=1`)).json();
@@ -206,6 +206,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     expect((await page.request.get(`/api/v1${path}`)).status()).toBe(404);
     expect((await page.request.get(`/api/v1${otherPath}`)).status()).toBe(200);
     await page.getByRole("link", { name: "Back to calendar", exact: true }).click();
+    await page.getByRole("button", { name: "Filters", exact: true }).click();
     await page.getByRole("button", { name: "Just mine", exact: true }).click();
     await expect(page.locator(`main a[href="${path}"]`)).toHaveCount(0);
     await expect(page.locator(`main a[href="${otherPath}"]`)).toBeVisible();

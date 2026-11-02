@@ -41,6 +41,7 @@ it("bounds a busy agenda and preserves a URL page without refetching", async () 
   await userEvent.click(screen.getByRole("button", { name: "Next events" }));
   expect(screen.getByText("Event 60")).toBeInTheDocument();
   expect(list).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole("button", { name: "Filters" }));
   await userEvent.selectOptions(screen.getByRole("combobox"), "");
   expect(await screen.findByText("Event 1")).toBeInTheDocument();
   expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ church: false }));
@@ -56,6 +57,7 @@ describe("filter chips (DEC-99)", () => {
   it("hides Remote seats and Childcare when nothing in view has them", async () => {
     show([occ(1)]);
     await screen.findByText("Event 1");
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
     expect(screen.getByRole("button", { name: "Just mine" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remote seats" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Childcare" })).not.toBeInTheDocument();
@@ -63,18 +65,21 @@ describe("filter chips (DEC-99)", () => {
 
   it("shows each chip only when something in view has that", async () => {
     show([occ(1, { remoteAvailable: true }), occ(2)]);
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
     expect(await screen.findByRole("button", { name: "Remote seats" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Childcare" })).not.toBeInTheDocument();
   });
 
   it("shows Childcare when a date offers it", async () => {
     show([occ(1, { childcareAvailable: true })]);
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
     expect(await screen.findByRole("button", { name: "Childcare" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remote seats" })).not.toBeInTheDocument();
   });
 
   it("keeps a selected chip even when nothing in view has it, so it can be turned off", async () => {
     show([], "/calendar?remote=1&childcare=1");
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
     expect(await screen.findByRole("button", { name: "Remote seats", pressed: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Childcare", pressed: true })).toBeInTheDocument();
   });
@@ -83,8 +88,54 @@ describe("filter chips (DEC-99)", () => {
     auth.mockReturnValue({ user: { id: 1 }, isAdmin: true });
     show([]);
     await waitFor(() => expect(list).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
     expect(screen.getByRole("button", { name: "Just mine" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show deleted events" })).toBeInTheDocument();
+  });
+});
+
+describe("Filters disclosure", () => {
+  it("starts collapsed, reveals controls and returns focus when done", async () => {
+    show([occ(1)]);
+    await screen.findByText("Event 1");
+    const filters = screen.getByRole("button", { name: "Filters" });
+    expect(filters).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("No filters")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Just mine" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Group" })).not.toBeInTheDocument();
+    const panel = document.getElementById(filters.getAttribute("aria-controls")!)!;
+    expect(panel).toHaveAttribute("hidden");
+    await userEvent.click(filters);
+    expect(filters).toHaveAttribute("aria-expanded", "true");
+    expect(panel).not.toHaveAttribute("hidden");
+    expect(screen.getByLabelText("From date")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Group" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Just mine" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ mine: true })));
+    await userEvent.click(screen.getByRole("button", { name: "Done with filters" }));
+    expect(filters).toHaveFocus();
+    expect(filters).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTitle("Just mine")).toBeVisible();
+  });
+
+  it("summarizes active URL filters with the group's name", async () => {
+    groups.mockResolvedValue({ groups: [{ id: 3, name: "Sunrise study" }] });
+    show([], "/calendar?mine=1&childcare=1&group=3");
+    expect(await screen.findByText("Just mine · Childcare · Sunrise study")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByRole("button", { name: "Just mine", pressed: true })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Childcare", pressed: true })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Group" })).toHaveValue("3");
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ mine: true, childcare: true, group: "3" }));
+  });
+
+  it.each(["week", "month"])("keeps %s navigation outside the disclosure", async (view) => {
+    show([], `/calendar?view=${view}&date=2026-10-21`);
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: `Previous ${view}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: `Next ${view}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Today" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Filters" })).toHaveAttribute("aria-expanded", "false");
   });
 });
 
