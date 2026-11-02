@@ -60,7 +60,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   const stateClass = state === "going"
     ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
-      ? "border-primary border-dashed bg-sunken text-text"
+      ? "border-border border-dashed bg-sunken text-text"
       : "border-border bg-surface text-text";
   return (
     <Link
@@ -114,7 +114,7 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
   const stateClass = state === "going"
     ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
-      ? "border-primary border-dashed bg-sunken text-text"
+      ? "border-border border-dashed bg-sunken text-text"
       : state === "declined"
         ? "border-border bg-surface text-text-muted"
         : "border-transparent bg-primary-subtle text-primary-on-subtle";

@@ -57,6 +57,10 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
   short text actions. Focus is immediate, visible, never clipped.
 - Calendar Going rows use a quiet primary tint, solid accent and check-mark label, not a
   solid violet fill. Every agenda answer label sits below the time (PLAN DEC-71 / #228).
+- Signed-out public dates: "Register as a guest" is the one primary CTA; "Log in to register"
+  stays secondary.
+- Ghosted / unanswered agenda rows use a quiet dashed border (not primary), so Going's primary
+  accent stays the answered cue.
 - Heading levels follow the host page: single-event and full Alerts sections start at h2;
   series dates sit under Upcoming dates, and the bell's sections under its own h2.
 - Alert Archive uses an outlined 44px control with a prominent glyph, separate from its row link.
