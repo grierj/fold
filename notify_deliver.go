@@ -87,10 +87,12 @@ func (a *App) deliverOneNotification(ctx context.Context, id uint) error {
 			return err
 		}
 	}
-	if err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return queuePushFor(tx, &n)
-	}); err != nil {
-		return err
+	if k.AllowPush && n.PushTitle != "" {
+		if err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return queuePushFor(tx, &n)
+		}); err != nil {
+			return err
+		}
 	}
 	if !k.AllowEmail {
 		return nil
