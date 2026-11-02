@@ -43,6 +43,7 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   // Home lists these under "Church events", so the preview names no host (DEC-99).
   expect((await preview.allTextContents()).join(" ")).not.toContain("Hosted by");
   await page.getByRole("link", { name: "See all church events" }).click();
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
   await expect(page.getByLabel("Group", { exact: true })).toHaveValue("church");
   await page.getByLabel("From date", { exact: true }).fill(futureDate(18));
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
