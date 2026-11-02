@@ -17,10 +17,12 @@ import (
 )
 
 // notifyFailSender is a mailer whose error and call count a test sets.
+// onSend runs inside SendEmail, still holding the lock.
 type notifyFailSender struct {
-	mu    sync.Mutex
-	err   error
-	calls int
+	mu     sync.Mutex
+	err    error
+	calls  int
+	onSend func()
 }
 
 func (s *notifyFailSender) Send(ctx context.Context, m mail.Message) error {
@@ -32,6 +34,9 @@ func (s *notifyFailSender) SendEmail(context.Context, mail.Message) (string, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	if s.onSend != nil {
+		s.onSend()
+	}
 	return "", s.err
 }
 
@@ -44,6 +49,11 @@ func (s *notifyFailSender) n() int {
 	defer s.mu.Unlock()
 	return s.calls
 }
+
+// notifyPlainSender sends mail and reports no provider id.
+type notifyPlainSender struct{}
+
+func (notifyPlainSender) Send(context.Context, mail.Message) error { return nil }
 
 // seedNotifyDeliver writes a notice, a queued email row, and a job whose
 // key is the literal notify.deliver:<id>.
@@ -384,5 +394,186 @@ func TestNotifyDeliverPushFanOutSurvivesEmailFailure(t *testing.T) {
 	}
 	if all != 2 {
 		t.Fatalf("push jobs %d", all)
+	}
+}
+
+func TestNotifyDeliverLedgerCases(t *testing.T) {
+	busy := errors.New("451 mailbox busy")
+	_, noSenderErr := (mail.NoSender{}).SendEmail(context.Background(), mail.Message{})
+	if noSenderErr == nil || !mail.NotConfigured(noSenderErr) {
+		t.Fatal(noSenderErr)
+	}
+
+	cases := []struct {
+		name         string
+		attempts     int
+		seedStatus   string
+		kind         string
+		createdAgo   time.Duration
+		mailer       string
+		sendErr      error
+		cancel       bool
+		backdate     bool
+		presetID     string
+		wantStatus   string
+		wantReason   string
+		wantJob      string
+		wantAttempts int
+		checkAttempt bool
+		wantHour     bool
+		wantNullID   bool
+		wantID       bool
+		wantUpdated  bool
+		unchanged    bool
+		wantNoMail   bool
+	}{
+		{
+			name: "deferred row sends on rerun", attempts: notifyDeliverAttempts,
+			seedStatus: models.DeliveryDeferred, mailer: "default",
+			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantID: true,
+		},
+		{
+			name: "transient failure returns deferred to queued", attempts: notifyDeliverAttempts,
+			seedStatus: models.DeliveryDeferred, mailer: "fail", sendErr: busy,
+			wantStatus: models.DeliveryQueued, wantReason: jobs.CleanError(busy),
+			wantJob: models.JobFailed, wantNoMail: true,
+		},
+		{
+			name: "nil mailer", attempts: notifyDeliverAttempts, mailer: "nil",
+			wantStatus: models.DeliveryFailed, wantReason: jobs.CleanError(noSenderErr),
+			wantJob: models.JobDone, wantNoMail: true,
+		},
+		{
+			name: "updated_at moves past created_at", attempts: notifyDeliverAttempts,
+			mailer: "default", backdate: true,
+			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantUpdated: true, wantID: true,
+		},
+		{
+			name: "non-tracking sender stores a null provider id", attempts: notifyDeliverAttempts,
+			mailer: "plain", presetID: "old-id",
+			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantNullID: true, wantNoMail: true,
+		},
+		{
+			name: "unknown kind waits", attempts: notifyDeliverAttempts,
+			kind:       "kind.not.in.this.build",
+			wantStatus: models.DeliveryQueued, wantJob: models.JobQueued,
+			wantAttempts: 0, checkAttempt: true, wantHour: true, unchanged: true, wantNoMail: true,
+		},
+		{
+			name: "unknown kind past a week is suppressed", attempts: notifyDeliverAttempts,
+			kind: "kind.not.in.this.build", createdAgo: notifyUnknownGrace + time.Hour,
+			wantStatus: models.DeliverySuppressed, wantReason: emailKindUnknown,
+			wantJob: models.JobDone, wantNoMail: true,
+		},
+		{
+			name: "cancelled context on the last attempt", attempts: 1,
+			mailer: "fail", sendErr: busy, cancel: true,
+			wantStatus: models.DeliveryQueued, wantReason: jobs.CleanError(busy),
+			wantJob: models.JobQueued, wantAttempts: 0, checkAttempt: true, wantNoMail: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testApp(t)
+			u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+			ctx := context.Background()
+			var cancel context.CancelFunc
+			var sender *notifyFailSender
+			switch tc.mailer {
+			case "nil":
+				app.Mailer = nil
+			case "plain":
+				app.Mailer = notifyPlainSender{}
+			case "fail":
+				ctx, cancel = context.WithCancel(context.Background())
+				sender = &notifyFailSender{err: tc.sendErr}
+				if tc.cancel {
+					sender.onSend = cancel
+				}
+				app.Mailer = sender
+				t.Cleanup(cancel)
+			}
+			id, seeded := seedNotifyDeliver(t, app, u, tc.attempts)
+			if tc.kind != "" {
+				if err := app.DB.Model(&models.Notification{}).Where("id = ?", id).UpdateColumn("kind", tc.kind).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.createdAgo > 0 {
+				when := time.Now().Add(-tc.createdAgo)
+				if err := app.DB.Model(&models.Notification{}).Where("id = ?", id).UpdateColumn("created_at", when).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.seedStatus != "" {
+				if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ? AND channel = ?", id, models.DeliveryEmail).UpdateColumn("status", tc.seedStatus).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.presetID != "" {
+				if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ? AND channel = ?", id, models.DeliveryEmail).UpdateColumn("provider_message_id", tc.presetID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.backdate {
+				past := time.Now().Add(-time.Hour).UTC()
+				if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ? AND channel = ?", id, models.DeliveryEmail).UpdateColumns(map[string]any{
+					"created_at": past, "updated_at": past,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := emailDeliveryOf(t, app, id)
+			ran, err := jobs.NewRunner(app.DB, app.notifyKinds()...).RunOnce(ctx, "test")
+			if err != nil || !ran {
+				t.Fatalf("run: ran %v err %v", ran, err)
+			}
+			if sender != nil && sender.n() != 1 {
+				t.Fatalf("sends %d", sender.n())
+			}
+			if tc.wantNoMail {
+				if n := mailCount(t, app, ""); n != 0 {
+					t.Fatalf("outbox %d", n)
+				}
+			}
+			d := emailDeliveryOf(t, app, id)
+			if d.Status != tc.wantStatus || (tc.wantReason != "" && d.Reason != tc.wantReason) {
+				t.Fatalf("delivery status %q reason %q", d.Status, d.Reason)
+			}
+			job := reloadJob(t, app, seeded.ID)
+			if job.Status != tc.wantJob {
+				t.Fatalf("job %+v", job)
+			}
+			if tc.checkAttempt && job.Attempts != tc.wantAttempts {
+				t.Fatalf("attempts %d, want %d", job.Attempts, tc.wantAttempts)
+			}
+			if tc.wantHour {
+				until := time.Until(job.RunAt)
+				if until < notifyUnknownWait-time.Minute || until > notifyUnknownWait+time.Minute {
+					t.Fatalf("run_at %s (%s from now)", job.RunAt, until)
+				}
+			}
+			if tc.wantNullID && d.ProviderMessageID != nil {
+				t.Fatalf("provider id %q", *d.ProviderMessageID)
+			}
+			if tc.wantID && (d.ProviderMessageID == nil || !strings.HasPrefix(*d.ProviderMessageID, "devoutbox-")) {
+				t.Fatalf("provider id %v", d.ProviderMessageID)
+			}
+			if tc.wantUpdated && !d.UpdatedAt.After(d.CreatedAt) {
+				t.Fatalf("updated_at %s created_at %s", d.UpdatedAt, d.CreatedAt)
+			}
+			if tc.unchanged && (!d.UpdatedAt.Equal(before.UpdatedAt) || d.Status != before.Status || d.Reason != before.Reason) {
+				t.Fatalf("row changed: before %+v after %+v", before, d)
+			}
+			if tc.wantJob == models.JobDone && job.LastError != "" {
+				t.Fatalf("last error %q", job.LastError)
+			}
+			if tc.wantJob == models.JobQueued && job.LastError != "" {
+				t.Fatalf("last error %q", job.LastError)
+			}
+			if tc.wantJob == models.JobFailed && job.LastError == "" {
+				t.Fatal("missing last error")
+			}
+		})
 	}
 }

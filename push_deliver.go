@@ -591,7 +591,7 @@ func recordPushIn(db *gorm.DB, n models.Notification, status, reason string, now
 	}
 	return db.Exec(`INSERT INTO notification_deliveries (notification_id, user_id, channel, status, reason, sent_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (notification_id, channel) DO UPDATE SET status = excluded.status, reason = excluded.reason, sent_at = excluded.sent_at
+		ON CONFLICT (notification_id, channel) DO UPDATE SET status = excluded.status, reason = excluded.reason, sent_at = excluded.sent_at, updated_at = now()
 		WHERE excluded.status = 'sent' AND notification_deliveries.status <> 'sent'`,
 		n.ID, n.UserID, models.DeliveryPush, status, reason, sentAt).Error
 }
