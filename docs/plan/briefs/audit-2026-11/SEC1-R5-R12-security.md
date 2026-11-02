@@ -1,18 +1,18 @@
 # Audit 2026-11 briefs — SEC1, R5, R12 (security)
 
-Source: [docs/AUDIT-2026-11-01.md](/home/grier/git/fold/docs/AUDIT-2026-11-01.md)
+Source: `docs/AUDIT-2026-11-01.md`
 (SEC1, R5, R12), approved by the owner on 2026-11-01. R7 and R8 were
 rejected; nothing here depends on them. Conventions for every brief:
-[AGENTS.md](/home/grier/git/fold/AGENTS.md) — pure rules in
+`AGENTS.md` — pure rules in
 `internal/policy` with table tests, `audit.Write` + `notify.Send` in the
 same transaction as a sensitive change, a code in
-[api_errors.go](/home/grier/git/fold/api_errors.go:1) plus a line in
-`ERROR_COPY` ([web/src/lib/errors.ts](/home/grier/git/fold/web/src/lib/errors.ts:13))
+`api_errors.go:1` plus a line in
+`ERROR_COPY` (`web/src/lib/errors.ts:13`)
 for every new error a person can act on, CSRF on every state-changing
 route, DEC-52 uniform answers on public forms, tests beside the source
 they cover. Schema changes are new goose files named with the next free
 number at coding time (highest today:
-[migrations/00062_reminder_push.sql](/home/grier/git/fold/migrations/00062_reminder_push.sql));
+`migrations/00062_reminder_push.sql`);
 never edit an old migration.
 
 Verify before every push (AGENTS.md):
@@ -61,66 +61,66 @@ check.
   transaction, lock, or token (audit SEC1 evidence). That is fixed:
 - Token source: optional `FOLD_SETUP_TOKEN` env, exactly 64 hex chars
   (32 bytes), validated in `LoadConfig`
-  ([config.go](/home/grier/git/fold/config.go:166)); invalid values fail
+  (`config.go:166`); invalid values fail
   startup with a fix-it message naming `openssl rand -hex 32`
-  ([config.go](/home/grier/git/fold/config.go:170)). Stored on
-  `Config.SetupToken` ([config.go](/home/grier/git/fold/config.go:27)).
+  (`config.go:170`). Stored on
+  `Config.SetupToken` (`config.go:27`).
 - When the env is unset and no user exists, `serve` generates a token
   and logs it once: `setupComplete` gate, then `newSetupToken`, then
-  one log line ([main.go](/home/grier/git/fold/main.go:128)).
+  one log line (`main.go:128`).
   The generator is 32 bytes of `crypto/rand`, hex-encoded
-  ([setup.go](/home/grier/git/fold/setup.go:28)).
+  (`setup.go:28`).
 - `GET /setup` is gated: without an authorized session it renders the
   code-entry page `setup-unlock.html`, not the wizard
-  ([main.go](/home/grier/git/fold/main.go:559), `showSetup`;
-  [templates/setup-unlock.html](/home/grier/git/fold/templates/setup-unlock.html:13)).
+  (`main.go:559`, `showSetup`;
+  `templates/setup-unlock.html:13`).
   `POST /setup` answers 403 without the authorized session
-  ([main.go](/home/grier/git/fold/main.go:581), `handleSetup`).
+  (`main.go:581`, `handleSetup`).
 - Unlock is a form POST, never a query parameter:
   `POST /setup/unlock` reads form field `setup_token`, compares with
   `subtle.ConstantTimeCompare`, and stores only the SHA-256 hash of the
   token in the session under `setupAuthorization`
-  ([setup.go](/home/grier/git/fold/setup.go:36),
-  [setup.go](/home/grier/git/fold/setup.go:53)). Authorization re-hashes
+  (`setup.go:36`,
+  `setup.go:53`). Authorization re-hashes
   the configured token and compares in constant time, so a changed
   token invalidates old setup sessions
-  ([setup.go](/home/grier/git/fold/setup.go:41)).
+  (`setup.go:41`).
 - Both POSTs ride the normal middleware: routes register after
   `setupRequired` and `csrfMiddleware`
-  ([main.go](/home/grier/git/fold/main.go:280)); neither is in
+  (`main.go:280`); neither is in
   `csrfExemptRoutes`. The unlock form carries `{{.csrfField}}`
-  ([templates/setup-unlock.html](/home/grier/git/fold/templates/setup-unlock.html:16)).
+  (`templates/setup-unlock.html:16`).
 - Creation is transactional: `createFirstAdmin` takes
   `pg_advisory_xact_lock` on a setup-specific lock id, re-counts users
   inside the lock, returns `errSetupComplete` when the count is
   non-zero, and writes the admin plus the `site_name` and timezone
   settings in the same transaction
-  ([setup.go](/home/grier/git/fold/setup.go:79)). This mirrors the
+  (`setup.go:79`). This mirrors the
   advisory-lock pattern in `lockVAPID`
-  ([push_keys.go](/home/grier/git/fold/push_keys.go:115)) but uses its
+  (`push_keys.go:115`) but uses its
   own lock id (`setupLockID`,
-  [setup.go](/home/grier/git/fold/setup.go:23)), so setup never waits on
+  `setup.go:23`), so setup never waits on
   a migration/push-key transaction.
 - `setupComplete` caches "a user exists" for the life of the process
-  ([main.go](/home/grier/git/fold/main.go:492)); `setupRequired`
+  (`main.go:492`); `setupRequired`
   redirects everything else to `/setup` until then, exempting
   `/setup`, `/setup/unlock`, `/healthz`, and `/assets/`
-  ([main.go](/home/grier/git/fold/main.go:533)).
+  (`main.go:533`).
 - Log hygiene: the access log records only the request path, never a
-  query string ([access_log.go](/home/grier/git/fold/access_log.go:58)),
+  query string (`access_log.go:58`),
   and the token only ever travels in a POST body. The one startup log
   line is the sole place the generated code appears; it is printed
   only while setup is incomplete, so it never prints again after
   setup. An env-provided token is never logged at all.
 - Docs and deployment already name the flow: `.env.example` documents
-  the variable ([.env.example](/home/grier/git/fold/.env.example:10)),
+  the variable (`.env.example:10`),
   compose passes it through
-  ([docker-compose.yml](/home/grier/git/fold/docker-compose.yml:28)),
+  (`docker-compose.yml:28`),
   the README quick start tells the volunteer to read the code from
   `docker compose logs app`
-  ([README.md](/home/grier/git/fold/README.md:17)), and the
+  (`README.md:17`), and the
   DigitalOcean guide says the same with the provisioned paths
-  ([docs/DEPLOY-DIGITALOCEAN.md](/home/grier/git/fold/docs/DEPLOY-DIGITALOCEAN.md:195)).
+  (`docs/DEPLOY-DIGITALOCEAN.md:195`).
 
 ## Design decisions (recorded so nobody relitigates them)
 
@@ -130,7 +130,7 @@ check.
 - `APP_ENV=dev` gets no bypass. Dev and prod behave identically: read
   the printed code from the log, or set `FOLD_SETUP_TOKEN`. Tests set
   a fixed token through `testApp`
-  ([testhelpers_test.go](/home/grier/git/fold/testhelpers_test.go:95));
+  (`testhelpers_test.go:95`);
   e2e does the same in `web/e2e/server.sh`. Rationale: a dev-only
   open door is exactly how an internet-facing first run gets missed,
   and "look at the log" costs a developer nothing.
@@ -183,27 +183,27 @@ Out of scope:
 
 ## Tests (already in tree; run them)
 
-All in [setup_test.go](/home/grier/git/fold/setup_test.go:1) unless noted:
+All in `setup_test.go:1` unless noted:
 
 - `TestSetupRequiresOperatorCredential`: anonymous GET shows no wizard
   fields; anonymous POST with a valid CSRF token still gets 403 and
   creates zero users
-  ([setup_test.go](/home/grier/git/fold/setup_test.go:22)).
+  (`setup_test.go:22`).
 - `TestSetupUnlock`: no-CSRF POST 403, wrong code 403 and never
   echoed, right code 303 to `/setup`, wizard then renders without
   exposing the code, and rotating the configured token kills the old
-  session ([setup_test.go](/home/grier/git/fold/setup_test.go:90)).
+  session (`setup_test.go:90`).
 - `TestConcurrentSetupCreatesOneAdmin`: two `App` instances (separate
   completion caches, one database) race past the unlocked count via a
   GORM callback barrier; exactly one admin is created, the winner
   redirects to `/login`, the loser to `/`, and `site_name` belongs to
-  the winner ([setup_test.go](/home/grier/git/fold/setup_test.go:137)).
+  the winner (`setup_test.go:137`).
 - `TestSetupRollsBackWhenSettingFails`: a forced failure on the second
   settings write leaves zero users and unchanged settings — admin and
   settings really are one transaction
-  ([setup_test.go](/home/grier/git/fold/setup_test.go:207)).
+  (`setup_test.go:207`).
 - `TestNewSetupToken`: distinct 64-char hex values
-  ([setup_test.go](/home/grier/git/fold/setup_test.go:56));
+  (`setup_test.go:56`);
   `TestSetupTokenConfiguration` in `config_test.go` covers the env
   validation. `TestCSRFExemptRoutesAreExact` guards that neither
   setup POST drifts into the CSRF-exempt list.
@@ -237,7 +237,7 @@ All in [setup_test.go](/home/grier/git/fold/setup_test.go:1) unless noted:
   partial rollback. If a regression appears, fix forward.
 - The setup session marker is a hash, so a leaked session cookie does
   not reveal the code itself. Session cookies are signed with
-  `SESSION_SECRET` ([main.go](/home/grier/git/fold/main.go:122),
+  `SESSION_SECRET` (`main.go:122`,
   `newSessionStore`); rotating that secret also kills setup sessions
   (see R12).
 
@@ -291,32 +291,32 @@ needs a reviewer who can hold one leak in their head.
 
 `apiSearchPeople` returns, for each of up to 10 matched people, their
 public name plus `SharedGroups` / `OtherGroups` name lists
-([api_people.go](/home/grier/git/fold/api_people.go:146)). The label
+(`api_people.go:146`). The label
 loader `peopleSearchGroups` pre-filters in SQL to groups that are
 active and `public`/`private`, or shared, or led by the viewer (or
 anything, for an admin), then re-checks each row with
 `policy.CanSeeGroup` before the name leaves the API
-([api_people.go](/home/grier/git/fold/api_people.go:233),
+(`api_people.go:233`,
 the policy call at
-[api_people.go](/home/grier/git/fold/api_people.go:259)).
+`api_people.go:259`).
 
 The leak: `CanSeeGroup` answers "may this viewer know the group
 exists", not "may this viewer know who is in it". Membership is
 roster information. The roster rule already exists:
 `policy.CanSeeRoster` — people who share the group, and admins
-([internal/policy/policy.go](/home/grier/git/fold/internal/policy/policy.go:74)).
+(`internal/policy/policy.go:74`).
 Today any people-search-eligible leader (see `policy.CanSearchPeople`,
-[internal/policy/contact.go](/home/grier/git/fold/internal/policy/contact.go:52))
+`internal/policy/contact.go:52`)
 can learn that a named person belongs to, say, a private recovery
 group they themselves are not in. The person's name, teen flag, and
 avatar are not the leak — searching people to add them is the point
 of the endpoint, and teen avatars are already suppressed
-([api_people.go](/home/grier/git/fold/api_people.go:203)).
+(`api_people.go:203`).
 
 ### Change
 
 - In `peopleSearchGroups`
-  ([api_people.go](/home/grier/git/fold/api_people.go:233)), gate each
+  (`api_people.go:233`), gate each
   label with `policy.CanSeeRoster` instead of `policy.CanSeeGroup`.
   Consequences, all intended: `SharedGroups` is unchanged (a shared
   membership passes the roster rule by definition); `OtherGroups`
@@ -325,7 +325,7 @@ of the endpoint, and teen avatars are already suppressed
   actively in the group), because the `LIMIT 10` is per subject and
   hidden labels must not crowd out visible ones — the same
   filter-before-limit reasoning already documented above the query
-  ([api_people.go](/home/grier/git/fold/api_people.go:230)). The pure
+  (`api_people.go:230`). The pure
   policy call stays the disclosure authority; SQL is only a
   performance pre-filter, and the two must not diverge in the
   permissive direction.
@@ -360,37 +360,37 @@ of the endpoint, and teen avatars are already suppressed
 
 `apiLogout` expires the browser's cookie and ends this browser's push
 device, but writes nothing to the database
-([api_auth.go](/home/grier/git/fold/api_auth.go:290)). A copied
+(`api_auth.go:290`). A copied
 session cookie therefore keeps working for its full 7-day codec
 lifetime (`newSessionStore`,
-[main.go](/home/grier/git/fold/main.go:79)).
+`main.go:79`).
 
 The revocation mechanism exists and is per-user, not per-device:
 every authenticated request compares the cookie's stored version
 against `users.session_version` and refuses on mismatch
-([api.go](/home/grier/git/fold/api.go:346),
+(`api.go:346`,
 `authenticatedSessionUser`; the column is
-[models/models.go](/home/grier/git/fold/models/models.go:160)).
+`models/models.go:160`).
 Existing bumps: password replacement (`replacePasswordIn`,
-[account_security.go](/home/grier/git/fold/account_security.go:129)),
+`account_security.go:129`),
 plus the email/role/status changes documented on the column. Callers
 that must keep the current browser signed in re-store the fresh
 version after a bump — see `apiChangePassword` re-saving the session
-([api_auth.go](/home/grier/git/fold/api_auth.go:276)).
+(`api_auth.go:276`).
 
 Separately, login keeps the pre-login CSRF token: `signInSession`
 stores `userID`/`sessionVersion` and saves, leaving the `csrfToken`
 session value untouched
-([api_auth.go](/home/grier/git/fold/api_auth.go:559)). The token is
+(`api_auth.go:559`). The token is
 created by `csrfToken` only when the session lacks one
-([csrf.go](/home/grier/git/fold/csrf.go:27)) and checked in
-`csrfMiddleware` ([csrf.go](/home/grier/git/fold/csrf.go:51)). A token
+(`csrf.go:27`) and checked in
+`csrfMiddleware` (`csrf.go:51`). A token
 fixated or leaked before login therefore stays valid after it.
 
 ### Change
 
 - Logout: in `apiLogout`
-  ([api_auth.go](/home/grier/git/fold/api_auth.go:294)), inside a
+  (`api_auth.go:294`), inside a
   transaction, increment the caller's `session_version`
   (`session_version + 1`, the expression `replacePasswordIn` uses),
   then expire the cookie as today. Logout is currently unaudited;
@@ -404,7 +404,7 @@ fixated or leaked before login therefore stays valid after it.
   one. This matches the semantics members already get from a
   password change ("This browser stays logged in; other sessions for
   the account do not",
-  [api_auth.go](/home/grier/git/fold/api_auth.go:229)) minus the
+  `api_auth.go:229`) minus the
   current-browser exception — at logout there is no browser to keep.
 - Before coding, read the push revocation trigger (migration 00059,
   described in AGENTS.md: an account's devices are deleted when its
@@ -423,10 +423,10 @@ fixated or leaked before login therefore stays valid after it.
   cleared-login teen branch). The next request's `csrfMiddleware`
   mints a fresh token via `csrfToken`. Because `signInSession` is
   shared, password-reset sign-in (`apiConfirmPasswordReset`,
-  [api_auth.go](/home/grier/git/fold/api_auth.go:552)) rotates too —
+  `api_auth.go:552`) rotates too —
   that is deliberate, not a side effect to avoid. The login response
   itself carries no CSRF token (the SPA fetches `GET /csrf` through
-  `apiGetCSRF`, [api_auth.go](/home/grier/git/fold/api_auth.go:27)),
+  `apiGetCSRF`, `api_auth.go:27`),
   so no response-shape change is needed; confirm the SPA refetches
   after login rather than caching the pre-login token, and fix the
   client if it caches (`web/src/api.ts`).
@@ -434,7 +434,7 @@ fixated or leaked before login therefore stays valid after it.
 ### Tests (failing first)
 
 - `api_auth_test.go` beside `TestLogoutEndsSession`
-  ([api_auth_test.go](/home/grier/git/fold/api_auth_test.go:491)):
+  (`api_auth_test.go:491`):
   capture the session cookie before logout, log out, replay the
   captured cookie against an authenticated route — 401. A second
   "device" (separately minted cookie for the same user) is also 401
@@ -457,13 +457,13 @@ fixated or leaked before login therefore stays valid after it.
 
 `readImageUpload` size-checks (5 MB, real byte count) and
 content-sniffs an upload, then hands back the temp file verbatim
-([api_profile.go](/home/grier/git/fold/api_profile.go:388)); both
+(`api_profile.go:388`); both
 callers store those bytes unchanged — avatars via `saveAvatar`
-([api_profile.go](/home/grier/git/fold/api_profile.go:480)) and group
+(`api_profile.go:480`) and group
 covers in `apiUploadGroupCover`
-([api_profile.go](/home/grier/git/fold/api_profile.go:539)). Accepted
+(`api_profile.go:539`). Accepted
 types are JPEG, PNG, GIF, WebP
-([api_profile.go](/home/grier/git/fold/api_profile.go:41),
+(`api_profile.go:41`,
 `allowedImageTypes`). A phone photo's EXIF block — GPS coordinates
 of a member's home, timestamps, device serials — is therefore served
 to anyone who can fetch `/uploads/<key>`.
@@ -471,7 +471,7 @@ to anyone who can fetch `/uploads/<key>`.
 The browser does not fix this: `prepareUpload` returns files of 1 MB
 or less untouched, and only larger files are recompressed (to JPEG,
 which incidentally drops metadata)
-([web/src/lib/image.ts](/home/grier/git/fold/web/src/lib/image.ts:1)).
+(`web/src/lib/image.ts:1`).
 Browser resizing is a CPU optimization (AGENTS.md); the server is
 the enforcement point.
 
@@ -514,6 +514,11 @@ dependency for three of the four formats.
   the error tells them the fix. Revisit only with a maintained
   pure-Go WebP encoder — that is a dependency decision for the
   owner, not this slice.
+- This slice owns every upload path that stores user images, including
+  the M4.2b church-logo upload (DEC-137) whichever lands second: route
+  the logo bytes through the same strip/re-encode step, do not add a
+  second pipeline beside it. (`golang.org/x/image` is approved for
+  M4.2b's resize (DEC-137); this slice stays stdlib-only per above.)
 - The re-encoded bytes define the stored size and MIME from then on;
   extension and key logic in `saveAvatar` / `apiUploadGroupCover`
   already key off the sniffed MIME, which is now also the encoded
@@ -556,26 +561,26 @@ In `image_normalize_test.go` (unit, no database) and
 ### Current state
 
 The admin-issued room feed (`buildRoomFeed`,
-[api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:190))
+`api_room_feeds.go:190`)
 describes a booking — title, location line, URL, description —
 unless `roomFeedDescribes` says no. Today that rule hides a date
 only when its effective visibility is invite-only
 (`policy.EffectiveVisibility` over the event value and the
 occurrence override)
-([api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:291)).
+(`api_room_feeds.go:291`).
 A **private** (signed-in members only) event's title and description
 therefore land on a door display or office calendar that holds
 nothing but a secret link — readable by anyone who can see the
 screen, signed in or not. Two extra guards already limit the damage
 for invite-only groups (no group location line, no series
 description) at
-[api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:267), but
+`api_room_feeds.go:267`, but
 they never fire for merely-private dates.
 
 The sibling surface shows the intended shape: the by-room calendar
 view starts every slot as `Reserved` and only fills in details the
 *specific viewer* may see on that exact date
-([api_room_calendar.go](/home/grier/git/fold/api_room_calendar.go:191)).
+(`api_room_calendar.go:191`).
 A feed has no viewer — the link is the only credential — so the
 faithful analog of "a member of the public is looking" is: describe
 public dates, reserve everything else.
@@ -583,7 +588,7 @@ public dates, reserve everything else.
 ### Change
 
 - In `roomFeedDescribes`
-  ([api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:294)),
+  (`api_room_feeds.go:294`),
   require `policy.EffectiveVisibility(...) == policy.Public`.
   Keep the missing/deleted-group refusal. The invite-only-only
   location/description guards stay as defense in depth; do not
@@ -591,11 +596,11 @@ public dates, reserve everything else.
 - Update the file's doc comment, which currently promises the old
   rule ("except that a date whose own visibility is invite-only is
   titled Reserved",
-  [api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:20)).
+  `api_room_feeds.go:20`).
 - Nothing else changes: same route, same token handling, same ICS
   shape. `DTSTAMP` already advances when a described date becomes
   Reserved (the `UpdatedAt` handling at
-  [api_room_feeds.go](/home/grier/git/fold/api_room_feeds.go:263)),
+  `api_room_feeds.go:263`),
   so subscribed calendars replace the old title instead of keeping
   it forever.
 - Occurrence overrides cut both ways and must be honored as today:
@@ -608,7 +613,7 @@ public dates, reserve everything else.
 ### Tests (failing first)
 
 - Extend `TestRoomFeedContents`
-  ([api_room_feeds_test.go](/home/grier/git/fold/api_room_feeds_test.go:96)):
+  (`api_room_feeds_test.go:96`):
   a private event's booking now renders `SUMMARY:Reserved` with no
   title, description, or event URL in the body; the public booking
   is still described. Add the two override cases above (private
@@ -620,32 +625,32 @@ public dates, reserve everything else.
 
 ### Current state
 
-`LoadConfig` ([config.go](/home/grier/git/fold/config.go:158))
+`LoadConfig` (`config.go:158`)
 validates several values in a consistent fix-it style — name the
 variable, say what's wrong (never the secret's value), give the exact
 fix and where to put it — exemplified by `shortSecretMessage`
-([config.go](/home/grier/git/fold/config.go:126)) and the
+(`config.go:126`) and the
 `FOLD_SETUP_TOKEN` check
-([config.go](/home/grier/git/fold/config.go:166)). Three dangerous
+(`config.go:166`). Three dangerous
 values slip through:
 
 - `parseTrustedProxies` accepts any parseable CIDR, including
   `0.0.0.0/0` and `::/0`
-  ([config.go](/home/grier/git/fold/config.go:108)). A `/0` entry
+  (`config.go:108`). A `/0` entry
   makes Gin believe `X-Forwarded-For` from the whole internet, so
   every IP-keyed throttle (login, public forms) becomes
   attacker-spoofable.
 - `SiteURL` is stored unexamined
-  ([config.go](/home/grier/git/fold/config.go:208)). Downstream code
+  (`config.go:208`). Downstream code
   already distrusts it — `vapidSubject` ignores a non-https value
-  ([push_keys.go](/home/grier/git/fold/push_keys.go:262)) — but email
+  (`push_keys.go:262`) — but email
   links are built from it, so an `http://` value in prod quietly
   ships password-reset and invitation links in cleartext form.
 - `CookieSecure` defaults to `!isDev` but an explicit
   `COOKIE_SECURE=false` is honored in prod
-  ([config.go](/home/grier/git/fold/config.go:207)), sending session
+  (`config.go:207`), sending session
   cookies without `Secure` and dropping HSTS with it
-  (`securityHeaders`, [main.go](/home/grier/git/fold/main.go:461)).
+  (`securityHeaders`, `main.go:461`).
 
 ### Change
 
@@ -664,7 +669,7 @@ legitimate, dev included.
   uses). Unset stays allowed (links fall back as today). Message
   names the fix: set it to `https://<DOMAIN>` in `.env`, as the
   shipped compose file already does
-  ([docker-compose.yml](/home/grier/git/fold/docker-compose.yml:31)).
+  (`docker-compose.yml:31`).
 - `COOKIE_SECURE=false` when not dev: refuse, naming the fix (remove
   it, or set it to `true`; plain-HTTP testing belongs in
   `APP_ENV=dev`).
@@ -688,27 +693,27 @@ legitimate, dev included.
 ### Current state
 
 `storeAccountRequest` serves both public doors
-([api_account_requests.go](/home/grier/git/fold/api_account_requests.go:196)).
+(`api_account_requests.go:196`).
 When the submitted email already has an account, self-signup answers
 uniformly and emails the hint to the address instead
-([api_account_requests.go](/home/grier/git/fold/api_account_requests.go:243)) —
+(`api_account_requests.go:243`) —
 but the member invite-a-friend door breaks ranks: it answers 409
 "that email already has an account"
-([api_account_requests.go](/home/grier/git/fold/api_account_requests.go:236)),
+(`api_account_requests.go:236`),
 with a comment arguing an authenticated member may learn what an
 inviter learns. DEC-52 (AGENTS.md) says the opposite for answers
 that reveal whether an account exists; its only 429-style exceptions
 are sign-in lockout and a leader's own invitation limit. As built,
 any signed-in adult member (`policy.CanInviteFriend`,
-[internal/policy/policy.go](/home/grier/git/fold/internal/policy/policy.go:432);
+`internal/policy/policy.go:432`;
 handler gate in `apiInviteFriend`,
-[api_account_requests.go](/home/grier/git/fold/api_account_requests.go:336))
+`api_account_requests.go:336`)
 can test arbitrary addresses for church membership — exactly the
 enumeration the file's own header promises to prevent
-([api_account_requests.go](/home/grier/git/fold/api_account_requests.go:25)).
+(`api_account_requests.go:25`).
 The cost-equalization is already in place: both paths pay a dummy
 bcrypt before the branch
-([api_account_requests.go](/home/grier/git/fold/api_account_requests.go:233)),
+(`api_account_requests.go:233`),
 and the IP/site/per-address throttles run first.
 
 ### Change
@@ -718,7 +723,7 @@ and the IP/site/per-address throttles run first.
   `answerAccountRequest` reply (200 with each door's usual thanks —
   for invite-a-friend, the existing "an admin will review it…"
   message at
-  [api_account_requests.go](/home/grier/git/fold/api_account_requests.go:308)),
+  `api_account_requests.go:308`),
   no row stored, and the already-have-an-account hint emailed to the
   address (skipped for honeypot submissions, as today). Emailing the
   *address* is safe: the hint reaches only the account holder, and
@@ -734,9 +739,9 @@ and the IP/site/per-address throttles run first.
   police both directions.
 - Out of scope, deliberately: leader/admin invitations keep their
   409s ("an account with that email already exists",
-  [api_invitations.go](/home/grier/git/fold/api_invitations.go:242);
+  `api_invitations.go:242`;
   the household sibling at
-  [api_invitations.go](/home/grier/git/fold/api_invitations.go:474)).
+  `api_invitations.go:474`).
   Inviters are managers who can already find existing members
   through people search and add them directly, so the 409 tells them
   nothing they cannot already see, and it is genuinely actionable
@@ -760,13 +765,13 @@ and the IP/site/per-address throttles run first.
 
 The server is a bare `&http.Server{Addr: …, Handler: r}` with no
 timeouts of any kind
-([main.go](/home/grier/git/fold/main.go:160)). Slow-loris headers,
+(`main.go:160`). Slow-loris headers,
 dribbled bodies, and stuck responses can hold connections (and the
 goroutines behind them) forever. Body *size* is already capped
 (`limitBody(maxRequestBytes)`,
-[main.go](/home/grier/git/fold/main.go:623)); body *duration* is not.
+`main.go:623`); body *duration* is not.
 Shutdown already allows 10 s of grace
-([main.go](/home/grier/git/fold/main.go:168)).
+(`main.go:168`).
 
 ### Change
 
@@ -784,7 +789,7 @@ Shutdown already allows 10 s of grace
   for any handler that waits on mail or a job; if one exists, it
   gets a context deadline of its own rather than a bigger server
   timeout. `fold healthcheck` keeps its own 2 s client timeout
-  ([main.go](/home/grier/git/fold/main.go:220)) and is unaffected.
+  (`main.go:220`) and is unaffected.
 - Slow *responses* behind Caddy: 60 s write timeout is measured from
   header read; a large ICS feed to a slow door display is the worst
   realistic case and is kilobytes. Fine.
@@ -805,16 +810,16 @@ Shutdown already allows 10 s of grace
 ### Password minimum counts characters, not bytes — IN (fold into slice (b)'s PR or its own S PR)
 
 The copy promises characters: `minPasswordLength = 10`
-([api.go](/home/grier/git/fold/api.go:16)) and every new-password
+(`api.go:16`) and every new-password
 field says "at least 10 characters". The check measures bytes:
 `len(pw) < minPasswordLength`
-([password_rules.go](/home/grier/git/fold/password_rules.go:18),
+(`password_rules.go:18`,
 `passwordRuleError`), duplicated in setup validation
-([setup.go](/home/grier/git/fold/setup.go:148)). Four emoji (16
+(`setup.go:148`). Four emoji (16
 bytes) currently pass the "10 characters" rule. Change: the minimum
 test uses `utf8.RuneCountInString`; the 72-**byte** maximum stays
 bytes — it is bcrypt's hard limit, and `password_rules.go` already
-documents why ([password_rules.go](/home/grier/git/fold/password_rules.go:9)).
+documents why (`password_rules.go:9`).
 Make setup call the shared rule instead of its copy so the two can't
 drift again (setup renders its own field messages; keep the wording,
 take the verdict from one helper). Sign-in never re-checks length,
@@ -827,15 +832,15 @@ refused for minimum; 10 runes accepted; >72 bytes still refused) and
 
 The fear is CPU exhaustion: each login costs one bcrypt comparison
 at `bcrypt.DefaultCost`
-([models/models.go](/home/grier/git/fold/models/models.go:183)).
+(`models/models.go:183`).
 But attempts are already reserved *before* any bcrypt work,
 atomically, per email (10) and per IP (50) per 15 minutes
-([api_auth.go](/home/grier/git/fold/api_auth.go:31),
+(`api_auth.go:31`,
 `reserveLoginAttempt` at
-[api_auth.go](/home/grier/git/fold/api_auth.go:121)), and the
+`api_auth.go:121`), and the
 password-reset door pays its dummy comparison only after the same
 style of throttle passes
-([api_auth.go](/home/grier/git/fold/api_auth.go:392)). A global
+(`api_auth.go:392`). A global
 semaphore adds a new failure mode — queueing delay as a timing
 signal, and one attacker filling the slots to delay everyone's
 sign-ins — to bound a cost the throttles already bound per source.
@@ -955,21 +960,21 @@ secret touches.
 ## Current state — everywhere the one secret reaches
 
 `SESSION_SECRET` is read once per process (`sessionSecret`,
-[config.go](/home/grier/git/fold/config.go:138); ≥32 chars outside
+`config.go:138`; ≥32 chars outside
 dev) and stored as `Config.SessionSecret`
-([config.go](/home/grier/git/fold/config.go:24)). Every use, with its
+(`config.go:24`). Every use, with its
 lifetime and its behavior when the secret changes:
 
 | Use | Where | Lifetime | On secret change |
 |---|---|---|---|
-| Session cookies (signing) | `newSessionStore`, [main.go](/home/grier/git/fold/main.go:79); built at [main.go](/home/grier/git/fold/main.go:122) | 7 days | All cookies die; everyone signs in again. Desired. |
-| VAPID private key at rest | `vapidCipher` — key = SHA-256(`fold:vapid:v1:` ∥ secret), AES-GCM, [push_keys.go](/home/grier/git/fold/push_keys.go:48) | Until rotated | Self-heals: `ensureVAPIDKeys` makes a new pair, deletes every `push_subscriptions` row, audits + notifies admins in the same transaction ([push_keys.go](/home/grier/git/fold/push_keys.go:145)). Members must re-enable notifications. |
-| Unsubscribe + email-settings links | HMAC key = SHA-256(`fold:unsubscribe:v1:` ∥ secret), [email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:29) | **Never expires** (by design, so an old email's button works, [email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:19)) | **Every link ever emailed dies permanently.** The audited problem. |
-| People-search selection tokens | AES-GCM, SHA-256(`fold:people-selection:v1:` ∥ secret), [api_people.go](/home/grier/git/fold/api_people.go:39) | 10 minutes (`peopleSelectionLifetime`) | In-flight picks fail; user searches again. Harmless. |
+| Session cookies (signing) | `newSessionStore`, `main.go:79`; built at `main.go:122` | 7 days | All cookies die; everyone signs in again. Desired. |
+| VAPID private key at rest | `vapidCipher` — key = SHA-256(`fold:vapid:v1:` ∥ secret), AES-GCM, `push_keys.go:48` | Until rotated | Self-heals: `ensureVAPIDKeys` makes a new pair, deletes every `push_subscriptions` row, audits + notifies admins in the same transaction (`push_keys.go:145`). Members must re-enable notifications. |
+| Unsubscribe + email-settings links | HMAC key = SHA-256(`fold:unsubscribe:v1:` ∥ secret), `email_unsubscribe.go:29` | **Never expires** (by design, so an old email's button works, `email_unsubscribe.go:19`) | **Every link ever emailed dies permanently.** The audited problem. |
+| People-search selection tokens | AES-GCM, SHA-256(`fold:people-selection:v1:` ∥ secret), `api_people.go:39` | 10 minutes (`peopleSelectionLifetime`) | In-flight picks fail; user searches again. Harmless. |
 | Departure preview tokens | SHA-256(`fold:departure-preview:v3:` ∥ secret), `api_departure.go:386` | Short-lived preview | In-flight preview fails; user retries. Harmless. |
 | Guardian-email authority tokens | HMAC over `SessionSecret`, `api_guardian_email.go:45` | Short-lived flow | In-flight confirmation fails; flow restarts. Harmless. |
 
-Token shape today ([email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:26)):
+Token shape today (`email_unsubscribe.go:26`):
 one version byte (`unsubscribeVersion = 1`), uvarint user id, scope
 string (`category:<name>`, validated against the optional-email
 registry), 16-byte truncated HMAC-SHA256, base64url. The same token
@@ -978,39 +983,39 @@ serves two doors of very different power:
 - `POST /u/unsubscribe/:token` — RFC 8058 one-click, CSRF-exempt by
   design, opts the user out of the token's own scope only
   (`oneClickUnsubscribe`,
-  [email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:99);
-  route at [main.go](/home/grier/git/fold/main.go:276)).
+  `email_unsubscribe.go:99`;
+  route at `main.go:276`).
 - `GET`/`PUT /api/v1/email-settings/:token` — the signed-out
   settings page's API (routes at `api.go:686`–687). The read returns
   the masked email, the originating category, and all switches
   (`apiTokenEmailSettings`,
-  [api_email_settings.go](/home/grier/git/fold/api_email_settings.go:131)).
+  `api_email_settings.go:131`).
   The write **discards the token's scope**
   (`u, _, ok := …`,
-  [api_email_settings.go](/home/grier/git/fold/api_email_settings.go:148))
+  `api_email_settings.go:148`)
   and `applyEmailSettings` will flip any listed category — or, with
   no category, every optional kind at once
-  ([api_email_settings.go](/home/grier/git/fold/api_email_settings.go:72)).
+  (`api_email_settings.go:72`).
   Any single old email's link is therefore a permanent capability to
   reconfigure (including re-subscribe) all of a person's optional
   mail. The footers that mint these links point at
-  `/email-settings/<token>` ([email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:161)).
+  `/email-settings/<token>` (`email_unsubscribe.go:161`).
 
 Rotation aids that exist: `fold push keys rotate [--force]`
-(`runPush`, [cli.go](/home/grier/git/fold/cli.go:155);
+(`runPush`, `cli.go:155`;
 `rotateVAPIDKeys`,
-[push_keys.go](/home/grier/git/fold/push_keys.go:201)), which already
+`push_keys.go:201`), which already
 refuses to rotate under a secret that can't open the stored key and
 tells the operator to restart with the new secret instead
 (`errRotateOtherSecret`,
-[push_keys.go](/home/grier/git/fold/push_keys.go:193)). There is no
+`push_keys.go:193`). There is no
 runbook tying any of this together; `.env.example` only warns that
 changing the secret turns off everyone's device notifications
-([.env.example](/home/grier/git/fold/.env.example:63)).
+(`.env.example:63`).
 
 Log hygiene is already right and must stay right: tokens in URLs are
 redacted from the access log
-([access_log.go](/home/grier/git/fold/access_log.go:11) —
+(`access_log.go:11` —
 `/u/unsubscribe/`, `/email-settings/`, `/api/v1/email-settings/`
 prefixes; `TestAccessLogKeepsSecretsOut` guards it).
 
@@ -1035,7 +1040,7 @@ Out of scope, explicitly:
   it the moment the new secret boots. Members signing in again once
   is the cheap, correct price — it is also what the short-secret
   error already promises ("Changing it signs everyone out once",
-  [config.go](/home/grier/git/fold/config.go:128)). The same logic
+  `config.go:128`). The same logic
   covers the short-lived derived tokens (people-selection,
   departure-preview, guardian-email): they expire in minutes on
   their own, so dual-keying them buys nothing and widens the code
@@ -1128,13 +1133,13 @@ Out of scope, explicitly:
   without inventing a new pattern; otherwise the PR description
   carries the grep output. `sessionSecret`'s CLI reuse
   (`fold push keys rotate` reads the primary the same way,
-  [cli.go](/home/grier/git/fold/cli.go:174)) stays primary-only.
+  `cli.go:174`) stays primary-only.
 - `.env.example`: document the variable next to `SESSION_SECRET`
-  ([.env.example](/home/grier/git/fold/.env.example:7)) — what it
+  (`.env.example:7`) — what it
   is for, that it accepts only emailed links signed by the old
   secret, when to remove it (the runbook's window), and that it
   never signs anything new. Update the web-push comment block
-  ([.env.example](/home/grier/git/fold/.env.example:63)) only if the
+  (`.env.example:63`) only if the
   runbook wording needs it.
 
 ### Slice 3 — The rotation runbook (docs only)
@@ -1159,10 +1164,10 @@ at least 32 characters"). The runbook, in this order:
    the point if the old secret leaked); `ensureVAPIDKeys` finds the
    stored push key unreadable, makes a new pair, deletes every
    device, and notifies admins
-   ([push_keys.go](/home/grier/git/fold/push_keys.go:145)) — do
+   (`push_keys.go:145`) — do
    **not** also run `fold push keys rotate`, the restart already
    did it (its `--force` refusal copy says the same,
-   [push_keys.go](/home/grier/git/fold/push_keys.go:193));
+   `push_keys.go:193`);
    unsubscribe and settings links from old mail keep working via
    the previous key, and new mail carries new-key tokens;
    in-flight people picks / previews from the last few minutes fail
@@ -1174,7 +1179,7 @@ at least 32 characters"). The runbook, in this order:
    still need re-enabling either way); an old email's unsubscribe
    button still works (test with your own mailbox or the dev
    outbox); `fold push keys show` prints a (new) public key
-   ([cli.go](/home/grier/git/fold/cli.go:31)).
+   (`cli.go:31`).
 5. **Close the window.** After the acceptance window (default:
    13 months, or sooner if the compromise demands it — see open
    questions), remove `SESSION_SECRET_PREVIOUS` and restart. From
@@ -1200,16 +1205,16 @@ follow-up line in the runbook PR, don't build it here.
 - Token v2 byte layout as specified in slice 1. No database or
   migration change (links are stateless). `consents` writes are
   unchanged (`setEmailConsent`,
-  [email_unsubscribe.go](/home/grier/git/fold/email_unsubscribe.go:119)).
+  `email_unsubscribe.go:119`).
 - HTTP surface unchanged: same three routes, same JSON
   (`emailSettingsJSON`,
-  [api_email_settings.go](/home/grier/git/fold/api_email_settings.go:29)).
+  `api_email_settings.go:29`).
   `web/src/types.ts` untouched. The only SPA change permitted is
   the expired-link copy state on the settings page.
 - `TestCSRFExemptRoutesAreExact` must stay green: `/u/unsubscribe`
   remains the one token-only POST; settings `PUT` keeps its CSRF
   token on top of the link token, as today
-  ([api_email_settings.go](/home/grier/git/fold/api_email_settings.go:148)).
+  (`api_email_settings.go:148`).
 
 ## Tests
 

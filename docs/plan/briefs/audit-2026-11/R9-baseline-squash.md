@@ -743,7 +743,7 @@ other applied migration from the first tagged release on." Update the
 three stale decision counters (`docs/plan/PLAN.md:3`, `:10`, `:98`, today
 "through DEC-134" although DEC-136 exists): already updated to DEC-145 when the audit DECs landed; keep them at the true highest DEC.
 
-### 8.3 DEC-138 (new row in PLAN §15, after DEC-136)
+### 8.3 DEC-138 (landed in PLAN §15, after DEC-137 branding)
 
 > | DEC-138 | **One baseline before the first church; additive-first after**
 > (Grier, Nov 1, 2026; audit R9). While DEC-22 holds and no church has data
@@ -1025,9 +1025,9 @@ slice opens. None blocks S1.
   registration-flavored names in S4, or keep names and record the debt?
   **Default: keep names** — smallest diff, policy tests pass unedited as a
   required proof; a rename can ride a later no-behavior-change PR.
-- **Q4 (before S1 merges).** DEC number: 137 assumes no sibling brief
-  takes it first. **Default: 137;** renumber at merge if taken, updating
-  §8 texts and this brief's mentions in the same PR.
+- **Q4 (resolved).** DEC number: **138**, landed. PR #236 took DEC-137
+  (branding) first; this brief and PLAN already use 138 throughout. Do
+  not renumber again.
 - **Q5 (before S4).** Audit/notify `TargetType`/`SubjectType` rename
   `"occurrence_access"` → `"registration"` (this brief) vs keeping the old
   label pointing at registration IDs? **Default: rename.** Pre-live there

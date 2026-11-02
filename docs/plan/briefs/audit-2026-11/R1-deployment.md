@@ -342,9 +342,10 @@ upgrade runbook; README and deploy-guide updates; R2 named as a
 backup target option in the backup env example and guide.
 
 Out: any Cloudflare hosting target; Render/Fly/Railway files
-(M5.5 stays future, DEC-26); the SPA setup wizard and encrypted
+(cut — DEC-140/DEC-142; DEC-26's M5.5 is a reference evaluation only);
+the SPA setup wizard and encrypted
 provider settings (M4.1/M4.2 own those; `fold doctor` only reports);
-the S3 uploads store (M4.7); an Admin System "last backup" panel
+the S3 uploads store (cut until demanded, DEC-140); an Admin System "last backup" panel
 (PLAN 11.8 names it — it is a follow-up slice once the backup
 volume exists, noted under Dependencies, not silently dropped);
 multi-arch beyond `linux/amd64` + `linux/arm64`; automatic upgrades
