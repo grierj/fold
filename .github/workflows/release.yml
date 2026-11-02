@@ -6,6 +6,16 @@ name: release
 #
 # A `v*` tag push builds that tag. Run it by hand (Actions > release > Run
 # workflow) to rebuild a version whose build failed after the tag was pushed.
+#
+# Tag policy (a published tag is never overwritten):
+#   <x.y.z>   immutable; the run refuses to publish a version that exists.
+#   <x.y>     moves with each final release of that minor (not for -rc and
+#             other prereleases). A convenience for people reading; the
+#             compose file and the scripts require an exact <x.y.z>.
+#   <sha>     the full commit SHA, published only if absent. A commit released
+#             twice (0.5.0-rc.1, then 0.5.0) keeps the digest of its first
+#             release, because each build stamps its own version into the
+#             binary and so has its own digest.
 on:
   push:
     tags: ["v*"]
@@ -16,13 +26,17 @@ on:
         required: true
         type: string
 
-# Least privilege for every job by default; the one job below asks for more.
+# Least privilege for every job by default; each job below asks for its own.
 permissions:
   contents: read
 
-# One publish per ref at a time; never cancel a half-pushed release.
+# One publish at a time for the whole repository, whatever ref asked for it.
+# The existence checks below are only safe because nothing else can push
+# between the check and the push. Never cancel a half-pushed release. GitHub
+# keeps one waiting run per group and cancels older waiting ones: if two
+# releases are queued at once, re-run the cancelled one with workflow_dispatch.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-publish
   cancel-in-progress: false
 
 env:
@@ -37,6 +51,10 @@ jobs:
       packages: write # push to ghcr.io/grierj/fold
       id-token: write # sign the build provenance attestation
       attestations: write # store the attestation
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+      attestation_url: ${{ steps.attest.outputs.attestation-url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -58,9 +76,10 @@ jobs:
             echo "::error::'$version' is not a version like 0.5.0 or 0.5.0-rc.1"
             exit 1
           fi
-          # <x.y.z> and the full commit SHA always; <x.y> only for a final
-          # release, so a release candidate never moves a church's minor pin.
-          tags="${IMAGE}:${version}"$'\n'"${IMAGE}:${GITHUB_SHA}"
+          # <x.y.z> always; <x.y> only for a final release, so a release
+          # candidate never moves a church's minor tag. The SHA alias is
+          # published separately, and only when it does not exist yet.
+          tags="${IMAGE}:${version}"
           if [[ -z "${BASH_REMATCH[4]}" ]]; then
             tags+=$'\n'"${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           fi
@@ -80,16 +99,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # A released version is immutable: a second publish of the same number
-      # would change what churches already pinned.
+      # would change what churches already pinned. Only a confirmed "not
+      # found" lets the run go on; a login, permission or network error is
+      # not "free to use", so it stops the run.
       - name: Refuse to overwrite a published version
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
-            echo "::error::${IMAGE}:${VERSION} is already published. Pick a new version."
-            exit 1
-          fi
+          status=0
+          bash scripts/image-tag-exists.sh "${IMAGE}:${VERSION}" || status=$?
+          case "$status" in
+            0) echo "::error::${IMAGE}:${VERSION} is already published. Pick a new version."; exit 1 ;;
+            1) echo "${IMAGE}:${VERSION} is not published yet" ;;
+            *) echo "::error::Could not confirm that ${IMAGE}:${VERSION} is unpublished. Not publishing."; exit 1 ;;
+          esac
 
       - name: Build and push (linux/amd64, linux/arm64)
         id: build
@@ -106,7 +130,27 @@ jobs:
           provenance: false
           sbom: false
 
+      # The full-SHA alias points at the first release of a commit and stays
+      # there. Same fail-closed check: unknown means do not touch it.
+      - name: Publish the commit SHA alias if it is new
+        id: sha_alias
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          bash scripts/image-tag-exists.sh "${IMAGE}:${GITHUB_SHA}" || status=$?
+          case "$status" in
+            0) echo "result=kept" >>"$GITHUB_OUTPUT"; echo "${IMAGE}:${GITHUB_SHA} already exists; leaving it alone" ;;
+            1)
+              docker buildx imagetools create --tag "${IMAGE}:${GITHUB_SHA}" "${IMAGE}@${DIGEST}"
+              echo "result=published" >>"$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::Could not tell whether ${IMAGE}:${GITHUB_SHA} exists."; exit 1 ;;
+          esac
+
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -118,6 +162,8 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           DIGEST: ${{ steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          SHA_ALIAS: ${{ steps.sha_alias.outputs.result }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
         run: |
           {
             echo "## Fold ${VERSION}"
@@ -129,10 +175,69 @@ jobs:
             echo "Tags pushed:"
             echo
             while IFS= read -r tag; do echo "- \`${tag}\`"; done <<<"$TAGS"
+            echo "- \`${IMAGE}:${GITHUB_SHA}\` (${SHA_ALIAS})"
             echo
-            echo "Paste the digest into the GitHub release notes. To check an image:"
+            echo "Attestation: ${ATTESTATION_URL}"
+            echo
+            echo "To check an image:"
             echo
             echo '```'
             echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+
+  # Writes the digest into the GitHub release. Its own job so the only token
+  # that can write releases never holds packages: write.
+  notes:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create or edit the release for this version
+    steps:
+      - name: Put the digest in the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+          VERSION: ${{ needs.image.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          ATTESTATION_URL: ${{ needs.image.outputs.attestation_url }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          fence='```'
+          section="$(
+            echo '### Image'
+            echo
+            echo "\`${IMAGE}:${VERSION}\`"
+            echo
+            echo "Digest: \`${DIGEST}\`"
+            echo
+            echo "Build provenance: ${ATTESTATION_URL}"
+            echo
+            echo 'Check it with:'
+            echo
+            echo "$fence"
+            echo "gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${REPO}"
+            echo "$fence"
+          )"
+          status=0
+          body="$(gh release view "$tag" --repo "$REPO" --json body --jq .body 2>&1)" || status=$?
+          if [[ "$status" -eq 0 ]]; then
+            if grep -qF "$DIGEST" <<<"$body"; then
+              echo "release ${tag} already lists this digest"
+              exit 0
+            fi
+            gh release edit "$tag" --repo "$REPO" --notes "${body}"$'\n\n'"${section}"
+          elif grep -qi 'release not found' <<<"$body"; then
+            flags=()
+            if [[ "$VERSION" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$tag" --repo "$REPO" --target "$TARGET_SHA" \
+              --title "Fold ${VERSION}" --notes "$section" "${flags[@]}"
+          else
+            echo "::error::Could not read release ${tag}: ${body}"
+            exit 1
+          fi

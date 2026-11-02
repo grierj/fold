@@ -210,7 +210,7 @@ current_release() {
   fi
   version="$(env_value "$DEPLOY_DIR/.env" FOLD_VERSION || true)"
   [[ -n "$version" ]] || die "${DEPLOY_DIR}/.env has no FOLD_VERSION; cannot tell which release is running"
-  assert_pinned_version "$version" || exit 1
+  assert_release_version "$version" || exit 1
   REL_MODE="image"
   REL_IMAGE="${FOLD_IMAGE_REPO}:${version}"
 }
