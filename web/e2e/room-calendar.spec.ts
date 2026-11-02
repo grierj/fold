@@ -12,12 +12,6 @@ test("a member sees the room calendar, with a hidden date as Reserved", async ({
   const hall = rooms.find((r) => r.name === "Fellowship Hall")!;
   const day = new Date(Date.now() + 61 * 864e5).toISOString().slice(0, 10);
 
-  const lee = await apiAs(request, "lee");
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
-    title: "Room calendar night", startsLocal: `${day}T19:00`, durationMinutes: 60, tzid: "America/Boise",
-  })) as { event: { id: number } };
-  await lee("PUT", `/events/${event.id}/dates/${day}/room`, { roomId: hall.id });
-
   // An invite-only group Sam isn't in holds the hall that morning.
   const { group: hidden } = (await admin("POST", "/groups", { name: "Room calendar hidden group", visibility: "invite_only", tags: [] })) as {
     group: { id: number };
@@ -26,6 +20,15 @@ test("a member sees the room calendar, with a hidden date as Reserved", async ({
     title: "Hidden room meeting", startsLocal: `${day}T09:00`, durationMinutes: 60, tzid: "America/Boise",
   })) as { event: { id: number } };
   await admin("PUT", `/events/${secret.id}/dates/${day}/room`, { roomId: hall.id });
+
+  // apiAs clients share this request context's cookie jar: each sign-in
+  // replaces the session and rotates its CSRF token, so finish with one user
+  // before signing in the next.
+  const lee = await apiAs(request, "lee");
+  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+    title: "Room calendar night", startsLocal: `${day}T19:00`, durationMinutes: 60, tzid: "America/Boise",
+  })) as { event: { id: number } };
+  await lee("PUT", `/events/${event.id}/dates/${day}/room`, { roomId: hall.id });
 
   await signIn(page, "sam");
   await page.goto(`/calendar?view=week&date=${day}`);
