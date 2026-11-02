@@ -234,14 +234,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// both paths so the number of admins cannot disclose account existence.
 	(&models.User{}).CheckPassword("not a real password")
 	if hasAccount {
-		if source == models.RequestMemberInvite {
-			// An authenticated member learns what an inviter learns
-			// (M1.2 invitations answer 409 too); no email is sent.
-			jsonError(c, http.StatusConflict, "that email already has an account")
-			return false
-		}
+		// Both doors answer the same way, however the visitor signed in:
+		// any adult member can use invite-a-friend, so a different answer
+		// would let them test addresses for church membership (DEC-52).
 		// Same answer and about the same cost as a stored request; the
-		// hint travels by email instead (10.1).
+		// hint travels by email to the address instead (10.1).
 		if !v.honeypot {
 			a.runInBackground(func() {
 				if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {

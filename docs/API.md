@@ -589,7 +589,7 @@ Ordinary acceptance signs in active accounts only; pending teens get the public 
 
 ```
 POST /api/v1/account-requests              → 200 {message} | 400 | 403  (public)
-POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409  (auth)
+POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403  (auth)
 POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
 GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
 POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId} | 409  (admin)
