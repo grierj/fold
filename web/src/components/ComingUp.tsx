@@ -18,7 +18,7 @@ const WINDOW_DAYS = 60;
 // calendar's Just mine scope, each with their own answer. It stays inside
 // Just mine, so it never lists another group's unanswered public events
 // (DEC-76). It loads and fails on its own, so the groups below still work.
-export function ComingUp() {
+export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
   const [rows, setRows] = useState<CalendarOccurrence[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
@@ -48,10 +48,14 @@ export function ComingUp() {
     };
   }, [retry]);
 
+  useEffect(() => {
+    if (rows !== null || error) onReady?.();
+  }, [rows, error, onReady]);
+
   return (
     <section aria-labelledby="coming-up-heading">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 id="coming-up-heading" className="text-2xl font-bold">Coming up for you</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <h2 id="coming-up-heading" className="text-xl font-bold">Coming up for you</h2>
         <Link to="/calendar?mine=1" className="inline-flex min-h-11 items-center font-semibold text-primary hover:underline">
           See calendar
         </Link>
@@ -63,9 +67,9 @@ export function ComingUp() {
       ) : rows.length === 0 ? (
         <EmptyState title="Nothing coming up in the next two months" body="Dates from your groups, and events you answer, show up here." />
       ) : (
-        <ul className="space-y-3">
+        <ul className="grid gap-x-6 border-t border-border sm:grid-cols-2 lg:grid-cols-4">
           {rows.map((o) => (
-            <li key={`${o.eventId}-${o.date}`}>
+            <li key={`${o.eventId}-${o.date}`} className="min-w-0 border-b border-border">
               <ComingUpRow occ={o} />
             </li>
           ))}
@@ -85,18 +89,16 @@ function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
     // own address, anything else opens the event.
     <Link
       to={occurrenceLink(occ)}
-      className="flex min-h-11 gap-4 rounded-lg border border-border bg-surface p-4 hover:border-border-strong"
+      className="fold-list-row flex min-h-11 gap-3 rounded-sm hover:bg-sunken"
     >
-      <DateBadge at={occ.startsAt} size="sm" />
+      <DateBadge at={occ.startsAt} />
       <span className="min-w-0 flex-1">
-        <span className="block font-semibold text-text">{occ.title || occ.groupName}</span>
-        <span className="block text-sm text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
-        {where && <span className="block truncate text-sm text-text-muted">{where}</span>}
-        {state && (
-          <span className="mt-1 block">
-            <StatusBadge state={state} />
-          </span>
-        )}
+        <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="font-semibold text-text wrap-anywhere">{occ.title || occ.groupName}</span>
+          {state && <StatusBadge state={state} />}
+        </span>
+        <span className="mt-1 block text-sm text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
+        {where && <span className="mt-1 block text-sm text-text-muted wrap-anywhere">{where}</span>}
       </span>
     </Link>
   );

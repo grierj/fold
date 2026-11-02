@@ -52,11 +52,11 @@ export function Login() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth wrap-anywhere">
       {/* The church's name, as the header shows it ("Fold" when it has none); plain "Log in" until it loads. */}
-      <h1 className="text-3xl font-bold mb-6">{site === undefined ? "Log in" : `Log in to ${site || "Fold"}`}</h1>
+      <h1 className="fold-page-header text-3xl font-bold mb-6">{site === undefined ? "Log in" : `Log in to ${site || "Fold"}`}</h1>
       {homeScreen && <p className="-mt-3 mb-6 text-text-muted">Sign in once here and your notifications will come to this app.</p>}
-      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="fold-form space-y-5">
         {error && (waiting
           ? <p role="status" className="rounded-md border border-border bg-sunken p-3 text-text">{error}</p>
           : <FormError>{error}</FormError>)}
@@ -92,8 +92,7 @@ export function Login() {
         New here?{" "}
         <Link to="/join" className="text-link">
           Request an account
-        </Link>{" "}
-        — an admin reviews every request.
+        </Link>. An admin reviews every request.
       </p>
     </div>
   );

@@ -20,6 +20,24 @@ function renderCard(props: Partial<Parameters<typeof GroupCard>[0]> = {}) {
 }
 
 describe("GroupCard", () => {
+  it.each(["", "/uploads/cover.jpg"])("prioritizes only the requested cover, including imageUrl=%s", (imageUrl) => {
+    const view = renderCard({ group: { ...group, imageUrl }, priority: true });
+    const image = view.container.querySelector("img")!;
+    expect(image).toHaveAttribute("loading", "eager");
+    expect(image).toHaveAttribute("fetchpriority", "high");
+    expect(image).toHaveAttribute("width", "112");
+    expect(image).toHaveAttribute("height", "112");
+    expect(image).toHaveAttribute("alt", "");
+    expect(image).toHaveStyle({ objectPosition: "50% 50%" });
+    if (imageUrl) expect(image).toHaveAttribute("src", imageUrl);
+    view.unmount();
+
+    const later = renderCard({ group: { ...group, imageUrl } }).container.querySelector("img")!;
+    expect(later).toHaveAttribute("loading", "lazy");
+    expect(later).toHaveAttribute("fetchpriority", "auto");
+    expect(later).toHaveAttribute("decoding", "async");
+  });
+
   it("can use h2 directly under the My groups page title", () => {
     renderCard({ headingLevel: 2 });
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(group.name);

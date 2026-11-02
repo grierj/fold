@@ -364,6 +364,33 @@ func TestCalendarTruncatesAt500(t *testing.T) {
 	}
 }
 
+func TestCalendarChurchWideFilterKeepsVisibility(t *testing.T) {
+	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
+	adminUser := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	group := activeGroup(t, app, adminUser, "Busy group", models.VisibilityPublic, "")
+	start := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i <= maxCalendarOccurrences; i++ {
+		seedEvent(t, app, &group, adminUser.ID, start.Add(time.Duration(i)*time.Minute))
+	}
+	for _, visibility := range []string{"public", "private"} {
+		w := admin.do("POST", "/api/v1/events", map[string]any{"title": visibility + " church event", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60, "tzid": "UTC", "visibility": visibility}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("church event: %d %s", w.Code, w.Body.String())
+		}
+	}
+	query := "from=2026-12-01&to=2026-12-01&tz=UTC&church=1"
+	visitor, _ := getCalendar(t, newAPIClient(t, app), query, http.StatusOK)
+	if len(visitor.Occurrences) != 1 || visitor.Occurrences[0].Title != "public church event" || visitor.Truncated {
+		t.Fatalf("visitor church filter: %+v", visitor)
+	}
+	staff, _ := getCalendar(t, admin, query, http.StatusOK)
+	if len(staff.Occurrences) != 2 || staff.Truncated {
+		t.Fatalf("staff church filter: %+v", staff)
+	}
+}
+
 // DEC-68: a deleted group's events are hidden from everyone by default;
 // an admin's "show deleted events" switch (deleted=1) lists them, marked
 // groupDeleted, and the switch does nothing for anyone else.

@@ -76,12 +76,12 @@ test("invite a friend speaks about them, then the admin queue decides", async ({
   await expect(page.getByText("Account requests")).toBeVisible();
   await expect(page.getByText("Friend Fran")).toBeVisible();
   await expect(page.getByText(/Invited by Sam/)).toBeVisible();
-  const card = page.getByText("Friend Fran").locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
+  const card = page.getByRole("group", { name: "Account request from Friend Fran", exact: true });
   await card.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Friend Fran")).toHaveCount(0);
   // Beth (first test) is still waiting; approve her too so later specs
   // that count waiting items start clean.
-  const beth = page.getByText("Browser Beth").locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
+  const beth = page.getByRole("group", { name: "Account request from Browser Beth", exact: true });
   await beth.getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Browser Beth")).toHaveCount(0);
   await markAllRead(page);

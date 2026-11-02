@@ -1,5 +1,7 @@
 import { Form } from "./ui/Form";
 import { AddRequestForm } from "./AddRequestForm";
+import { PeopleList } from "./PeopleList";
+import { Menu } from "./ui/Menu";
 import { PeoplePicker } from "./ui/PeoplePicker";
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
@@ -12,10 +14,13 @@ import { Button } from "./ui/Button";
 import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
 
-export function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void }) {
+export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void; headingLevel?: 3 | 4 }) {
+  const Heading = headingLevel === 3 ? "h3" : "h4";
+  const Subheading = headingLevel === 3 ? "h4" : "h5";
   const { user } = useAuth();
   const [busy, setBusy] = useState<number | "add" | null>(null);
   const [email, setEmail] = useState("");
+  const [adding, setAdding] = useState((instance.attendees?.length ?? 0) <= 6);
   const [selection, setSelection] = useState<PersonSearchResult | null>(null);
   const [approvalRequired, setApprovalRequired] = useState<{ overCapacity: boolean } | null>(null);
   const [askPerson, setAskPerson] = useState<{ person: PersonSearchResult; overCapacity: boolean } | null>(null);
@@ -80,29 +85,37 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
 
   const roster = (instance.attendees ?? []).filter((a) => ["going", "maybe", "waitlisted"].includes(a.status));
   return <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
-    <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Manage sign-ups</h3><Button variant="link" onClick={onClose}>Close</Button></div>
+    <div className="flex items-center justify-between gap-3"><Heading className="font-semibold">Manage sign-ups</Heading><Button variant="link" onClick={onClose}>Close</Button></div>
     {error && <FormError>{error}</FormError>}
-    {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email below." />}
-    <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
+    <div className="my-3"><Button variant="secondary" aria-expanded={adding} onClick={() => setAdding(!adding)}>{adding ? "Close add person" : "Add person"}</Button></div>
+    <div hidden={!adding} className="mb-4">
+      <Form noValidate onSubmit={add} className="space-y-3">
+        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
+        <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button>
+      </Form>
+      {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
+    </div>
+    {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email above." />}
+    {roster.length > 0 && <PeopleList rows={roster} noun="sign-ups" sort={false} filters={[
+      { value: "going", label: "Going", matches: (a) => a.status === "going" },
+      { value: "maybe", label: "Maybe", matches: (a) => a.status === "maybe" },
+      { value: "waitlisted", label: "Waitlist", matches: (a) => a.status === "waitlisted" },
+    ]}>{(a) => <li key={a.registrationId} className="flex items-start justify-between gap-3 py-3 border-b border-border">
+      <div className="min-w-0 flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
         {a.addedByLeader === true && <p className="text-sm text-text-muted">Added by a leader</p>}
         {user?.status === "active" && user.accountType === "adult" && a.userId !== undefined && a.userId > 0 && !a.householdPerson && a.userId !== user.id && a.email === undefined && a.phone === undefined && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
       </div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
-        <Button variant="danger-outline" aria-label={`Remove ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove</Button>
+        <Menu tone="quiet" label={`More for ${a.name}`} items={[{ label: `Remove ${a.name}`, danger: true, disabled: busy !== null, onSelect: () => void action(a, "remove") }]} />
       </div>
-    </li>)}</ul>
+    </li>}</PeopleList>}
     {(instance.removedRegistrations?.length ?? 0) > 0 && <section aria-label="Removed or left out" className="my-4">
-      <h4 className="font-semibold">Removed or left out</h4>
-      <ul className="space-y-3 mt-2">{instance.removedRegistrations?.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+      <Subheading className="font-semibold">Removed or left out</Subheading>
+      <PeopleList rows={instance.removedRegistrations ?? []} noun="removed sign-ups">{(a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={false} showAccountType /></div><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
-      </li>)}</ul>
+      </li>}</PeopleList>
     </section>}
-    <Form noValidate onSubmit={add} className="space-y-3">
-      {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
-      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button></Form>
-    {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
   </section>;
 }
 

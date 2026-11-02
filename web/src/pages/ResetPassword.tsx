@@ -48,9 +48,9 @@ export function ResetPassword() {
 
   if (!token) {
     return (
-      <div className="max-w-md mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold mb-6">Reset your password</h1>
-        <div className="bg-surface rounded-lg border border-border p-6">
+      <div className="fold-auth wrap-anywhere">
+        <h1 className="fold-page-header text-3xl font-bold mb-6">Reset your password</h1>
+        <div className="space-y-4">
           <p className="text-sm">This link is missing its token.</p>
           <p className="mt-4">
             <Link to="/forgot-password" className="inline-flex min-h-11 items-center text-primary font-semibold text-sm">
@@ -63,9 +63,9 @@ export function ResetPassword() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold mb-6">Choose a new password</h1>
-      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <div className="fold-auth wrap-anywhere">
+      <h1 className="fold-page-header text-3xl font-bold mb-6">Choose a new password</h1>
+      <Form noValidate onSubmit={submit} className="fold-form space-y-5">
         {error && <FormError>{error}</FormError>}
         <Field id="rp-password" label="New password" hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
           <Input

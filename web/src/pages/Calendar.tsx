@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Calendar, Groups } from "../api";
 import { useAuth } from "../auth";
@@ -8,7 +8,9 @@ import { browserTimeZone, dayOf, formatDayHeading, formatPeriod } from "../lib/w
 import { errorText } from "../lib/errors";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { Chip } from "../components/ui/Chip";
-import { Field, Select } from "../components/ui/Field";
+import { usePage } from "../lib/usePage";
+import { PageCount, Pagination } from "../components/ui/Pagination";
+import { Field, Input, Select } from "../components/ui/Field";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -36,11 +38,13 @@ export function CalendarPage() {
   const remote = params.get("remote") === "1";
   const childcare = params.get("childcare") === "1";
   const group = params.get("group") ?? "";
+  const church = params.get("church") === "1";
   // Admins only: also list deleted groups' events (DEC-68). Off by default.
   const deleted = !!isAdmin && params.get("deleted") === "1";
   const roomsShown = useRoomCalendarShown();
 
-  const [agendaDays, setAgendaDays] = useState(AGENDA_STEP);
+  const requestedDays = Number(params.get("days"));
+  const agendaDays = Number.isSafeInteger(requestedDays) && requestedDays >= AGENDA_STEP ? Math.min(requestedDays, AGENDA_MAX) : AGENDA_STEP;
   const [occs, setOccs] = useState<CalendarOccurrence[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -48,9 +52,22 @@ export function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
 
-  const range = rangeFor(view, view === "agenda" ? today : date, agendaDays);
+  const toolbar = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const bar = toolbar.current;
+    if (!bar) return;
+    const measure = () => bar.parentElement?.style.setProperty("--calendar-toolbar-height", `${bar.getBoundingClientRect().height}px`);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(bar);
+    return () => observer?.disconnect();
+  }, [view]);
+  const range = rangeFor(view, date, agendaDays);
+  const paging = usePage(occs, `${date}:${mine}:${group}:${church}:${remote}:${childcare}:${deleted}`, 25, {
+    page: Number(params.get("page")) || 1,
+    onChange: (page) => go({ page: String(page) }),
+  });
 
   useEffect(() => {
     Groups.list("", []).then(
@@ -63,7 +80,7 @@ export function CalendarPage() {
     let alive = true;
     setLoading(true);
     setError(null);
-    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group, deleted, remote, childcare })
+    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group, deleted, remote, childcare, church })
       .then(({ occurrences, truncated }) => {
         if (!alive) return;
         setOccs(occurrences);
@@ -78,7 +95,7 @@ export function CalendarPage() {
     return () => {
       alive = false;
     };
-  }, [range.from, range.to, zone, mine, group, deleted, remote, childcare, retry]);
+  }, [range.from, range.to, zone, mine, group, deleted, remote, childcare, church, retry]);
 
   function link(next: Record<string, string | null>): string {
     const p = new URLSearchParams(params);
@@ -89,17 +106,18 @@ export function CalendarPage() {
     return `/calendar?${p}`;
   }
   function go(next: Record<string, string | null>) {
-    setParams(new URLSearchParams(link(next).split("?")[1]), { replace: false });
+    const changes = "page" in next ? next : { page: null, ...next };
+    setParams(new URLSearchParams(link(changes).split("?")[1]), { replace: false });
   }
 
-  const byDay = groupByDay(occs, zone);
+  const byDay = groupByDay(view === "agenda" ? paging.rows : occs, zone);
   const weekDays = weekRange(date);
   const weeks = monthGrid(date);
   const month = date.slice(0, 7);
   const title = view === "month" ? formatPeriod("month", `${month}-01`, `${month}-01`) : formatPeriod("week", weekDays[0], weekDays[6]);
   const step = (n: number) => go({ date: view === "month" ? addMonths(date, n) : addDays(date, 7 * n) });
   const unit = view === "month" ? "month" : "week";
-  const daySelected = selected && selected.slice(0, 7) === month ? selected : today.slice(0, 7) === month ? today : `${month}-01`;
+  const daySelected = date;
   // The Remote seats and Childcare chips appear only when something in view
   // has them (DEC-99). A selected chip always stays so the filter can be turned
   // off. Before the first load we don't know, so they wait rather than flash.
@@ -111,17 +129,18 @@ export function CalendarPage() {
   const groupName = groups.find((g) => String(g.id) === group)?.name ?? "this group";
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold text-text">Calendar</h1>
-
-      <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+    <div className="fold-page">
+      <header className="fold-page-header mb-4 border-0 pb-0">
+        <h1 className="text-3xl font-bold text-text">Calendar</h1>
         <CalendarViewSwitch
           current={view}
           rooms={roomsShown}
           to={(v) => (v === "rooms" ? `/calendar/rooms${params.get("date") ? `?date=${params.get("date")}` : ""}` : link({ view: v === "agenda" ? null : v }))}
         />
+      </header>
+      <div ref={toolbar} className={`space-y-3 border-b border-border bg-page pb-4 ${view === "agenda" ? "sticky top-[var(--fold-header-height,4rem)] z-[5] pt-3" : ""}`}>
         {view !== "agenda" && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 sm:max-w-lg">
             <Button variant="secondary" aria-label={`Previous ${unit}`} onClick={() => step(-1)}>
               <ChevronLeftIcon />
             </Button>
@@ -137,7 +156,7 @@ export function CalendarPage() {
             </Button>
           </div>
         )}
-        <div className="flex flex-wrap items-end gap-3 sm:ml-auto">
+        <div className="flex flex-wrap items-end gap-3">
           {user && (
             <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
               Just mine
@@ -154,12 +173,13 @@ export function CalendarPage() {
               Show deleted events
             </Chip>
           )}
-          <div className="min-w-48 flex-1 sm:w-56 sm:flex-none">
+          {view === "agenda" && <div className="min-w-40 flex-1 sm:max-w-48"><Field label="From date"><Input type="date" value={date} onChange={(e) => go({ date: e.target.value || null })} /></Field></div>}
+          <div className="min-w-48 flex-1 sm:ml-auto sm:max-w-56">
             <Field label="Group">
               <Select
-                value={group}
-                onChange={(e) => go({ group: e.target.value || null })}
-                options={[{ value: "", label: "All groups" }, ...groups.map((g) => ({ value: String(g.id), label: g.name }))]}
+                value={church ? "church" : group}
+                onChange={(e) => go({ group: e.target.value === "church" ? null : e.target.value || null, church: e.target.value === "church" ? "1" : null })}
+                options={[{ value: "", label: "All groups" }, { value: "church", label: "Church-wide events" }, ...groups.map((g) => ({ value: String(g.id), label: g.name }))]}
               />
             </Field>
           </div>
@@ -169,7 +189,7 @@ export function CalendarPage() {
       {!user && (
         <p className="mt-4 text-sm text-text-muted">
           Showing public events.{" "}
-          <Link to="/login" className="font-semibold text-primary hover:underline">
+          <Link to="/login" className="text-link">
             Log in
           </Link>{" "}
           to see your groups' events too.
@@ -184,17 +204,19 @@ export function CalendarPage() {
         {error ? (
           <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />
         ) : view === "agenda" ? (
-          loading && occs.length === 0 ? (
+          loading ? (
             <Skeleton kind="lines" count={6} label="Loading the calendar…" />
           ) : occs.length === 0 ? (
             <AgendaEmpty mine={mine} remote={remote} childcare={childcare} group={group} groupName={groupName} signedIn={!!user} go={go} />
           ) : (
-            <div className="max-w-3xl space-y-6">
+            <div className="space-y-4">
+              <PageCount paging={paging} noun="events" scrollMarginTop="calc(var(--fold-header-height,4rem) + var(--calendar-toolbar-height,0px) + 1rem)" />
               {[...byDay.entries()].map(([d, list]) => (
-                <DaySection key={d} heading={formatDayHeading(d, zone)} occs={list} sticky />
+                <DaySection key={d} heading={formatDayHeading(d, zone)} occs={list} />
               ))}
+              <Pagination paging={paging} noun="events" />
               {agendaDays < AGENDA_MAX ? (
-                <Button variant="secondary" disabled={loading} onClick={() => setAgendaDays((n) => Math.min(n + AGENDA_STEP, AGENDA_MAX))}>
+                <Button variant="secondary" disabled={loading} onClick={() => go({ days: String(Math.min(agendaDays + AGENDA_STEP, AGENDA_MAX)), page: String(paging.pages) })}>
                   Show more dates
                 </Button>
               ) : (
@@ -207,7 +229,7 @@ export function CalendarPage() {
             {!loading && view === "week" && <p className="mb-4 text-sm text-text-muted">{weekCountText(weekCount)}</p>}
             {!loading && view === "month" && occs.length === 0 && <p className="mb-4 text-sm text-text-muted">No events this month.</p>}
             {view === "week" ? (
-              <WeekView days={weekDays} byDay={byDay} today={today} />
+              <WeekView days={weekDays} byDay={byDay} today={today} selected={date} onSelect={(day) => go({ date: day })} />
             ) : (
               <MonthView
                 weeks={weeks}
@@ -215,11 +237,8 @@ export function CalendarPage() {
                 byDay={byDay}
                 today={today}
                 selected={daySelected}
-                onSelect={setSelected}
-                onNavigate={(d) => {
-                  setSelected(d);
-                  go({ date: d });
-                }}
+                onSelect={(d) => go({ date: d })}
+                onNavigate={(d) => go({ date: d })}
                 caption={title}
               />
             )}

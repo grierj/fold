@@ -81,7 +81,7 @@ export function Invite() {
 
   if (loading) {
     return (
-      <div className="max-w-md mx-auto px-4 py-12">
+      <div className="fold-auth wrap-anywhere">
         <Skeleton kind="page" label="Loading invitation…" />
       </div>
     );
@@ -91,8 +91,8 @@ export function Invite() {
 
   if (!token || (!invitation && error)) {
     return (
-      <div className="max-w-md mx-auto px-4 py-12">
-        <h1 className="text-3xl font-bold mb-6">You're invited</h1>
+      <div className="fold-auth wrap-anywhere">
+        <h1 className="fold-page-header text-3xl font-bold mb-6">You're invited</h1>
         <EmptyState
           illustration={<Illustration name="link-expired" />}
           level={2}
@@ -109,7 +109,7 @@ export function Invite() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth wrap-anywhere">
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.conversion && <div className="mb-4 space-y-2">
         <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account after an admin approves{invitation.accountType === "teen" ? ", consent is granted, and the new guardian link is confirmed" : ""}. Group memberships do not move, so some private events may no longer be available.</p>
@@ -121,7 +121,7 @@ export function Invite() {
         </p>
       )}
       {!invitation?.groupName && <div className="mb-6" />}
-      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="fold-form space-y-5">
         {error && <FormError>{error}</FormError>}
         <Field id="invite-your-name" label="Your name" hint={invitation?.conversion ? "You can change it later in your profile." : undefined}>
           <Input
@@ -160,7 +160,7 @@ function AccountWaiting({ teen = false }: { teen?: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth wrap-anywhere">
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>
       <p>A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before. We'll email you when it's approved. Then you can sign in with the password you chose.</p>
       {teen && <p className="mt-4">Your account also needs consent and a fresh guardian-link check. Your household keeps managing your sign-ups until those are complete.</p>}

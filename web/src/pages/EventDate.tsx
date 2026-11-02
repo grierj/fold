@@ -93,42 +93,48 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   const place = occurrence ? placeLine(occurrence.room, occurrence.location) : "";
   const standing = occurrence && user ? standingLine(occurrence.myRegistration) : null;
   const canEmail = useCanEmailEvent(Number(id));
-  return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">
-    <div>
-      {/* The link says where it goes for screen readers and is also not confused with the nav's Calendar tab. */}
-      <ButtonLink variant="link" to="/calendar"><span aria-hidden="true">‹ Calendar</span><span className="sr-only">Back to calendar</span></ButtonLink>
-      <h1 className="text-2xl font-bold">{occurrence?.title || "Event date"}</h1>
-      {/* hostedBy with no group can be a church-wide event or a hidden group's fallback, so it keeps "Hosted by" (DEC-99). */}
-      {occurrence?.visibility && <EventIntro hostedBy={occurrence.hostedBy} groupName={occurrence.groupName} groupId={occurrence.groupId} />}
+  return <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">
+    <div className="fold-page-header">
+      <div>
+        {/* The link says where it goes for screen readers and is also not confused with the nav's Calendar tab. */}
+        <ButtonLink variant="link" to="/calendar"><span aria-hidden="true">‹ Calendar</span><span className="sr-only">Back to calendar</span></ButtonLink>
+        <h1 className="text-3xl font-bold">{occurrence?.title || "Event date"}</h1>
+        {/* hostedBy with no group can be a church-wide event or a hidden group's fallback, so it keeps "Hosted by" (DEC-99). */}
+        {occurrence?.visibility && <EventIntro hostedBy={occurrence.hostedBy} groupName={occurrence.groupName} groupId={occurrence.groupId} />}
+      </div>
     </div>
     {!loaded && <p role="status">Loading this date…</p>}
     {loaded && !occurrence && <EmptyState title="This date is not available" body="Your invitation may have ended, or this date may not be available to you. Check your calendar for dates you can open." />}
-    {occurrence && <section aria-label="This event date" className="bg-surface border border-border rounded-lg p-4 space-y-4">
-      <div className="flex gap-4">
-        <DateBadge at={occurrence.startsAt} />
-        <div className="min-w-0 grow">
-          <p className="font-medium">{when}</p>
-          {zone && <p className="text-sm text-text-muted">{zone}</p>}
-          {place && <p className="text-text-muted">{place}</p>}
+    {occurrence && <section aria-label="This event date" className="grid gap-6 sm:grid-cols-2 sm:gap-8">
+      <div className="space-y-4">
+        <div className="flex gap-3">
+          <DateBadge at={occurrence.startsAt} />
+          <div className="min-w-0 grow">
+            <p className="font-medium">{when}</p>
+            {zone && <p className="text-sm text-text-muted">{zone}</p>}
+            {place && <p className="text-text-muted">{place}</p>}
+          </div>
         </div>
+        <DateActions eventId={occurrence.eventId} date={occurrence.date} sharePath={occurrence.dateUrl} title={occurrence.title} when={when} />
       </div>
-      <DateActions eventId={occurrence.eventId} date={occurrence.date} sharePath={occurrence.dateUrl} title={occurrence.title} when={when} />
-      {!user && occurrence.visibility === "public" && <GuestRegistrationForm instance={occurrence} />}
-      {/* Only a real exact-date invitation (DEC-75): canDecline is true for those reads alone. */}
-      {occurrence.canDecline && <p className="text-text-muted">You're invited to this date.</p>}
-      {occurrence.myAttendanceMode && <p>Attending: {occurrence.myAttendanceMode === "remote" ? "Remote" : "In person"}{occurrence.myGuestCount !== undefined ? ` · Guests: ${occurrence.myGuestCount}` : ""}</p>}
-      {occurrence.canSeeVideo && occurrence.videoUrl && <ButtonLink variant="secondary" to={occurrence.videoUrl} external>Join video call (opens in a new tab)</ButtonLink>}
-      {occurrence.videoHidden && !(occurrence.canSeeVideo && occurrence.videoUrl) && <p className="text-sm text-text-muted">The video link is not available to you. Check your answer or return to this page to check again.</p>}
-      {error && <FormError>{error}</FormError>}
-      {(occurrence.canDecline || occurrence.canRegister) && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
-      {/* The standing line is this card's one status region, as on the event page (DEC-92). */}
-      {user && <p role="status" className="text-sm text-text-muted empty:hidden">{standing}</p>}
-      <div className="flex flex-wrap gap-2">
-        {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
-        {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
-        {canEmail && <ButtonLink variant="secondary" to={composePath({ occurrence: occurrence.id })}>{EMAIL_GOING}</ButtonLink>}
+      <div className="space-y-4 border-t border-border pt-6 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-6">
+        {!user && occurrence.visibility === "public" && <GuestRegistrationForm instance={occurrence} />}
+        {/* Only a real exact-date invitation (DEC-75): canDecline is true for those reads alone. */}
+        {occurrence.canDecline && <p className="text-text-muted">You're invited to this date.</p>}
+        {occurrence.myAttendanceMode && <p>Attending: {occurrence.myAttendanceMode === "remote" ? "Remote" : "In person"}{occurrence.myGuestCount !== undefined && <span className="block">Guests: {occurrence.myGuestCount}</span>}</p>}
+        {occurrence.canSeeVideo && occurrence.videoUrl && <ButtonLink variant="secondary" to={occurrence.videoUrl} external>Join video call (opens in a new tab)</ButtonLink>}
+        {occurrence.videoHidden && !(occurrence.canSeeVideo && occurrence.videoUrl) && <p className="text-sm text-text-muted">The video link is not available to you. Check your answer or return to this page to check again.</p>}
+        {error && <FormError>{error}</FormError>}
+        {(occurrence.canDecline || occurrence.canRegister) && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
+        {/* The standing line is this card's one status region, as on the event page (DEC-92). */}
+        {user && <p role="status" className="text-sm text-text-muted empty:hidden">{standing}</p>}
+        <div className="flex flex-wrap gap-2">
+          {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
+          {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
+          {canEmail && <ButtonLink variant="secondary" to={composePath({ occurrence: occurrence.id })}>{EMAIL_GOING}</ButtonLink>}
+        </div>
+        {occurrence.reminders && <DateReminderLines reminders={occurrence.reminders} />}
       </div>
-      {occurrence.reminders && <DateReminderLines reminders={occurrence.reminders} />}
     </section>}
   </div>;
 }

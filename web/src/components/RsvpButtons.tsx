@@ -457,9 +457,10 @@ function SingleRsvpButtons({
 }
 
 // The household is loaded once by the page and shared across date editors.
-export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate }: {
+export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate, headingLevel = 4 }: {
   instance: EventOccurrence;
   people?: HouseholdPerson[];
+  headingLevel?: 3 | 4;
   onChange: (result: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
@@ -469,7 +470,7 @@ export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, o
   const localMutationGate = useRsvpMutationGate();
   const activeMutationGate = mutationGate ?? localMutationGate;
   if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={activeMutationGate} />;
-  return <HouseholdRsvp instance={instance} people={people} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={activeMutationGate} />;
+  return <HouseholdRsvp instance={instance} people={people} headingLevel={headingLevel} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={activeMutationGate} />;
 }
 
 type Answer = { selected: boolean; status: "going" | "maybe" | "declined"; mode: AttendanceMode; care: boolean };
@@ -480,9 +481,10 @@ const ELIGIBILITY: Record<HouseholdPerson["registrationEligibility"], string> = 
   converted: "This person now has an account.", registration_holder_unavailable: "Ask your church office to check the responsible account.",
 };
 
-function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate }: {
+function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate, headingLevel }: {
   instance: EventOccurrence;
   people: HouseholdPerson[];
+  headingLevel: 3 | 4;
   onChange: (result: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
@@ -490,6 +492,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   mutationGate: RsvpMutationGate;
 }) {
   const root = useRef<HTMLFormElement>(null);
+  const Heading = headingLevel === 3 ? "h3" : "h4";
   const own: MyHouseholdRegistration[] = instance.myHouseholdRegistrations ?? [];
   const [me, setMe] = useState(() => draftAnswer(instance.myRegistration, instance.myAttendanceMode));
   const [drafts, setDrafts] = useState<Record<number, Answer>>(() => Object.fromEntries(people.map((p) => {
@@ -617,7 +620,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   </div>;
 
   return <Form noValidate ref={root} onSubmit={save} className="space-y-4" aria-label="Household answers">
-    <h4 className="font-semibold">Who will attend?</h4>
+    <Heading className="font-semibold">Who will attend?</Heading>
     <div className="rounded-lg border border-border p-3">
       {instance.myRegistration === "removed" ? <p>A leader or host removed your registration for this date. Ask them to add you back.</p> : <>
         <Checkbox label="Me" checked={me.selected} disabled={disabled} onChange={(e) => setMe({ ...me, selected: e.target.checked })} />

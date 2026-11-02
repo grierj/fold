@@ -22,6 +22,20 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 
+it.each([false, true])("prioritizes only the first group cover (meeting-soon recommendations=%s)", async (suggested) => {
+  const groups = [group(1), group(2)];
+  vi.mocked(Groups.mine).mockResolvedValue({ groups: suggested ? [] : groups });
+  vi.mocked(Groups.list).mockResolvedValue({ groups });
+  open();
+  await screen.findByRole("heading", { name: "Group 1" });
+  const first = screen.getByRole("link", { name: /Group 1/ }).querySelector("img");
+  const later = screen.getByRole("link", { name: /Group 2/ }).querySelector("img");
+  expect(first).toHaveAttribute("loading", "eager");
+  expect(first).toHaveAttribute("fetchpriority", "high");
+  expect(later).toHaveAttribute("loading", "lazy");
+  expect(later).toHaveAttribute("fetchpriority", "auto");
+});
+
 it("labels only the groups you lead", async () => {
   vi.mocked(Groups.mine).mockResolvedValue({ groups: [group(1, { myRole: "leader" }), group(2, { myRole: "member" })] });
   open();

@@ -48,6 +48,28 @@ it("lays out like other pages: title and chips on the page, the list in one card
   expect(container.firstElementChild).toHaveClass("max-w-2xl", "mx-auto");
 });
 
+it("puts day and task sections directly under the page title", async () => {
+  feed([item({}), item({ id: 2, updatedAt: "2020-01-01T12:00:00Z" })], [item({ id: 3, waiting: true })]);
+  open();
+  for (const name of ["Waiting on you", "Today", "Earlier"]) {
+    expect(await screen.findByRole("heading", { name, level: 2 })).toBeInTheDocument();
+  }
+});
+
+it("gives Archive a visible 44px control and keeps it separate from opening the alert", async () => {
+  api.archive.mockResolvedValue({});
+  open();
+  const archive = await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" });
+  expect(archive).toHaveClass("btn-secondary", "h-11", "w-11");
+  expect(within(archive).getByText("×")).toHaveClass("text-2xl", "font-semibold");
+  expect(archive.closest("a")).toBeNull();
+  feed([]); // the post-archive refresh no longer includes the row
+  await userEvent.click(archive);
+  expect(api.archive).toHaveBeenCalledWith(1, true);
+  expect(api.read).not.toHaveBeenCalled();
+  await waitFor(() => expect(archive).not.toBeInTheDocument());
+});
+
 describe("Mark all as read", () => {
   it("works when something is unread", async () => {
     open();

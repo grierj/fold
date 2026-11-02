@@ -150,14 +150,14 @@ export function NewChurchEvent() {
 
   if (loading) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12">
+      <div className="fold-page fold-page-narrow">
         <Skeleton kind="page" />
       </div>
     );
   }
   if (!user) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+      <div className="fold-page fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Schedule a church-wide event</h1>
         <Link to="/login" state={{ from: "/events/new" }} className="text-primary font-semibold">
           Log in
@@ -168,7 +168,7 @@ export function NewChurchEvent() {
   }
   if (!isAdmin) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center text-text-muted">
+      <div className="fold-page fold-page-narrow text-text-muted">
         <h1 className="text-3xl font-bold mb-6">Schedule a church-wide event</h1>
         Only an admin can schedule a church-wide event.
       </div>
@@ -176,10 +176,14 @@ export function NewChurchEvent() {
   }
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
-      <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
-      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+    <div className="fold-page fold-page-narrow">
+      <header className="fold-page-header">
+        <div>
+          <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
+          <p className="text-text-muted">You are a host. Add another host if someone else should run it.</p>
+        </div>
+      </header>
+      <Form noValidate onSubmit={submit} className="fold-form space-y-6">
         {guard}
         {error && <FormError>{error}</FormError>}
         <Field id="church-event-title" label="Title">
@@ -193,26 +197,28 @@ export function NewChurchEvent() {
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        <WhenFields
-          idPrefix="church-event"
-          when={when}
-          tzid={tzid}
-          onTzid={setTzid}
-          zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
-        />
-        <Field id="church-event-location" label="Location" optional>
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-        </Field>
-        <CreateRoomField
-          id="church-event-room"
-          schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
-          visibility={visibility}
-          roomId={roomId}
-          onChange={setRoomId}
-        />
-        <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
-          <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
-        </Field>
+        <div className="fold-section space-y-4">
+          <WhenFields
+            idPrefix="church-event"
+            when={when}
+            tzid={tzid}
+            onTzid={setTzid}
+            zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
+          />
+          <Field id="church-event-location" label="Location" optional>
+            <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+          </Field>
+          <CreateRoomField
+            id="church-event-room"
+            schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
+            visibility={visibility}
+            roomId={roomId}
+            onChange={setRoomId}
+          />
+          <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
+            <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
+          </Field>
+        </div>
         <EventOptions
           idPrefix="church-event"
           open={moreOpen}

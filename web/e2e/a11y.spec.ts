@@ -8,9 +8,13 @@ import { open, partSelected, UI_PARTS, uiPages, uiPart, type UIPage } from "./ui
 async function scan(page: Page, name: string) {
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
-    const { violations } = await new AxeBuilder({ page })
+    const wcag = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
       .analyze();
+    // heading-order is a best-practice rule, not included by WCAG tags.
+    // Run it separately: withRules would replace, not extend, withTags.
+    const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
+    const violations = [...wcag.violations, ...headings.violations];
     const bad = violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical");
     for (const v of violations.filter((v) => !bad.includes(v))) {
       console.log(`axe ${v.impact} ${name}@${width}: ${v.id} (${v.nodes.length})`);

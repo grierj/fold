@@ -6,30 +6,35 @@ import { apiAs, signIn, signOut } from "./helpers";
 
 test("logout clears the session's data, including through back", async ({ page }) => {
   await signIn(page, "sam");
+  const search = page.getByRole("searchbox", { name: "Search groups" });
+  await search.fill("circle");
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
   await page.getByRole("heading", { name: "Invite-only circle" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Invite-only circle" })).toBeVisible();
   // Back to the listing, where Grier was when the stale screen stayed up.
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Home" }).click();
+  await search.fill("circle");
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
   await page.evaluate(() => sessionStorage.setItem("probe", "x"));
   const session = async () => (await page.context().cookies()).find((c) => c.name === "fold-session")?.value;
   const before = await session();
 
   await signOut(page);
-  await expect(page.getByRole("heading", { name: "Room 201 class" })).toBeVisible();
+  await expect(page.locator("#groups").getByRole("status")).toHaveText(/\d+ groups?$/);
   for (const text of ["Members-only circle", "Invite-only circle", "Sam Member", "Log out"]) {
     await expect(page.getByText(text)).toHaveCount(0);
   }
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
   // The server session is over: the old cookie is gone (the fresh page got
   // a new anonymous one for its CSRF token) and the API sees no one.
+  await search.fill("Room 201 class");
+  await expect(page.getByRole("heading", { name: "Room 201 class" })).toBeVisible();
   expect(await session()).not.toBe(before);
   expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
 
   // Back to the invite-only group's URL, then the listing before it: each
   // loads fresh and signed out.
-  for (const url of [/\/groups\/\d+$/, /\/$/]) {
+  for (const url of [/\/groups\/\d+$/, /\/\?search=circle$/]) {
     await page.goBack();
     await expect(page).toHaveURL(url);
     await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();

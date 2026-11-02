@@ -1,5 +1,5 @@
 import { api } from "./api";
-import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview, MessageRead, MessageRecipients } from "./types";
+import type { AudienceSummary, ComposeOptions, Message, MessageListResponse, MessageAudience, MessagePreview, MessageRead, MessageRecipients } from "./types";
 
 // The composer's API (M3.4, docs/API.md "Messages"). Email only for now;
 // pushAlert adds the companion push (M3.13d2), never instead of the email.
@@ -15,8 +15,13 @@ export const Messages = {
   options: (eventId?: number) => api<ComposeOptions>(`/messages/compose${eventId ? `?event=${eventId}` : ""}`),
   audiencePreview: (audience: MessageAudience) =>
     api<{ summary: AudienceSummary }>("/messages/audience-preview", { method: "POST", body: { audience } }),
-  // category: one kind only, each with its own 200 (an admin's chips, M3.6b).
-  list: (category?: "announcement" | "reminder") => api<{ messages: Message[] }>(`/messages${category ? `?category=${category}` : ""}`),
+  // Each page rechecks author/category access. Omitted limit keeps the legacy 200.
+  list: (category?: "announcement" | "reminder", options?: { cursor?: string; search?: string; status?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    for (const [key, value] of Object.entries(options ?? {})) if (value) params.set(key, String(value));
+    return api<MessageListResponse>(`/messages${params.size ? `?${params}` : ""}`);
+  },
   get: (id: number) => api<{ message: Message }>(`/messages/${id}`),
   create: (draft: MessageDraft) => api<{ message: Message }>("/messages", { method: "POST", body: { channel: "email", ...draft } }),
   update: (id: number, draft: MessageDraft) =>

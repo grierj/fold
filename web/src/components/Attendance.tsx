@@ -9,7 +9,8 @@ import type { EventOccurrence } from "../types";
 // "Can't go" is never among attendees. Only the event's leaders and admins
 // get a declined count and names from the server (DEC-64); for them they
 // show after the attendees, under "Can't go".
-export function Attendance({ instance }: { instance: EventOccurrence }) {
+export function Attendance({ instance, headingLevel = 4 }: { instance: EventOccurrence; headingLevel?: 3 | 4 }) {
+  const Heading = headingLevel === 3 ? "h3" : "h4";
   const [open, setOpen] = useState(false);
   const listId = useId();
   const going = instance.registrations.going ?? 0;
@@ -54,7 +55,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
             <div id={listId} className="space-y-3">
               {sections.filter((section) => section.people.length > 0).map((section) => (
                 <section key={section.label} aria-label={`${section.label} names`}>
-                  <h4 className="font-semibold">{section.label} ({section.people.length})</h4>
+                  <Heading className="font-semibold">{section.label} ({section.people.length})</Heading>
                   <ul className="space-y-2">
                     {section.people.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
                   </ul>

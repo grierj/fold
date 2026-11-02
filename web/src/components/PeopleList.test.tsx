@@ -1,0 +1,71 @@
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, it, vi } from "vitest";
+import { PeopleList } from "./PeopleList";
+import { MemoryRouter } from "react-router-dom";
+import { RequestContactButton } from "./RequestContactButton";
+import { Contacts } from "../contact-api";
+import { ApiError } from "../api";
+vi.mock("../contact-api", () => ({ Contacts: { create: vi.fn() } }));
+
+const people = Array.from({ length: 60 }, (_, i) => ({ name: `Member ${String(i + 1).padStart(2, "0")}`, leader: i >= 55 }));
+const view = (rows = people) => <PeopleList rows={rows} noun="members" filters={[{ value: "leader", label: "Leaders", matches: (p) => p.leader }]}>{(p) => <li key={p.name}>{p.name}</li>}</PeopleList>;
+it("bounds all sixty people, preserves order, and focuses the new page count", async () => {
+  Element.prototype.scrollIntoView = vi.fn();
+  render(view());
+  expect(screen.getAllByRole("listitem")).toHaveLength(25);
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  expect(screen.getByRole("status")).toHaveTextContent("Showing 26 to 50 of 60 members");
+  expect(screen.getByRole("status").parentElement).toHaveFocus();
+  expect(screen.getAllByRole("listitem")[0]).toHaveTextContent("Member 26");
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  expect(screen.getAllByRole("listitem")).toHaveLength(10);
+  expect(screen.getByRole("button", { name: "Next members" })).toBeDisabled();
+});
+it("searches all rows, resets paging on every filter change, and keeps a useful empty state", async () => {
+  render(view());
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  const search = screen.getByRole("searchbox");
+  await userEvent.type(search, "60");
+  expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.getByRole("listitem")).toHaveTextContent("Member 60");
+  await userEvent.clear(search);
+  expect(screen.getAllByRole("listitem")[0]).toHaveTextContent("Member 01");
+  await userEvent.selectOptions(screen.getByLabelText("Filter members"), "leader");
+  expect(screen.getAllByRole("listitem")).toHaveLength(5);
+  await userEvent.type(search, "absent");
+  expect(screen.getByText("No one matches")).toBeInTheDocument();
+  expect(within(screen.getByRole("list")).queryAllByRole("listitem")).toHaveLength(0);
+});
+it("keeps the real contact-request draft and async result across pages and search", async () => {
+  let reject!: (reason: unknown) => void;
+  vi.mocked(Contacts.create).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+  render(<MemoryRouter><PeopleList rows={people} noun="members">{(p) => <li key={p.name}>{p.name}<RequestContactButton subjectUserId={Number(p.name.slice(-2))} subjectName={p.name} contextType="group" contextId={1} /></li>}</PeopleList></MemoryRouter>);
+  await userEvent.click(within(screen.getAllByRole("listitem")[0]).getByRole("button", { name: "Request direct contact" }));
+  await userEvent.click(await screen.findByRole("radio", { name: "Phone" }));
+  await userEvent.type(screen.getByLabelText(/Reason/), "To coordinate a ride");
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  expect(screen.queryByRole("textbox", { name: /Reason/ })).not.toBeInTheDocument();
+  await userEvent.type(screen.getByRole("searchbox"), "Member 01");
+  expect(screen.getByLabelText(/Reason/)).toHaveValue("To coordinate a ride");
+  expect(screen.getByRole("radio", { name: "Phone" })).toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Send request" }));
+  await userEvent.clear(screen.getByRole("searchbox"));
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  await act(async () => reject(new ApiError(409, "hidden server text", { code: "request_open_limit" })));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Previous members" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("You have 10 open requests");
+  expect(screen.getByLabelText(/Reason/)).toHaveValue("To coordinate a ride");
+});
+
+it("clamps the page after a removal without hiding remaining people", async () => {
+  const rendered = render(view());
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  await userEvent.click(screen.getByRole("button", { name: "Next members" }));
+  rendered.rerender(view(people.slice(0, 49)));
+  expect(screen.getByRole("status")).toHaveTextContent("Showing 26 to 49 of 49 members");
+  expect(screen.getByRole("status").parentElement).toHaveFocus();
+  rendered.rerender(view());
+  expect(screen.getByRole("status")).toHaveTextContent("Showing 26 to 50 of 60 members");
+});

@@ -29,19 +29,19 @@ export function ForgotPassword() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold mb-6">Reset your password</h1>
+    <div className="fold-auth wrap-anywhere">
+      <h1 className="fold-page-header text-3xl font-bold mb-6">Reset your password</h1>
       {message ? (
-        <div className="bg-surface rounded-lg border border-border p-6">
+        <div className="space-y-4">
           <p className="text-sm">{message}</p>
           <p className="mt-4">
-            <Link to="/login" className="text-primary font-semibold text-sm">
+            <Link to="/login" className="inline-flex min-h-11 items-center text-primary font-semibold text-sm">
               Back to log in
             </Link>
           </p>
         </div>
       ) : (
-        <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        <Form noValidate onSubmit={submit} className="fold-form space-y-5">
           {error && <FormError>{error}</FormError>}
           <p className="text-sm text-text-muted">
             Enter the email you sign in with and we'll send you a reset link.

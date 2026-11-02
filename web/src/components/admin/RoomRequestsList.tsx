@@ -10,6 +10,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Field, FormError, Textarea } from "../ui/Field";
 import { Skeleton } from "../ui/Skeleton";
+import { AlertCircleIcon } from "../icons";
 
 const REASON_MAX = 500;
 const WHO = "the people running it";
@@ -121,7 +122,7 @@ function RequestRow({ request: r, onDone, onStale }: {
       <p>{datesLine(r)}</p>
       <p className="text-sm text-text-muted">Asked by {r.requestedBy} · {formatWhen(r.createdAt)}</p>
       {r.busyDates > 0 && mode !== "approve" && (
-        <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{busyLine(r)}</p>
+        <p className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{busyLine(r)}</p>
       )}
       {error && <FormError>{error}</FormError>}
       {mode === "idle" && (
@@ -133,7 +134,7 @@ function RequestRow({ request: r, onDone, onStale }: {
       {mode === "approve" && (
         <div data-panel className="space-y-3 rounded-md border border-warning-border bg-warning-subtle p-3">
           <p className="text-sm text-warning-on-subtle">
-            <span aria-hidden="true">⚠ </span>{busyLine(r)} Without a reason, {r.busyDates === 1 ? "it goes" : "they go"} back to {WHO} to pick another room. Give a reason to book {r.busyDates === 1 ? "it" : "them"} anyway.
+            <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{busyLine(r)} Without a reason, {r.busyDates === 1 ? "it goes" : "they go"} back to {WHO} to pick another room. Give a reason to book {r.busyDates === 1 ? "it" : "them"} anyway.
           </p>
           <Field id={`${idBase}-reason`} label="Double-book reason" optional hint={`Up to ${REASON_MAX} characters. It goes in the admin record.`}>
             <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />

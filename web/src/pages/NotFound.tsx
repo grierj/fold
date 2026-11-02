@@ -8,7 +8,7 @@ import { Illustration } from "../components/ui/Illustration";
 // only; any other load failure is an ErrorNotice with Try again.
 export function Missing({ title, body, myGroups }: { title: string; body: string; myGroups?: boolean }) {
   return (
-    <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+    <div className="fold-auth">
       <EmptyState
         level={1}
         illustration={<Illustration name="not-found" />}

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,8 +15,9 @@ vi.mock("../api", async (importActual) => ({
   Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) },
 }));
 
+const firstPage = { limit: 25, cursor: "", search: "", status: "" };
 const open = () => render(<MemoryRouter><MessagesPage /></MemoryRouter>);
-afterEach(() => { vi.clearAllMocks(); actor.canCompose = true; actor.isAdmin = false; });
+afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); actor.canCompose = true; actor.isAdmin = false; });
 
 describe("MessagesPage", () => {
   it("lists each message with its state in words, subject, audience and update time", async () => {
@@ -55,11 +56,44 @@ describe("MessagesPage", () => {
     expect(screen.getByRole("link", { name: "New message" })).toHaveClass("btn-primary");
   });
 
-  it("says when only the latest 200 are shown", async () => {
+  it("pages to older history rather than hiding everything after 200", async () => {
     vi.mocked(Messages.options).mockResolvedValue(composeOptions());
-    vi.mocked(Messages.list).mockResolvedValue({ messages: Array.from({ length: 200 }, (_, i) => message({ id: i + 1 })) });
+    vi.mocked(Messages.list).mockResolvedValueOnce({ messages: Array.from({ length: 25 }, (_, i) => message({ id: i + 1 })), nextCursor: "older-page" })
+      .mockResolvedValueOnce({ messages: [message({ id: 201, subject: "An older message" })] });
     open();
-    expect(await screen.findByText("Showing your latest 200 messages.")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Older messages" }));
+    expect(await screen.findByRole("link", { name: /An older message/ })).toHaveAttribute("href", "/messages/201");
+    expect(Messages.list).toHaveBeenLastCalledWith(undefined, { ...firstPage, cursor: "older-page" });
+    expect(screen.queryByRole("button", { name: "Older messages" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Newest messages" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveFocus();
+  });
+
+  it("cannot apply an old cursor while a new subject search is debouncing", async () => {
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockResolvedValue({ messages: [message()], nextCursor: "old-query-cursor" });
+    open();
+    await screen.findByRole("button", { name: "Older messages" });
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Needle" } });
+      const older = screen.getByRole("button", { name: "Older messages" });
+      expect(older).toBeDisabled();
+      fireEvent.click(older);
+      await act(async () => vi.advanceTimersByTimeAsync(300));
+      expect(Messages.list).toHaveBeenLastCalledWith(undefined, { ...firstPage, search: "Needle" });
+      expect(vi.mocked(Messages.list).mock.calls.every(([, options]) => !options?.cursor)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("offers a way out of an invalid history cursor", async () => {
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockRejectedValueOnce(new ApiError(400, "bad cursor")).mockResolvedValueOnce({ messages: [message()] });
+    render(<MemoryRouter initialEntries={["/messages?cursor=bad"]}><MessagesPage /></MemoryRouter>);
+    await screen.findByRole("alert");
+    await userEvent.click(screen.getByRole("button", { name: "Newest messages" }));
+    expect(await screen.findByRole("link", { name: /Bring a friend/ })).toBeInTheDocument();
+    expect(Messages.list).toHaveBeenLastCalledWith(undefined, firstPage);
   });
 
   it("says what would appear and offers New message when there are none", async () => {
@@ -100,12 +134,12 @@ describe("MessagesPage", () => {
     open();
     const announcements = await screen.findByRole("button", { name: "Announcements" });
     expect(announcements).toHaveAttribute("aria-pressed", "true");
-    expect(Messages.list).toHaveBeenLastCalledWith("announcement");
+    expect(Messages.list).toHaveBeenLastCalledWith("announcement", firstPage);
     expect(await screen.findByRole("link", { name: /Bring a friend/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Automatic reminder/ })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "Automatic reminders" }));
-    expect(Messages.list).toHaveBeenLastCalledWith("reminder");
+    expect(Messages.list).toHaveBeenLastCalledWith("reminder", firstPage);
     expect(screen.getByRole("button", { name: "Automatic reminders" })).toHaveAttribute("aria-pressed", "true");
     const row = await screen.findByRole("link", { name: /Automatic reminder ·/ });
     expect(row).toHaveAttribute("href", "/messages/9");
@@ -123,7 +157,7 @@ describe("MessagesPage", () => {
     vi.mocked(Messages.list).mockResolvedValue({ messages: [] });
     render(<MemoryRouter initialEntries={["/messages?show=reminders"]}><MessagesPage /></MemoryRouter>);
     expect(await screen.findByText("No automatic reminders yet")).toBeInTheDocument();
-    expect(Messages.list).toHaveBeenCalledWith("reminder");
+    expect(Messages.list).toHaveBeenCalledWith("reminder", firstPage);
   });
 
   it("shows a leader no chips and their own list", async () => {
@@ -131,7 +165,7 @@ describe("MessagesPage", () => {
     vi.mocked(Messages.list).mockResolvedValue({ messages: [message({ id: 1 })] });
     open();
     expect(await screen.findByRole("link", { name: /Bring a friend/ })).toBeInTheDocument();
-    expect(Messages.list).toHaveBeenCalledWith(undefined);
+    expect(Messages.list).toHaveBeenCalledWith(undefined, firstPage);
     expect(screen.queryByRole("button", { name: "Automatic reminders" })).toBeNull();
   });
 });

@@ -22,16 +22,18 @@ export function EmptyState({
     <div
       className={
         framed
-          ? "flex flex-col items-center rounded-lg border border-border bg-surface p-6 sm:p-8 text-center"
-          : "flex flex-col items-center p-6 sm:p-8 text-center"
+          ? "flex flex-col items-start gap-4 rounded-lg bg-sunken p-6 sm:flex-row sm:gap-6"
+          : "flex flex-col items-start gap-4 py-6 sm:flex-row sm:gap-6"
       }
     >
-      {illustration && <div className="mb-4">{illustration}</div>}
-      <Title className="text-lg font-semibold text-text">{title}</Title>
-      {body && <p className="mt-2 text-sm text-text-muted max-w-prose">{body}</p>}
-      {action && (
-        <div className="mt-4 flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:justify-center">{action}</div>
-      )}
+      {illustration && <div className="w-16 shrink-0">{illustration}</div>}
+      <div className="min-w-0 w-full">
+        <Title className="text-lg font-semibold text-text">{title}</Title>
+        {body && <p className="mt-2 text-sm text-text-muted max-w-prose">{body}</p>}
+        {action && (
+          <div className="mt-4 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">{action}</div>
+        )}
+      </div>
     </div>
   );
 }

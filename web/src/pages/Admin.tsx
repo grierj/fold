@@ -34,6 +34,8 @@ import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErr
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Chip } from "../components/ui/Chip";
+import { usePage } from "../lib/usePage";
+import { PageCount, Pagination } from "../components/ui/Pagination";
 import { SearchBox } from "../components/ui/SearchBox";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -93,7 +95,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
   }
 
   return (
-    <div className="bg-surface rounded-lg border border-border p-6">
+    <div className="fold-list-row bg-surface border-b border-border px-4">
       <div className="flex items-start gap-4 flex-wrap">
         <div className="grow min-w-0">
           <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-primary">
@@ -101,7 +103,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
           </Link>
           <div className="text-sm text-text-muted mt-0.5">
             Organized by {group.leaderName || "unknown"}
-            {group.location ? ` · ${group.location}` : ""}
+            {group.location ? `, ${group.location}` : ""}
           </div>
           <p className="text-text-muted mt-3 whitespace-pre-wrap">
             {group.description || "No description."}
@@ -166,12 +168,12 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
   }
 
   return (
-    <div className="bg-surface rounded-lg border border-border p-6">
+    <div className="fold-list-row bg-surface border-b border-border px-4">
       <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-primary">
         {group.name}
       </Link>
       <div className="text-sm text-text-muted mt-0.5">
-        Organized by {group.leaderName || "unknown"} · {group.memberCount}{" "}
+        Organized by {group.leaderName || "unknown"}, {group.memberCount}{" "}
         {group.memberCount === 1 ? "member" : "members"}
       </div>
       <p className="text-text-muted mt-3">The leader asked for this group to be deleted.</p>
@@ -226,7 +228,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
 
   return (
-    <div ref={ref} className="bg-surface rounded-lg border border-border p-6">
+    <div ref={ref} role="group" aria-label={`Account request from ${request.name}`} className="fold-list-row bg-surface border-b border-border px-4">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="grow min-w-0">
           <span className="text-xl font-bold">{request.name}</span>
@@ -235,16 +237,15 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
           )}
           <div className="text-sm text-text-muted mt-0.5">
             {request.email}
-            {request.phone ? ` · ${request.phone}` : ""}
-            {request.birthDate ? ` · born ${request.birthDate}` : ""}
+            {request.phone ? `, ${request.phone}` : ""}
+            {request.birthDate ? `, born ${request.birthDate}` : ""}
           </div>
           <div className="text-sm text-text-muted">
             {request.source === "member_invite"
               ? `Invited by ${request.requestedByName || "a member"}`
               : request.source === "household_conversion"
                 ? `Household account, invited by ${request.requestedByName || "a member"}`
-                : "Self-signup"}{" "}
-            · asked {new Date(request.createdAt).toLocaleDateString()}
+                : "Self-signup"}, asked {new Date(request.createdAt).toLocaleDateString()}
           </div>
           {request.message && <p className="text-text-muted mt-3 whitespace-pre-wrap">{request.message}</p>}
           {request.guardianEmail && <p className="text-sm text-text-muted mt-3 break-words">Nominated guardian: {request.guardianEmail}. Approval asks an admin to check the link if this adult has an active account. Otherwise, help the adult join, then ask them to claim the teen from their profile.</p>}
@@ -384,7 +385,7 @@ function ApprovalsTab({ onCount, onGroupDecided }: { onCount: (n: number) => voi
       )}
       {nominations.length > 0 && <section className="space-y-4 mb-8" aria-label="Guardians who need an account">
         <h2 className="text-xl font-bold">Guardians who need an account</h2>
-        {nominations.map((n) => <div key={n.requestId} className="bg-surface rounded-lg border border-border p-6 text-sm">
+        {nominations.map((n) => <div key={n.requestId} className="fold-list-row bg-surface border-b border-border px-4 text-sm">
           <p className="font-semibold">{n.teenName}</p>
           <p className="mt-2 break-words">Nominated guardian: {n.guardianEmail}</p>
           <p className="text-text-muted mt-2">Help this adult get an active account. Then ask them to open Profile and request a guardian link using the teen's email. You will still need to confirm that link.</p>
@@ -540,7 +541,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
                       Admin
                     </span>
                   )}
-                  <span className="text-xs text-text-muted">· {roleLabel(m.role)}</span>
+                  <span className="text-sm text-text-muted">{roleLabel(m.role)}</span>
                   <ContactDetails email={m.email} phone={m.phone} />
                 </div>
                 <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy || departureMember !== null}>
@@ -605,6 +606,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
   onDeleted: (id: number) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -638,19 +640,23 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
     }
   }
 
-  if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
-
   const needle = query.trim().toLowerCase();
-  const shown = sortGroups(groups).filter((g) => !needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle));
+  const shown = sortGroups(groups ?? []).filter((g) => (!statusFilter || g.status === statusFilter) && (!needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle)));
+  const paging = usePage(shown, query + statusFilter);
+  if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   return (
     <div className="space-y-3">
-      {groups.length > 0 && <SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} />}
+      {groups.length > 0 && <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-48 flex-1"><SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} disabled={openMembers !== null} /></div>
+        <Field label="Group status"><Select value={statusFilter} disabled={openMembers !== null} onChange={(e) => setStatusFilter(e.target.value)} options={[{ value: "", label: "All statuses" }, { value: "pending", label: "Pending" }, { value: "active", label: "Active" }, { value: "archived", label: "Archived" }]} /></Field>
+      </div>}
+      <PageCount paging={paging} noun="groups" />
       {deleteError && <FormError>{deleteError}</FormError>}
       {/* Always rendered so screen readers announce the text when it arrives; empty, it takes no room. */}
       <p ref={deletedRef} role="status" tabIndex={-1} className={deleted ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{deleted}</p>
-      {shown.map((g) => (
-        <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
+      {paging.rows.map((g) => (
+        <div key={g.id} className="fold-list-row bg-surface border-b border-border px-4">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
               <Link to={`/groups/${g.id}`} className="inline-flex min-h-11 items-center font-bold hover:text-primary">
@@ -697,6 +703,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
             fallbackFocus={() => manageMemberButtons.current.get(g.id)?.focus()} />}
         </div>
       ))}
+      <Pagination paging={paging} noun="groups" disabled={openMembers !== null} />
       {groups.length === 0 && (
         <EmptyState title="No groups yet" body="Groups people start, and groups you add, show up here." />
       )}
@@ -704,7 +711,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
         <EmptyState
           title="No groups match"
           body="Try a different name, or clear the search."
-          action={<Button variant="secondary" onClick={() => setQuery("")}>Clear search</Button>}
+          action={<Button variant="secondary" onClick={() => { setQuery(""); setStatusFilter(""); }}>Clear search</Button>}
         />
       )}
     </div>
@@ -775,7 +782,7 @@ function UserForm({
   }
 
   return (
-    <Form noValidate onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-4">
+    <Form noValidate onSubmit={save} className="fold-section fold-form space-y-5 mt-4">
       {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-2 gap-4">
         <Field id="admin-email" label="Email (signs in with it)">
@@ -1011,6 +1018,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   const needle = query.trim().toLowerCase();
   const shown = users.filter((u) => matchesUserFilter(u, filter) && (!needle || [u.name, u.displayName, u.email].some((v) => v.toLowerCase().includes(needle))));
+  const paging = usePage(shown, query + filter);
+  const editingRow = creating || editingId !== null || resetId !== null || consentId !== null || leaving !== null;
 
   return (
     <div>
@@ -1031,14 +1040,15 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       )}
       {users.length > 0 && (
         <div className="mb-4 space-y-3">
-          <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} />
+          <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} disabled={editingRow} />
           <div role="group" aria-label="Filter users" className="flex flex-wrap gap-2">
             {USER_FILTERS.filter((f) => f.id !== "email" || filter === "email" || users.some((u) => u.emailSuppression)).map((f) => (
-              <Chip key={f.id} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
+              <Chip key={f.id} disabled={editingRow} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
             ))}
           </div>
         </div>
       )}
+      <PageCount paging={paging} noun="users" />
       {users.length > 0 && shown.length === 0 && (
         <EmptyState
           title="No one matches"
@@ -1049,7 +1059,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       {/* Below md each user is a stacked card with Edit and More (PR #65
           review F1); from md up it's a table. */}
       {/* Not overflow-hidden: a row's More menu must be able to open past the card. */}
-      {(users.length === 0 || shown.length > 0) && <div className="bg-surface rounded-lg border border-border overflow-visible">
+      {(users.length === 0 || shown.length > 0) && <div className="bg-surface border-y border-border overflow-visible">
         <table className="block md:table w-full text-sm">
           <thead className="hidden md:table-header-group">
             <tr className="text-left text-text-muted border-b border-border">
@@ -1060,7 +1070,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
             </tr>
           </thead>
           <tbody className="block md:table-row-group divide-y divide-border">
-            {shown.map((u) => (
+            {paging.rows.map((u) => (
               <tr key={u.id} className="block md:table-row">
                 <td className="block md:table-cell px-4 pt-3 md:py-3">
                   <div className="flex items-center gap-2">
@@ -1158,6 +1168,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           </tbody>
         </table>
       </div>}
+      <Pagination paging={paging} noun="users" disabled={editingRow} />
     </div>
   );
 }
@@ -1270,11 +1281,11 @@ function InviteTab() {
   }
 
   return (
-    <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
+    <Form noValidate onSubmit={submit} className="fold-form max-w-xl space-y-5">
       {error && <FormError>{error}</FormError>}
       {status && <p role="status" className="text-success text-sm">{status}</p>}
       <p className="text-sm text-text-muted">
-        They'll get an email link, set a password, and join with an active account — no
+        They'll get an email link, set a password, and join with an active account. No
         approval step.
       </p>
       <Field id="inv-email" label="Email">
@@ -1580,8 +1591,8 @@ export function AdminPage() {
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12 text-center text-text-muted">
-        <h1 className="text-3xl font-bold mb-6">Admin</h1>
+      <div className="fold-page fold-page-narrow text-center text-text-muted">
+        <h1 className="fold-page-header text-3xl font-bold mb-6">Admin</h1>
         This page is for church admins only.
       </div>
     );
@@ -1602,8 +1613,8 @@ export function AdminPage() {
   ];
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6">Admin</h1>
+    <div className="fold-page wrap-anywhere">
+      <h1 className="fold-page-header text-3xl font-bold mb-6">Admin</h1>
       <Tabs label="Admin sections" variant="chips" value={tab}
         onChange={(value) => setSearchParams(value === "approvals" ? {} : { tab: value })}
         options={tabs.map((t) => ({
@@ -1616,16 +1627,16 @@ export function AdminPage() {
           ) : null}{t.count != null && !t.badge && <span className="font-normal">{" "}{t.count}</span>}</>,
         }))}>
 
-      {tab === "settings" && <section aria-labelledby="admin-settings-heading">
+      {tab === "settings" && <section aria-labelledby="admin-settings-heading" className="max-w-3xl space-y-6">
         <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
-        <ChurchAddressSetting />
-        <ReplyToSetting />
-        <GuardianCopiesSetting />
-        <PushEnabledSetting />
-        <ChurchTimezone />
-        <SelfSignupSetting />
-        <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />
-        {roomsEnabled === true && <RoomApprovalSetting enabled={needApproval} onChanged={setNeedApproval} />}
+        <div className="fold-section"><ChurchAddressSetting /></div>
+        <div className="fold-section"><ReplyToSetting /></div>
+        <div className="fold-section"><GuardianCopiesSetting /></div>
+        <div className="fold-section"><PushEnabledSetting /></div>
+        <div className="fold-section"><ChurchTimezone /></div>
+        <div className="fold-section"><SelfSignupSetting /></div>
+        <div className="fold-section"><RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} /></div>
+        {roomsEnabled === true && <div className="fold-section"><RoomApprovalSetting enabled={needApproval} onChanged={setNeedApproval} /></div>}
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}

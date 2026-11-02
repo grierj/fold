@@ -515,7 +515,7 @@ describe("EventDetail when line and date actions (DEC-92, DEC-93)", () => {
     expect(screen.queryByRole("heading", { name: "Upcoming dates" })).not.toBeInTheDocument();
     // The card does not say the title or place again; only the header does.
     const card = screen.getByRole("article", { name: "Hybrid study" });
-    expect(within(card).getByRole("heading", { name: "Hybrid study", level: 3 })).toHaveClass("sr-only");
+    expect(within(card).getByRole("heading", { name: "Hybrid study", level: 2 })).toHaveClass("sr-only");
     expect(within(card).queryByText("Hall")).not.toBeInTheDocument();
     expect(screen.getAllByText("Hall")).toHaveLength(1);
     expect(within(card).getByRole("group", { name: "Your answer" })).toBeInTheDocument();

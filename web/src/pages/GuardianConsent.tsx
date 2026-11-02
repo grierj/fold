@@ -28,9 +28,9 @@ export function GuardianConsentPage() {
     finally { setBusy(false); }
   }
 
-  return <div className="max-w-md mx-auto px-4 py-12">
+  return <div className="fold-auth">
     <h1 className="text-3xl font-bold mb-6">Review account consent</h1>
-    <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <div className="fold-section space-y-4">
       {review.kind === "loading" && <p>Checking your link…</p>}
       {review.kind === "ready" && <>
         <p>Give account consent for <strong>{review.preview.teenName}</strong>?</p>

@@ -14,6 +14,8 @@ import { ApiError, Events, GroupCover, Groups } from "../api";
 import type { DepartureConfirmation, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
+import { PeopleList } from "../components/PeopleList";
+import { CompactDates } from "../components/CompactDates";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { composePath, EMAIL_GOING, EMAIL_MEMBERS } from "../components/messages/composeLinks";
@@ -254,7 +256,7 @@ function GroupForm({
 
   return (
     <Form noValidate
-      className="bg-surface rounded-lg border border-border p-6 space-y-6"
+      className="fold-form space-y-8"
       // A bad member limit inside the closed section opens it before the form
       // checks its fields, so the error shows and focus can land on the field.
       onSubmitCapture={() => {
@@ -290,7 +292,7 @@ function GroupForm({
       {guard}
       {error && <FormError>{error}</FormError>}
       <section className="space-y-4">
-        <h2 className="text-base font-semibold">About the group</h2>
+        <h2 className="text-xl font-semibold">About the group</h2>
         <Field id="group-name" label="Group name">
           <Input value={name} onChange={(e) => setName(e.target.value)} required />
         </Field>
@@ -301,7 +303,7 @@ function GroupForm({
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
       </section>
-      <section>
+      <section className="fold-section">
         <Choices legend="Who can see this group">
           <Radio
             name="visibility"
@@ -326,7 +328,7 @@ function GroupForm({
           />
         </Choices>
       </section>
-      <section>
+      <section className="fold-section">
         <Button variant="link" aria-expanded={moreOpen} aria-controls={moreId} aria-describedby={moreOpen ? undefined : summaryId} onClick={() => setMoreOpen(!moreOpen)}>
           More options
           <ChevronDownIcon className={`ml-1 size-5 ${moreOpen ? "rotate-180" : ""}`} />
@@ -521,7 +523,7 @@ function GroupDetailContent() {
 
   if (loading || authLoading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="fold-page">
         <Skeleton kind="cover" />
         <div className="mt-6">
           <Skeleton kind="lines" />
@@ -539,7 +541,7 @@ function GroupDetailContent() {
   }
   if (!detail) {
     return (
-      <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+      <div className="fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Group unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load()} />
       </div>
@@ -745,50 +747,49 @@ function GroupDetailContent() {
   }
 
   return (
-    <div>
-      {/* Cover header */}
-      {/* No overflow-hidden: the More menu opens below the cover. */}
-      <div className="relative h-56 sm:h-72 bg-inverse">
+    <div className="fold-page">
+      {/* No overflow-hidden: group menus can extend beyond the photo header. */}
+      <div className="fold-cover relative flex min-h-48 items-end rounded-lg bg-inverse sm:min-h-56">
         <img
           src={coverSrc(group)}
           alt=""
-          className="w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full rounded-lg object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
         />
         {/* A uniform 75% inverse scrim keeps even white covers legible behind every line. */}
-        <div className="absolute inset-0 bg-inverse/75" />
-        <div className="absolute bottom-0 left-0 right-0">
-          <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
+        <div className="absolute inset-0 rounded-lg bg-inverse/75" />
+        <div className="relative w-full p-4 sm:p-6">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="grow min-w-0">
               {(group.status === "pending" || group.visibility !== "public") && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {group.status === "pending" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-warning-subtle text-warning-on-subtle rounded-full px-3 py-1">
+                    <span className="inline-block text-sm font-semibold bg-warning-subtle text-warning-on-subtle rounded-full px-3 py-1">
                       Pending approval
                     </span>
                   )}
                   {group.visibility === "private" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-surface/90 text-text rounded-full px-3 py-1">
+                    <span className="inline-block text-sm font-semibold bg-surface/90 text-text rounded-full px-3 py-1">
                       Private
                     </span>
                   )}
                   {group.visibility === "invite_only" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-inverse text-inverse-foreground rounded-full px-3 py-1">
+                    <span className="inline-block text-sm font-semibold bg-inverse text-inverse-foreground rounded-full px-3 py-1">
                       Invite only
                     </span>
                   )}
                 </div>
               )}
-              <h1 className="text-3xl sm:text-4xl font-bold text-inverse-foreground">{group.name}</h1>
-              <div className="text-inverse-foreground text-sm mt-1">
-                {canManage && group.memberLimit
+              <h1 className="text-3xl font-bold text-inverse-foreground wrap-anywhere">{group.name}</h1>
+              <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-inverse-foreground">
+                <span>{canManage && group.memberLimit
                   ? `${group.memberCount} of ${group.memberLimit} members`
-                  : `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}`}
-                {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
-                {group.location ? ` · ${group.location}` : ""}
+                  : `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}`}</span>
+                {group.leaderName && <span className="text-inverse-foreground">Organized by {group.leaderName}</span>}
+                {group.location && <span>{group.location}</span>}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex shrink-0 flex-wrap gap-2">
               {canManage && (
                 <>
                   <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary-inverse">
@@ -835,7 +836,7 @@ function GroupDetailContent() {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      <div className="pt-6">
         {departureStatus && <p role="status" className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm">{departureStatus}</p>}
         {editing && review && (
           <>
@@ -883,7 +884,7 @@ function GroupDetailContent() {
               { id: "members", label: "Members" },
             ]}>
             {tab === "events" && (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 <h2 className="sr-only">Upcoming events</h2>
                 {events.length === 0 && (
                   <EmptyState
@@ -903,11 +904,6 @@ function GroupDetailContent() {
                     }
                   />
                 )}
-                {detail.hasMore && (
-                  <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>
-                    {loadingMore ? "Loading dates…" : "Load more dates"}
-                  </Button>
-                )}
                 {detail.truncated && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <span className="text-sm text-text-muted">Showing the next {events.length} dates.</span>
@@ -918,8 +914,8 @@ function GroupDetailContent() {
                 )}
                 {error && <ErrorNotice message={error} onRetry={() => void load({ quiet: true })} />}
                 {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
-          {nextDates.map((m) => (
-                  <EventRow
+                <CompactDates dates={nextDates} loadedOnly={detail.hasMore} noun="events">
+                  {(m) => <EventRow
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
@@ -937,8 +933,9 @@ function GroupDetailContent() {
                     onTerminalRefresh={() => void load({ quiet: true, failClosed: true })}
                     onCancelled={handleCancelled}
                     onChanged={() => void load({ quiet: true })}
-                  />
-                ))}
+                  />}
+                </CompactDates>
+                {detail.hasMore && <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>{loadingMore ? "Loading dates…" : "Load more dates"}</Button>}
                 {group.visibility === "public" && group.status === "active" && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
@@ -951,28 +948,28 @@ function GroupDetailContent() {
             )}
 
             {tab === "about" && (
-              <div className="bg-surface rounded-lg border border-border p-6 max-w-3xl space-y-4">
+              <div className="grid max-w-3xl gap-8 sm:grid-cols-2">
                 <div>
-                  <h3 className="font-bold mb-1">About this group</h3>
+                  <h2 className="font-bold mb-1">About this group</h2>
                   <p className="text-text-muted whitespace-pre-wrap">
                     {group.description || "No description yet."}
                   </p>
                 </div>
                 {group.location && (
                   <div>
-                    <h3 className="font-bold mb-1">Location</h3>
+                    <h2 className="font-bold mb-1">Location</h2>
                     <p className="text-text-muted">{group.location}</p>
                   </div>
                 )}
                 {group.tags.length > 0 && (
                   <div>
-                    <h3 className="font-bold mb-1">Tags</h3>
+                    <h2 className="font-bold mb-1">Tags</h2>
                     <div className="flex flex-wrap gap-2">
                       {group.tags.map((t) => (
                         <Link
                           key={t}
                           to={`/?tag=${encodeURIComponent(t)}`}
-                          className="text-sm bg-sunken text-text-muted hover:bg-border rounded-full px-3 py-1"
+                          className="inline-flex min-h-11 items-center rounded-lg bg-sunken px-3 py-2 text-sm text-text-muted hover:bg-border"
                         >
                           {t}
                         </Link>
@@ -981,7 +978,7 @@ function GroupDetailContent() {
                   </div>
                 )}
                 <div>
-                  <h3 className="font-bold mb-1">Next event</h3>
+                  <h2 className="font-bold mb-1">Next event</h2>
                   <p className="text-text-muted">
                     {group.nextEventAt ? (
                       formatWhen(group.nextEventAt)
@@ -997,7 +994,7 @@ function GroupDetailContent() {
             )}
 
             {tab === "members" && (
-              <div className="bg-surface rounded-lg border border-border p-6 max-w-3xl">
+              <div className="max-w-3xl">
                 {!user ? (
                   <p className="text-text-muted">
                     <Link to="/login" className="text-primary font-semibold">
@@ -1008,10 +1005,16 @@ function GroupDetailContent() {
                 ) : (
                   <>
                     {memberError && <FormError layout="mb-3">{memberError}</FormError>}
-                    {members && members.length > 0 ? (
-                      <ul className="divide-y divide-border">
-                        {members.map((m) => (
-                          <li key={m.id} className="py-3">
+                    {canManage && <div className="mb-4"><AddPeople
+                      groupId={group.id} groupName={group.name} memberCount={group.memberCount} memberLimit={group.memberLimit}
+                      canSearch={user?.status === "active" && user.accountType === "adult"} onAdded={() => load({ quiet: true })}
+                    /></div>}
+                    <PeopleList rows={members ?? []} noun="members" filters={[
+                      { value: "leader", label: "Leaders", matches: (m) => m.role === "leader" },
+                      { value: "member", label: "Members", matches: (m) => m.role === "member" },
+                    ]}>
+                        {(m) => (
+                          <li key={m.id} className="fold-list-row">
                             <div className="flex items-center gap-3">
                               <Avatar
                                 url={m.avatarUrl || undefined}
@@ -1051,21 +1054,8 @@ function GroupDetailContent() {
                             </div>
                             {canManage && isLeader && group.status === "active" && user?.status === "active" && user.accountType === "adult" && m.id !== user.id && m.email === undefined && m.phone === undefined && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
                           </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-text-muted">No members yet.</p>
-                    )}
-                    {canManage && (
-                      <AddPeople
-                        groupId={group.id}
-                        groupName={group.name}
-                        memberCount={group.memberCount}
-                        memberLimit={group.memberLimit}
-                        canSearch={user?.status === "active" && user.accountType === "adult"}
-                        onAdded={() => load({ quiet: true })}
-                      />
-                    )}
+                        )}
+                    </PeopleList>
                     {isLeader && (
                       <div className="mt-6 border-t border-border pt-4">
                         {group.memberCount <= 1 ? (

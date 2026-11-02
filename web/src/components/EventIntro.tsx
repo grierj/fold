@@ -17,16 +17,16 @@ export function EventIntro({
   churchWide?: boolean;
 }) {
   if (churchWide) {
-    return <p className="text-text-muted">Church-wide event</p>;
+    return <p className="text-sm text-text-muted">Church-wide event</p>;
   }
   if (hostedBy) {
-    return <p className="text-text-muted">Hosted by {hostedBy}</p>;
+    return <p className="text-sm text-text-muted">Hosted by {hostedBy}</p>;
   }
   if (groupId && groupName) {
     return (
-      <p className="text-text-muted">
+      <p className="text-sm text-text-muted">
         Part of{" "}
-        <Link to={`/groups/${groupId}`} className="inline-flex min-h-11 items-center text-primary font-semibold">
+        <Link to={`/groups/${groupId}`} className="inline-flex min-h-11 items-center text-primary font-semibold hover:underline">
           {groupName}
         </Link>
       </p>

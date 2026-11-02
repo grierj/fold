@@ -47,8 +47,8 @@ describe("Attendance", () => {
     expect(screen.getByText("Remote attendance available")).toBeInTheDocument();
   });
 
-  it("labels visible going, maybe and declined names without inventing private people", async () => {
-    render(<Attendance instance={occurrence({
+  it.each([3, 4] as const)("labels visible names at heading level %s without inventing private people", async (headingLevel) => {
+    render(<Attendance headingLevel={headingLevel} instance={occurrence({
       registrations: { going: 3, maybe: 1, declined: 1, waitlisted: 0 }, attendeesVisible: true,
       attendees: [
         { registrationId: 1, userId: 1, name: "Sam", status: "going", guestCount: 0, attendanceMode: "in_person" },
@@ -60,7 +60,7 @@ describe("Attendance", () => {
     expect(screen.getByText("Some people's names are private.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
     for (const name of ["Going (1)", "Maybe (1)", "Can't go (1)"]) {
-      expect(screen.getByRole("heading", { name, level: 4 })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name, level: headingLevel })).toBeInTheDocument();
     }
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });

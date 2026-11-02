@@ -6,7 +6,7 @@ import { Avatar } from "../components/Avatar";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { Chip } from "../components/ui/Chip";
 import { Form } from "../components/ui/Form";
-import { AdminIcon, MailIcon } from "../components/icons";
+import { AdminIcon, ChevronRightIcon, MailIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { CalendarFeedCard } from "../components/CalendarFeedCard";
@@ -48,8 +48,8 @@ export function ProfilePage() {
   const { section } = useParams();
   const location = useLocation();
   const [search, setSearch] = useSearchParams();
-  if (loading) return <div className="max-w-2xl mx-auto px-4 py-12"><Skeleton kind="page" /></div>;
-  if (!user) return <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+  if (loading) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" /></div>;
+  if (!user) return <div className="fold-page fold-page-narrow text-center">
     <h1 className="text-3xl font-bold mb-6">Your profile</h1>
     <Link to="/login" state={{ from: location.pathname + location.search }} className="text-primary font-semibold">Log in</Link> to view your profile.
   </div>;
@@ -69,22 +69,22 @@ export function ProfilePage() {
         {hub
           ? <h2 id={headingId} className="mb-2 text-sm font-semibold text-text-muted">{group.heading}</h2>
           : <p id={headingId} className="mb-2 text-sm font-semibold text-text-muted">{group.heading}</p>}
-        <div className="rounded-lg border border-border bg-surface divide-y divide-border overflow-hidden">
-          {group.items.map((item) => <NavLink key={item.id} to={`/profile/${item.id}`} className={({ isActive }) => `flex min-h-11 items-center justify-between gap-3 px-4 py-2 ${isActive ? "bg-primary-subtle text-primary font-semibold" : "text-text hover:bg-page"}`}>
+        <div className="fold-list">
+          {group.items.map((item) => <NavLink key={item.id} to={`/profile/${item.id}`} className={({ isActive }) => `flex min-h-11 items-center justify-between gap-3 rounded-md px-3 py-3 ${isActive ? "bg-primary-subtle text-primary font-semibold" : "text-text hover:bg-sunken"}`}>
             <span className="min-w-0">
               {/* The link's name is its whole visible text, label then description (axe label-content-name-mismatch). */}
               <span className="block">{item.label}</span>
               {hub && <>{" "}<span className="block text-sm font-normal text-text-muted">{item.description}</span></>}
             </span>
-            <span aria-hidden="true" className="shrink-0">›</span>
+            <ChevronRightIcon className="h-5 w-5 shrink-0" />
           </NavLink>)}
         </div>
       </div>;
     })}
   </nav>;
 
-  if (!selected) return <div className="max-w-xl mx-auto px-4 py-8 space-y-6 wrap-anywhere">
-    <h1 className="text-3xl font-bold">Your profile</h1>
+  if (!selected) return <div className="fold-page fold-page-narrow space-y-8 wrap-anywhere">
+    <h1 className="fold-page-header text-3xl font-bold">Your profile</h1>
     <div className="flex items-center gap-4">
       <Avatar url={user.avatarUrl || undefined} name={publicName} focalX={user.avatarFocalX} focalY={user.avatarFocalY} size="w-16 h-16" textSize="text-2xl" />
       <div><p className="text-xl font-semibold">{publicName}</p><p className="text-text-muted">Choose what you want to update.</p></div>
@@ -104,15 +104,15 @@ export function ProfilePage() {
       return next;
     }, { replace: true });
   }
-  return <div className="max-w-5xl mx-auto px-4 py-8 wrap-anywhere">
-    <div className="sm:grid sm:grid-cols-3 sm:gap-8">
-      <aside className="hidden sm:block space-y-4">
+  return <div className="fold-page wrap-anywhere">
+    <div className="fold-settings-grid">
+      <aside className="hidden lg:block space-y-6">
         <ButtonLink variant="link" to="/profile">Your profile</ButtonLink>
         {menu(false)}
       </aside>
-      <div className="min-w-0 sm:col-span-2 space-y-6">
-        <ButtonLink variant="link" to="/profile" layout="sm:hidden">Back to your profile</ButtonLink>
-        <h1 className="text-3xl font-bold">{selected.label}</h1>
+      <div className="min-w-0 space-y-6">
+        <ButtonLink variant="link" to="/profile" layout="lg:hidden">Back to your profile</ButtonLink>
+        <h1 className="fold-page-header text-3xl font-bold">{selected.label}</h1>
         <div key={selected.id}>
           {section === "details" && <ProfileDetails />}
           {section === "privacy" && <ProfilePrivacy />}
@@ -201,14 +201,14 @@ function ProfileDetails() {
     finally { setPictureBusy(false); }
   }
   return <div className="space-y-6">
-    {user.accountType !== "teen" && <div className="bg-surface rounded-lg border border-border p-6">
+    {user.accountType !== "teen" && <div className="space-y-4">
       <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" placeholderName={user.displayName || user.name || "Member"} onFile={savePictureFile} onFocal={saveFocal} />
       <p className="text-xs text-text-muted mt-3">A new picture is saved as soon as you choose it.</p>
       {pictureStatus && <p role="status" className="text-success text-sm mt-3">{pictureStatus}</p>}
       {pictureError && <FormError layout="mt-3">{pictureError}</FormError>}
       {user.avatarUrl && <Button variant="danger-outline" layout="mt-3" onClick={removeAvatar} disabled={pictureBusy}>Remove picture</Button>}
     </div>}
-    <Form noValidate onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <Form noValidate onSubmit={save} className="fold-section fold-form space-y-5">
       {guard}
       {error && <FormError>{error}</FormError>}
       {saved && <p role="status" className="text-success text-sm">Profile saved.</p>}
@@ -244,7 +244,7 @@ function ProfilePrivacy() {
       setError(errorText(err, "We couldn't save your changes."));
     } finally { setSaving(false); }
   }
-  return <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
+  return <div className="fold-form space-y-4">
     {error && <FormError>{error}</FormError>}
     <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them." checked={hideContact} disabled={saving} onChange={(e) => void change(e.target.checked)} />
     <p role="status" className="text-success text-sm">{saved ? "Saved" : ""}</p>

@@ -10,6 +10,7 @@ test.use({ locale: "en-US", timezoneId: "America/New_York" });
 test("a new series defaults to the church time zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/");
+  await page.getByRole("searchbox", { name: "Search groups" }).fill("Room 201 class");
   await page.getByRole("heading", { name: "Room 201 class" }).click();
   await page.getByRole("link", { name: "Schedule event" }).click();
   await expect(page).toHaveURL(/\/groups\/\d+\/events\/new/);
@@ -33,7 +34,10 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await page.getByRole("button", { name: "Schedule event" }).click();
 
   await expect(page).toHaveURL(/\/groups\/\d+$/);
-  await expect(page.getByText("Wednesday class")).toBeVisible();
-  await expect(page.getByText(/^9:00 PM/).first()).toBeVisible();
+  await expect(page.getByText("Wednesday class", { exact: true }).first()).toBeVisible();
+  // Dense schedules collapse details; the same date still shows the viewer's time.
+  const details = page.getByRole("button", { name: /^Details and RSVP: Wednesday class,/ });
+  if (await details.count()) await details.click();
+  await expect(page.getByRole("article", { name: "Wednesday class", exact: true }).getByText(/^9:00 PM/)).toBeVisible();
   await expect(page.getByText(/MDT|MST/)).toHaveCount(0);
 });

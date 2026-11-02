@@ -1,0 +1,15 @@
+/* Fold layout tokens. Color and type roles remain in index.css @theme (DEC-60).
+   Adapted from the Hallmark app scaffold; no parallel color palette. */
+:root {
+  --fold-page-width: 72rem;
+  --fold-reading-width: 48rem;
+  --fold-form-width: 36rem;
+  --fold-gutter: 1rem;
+  --fold-section-gap: 2rem;
+  --fold-column-gap: 2rem;
+  --fold-duration: 120ms;
+  --fold-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (width >= 40rem) {
+  :root { --fold-gutter: 1.5rem; }
+}

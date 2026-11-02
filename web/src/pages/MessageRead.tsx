@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import { ChevronLeftIcon } from "../components/icons";
 import { useAuth } from "../auth";
 import { Messages } from "../messages-api";
 import type { MessageRead } from "../types";
@@ -36,9 +37,9 @@ export function MessageReadPage() {
   // Back to Messages for those who can open it (authors, admins), else Home.
   const { isAdmin, canCompose } = useAuth();
   const back = isAdmin || canCompose
-    ? <ButtonLink variant="link" to="/messages"><span aria-hidden="true">‹ Messages</span><span className="sr-only">Back to messages</span></ButtonLink>
-    : <ButtonLink variant="link" to="/"><span aria-hidden="true">‹ Home</span><span className="sr-only">Back to home</span></ButtonLink>;
-  const page = (children: React.ReactNode) => <div className="max-w-3xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">{back}{children}</div>;
+    ? <ButtonLink variant="link" to="/messages"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Messages</span><span className="sr-only">Back to messages</span></ButtonLink>
+    : <ButtonLink variant="link" to="/"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Home</span><span className="sr-only">Back to home</span></ButtonLink>;
+  const page = (children: React.ReactNode) => <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">{back}{children}</div>;
   if (failed?.missing) {
     return page(
       <EmptyState level={1} title="This message isn't here"
@@ -55,12 +56,12 @@ export function MessageReadPage() {
   if (!message) return page(<Skeleton kind="page" label="Loading the message…" />);
   return page(
     <article aria-labelledby="message-subject" className="space-y-4">
-      <header className="space-y-1">
+      <header className="fold-page-header flex-col items-start gap-2">
         <h1 id="message-subject" className="text-3xl font-bold">{message.subject || "Message"}</h1>
         <p className="text-text-muted">From {message.from}</p>
         {message.sentAt && <p className="text-sm text-text-muted">Sent {lowerLead(formatWhen(message.sentAt, undefined, new Date(), true))}</p>}
       </header>
-      <div className="rounded-lg border border-border bg-surface p-4 sm:p-6">
+      <div className="py-2">
         <Suspense fallback={<Skeleton kind="lines" label="Loading the message…" />}>
           <RichTextView html={message.bodyHtml} />
         </Suspense>

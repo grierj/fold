@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { AdminIcon, BellIcon, CalendarIcon, CheckIcon, GroupsIcon, UserPlusIcon } from "./icons";
+import { AdminIcon, BellIcon, CalendarIcon, CheckIcon, ChevronRightIcon, GroupsIcon, UserPlusIcon } from "./icons";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
@@ -30,7 +30,7 @@ function KindBadge({ kind }: { kind: string }) {
   const name = kindIcon(kind);
   const Glyph = KIND_ICONS[name];
   return (
-    <span className="w-9 h-9 rounded-full bg-sunken text-text-muted flex items-center justify-center shrink-0">
+    <span className="w-9 h-9 text-text-muted flex items-center justify-center shrink-0">
       <Glyph className="w-5 h-5" data-icon={name} />
     </span>
   );
@@ -52,24 +52,24 @@ function NotificationRow({
   // A decided task keeps only its outcome: the original ask is stale.
   const resolved = !!(done || handled);
   return (
-    <li className="relative flex gap-3 px-4 py-3 hover:bg-sunken">
+    <li className="relative flex gap-3 px-4 py-4 hover:bg-sunken">
       {unread && <span className="absolute left-1.5 top-5 w-2 h-2 rounded-full bg-primary" aria-hidden="true" />}
       <KindBadge kind={n.kind} />
-      <div className="min-w-0 flex-1 pr-8">
+      <div className={`min-w-0 flex-1 ${n.archived ? "pr-20" : "pr-8"}`}>
         <Link
           to={n.link}
           onClick={() => {
             feed.open(n);
             onNavigate?.();
           }}
-          className="block rounded-sm"
+          className="block min-h-11 rounded-sm"
         >
           {unread && <span className="sr-only">Unread. </span>}
           {n.waiting && <span className="sr-only">Waiting on you. </span>}
           <span className={`block text-sm line-clamp-2 ${unread ? "font-semibold" : ""}`}>{n.title}</span>
-          {n.body && !resolved && <span className="block text-xs text-text-muted line-clamp-2">{n.body}</span>}
+          {n.body && !resolved && <span className="block text-sm text-text-muted line-clamp-2">{n.body}</span>}
         </Link>
-        <div className="mt-0.5 text-xs text-text-muted flex gap-2">
+        <div className="mt-1 text-sm text-text-muted flex flex-wrap gap-x-3 gap-y-1">
           <time dateTime={n.updatedAt} title={new Date(n.updatedAt).toLocaleString()}>
             {relativeTime(n.updatedAt)}
           </time>
@@ -96,7 +96,7 @@ function NotificationRow({
                 {feed.busy[n.id] ? "Approving…" : a.label}
               </Button>
             ))}
-            <Link to={n.link} onClick={onNavigate} className="btn-secondary py-1.5! px-3! text-sm">
+            <Link to={n.link} onClick={onNavigate} className="btn-secondary text-sm">
               Review
             </Link>
           </div>
@@ -114,15 +114,15 @@ function NotificationRow({
         </button>
       )}
       {!n.waiting && !n.archived && (
-        <button
-          className="absolute right-1 top-1 w-11 h-11 flex items-center justify-center text-text-muted hover:text-text rounded-full"
+        <Button variant="secondary"
+          layout="absolute right-1 top-1 h-11 w-11 p-0 rounded-full"
           aria-label={`Archive: ${n.title}`}
           disabled={feed.offline}
           title={feed.offline ? "Reconnect to do this" : "Archive"}
           onClick={() => feed.archive(n).then(() => onArchived(n)).catch(() => {})}
         >
-          <span aria-hidden="true">×</span>
-        </button>
+          <span aria-hidden="true" className="text-2xl font-semibold leading-none">×</span>
+        </Button>
       )}
     </li>
   );
@@ -147,7 +147,7 @@ function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: 
       onBlur={() => setPaused(false)}
     >
       Archived
-      <button className="font-semibold underline" onClick={onUndo}>
+      <button className="min-h-11 min-w-11 font-semibold underline" onClick={onUndo}>
         Undo
       </button>
     </div>
@@ -162,8 +162,8 @@ function StatusLine({ feed }: { feed: Feed }) {
   if (feed.error && feed.loadedAt) {
     return (
       <p className="px-4 py-1 text-xs text-text-muted">
-        Couldn't refresh. Showing alerts from {at} ·{" "}
-        <button className="underline" onClick={feed.reload}>
+        Couldn't refresh. Showing alerts from {at}.{" "}
+        <button className="min-h-11 underline" onClick={feed.reload}>
           Try again
         </button>
       </p>
@@ -184,19 +184,19 @@ function Skeleton() {
 
 function FeedEmpty({ text, action }: { text?: string; action?: ReactNode }) {
   return (
-    <EmptyState
+    <div className="px-4"><EmptyState
       framed={false}
       illustration={<Illustration name="all-caught-up" size="sm" />}
       title={text ?? "You're all caught up"}
       body={!text ? "Updates about your groups and events show up here." : undefined}
       action={!text ? action : undefined}
-    />
+    /></div>
   );
 }
 
 // FeedBody renders loading, error, and the rows of one feed.
 export function FeedBody({
-  feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false,
+  feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false, headingLevel = 3,
 }: {
   feed: Feed;
   onArchived: (n: Notification) => void;
@@ -205,8 +205,10 @@ export function FeedBody({
   emptyAction?: ReactNode; // shown with the default empty message only
   sections?: boolean;
   dayHeadings?: boolean; // the full page splits Recent into Today and Earlier (6.5)
+  headingLevel?: 2 | 3; // page sections follow h1; bell sections follow its h2
 }) {
   const headingId = useId();
+  const Heading = headingLevel === 2 ? "h2" : "h3";
   if (feed.loading && !feed.loadedAt) return <Skeleton />;
   if (feed.error && !feed.loadedAt) {
     return (
@@ -227,13 +229,13 @@ export function FeedBody({
       <StatusLine feed={feed} />
       {feed.waiting.length > 0 && (
         <section aria-labelledby={`${headingId}-w`}>
-          <h3 id={`${headingId}-w`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
+          <Heading id={`${headingId}-w`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
             Waiting on you
-          </h3>
+          </Heading>
           <ul className="divide-y divide-border">{feed.waiting.map(row)}</ul>
           {feed.waitingTotal > feed.waiting.length && (
-            <Link to="/notifications?filter=waiting" onClick={onNavigate} className="block px-4 py-2 text-sm text-primary font-semibold hover:underline">
-              and {feed.waitingTotal - feed.waiting.length} more →
+            <Link to="/notifications?filter=waiting" onClick={onNavigate} className="flex min-h-11 items-center gap-2 px-4 py-2 text-sm text-primary font-semibold hover:underline">
+              and {feed.waitingTotal - feed.waiting.length} more <ChevronRightIcon className="h-4 w-4 shrink-0" />
             </Link>
           )}
         </section>
@@ -243,9 +245,9 @@ export function FeedBody({
           <>
             {splitByDay(feed.items).map(([label, rows]) => (
               <section key={label} aria-labelledby={`${headingId}-${label}`}>
-                <h3 id={`${headingId}-${label}`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
+                <Heading id={`${headingId}-${label}`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
                   {label}
-                </h3>
+                </Heading>
                 <ul className="divide-y divide-border">{rows.map(row)}</ul>
               </section>
             ))}
@@ -253,15 +255,15 @@ export function FeedBody({
         ) : (
           <section aria-labelledby={`${headingId}-r`}>
             {sections && feed.waiting.length > 0 && (
-              <h3 id={`${headingId}-r`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
+              <Heading id={`${headingId}-r`} className="px-4 pt-4 pb-2 text-sm font-semibold text-text-muted">
                 Recent
-              </h3>
+              </Heading>
             )}
             <ul className="divide-y divide-border">{feed.items.map(row)}</ul>
           </section>
         ))}
       {feed.next && (
-        <button className="block w-full px-4 py-2 text-sm text-primary font-semibold hover:underline" disabled={feed.loadingMore} onClick={feed.showMore}>
+        <button className="block min-h-11 w-full px-4 py-2 text-sm text-primary font-semibold hover:underline" disabled={feed.loadingMore} onClick={feed.showMore}>
           {feed.loadingMore ? "Loading…" : "Show more"}
         </button>
       )}
@@ -404,7 +406,7 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
           <Link
             to="/notifications"
             onClick={() => setOpen(false)}
-            className="block px-4 py-2.5 border-t border-border text-sm text-center text-primary font-semibold hover:underline"
+            className="flex min-h-11 items-center justify-center px-4 py-2.5 border-t border-border text-sm text-center text-primary font-semibold hover:underline"
           >
             See all alerts
           </Link>

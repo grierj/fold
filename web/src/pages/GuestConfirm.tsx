@@ -38,9 +38,9 @@ export function GuestConfirm() {
   const reg = result?.registration;
   const waitlisted = reg?.status === "waitlisted";
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-6">Confirm your registration</h1>
-      <div className="bg-surface rounded-lg border border-border p-6">
+      <div className="fold-section">
         {full ? (
           <p className="text-sm text-text-muted">
             This event is full. The link has been used up, so it won&apos;t work again.

@@ -55,7 +55,7 @@ export function EmailSettingsPage() {
   const save = useCallback((c: EmailSettingsChange) => EmailSettingsLink.update(token, c).then((r) => r.emailSettings), [token]);
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-8">
+    <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-2">Email settings</h1>
       {gone ? (
         <EmptyState illustration={<Illustration name="link-expired" />} title="This link doesn't work anymore"

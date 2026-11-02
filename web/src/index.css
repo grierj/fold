@@ -1,4 +1,17 @@
+/* Hallmark · shape: app screen · genre: playful · theme: Fold brand · redesign: full
+ * paper: warm stone · accent: Fold Violet · display: Inter · body: Inter
+ * nav: kept responsive shell · signature: date-led agenda and groups · states: existing loading, empty, error, full
+ * axes: warm/sans/violet · posture: restrained · surface: absolute · contrast: pass · v2.0.0
+ * inferred: warm practical community-first · material: existing app data and assets */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V3 · weakest: V, repeated date cards; replaced stacks with compact agenda rows */
+/* Hallmark · waive 7b · surface: absolute, existing Fold theme roles · white surfaces and foregrounds retain the approved Fold contrast pairs */
+/* Hallmark · dismissed 70 · Fold success states follow awaited API calls or awaited onSubmit callbacks; the static scan cannot follow the imported request functions */
+/* Hallmark · answered F1 · existing Fold copy and test-contracted apostrophes are retained rather than changing wording merely for typography */
+/* Hallmark · answered F24 · existing confirmation dialogs keep their defined boundary and elevation to distinguish modal decisions from the Fold page */
+/* Hallmark · finish-review: subagent, approved with notes; tablet profile, alert inset and date editor fixed; calendar density refined after scoring */
 @import 'tailwindcss';
+@import './tokens.css';
+@import './base.css' layer(base);
 
 /* The server-rendered pages (setup, dev outbox) use this stylesheet too. */
 @source '../../templates';
@@ -96,10 +109,10 @@
   --color-focus: var(--color-violet-700);
 
   /* Radius */
-  --radius-sm: 0.375rem;   /* 6px: chips, badges, checkboxes */
-  --radius-md: 0.625rem;   /* 10px: buttons, inputs, selects */
-  --radius-lg: 1rem;       /* 16px: cards, popovers, alerts */
-  --radius-xl: 1.5rem;     /* 24px: bottom sheets, dialogs, hero cards */
+  --radius-sm: 0.25rem;    /* 4px: badges, checkboxes */
+  --radius-md: 0.5rem;     /* 8px: buttons, inputs, selects */
+  --radius-lg: 0.75rem;    /* 12px: cards, popovers, alerts */
+  --radius-xl: 1rem;       /* 16px: bottom sheets and dialogs */
   /* full: Tailwind's rounded-full (avatars, pills, nav indicator) */
 
   /* Spacing: Tailwind 4 default --spacing: 0.25rem is KEPT (p-4 = 16px).
@@ -112,7 +125,8 @@
   --spacing-section: 2rem;       /* gap between page sections */
   --spacing-target: 2.75rem;     /* 44px min interactive height */
 
-  /* Type: Inter, self-hosted */
+  /* Type: Inter, self-hosted. Three weights: body, controls, headings. */
+  --font-weight-medium: 600;
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --text-xs: 0.75rem;    --text-xs--line-height: 1rem;        /* 12/16: badges and counters only, never essential info */
   --text-sm: 0.875rem;   --text-sm--line-height: 1.25rem;     /* 14/20: secondary text, labels */
@@ -195,7 +209,14 @@
   .input         { @apply w-full min-h-11 rounded-md border border-border-strong bg-surface px-4 py-2.5 text-base text-text; }
   .label         { @apply mb-1 block text-sm font-medium text-text; }
   /* The one form pattern (DEC-65): label, then hint, then the control. */
-  .field-hint    { @apply mb-1 text-sm text-text-muted; }
+  .field-hint    { @apply mb-2 text-sm text-text-muted; }
+  .input:focus-visible { outline-offset: 2px; }
+  .input:disabled { @apply bg-sunken text-text-muted cursor-not-allowed; }
+  .input[aria-invalid="true"] { @apply border-danger; }
+  .btn-secondary:active, .btn-ghost:active, .btn-link:active { @apply bg-primary-subtle text-primary-on-subtle; }
+  .btn-danger-outline:active { @apply bg-danger-subtle; }
+  .btn-secondary:disabled, .btn-danger-outline:disabled, .btn-ghost:disabled, .btn-link:disabled { @apply bg-sunken text-text-muted cursor-not-allowed; }
+  .btn-primary:focus-visible, .btn-primary-inverse:focus-visible { outline-offset: 3px; }
   .input[readonly] { @apply bg-sunken text-text-muted cursor-default; }
   /* A radio or checkbox row: the whole row is the label, 44px tall, with a
      20px control (PR 7). */
@@ -213,18 +234,50 @@
   .chip[aria-pressed="true"]::before, .chip[aria-selected="true"]::before { content: "✓" / ""; }
   /* A plain violet text action ("Show who's coming"), 44px tall like the
      other text links. */
-  .btn-link      { @apply inline-flex items-center min-h-11 text-sm font-medium text-primary hover:underline; }
-  /* A link inside a running sentence (DEC-99). Inline keeps the line height
-     even; the padding gives a 24px-tall hit area without opening a gap
-     between wrapped lines (inline boxes ignore vertical margin and padding
-     when lines are laid out). */
-  .text-link     { @apply inline py-1.5 -my-1.5 font-semibold text-primary hover:underline focus-visible:underline; }
+  .btn-link      { @apply inline-flex items-center justify-center min-h-11 min-w-11 text-sm font-medium text-primary hover:underline; }
+  /* Actionable prose links keep the same 44px target as other controls. */
+  .text-link     { @apply inline-flex items-center align-middle min-h-11 min-w-11 font-semibold text-primary hover:underline focus-visible:underline; }
   /* One segment of a joined control (RSVP, DEC-63). The chosen one is
      filled and, like chips, leads with a check so color isn't the only cue. */
   .segment { @apply inline-flex flex-1 items-center justify-center gap-1 min-h-11 px-2 whitespace-nowrap text-sm font-semibold border border-border-strong bg-surface text-text -ml-px first:ml-0 first:rounded-l-lg last:rounded-r-lg hover:text-primary disabled:opacity-50; }
-  .segment[aria-current="page"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
-  .segment[aria-pressed="true"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
+  /* Raise a selected border above its neighbors, not above the sticky shell. */
+  .segment[aria-current="page"] { @apply relative z-[1] border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
+  .segment[aria-pressed="true"] { @apply relative z-[1] border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
   .segment[aria-pressed="true"]::before { content: "✓" / ""; }
+}
+
+/* Shared app compositions: one outer measure; narrower reading and form
+   columns where the task needs them. Children never acquire a second card. */
+@layer components {
+  .fold-page, .fold-page-narrow, .fold-auth {
+    width: 100%;
+    margin-inline: auto;
+    padding: var(--fold-section-gap) var(--fold-gutter);
+  }
+  .fold-page { max-width: var(--fold-page-width); }
+  .fold-page-narrow { max-width: var(--fold-reading-width); }
+  .fold-auth { max-width: var(--fold-form-width); }
+  .fold-page-header { @apply mb-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 border-b border-border pb-6; }
+  .fold-page-header h1 { @apply text-3xl font-bold; }
+  .fold-section { @apply border-t border-border pt-6; }
+  .fold-panel { @apply rounded-lg border border-border bg-surface p-4 sm:p-6; }
+  .fold-list { @apply divide-y divide-border border-y border-border; }
+  .fold-list-row { @apply py-4; }
+  /* Leave room for the directory's compact sticky toolbar when tabbing back
+     through results. The shell already reserves its own header height. */
+  #groups { overflow-anchor: none; }
+  .directory-results a { scroll-margin-top: 7rem; scroll-margin-bottom: 1rem; }
+  .fold-form { @apply w-full max-w-xl space-y-5; }
+  .fold-settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--fold-column-gap); }
+  @media (width >= 64rem) {
+    .fold-settings-grid { grid-template-columns: 15rem minmax(0, 1fr); }
+  }
+  .fold-nav-link { @apply border border-transparent; }
+  .fold-nav-link[aria-current="page"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle; }
+  .fold-tab[aria-current="page"] { @apply bg-primary-subtle text-primary-on-subtle; }
+  .fold-tab[aria-current="page"] svg { stroke-width: 2.5; }
+  .fold-cover :focus-visible { outline-color: var(--color-inverse-foreground); }
+  .fold-cover [role="menuitem"]:focus-visible { outline-color: var(--color-focus); }
 }
 
 /* The composer's email editor (M3.4c). TipTap's injected CSS is off (CSP,

@@ -764,6 +764,11 @@ describe("named household answers", () => {
     return render(<MemoryRouter><RsvpButtons people={[kit, mary]} instance={instance} onChange={() => {}} /></MemoryRouter>);
   }
 
+  it.each([3, 4] as const)("places the household question at heading level %s", (headingLevel) => {
+    render(<MemoryRouter><RsvpButtons people={[kit, mary]} instance={occurrence({})} headingLevel={headingLevel} onChange={() => {}} /></MemoryRouter>);
+    expect(screen.getByRole("heading", { name: "Who will attend?", level: headingLevel })).toBeInTheDocument();
+  });
+
   it("can save only a child without changing Me and explicitly clears remote childcare", async () => {
     vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 17, registeredBy: 3, status: "going", attendanceMode: "remote", waitlistPosition: null, childcareRequested: false }] });
     family();

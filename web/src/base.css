@@ -1,0 +1,22 @@
+/* Fold app foundation, adapted from Hallmark. Imported in Tailwind's base layer. */
+html, body { overflow-x: clip; }
+html { scrollbar-color: var(--color-border-strong) var(--color-page); }
+body { font-family: var(--font-sans); caret-color: var(--color-primary); }
+::selection { background-color: var(--color-primary-subtle); color: var(--color-primary-on-subtle); }
+h1, h2, h3, h4 { overflow-wrap: break-word; min-width: 0; text-wrap: balance; }
+h1 { letter-spacing: -0.025em; }
+p { text-wrap: pretty; }
+a { text-underline-offset: 0.2em; }
+:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+button:disabled, input:disabled, textarea:disabled, select:disabled {
+  cursor: not-allowed;
+}
+[aria-busy="true"] { cursor: progress; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0s;
+    animation-iteration-count: 1;
+    transition-duration: 0s;
+    scroll-behavior: auto;
+  }
+}

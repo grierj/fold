@@ -1,0 +1,147 @@
+[
+ {
+  "mode": "redesign",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
+  "prompt": "Sounds good, please implement: busy-church list recommendations.",
+  "base": "5c0f919",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "bounded visitor church preview, calendar agenda and compact group/series dates",
+   "searchable paged people, admin and personal group lists with draft/focus preservation",
+   "server-cursor message history, subject/status filters and date grouping",
+   "building-grouped compact room list and responsive calendar/admin navigation",
+   "additive calendar church filter and compatible message cursor/search/status API"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "warnings": 0,
+   "tests": 1404,
+   "fullGoSuite": "passed against isolated Postgres",
+   "browserChecks": 172,
+   "eagerGzipKB": 175.7,
+   "independentReview": "correctness/security/simplicity and UI/UX explicitly approved after fixes",
+   "evidence": "/tmp/fold-verify-proof/20261101T232904Z-1083168",
+   "details": ".hallmark/busy-lists.md",
+   "furtherListRecommendationsImplemented": true
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
+  "prompt": "Implement all five directory recommendations, then evaluate a busy church and recommend further improvements.",
+  "base": "54717aa",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "URL-backed search, selected tags and expanded count; Back restores position and focus",
+   "compact sticky Filters disclosure and announced result count",
+   "12-result batches with explicit Show more and keyboard focus handling",
+   "four-date agenda above full-width two-column desktop directory",
+   "Browse groups jump waits for preceding content",
+   "100-user busy-church API fixture and browsing experiment"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "warnings": 0,
+   "tests": 1388,
+   "browserChecks": 99,
+   "eagerGzipKB": 173.6,
+   "independentReview": "UI/UX and correctness explicitly approved after three filter findings were fixed",
+   "reviewRun": "5fc6e7b8-f2d7-44e9-bd3c-53f9d9884dbb",
+   "evidence": "/tmp/fold-verify-proof/20261101T214745Z-294686",
+   "details": ".hallmark/busy-church.md",
+   "furtherListRecommendationsImplemented": false
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
+  "depth": "polish",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
+  "shape": "existing working app",
+  "entry": "web/src/App.tsx",
+  "signature": "date-led agenda and explicit RSVP",
+  "prompt": "Fix the three failures and address lazy-thumbnail performance. Implement optional recommended UI additions.",
+  "base": "e71a8e7",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "two-sentence upload hint",
+   "explicit to between calendar time endpoints",
+   "visible No events on empty weekdays",
+   "only first group cover eager/high; later covers lazy/auto with async decoding",
+   "intrinsic thumbnail dimensions and priority regression coverage"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "reflexFailures": 0,
+   "warnings": 0,
+   "waiver": "7b retained brand roles, nine occurrences",
+   "tests": 1376,
+   "browserChecks": 39,
+   "eagerGzipKB": 172.7,
+   "independentReview": "ship; explicitly approved, no blockers",
+   "reviewRun": "fa9fe2c6-bf85-4e2e-a0c1-aa51439ccc43",
+   "evidence": "/tmp/fold-verify-proof/20261101T204553Z-3995714",
+   "details": ".hallmark/verification.md"
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "shape": "working app; date-led agenda and group directory",
+  "theme": "Fold brand (approved product system)",
+  "axes": [
+   "warm paper",
+   "self-hosted sans",
+   "violet action",
+   "compact agenda",
+   "left-aligned",
+   "still"
+  ],
+  "hero": "not applicable to working app",
+  "nav": "existing desktop navigation and five mobile tabs",
+  "footer": "existing app shell, no marketing footer",
+  "imagery": "existing group covers, avatars, deterministic patterns and UI illustrations",
+  "photos": [],
+  "entry": "web/src/App.tsx",
+  "fingerprint": "capped working app / compact date agenda / adjacent groups / quiet section rules / existing shell / still",
+  "sections": [
+   "Home and discovery",
+   "groups",
+   "events and RSVP",
+   "calendar",
+   "account and messages",
+   "organizer"
+  ],
+  "signature": "date, event and RSVP presented together",
+  "waived": [
+   "7b: retain approved semantic white/black roles"
+  ],
+  "prompt": "Hallmark redesign /home/grier/git/fold; go ahead after preflight. Preserve brand, content, routes and wiring.",
+  "base": "82323bf",
+  "branch": "design/hallmark-fold",
+  "result": {
+   "floorFailures": 3,
+   "reflexFailures": 0,
+   "confirmedWarnings": 1,
+   "finishAnswered": 22,
+   "falsePositivesDismissed": 6,
+   "kept": {
+    "links": "98/98",
+    "fields": "19/19",
+    "handlers": "547/547",
+    "testHooks": "1/1",
+    "headings": "13/13",
+    "figures": "3/3"
+   },
+   "independentReview": "UI approved with notes; correctness approved; four visual issues corrected",
+   "details": ".hallmark/verification.md"
+  },
+  "date": "2026-11-01"
+ }
+]

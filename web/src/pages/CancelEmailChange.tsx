@@ -13,7 +13,7 @@ export function CancelEmailChange() {
   const token = params.get("token") ?? "";
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-6">Cancel email change</h1>
       <CancelEmailChangeForm key={token} token={token} />
     </div>
@@ -62,7 +62,7 @@ function CancelEmailChangeForm({ token }: { token: string }) {
   }
 
   return (
-    <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <Form noValidate onSubmit={submit} className="fold-form fold-section">
       <p className="text-sm text-text-muted">
         This only cancels a pending email change. Confirming also ends all current sign-ins to protect your account.
       </p>

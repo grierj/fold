@@ -139,7 +139,7 @@ it("labels only the groups that need attention and keeps one action beside More"
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(3, "Choir", { leaderName: "Pat Leader" })] });
   render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByText("1 member · Organized by Pat Leader")).toBeInTheDocument();
-  expect(screen.queryByText("Active", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByText("Active", { exact: true, selector: "span" })).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Choir" })).toHaveAttribute("href", "/groups/3");
   expect(screen.queryByRole("link", { name: "Open & edit" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Manage members" })).toHaveClass("btn-secondary");
@@ -156,8 +156,8 @@ it("lists pending groups first, then the rest by name, with a label only when no
   const names = screen.getAllByRole("link").map((l) => l.textContent).filter((t) => ["Zeta", "Alpha", "Mid", "Beta", "Aaa pending"].includes(t ?? ""));
   expect(names).toEqual(["Aaa pending", "Mid", "Alpha", "Beta", "Zeta"]);
   expect(screen.getAllByText("Pending approval")).toHaveLength(2);
-  expect(screen.getAllByText("Archived")).toHaveLength(1);
-  expect(screen.queryByText("Active", { exact: true })).not.toBeInTheDocument();
+  expect(screen.getAllByText("Archived", { selector: "span" })).toHaveLength(1);
+  expect(screen.queryByText("Active", { exact: true, selector: "span" })).not.toBeInTheDocument();
 });
 
 it("filters groups as you type and says when none match", async () => {
@@ -429,8 +429,8 @@ it("copies and always shows the exact returned person ID as a fallback", async (
   render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
   await userEvent.click(await screen.findByRole("button", { name: "More for Pat" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Copy person ID" }));
-  const status = await screen.findByRole("status");
-  expect(status).toHaveTextContent("Person ID for Pat Public: 9007199254740993");
+  const status = await screen.findByText(/Person ID for Pat Public: 9007199254740993/);
+  expect(status).toHaveAttribute("role", "status");
   expect(status).not.toHaveTextContent("pat-history@example.com");
   expect(writeText).toHaveBeenCalledWith("9007199254740993");
 });

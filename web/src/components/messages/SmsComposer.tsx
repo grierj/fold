@@ -1,5 +1,6 @@
 import { countSms, framedSms, isDonationAsk } from "../../lib/sms";
 import { Field, Textarea } from "../ui/Field";
+import { AlertCircleIcon } from "../icons";
 
 // The composer's text tab (PLAN 7.3, M3.4c). It shows only when texting is
 // set up (smsEnabled, M3.7), so nobody sees a tab that can't send
@@ -22,7 +23,7 @@ export function SmsComposer({ church, value, onChange }: { church: string; value
       </p>
       {isDonationAsk(value) && (
         <p className="flex items-start gap-2 rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
-          <span aria-hidden="true">⚠</span>
+          <AlertCircleIcon className="size-4 shrink-0" />
           <span><span className="font-semibold">Heads up: </span>{DONATION_WARNING}</span>
         </p>
       )}

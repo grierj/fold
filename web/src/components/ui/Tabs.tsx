@@ -19,7 +19,22 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
   const list = useRef<HTMLDivElement>(null);
   // A bookmarked tab off the edge of a phone-width row scrolls into view.
   useEffect(() => {
-    list.current?.querySelector<HTMLElement>("[aria-selected=true]")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    const row = list.current;
+    if (!row) return;
+    const reveal = () => {
+      const tab = row.querySelector<HTMLElement>("[aria-selected=true]");
+      const nav = row.parentElement;
+      if (!tab || !nav) return;
+      const t = tab.getBoundingClientRect(), n = nav.getBoundingClientRect();
+      // Counts and conditionally available tabs can arrive after mount. Adjust
+      // only this strip, never scroll the surrounding page during a refresh.
+      if (t.left < n.left) nav.scrollLeft += t.left - n.left;
+      else if (t.right > n.right) nav.scrollLeft += t.right - n.right;
+    };
+    reveal();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reveal);
+    observer?.observe(row);
+    return () => observer?.disconnect();
   }, [value]);
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = {

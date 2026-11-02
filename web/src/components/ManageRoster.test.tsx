@@ -17,9 +17,12 @@ it("acts on the registration ID when user and person IDs overlap", async () => {
   render(<ManageRoster instance={occurrence({ attendees: [child, { registrationId: 92, userId: 3, name: "Sam", status: "going", attendanceMode: "in_person", guestCount: 0 }] })} onChanged={onChanged} onClose={() => {}} />);
   await userEvent.click(screen.getByRole("button", { name: "Promote" }));
   expect(Events.promoteRegistration).toHaveBeenCalledWith(7, "2026-12-01", 91);
-  await userEvent.click(screen.getByRole("button", { name: "Remove Kit" }));
+  await userEvent.click(screen.getByRole("button", { name: "More for Kit" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Remove Kit" }));
   expect(Events.removeRegistration).toHaveBeenCalledWith(7, "2026-12-01", 91);
-  expect(screen.getByRole("button", { name: "Remove Sam" })).toHaveClass("btn-danger-outline");
+  await userEvent.click(screen.getByRole("button", { name: "More for Sam" }));
+  expect(screen.getByRole("menuitem", { name: "Remove Sam" })).toBeInTheDocument();
+  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Remove Kit's registration"));
 });
 
 it("recovers the named person with the original holder and confirms their own pool", async () => {
@@ -37,12 +40,13 @@ it("shows childcare refusal without pretending the restore succeeded", async () 
   expect(screen.getByRole("alert")).toHaveTextContent("Childcare is full"); expect(changed).not.toHaveBeenCalled();
 });
 
-it("stacks actions under details and names statuses in words (PR 110 M1, N2)", () => {
+it("keeps actions beside compact details and names statuses in words", () => {
   render(<ManageRoster instance={occurrence({ attendees: [{ ...child, attendanceMode: "in_person" }, { ...child, registrationId: 93, name: "Mary", attendanceMode: "in_person" }, { registrationId: 92, userId: 3, name: "Sam", status: "going", attendanceMode: "in_person", guestCount: 0 }] })} onChanged={() => {}} onClose={() => {}} />);
   expect(screen.getByText("Waitlist position 1")).toBeInTheDocument();
   expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
-  expect(screen.getByText("Going")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Remove Sam" }).closest("li")).toHaveClass("flex-col", "sm:flex-row");
+  const row = screen.getByRole("button", { name: "More for Sam" }).closest("li")!;
+  expect(within(row).getByText("Going")).toBeInTheDocument();
+  expect(row).toHaveClass("flex", "items-start");
 });
 
 it("keeps waitlist positions per pool and places status before care notes", () => {

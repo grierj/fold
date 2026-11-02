@@ -25,6 +25,7 @@ test("a teen created through the admin form browses publicly but cannot sign in 
   await page.getByLabel("Birth date").fill(birth.toISOString().slice(0, 10));
   await capture(page, "admin-age-teen");
   await page.getByRole("button", { name: "Create user", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search by name or email" }).fill(email("waiting-teen"));
   await expect(page.getByText("Waiting Teen", { exact: true })).toBeVisible();
   await signOut(page);
   await attemptPendingSignIn(page, "waiting-teen");
@@ -45,6 +46,7 @@ test("a teen created through the admin form browses publicly but cannot sign in 
     expect((await page.request.get(`/api/v1${path}`)).status()).toBe(401);
   }
   await signIn(page, "sam");
+  await page.getByRole("searchbox", { name: "Search groups" }).fill("Members-only circle");
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
   const admin = await apiAs(request, "grier");
   const { users } = await admin("GET", "/admin/users");

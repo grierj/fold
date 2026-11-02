@@ -109,7 +109,7 @@ export function DateEditor({
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
       {error && <FormError>{error}</FormError>}
-      <div className="grid sm:grid-cols-3 gap-3">
+      <div className="grid gap-3">
         <Field id={`cev-date-${instance.id}`} label="Date">
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
         </Field>
@@ -126,7 +126,7 @@ export function DateEditor({
           />
         </Field>
       </div>
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid gap-3">
         <Field id={`cev-title-${instance.id}`} label="Title">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>

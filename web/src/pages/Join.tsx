@@ -26,7 +26,7 @@ export function Join() {
   const church = site && site !== "Fold" ? site : "";
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth wrap-anywhere">
       <h1 className="text-3xl font-bold mb-2">{church ? `Request an account at ${church}` : "Request an account"}</h1>
       <ol className="list-decimal pl-5 mb-4 space-y-1 text-sm text-text-muted">
         <li>Send your request.</li>
@@ -37,7 +37,7 @@ export function Join() {
         Already have an account? <Link to="/login" className="text-link">Log in</Link>
       </p>
       {loaded && mode === "off" ? (
-        <div className="bg-surface rounded-lg border border-border p-6 text-sm text-text-muted">
+        <div className="fold-section text-text-muted">
           Self-signup is turned off for this church. Ask your church office for an
           account, or log in if you already have one.
         </div>

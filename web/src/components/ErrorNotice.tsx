@@ -13,14 +13,16 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
     );
   }
   return (
-    <div role="alert" className="flex flex-col items-center rounded-lg border border-border bg-surface p-6 sm:p-8 text-center">
-      <div className="mb-4">
+    <div role="alert" className="flex flex-col items-start gap-4 rounded-lg bg-surface p-6 sm:flex-row sm:gap-6">
+      <div className="w-16 shrink-0">
         <Illustration name="cant-load" />
       </div>
-      <p className="text-base text-text">{message}</p>
-      <Button variant="secondary" layout="mt-4 w-full sm:w-auto" onClick={onRetry}>
-        Try again
-      </Button>
+      <div className="min-w-0 w-full">
+        <p className="text-base text-text max-w-prose">{message}</p>
+        <Button variant="secondary" layout="mt-4 w-full sm:w-auto" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
     </div>
   );
 }

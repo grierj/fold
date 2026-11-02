@@ -95,19 +95,19 @@ export function RoomCalendarPage() {
   };
 
   const header = (
-    <>
+    <header className="fold-page-header">
       <h1 className="text-3xl font-bold text-text">Calendar</h1>
-      <div className="mt-6">
+      <div>
         <CalendarViewSwitch current="rooms" rooms to={calendarLink} />
       </div>
-    </>
+    </header>
   );
 
   // While the session loads, the page waits rather than asking a signed-in
   // person to log in.
   if (authLoading) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="fold-page">
         {header}
         <div className="mt-6">
           <Skeleton kind="lines" count={6} label="Loading the room calendar…" />
@@ -117,7 +117,7 @@ export function RoomCalendarPage() {
   }
   if (!user) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="fold-page">
         {header}
         <div className="mt-6">
           <EmptyState
@@ -131,7 +131,7 @@ export function RoomCalendarPage() {
   }
   if (unavailable) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="fold-page">
         {header}
         <div className="mt-6">
           <EmptyState
@@ -155,9 +155,9 @@ export function RoomCalendarPage() {
   const unit = view === "week" ? "week" : "day";
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
+    <div className="fold-page">
       {header}
-      <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <ViewSwitch
           label="Room calendar view"
           items={(["day", "week"] as RoomView[]).map((v) => ({
@@ -312,7 +312,7 @@ function DayGrid({ rooms, day, zone }: { rooms: RoomCalendarRoom[]; day: string;
                 <span className="truncate">{r.name}</span>
                 {(r.building || r.restricted) && (
                   <span className="truncate text-xs font-normal text-text-muted">
-                    {[r.building, r.restricted && "Admins only"].filter(Boolean).join(" · ")}
+                    {[r.building, r.restricted && "Admins only"].filter(Boolean).join(", ")}
                   </span>
                 )}
               </h3>
@@ -383,7 +383,7 @@ function WeekGrid({ rooms, days, zone, today }: { rooms: RoomCalendarRoom[]; day
                   <span className="block">{r.name}</span>
                   {(r.building || r.restricted) && (
                     <span className="block text-xs font-normal text-text-muted">
-                      {[r.building, r.restricted && "Admins only"].filter(Boolean).join(" · ")}
+                      {[r.building, r.restricted && "Admins only"].filter(Boolean).join(", ")}
                     </span>
                   )}
                 </th>
@@ -430,10 +430,10 @@ function PhoneList({ room, days, zone }: { room: RoomCalendarRoom; days: string[
             {list.length === 0 ? (
               <p className="text-sm text-text-muted">Nothing booked. {room.name} is free all day.</p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="fold-list">
                 {list.map((s, i) => (
                   <li key={`${s.startsAt}-${i}`}>
-                    <SlotBox slot={s} zone={zone} className="min-h-11 rounded-lg p-3">
+                    <SlotBox slot={s} zone={zone} className="min-h-11 p-3">
                       <SlotWords slot={s} zone={zone} mode="row" />
                     </SlotBox>
                   </li>

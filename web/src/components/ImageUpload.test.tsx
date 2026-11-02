@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ImageUpload } from "./ImageUpload";
 
-const hint = "Tap or click the image to move the focal point — faces stay centered when cropped.";
+const hint = "Tap or click the image to move the focal point. Faces stay centered when cropped.";
 const props = { label: "Cover image", initialFocal: { x: 50, y: 50 }, maxDim: 1600, aspectClass: "aspect-video", onFile: vi.fn(), onFocal: vi.fn() };
 
 beforeEach(() => {

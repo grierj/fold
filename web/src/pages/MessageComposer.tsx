@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ChevronLeftIcon } from "../components/icons";
 import { useAuth } from "../auth";
 import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
@@ -355,8 +356,8 @@ export function MessageComposerPage() {
     void run("send");
   }
 
-  const back = <ButtonLink variant="link" to="/messages"><span aria-hidden="true">‹ Messages</span><span className="sr-only">Back to messages</span></ButtonLink>;
-  const page = (children: React.ReactNode) => <div className="max-w-3xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">{children}</div>;
+  const back = <ButtonLink variant="link" to="/messages"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Messages</span><span className="sr-only">Back to messages</span></ButtonLink>;
+  const page = (children: React.ReactNode) => <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">{children}</div>;
 
   if (loadError) {
     return page(<>
@@ -392,9 +393,9 @@ export function MessageComposerPage() {
         : reminder && isAdmin
           ? <ButtonLink variant="link" to="/messages?show=reminders">‹ Back to automatic reminders</ButtonLink>
           : back}
-      <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
+      <h1 ref={heading} tabIndex={-1} className="fold-page-header text-3xl font-bold focus:outline-none">{title}</h1>
       <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />
-      <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
+      <section aria-label="This message" className="space-y-6">
         <div className="space-y-1">
           <p className="text-lg font-semibold">{label}</p>
           {history && !pushReminder && <p className="text-sm">{historyLine(history, message)}</p>}
@@ -431,7 +432,7 @@ export function MessageComposerPage() {
           </>}
         </dl>
         {history && <WhoGotIt history={history} withCopies={isAdmin} />}
-        <div className="border-t border-border pt-4">
+        <div className="fold-section">
           <Suspense fallback={<Skeleton kind="lines" label="Loading the message…" />}>
             <RichTextView html={message.bodyHtml} />
           </Suspense>
@@ -464,8 +465,8 @@ export function MessageComposerPage() {
 
   return page(<>
     {back}
-    <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
-    <Form ref={form} aria-label={title} onSubmit={submit} className="space-y-6">
+    <h1 ref={heading} tabIndex={-1} className="fold-page-header text-3xl font-bold focus:outline-none">{title}</h1>
+    <Form ref={form} aria-label={title} onSubmit={submit} className="space-y-8">
       <section aria-labelledby={`${ids.audience}-h`} className="space-y-4">
         <h2 id={`${ids.audience}-h`} className="text-xl font-semibold">Who gets it</h2>
         <AudiencePicker id={ids.audience} options={options} choice={choice} error={errors.audience} push={pushShown && pushAlert}
@@ -479,7 +480,7 @@ export function MessageComposerPage() {
         )}
       </section>
 
-      <section aria-labelledby={`${ids.body}-h`} className="space-y-4">
+      <section aria-labelledby={`${ids.body}-h`} className="fold-section space-y-5">
         <h2 id={`${ids.body}-h`} className="text-xl font-semibold">What it says</h2>
         {options.smsEnabled ? (
           <Tabs label="Channel" value={tab} onChange={setTab} options={[{ id: "email", label: "Email" }, { id: "sms", label: "Text" }]}>
@@ -510,7 +511,7 @@ export function MessageComposerPage() {
         </section>
       )}
 
-      <section aria-labelledby={`${ids.when}-h`} className="space-y-3">
+      <section aria-labelledby={`${ids.when}-h`} className="fold-section space-y-4">
         <h2 id={`${ids.when}-h`} className="text-xl font-semibold">When</h2>
         <Choices legend="When to send">
           <Radio name={ids.when} label="Send now" checked={when === "now"} onChange={() => setWhen("now")} />
