@@ -124,7 +124,6 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		outcome, auditAction = "rejected", audit.GroupRejected
 	}
 	errHandled := errors.New("already handled")
-	var emailed []uint
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		set := map[string]any{"status": status}
 		if tags != nil {
@@ -144,11 +143,9 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
 		}
-		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note)
-		if err != nil {
+		if _, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note); err != nil {
 			return err
 		}
-		emailed = ids
 		var meta map[string]any
 		if note != "" {
 			meta = map[string]any{"message": note}
@@ -163,7 +160,6 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	if action == notify.ActionApproveGroup {
 		c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(&g)})
 		return
@@ -338,7 +334,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	errHandled := errors.New("already handled")
 	errSelfConfirm := errors.New("another admin must confirm your own guardian link")
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if link.TeenUserID != nil {
 			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
@@ -416,7 +411,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
 				return err
 			}
-			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed); err != nil {
+			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
 				return err
 			}
 		}
@@ -439,7 +434,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		jsonError(c, http.StatusInternalServerError, "could not decide that link")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	var fresh models.GuardianLink
 	a.DB.First(&fresh, link.ID)
 	if confirm && fresh.TeenUserID != nil {
@@ -695,7 +689,6 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		}
 	}
 	if len(updates) > 0 || body.Status != nil {
-		var emailed []uint
 		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
 		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
@@ -762,8 +755,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					}
 					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled, TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 				}
-				ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
-				emailed = append(emailed, ids...)
+				_, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
 				if err != nil {
 					return err
 				}
@@ -777,8 +769,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 				// Disabling keeps registration rows but frees every seat
 				// the account held on future dates, promoting into them.
-				ids, err = a.promoteOnDisable(tx, u.ID)
-				emailed = append(emailed, ids...)
+				_, err = a.promoteOnDisable(tx, u.ID)
 				if err != nil {
 					return err
 				}
@@ -786,16 +777,14 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 			}
 			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				ids, err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
-				emailed = append(emailed, ids...)
+				_, err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
 				if err != nil {
 					return err
 				}
 				// Registrations come back as they were when they fit;
 				// a row that would overfill is dropped and the person
 				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				ids, err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
-				emailed = append(emailed, ids...)
+				_, err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
 				if err != nil {
 					return err
 				}
@@ -807,7 +796,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if err := tx.Model(u).Updates(updates).Error; err != nil {
 				return err
 			}
-			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed)
+			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP())
 		})
 		if needSuccessors(c, err) {
 			return
@@ -832,7 +821,6 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not update user")
 			return
 		}
-		a.deliverNotificationEmails(emailed)
 	}
 	var updated models.User
 	a.DB.First(&updated, u.ID)
@@ -863,7 +851,6 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// and ending their memberships. The email is replaced so the address is
 	// free for a new account, and the session version is bumped so open
 	// sessions end.
-	var emailed []uint
 	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 			return err
@@ -871,8 +858,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := revokeAccountTokens(tx, u.ID); err != nil {
 			return err
 		}
-		ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
-		emailed = append(emailed, ids...)
+		_, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 		if err != nil {
 			return err
 		}
@@ -895,12 +881,8 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		// The deleted account no longer counts, so its seats and childcare
 		// spots are free: promote waiters now (Whittler, PR 109).
-		promoted, err := a.promoteOnDisable(tx, u.ID)
-		if err != nil {
-			return err
-		}
-		emailed = append(emailed, promoted...)
-		return nil
+		_, err = a.promoteOnDisable(tx, u.ID)
+		return err
 	})
 	if needSuccessors(c, err) {
 		return
@@ -909,7 +891,6 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not delete user")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 

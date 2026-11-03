@@ -435,7 +435,6 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	}
 	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
 	var impact visibilityImpactJSON
-	var emailed []uint
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
@@ -465,8 +464,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.Openness(vis) < policy.Openness(oldVis) {
-			ids, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
-			emailed = append(emailed, ids...)
+			_, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -477,11 +475,10 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 				return err
 			}
 			for i := range dates {
-				ids, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				_, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
 				if err != nil {
 					return err
 				}
-				emailed = append(emailed, ids...)
 			}
 		}
 		*ev = locked
@@ -504,8 +501,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			return err
 		}
 		if action == audit.VisibilityOverride && f.group != nil {
-			ids, err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
-			emailed = append(emailed, ids...)
+			_, err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
 			return err
 		}
 		return nil
@@ -522,7 +518,6 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update visibility")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	f.view.Visibility = vis
 	c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
 }

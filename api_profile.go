@@ -1203,7 +1203,6 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		return
 	}
 	person.HouseholdID, person.CreatedBy = household.ID, me.ID
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockHousehold(tx, household.ID); err != nil {
 			return err
@@ -1213,11 +1212,10 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		}
 		meta := map[string]any{"personId": person.ID, "kind": person.Kind}
 		if policy.NeedsGuardianLink(person.Kind) {
-			link, ids, err := createGuardianLink(tx, me.ID, &person)
+			link, _, err := createGuardianLink(tx, me.ID, &person)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 			meta["guardianLinkId"] = link.ID
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonAdded,
@@ -1227,7 +1225,6 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not add that person")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	row, err := a.householdPersonRow(a.DB, &person, me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
@@ -1339,7 +1336,6 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	if body.PhotoConsent != nil {
 		updates["photo_consent"] = *body.PhotoConsent
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockHousehold(tx, person.HouseholdID); err != nil {
 			return err
@@ -1406,17 +1402,15 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 				return err
 			}
 		case !policy.NeedsGuardianLink(oldKind) && policy.NeedsGuardianLink(newKind):
-			_, ids, err := createGuardianLink(tx, me.ID, person)
+			_, _, err := createGuardianLink(tx, me.ID, person)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
-		ids, err := a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
+		_, err := a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
-		emailed = append(emailed, ids...)
 		fields := []string{}
 		for key := range updates {
 			fields = append(fields, key)
@@ -1432,7 +1426,6 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		registrationError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	var fresh models.HouseholdPerson
 	if err := a.DB.First(&fresh, person.ID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
@@ -1455,7 +1448,6 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockHousehold(tx, household.ID); err != nil {
 			return err
@@ -1476,11 +1468,10 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
 			return err
 		}
-		ids, err := a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
+		_, err = a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
-		emailed = append(emailed, ids...)
 		if err := revokeGuardianLinks(tx, c, me.ID, person); err != nil {
 			return err
 		}
@@ -1499,6 +1490,5 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not remove that person")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }

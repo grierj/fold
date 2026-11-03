@@ -105,7 +105,9 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   same transaction as the change and its `AuditLog` row. The kind registry
   (`internal/notify/kinds.go`) never looks anything up, so the caller decides what the recipient
   may see (pass a group's name, place or link only when `canSeeGroupIn` says so). Close tasks
-  (`waiting`) with `notify.Resolve` wherever the subject is decided.
+  (`waiting`) with `notify.Resolve` wherever the subject is decided. `Send` also writes the delivery
+  intent in that transaction (`BellOnly` records the bell row alone); the `notify.deliver` job sends
+  the email and push after commit, so callers never deliver a notice themselves (R6).
 - Guest registration (C5, PLAN M1.4): the rule is `policy.CanRegisterGuest`; never widen
   `CanRegisterEvent` to a nil person, and never load a guest row as an actor (`asPerson` would
   treat it as signed in). A submit stores only a `guest_signups` row; the guest `User`
@@ -149,7 +151,7 @@ date changes within 24 hours go at once; more than 20 optional pushes an hour ar
 (slice c1) has no `fetch` handler, so it can never serve a stale shell after logout. A kind
 pushes only with `AllowPush` and its own short `PushRender` (stored on the row, never the bell
 body cut short; safety kinds get the safe line, titled with `site_name` at send, DEC-134);
-`deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. Announcement
+the `notify.deliver` job `notify.Send` queues does it. Announcement
 pushes (M3.13d2, `messages_push.go`) are `message_recipients` rows with `channel = 'push'`; a
 message's status, counts, settling, reaper and Try again read its email rows only, so filter
 `channel = 'email'` in any new query over a message's rows. The 2-hour push reminder (M3.13d3,
@@ -302,6 +304,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
 | Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
+| Notices are delivered by the `notify.deliver` job `notify.Send` queues, never by a caller; only listed files call the mailer | `TestNoticesAreDeliveredBySendNotByCallers`, `TestNoticeGuardCatchesPostCommitDelivery` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |

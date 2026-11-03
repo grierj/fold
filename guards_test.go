@@ -1170,3 +1170,93 @@ func TestRegistrationQueriesUseSubjectScope(t *testing.T) {
 		}
 	}
 }
+
+// R6 (M7.5): notify.Send writes a durable delivery intent in the caller's
+// transaction and the notify.deliver job it queues sends the email and the
+// push. No caller delivers a notice itself after commit, and nothing outside
+// the files below talks to the mailer.
+var legacyNoticeDeliveryRe = regexp.MustCompile(`\b(deliverNotificationEmails|deliverNotificationEmail|recordDelivery|queuePushDeliveries)\b`)
+
+// mailerCallRe matches a direct send through the mailer or a tracked sender.
+var mailerCallRe = regexp.MustCompile(`\.Mailer\.Send\(|\.SendEmail\(`)
+
+// mailerSendFiles may call the mailer directly, each with its reason. Files
+// of the direct-mail group are the account and invitation mails that are not
+// notices (they shrink as they move to notify.Send).
+var mailerSendFiles = map[string]string{
+	"notify_deliver.go":           "the notify.deliver job sends notice mail",
+	"messages_send.go":            "announcement mail goes through its own send path",
+	"api_message_preview.go":      "the composer's test send is synchronous by design (brief section 4)",
+	"api_auth.go":                 "direct mail: password reset and sign-in links",
+	"api_account_requests.go":     "direct mail: account request and setup links",
+	"api_invitations.go":          "direct mail: invitations into Fold",
+	"api_household_conversion.go": "direct mail: household conversion invitation",
+	"api_profile.go":              "direct mail: address change confirmation",
+	"api_guest.go":                "direct mail: guest verification and manage links",
+	"api_guardian_email.go":       "direct mail: guardian consent link",
+}
+
+// noticeDeliveryViolations scans one production file's source. The legacy
+// identifiers fail anywhere. A mailer call fails outside mailerSendFiles
+// when checkMailer is set (the root package; internal/ implements the
+// senders).
+func noticeDeliveryViolations(file, src string, checkMailer bool) []string {
+	var bad []string
+	for i, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		at := file + " line " + itoa(uint(i+1)) + ": " + strings.TrimSpace(line)
+		if legacyNoticeDeliveryRe.MatchString(line) {
+			bad = append(bad, at+" (write the notice with notify.Send; delivery is automatic (R6))")
+		}
+		if _, ok := mailerSendFiles[filepath.Base(file)]; checkMailer && mailerCallRe.MatchString(line) && !ok {
+			bad = append(bad, at+" (mail a notice with notify.Send; a direct mailer call needs an entry in mailerSendFiles with its reason)")
+		}
+	}
+	return bad
+}
+
+func TestNoticesAreDeliveredBySendNotByCallers(t *testing.T) {
+	var files []string
+	for _, pattern := range []string{"*.go", "internal/*/*.go", "internal/*/*/*.go"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matches...)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range noticeDeliveryViolations(f, string(src), !strings.Contains(f, "/")) {
+			t.Error(v)
+		}
+	}
+	for f := range mailerSendFiles {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("mailerSendFiles names %s, which does not exist: %v", f, err)
+		}
+	}
+}
+
+// The scan catches a handler that delivers a notice after commit, and a
+// direct mailer call from a file with no reason to hold one.
+func TestNoticeGuardCatchesPostCommitDelivery(t *testing.T) {
+	post := "\tids, err := notifyThing(tx)\n\ta.deliverNotificationEmails(ids)\n"
+	if len(noticeDeliveryViolations("api_example.go", post, true)) != 1 {
+		t.Fatal("guard missed a post-commit deliverNotificationEmails call")
+	}
+	mailer := "\terr := a.Mailer.Send(ctx, msg)\n"
+	if len(noticeDeliveryViolations("api_example.go", mailer, true)) != 1 {
+		t.Fatal("guard missed a mailer call from a file outside the allow-list")
+	}
+	if len(noticeDeliveryViolations("notify_deliver.go", mailer, true)) != 0 {
+		t.Fatal("guard flagged an allow-listed file")
+	}
+}

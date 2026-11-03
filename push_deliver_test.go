@@ -195,11 +195,6 @@ func TestQueuePushForSkipsNoticesThatDoNotPush(t *testing.T) {
 			if rows := pushJobsFor(t, app, id); len(rows) != 0 {
 				t.Fatalf("queued %d push jobs", len(rows))
 			}
-			if err := app.DB.Create(&models.NotificationDelivery{
-				NotificationID: id, Channel: models.DeliveryEmail, UserID: u.ID, Status: models.DeliveryQueued,
-			}).Error; err != nil {
-				t.Fatal(err)
-			}
 			if err := app.deliverOneNotification(context.Background(), id); err != nil {
 				t.Fatal(err)
 			}
@@ -329,7 +324,7 @@ func TestPushDeliverRecordsOneSentRowForSeveralDevices(t *testing.T) {
 		t.Fatalf("delivery %q", status)
 	}
 	var rows int64
-	app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", n).Count(&rows)
+	app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ? AND channel = ?", n, models.DeliveryPush).Count(&rows)
 	if rows != 1 {
 		t.Fatalf("%d delivery rows", rows)
 	}
@@ -531,7 +526,7 @@ func TestPushDeliverSkipsWhatIsNoLongerThere(t *testing.T) {
 		t.Fatalf("sends %v", f.sent)
 	}
 	var dead int64
-	app.DB.Model(&models.Job{}).Where("status <> ?", models.JobDone).Count(&dead)
+	app.DB.Model(&models.Job{}).Where("kind = ? AND status <> ?", kindPushDeliver, models.JobDone).Count(&dead)
 	if dead != 0 {
 		t.Fatalf("%d jobs not done", dead)
 	}
@@ -575,8 +570,7 @@ func TestRenderPushUsesTheStoredPushText(t *testing.T) {
 }
 
 // After commit, every notify.Send caller's rows of a pushed kind queue one
-// push.deliver per device (deliverNotificationEmails does it beside the
-// email), with no delay; a kind that doesn't push, or a person with no
+// push.deliver per device through notify.deliver, with no delay; a kind that doesn't push, or a person with no
 // device, queues nothing.
 func TestNotificationsQueueOnePushPerDevice(t *testing.T) {
 	app, f := pushTestApp(t)
@@ -584,8 +578,8 @@ func TestNotificationsQueueOnePushPerDevice(t *testing.T) {
 	phone, laptop := newPushDevice(t, app, pat, "phone"), newPushDevice(t, app, pat, "laptop")
 	pushed := sendNotice(t, app, notify.GroupApproved, pat)
 	quiet := sendNotice(t, app, notify.MembershipLeft, pat)
-	nobody := sendNotice(t, app, notify.GroupApproved, lee) // lee has no device
-	app.deliverNotificationEmails([]uint{pushed, quiet, nobody})
+	sendNotice(t, app, notify.GroupApproved, lee) // lee has no device
+	drainNotices(t, app)
 
 	var queued []models.Job
 	app.DB.Where("kind = ?", kindPushDeliver).Order("id").Find(&queued)
@@ -599,7 +593,7 @@ func TestNotificationsQueueOnePushPerDevice(t *testing.T) {
 		}
 	}
 	// Delivering the same rows again (a merge, a retry) queues nothing new.
-	app.deliverNotificationEmails([]uint{pushed})
+	drainNotices(t, app)
 	var again int64
 	app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Count(&again)
 	if again != 2 {
@@ -639,7 +633,7 @@ func TestCancellingADatePushesToRegistrants(t *testing.T) {
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("cancel notices %v %v", ids, err)
 	}
-	app.deliverNotificationEmails(ids)
+	drainNotices(t, app)
 	drainJobs(t, app)
 	if f.count(phone.path) != 1 {
 		t.Fatalf("sends %v", f.sent)

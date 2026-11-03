@@ -172,13 +172,6 @@ func TestPostmarkSoftBounceAndComplaint(t *testing.T) {
 	}
 }
 
-func outboxTo(t *testing.T, app *App, to string) []models.MailOutbox {
-	t.Helper()
-	var rows []models.MailOutbox
-	app.DB.Where("to_address = ?", to).Find(&rows)
-	return rows
-}
-
 // A report that beats its delivery row is retried for a couple of minutes,
 // then taken to be about mail Fold has no row for.
 func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {

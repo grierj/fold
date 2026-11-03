@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/notify"
 	"fold/models"
 )
 
@@ -59,5 +61,67 @@ func TestDailyTasksQueueOncePerChurchDay(t *testing.T) {
 	app.DB.Where("status <> ?", models.JobDone).Find(&failed)
 	if len(failed) != 0 {
 		t.Fatalf("daily tasks failed: %+v", failed)
+	}
+}
+
+// The notices the nightly extender writes carry their own delivery intent, so
+// a crash after the extend commits cannot lose their emails: every notice has
+// its notify.deliver job before anything else runs, and a drain sends them.
+func TestExtendedDatesNoticesSurviveCrash(t *testing.T) {
+	f := newBookingFixture(t)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=4")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 4 {
+		t.Fatalf("book the series: %d %+v", code, out)
+	}
+	// The last two dates go missing (as if not yet generated), and another
+	// event takes the hall on the last one, so the extender must tell the leader.
+	third, fourth := feedDate(f.startOn.AddDate(0, 0, 15)), feedDate(f.startOn.AddDate(0, 0, 22))
+	if err := f.app.DB.Where("event_id = ? AND original_date IN ?", series.ID, []string{third, fourth}).Delete(&models.EventOccurrence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	other := createFeedEvent(t, f.leader, f.group, "Other", f.startOn.AddDate(0, 0, 22), "")
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(other.ID)+"/dates/"+fourth+"/room", map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("book the other event: %d %s", w.Code, w.Body.String())
+	}
+	drainNotices(t, f.app) // the setup's own notices are not under test
+	var lastBefore uint
+	f.app.DB.Model(&models.Notification{}).Select("COALESCE(MAX(id), 0)").Scan(&lastBefore)
+
+	var extend *jobs.Kind
+	for _, k := range f.app.dailyKinds() {
+		if k.Name == "occurrences.extend" {
+			k := k
+			extend = &k
+		}
+	}
+	if extend == nil {
+		t.Fatal("no occurrences.extend task")
+	}
+	// Run it, and nothing after: no post-commit delivery call exists.
+	if err := extend.Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var notices []models.Notification
+	if err := f.app.DB.Where("kind = ? AND id > ?", notify.RoomLost, lastBefore).Order("id").Find(&notices).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) == 0 {
+		t.Fatal("the extender wrote no notice for the date that lost its room")
+	}
+	for _, n := range notices {
+		var jobsFound int64
+		f.app.DB.Model(&models.Job{}).Where("kind = ? AND unique_key = ? AND status = ?", notify.DeliverKind, notify.DeliverKey(n.ID), models.JobQueued).Count(&jobsFound)
+		if jobsFound != 1 {
+			t.Fatalf("notice %d (%s) has %d queued notify.deliver jobs; want 1", n.ID, n.Kind, jobsFound)
+		}
+	}
+	if m := latestEmail(t, f.app, f.leaderUser.Email); m.Subject == "" {
+		t.Fatal("the drain sent no email to the leader")
+	}
+	for _, n := range notices {
+		if d := emailDeliveryOf(t, f.app, n.ID); d.Status == models.DeliveryQueued {
+			t.Fatalf("notice %d is still queued after the drain", n.ID)
+		}
 	}
 }

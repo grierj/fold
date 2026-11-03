@@ -260,7 +260,6 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	}
 	var confirmed, overlapped int
 	lost := []string{}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		req, ev, err := lockRequest(tx, id)
 		if err != nil {
@@ -330,13 +329,12 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 		if len(lost) > 0 {
 			note += fmt.Sprintf(" %s busy now: pick another room for %s on the event page.", isAre(len(lost)), themIt(len(lost)))
 		}
-		emailed, err = notifyRoomDecided(tx, ev, me.ID, "approved", note)
+		_, err = notifyRoomDecided(tx, ev, me.ID, "approved", note)
 		return err
 	})
 	if a.requestFailed(c, id, err) {
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"confirmed": confirmed, "overlapped": overlapped, "lost": lost})
 }
 
@@ -365,7 +363,6 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "admin required")
 		return
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		req, ev, err := lockRequest(tx, id)
 		if err != nil {
@@ -404,13 +401,12 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 		if reason != "" {
 			note = room.Name + " wasn't approved: " + reason + " Pick another room on the event page."
 		}
-		emailed, err = notifyRoomDecided(tx, ev, me.ID, "not approved", note)
+		_, err = notifyRoomDecided(tx, ev, me.ID, "not approved", note)
 		return err
 	})
 	if a.requestFailed(c, id, err) {
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 

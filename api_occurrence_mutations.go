@@ -271,7 +271,6 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		decoder.DisallowUnknownFields()
 		valid = valid && decoder.Decode(&input) == nil && validAnswer(input.Status)
 	}
-	var mailed []uint
 	var result registrationJSON
 	refused := false
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -369,28 +368,25 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		ids, err := a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, actor.ID, c.ClientIP())
+		_, err = a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, actor.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
-		mailed = append(mailed, ids...)
 		if reason != "" {
-			ids, err = endOccurrenceAccessIn(tx, &access, reason, &actor.ID, now, c.ClientIP())
+			_, err = endOccurrenceAccessIn(tx, &access, reason, &actor.ID, now, c.ClientIP())
 			if err != nil {
 				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if operation == "block" {
 			change := contactChange{EventID: access.EventID}
 			if access.OrganizerType == policy.ContactGroup {
 				change = contactChange{GroupID: access.OrganizerID}
 			}
-			ids, err = a.reconcileContacts(tx, now, change)
+			_, err = a.reconcileContacts(tx, now, change)
 			if err != nil {
 				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if err := tx.First(&reg, reg.ID).Error; err != nil {
 			return err
@@ -419,7 +415,6 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		registrationError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	if refused {
 		jsonError(c, 404, "event not found")
 		return
@@ -522,11 +517,9 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	// The domain locks may have waited across expiry or a birthday. Refresh
 	// completion time and eligibility here, not just when the gate was taken.
 	op.now = time.Now().UTC().Truncate(time.Microsecond)
-	ids, err := a.reconcileOccurrenceAsk(tx, r, op.now)
-	if err != nil {
+	if _, err := a.reconcileOccurrenceAsk(tx, r, op.now); err != nil {
 		return err
 	}
-	op.mailed = append(op.mailed, ids...)
 	facts, err = a.loadOccurrenceAddFacts(tx, *r, op.now)
 	if err != nil {
 		return err
@@ -541,7 +534,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "options_changed", ip)
 	}
 	count, ages := r.AddChildcareCount, r.AddChildcareAgesNote
-	registration, ids, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, r.RequesterID,
+	registration, _, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, r.RequesterID,
 		managerRegistrationOptions{approved: &verifiedOccurrenceAdd{requestID: r.ID}, mode: r.AddAttendanceMode, guests: r.AddGuestCount, overCapacity: r.AddOverCapacity, care: childcareRequest{ChildcareCount: &count, ChildcareAgesNote: &ages}}, op.now, ip)
 	if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) {
 		op.completionProblem = "capacity"
@@ -553,24 +546,20 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	if err != nil {
 		return err
 	}
-	op.mailed = append(op.mailed, ids...)
 	r.Status, r.CompletedAt, r.CompletedTargetID = policy.ContactGranted, &op.now, &registration.ID
 	if err := tx.Save(r).Error; err != nil {
 		return err
 	}
-	ids, err = a.recordManagerOccurrenceAdd(tx, &ev, locked, registration, r.RequesterID, &r.ID, r.NeedsAdmin, op.now, ip)
-	if err != nil {
+	if _, err := a.recordManagerOccurrenceAdd(tx, &ev, locked, registration, r.RequesterID, &r.ID, r.NeedsAdmin, op.now, ip); err != nil {
 		return err
 	}
-	op.mailed = append(op.mailed, ids...)
 	if err := contactAudit(tx, &op.actor.ID, audit.ContactGranted, *r, "", ip); err != nil {
 		return err
 	}
 	if err := resolveContactTasks(tx, *r, &op.actor.ID, r.Status); err != nil {
 		return err
 	}
-	ids, err = contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID}, "completed")
-	op.mailed = append(op.mailed, ids...)
+	_, err = contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID}, "completed")
 	return err
 }
 

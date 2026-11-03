@@ -481,10 +481,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		conversionError(c, err)
 		return
 	}
-	var mailed []uint
 	var err error
 	for attempt := 0; attempt < 4; attempt++ {
-		mailed = nil
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			discovery, err := liveInvitation(tx, raw)
 			if err != nil || discovery.HouseholdPersonID == nil {
@@ -554,7 +552,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
 				return err
 			}
-			mailed, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
+			_, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -576,23 +574,22 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		conversionError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingApproval: true})
 }
 
 func userJSONPtr(u userJSON) *userJSON { return &u }
 
 // moveHouseholdConversion runs after user and household locks are held.
-func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, passwordHash *string, result *models.User, mailed *[]uint) error {
+func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, passwordHash *string, result *models.User) error {
 	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: passwordHash}
 	if err := tx.Create(&user).Error; err != nil {
 		return err
 	}
 	*result = user
-	return a.transferHouseholdConversion(tx, inv, person, locked, ids, &user, c.ClientIP(), mailed)
+	return a.transferHouseholdConversion(tx, inv, person, locked, ids, &user, c.ClientIP())
 }
 
-func (a *App) transferHouseholdConversion(tx *gorm.DB, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, user *models.User, ip string, mailed *[]uint) error {
+func (a *App) transferHouseholdConversion(tx *gorm.DB, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, user *models.User, ip string) error {
 	var occurrenceIDs []uint
 	if err := tx.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Distinct("occurrence_id").Order("occurrence_id").Pluck("occurrence_id", &occurrenceIDs).Error; err != nil {
 		return err
@@ -652,14 +649,13 @@ func (a *App) transferHouseholdConversion(tx *gorm.DB, inv *models.Invitation, p
 			recipients = append(recipients, id)
 		}
 	}
-	notices, err := notify.Send(tx, notify.Msg{Kind: notify.HouseholdConverted, To: recipients, SubjectType: "household", SubjectID: person.HouseholdID, Link: "/profile", Vars: notify.Vars{Person: user.PublicName()}, Data: meta, DedupeKey: fmt.Sprintf("household.converted:%d", inv.ID)})
-	*mailed = append(*mailed, notices...)
+	_, err := notify.Send(tx, notify.Msg{Kind: notify.HouseholdConverted, To: recipients, SubjectType: "household", SubjectID: person.HouseholdID, Link: "/profile", Vars: notify.Vars{Person: user.PublicName()}, Data: meta, DedupeKey: fmt.Sprintf("household.converted:%d", inv.ID)})
 	return err
 }
 
 // approveHouseholdConversion reuses the participant locks acquired before the
 // account-request decision. A changed lock set refuses the decision.
-func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *models.AccountRequest, locked map[uint]*models.User, mailed *[]uint) (uint, error) {
+func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *models.AccountRequest, locked map[uint]*models.User) (uint, error) {
 	if req.HouseholdPersonID == nil || req.InvitationID == nil || req.PasswordHash == nil {
 		return 0, errConversionUnavailable
 	}
@@ -729,16 +725,15 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 			if guardian == nil || guardian.Status != models.UserActive || guardian.AccountType == models.AccountTeen || guardian.DeletedAt.Valid {
 				continue
 			}
-			notices, err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", c.ClientIP())
+			_, err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", c.ClientIP())
 			if err != nil {
 				return 0, err
 			}
-			*mailed = append(*mailed, notices...)
 		}
 		return user.ID, nil
 	}
 	var user models.User
-	if err := a.moveHouseholdConversion(tx, c, &inv, &person, locked, fresh, req.PasswordHash, &user, mailed); err != nil {
+	if err := a.moveHouseholdConversion(tx, c, &inv, &person, locked, fresh, req.PasswordHash, &user); err != nil {
 		return 0, err
 	}
 	return user.ID, nil

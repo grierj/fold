@@ -1,6 +1,9 @@
 package notify
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -564,4 +567,205 @@ func TestStateChangesLeaveUpdatedAtAlone(t *testing.T) {
 		t.Fatalf("resolve %d %v", n, err)
 	}
 	unchanged("resolve")
+}
+
+// Delivery intent and the job either commit with the bell or roll back with it.
+func TestSendWritesDeliveryIntentInTransaction(t *testing.T) {
+	register(Kind{Key: "test.outbox.batch", Category: CatGroups, AllowEmail: true, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return v.Actor + " " + itoa(v.Count), "" }})
+	defer delete(registry, "test.outbox.batch")
+	for _, tc := range []struct {
+		name, kind                        string
+		rollback, repeat, merge, bellOnly bool
+		want                              int64
+	}{
+		{name: "commit", kind: GroupPending, want: 1},
+		{name: "rollback", kind: GroupPending, rollback: true},
+		{name: "neither channel", kind: PushDevicesOff},
+		{name: "dedupe", kind: GroupPending, repeat: true, want: 1},
+		{name: "merge", kind: "test.outbox.batch", merge: true, want: 1},
+		{name: "bell only", kind: GroupPending, bellOnly: true, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid := user(t, db, "recipient")
+			m := Msg{Kind: tc.kind, To: []uint{uid}, Link: "/admin", BellOnly: tc.bellOnly, Vars: Vars{Actor: "Pat"}}
+			if tc.repeat {
+				m.DedupeKey = "once"
+			}
+			if tc.merge {
+				m.GroupKey = "joined"
+			}
+			var ids []uint
+			rollback := errors.New("rollback")
+			err := db.Transaction(func(tx *gorm.DB) error {
+				var err error
+				ids, err = Send(tx, m)
+				if err != nil {
+					return err
+				}
+				if len(ids) != 1 {
+					t.Fatalf("first send: %v", ids)
+				}
+				if tc.rollback {
+					return rollback
+				}
+				return nil
+			})
+			if !errors.Is(err, rollback) && err != nil {
+				t.Fatal(err)
+			}
+			if tc.repeat || tc.merge {
+				if err := db.Transaction(func(tx *gorm.DB) error {
+					second, err := Send(tx, m)
+					if err != nil {
+						return err
+					}
+					if tc.repeat && len(second) != 0 {
+						t.Fatalf("dedupe IDs: %v", second)
+					}
+					if tc.merge && (len(second) != 1 || second[0] != ids[0]) {
+						t.Fatalf("merge IDs: %v", second)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var deliveries []models.NotificationDelivery
+			if err := db.Find(&deliveries).Error; err != nil {
+				t.Fatal(err)
+			}
+			if int64(len(deliveries)) != tc.want {
+				t.Fatalf("deliveries: %+v, want %d", deliveries, tc.want)
+			}
+			if tc.want == 1 {
+				d := deliveries[0]
+				status, reason := models.DeliveryQueued, ""
+				if tc.bellOnly {
+					status, reason = models.DeliverySuppressed, "bell only"
+				}
+				if d.NotificationID != ids[0] || d.UserID != uid || d.Channel != models.DeliveryEmail || d.Status != status || d.Reason != reason {
+					t.Fatalf("delivery: %+v", d)
+				}
+			}
+			var queued []models.Job
+			if err := db.Find(&queued).Error; err != nil {
+				t.Fatal(err)
+			}
+			wantJobs := tc.want
+			if tc.bellOnly {
+				wantJobs = 0
+			}
+			if int64(len(queued)) != wantJobs {
+				t.Fatalf("jobs: %+v, want %d", queued, wantJobs)
+			}
+			if wantJobs == 1 {
+				j := queued[0]
+				var payload struct {
+					NotificationID uint `json:"notificationId"`
+				}
+				if err := json.Unmarshal([]byte(j.Payload), &payload); err != nil || payload.NotificationID != ids[0] {
+					t.Fatalf("payload %s: %v", j.Payload, err)
+				}
+				if j.Kind != DeliverKind || j.UniqueKey == nil || *j.UniqueKey != DeliverKey(ids[0]) || j.Status != models.JobQueued || j.MaxAttempts != 8 || j.RunAt.After(time.Now()) {
+					t.Fatalf("job: %+v", j)
+				}
+			}
+		})
+	}
+}
+
+func TestMergeWaitsForAnInFlightSend(t *testing.T) {
+	register(Kind{Key: "test.outbox.lock", Category: CatGroups, AllowEmail: true, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return v.Actor + " " + itoa(v.Count), "" }})
+	defer delete(registry, "test.outbox.lock")
+	db := testdb.Shared(t)
+	uid := user(t, db, "recipient")
+	m := Msg{Kind: "test.outbox.lock", To: []uint{uid}, Link: "/groups/1", GroupKey: "joined", Vars: Vars{Actor: "Pat"}}
+	ids, err := Send(db, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	var held uint
+	if err := tx.Raw("SELECT id FROM notification_deliveries WHERE notification_id = ? AND channel = 'email' FOR UPDATE", ids[0]).Scan(&held).Error; err != nil {
+		t.Fatal(err)
+	}
+	if held == 0 {
+		t.Fatal("no delivery to hold")
+	}
+	m.Vars.Actor = "Sam"
+	err = db.Transaction(func(merging *gorm.DB) error {
+		if err := merging.Exec("SET LOCAL lock_timeout = '200ms'").Error; err != nil {
+			return err
+		}
+		_, err := Send(merging, m)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Fatalf("merge while sending: %v", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(merging *gorm.DB) error { _, err := Send(merging, m); return err }); err != nil {
+		t.Fatal(err)
+	}
+	var n models.Notification
+	if err := db.First(&n, ids[0]).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n.EmailTitle != "Sam 2" || n.BatchCount != 2 {
+		t.Fatalf("merged: %+v", n)
+	}
+	var count int64
+	if err := db.Model(&models.Job{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("merge added a job: %d", count)
+	}
+}
+
+// The channel ledger and jobs inserts stay batched as the admin list grows.
+func TestSendBatchesDeliveryIntent(t *testing.T) {
+	db := testdb.Shared(t)
+	var recipients []uint
+	for i := 0; i < 50; i++ {
+		recipients = append(recipients, user(t, db, fmt.Sprintf("admin%d", i)))
+	}
+	writes := 0
+	const callback = "test:delivery_writes"
+	if err := db.Callback().Raw().Before("gorm:raw").Register(callback, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		if strings.HasPrefix(sql, "INSERT INTO notification_deliveries ") || strings.HasPrefix(sql, "INSERT INTO jobs ") {
+			writes++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Raw().Remove(callback)
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, err := Send(tx, Msg{Kind: GroupPending, To: recipients, Link: "/admin"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 2 {
+		t.Fatalf("50-admin delivery fan-out used %d statements, want 2", writes)
+	}
+	for _, table := range []any{&models.NotificationDelivery{}, &models.Job{}} {
+		var count int64
+		if err := db.Model(table).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 50 {
+			t.Fatalf("%T rows: %d", table, count)
+		}
+	}
 }

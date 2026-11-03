@@ -117,9 +117,9 @@ type Kind struct {
 	BatchWindow time.Duration // 0: never batched
 	Actions     []Action      // the inline allow-list
 	Render      func(Vars) (title, body string)
-	// AllowEmail sends a transactional email through the minimal sender
-	// right after the writing transaction commits (5.12, M1.2). The send
-	// is recorded in notification_deliveries.
+	// AllowEmail enables email delivery by the notify.deliver job that Send
+	// queues in the writing transaction (5.12, M1.2). Delivery is retried
+	// with backoff and recorded in notification_deliveries.
 	AllowEmail bool
 	// RenderEmail renders the email title and body. Nil means
 	// RenderForEmail: the RenderEmailSafe link-only variant when the

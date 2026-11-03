@@ -195,7 +195,6 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		actor, holder, guardian, err := lockAdminHouseholdParticipants(tx, apiUser(c), id, body.GuardianUserID)
 		if err != nil {
@@ -228,11 +227,10 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 		}
 		meta := map[string]any{"personId": person.ID, "kind": person.Kind, "holderUserId": holder.ID}
 		if policy.NeedsGuardianLink(person.Kind) {
-			link, ids, err := createGuardianLink(tx, guardian.ID, &person)
+			link, _, err := createGuardianLink(tx, guardian.ID, &person)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 			meta["guardianLinkId"], meta["guardianUserId"] = link.ID, guardian.ID
 		}
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.HouseholdPersonAdded, TargetType: "household", TargetID: account.HouseholdID, Meta: meta, IP: c.ClientIP()})
@@ -241,7 +239,6 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 		a.adminHouseholdError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	row, err := a.householdPersonRow(a.DB, &person, apiUser(c))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/jobs"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -54,6 +55,8 @@ type Msg struct {
 	// endpoint still checks eligibility itself; this only hides the
 	// button.
 	SuppressActions bool
+	// BellOnly records the notice without emailing or pushing it.
+	BellOnly bool
 }
 
 // ErrBadLink: a link that isn't an internal path.
@@ -69,10 +72,9 @@ func ValidLink(s string) bool {
 }
 
 // Send writes (or merges) one row per recipient, skipping the actor. It
-// returns the IDs of the rows written or merged, so the caller can deliver
-// email for AllowEmail kinds after the transaction commits (5.12, M1.2).
-// A dedupe hit writes nothing and returns no ID: the first send already
-// delivered.
+// returns the IDs of the rows written or merged for callers that need them.
+// Delivery intent is written in tx too; delivery no longer needs those IDs.
+// A dedupe hit writes nothing and returns no ID: the first send owns delivery.
 func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	k, ok := Lookup(m.Kind)
 	if !ok {
@@ -97,6 +99,7 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	now := time.Now().UTC()
 	seen := map[uint]bool{}
 	var ids []uint
+	var created []models.Notification
 	for _, uid := range m.To {
 		if uid == 0 || seen[uid] || (m.Actor != nil && *m.Actor == uid) {
 			continue
@@ -148,16 +151,65 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 		}
 		if res.RowsAffected > 0 {
 			ids = append(ids, row.ID)
+			created = append(created, row)
 		}
 	}
+	if err := QueueDelivery(tx, m.BellOnly, created...); err != nil {
+		return nil, err
+	}
 	return ids, nil
+}
+
+// DeliverKey identifies a notice's delivery job in any status.
+func DeliverKey(id uint) string { return fmt.Sprintf("%s:%d", DeliverKind, id) }
+
+// QueueDelivery writes channel intent and jobs in the caller's transaction.
+// A fan-out uses one delivery INSERT and one jobs INSERT per batch of 500.
+// Push has no queued ledger row: device outcomes own its aggregate record.
+func QueueDelivery(tx *gorm.DB, bellOnly bool, rows ...models.Notification) error {
+	now := time.Now().UTC()
+	var values []string
+	var args []any
+	var specs []jobs.Spec
+	for _, row := range rows {
+		k, ok := Lookup(row.Kind)
+		if !ok {
+			return fmt.Errorf("notify: unknown kind %q", row.Kind)
+		}
+		if k.AllowEmail {
+			status, reason := models.DeliveryQueued, ""
+			if bellOnly {
+				status, reason = models.DeliverySuppressed, "bell only"
+			}
+			values = append(values, "(?, ?, ?, ?, ?)")
+			args = append(args, row.ID, models.DeliveryEmail, row.UserID, status, reason)
+		}
+		if !bellOnly && (k.AllowEmail || k.AllowPush) {
+			specs = append(specs, jobs.Spec{
+				Kind: DeliverKind, Payload: struct {
+					NotificationID uint `json:"notificationId"`
+				}{row.ID},
+				RunAt: now, UniqueKey: DeliverKey(row.ID), MaxAttempts: 8,
+			})
+		}
+	}
+	for len(values) > 0 {
+		n := min(len(values), 500)
+		if err := tx.Exec(`INSERT INTO notification_deliveries (notification_id, channel, user_id, status, reason) VALUES `+
+			strings.Join(values[:n], ", ")+` ON CONFLICT (notification_id, channel) DO NOTHING`, args[:5*n]...).Error; err != nil {
+			return err
+		}
+		values, args = values[n:], args[5*n:]
+	}
+	_, err := jobs.EnqueueMany(tx, specs)
+	return err
 }
 
 func withCount(v Vars, n int) Vars { v.Count = n; return v }
 
 // merge folds m into an open unread row with the same group key inside the
-// kind's window, re-rendering its text with the new count (6.5). It returns
-// the merged row's ID for post-commit delivery.
+// kind's window, re-rendering its text with the new count (6.5). A merge
+// keeps the original delivery intent and returns the existing row's ID.
 func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, error) {
 	var open models.Notification
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -168,6 +220,15 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 		return false, 0, nil
 	}
 	if err != nil {
+		return false, 0, err
+	}
+	// The handler locks the delivery row, then reads the notification without
+	// a lock. Merge locks the notification, then the delivery row. The read
+	// cannot wait on our notification lock, so this order cannot deadlock.
+	// An in-flight send finishes first; its sent ledger row stays terminal.
+	var deliveryID uint
+	if err := tx.Raw(`SELECT id FROM notification_deliveries
+		WHERE notification_id = ? AND channel = 'email' FOR UPDATE`, open.ID).Scan(&deliveryID).Error; err != nil {
 		return false, 0, err
 	}
 	n := open.BatchCount + 1

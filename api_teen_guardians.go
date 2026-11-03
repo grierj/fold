@@ -100,7 +100,6 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	}
 	var teen models.User
 	res := a.DB.Where("email = ? AND account_type = ?", email, models.AccountTeen).Limit(1).Find(&teen)
-	var mailed []uint
 	if res.Error == nil && res.RowsAffected == 1 && teen.ID != me.ID {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			guardian, target, err := lockConsentUsers(tx, me.ID, teen.ID)
@@ -110,7 +109,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 			if guardian.Status != models.UserActive || guardian.SessionVersion != me.SessionVersion || !policy.CanRequestGuardianLink(asPerson(guardian)) || target.AccountType != models.AccountTeen {
 				return errGuardianUnavailable
 			}
-			mailed, err = requestTeenGuardian(tx, me.ID, teen.ID, &me.ID, "claim", c.ClientIP())
+			_, err = requestTeenGuardian(tx, me.ID, teen.ID, &me.ID, "claim", c.ClientIP())
 			return err
 		})
 	} else {
@@ -119,7 +118,6 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	if err != nil {
 		log.Printf("guardian claim: actor=%d err=%v", me.ID, err)
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{"message": guardianClaimThanks})
 }
 
@@ -222,19 +220,17 @@ func (a *App) apiGuardianChangeConsent(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	var mailed []uint
 	err = a.contactMutation(contactChange{UserID: *link.TeenUserID}, func(tx *gorm.DB) error {
 		guardian, teen, _, err := lockedTeenGuardian(tx, me.ID, *link.TeenUserID, link.ID)
 		if err != nil || guardian.SessionVersion != me.SessionVersion {
 			return errConsentForbidden
 		}
-		mailed, err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})
+		_, err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})
 		return err
 	})
 	if err != nil {
 		consentError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{})
 }

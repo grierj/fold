@@ -226,6 +226,8 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
+	// Synchronous by design: the person at the composer waits for this one
+	// test message, so it is not a notice and does not go through notify.Send.
 	err = a.Mailer.Send(ctx, mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
 		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()})
 	var suppressed *mail.ErrSuppressed

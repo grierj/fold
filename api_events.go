@@ -802,7 +802,6 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		ev.Visibility = vis
 		ev.LeaderOpened = policy.MoreOpen(vis, g.Visibility)
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := createEvent(tx, &ev); err != nil {
 			return err
@@ -826,8 +825,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 				return err
 			}
 			if ev.LeaderOpened {
-				ids, err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
-				emailed = append(emailed, ids...)
+				_, err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
 				if err != nil {
 					return err
 				}
@@ -836,8 +834,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
 			return err
 		}
-		ids, err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
-		emailed = append(emailed, ids...)
+		_, err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
 		return err
 	})
 	if createRoomFailed(c, err) {
@@ -847,7 +844,6 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create event")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	j := toEventJSON(&ev)
 	revealVideoToManager(&j, &ev) // the creator leads the group or is an admin
 	c.JSON(http.StatusCreated, gin.H{"event": j})
@@ -886,7 +882,6 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	now := time.Now().UTC()
-	var emailed []uint
 	var locked models.Event
 	// Everything that depends on the stored row is read from the locked row
 	// inside the transaction, so a concurrent edit is never overwritten with
@@ -980,8 +975,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				added = append(added, row.ID)
 			}
 		}
-		ids, err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
-		emailed = append(emailed, ids...)
+		_, err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
 		if err != nil {
 			return err
 		}
@@ -991,13 +985,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := releaseRoomBookings(tx, cancelled); err != nil {
 			return err
 		}
-		ids, err = settleDateRooms(tx, &locked, moved, append(added, restored...), &me.ID)
-		emailed = append(emailed, ids...)
+		_, err = settleDateRooms(tx, &locked, moved, append(added, restored...), &me.ID)
 		if err != nil {
 			return err
 		}
-		ids, err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
-		emailed = append(emailed, ids...)
+		_, err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
 		if err != nil {
 			return err
 		}
@@ -1030,8 +1022,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			ids, err := notifyEventChanged(tx, &locked, o, variant, me.ID)
-			emailed = append(emailed, ids...)
+			_, err := notifyEventChanged(tx, &locked, o, variant, me.ID)
 			if err != nil {
 				return err
 			}
@@ -1063,8 +1054,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					// combined notice above.
 					continue
 				}
-				ids, err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
-				emailed = append(emailed, ids...)
+				_, err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
 				if err != nil {
 					return err
 				}
@@ -1104,11 +1094,10 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				if err != nil {
 					return err
 				}
-				ids, err := a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
+				_, err = a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
 				if err != nil {
 					return err
 				}
-				emailed = append(emailed, ids...)
 			}
 		}
 		return nil
@@ -1123,7 +1112,6 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		}
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	ev = &locked
 	j := toEventJSON(ev)
 	revealVideoToManager(&j, ev) // the locked row was re-checked: only managers reach here
@@ -1206,7 +1194,6 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
-	var emailed []uint
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
 			Updates(map[string]any{"status": models.OccurrenceCancelled, "cancel_source": models.CancelSourceManual})
@@ -1221,8 +1208,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 			}
 			return res.Error
 		}
-		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
-		emailed = append(emailed, ids...)
+		_, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
 		if err != nil {
 			return err
 		}
@@ -1233,7 +1219,6 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not cancel")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -1311,7 +1296,6 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			groupLoc = g.Location // group-ok: loadManagedEvent, only managers reach here
 		}
 	}
-	var emailed []uint
 	var inst occurrenceJSON
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
@@ -1388,11 +1372,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		// Cancellation and promotion use the final title, time and seat pools
 		// even when this request edits visibility and capacity together.
 		if visibilitySet {
-			ids, err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
+			_, err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		// event.changed fans out when the date's time or place actually
 		// changed: one item per going or waitlisted person, with the
@@ -1401,8 +1384,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		placeChanged := newPlace != oldPlace
 		if timeChanged {
 			// The date's room moves with it, or is lost to a conflict (9.2).
-			ids, err := settleDateRooms(tx, ev, []uint{o.ID}, nil, &me.ID)
-			emailed = append(emailed, ids...)
+			_, err := settleDateRooms(tx, ev, []uint{o.ID}, nil, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1415,8 +1397,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			if timeChanged && placeChanged {
 				variant = "time and place"
 			}
-			ids, err := notifyEventChanged(tx, ev, &o, variant, me.ID)
-			emailed = append(emailed, ids...)
+			_, err := notifyEventChanged(tx, ev, &o, variant, me.ID)
 			if err != nil {
 				return err
 			}
@@ -1431,11 +1412,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			!intPtrEqual(events.EffectiveRemoteCapacity(ev.RemoteCapacity, oldRemoteOverride),
 				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
-			ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
+			_, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
 		inst.Room = a.occurrenceRooms(a.DB, []uint{o.ID})[o.ID]
@@ -1496,7 +1476,6 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update this date")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
 }
 

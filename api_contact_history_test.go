@@ -349,6 +349,8 @@ func TestContactHistoryCursorExportBoundsAndTypedAttribution(t *testing.T) {
 			t.Fatal("unstable exclusive cursor")
 		}
 	}
+	// The client's notice drain is harness work, not handler reads.
+	client.holdNotices = true
 	n := collectionReadCounter(t, app.DB)
 	*n = 0
 	getHistory(t, client, 11, "?limit=100")

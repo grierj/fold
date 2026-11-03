@@ -45,10 +45,9 @@ type contactChange struct {
 
 // contactMutation retains the caller's transaction boundary, and ends access
 // using its own writes before commit. A failed audit rolls back the domain
-// mutation too. Notifications are delivered only after the joint commit.
+// mutation too. Notices queue their own delivery in the same transaction.
 func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) error {
-	var mailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
@@ -56,23 +55,16 @@ func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) err
 		// Persist expiry under the shared gate before the event/occurrence rows
 		// change, so a move cannot resurrect authority that already elapsed.
 		if change.EventID != 0 {
-			ids, err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change)
-			if err != nil {
+			if _, err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
 				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if err := fn(tx); err != nil {
 			return err
 		}
-		ids, err := a.reconcileContacts(tx, time.Now().UTC(), change)
-		mailed = append(mailed, ids...)
+		_, err := a.reconcileContacts(tx, time.Now().UTC(), change)
 		return err
 	})
-	if err == nil {
-		a.deliverNotificationEmails(mailed)
-	}
-	return err
 }
 
 func contactScope(r models.ContactRequest) policy.ContactScope {
@@ -408,8 +400,7 @@ func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange
 }
 
 func (a *App) sweepContacts(ctx context.Context, now time.Time) error {
-	var mailed []uint
-	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var locked bool
 		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", contactLockID).Scan(&locked).Error; err != nil {
 			return err
@@ -417,14 +408,9 @@ func (a *App) sweepContacts(ctx context.Context, now time.Time) error {
 		if !locked {
 			return nil
 		}
-		var err error
-		mailed, err = a.reconcileContacts(tx, now, contactChange{})
+		_, err := a.reconcileContacts(tx, now, contactChange{})
 		return err
 	})
-	if err == nil {
-		a.deliverNotificationEmails(mailed)
-	}
-	return err
 }
 
 // addRequestPolicy is deliberately separate from contactScope: an ask never

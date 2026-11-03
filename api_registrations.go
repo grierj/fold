@@ -27,8 +27,8 @@ import (
 // seats runs in one transaction that locks the occurrence row first
 // (SELECT ... FOR UPDATE), recounts seats inside the lock, writes, runs
 // promotion when a seat freed or capacity grew, and writes audit and
-// notification rows. Email delivery runs after commit through
-// deliverNotificationEmails. M1.8 slice 2 adds the second seat pool:
+// notification rows. Each notice carries its own email delivery
+// intent in notify.Send's transaction. M1.8 slice 2 adds the second seat pool:
 // remote registrations count against the remote capacity only.
 
 var (
@@ -538,8 +538,8 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 // pass time.Now().UTC(), tests pass a fixed clock. Inside the 2-hour
 // cutoff nobody is promoted; the leaders or hosts get one cutoff notice
 // instead. A promoted row becomes going, keeps waitlisted_at as history,
-// and gets a rotated manage token for the "I can't come" link. Returns
-// notification ids to email after commit.
+// and gets a rotated manage token for the "I can't come" link. Returns the
+// notification ids written.
 func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, now time.Time, actor *uint) ([]uint, error) {
 	if o.Status != models.OccurrenceScheduled {
 		// Nobody is promoted into a cancelled date.
@@ -1030,7 +1030,6 @@ func (a *App) apiRegister(c *gin.Context) {
 	sort.Slice(holderIDs, func(i, j int) bool { return holderIDs[i] < holderIDs[j] })
 	now := time.Now().UTC()
 	response := registrationBatchJSON{People: []householdRegistrationJSON{}}
-	var emailed []uint
 	gated := false
 	mutate := func(tx *gorm.DB) error {
 		if gated {
@@ -1191,16 +1190,15 @@ func (a *App) apiRegister(c *gin.Context) {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
-		emailed, err = a.applyRegistrationBatch(tx, ev, locked, changes, now, holder.ID, c.ClientIP())
+		_, err = a.applyRegistrationBatch(tx, ev, locked, changes, now, holder.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
 		if hasInvitation && body.Status == models.RegDeclined {
-			ids, err := endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP())
+			_, err := endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP())
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		for _, ch := range changes {
 			var r models.Registration
@@ -1232,7 +1230,6 @@ func (a *App) apiRegister(c *gin.Context) {
 		registrationError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -1311,7 +1308,6 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	var emailed []uint
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		actor, err := peopleAddActor(tx, me)
 		if err != nil {
@@ -1379,32 +1375,28 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 				return err
 			}
 			for i := range pending {
-				ids, err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, time.Now().UTC())
+				_, err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, time.Now().UTC())
 				if err != nil {
 					return err
 				}
-				emailed = append(emailed, ids...)
 			}
 		}
-		var ids []uint
 		if invitation.ID != 0 {
-			ids, err = endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP())
+			_, err = endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP())
 		} else {
-			ids, err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
+			_, err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
 		}
 		if err != nil {
 			return err
 		}
-		emailed = append(emailed, ids...)
 		// Removing a going party retries promotion under the occurrence lock.
 		// promoteLocked checks remaining attendance/childcare room and cutoff;
 		// being at or over capacity after removal never seats another party.
 		if r.Status == models.RegGoing {
-			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			_, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		return nil
 	})
@@ -1420,7 +1412,6 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not remove registration")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -1444,7 +1435,6 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
@@ -1498,11 +1488,10 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		}); err != nil {
 			return err
 		}
-		ids, err := a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
+		_, err = a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
 		if err != nil {
 			return err
 		}
-		emailed = append(emailed, ids...)
 		return nil
 	})
 	switch {
@@ -1519,7 +1508,6 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		registrationError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -1633,7 +1621,6 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	}
 	me := apiUser(c)
 	overCap := body.OverCapacity != nil && *body.OverCapacity
-	var emailed []uint
 	var businessErr error
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Manager adds serialize with account, leadership and host revocation.
@@ -1699,8 +1686,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if holder.Status != models.UserGuest && (!f.Subject.Active || (f.Subject.AgeYears != nil && *f.Subject.AgeYears < 18)) {
 			return refuse(errDateAddApproval)
 		}
-		registration, ids, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, time.Now().UTC(), c.ClientIP())
-		emailed = append(emailed, ids...)
+		registration, _, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, time.Now().UTC(), c.ClientIP())
 		if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) || errors.Is(err, errChildcareUnavailable) || errors.Is(err, errRemoteNotAvailable) {
 			return refuse(err)
 		}
@@ -1708,11 +1694,10 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			return err
 		}
 		if holder.Status == models.UserActive {
-			ids, err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, time.Now().UTC(), c.ClientIP())
+			_, err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, time.Now().UTC(), c.ClientIP())
 			if err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		return nil
 	})
@@ -1750,7 +1735,6 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not add registration")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -1916,7 +1900,6 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 	}
 	actor := apiUser(c)
 	now := time.Now().UTC()
-	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var holder models.User
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, holderID).Error; err != nil {
@@ -2015,7 +1998,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 			return err
 		}
 		if old.Status == models.RegGoing && (attendanceModeOf(r.AttendanceMode) != attendanceModeOf(old.AttendanceMode) || effectiveChildcare(ev, r) < effectiveChildcare(ev, old)) {
-			mailed, err = a.promoteLocked(tx, ev, locked, now, &actor.ID)
+			_, err = a.promoteLocked(tx, ev, locked, now, &actor.ID)
 			return err
 		}
 		return nil
@@ -2028,7 +2011,6 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		registrationError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 

@@ -194,7 +194,6 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	actorAtRequest := apiUser(c)
 	response := seriesRegistrationResponse{EventID: eventID, Scope: body.Scope, Date: body.Date, Status: body.Status,
 		Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}}
-	var mailed []uint
 	undoRaw, tokenErr := newRawToken()
 	if tokenErr != nil {
 		log.Printf("series registration: %v", tokenErr)
@@ -328,7 +327,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err := tx.SavePoint(savepoint).Error; err != nil {
 				return err
 			}
-			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+			_, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
@@ -339,7 +338,6 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 				}
 				return err
 			}
-			mailed = append(mailed, ids...)
 			var after models.Registration
 			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).First(&after).Error; err != nil {
 				return err
@@ -364,11 +362,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 					return err
 				}
 				if access.ID != 0 {
-					ids, err := endOccurrenceAccessIn(tx, &access, policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
+					_, err := endOccurrenceAccessIn(tx, &access, policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
 					if err != nil {
 						return err
 					}
-					mailed = append(mailed, ids...)
 				}
 			}
 		}
@@ -417,7 +414,6 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	// implementation changes build the slices concurrently.
 	sort.Slice(response.Results, func(i, j int) bool { return response.Results[i].Date < response.Results[j].Date })
 	sort.Slice(response.Refusals, func(i, j int) bool { return response.Refusals[i].Date < response.Refusals[j].Date })
-	a.deliverNotificationEmails(mailed)
 	if undoReceiptID != 0 {
 		if expires, ok := a.finalizeSeriesUndoReceipt(undoReceiptID, undoHash, actorAtRequest.ID, eventID); ok {
 			response.UndoToken, response.UndoExpiresAt = undoRaw, &expires
@@ -472,7 +468,6 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 	}
 	actorAtRequest := apiUser(c)
 	response := seriesRegistrationResponse{EventID: uint(eventID64), Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}, CapacityLoss: []string{}}
-	var mailed []uint
 
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Peek only to identify the actor/event. The actual single-use decision
@@ -577,9 +572,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 				change, err := prepareRegistration(current, o, userSubject(actor.ID), models.RegDeclined, 0, current.AttendanceMode,
 					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, dateNow)
 				if err == nil {
-					var ids []uint
-					ids, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
-					mailed = append(mailed, ids...)
+					_, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 				}
 				if err == nil {
 					err = tx.Delete(&models.Registration{}, current.ID).Error
@@ -596,7 +589,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			next.ChildcareCount, next.ChildcareAgesNote, next.ChildcareRequested = item.Before.ChildcareCount, item.Before.ChildcareAgesNote, item.Before.ChildcareRequested
 			next.Source, next.RegisteredBy, next.WaitlistedAt, next.PromotedAt = item.Before.Source, item.Before.RegisteredBy, item.Before.WaitlistedAt, item.Before.PromotedAt
 			change := registrationChange{old: current, next: next, found: true}
-			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+			_, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
@@ -610,7 +603,6 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 				}
 				return err
 			}
-			mailed = append(mailed, ids...)
 			var restored models.Registration
 			if err := tx.First(&restored, current.ID).Error; err != nil {
 				return err
@@ -655,7 +647,6 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		return
 	}
 	sort.Strings(response.CapacityLoss)
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, response)
 }
 

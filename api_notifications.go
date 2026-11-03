@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,13 +14,11 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
-	"fold/internal/providers"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -469,6 +465,7 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 		Data:            map[string]any{"requestId": req.ID},
 		DedupeKey:       fmt.Sprintf("account.requested:%d", req.ID),
 		SuppressActions: !eligible,
+		BellOnly:        flags.Duplicate || flags.Honeypot,
 	})
 }
 
@@ -805,55 +802,10 @@ func (a *App) actorName(id *uint) string {
 }
 
 // ---------------------------------------------------------------------------
-// Email delivery (5.12, M1.2). Kinds marked AllowEmail send a transactional
-// email through the minimal sender right after the writing transaction
-// commits, with no delay. Each send is recorded in
-// notification_deliveries. Sensitive kinds use the link-only RenderEmailSafe
-// variant, which names nobody. The 15-minute "if not seen" escalation waits
-// for the jobs table (M3.1). Delivery failures are logged, never returned:
-// the notification row is already committed.
+// Email delivery (5.12, M1.2). notify.deliver uses these recipient facts and
+// rendering helpers. Sensitive kinds use the link-only RenderEmailSafe
+// variant, which names nobody.
 // ---------------------------------------------------------------------------
-
-// deliverNotificationEmails sends email for the AllowEmail kinds among ids,
-// first queuing web push for the AllowPush kinds (M3.13b), so every
-// notify.Send caller gets push from the call it already makes. Call it
-// after the writing transaction committed, never inside it.
-func (a *App) deliverNotificationEmails(ids []uint) {
-	a.queuePushDeliveries(ids)
-	if len(ids) == 0 || a.Mailer == nil {
-		return
-	}
-	ctx := context.Background()
-	// Two reads for the whole batch, not two per recipient (#76 follow-up):
-	// the rows, then their recipients. A row missing here was rolled back
-	// or pruned after commit; there is nothing to send for it.
-	var rows []models.Notification
-	if err := a.DB.Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
-		log.Printf("notification email: loading %d notifications: %v", len(ids), err)
-		return
-	}
-	userIDs := make([]uint, 0, len(rows))
-	for _, n := range rows {
-		if k, ok := notify.Lookup(n.Kind); ok && k.AllowEmail {
-			userIDs = append(userIDs, n.UserID)
-		}
-	}
-	if len(userIDs) == 0 {
-		return
-	}
-	// One read for every recipient (DEC-97, DEC-112), shared with the
-	// single-notice job. A failure marks nothing: without a delivery
-	// record the rows stay pending, so a later pass can still send them.
-	users, err := readEmailRecipients(a.DB, userIDs)
-	if err != nil {
-		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
-		return
-	}
-	byID, optOuts, suppressed, footer := indexEmailRecipients(users)
-	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID], footer)
-	}
-}
 
 // readEmailRecipients loads each account with the email consent scopes they
 // opted out of (DEC-97), the address's open suppressions (DEC-112), and the
@@ -938,7 +890,7 @@ type emailRecipient struct {
 
 // emailOptOuts maps each user to the email consent scopes whose latest
 // record opts out (5.12, DEC-97). Delivery reads the same thing alongside
-// each recipient's account (deliverNotificationEmails).
+// each recipient's account (readEmailRecipient).
 func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error) {
 	var rows []models.Consent
 	if err := db.Raw(`SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents
@@ -960,51 +912,7 @@ func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error)
 
 func categoryScope(category string) string { return "category:" + category }
 
-// deliverNotificationEmail sends one row to its preloaded recipient (nil
-// when the account is gone). optedOut holds the recipient's email consent
-// scopes that opt out; only optional kinds consult it (DEC-97).
-func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool, suppressions []string, footer footerFacts) {
-	k, ok := notify.Lookup(n.Kind)
-	if !ok || !k.AllowEmail {
-		return
-	}
-	if !k.Required && optedOut[categoryScope(k.Category)] {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "optional email turned off", "")
-		return
-	}
-	if u == nil ||
-		(u.Status != models.UserActive && u.Status != models.UserGuest) {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active", "")
-		return
-	}
-	// The suppressions came with the recipient, so the send skips the
-	// wrapper's own read (one per batch, not one per person).
-	msg := a.notificationEmailMessage(n, u, k, footer)
-	// The provider's id for the message lets its delivery and bounce reports
-	// find this row (M3.2).
-	var providerID string
-	err := mail.Blocked(suppressions, msg)
-	sender := mail.Unwrap(a.Mailer)
-	if err != nil {
-		// refused: recorded below
-	} else if tracked, ok := sender.(providers.EmailSender); ok {
-		providerID, err = tracked.SendEmail(ctx, msg)
-	} else {
-		err = sender.Send(ctx, msg)
-	}
-	if mail.IsSuppressed(err) {
-		a.recordDelivery(n.ID, u.ID, models.DeliverySuppressed, strings.TrimPrefix(err.Error(), "mail: "), "")
-		return
-	}
-	if err != nil {
-		log.Printf("notification email for notification %d: %v", n.ID, err)
-		a.recordDelivery(n.ID, u.ID, models.DeliveryFailed, err.Error(), "")
-		return
-	}
-	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "", providerID)
-}
-
-// notificationEmailMessage is the mail deliverNotificationEmail sends: the
+// notificationEmailMessage is the mail notify.deliver sends: the
 // stored email text, the absolute link, and, for an optional kind, the
 // footer and one-click unsubscribe. A spam complaint stops optional mail,
 // not required notices (DEC-112). Required mail never offers an unsubscribe.
@@ -1021,28 +929,6 @@ func (a *App) notificationEmailMessage(n *models.Notification, u *models.User, k
 		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
 	return msg
-}
-
-// recordDelivery writes one notification_deliveries row. The unique
-// (notification_id, channel) keeps a second delivery of the same row from
-// duplicating the record.
-func (a *App) recordDelivery(notificationID, userID uint, status, reason, providerID string) {
-	var sentAt *time.Time
-	var pid *string
-	if providerID != "" {
-		pid = &providerID
-	}
-	if status == models.DeliverySent {
-		now := time.Now().UTC()
-		sentAt = &now
-	}
-	_ = a.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "notification_id"}, {Name: "channel"}},
-		DoNothing: true,
-	}).Create(&models.NotificationDelivery{
-		NotificationID: notificationID, Channel: models.DeliveryEmail,
-		UserID: userID, Status: status, Reason: reason, SentAt: sentAt, ProviderMessageID: pid,
-	}).Error
 }
 
 // emailBaseURL is the absolute base for links in transactional email:
