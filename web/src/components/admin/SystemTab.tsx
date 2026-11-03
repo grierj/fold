@@ -19,7 +19,7 @@ function deliveryLine(d: AdminDeliverySummary | null | undefined): string | null
   if (d.queued > 0) {
     parts.push(`${d.queued} waiting to send${d.oldestQueuedAt ? ` (oldest ${lowerLead(formatWhen(d.oldestQueuedAt, undefined, undefined, true))})` : ""}`);
   }
-  if (d.deferred > 0) parts.push(`${d.deferred} will be tried again`);
+  if (d.deferred > 0) parts.push(`${d.deferred} gave up; you can try again from the list below`);
   if (d.failed > 0) parts.push(`${d.failed} could not be sent this week`);
   return parts.length > 0 ? `Email: ${parts.join(", ")}` : null;
 }
@@ -126,8 +126,9 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
             <JobRow key={j.id} job={j} onDone={(id, message) => {
               setStatus((s) => ({ text: message, n: s.n + 1 }));
               onRemoved(id);
-              // More failed than were listed: fetch the next ones.
-              if (more) reload();
+              // Refresh the list and the email counts from the server, which also
+              // brings in the next tasks when more failed than were listed.
+              reload();
             }} />
           ))}
         </ul>

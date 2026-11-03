@@ -887,6 +887,20 @@ it("shows failed background tasks on the System tab, counted only when there are
   expect(AdminJobs.list).toHaveBeenCalledTimes(1);
 });
 
+it("refreshes the email counts after a task is retried", async () => {
+  const dead = { id: 4, kind: "notify.deliver", label: "Sending an email", runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" };
+  vi.mocked(AdminJobs.list)
+    .mockResolvedValueOnce({ jobs: [dead], more: false, deliveries: { queued: 0, deferred: 1, failed: 0, oldestQueuedAt: null } })
+    .mockResolvedValue({ jobs: [], more: false, deliveries: { queued: 1, deferred: 0, failed: 0, oldestQueuedAt: null } });
+  vi.mocked(AdminJobs.retry).mockResolvedValue({ status: "ok" });
+  render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Email: 1 gave up; you can try again from the list below")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Retry now/ }));
+  expect(await screen.findByText("Email: 1 waiting to send")).toBeInTheDocument();
+  expect(screen.queryByText(/gave up/)).not.toBeInTheDocument();
+  expect(AdminJobs.list).toHaveBeenCalledTimes(2);
+});
+
 it("shows no count on the System tab when nothing failed", async () => {
   render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByText("Nothing needs attention.")).toBeInTheDocument();

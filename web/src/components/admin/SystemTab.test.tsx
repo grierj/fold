@@ -95,9 +95,9 @@ it("gives the cursor back to the pressed button when an action fails, and announ
   await waitFor(() => expect(dismiss).toHaveFocus());
 });
 
-it("fetches the next tasks after an action when more failed than were listed", async () => {
+it("refreshes from the server after an action, even when nothing more was listed", async () => {
   const reload = vi.fn();
-  render(<Harness initial={[job(1), job(2)]} more reload={reload} />);
+  render(<Harness initial={[job(1), job(2)]} reload={reload} />);
   await userEvent.click(screen.getAllByRole("button", { name: "Retry now Adding upcoming event dates" })[0]);
   await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
 });
@@ -114,13 +114,13 @@ it("shows waiting emails with the oldest time, and nothing else when only those 
   render(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ queued: 3, oldestQueuedAt: oldest })} />);
   const line = screen.getByText(/^Email:/);
   expect(line).toHaveTextContent(/^Email: 3 waiting to send \(oldest .*\d{1,2}:\d{2}.*\)$/);
-  expect(line).not.toHaveTextContent(/tried again|could not be sent/);
+  expect(line).not.toHaveTextContent(/gave up|could not be sent/);
   expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
 });
 
-it("shows the tried-again and could-not-be-sent counts, with no recipient or error text", () => {
+it("shows the gave-up and could-not-be-sent counts, with no recipient or error text", () => {
   render(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ deferred: 1, failed: 2 })} />);
-  expect(screen.getByText("Email: 1 will be tried again, 2 could not be sent this week")).toBeInTheDocument();
+  expect(screen.getByText("Email: 1 gave up; you can try again from the list below, 2 could not be sent this week")).toBeInTheDocument();
   expect(screen.queryByText(/waiting to send/)).not.toBeInTheDocument();
   expect(document.body).not.toHaveTextContent(/@|pq:|smtp/i);
 });
