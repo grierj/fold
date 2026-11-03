@@ -111,21 +111,21 @@ func losersForDate(tx *gorm.DB, ev *models.Event, newVis string, now time.Time, 
 	}
 	// Only a current explicit invitation preserves its own registration. Parent
 	// event visibility never widens, and household/ordinary siblings still lose.
-	var accesses []models.OccurrenceAccess
-	if err := tx.Where("event_id = ? AND status = ? AND registration_id IN (?)", ev.ID, policy.OccurrenceAccessActive,
-		q.Session(&gorm.Session{}).Select("registrations.id")).Order("id").Find(&accesses).Error; err != nil {
+	var grants []models.Registration
+	if err := tx.Where(registrationAccessLiveSQL+" AND registrations.id IN (?)",
+		q.Session(&gorm.Session{}).Select("registrations.id")).Order("registrations.id").Find(&grants).Error; err != nil {
 		q.AddError(err)
 		return q
 	}
-	reads, err := occurrenceInvitationReadsIn(tx, accesses, now)
+	reads, err := occurrenceInvitationReadsIn(tx, grants, now)
 	if err != nil {
 		q.AddError(err)
 		return q
 	}
 	kept := []uint{}
-	for _, access := range accesses {
-		if reads[access.ID] != nil {
-			kept = append(kept, access.RegistrationID)
+	for _, grant := range grants {
+		if reads[grant.ID] != nil {
+			kept = append(kept, grant.ID)
 		}
 	}
 	if len(kept) > 0 {

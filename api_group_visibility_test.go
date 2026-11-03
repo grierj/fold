@@ -321,7 +321,7 @@ func TestVisibilityInvitationCollectionReadBudget(t *testing.T) {
 				if remains != 0 {
 					t.Fatal("ordinary loser survived")
 				}
-				f.app.DB.Model(&models.OccurrenceAccess{}).Where("status = ?", policy.OccurrenceAccessActive).Count(&remains)
+				f.app.DB.Model(&models.Registration{}).Where("access_origin <> '' AND access_ended_at IS NULL").Count(&remains)
 				if remains != int64(2*size+1) {
 					t.Fatal("live invitations changed", remains)
 				}
@@ -353,9 +353,7 @@ func TestVisibilityBatchExcludesEndedAndUnconsentedInvitations(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else {
-					if err := f.app.DB.Model(&f.access).Updates(map[string]any{"status": policy.OccurrenceAccessEnded, "ended_at": time.Now(), "end_reason": policy.OccurrenceDeclined, "ended_by": f.recipient.ID}).Error; err != nil {
-						t.Fatal(err)
-					}
+					endSeededAccess(t, f.app.DB, f.access.RegistrationID, policy.OccurrenceDeclined, &f.recipient.ID, time.Now().UTC())
 				}
 				root := "/api/v1/events/" + itoa(f.event.ID)
 				if scope == "group" {

@@ -421,7 +421,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		reg.AttendanceMode = models.AttendanceInPerson
 		reg.ManageTokenHash = hash
 		reg.WaitlistedAt = wlAt
-		if err := tx.Save(&reg).Error; err != nil {
+		if err := tx.Omit(registrationAccessColumns...).Save(&reg).Error; err != nil {
 			return err
 		}
 		if full {
@@ -614,11 +614,11 @@ func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, o
 	}
 	exact := false
 	if !guest && reg.UserID != nil {
-		var accesses []models.OccurrenceAccess
-		if err := tx.Where("registration_id = ? AND subject_user_id = ? AND occurrence_id = ? AND status = ?", reg.ID, holder.ID, occ.ID, policy.OccurrenceAccessActive).Find(&accesses).Error; err != nil {
+		var grants []models.Registration
+		if err := tx.Where("registrations.id = ? AND registrations.user_id = ? AND registrations.occurrence_id = ? AND "+registrationAccessLiveSQL, reg.ID, holder.ID, occ.ID).Find(&grants).Error; err != nil {
 			return err
 		}
-		reads, err := occurrenceInvitationReadsIn(tx, accesses, time.Now().UTC())
+		reads, err := occurrenceInvitationReadsIn(tx, grants, time.Now().UTC())
 		if err != nil {
 			return err
 		}

@@ -32,6 +32,14 @@ package migrations_test
 //	TestPushSubscriptionsMigration             UpTo(58), DownTo(57) x4 removed; constraints, consent and the
 //	                                           session trigger (00059) kept.
 //
+// R9 S4 folded occurrence_accesses into registrations.access_*: the departure
+// origin, expiry end-state, supersession end-state and contact-add tests now
+// write a registration's own columns and keep their refusal matrices (blocked,
+// teen direct, repeat, stale, forged issuer/request/target/event/subject, wrong
+// departure actor or membership, sole leader, household rows, malformed end
+// states, identity transfer, immutable terminal fields). The DELETE, replacement,
+// snapshot, same-row ordering and trigger-shape cases are new.
+//
 // The baseline Down is new and tested below: it refuses while a user exists,
 // destroys nothing then, and on an empty database drops everything and Up
 // restores it. The same disposition for the other test files is recorded in
@@ -40,6 +48,7 @@ package migrations_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -223,21 +232,20 @@ func TestContactRequestsConstraints(t *testing.T) {
 	}
 }
 
-func TestOccurrenceAccessDepartureOrigin(t *testing.T) {
-	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, true))
-	exec := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.Exec(q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	refuse := func(name, q string) {
-		t.Helper()
-		if _, err := db.Exec(q); err == nil {
-			t.Fatalf("%s accepted", name)
-		}
-	}
+// accessDB is a migrated scratch database holding the shared departure and
+// manager data of the exact-date access tests (R9 S4): users 1-7, group 10 with
+// its memberships, one series with dates 30-36 and registrations 40-46. A grant
+// is a write to a registration's access_* columns, so every case below is a
+// direct SQL statement against the trigger and CHECKs that replaced
+// occurrence_accesses.
+type accessDB struct {
+	t  *testing.T
+	db *sql.DB
+}
+
+func newAccessDB(t *testing.T) accessDB {
+	t.Helper()
+	a := accessDB{t: t, db: openSQL(t, testdb.Fresh(t, true))}
 	for _, q := range []string{
 		`INSERT INTO users(id,email,status,role,account_type) VALUES
 		 (1,'departure-leader@example.com','active','member','adult'),
@@ -269,141 +277,470 @@ func TestOccurrenceAccessDepartureOrigin(t *testing.T) {
 		 VALUES(60,1,4,'group',10,'email',false,'not_needed','2026-10-20 12:00Z','2026-11-03 12:00Z')`,
 		`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(2,'group',10),(3,'group',10)`,
 	} {
-		exec(q)
+		a.exec(q)
 	}
+	return a
+}
+
+func (a accessDB) exec(q string, args ...any) {
+	a.t.Helper()
+	if _, err := a.db.Exec(q, args...); err != nil {
+		a.t.Fatalf("%s: %v", q, err)
+	}
+}
+
+func (a accessDB) refuse(name, q string, args ...any) {
+	a.t.Helper()
+	if _, err := a.db.Exec(q, args...); err == nil {
+		a.t.Fatalf("%s accepted", name)
+	}
+}
+
+// micro is the canonical stamp Postgres derives for a timestamp literal: the
+// integer microseconds the application writes into every snapshot.
+func (a accessDB) micro(ts string) int64 {
+	a.t.Helper()
+	var m int64
+	if err := a.db.QueryRow(`SELECT (extract(epoch FROM $1::timestamptz) * 1000000)::bigint`, ts).Scan(&m); err != nil {
+		a.t.Fatal(err)
+	}
+	return m
+}
+
+// snapshot writes one access audit row exactly as the application does: the
+// registration is the target, the metadata carries the complete grant.
+func (a accessDB) snapshot(action string, registration, subject, occurrence int, origin, grantedAt string, extra map[string]any) {
+	a.t.Helper()
+	meta := map[string]any{"subjectUserId": subject, "occurrenceId": occurrence, "eventId": 20, "organizerType": "group", "organizerId": 10,
+		"registrationId": registration, "origin": origin, "grantedAtMicro": a.micro(grantedAt)}
+	for k, v := range extra {
+		meta[k] = v
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	a.exec(`INSERT INTO audit_logs(action, target_type, target_id, meta_json) VALUES($1, 'registration', $2, $3::jsonb)`, action, registration, string(raw))
+}
+
+func (a accessDB) recordAdded(registration, subject, occurrence int, origin, grantedAt string, extra map[string]any) {
+	a.t.Helper()
+	a.snapshot("occurrence_access.added", registration, subject, occurrence, origin, grantedAt, extra)
+}
+
+// recordEnded adds the ended snapshot of a grant; endedBy 0 means no actor.
+func (a accessDB) recordEnded(registration, subject, occurrence int, origin, grantedAt, endedAt, reason string, endedBy int, extra map[string]any) {
+	a.t.Helper()
+	merged := map[string]any{"endedAtMicro": a.micro(endedAt), "endReason": reason, "outcome": "ended"}
+	if endedBy != 0 {
+		merged["endedBy"] = endedBy
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	a.snapshot("occurrence_access.ended", registration, subject, occurrence, origin, grantedAt, merged)
+}
+
+func (a accessDB) count(q string, args ...any) int {
+	a.t.Helper()
+	var n int
+	if err := a.db.QueryRow(q, args...).Scan(&n); err != nil {
+		a.t.Fatal(err)
+	}
+	return n
+}
+
+func TestRegistrationAccessDepartureOrigin(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
 
 	// Blocks govern new manager adds only. They do not invalidate standing
 	// Maybe/Waitlisted registrations retained by an authorized departure.
-	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
-	 registration_id,departure_membership_id,departure_actor_id,granted_at)
-	 VALUES(2,30,20,'group',10,'departure_self',40,50,2,'2026-10-26 12:00Z')`)
-	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
-	 registration_id,departure_membership_id,departure_actor_id,granted_at)
-	 VALUES(2,31,20,'group',10,'departure_removal',41,50,1,'2026-10-26 12:00Z')`)
+	a.exec(`UPDATE registrations SET access_origin='departure_self',access_departure_membership_id=50,access_departure_actor_id=2,access_granted_at='2026-10-26 12:00Z' WHERE id=40`)
+	a.exec(`UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=50,access_departure_actor_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=41`)
 
-	// Existing manager rows receive the explicit default and keep their issuer
-	// requirements. A block, teen direct add, and non-Going manager add fail.
-	exec(`DELETE FROM manager_add_blocks WHERE subject_user_id=3`)
-	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(3,32,20,'group',10,1,42)`)
-	refuse("manager add for Maybe", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(3,36,20,'group',10,1,46)`)
+	// A manager add keeps its issuer requirement. A block, a teen direct add
+	// and a non-Going manager add fail; a plain attendee row never needed a
+	// provenance column to be written.
+	a.exec(`DELETE FROM manager_add_blocks WHERE subject_user_id=3`)
+	a.exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=42`)
+	a.refuse("manager add for Maybe", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=46`)
 	var origin string
-	if err := db.QueryRow(`SELECT origin FROM occurrence_accesses WHERE occurrence_id=32`).Scan(&origin); err != nil || origin != "manager_add" {
-		t.Fatalf("manager origin default = %q, %v", origin, err)
+	if err := a.db.QueryRow(`SELECT access_origin FROM registrations WHERE id=42`).Scan(&origin); err != nil || origin != "manager_add" {
+		t.Fatalf("manager origin = %q, %v", origin, err)
 	}
-	exec(`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(3,'group',10)`)
-	refuse("blocked manager add", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(3,33,20,'group',10,1,43)`)
-	refuse("direct teen manager add", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(6,34,20,'group',10,1,44)`)
-	refuse("manager origin without issuer", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,registration_id)
-	 VALUES(4,35,20,'group',10,45)`)
+	a.exec(`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(3,'group',10)`)
+	a.refuse("blocked manager add", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=43`)
+	a.refuse("direct teen manager add", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=44`)
+	a.refuse("manager origin without issuer", `UPDATE registrations SET access_origin='manager_add',access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
+	a.refuse("manager issuer is the subject", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=4,access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
+	a.refuse("unknown origin", `UPDATE registrations SET access_origin='invited',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
+	a.refuse("provenance without a grant stamp", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1 WHERE id=45`)
+	a.refuse("stamp without provenance", `UPDATE registrations SET access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
 
-	for _, tt := range []struct{ name, sql string }{
-		{"self leave by another actor", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_self',45,54,1)`},
-		{"removal by plain member", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,54,3)`},
-		{"leader removes admin", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,54,1)`},
-		{"wrong membership", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,52,4)`},
-		{"departure forged issuer", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,issuer_id,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',1,45,54,4)`},
-		{"departure forged request", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,request_id,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',60,45,54,4)`},
+	for _, tt := range []struct{ name, set string }{
+		{"self leave by another actor", `access_origin='departure_self',access_departure_membership_id=54,access_departure_actor_id=1`},
+		{"self leave without an actor", `access_origin='departure_self',access_departure_membership_id=54`},
+		{"removal by plain member", `access_origin='departure_removal',access_departure_membership_id=54,access_departure_actor_id=3`},
+		{"leader removes admin", `access_origin='departure_removal',access_departure_membership_id=54,access_departure_actor_id=1`},
+		{"wrong membership", `access_origin='departure_removal',access_departure_membership_id=52,access_departure_actor_id=7`},
+		{"removal by the subject", `access_origin='departure_removal',access_departure_membership_id=54,access_departure_actor_id=4`},
+		{"departure forged issuer", `access_origin='departure_removal',access_issuer_id=1,access_departure_membership_id=54,access_departure_actor_id=7`},
+		{"departure forged request", `access_origin='departure_removal',access_request_id=60,access_departure_membership_id=54,access_departure_actor_id=7`},
+		{"departure without a membership", `access_origin='departure_removal',access_departure_actor_id=7`},
+		{"non-positive membership", `access_origin='departure_removal',access_departure_membership_id=0,access_departure_actor_id=7`},
 	} {
-		t.Run(tt.name, func(t *testing.T) { refuse(tt.name, tt.sql) })
+		t.Run(tt.name, func(t *testing.T) {
+			a.refuse(tt.name, `UPDATE registrations SET `+tt.set+`,access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
+		})
 	}
 	// An admin can authorize removal of an admin; this records the remover as
 	// departure actor, never as a fictitious invitation issuer.
-	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
-	 registration_id,departure_membership_id,departure_actor_id)
-	 VALUES(4,35,20,'group',10,'departure_removal',45,54,7)`)
+	a.exec(`UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=54,access_departure_actor_id=7,access_granted_at='2026-10-26 12:00Z' WHERE id=45`)
 
+	// A live grant's provenance is immutable, and the subject and date it names
+	// cannot move to another row of the table while it exists.
 	for _, mutation := range []string{
-		`origin='manager_add'`, `departure_actor_id=4`, `departure_membership_id=52`, `issuer_id=1`,
+		`access_origin='manager_add'`, `access_departure_actor_id=4`, `access_departure_membership_id=52`, `access_issuer_id=1`,
+		`access_request_id=60`, `access_granted_at=access_granted_at+interval '1 second'`, `access_origin=''`,
 	} {
-		if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + mutation + ` WHERE occurrence_id=30`); err == nil {
-			t.Fatalf("immutable departure provenance changed: %s", mutation)
-		}
+		a.refuse("live provenance change "+mutation, `UPDATE registrations SET `+mutation+` WHERE id=40`)
 	}
-	refuse("second active access", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(2,30,20,'group',10,'departure_self',40,50,2)`)
+	a.refuse("identity transfer to another person", `UPDATE registrations SET user_id=3 WHERE id=40`)
+	a.refuse("identity transfer to another date", `UPDATE registrations SET occurrence_id=36 WHERE id=40`)
+	a.refuse("household takeover of a granted row", `UPDATE registrations SET user_id=NULL,household_person_id=1,registered_by=2 WHERE id=40`)
+	// An ordinary answer on a granted row passes without any provenance check.
+	a.exec(`UPDATE registrations SET status='going',guest_count=1,childcare_count=1,attendance_mode='remote',updated_at=now() WHERE id=40`)
+	a.exec(`UPDATE registrations SET source='admin',waitlisted_at=now(),promoted_at=now(),removal_note='kept' WHERE id=40`)
+}
+
+// A leader who is the group's only leader cannot be the subject of a kept date
+// on leaving or removal; a second leader makes it lawful. Household rows are not
+// people with accounts and can never carry a grant.
+func TestRegistrationAccessSoleLeaderAndHouseholdProvenance(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	a.exec(`INSERT INTO users(id,email,status,role,account_type) VALUES(8,'sole-leader@example.com','active','member','adult')`)
+	a.exec(`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(11,'Sole leader group',8,'active','invite_only')`)
+	a.exec(`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(56,8,11,'leader','active')`)
+	a.exec(`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
+	 VALUES(21,11,'Sole leader series','','2026-12-01T18:00',60,'UTC','','','invite_only',8)`)
+	a.exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(37,21,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled')`)
+	a.exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(47,37,8,'going','web')`)
+	self := `UPDATE registrations SET access_origin='departure_self',access_departure_membership_id=56,access_departure_actor_id=8,access_granted_at='2026-10-26 12:00Z' WHERE id=47`
+	removal := `UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=56,access_departure_actor_id=7,access_granted_at='2026-10-26 12:00Z' WHERE id=47`
+	a.refuse("sole leader leaves", self)
+	a.refuse("sole leader removed", removal)
+	a.exec(`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(57,5,11,'leader','active')`)
+	a.exec(self)
+	if a.count(`SELECT count(*) FROM registrations WHERE id=47 AND access_origin='departure_self'`) != 1 {
+		t.Fatal("departure with a second leader was not recorded")
+	}
+
+	// Household rows hold no account, so provenance is refused by CHECK for
+	// every origin, and a grant cannot be moved onto one.
+	a.exec(`INSERT INTO households(id,name,created_by) VALUES(1,'Household',2)`)
+	a.exec(`INSERT INTO household_people(id,household_id,first_name,kind,created_by) VALUES(1,1,'Kit','adult',2)`)
+	a.exec(`INSERT INTO registrations(id,occurrence_id,household_person_id,registered_by,status,source) VALUES(48,33,1,2,'going','web')`)
+	for _, set := range []string{
+		`access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z'`,
+		`access_origin='departure_self',access_departure_membership_id=50,access_departure_actor_id=2,access_granted_at='2026-10-26 12:00Z'`,
+		`access_origin='departure_removal',access_departure_membership_id=50,access_departure_actor_id=7,access_granted_at='2026-10-26 12:00Z'`,
+	} {
+		a.refuse("household provenance "+set, `UPDATE registrations SET `+set+` WHERE id=48`)
+	}
+	a.refuse("household row inserted with provenance", `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,access_origin,access_issuer_id,access_granted_at)
+	 VALUES(34,1,2,'going','manager_add',1,'2026-10-26 12:00Z')`)
 }
 
 // The end-state CHECK accepts occurrence_ended for a kept departure date and
 // refuses the malformed shapes around it. Ending is final.
-func TestDepartureOccurrenceAccessExpiryEndState(t *testing.T) {
+func TestRegistrationAccessDepartureExpiryEndState(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, true))
-	exec := func(q string) {
-		t.Helper()
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	for _, q := range []string{
-		`INSERT INTO users(id,email,status,role) VALUES(1,'expiry-actor@example.com','active','admin'),(2,'expiry-subject@example.com','active','member')`,
-		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Expiry group',1,'active','invite_only')`,
-		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,2,10,'member','active')`,
-		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(20,10,'Expiry','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
-		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled')`,
-		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','web')`,
-		`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id,granted_at) VALUES(2,30,20,'group',10,'departure_self',40,50,2,'2026-10-26 12:00Z')`,
-	} {
-		exec(q)
-	}
+	a := newAccessDB(t)
+	a.exec(`UPDATE registrations SET access_origin='departure_self',access_departure_membership_id=50,access_departure_actor_id=2,access_granted_at='2026-10-26 12:00Z',status='going' WHERE id=40`)
 	for _, tt := range []struct{ name, mutation string }{
-		{"expiry with an actor", `status='ended',ended_at='2026-12-01 19:00Z',end_reason='occurrence_ended',ended_by=2`},
-		{"expiry before the grant", `status='ended',ended_at='2026-10-25 12:00Z',end_reason='occurrence_ended'`},
-		{"ended without a time", `status='ended',end_reason='occurrence_ended'`},
-		{"reason on a live row", `end_reason='occurrence_ended'`},
-		{"unknown reason", `status='ended',ended_at='2026-12-01 19:00Z',end_reason='expired'`},
+		{"expiry with an actor", `access_ended_at='2026-12-01 19:00Z',access_end_reason='occurrence_ended',access_ended_by=2`},
+		{"expiry before the grant", `access_ended_at='2026-10-25 12:00Z',access_end_reason='occurrence_ended'`},
+		{"ended without a time", `access_end_reason='occurrence_ended'`},
+		{"reason on a live row", `access_end_reason='occurrence_ended'`},
+		{"actor on a live row", `access_ended_by=2`},
+		{"unknown reason", `access_ended_at='2026-12-01 19:00Z',access_end_reason='expired'`},
+		{"declined by someone else", `access_ended_at='2026-12-01 19:00Z',access_end_reason='declined',access_ended_by=1`},
+		{"declined without an actor", `access_ended_at='2026-12-01 19:00Z',access_end_reason='declined'`},
+		{"removed without an actor", `access_ended_at='2026-12-01 19:00Z',access_end_reason='removed'`},
+		{"system reason with an actor", `access_ended_at='2026-12-01 19:00Z',access_end_reason='account_disabled',access_ended_by=1`},
+		{"non-positive actor", `access_ended_at='2026-12-01 19:00Z',access_end_reason='removed',access_ended_by=0`},
+		{"end time without a reason", `access_ended_at='2026-12-01 19:00Z'`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + tt.mutation + ` WHERE occurrence_id=30`); err == nil {
-				t.Fatal("malformed end state accepted")
-			}
+			a.refuse(tt.name, `UPDATE registrations SET `+tt.mutation+` WHERE id=40`)
 		})
 	}
-	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-12-01 19:00Z',end_reason='occurrence_ended' WHERE occurrence_id=30`)
-	if _, err := db.Exec(`UPDATE occurrence_accesses SET status='active',ended_at=NULL,end_reason='' WHERE occurrence_id=30`); err == nil {
-		t.Fatal("an ended departure date came back to life")
+	a.exec(`UPDATE registrations SET access_ended_at='2026-12-01 19:00Z',access_end_reason='occurrence_ended' WHERE id=40`)
+	// Terminal fields cannot change, and the end cannot be undone: not without
+	// snapshots, and not as a "replacement" that is the same grant.
+	for _, mutation := range []string{
+		`access_ended_at=NULL,access_end_reason='',access_ended_by=NULL`,
+		`access_end_reason='context_changed'`,
+		`access_ended_at='2026-12-01 20:00Z'`,
+		`access_ended_by=2`,
+		`access_origin=''`,
+		`access_origin='',access_issuer_id=NULL,access_departure_membership_id=NULL,access_departure_actor_id=NULL,access_granted_at=NULL,access_ended_at=NULL,access_end_reason='',access_ended_by=NULL`,
+	} {
+		a.refuse("terminal change "+mutation, `UPDATE registrations SET `+mutation+` WHERE id=40`)
 	}
+	a.recordAdded(40, 2, 30, "departure_self", "2026-10-26 12:00Z", map[string]any{"departureMembershipId": 50, "departureActorId": 2})
+	a.recordEnded(40, 2, 30, "departure_self", "2026-10-26 12:00Z", "2026-12-01 19:00Z", "occurrence_ended", 0, map[string]any{"departureMembershipId": 50, "departureActorId": 2})
+	a.refuse("an ended departure date came back to life", `UPDATE registrations SET access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`)
 }
 
 // A manager grant superseded by a departure keeps its manager provenance and
 // ends with the dedicated reason and an actor.
-func TestDepartureAccessSupersessionEndState(t *testing.T) {
+func TestRegistrationAccessSupersessionEndState(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, true))
-	exec := func(q string) {
-		t.Helper()
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	for _, q := range []string{
-		`INSERT INTO users(id,email,status,role) VALUES(1,'supersede-issuer@example.com','active','member'),(2,'supersede-subject@example.com','active','member')`,
-		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Supersede group',1,'active','invite_only')`,
-		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,1,10,'leader','active'),(51,2,10,'member','active')`,
-		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(20,10,'Supersede','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
-		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled')`,
-		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','admin')`,
-		`INSERT INTO occurrence_accesses(id,subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id,granted_at) VALUES(60,2,30,20,'group',10,1,40,'2026-11-01 12:00Z')`,
-	} {
-		exec(q)
-	}
+	a := newAccessDB(t)
+	a.exec(`DELETE FROM manager_add_blocks`)
+	a.exec(`UPDATE registrations SET status='going',access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-11-01 12:00Z' WHERE id=40`)
 	for _, tt := range []struct{ name, mutation string }{
-		{"superseded without an actor", `status='ended',ended_at='2026-11-02 12:00Z',end_reason='departure_superseded'`},
-		{"superseded before the grant", `status='ended',ended_at='2026-10-31 12:00Z',end_reason='departure_superseded',ended_by=2`},
+		{"superseded without an actor", `access_ended_at='2026-11-02 12:00Z',access_end_reason='departure_superseded'`},
+		{"superseded before the grant", `access_ended_at='2026-10-31 12:00Z',access_end_reason='departure_superseded',access_ended_by=2`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + tt.mutation + ` WHERE id=60`); err == nil {
-				t.Fatal("malformed supersession accepted")
-			}
+			a.refuse(tt.name, `UPDATE registrations SET `+tt.mutation+` WHERE id=40`)
 		})
 	}
-	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-11-02 12:00Z',end_reason='departure_superseded',ended_by=2 WHERE id=60`)
+	a.exec(`UPDATE registrations SET access_ended_at='2026-11-02 12:00Z',access_end_reason='departure_superseded',access_ended_by=2 WHERE id=40`)
 	var origin string
-	var issuer, registration int64
-	if err := db.QueryRow(`SELECT origin,issuer_id,registration_id FROM occurrence_accesses WHERE id=60`).Scan(&origin, &issuer, &registration); err != nil || origin != "manager_add" || issuer != 1 || registration != 40 {
-		t.Fatalf("manager provenance changed: origin=%q issuer=%d registration=%d err=%v", origin, issuer, registration, err)
+	var issuer int64
+	if err := a.db.QueryRow(`SELECT access_origin,access_issuer_id FROM registrations WHERE id=40`).Scan(&origin, &issuer); err != nil || origin != "manager_add" || issuer != 1 {
+		t.Fatalf("manager provenance changed: origin=%q issuer=%d err=%v", origin, issuer, err)
+	}
+}
+
+// DELETE: the audit log is the only record of an ended grant once its row is
+// gone, so the trigger demands the complete, matching snapshots first. A row
+// with no provenance deletes freely.
+func TestRegistrationAccessDeleteNeedsMatchingSnapshots(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	a.exec(`DELETE FROM manager_add_blocks`)
+	a.exec(`UPDATE registrations SET status='going',access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-11-01 12:00Z' WHERE id=40`)
+	a.refuse("deleting a live grant", `DELETE FROM registrations WHERE id=40`)
+	a.exec(`UPDATE registrations SET access_ended_at='2026-11-02 12:00Z',access_end_reason='declined',access_ended_by=2 WHERE id=40`)
+	a.refuse("deleting an ended grant with no snapshots", `DELETE FROM registrations WHERE id=40`)
+
+	extra := map[string]any{"issuerId": 1}
+	a.recordAdded(40, 2, 30, "manager_add", "2026-11-01 12:00Z", extra)
+	a.refuse("deleting with only the added snapshot", `DELETE FROM registrations WHERE id=40`)
+	// Each mismatch of the ended snapshot leaves it unmatched.
+	for name, tc := range map[string]struct {
+		subject, occurrence int
+		origin, grantedAt   string
+		endedAt, reason     string
+		endedBy             int
+		extra               map[string]any
+	}{
+		"other subject":    {3, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra},
+		"other date":       {2, 31, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra},
+		"other origin":     {2, 30, "departure_self", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra},
+		"other grant":      {2, 30, "manager_add", "2026-11-01 12:00:01Z", "2026-11-02 12:00Z", "declined", 2, extra},
+		"other end":        {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00:01Z", "declined", 2, extra},
+		"other reason":     {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "removed", 2, extra},
+		"other actor":      {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 1, extra},
+		"missing actor":    {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 0, extra},
+		"other issuer":     {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, map[string]any{"issuerId": 3}},
+		"invented request": {2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, map[string]any{"issuerId": 1, "requestId": 60}},
+	} {
+		a.recordEnded(40, tc.subject, tc.occurrence, tc.origin, tc.grantedAt, tc.endedAt, tc.reason, tc.endedBy, tc.extra)
+		a.refuse("mismatched ended snapshot: "+name, `DELETE FROM registrations WHERE id=40`)
+	}
+	// A snapshot recorded for another registration does not count either.
+	a.exec(`INSERT INTO audit_logs(action, target_type, target_id, meta_json)
+	 SELECT action, target_type, 41, meta_json FROM audit_logs WHERE action='occurrence_access.added' AND target_id=40`)
+	a.refuse("snapshots of a different registration", `DELETE FROM registrations WHERE id=40`)
+	a.recordEnded(40, 2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra)
+	before := a.count(`SELECT count(*) FROM audit_logs`)
+	a.exec(`DELETE FROM registrations WHERE id=40`)
+	if a.count(`SELECT count(*) FROM audit_logs`) != before {
+		t.Fatal("deleting the row touched the audit history")
+	}
+	if a.count(`SELECT count(*) FROM audit_logs WHERE target_id=40 AND action IN ('occurrence_access.added','occurrence_access.ended')`) < 2 {
+		t.Fatal("the snapshots did not outlive the row")
+	}
+	// No provenance, no requirement.
+	a.exec(`DELETE FROM registrations WHERE id=42`)
+	a.exec(`DELETE FROM registrations WHERE id=46`)
+}
+
+// Replacing an ended grant destroys the provenance it carried, so the same
+// snapshots are demanded first, and a replacement must itself start live.
+func TestRegistrationAccessReplacementNeedsHistoryAndMovesForward(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	a.exec(`DELETE FROM manager_add_blocks`)
+	a.exec(`UPDATE registrations SET status='going',access_origin='departure_self',access_departure_membership_id=50,access_departure_actor_id=2,access_granted_at='2026-11-01 12:00Z' WHERE id=40`)
+	a.exec(`UPDATE registrations SET access_ended_at='2026-11-02 12:00Z',access_end_reason='declined',access_ended_by=2 WHERE id=40`)
+	replace := func(grantedAt string) string {
+		return `UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=50,access_departure_actor_id=1,access_granted_at='` + grantedAt + `',
+		 access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`
+	}
+	a.refuse("overwriting an ended grant without history", replace("2026-11-03 12:00Z"))
+	extra := map[string]any{"departureMembershipId": 50, "departureActorId": 2}
+	a.recordAdded(40, 2, 30, "departure_self", "2026-11-01 12:00Z", extra)
+	a.refuse("overwriting with only the added snapshot", replace("2026-11-03 12:00Z"))
+	a.recordEnded(40, 2, 30, "departure_self", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra)
+
+	// Same-row ordering: a later stamp than the old grant, and no earlier than the old end.
+	a.refuse("equal to the old grant stamp", replace("2026-11-01 12:00Z"))
+	a.refuse("before the old grant stamp", replace("2026-10-31 12:00Z"))
+	a.refuse("between the old grant and its end", replace("2026-11-02 11:59Z"))
+	// A replacement is a grant: it leaves no end fields, and it is validated like one.
+	a.refuse("replacement that is already ended", `UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=50,access_departure_actor_id=1,
+	 access_granted_at='2026-11-03 12:00Z',access_ended_at='2026-11-04 12:00Z',access_end_reason='removed',access_ended_by=1 WHERE id=40`)
+	a.refuse("replacement by a plain member", `UPDATE registrations SET access_origin='departure_removal',access_departure_membership_id=50,access_departure_actor_id=3,
+	 access_granted_at='2026-11-03 12:00Z',access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`)
+	// Equal to the old end is allowed (the old end is not after the new grant).
+	a.exec(replace("2026-11-02 12:00Z"))
+	var origin string
+	if err := a.db.QueryRow(`SELECT access_origin FROM registrations WHERE id=40`).Scan(&origin); err != nil || origin != "departure_removal" {
+		t.Fatalf("valid replacement not applied: %q %v", origin, err)
+	}
+	// Nothing about an ordinary answer needs any of this.
+	a.exec(`UPDATE registrations SET guest_count=2 WHERE id=40`)
+}
+
+// Repeat and stale-request checks read the audit snapshots, so they survive the
+// deletion of the registration row they were first recorded on.
+func TestRegistrationAccessRepeatAndStaleChecksSurviveDeletion(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	a.exec(`DELETE FROM manager_add_blocks`)
+	a.exec(`UPDATE registrations SET status='going',access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-11-01 12:00Z' WHERE id=40`)
+	a.exec(`UPDATE registrations SET access_ended_at='2026-11-02 12:00Z',access_end_reason='declined',access_ended_by=2 WHERE id=40`)
+	extra := map[string]any{"issuerId": 1}
+	a.recordAdded(40, 2, 30, "manager_add", "2026-11-01 12:00Z", extra)
+	a.recordEnded(40, 2, 30, "manager_add", "2026-11-01 12:00Z", "2026-11-02 12:00Z", "declined", 2, extra)
+	a.exec(`DELETE FROM registrations WHERE id=40`)
+	// The same person is registered again on a newly allocated registration.
+	a.exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(70,30,2,'going','admin')`)
+	direct := `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-11-05 12:00Z' WHERE id=70`
+	a.refuse("direct re-add after the row was deleted", direct)
+	a.exec(`DELETE FROM registrations WHERE id=70`)
+	a.refuse("direct re-add as an insert", `INSERT INTO registrations(id,occurrence_id,user_id,status,source,access_origin,access_issuer_id,access_granted_at)
+	 VALUES(72,30,2,'going','admin','manager_add',1,'2026-11-05 12:00Z')`)
+	a.exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(70,30,2,'going','admin')`)
+
+	request := func(id int, created string) {
+		a.exec(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,purpose,occurrence_id,add_attendance_mode,needs_admin,admin_decision,created_at,expires_at)
+		 VALUES($1,1,2,'event',20,'','occurrence_add',30,'in_person',false,'not_needed',$2::timestamptz,$2::timestamptz + interval '14 days')`, id, created)
+	}
+	complete := func(id int, grantedAt string) error {
+		tx, err := a.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec(`UPDATE contact_requests SET subject_decision='approved',subject_decided_by=2,subject_decided_at=created_at + interval '1 hour',
+		 status='granted',completed_at=created_at + interval '2 hours',completed_target_id=70 WHERE id=$1`, id); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=$1,access_granted_at=$2::timestamptz WHERE id=70`, id, grantedAt); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	// A request created before the latest end is stale; equality is allowed.
+	request(80, "2026-11-01 13:00Z")
+	if err := complete(80, "2026-11-05 12:00Z"); err == nil {
+		t.Fatal("a stale approved request resurrected access after the row was deleted")
+	}
+	request(81, "2026-11-02 12:00Z")
+	if err := complete(81, "2026-11-05 12:00Z"); err != nil {
+		t.Fatalf("a request created exactly at the old end was refused: %v", err)
+	}
+	if a.count(`SELECT count(*) FROM registrations WHERE id=70 AND access_request_id=81 AND access_ended_at IS NULL`) != 1 {
+		t.Fatal("approved fresh request did not grant")
+	}
+}
+
+// Every request can authorize one grant only, even on the same registration.
+func TestRegistrationAccessRequestIsSingleUse(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	a.exec(`DELETE FROM manager_add_blocks`)
+	a.exec(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,purpose,occurrence_id,add_attendance_mode,needs_admin,admin_decision,created_at,expires_at)
+	 VALUES(80,1,2,'event',20,'','occurrence_add',30,'in_person',false,'not_needed','2026-11-01 14:00Z','2026-11-15 12:00Z')`)
+	a.exec(`UPDATE registrations SET status='going' WHERE id=40`)
+	tx, err := a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`UPDATE contact_requests SET subject_decision='approved',subject_decided_by=2,subject_decided_at='2026-11-01 14:00Z',status='granted',completed_at='2026-11-01 14:00Z',completed_target_id=40 WHERE id=80`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=80,access_granted_at='2026-11-01 14:00Z' WHERE id=40`); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	a.exec(`UPDATE registrations SET access_ended_at='2026-11-01 14:00Z',access_end_reason='declined',access_ended_by=2 WHERE id=40`)
+	a.recordAdded(40, 2, 30, "manager_add", "2026-11-01 14:00Z", map[string]any{"issuerId": 1, "requestId": 80})
+	a.recordEnded(40, 2, 30, "manager_add", "2026-11-01 14:00Z", "2026-11-01 14:00Z", "declined", 2, map[string]any{"issuerId": 1, "requestId": 80})
+	a.refuse("the same request twice", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=80,access_granted_at='2026-11-02 12:00Z',
+	 access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`)
+	a.refuse("another registration claiming the request", `UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=80,access_granted_at='2026-11-02 12:00Z' WHERE id=42`)
+}
+
+// The trigger's rules are declared once and cover every write: it fires before
+// INSERT, UPDATE and DELETE; the registration foreign keys cannot cascade a
+// delete behind it; and the structures R9 retires are gone.
+func TestRegistrationAccessSchemaShape(t *testing.T) {
+	t.Parallel()
+	a := newAccessDB(t)
+	var def string
+	if err := a.db.QueryRow(`SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname='registration_access_provenance' AND tgrelid='registrations'::regclass`).Scan(&def); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"BEFORE INSERT OR DELETE OR UPDATE ON public.registrations", "FOR EACH ROW", "registration_access_provenance()"} {
+		if !strings.Contains(def, want) {
+			t.Fatalf("trigger %q lacks %q", def, want)
+		}
+	}
+	rows, err := a.db.Query(`SELECT conname, confdeltype::text FROM pg_constraint WHERE conrelid='registrations'::regclass AND contype='f' AND conname IN ('fk_registrations_occurrence','fk_registrations_user')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var name, action string
+		if err := rows.Scan(&name, &action); err != nil {
+			t.Fatal(err)
+		}
+		if action != "a" {
+			t.Fatalf("%s deletes by %q; only NO ACTION keeps the delete trigger in the way", name, action)
+		}
+		seen++
+	}
+	if seen != 2 {
+		t.Fatalf("registration foreign keys found: %d", seen)
+	}
+	for _, gone := range []string{"occurrence_accesses", "occurrence_access_provenance"} {
+		if a.count(`SELECT count(*) FROM pg_class WHERE relname=$1`, gone)+a.count(`SELECT count(*) FROM pg_proc WHERE proname=$1`, gone) != 0 {
+			t.Fatalf("%s survived the fold", gone)
+		}
+	}
+	for _, idx := range []string{"idx_registrations_access_request", "idx_registrations_live_access"} {
+		if a.count(`SELECT count(*) FROM pg_indexes WHERE indexname=$1 AND tablename='registrations'`, idx) != 1 {
+			t.Fatalf("index %s missing", idx)
+		}
+	}
+	// The partial unique index lets one request ground one registration only.
+	var tables int
+	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 37 {
+		t.Fatalf("tables = %d (%v), models = %d, want 37", tables, err, len(models.All()))
 	}
 }
 
@@ -951,43 +1288,33 @@ func TestContactRequestPurposeDefaultsToContact(t *testing.T) {
 
 func TestContactAddRequestsConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, true))
-	exec := func(q string, args ...any) {
-		t.Helper()
-		if _, err := db.Exec(q, args...); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	for _, q := range []string{
-		`INSERT INTO users(id,email,status) VALUES(1,'issuer@example.com','active'),(2,'recipient@example.com','active'),(3,'other@example.com','active')`,
-		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Hidden',1,'active','invite_only')`,
-		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
-		 VALUES(20,10,'Hidden series','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
-		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status)
-		 VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled'),
-		 (31,20,'2026-12-02','2026-12-02 18:00Z','2026-12-02 19:00Z','scheduled')`,
-		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','admin'),(41,31,2,'going','admin')`,
-		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,2,10,'member','active')`,
-	} {
-		exec(q)
-	}
+	a := newAccessDB(t)
+	db := a.db
+	exec := a.exec
+	// The shared fixture has blocks and other grants; this walk wants a clean
+	// organizer scope and a plain going answer for the recipient.
+	exec(`DELETE FROM manager_add_blocks`)
+	exec(`UPDATE registrations SET status='going' WHERE id IN (40,41)`)
+	exec(`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
+	 VALUES(21,10,'Other series','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`)
 	requestCreated := "2026-10-24 12:00Z"
-	insertRequest := func(purpose string) int {
+	insertRequestFor := func(purpose string, requester, subject, event, occurrence int) int {
 		t.Helper()
 		var id int
-		contextType, contextID, mode := "event", 20, "in_person"
-		var occurrence any = 30
+		contextType, contextID, mode := "event", event, "in_person"
+		var occ any = occurrence
 		if purpose == "group_add" {
-			contextType, contextID, mode, occurrence = "group", 10, "", nil
+			contextType, contextID, mode, occ = "group", 10, "", nil
 		}
 		err := db.QueryRow(`INSERT INTO contact_requests(requester_id,subject_user_id,context_type,context_id,fields,purpose,occurrence_id,
 		 add_attendance_mode,needs_admin,admin_decision,created_at,expires_at)
-		 VALUES(1,2,$1,$2,'',$3,$4,$5,true,'pending',$6::timestamptz,$6::timestamptz + interval '14 days') RETURNING id`, contextType, contextID, purpose, occurrence, mode, requestCreated).Scan(&id)
+		 VALUES($7,$8,$1,$2,'',$3,$4,$5,true,'pending',$6::timestamptz,$6::timestamptz + interval '14 days') RETURNING id`, contextType, contextID, purpose, occ, mode, requestCreated, requester, subject).Scan(&id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
+	insertRequest := func(purpose string) int { return insertRequestFor(purpose, 1, 2, 20, 30) }
 	for _, tt := range []struct{ name, mutation string }{
 		{"unknown purpose", `purpose='other'`}, {"contact cannot be retargeted", `purpose='contact', fields='email'`},
 		{"add has no contact fields", `fields='both'`}, {"exact occurrence required", `occurrence_id=NULL`},
@@ -1029,13 +1356,15 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 		t.Fatal("request option changed")
 	}
 	// Fully approved but incomplete is valid/retryable; still no grant/access.
-	approveSQL := `UPDATE contact_requests SET subject_decision='approved',subject_decided_by=2,subject_decided_at='2026-10-25 12:00Z',
+	approveSQL := `UPDATE contact_requests SET subject_decision='approved',subject_decided_by=subject_user_id,subject_decided_at='2026-10-25 12:00Z',
 	 admin_decision='approved',admin_decided_by=1,admin_decided_at='2026-10-25 12:00Z' WHERE id=$1`
 	exec(approveSQL, id)
 	if _, err := db.Exec(`INSERT INTO contact_grants(request_id,leader_id,subject_user_id,context_type,context_id,fields,granted_at)
 	 VALUES($1,1,2,'event',20,'','2026-10-25 12:00Z')`, id); err == nil {
 		t.Fatal("add created contact grant")
 	}
+	// The deferred completion trigger needs the exact effect on the registration
+	// at commit: a granted request with no grant on the named target fails.
 	if _, err := db.Exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=40 WHERE id=$1`, id); err == nil {
 		t.Fatal("successful add without occurrence effect accepted")
 	}
@@ -1048,9 +1377,10 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 	group := insertRequest("group_add")
 	exec(approveSQL, group)
 	exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=50 WHERE id=$1`, group)
+
 	// Exact request/issuer/date/registration provenance is checked in addition
 	// to the completed target, all in one deferred completion transaction.
-	complete := func(request int, accessSQL string) error {
+	complete := func(request, target int, grantSQL string) error {
 		tx, err := db.Begin()
 		if err != nil {
 			return err
@@ -1059,44 +1389,70 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 		if _, err = tx.Exec(approveSQL, request); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=40 WHERE id=$1`, request); err != nil {
+		if _, err = tx.Exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=$2 WHERE id=$1`, request, target); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(accessSQL, request); err != nil {
-			return err
+		if grantSQL != "" {
+			if _, err = tx.Exec(grantSQL, request); err != nil {
+				return err
+			}
 		}
 		return tx.Commit()
 	}
-	accessSQL := `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,request_id,registration_id,granted_at)
-	 VALUES(2,30,20,'group',10,1,$1,40,'2026-10-25 12:00Z')`
-	for _, mutation := range []struct{ old, new string }{
-		{"2,30,20", "3,30,20"}, {"2,30,20", "2,31,20"}, {"2,30,20", "2,30,21"},
-		{"'group',10", "'group',11"}, {"10,1,$1", "10,3,$1"}, {"$1,40", "$1,41"},
-	} {
-		r := insertRequest("occurrence_add")
-		if err := complete(r, strings.Replace(accessSQL, mutation.old, mutation.new, 1)); err == nil {
-			t.Fatalf("mismatched provenance accepted: %s", mutation.new)
+	grantAt := func(registration int, at string) string {
+		return fmt.Sprintf(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=$1,access_granted_at='%s' WHERE id=%d`, at, registration)
+	}
+	// Forged provenance: the request names a different subject, date, event,
+	// issuer or completed target than the registration it is used on.
+	forged := map[string]int{
+		"subject": insertRequestFor("occurrence_add", 1, 3, 20, 30),
+		"date":    insertRequestFor("occurrence_add", 1, 2, 20, 31),
+		"event":   insertRequestFor("occurrence_add", 1, 2, 21, 30),
+		"issuer":  insertRequestFor("occurrence_add", 3, 2, 20, 30),
+	}
+	for name, r := range forged {
+		if err := complete(r, 40, grantAt(40, "2026-10-25 12:00Z")); err == nil {
+			t.Fatalf("forged %s accepted", name)
 		}
+	}
+	if err := complete(insertRequest("occurrence_add"), 41, grantAt(40, "2026-10-25 12:00Z")); err == nil {
+		t.Fatal("forged completed target accepted")
+	}
+	// A request completed on another registration of the subject also fails at
+	// commit when the effect is missing from the target it names.
+	if err := complete(insertRequest("occurrence_add"), 40, ""); err == nil {
+		t.Fatal("granted request without its effect committed")
+	}
+	if err := complete(insertRequestFor("occurrence_add", 1, 2, 21, 30), 40, ""); err == nil {
+		t.Fatal("granted request for the wrong event committed")
 	}
 	request := insertRequest("occurrence_add")
 	exec(`UPDATE users SET account_type='teen',birth_date='2010-01-01' WHERE id=2`)
-	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+	if _, err := db.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-25 12:00Z' WHERE id=40`); err == nil {
 		t.Fatal("direct teen manager add accepted")
 	}
-	if err := complete(request, accessSQL); err != nil {
+	if err := complete(request, 40, grantAt(40, "2026-10-25 12:00Z")); err != nil {
 		t.Fatal(err)
 	}
-	if err := complete(insertRequest("occurrence_add"), accessSQL); err == nil {
-		t.Fatal("second live subject/date invitation accepted")
+	// A granted request is terminal: its effect cannot be rewritten, and a later
+	// end and re-grant on the registration cannot disturb it.
+	if _, err := db.Exec(`UPDATE contact_requests SET completed_target_id=41, reason='x' WHERE id=$1`, request); err == nil {
+		t.Fatal("granted request modified")
+	}
+	if _, err := db.Exec(`UPDATE contact_requests SET status='pending', completed_at=NULL, completed_target_id=NULL WHERE id=$1`, request); err == nil {
+		t.Fatal("granted request reopened")
+	}
+	if err := complete(insertRequest("occurrence_add"), 40, grantAt(40, "2026-10-25 12:00:01Z")); err == nil {
+		t.Fatal("second live subject/date grant accepted")
 	}
 	for _, mutation := range []string{
-		`end_reason='removed'`, `status='ended'`,
-		`status='ended',ended_at='2026-10-24 12:00Z',end_reason='declined',ended_by=2`,
-		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='declined',ended_by=1`,
-		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='unknown'`,
-		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='account_disabled',ended_by=1`,
+		`access_end_reason='removed'`, `access_ended_by=2`,
+		`access_ended_at='2026-10-24 12:00Z',access_end_reason='declined',access_ended_by=2`,
+		`access_ended_at='2026-10-26 12:00Z',access_end_reason='declined',access_ended_by=1`,
+		`access_ended_at='2026-10-26 12:00Z',access_end_reason='unknown'`,
+		`access_ended_at='2026-10-26 12:00Z',access_end_reason='account_disabled',access_ended_by=1`,
 	} {
-		if _, err := db.Exec("UPDATE occurrence_accesses SET " + mutation + " WHERE occurrence_id=30"); err == nil {
+		if _, err := db.Exec("UPDATE registrations SET " + mutation + " WHERE id=40"); err == nil {
 			t.Fatalf("malformed access end accepted: %s", mutation)
 		}
 	}
@@ -1104,56 +1460,77 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 	 VALUES($1,1,2,'event',20,'','2026-10-25 12:00Z')`, request); err == nil {
 		t.Fatal("approved add created ContactGrant")
 	}
-	for _, mutation := range []string{`issuer_id=3`, `occurrence_id=31`, `request_id=NULL`, `registration_id=41`, `granted_at=granted_at+interval '1 second'`} {
-		if _, err := db.Exec("UPDATE occurrence_accesses SET " + mutation + " WHERE occurrence_id=30"); err == nil {
+	for _, mutation := range []string{`access_issuer_id=3`, `access_request_id=NULL`, `access_granted_at=access_granted_at+interval '1 second'`, `user_id=3`, `occurrence_id=31`} {
+		if _, err := db.Exec("UPDATE registrations SET " + mutation + " WHERE id=40"); err == nil {
 			t.Fatalf("immutable provenance changed: %s", mutation)
 		}
 	}
-	// Other accepted dates survive organizer block; new dates cannot be added.
+	// Other accepted dates survive an organizer block; new dates cannot be added.
 	exec(`UPDATE users SET account_type='adult' WHERE id=2`)
-	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(2,31,20,'group',10,1,41)`)
+	exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-25 12:00Z' WHERE id=41`)
 	staleAsk := insertRequest("occurrence_add")
-	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-10-25 12:00Z',end_reason='declined',ended_by=2 WHERE occurrence_id=30`)
-	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+	exec(`UPDATE registrations SET access_ended_at='2026-10-25 12:00Z',access_end_reason='declined',access_ended_by=2 WHERE id=40`)
+	// Without snapshots the ended grant cannot even be replaced; with them the
+	// replacement is judged as a repeat or a stale request, from the audit log.
+	replace := func(at string) string {
+		return fmt.Sprintf(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_request_id=$1,access_granted_at='%s',
+		 access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`, at)
+	}
+	if err := complete(staleAsk, 40, replace("2026-10-25 12:00:01Z")); err == nil {
+		t.Fatal("replacement without recorded history accepted")
+	}
+	a.recordAdded(40, 2, 30, "manager_add", "2026-10-25 12:00Z", map[string]any{"issuerId": 1, "requestId": request})
+	a.recordEnded(40, 2, 30, "manager_add", "2026-10-25 12:00Z", "2026-10-25 12:00Z", "declined", 2, map[string]any{"issuerId": 1, "requestId": request})
+	if _, err := db.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-26 12:00Z',
+	 access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`); err == nil {
 		t.Fatal("direct re-add after end accepted")
 	}
-	if err := complete(staleAsk, accessSQL); err == nil {
+	if err := complete(staleAsk, 40, replace("2026-10-25 12:00:01Z")); err == nil {
 		t.Fatal("pending ask predating removal resurrected access")
 	}
 	requestCreated = "2026-10-25 12:00Z"
 	freshAsk := insertRequest("occurrence_add")
-	if err := complete(freshAsk, accessSQL); err != nil {
+	if err := complete(freshAsk, 40, replace("2026-10-25 12:00:01Z")); err != nil {
 		t.Fatalf("genuinely new approved ask refused: %v", err)
 	}
-	if _, err := db.Exec(`DELETE FROM occurrence_accesses WHERE occurrence_id=30`); err == nil {
-		t.Fatal("retained invitation history deleted")
+	// The earlier committed request is untouched by the later end and re-grant.
+	var status string
+	if err := db.QueryRow(`SELECT status FROM contact_requests WHERE id=$1`, request).Scan(&status); err != nil || status != "granted" {
+		t.Fatalf("earlier request = %q, %v", status, err)
+	}
+	if _, err := db.Exec(`DELETE FROM registrations WHERE id=40`); err == nil {
+		t.Fatal("live grant deleted")
 	}
 	exec(`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(2,'group',10)`)
-	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status)
-	 VALUES(32,20,'2026-12-03','2026-12-03 18:00Z','2026-12-03 19:00Z','scheduled')`)
-	exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(42,32,2,'going','admin')`)
-	if _, err := db.Exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
-	 VALUES(2,32,20,'group',10,1,42)`); err == nil {
+	exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(49,34,2,'going','admin')`)
+	if _, err := db.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-27 12:00Z' WHERE id=49`); err == nil {
 		t.Fatal("new date add bypassed organizer block")
 	}
-	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-10-26 12:00Z',end_reason='blocked',ended_by=2 WHERE occurrence_id=30 AND status='active'`)
-	if _, err := db.Exec(`UPDATE occurrence_accesses SET status='active',ended_at=NULL,end_reason='',ended_by=NULL WHERE occurrence_id=30`); err == nil {
+	exec(`UPDATE registrations SET access_ended_at='2026-10-26 12:00Z',access_end_reason='blocked',access_ended_by=2 WHERE id=40 AND access_ended_at IS NULL`)
+	if _, err := db.Exec(`UPDATE registrations SET access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`); err == nil {
 		t.Fatal("access tombstone resurrected")
 	}
-	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+	if _, err := db.Exec(`UPDATE registrations SET access_origin='manager_add',access_issuer_id=1,access_granted_at='2026-10-27 12:00Z',
+	 access_ended_at=NULL,access_end_reason='',access_ended_by=NULL WHERE id=40`); err == nil {
 		t.Fatal("duplicate/readded ended date accepted")
 	}
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM occurrence_accesses WHERE status='active' AND occurrence_id=31`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(`SELECT count(*) FROM registrations WHERE access_origin<>'' AND access_ended_at IS NULL AND occurrence_id=31`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("block ended unrelated accepted date: %d %v", count, err)
 	}
-	// History survives actual hard deletion, independent of live-domain joins.
+	// History survives actual hard deletion, independent of live-domain joins:
+	// end what is live, record what the application records, then delete.
+	exec(`UPDATE registrations SET access_ended_at='2026-10-26 12:00Z',access_end_reason='context_changed' WHERE id=41`)
+	a.recordAdded(40, 2, 30, "manager_add", "2026-10-25 12:00:01Z", map[string]any{"issuerId": 1, "requestId": freshAsk})
+	a.recordEnded(40, 2, 30, "manager_add", "2026-10-25 12:00:01Z", "2026-10-26 12:00Z", "blocked", 2, map[string]any{"issuerId": 1, "requestId": freshAsk})
+	a.recordAdded(41, 2, 31, "manager_add", "2026-10-25 12:00Z", map[string]any{"issuerId": 1})
+	a.recordEnded(41, 2, 31, "manager_add", "2026-10-25 12:00Z", "2026-10-26 12:00Z", "context_changed", 0, map[string]any{"issuerId": 1})
+	snapshots := a.count(`SELECT count(*) FROM audit_logs WHERE action IN ('occurrence_access.added','occurrence_access.ended')`)
 	for _, q := range []string{`DELETE FROM registrations`, `DELETE FROM event_occurrences`, `DELETE FROM events`, `DELETE FROM memberships`, `DELETE FROM groups`, `DELETE FROM users`} {
 		exec(q)
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM occurrence_accesses`).Scan(&count); err != nil || count != 3 {
-		t.Fatalf("access history lost: %d %v", count, err)
+	if got := a.count(`SELECT count(*) FROM audit_logs WHERE action IN ('occurrence_access.added','occurrence_access.ended')`); got != snapshots || snapshots < 6 {
+		t.Fatalf("access history lost: %d of %d", got, snapshots)
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM manager_add_blocks`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("block history lost: %d %v", count, err)

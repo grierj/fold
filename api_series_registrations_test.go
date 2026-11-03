@@ -311,11 +311,7 @@ func TestSeriesRegistrationRequiresSeriesAuthorityAndIgnoresManagerBlock(t *test
 		t.Fatal(err)
 	}
 	issuerID := leader.ID
-	access := models.OccurrenceAccess{SubjectUserID: actor.ID, OccurrenceID: occs[0].ID, EventID: ev.ID, OrganizerType: policy.ContactGroup,
-		OrganizerID: group.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
-	if err := app.DB.Create(&access).Error; err != nil {
-		t.Fatal(err)
-	}
+	seedAccessGrant(t, app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID}, &issuerID, time.Now().UTC())
 	client := loginAPI(t, app, "hidden-actor", "password1234")
 	w := client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
 	if w.Code != http.StatusNotFound {
@@ -743,18 +739,14 @@ func TestSeriesUndoDoesNotReviveEndedOccurrenceAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	issuerID := leader.ID
-	access := models.OccurrenceAccess{SubjectUserID: actor.ID, OccurrenceID: occs[0].ID, EventID: ev.ID, OrganizerType: policy.ContactGroup,
-		OrganizerID: group.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
-	if err := app.DB.Create(&access).Error; err != nil {
-		t.Fatal(err)
-	}
+	access := seedAccessGrant(t, app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID}, &issuerID, time.Now().UTC())
 	client := loginAPI(t, app, "undo-access-actor", "password1234")
 	out := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
 	if out == nil {
 		t.Fatal("series decline failed")
 	}
-	if err := app.DB.First(&access, access.ID).Error; err != nil || access.Status == policy.OccurrenceAccessActive {
-		t.Fatalf("access was not ended: %+v err=%v", access, err)
+	if row := loadAccessRow(t, app.DB, access.ID); row.Status == policy.OccurrenceAccessActive {
+		t.Fatalf("access was not ended: %+v", row)
 	}
 	if w := undoSeriesAnswer(client, ev.ID, out.UndoToken, true); w.Code != http.StatusOK {
 		t.Fatalf("undo=%d %s", w.Code, w.Body.String())
@@ -762,8 +754,8 @@ func TestSeriesUndoDoesNotReviveEndedOccurrenceAccess(t *testing.T) {
 	if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegGoing {
 		t.Fatalf("registration=%q", got)
 	}
-	if err := app.DB.First(&access, access.ID).Error; err != nil || access.Status == policy.OccurrenceAccessActive {
-		t.Fatalf("ended access was revived: %+v err=%v", access, err)
+	if row := loadAccessRow(t, app.DB, access.ID); row.Status == policy.OccurrenceAccessActive {
+		t.Fatalf("ended access was revived: %+v", row)
 	}
 }
 

@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/policy"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // reminderFor sends the reminder for occ as the sweep's job would at its
@@ -167,6 +170,144 @@ func TestReminderRechecksWhoCanSeeTheDate(t *testing.T) {
 	f.app.DB.Where("user_id = ?", outsider.ID).First(&r)
 	if r.Reason != skipCantSeeDate {
 		t.Fatalf("outsider row: %+v", r)
+	}
+}
+
+// A person who leaves a group (or is removed) and keeps a private date still
+// gets that date's reminder through the exact-date fallback in reminderReaders
+// (R9 section 10 item 6), although they have genuinely lost ordinary visibility.
+// The reminder stops the moment the grant ends. Everything runs through the
+// production departure endpoints, the reminder job and the contact lifecycle;
+// no policy fact is written by hand.
+func TestReminderKeptDepartureDateUsesExactDateFallback(t *testing.T) {
+	for _, how := range []string{"leaves", "is removed"} {
+		t.Run(how, func(t *testing.T) {
+			f := newDepartureTestFixture(t)
+			if err := f.app.DB.Model(f.group).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
+			// Private dates are keepable only underway or within the two-hour
+			// cutoff. Both remain future dates for the reminder delivery job.
+			now := time.Now().UTC().Truncate(time.Minute)
+			first, firstReg := addDepartureRegistration(t, f, f.subject, "Kept reminder one", models.VisibilityInviteOnly, nil, now.Add(time.Hour), now.Add(2*time.Hour), models.OccurrenceScheduled, models.RegGoing)
+			second, secondReg := addDepartureRegistration(t, f, f.subject, "Kept reminder two", models.VisibilityInviteOnly, nil, now.Add(90*time.Minute), now.Add(150*time.Minute), models.OccurrenceScheduled, models.RegGoing)
+			for _, ev := range []uint{first.EventID, second.EventID} {
+				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", ev).Update("reminder_email_minutes", 120).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			client, previewPath, mutationPath := f.subjectC, "/api/v1/groups/"+itoa(f.group.ID)+"/departure-preview", "/api/v1/groups/"+itoa(f.group.ID)+"/leave"
+			wantOrigin := policy.OccurrenceOriginDepartureSelf
+			if how == "is removed" {
+				client = f.leaderC
+				previewPath = "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.subject.ID) + "/departure-preview"
+				mutationPath = "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.subject.ID) + "/departure"
+				wantOrigin = policy.OccurrenceOriginDepartureRemoval
+			}
+			preview := getDeparturePreview(t, client, previewPath, http.StatusOK)
+			if preview.KeepableCount != 2 || len(preview.Dates) != 2 {
+				t.Fatalf("private reminder dates not keepable: %+v", preview)
+			}
+			for _, date := range preview.Dates {
+				if date.KeepReason != policy.DepartureKeepCutoff {
+					t.Fatalf("private reminder date lacks cutoff eligibility: %+v", date)
+				}
+			}
+			if w := confirmDeparturePreview(t, client, "POST", mutationPath, preview, []uint{first.ID, second.ID}, ""); w.Code != http.StatusOK {
+				t.Fatalf("departure: %d %s", w.Code, w.Body.String())
+			}
+
+			// Genuine ordinary visibility loss, read through the same loader a
+			// reminder uses, while the registrations and exact-date grants stay.
+			for _, occ := range []models.EventOccurrence{first, second} {
+				vs, err := f.app.dateCandidates(f.subject, f.app.DB.Where("id = ?", occ.EventID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ev := vs.ByID[occ.EventID]; ev != nil && vs.canSeeDate(f.subject, ev, &occ) {
+					t.Fatalf("the departed person still sees %q through ordinary visibility", ev.Title)
+				}
+				if got := regStatus(t, f.app, f.subject.ID, occ.ID); got != models.RegGoing {
+					t.Fatalf("kept registration is %q, want going", got)
+				}
+				if w := f.subjectC.do("GET", "/api/v1/events/"+itoa(occ.EventID)+"/dates/"+models.FormatCalendarDate(occ.OriginalDate), nil, false); w.Code != http.StatusOK {
+					t.Fatalf("the kept date is not readable through its grant: %d %s", w.Code, w.Body.String())
+				}
+			}
+			for _, regID := range []uint{firstReg.ID, secondReg.ID} {
+				if row := loadAccessRow(t, f.app.DB, regID); row.Origin != wantOrigin || row.Status != policy.OccurrenceAccessActive {
+					t.Fatalf("departure grant for registration %d: %+v", regID, row)
+				}
+			}
+
+			reminders := func(title string) int {
+				n := 0
+				for _, m := range reminderMails(t, f.app, f.subject.Email) {
+					if strings.HasPrefix(m.Subject, "Reminder: "+title+" on ") {
+						n++
+					}
+				}
+				return n
+			}
+			recipient := func(occ models.EventOccurrence) models.MessageRecipient {
+				var row models.MessageRecipient
+				if err := f.app.DB.Joins("JOIN messages m ON m.id = message_recipients.message_id").
+					Where("m.occurrence_id = ? AND m.category = ? AND message_recipients.user_id = ? AND message_recipients.channel = ?",
+						occ.ID, models.MessageCategoryReminder, f.subject.ID, models.DeliveryEmail).First(&row).Error; err != nil {
+					t.Fatal(err)
+				}
+				return row
+			}
+
+			// Run an overdue reminder after the departure, as a delayed worker
+			// would. Its original due time preceded the newly created grant.
+			sendCurrentReminder := func(occ models.EventOccurrence) {
+				t.Helper()
+				if err := f.app.sendReminder(context.Background(), reminderJob{OccurrenceID: occ.ID, StartsAt: occ.StartsAt.Unix(), Minutes: 120}, time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+				runMessageJobs(t, f.app)
+			}
+			// The first date's reminder goes through the exact-date fallback, once.
+			sendCurrentReminder(first)
+			sendCurrentReminder(first)
+			if n := reminders("Kept reminder one"); n != 1 {
+				t.Fatalf("kept-date reminders = %d, want 1", n)
+			}
+			if row := recipient(first); row.Status == models.RecipientSuppressed || row.Reason != "" {
+				t.Fatalf("kept-date recipient row: %+v", row)
+			}
+
+			// The group goes away from under the grants; the production lifecycle
+			// ends them (context_changed), and the next reminder is suppressed
+			// with the can't-see-it reason.
+			if err := f.app.contactMutation(contactChange{GroupID: f.group.ID}, func(tx *gorm.DB) error {
+				return tx.Model(f.group).Update("status", models.GroupArchived).Error
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, regID := range []uint{firstReg.ID, secondReg.ID} {
+				if row := loadAccessRow(t, f.app.DB, regID); row.Status != policy.OccurrenceAccessEnded || row.EndReason != policy.OccurrenceContextChanged {
+					t.Fatalf("grant for registration %d did not end with the group: %+v", regID, row)
+				}
+			}
+			if got := regStatus(t, f.app, f.subject.ID, second.ID); got != models.RegGoing {
+				t.Fatalf("the registration changed with its grant: %q", got)
+			}
+			sendCurrentReminder(second)
+			if n := reminders("Kept reminder two"); n != 0 {
+				t.Fatalf("a reminder went out after the grant ended: %d", n)
+			}
+			if row := recipient(second); row.Status != models.RecipientSuppressed || row.Reason != skipCantSeeDate {
+				t.Fatalf("recipient row after the grant ended: %+v", row)
+			}
+			// The reminder that already went is not sent again or taken back.
+			sendCurrentReminder(first)
+			if n := reminders("Kept reminder one"); n != 1 {
+				t.Fatalf("first date's reminders = %d after the grant ended, want still 1", n)
+			}
+		})
 	}
 }
 

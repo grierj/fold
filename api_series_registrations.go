@@ -357,12 +357,12 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			// provenance on that date, matching the single-date path. The
 			// provenance never helped authorize this series mutation.
 			if body.Status == models.RegDeclined && old.ID != 0 {
-				var access models.OccurrenceAccess
-				if err := tx.Where("registration_id = ? AND subject_user_id = ? AND occurrence_id = ? AND status = ?", old.ID, actor.ID, o.ID, policy.OccurrenceAccessActive).Limit(1).Find(&access).Error; err != nil {
+				var grant models.Registration
+				if err := tx.Where("registrations.id = ? AND registrations.user_id = ? AND registrations.occurrence_id = ? AND "+registrationAccessLiveSQL, old.ID, actor.ID, o.ID).Limit(1).Find(&grant).Error; err != nil {
 					return err
 				}
-				if access.ID != 0 {
-					_, err := endOccurrenceAccessIn(tx, &access, policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
+				if grant.ID != 0 {
+					_, err := endOccurrenceAccessIn(tx, &grant, accessScopeOf(&ev), policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
 					if err != nil {
 						return err
 					}
@@ -573,6 +573,13 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, dateNow)
 				if err == nil {
 					_, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+				}
+				if err == nil && current.AccessOrigin != "" {
+					// A removed row may hold a live exact-date grant: end it as
+					// context_changed (normal notice) so the delete trigger finds
+					// an ended grant and its snapshots. An ended grant keeps its
+					// own reason.
+					_, err = endOccurrenceAccessIn(tx, &current, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, dateNow, c.ClientIP())
 				}
 				if err == nil {
 					err = tx.Delete(&models.Registration{}, current.ID).Error

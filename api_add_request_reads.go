@@ -116,7 +116,8 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 		}
 	}
 	blocks := map[addRequestBlockKey]*policy.ManagerAddBlock{}
-	accesses := map[addRequestPair][]models.OccurrenceAccess{}
+	regRows := map[addRequestPair]models.Registration{}
+	var history map[accessKey]accessHistory
 	if len(pendingOccs) > 0 {
 		var bs []models.ManagerAddBlock
 		if err := tx.Where("subject_user_id IN ? AND ((organizer_type = ? AND organizer_id IN ?) OR (organizer_type = ? AND organizer_id IN ?))", pendingSubjects, policy.ContactGroup, groupIDs, policy.ContactEvent, eventIDs).Find(&bs).Error; err != nil {
@@ -126,13 +127,19 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 			organizer := policy.OrganizerScope{Type: b.OrganizerType, ID: b.OrganizerID}
 			blocks[addRequestBlockKey{b.SubjectUserID, organizer}] = &policy.ManagerAddBlock{SubjectUserID: b.SubjectUserID, Organizer: organizer}
 		}
-		var rows []models.OccurrenceAccess
-		if err := tx.Where("subject_user_id IN ? AND occurrence_id IN ?", pendingSubjects, pendingOccs).Order("id").Find(&rows).Error; err != nil {
+		// The live test reads each subject's current registration; the latest
+		// end also reads the validated audit snapshots, and a corrupt one
+		// fails closed for the whole page.
+		var rows []models.Registration
+		if err := tx.Where("user_id IN ? AND occurrence_id IN ?", pendingSubjects, pendingOccs).Order("id").Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
-			key := addRequestPair{row.SubjectUserID, row.OccurrenceID}
-			accesses[key] = append(accesses[key], row)
+			regRows[addRequestPair{*row.UserID, row.OccurrenceID}] = row
+		}
+		var err error
+		if history, err = loadAccessHistory(tx, pendingSubjects, pendingOccs); err != nil {
+			return nil, err
 		}
 	}
 	actor := contactAccount(op.actor, op.now, op.zone)
@@ -180,14 +187,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 						f.OrdinaryEligible = policy.CanRegisterGuest(view, gp)
 					}
 					f.Block = blocks[addRequestBlockKey{r.SubjectUserID, organizer}]
-					for _, access := range accesses[addRequestPair{r.SubjectUserID, *r.OccurrenceID}] {
-						if access.Status == policy.OccurrenceAccessActive {
-							f.ExistingAccessActive = true
-						}
-						if access.EndedAt != nil && (f.LatestAccessEndedAt == nil || access.EndedAt.After(*f.LatestAccessEndedAt)) {
-							f.LatestAccessEndedAt = access.EndedAt
-						}
-					}
+					f.ExistingAccessActive, f.LatestAccessEndedAt = accessAddFacts(regRows[addRequestPair{r.SubjectUserID, *r.OccurrenceID}], history[accessKey{r.SubjectUserID, *r.OccurrenceID}])
 				}
 			}
 		}

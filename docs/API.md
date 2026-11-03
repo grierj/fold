@@ -1281,7 +1281,7 @@ A preview or test first checks again that the viewer may write to the audience (
 
 `test` sends the message to the viewer's own address on the broadcast stream with its one-click unsubscribe header, subject `[Test] …`. It needs a subject and body. It is audited `message.test_sent` before sending, under a lock on the viewer's row, and those rows limit it to 10 tries an hour (a try that fails still counts) (`message_test_limit`, a 400: it is the author's own inbox, so not a DEC-52 429). An address that is suppressed answers `message_test_email`; a provider failure is 502 `message_test_failed`.
 
-Every email adapter now sends an HTML part when there is one: SMTP as `multipart/alternative` with quoted-printable text and HTML parts, Postmark as `HtmlBody`, devoutbox in `mail_outboxes.html_body` (migration 00055).
+Every email adapter now sends an HTML part when there is one: SMTP as `multipart/alternative` with quoted-printable text and HTML parts, Postmark as `HtmlBody`, devoutbox in `mail_outboxes.html_body` (defined in `migrations/00001_baseline.sql`).
 
 The SMS counter (`internal/content/sms.go`, `web/src/lib/sms.ts`, one table of cases in `web/src/lib/sms-cases.json`) counts GSM-7 septets (160 per text, 153 per part, extended characters count 2) or UCS-2 UTF-16 units (70, 67 per part), never splitting an escape or surrogate pair, after adding the `<church>: ` prefix and the `Reply STOP to opt out` footer. The donation-ask check (DEC-3) looks for give, donate, tithe and offering words and for links to giving pages (a giving word in the address, or a giving service such as Tithe.ly, Pushpay or Givelify). Both wait for the SMS tab (DEC-117).
 
@@ -1525,7 +1525,7 @@ All but logout need a signed-in, active account and the CSRF token as usual (`cs
 - **Test.** `POST /push/test` sends "Notifications are on. This is a test from <church>." to that device at once, through the same client and allow-list as `push.deliver` (TTL 10 minutes, high urgency), and opens Me → Notifications when tapped. An endpoint that isn't one of the person's devices is 404 `push_device_unknown`. A device the push service says is gone is deleted (`sent: false`, "This device stopped taking notifications. Turn them on again."); any other failure is `sent: false` with "The notification service didn't take the test. Try again in a few minutes.". Audited `push.test_sent`.
 - **Limits (DEC-129).** 30 saves an hour per person: past that it saves nothing and answers 200 `{saved: false, message: "Try again in a few minutes."}`, so the card never shows "on" without a subscription. 10 tests an hour: past that 200 `{sent: false, message: "You just sent a few tests. Try again in a few minutes."}`. Neither is a 429 (`TestOnlyLoginAndInvitesAnswer429`): it is the person's own device and reveals nothing, so DEC-52 doesn't apply.
 - **Settings.** `push` is `{on, devices, kinds}`: whether the latest `(push, all)` consent opts in, the devices newest first, and a Push switch per optional category (`groups`, `events`, `messages`, `admin` for admins: it covers leadership changes, the one optional admin kind that pushes), each off when its latest `(push, category:<cat>)` row opts out. With a device and no row, every category is on. The Push switches don't follow the email ones. Required kinds (safety, consent, contact, tasks waiting on you) always push to a device with push on and aren't listed; `{channel: "push"}` with any other category is 400 `push_kind_locked`. The signed-out email settings page has no push section.
-- **Sessions.** The logout request's `{pushEndpoint}` deletes that browser's device in the same request (a separate call after logout would have no CSRF token), whichever account holds it, since the browser presenting the endpoint is the device. Disabling an account, waiting for consent, and anything that revokes every session (a password change or reset, an email or role change, deletion) delete every device of the account: a trigger on `users.session_version` and `users.status` (migration 00059). When it removed any device, the trigger queues a `push.devices_off` job in the same transaction, and the job writes the person one bell notice (`push.devices_off`, never emailed, pushed or required): "Notifications on your devices were turned off" / "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications.", linking to `/profile/notifications` (DEC-134 C). Turning devices off yourself (this device, everywhere, logout) writes none.
+- **Sessions.** The logout request's `{pushEndpoint}` deletes that browser's device in the same request (a separate call after logout would have no CSRF token), whichever account holds it, since the browser presenting the endpoint is the device. Disabling an account, waiting for consent, and anything that revokes every session (a password change or reset, an email or role change, deletion) delete every device of the account: a trigger on `users.session_version` and `users.status` (`push_devices_end_with_sessions()` in `migrations/00001_baseline.sql`). When it removed any device, the trigger queues a `push.devices_off` job in the same transaction, and the job writes the person one bell notice (`push.devices_off`, never emailed, pushed or required): "Notifications on your devices were turned off" / "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications.", linking to `/profile/notifications` (DEC-134 C). Turning devices off yourself (this device, everywhere, logout) writes none.
 - **Privacy.** No response, log line, audit row, consent row or job carries an endpoint, `p256dh` or `auth` (`TestPushLogsKeepSecretsOut`, `TestPushSubscribeSavesBindsAndConsents`).
 - **The browser side (M3.13c1).** Two public routes outside `/api/v1`. `GET /sw.js` is the service worker (`web/src/sw.ts`, built to `web/dist/sw.js`), served `Cache-Control: no-cache` with a JavaScript type, and a 404 when the bundle has none (never the SPA shell). It handles `install` (`skipWaiting`) and `activate` (`clients.claim`), so a new worker takes over at once and controls open tabs, plus `push`, `notificationclick` (same-origin links only) and `pushsubscriptionchange` (CSRF token, `/push/config`, subscribe, `PUT /push/subscriptions`); it has no `fetch` handler and caches nothing, so it can never serve a stale page. Only the card's "Turn on notifications" registers it. `GET /manifest.webmanifest` is made by the server (`application/manifest+json`, `no-cache`): `name` is `site_name`, `short_name` the same when it is 12 characters or fewer, else "Fold"; `id` `/`, `start_url` `/?source=homescreen` (the SPA sends a signed-out Home Screen app to Log in), `scope` `/`, `display` `standalone`, and the 192, 512 and 512 maskable icons under `/assets/brand/`. The CSP names `worker-src 'self'; manifest-src 'self'`.
 
@@ -2126,7 +2126,7 @@ legacy pruning keeps its existing seat reservation. Legacy account-add selection
 email and ID siblings honor blocks and retained endings; eligible direct adult
 adds mint explicit provenance as described below.
 
-Ordinary RSVP detects active provenance in its existing registration row query.
+Ordinary RSVP detects active provenance in the same registration row it already reads.
 If present, it rolls back before any writes and retries with the gate FIRST;
 unrelated ordinary/household RSVP takes no extra query or gate. Ordinary decline
 therefore immediately ends the invitation too. Independently eligible voluntary
@@ -2145,8 +2145,31 @@ Re-enable, consent regrant and restoring dates never revive access. Issuer role
 loss ends pending asks, not accepted attendance; later blocks preserve other
 accepted dates; stable occurrence rescheduling preserves access.
 
-`occurrence_access.ended` audit retains subject/event/occurrence IDs and outcome,
-not contact values or internal end reasons. Navigation-only, unbatched
+Exact-date access is stored on the attendee's own `registrations` row (R9 S4,
+DEC-138): `access_origin` (`''` for an ordinary answer, else `manager_add`,
+`departure_self` or `departure_removal`), the issuer, request, departure
+membership and actor, the grant stamp, and the end stamp, reason and actor. A
+grant is live while its end stamp is empty. There is no `occurrence_accesses`
+table; the JSON contract below is unchanged. Subject, date, event and organizer
+are the registration's own user and date and that date's event. An ended grant
+stays on the row until a newer grant replaces it (the new stamp must be later
+than the old one and no earlier than the old end), or until the row is deleted.
+`registration_access_provenance()` validates every grant, refuses to change a
+live grant, and refuses to replace or delete an ended one unless its two audit
+snapshots already exist.
+
+Each transition writes a complete snapshot in the same transaction:
+`occurrence_access.added` and `occurrence_access.ended` (and `occurrence.blocked`
+for a recipient's block) with `target_type = 'registration'` and the
+registration ID as the target. The metadata holds the subject, date, event,
+organizer, registration, origin, issuer, request, departure membership and actor,
+the integer microsecond stamps `grantedAtMicro` and `endedAtMicro`, and for an
+end the reason and actor. Repeat and stale-request checks read only the validated
+added and ended snapshots, so they survive the deletion of the row. One malformed
+snapshot in that scope fails every grant closed with an internal error.
+
+The snapshots hold no contact values, and the contact-history view never shows an
+end reason. Navigation-only, unbatched
 `occurrence.updated` notices use exact-date links without personal, hidden
 organizer or series values, and names-free email. Deleted dates receive no new
 invalid navigation notice. Effects, audit, tasks and notices commit together;
@@ -2261,7 +2284,7 @@ routing; it adds an audit row, not a new CSRF exemption.
 `:id` is a positive retained account ID (up to signed bigint), not a live user
 lookup. A deleted requester, deleted subject or absent history returns 200;
 absent records give `entries: []` or a header-only CSV, not 404. History uses
-retained AuditLog and request/occurrence-access provenance, independent of live
+retained AuditLog (the registration-targeted access snapshots) and request provenance, independent of live
 accounts, groups, events, registrations and notification cleanup.
 
 JSON pagination is descending **audit ID**, regardless of timestamp. Optional
@@ -2312,8 +2335,8 @@ frontend state, URLSearchParams, cursors, comparisons and download paths;
 **never use Number(), parseInt(), unary + or numeric sorting on history IDs**.
 This does not change numeric IDs in other APIs or database/internal ID types.
 `at` is RFC3339; actor absence denotes a system action. IDs denote retained
-provenance, not permission to open a current context. Requester and subject are
-loaded from the known retained request/access relation. Ordinary group/date add
+provenance, not permission to open a current context. For exact-date rows `accessId` is the registration ID. Requester and subject are
+read from the known retained request relation or the access snapshot. Ordinary group/date add
 and removal audits use only their typed numeric `userId` (and date
 `occurrenceId`) metadata. No substring matching or live-person joins occur.
 Malformed/missing metadata omits the unproven fields; it does not fail open or

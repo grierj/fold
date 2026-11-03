@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/policy"
 	"fold/models"
 	"gorm.io/gorm"
 )
@@ -238,11 +240,11 @@ func TestContactHistoryAddPathWalk(t *testing.T) {
 		if w := addDecision(f.stranger, r.ID, "subject", "approved"); w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
-		var access models.OccurrenceAccess
-		if err := f.app.DB.Where("request_id = ?", r.ID).First(&access).Error; err != nil {
+		var access models.Registration
+		if err := f.app.DB.Where("access_request_id = ?", r.ID).First(&access).Error; err != nil {
 			t.Fatal(err)
 		}
-		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": access.RegistrationID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
+		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": access.ID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
 		r = createOccurrenceAsk(t, f, f.other, f.dates[2], nil)
 		if w := addDecision(f.stranger, r.ID, "subject", "approved"); w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
@@ -751,4 +753,173 @@ func TestContactHistoryExportSnapshotExcludesConcurrentAppend(t *testing.T) {
 		}
 	}
 	assertHistoryTempEmpty(t, temp)
+}
+
+// Exact-date history is read from the three action-scoped registration
+// snapshots, so it keeps issuer, request, origin and the registration ID after
+// a re-grant on the same registration and after the registration and its event
+// are deleted; the wire shape is the one the page has always read. The two
+// grants here come from different issuers and different requests, and each
+// history entry is matched to its own audit row by ID, never by action.
+func TestContactHistoryReadsAccessSnapshotsAfterDeletion(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	date := models.FormatCalendarDate(f.dates[1].OriginalDate)
+	declinePath := dateReadPath(f.event.ID, date) + "/decline"
+	firstRequest := *f.access.RequestID
+
+	// Grant one (the fixture's) ends when the recipient declines it. A second
+	// admin then asks again; the recipient approves, which grants on the same
+	// registration, and declines that grant too.
+	apiDo(t, f.client, "POST", declinePath, nil, 200)
+	issuer2 := newTestUser(t, f.app, "second history issuer", "password1234", models.RoleAdmin)
+	issuer2C := loginAPI(t, f.app, "second history issuer", "password1234")
+	second := createDateAsk(t, f.app, issuer2C, issuer2, f.recipient, f.event.ID, f.dates[1].ID)
+	if second.ID == firstRequest {
+		t.Fatal("the second ask reused the first request")
+	}
+	if w := addDecision(f.client, second.ID, "subject", "approved"); w.Code != 200 {
+		t.Fatalf("second approval: %d %s", w.Code, w.Body.String())
+	}
+	if row := loadAccessRow(t, f.app.DB, f.access.ID); row.Status != policy.OccurrenceAccessActive || ptrUint(row.RequestID) != second.ID || ptrUint(row.IssuerID) != issuer2.ID {
+		t.Fatalf("the re-grant did not land on the same registration: %+v", row)
+	}
+	if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.recipient.ID, f.dates[1].ID) != 1 {
+		t.Fatal("the re-grant created a second registration")
+	}
+	apiDo(t, f.client, "POST", declinePath, nil, 200)
+
+	// The stored snapshots are the authority for origin (the history DTO omits
+	// it): four rows, two grants, each with its own issuer, request and stamps.
+	rows := accessSnapshotsFor(t, f.app.DB, f.access.ID)
+	wantAction := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded, audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
+	type grant struct{ issuer, request uint }
+	wantGrant := []grant{{f.issuer.ID, firstRequest}, {f.issuer.ID, firstRequest}, {issuer2.ID, second.ID}, {issuer2.ID, second.ID}}
+	if len(rows) != 4 {
+		t.Fatalf("access snapshots = %+v", rows)
+	}
+	for i, s := range rows {
+		if s.Action != wantAction[i] || s.Meta["origin"] != policy.OccurrenceOriginManagerAdd || s.Meta["registrationId"] != float64(f.access.ID) ||
+			s.Meta["issuerId"] != float64(wantGrant[i].issuer) || s.Meta["requestId"] != float64(wantGrant[i].request) {
+			t.Fatalf("snapshot %d lost its attribution: %+v", i, s)
+		}
+	}
+	if wantGrant[0] == wantGrant[2] || rows[0].Meta["grantedAtMicro"] != rows[1].Meta["grantedAtMicro"] || rows[2].Meta["grantedAtMicro"] != rows[3].Meta["grantedAtMicro"] ||
+		rows[0].Meta["grantedAtMicro"] == rows[2].Meta["grantedAtMicro"] ||
+		snapshotInstant(t, rows[2], "grantedAtMicro").Before(snapshotInstant(t, rows[1], "endedAtMicro")) {
+		t.Fatalf("the two grants are not told apart by their stamps: %+v", rows)
+	}
+
+	// check finds each snapshot's own history entry by its audit row ID and
+	// compares it to that grant's issuer and request. The recipient sees all
+	// four; each issuer sees the entries of the grant they issued. It returns
+	// the recipient's entries, in snapshot order.
+	check := func(label string) []contactHistoryEntryJSON {
+		t.Helper()
+		var mine []contactHistoryEntryJSON
+		for _, person := range []struct {
+			id   uint
+			sees []int
+		}{{f.recipient.ID, []int{0, 1, 2, 3}}, {f.issuer.ID, []int{0, 1}}, {issuer2.ID, []int{2, 3}}} {
+			entries := getHistory(t, f.admin, person.id, "?limit=100").Entries
+			for _, i := range person.sees {
+				var e *contactHistoryEntryJSON
+				for j := range entries {
+					if entries[j].ID == itoa(rows[i].ID) {
+						e = &entries[j]
+						break
+					}
+				}
+				if e == nil {
+					t.Fatalf("%s: snapshot %d (audit %d) missing for person %d in %+v", label, i, rows[i].ID, person.id, entries)
+				}
+				outcome := "added"
+				if rows[i].Action == audit.OccurrenceAccessEnded {
+					outcome = "ended"
+				}
+				if e.Action != rows[i].Action || e.Outcome != outcome || e.RequesterID != itoa(wantGrant[i].issuer) || e.RequestID != itoa(wantGrant[i].request) ||
+					e.SubjectUserID != itoa(f.recipient.ID) || e.AccessID != itoa(f.access.ID) || e.Purpose != "occurrence_add" || e.ContextType != "event" ||
+					e.ContextID != itoa(f.event.ID) || e.OccurrenceID != itoa(f.dates[1].ID) {
+					t.Fatalf("%s: snapshot %d lost its attribution for person %d: %+v", label, i, person.id, *e)
+				}
+				if person.id == f.recipient.ID {
+					mine = append(mine, *e)
+				}
+			}
+		}
+		return mine
+	}
+	before := check("before deletion")
+	if err := f.app.contactMutation(contactChange{EventID: f.event.ID}, func(tx *gorm.DB) error { return deleteEventRows(tx, []uint{f.event.ID}) }); err != nil {
+		t.Fatal(err)
+	}
+	if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.ID) != 0 {
+		t.Fatal("the registration should be gone")
+	}
+	after := check("after deletion")
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(accessSnapshotsFor(t, f.app.DB, f.access.ID), rows) {
+		t.Fatalf("deleting the registration and event changed the history:\nbefore %+v\nafter  %+v", before, after)
+	}
+
+	// IDs above 2^53 stay exact decimal strings, malformed metadata is omitted
+	// field by field, and an unrelated registration action is not an access row.
+	const bigSubject, bigIssuer = uint(9007199254740993), uint(9007199254740995)
+	seedHistoryAudit(t, f.app, audit.Entry{Action: audit.OccurrenceAccessAdded, TargetType: "registration", TargetID: 77,
+		Meta: map[string]any{"subjectUserId": bigSubject, "issuerId": bigIssuer, "occurrenceId": 3, "eventId": 4, "registrationId": 77, "grantedAtMicro": 5, "origin": "manager_add"}})
+	entries := getHistory(t, f.admin, bigSubject, "").Entries
+	if len(entries) != 1 || entries[0].SubjectUserID != "9007199254740993" || entries[0].RequesterID != "9007199254740995" || entries[0].AccessID != "77" || entries[0].ContextID != "4" {
+		t.Fatalf("large IDs: %+v", entries)
+	}
+	actor := f.other.ID
+	seedHistoryAudit(t, f.app, audit.Entry{Actor: &actor, Action: audit.OccurrenceAccessAdded, TargetType: "registration", TargetID: 78,
+		Meta: map[string]any{"subjectUserId": "5", "issuerId": 1.5, "requestId": -1, "eventId": 1e30, "occurrenceId": nil, "origin": "manager_add"}})
+	seedHistoryAudit(t, f.app, audit.Entry{Actor: &actor, Action: audit.RegistrationChanged, TargetType: "registration", TargetID: 79,
+		Meta: map[string]any{"subjectUserId": f.other.ID, "occurrenceId": f.dates[0].ID}})
+	seedHistoryAudit(t, f.app, audit.Entry{Actor: &actor, Action: audit.OccurrenceAccessAdded, TargetType: "occurrence_access", TargetID: 80,
+		Meta: map[string]any{"subjectUserId": f.other.ID}})
+	mine := getHistory(t, f.admin, f.other.ID, "?limit=100").Entries
+	var malformed *contactHistoryEntryJSON
+	for i, e := range mine {
+		switch e.AccessID {
+		case "78":
+			malformed = &mine[i]
+		case "79", "80":
+			t.Fatalf("a non-access row was presented as exact-date history: %+v", e)
+		}
+		if e.Action == audit.RegistrationChanged {
+			t.Fatalf("registration.changed leaked into contact history: %+v", e)
+		}
+	}
+	if malformed == nil || malformed.SubjectUserID != "" || malformed.RequesterID != "" || malformed.RequestID != "" || malformed.ContextID != "" || malformed.OccurrenceID != "" || malformed.Action != audit.OccurrenceAccessAdded {
+		t.Fatalf("malformed fields must be omitted, never cast: %+v", malformed)
+	}
+	if w := f.admin.do("GET", historyPath(f.other.ID)+".csv", nil, false); w.Code != 200 {
+		t.Fatalf("export with malformed metadata: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The history wire shape does not move with its storage: the same sixteen keys,
+// and accessId now carries the registration ID.
+func TestContactHistoryJSONKeysAreUnchanged(t *testing.T) {
+	raw, err := json.Marshal(contactHistoryEntryJSON{ID: "1", Action: "a", ActorID: "2", RequesterID: "3", SubjectUserID: "4", Purpose: "p", RequestID: "5",
+		AccessID: "6", ContextType: "event", ContextID: "7", OccurrenceID: "8", Fields: "f", Outcome: "o", Party: "q", Decision: "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(keys))
+	for k := range keys {
+		got = append(got, k)
+	}
+	want := strings.Fields("id at action actorId requesterId subjectUserId purpose requestId accessId contextType contextId occurrenceId fields outcome party decision")
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("history keys = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(contactHistoryCSVHeader, strings.Fields("auditId at action actorId requesterId subjectUserId purpose requestId accessId contextType contextId occurrenceId fields outcome party decision")) {
+		t.Fatalf("CSV header moved: %v", contactHistoryCSVHeader)
+	}
 }

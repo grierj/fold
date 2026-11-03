@@ -114,18 +114,19 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if block.ID != 0 {
 		f.Block = &policy.ManagerAddBlock{SubjectUserID: block.SubjectUserID, Organizer: f.Occurrence.Organizer}
 	}
-	var accesses []models.OccurrenceAccess
-	if err := tx.Where("subject_user_id = ? AND occurrence_id = ?", r.SubjectUserID, *r.OccurrenceID).Order("id").Find(&accesses).Error; err != nil {
+	// The live test reads the subject's current registration. The latest end
+	// also reads the validated audit snapshots across every registration that
+	// ever held a grant for this date, so a deleted row cannot hide a repeat.
+	// A corrupt snapshot anywhere fails closed before any filtering.
+	var row models.Registration
+	if err := tx.Where("user_id = ? AND occurrence_id = ?", r.SubjectUserID, *r.OccurrenceID).Limit(1).Find(&row).Error; err != nil {
 		return f, err
 	}
-	for _, access := range accesses {
-		if access.Status == policy.OccurrenceAccessActive {
-			f.ExistingAccessActive = true
-		}
-		if access.EndedAt != nil && (f.LatestAccessEndedAt == nil || access.EndedAt.After(*f.LatestAccessEndedAt)) {
-			f.LatestAccessEndedAt = access.EndedAt
-		}
+	history, err := loadAccessHistory(tx, []uint{r.SubjectUserID}, []uint{*r.OccurrenceID})
+	if err != nil {
+		return f, err
 	}
+	f.ExistingAccessActive, f.LatestAccessEndedAt = accessAddFacts(row, history[accessKey{r.SubjectUserID, *r.OccurrenceID}])
 	return f, nil
 }
 
@@ -149,23 +150,31 @@ func (a *App) reconcileOccurrenceAsk(tx *gorm.DB, r *models.ContactRequest, now 
 // Accepted attendance deliberately does not reload issuer authority or blocks.
 // Only the recipient and the exact live domain/provenance rows can end it.
 func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change contactChange) ([]uint, error) {
-	q := tx.Where("status = ? AND ended_at IS NULL", policy.OccurrenceAccessActive)
+	q := tx.Where("registrations.user_id IS NOT NULL AND " + registrationAccessLiveSQL)
 	switch {
 	case change.UserID != 0:
-		q = q.Where("subject_user_id = ?", change.UserID)
+		q = q.Where("registrations.user_id = ?", change.UserID)
 	case change.EventID != 0:
-		q = q.Where("event_id = ?", change.EventID)
+		q = q.Where("registrations.occurrence_id IN (SELECT o.id FROM event_occurrences o WHERE o.event_id = ?)", change.EventID)
 	case change.GroupID != 0:
-		q = q.Where("organizer_type = ? AND organizer_id = ?", policy.ContactGroup, change.GroupID)
+		q = q.Where("registrations.occurrence_id IN (SELECT o.id FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE e.group_id = ?)", change.GroupID)
 	}
-	var rows []models.OccurrenceAccess
-	if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&rows).Error; err != nil {
+	var rows []models.Registration
+	if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("registrations.id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	facts, err := loadOccurrenceInvitationFacts(tx, rows, now)
+	if err != nil {
+		return nil, err
+	}
+	occurrenceIDs := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		occurrenceIDs = append(occurrenceIDs, row.OccurrenceID)
+	}
+	scopes, err := accessScopesIn(tx, occurrenceIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +185,7 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 		if reason == "" {
 			continue
 		}
-		ids, err := endOccurrenceAccessIn(tx, row, reason, nil, now, "")
+		ids, err := endOccurrenceAccessIn(tx, row, scopes[row.OccurrenceID], reason, nil, now, "")
 		if err != nil {
 			return nil, err
 		}
@@ -185,68 +194,42 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 	return mailed, nil
 }
 
-func endOccurrenceAccessIn(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string) ([]uint, error) {
-	return endOccurrenceAccess(tx, row, reason, actor, now, ip, true)
+func endOccurrenceAccessIn(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) ([]uint, error) {
+	return endRegistrationAccess(tx, row, scope, reason, actor, now, ip, true)
 }
 
 // endOccurrenceAccessWithoutNoticeIn is for a larger summarized operation,
-// such as group departure. It preserves the irreversible lifecycle row and
-// audit without generating one recipient notice per date.
-func endOccurrenceAccessWithoutNoticeIn(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string) error {
-	_, err := endOccurrenceAccess(tx, row, reason, actor, now, ip, false)
+// such as group departure. It preserves the irreversible end stamp and its audit
+// snapshot without generating one recipient notice per date.
+func endOccurrenceAccessWithoutNoticeIn(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
+	_, err := endRegistrationAccess(tx, row, scope, reason, actor, now, ip, false)
 	return err
 }
 
-func endOccurrenceAccess(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string, sendNotice bool) ([]uint, error) {
-	if row.Status != policy.OccurrenceAccessActive || row.EndedAt != nil {
-		return nil, nil
-	}
-	row.Status, row.EndedAt, row.EndReason, row.EndedBy = policy.OccurrenceAccessEnded, &now, reason, actor
-	if err := tx.Save(row).Error; err != nil {
-		return nil, err
-	}
-	if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.OccurrenceAccessEnded, TargetType: "occurrence_access", TargetID: row.ID, IP: ip,
-		Meta: map[string]any{"subjectUserId": row.SubjectUserID, "eventId": row.EventID, "occurrenceId": row.OccurrenceID, "outcome": row.Status}}); err != nil {
-		return nil, err
-	}
-	if !sendNotice {
-		return nil, nil
-	}
-	var subject models.User
-	if err := tx.Where("id = ? AND status = ? AND password_hash IS NOT NULL", row.SubjectUserID, models.UserActive).Limit(1).Find(&subject).Error; err != nil {
-		return nil, err
-	}
-	if subject.ID == 0 {
-		return nil, nil
-	}
-	var occ models.EventOccurrence
-	if err := tx.Where("id = ?", row.OccurrenceID).Limit(1).Find(&occ).Error; err != nil {
-		return nil, err
-	}
-	// Deleted dates have no valid navigation target; the retained audit is enough.
-	if occ.ID == 0 {
-		return nil, nil
-	}
-	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: "occurrence_access", SubjectID: row.ID,
-		Link: occurrenceDatePath(row.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: "occurrence-ended:" + strconv.FormatUint(uint64(row.ID), 10)})
-}
-
 // liveOccurrenceInvitationIn is transaction authority only while the contact
-// gate and the relevant holder/occurrence locks are held by the caller.
-func liveOccurrenceInvitationIn(tx *gorm.DB, row models.OccurrenceAccess, now time.Time) (bool, error) {
-	account, err := occurrenceAccountIn(tx, row.SubjectUserID, now, time.UTC)
+// gate and the relevant holder/occurrence locks are held by the caller. The
+// registration carries the provenance; its answer must still be a current one.
+func liveOccurrenceInvitationIn(tx *gorm.DB, row models.Registration, now time.Time) (bool, error) {
+	if row.UserID == nil || !row.AccessLive() {
+		return false, nil
+	}
+	scope, err := accessScopeIn(tx, row.OccurrenceID)
 	if err != nil {
 		return false, err
 	}
-	facts, err := occurrenceFactsIn(tx, row.EventID, row.OccurrenceID)
+	account, err := occurrenceAccountIn(tx, *row.UserID, now, time.UTC)
 	if err != nil {
 		return false, err
 	}
-	if !policy.OccurrenceAccessCurrent(account, occurrenceAccessPolicy(row), facts, now) {
+	facts, err := occurrenceFactsIn(tx, scope.EventID, row.OccurrenceID)
+	if err != nil {
+		return false, err
+	}
+	if !policy.OccurrenceAccessCurrent(account, occurrenceAccessPolicy(row, scope), facts, now) {
 		return false, nil
 	}
 	var n int64
-	err = tx.Model(&models.Registration{}).Where("id = ? AND occurrence_id = ? AND user_id = ? AND status IN ?", row.RegistrationID, row.OccurrenceID, row.SubjectUserID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Count(&n).Error
+	err = tx.Model(&models.Registration{}).Where("id = ? AND occurrence_id = ? AND user_id = ? AND status IN ? AND "+registrationAccessLiveSQL, row.ID, row.OccurrenceID, *row.UserID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Count(&n).Error
 	return n == 1, err
 }
 
@@ -306,14 +289,14 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		var access models.OccurrenceAccess
-		if err := tx.Where("subject_user_id = ? AND occurrence_id = ? AND status = ?", actor.ID, locked.ID, policy.OccurrenceAccessActive).First(&access).Error; err != nil {
+		var reg models.Registration
+		if err := tx.Where("registrations.user_id = ? AND registrations.occurrence_id = ? AND "+registrationAccessLiveSQL, actor.ID, locked.ID).First(&reg).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return refuse()
 			}
 			return err
 		}
-		live, err := liveOccurrenceInvitationIn(tx, access, now)
+		live, err := liveOccurrenceInvitationIn(tx, reg, now)
 		if err != nil {
 			return err
 		}
@@ -321,15 +304,15 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		if !live || !policy.CanEndOccurrenceAccess(account, false, occurrenceAccessPolicy(access)) {
+		scope, err := accessScopeIn(tx, locked.ID)
+		if err != nil {
+			return err
+		}
+		if !live || !policy.CanEndOccurrenceAccess(account, false, occurrenceAccessPolicy(reg, scope)) {
 			return refuse()
 		}
 		var ev models.Event
 		if err := tx.First(&ev, eventID).Error; err != nil {
-			return err
-		}
-		var reg models.Registration
-		if err := tx.First(&reg, access.RegistrationID).Error; err != nil {
 			return err
 		}
 		want, reason := input.Status, ""
@@ -337,14 +320,14 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			want, reason = models.RegDeclined, policy.OccurrenceDeclined
 		}
 		if operation == "block" {
-			if !policy.CanBlockManagerAdds(account, occurrenceAccessPolicy(access)) {
+			if !policy.CanBlockManagerAdds(account, occurrenceAccessPolicy(reg, scope)) {
 				return refuse()
 			}
-			block := models.ManagerAddBlock{SubjectUserID: actor.ID, OrganizerType: access.OrganizerType, OrganizerID: access.OrganizerID}
+			block := models.ManagerAddBlock{SubjectUserID: actor.ID, OrganizerType: scope.Organizer.Type, OrganizerID: scope.Organizer.ID}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&block).Error; err != nil {
 				return err
 			}
-			if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.OccurrenceBlocked, TargetType: "occurrence_access", TargetID: access.ID, IP: c.ClientIP(), Meta: map[string]any{"eventId": access.EventID, "occurrenceId": access.OccurrenceID}}); err != nil {
+			if err := writeAccessSnapshot(tx, audit.OccurrenceBlocked, &actor.ID, reg, scope, false, c.ClientIP()); err != nil {
 				return err
 			}
 			reason = policy.OccurrenceBlocked
@@ -373,15 +356,15 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			return err
 		}
 		if reason != "" {
-			_, err = endOccurrenceAccessIn(tx, &access, reason, &actor.ID, now, c.ClientIP())
+			_, err = endOccurrenceAccessIn(tx, &reg, scope, reason, &actor.ID, now, c.ClientIP())
 			if err != nil {
 				return err
 			}
 		}
 		if operation == "block" {
-			change := contactChange{EventID: access.EventID}
-			if access.OrganizerType == policy.ContactGroup {
-				change = contactChange{GroupID: access.OrganizerID}
+			change := contactChange{EventID: scope.EventID}
+			if scope.Organizer.Type == policy.ContactGroup {
+				change = contactChange{GroupID: scope.Organizer.ID}
 			}
 			_, err = a.reconcileContacts(tx, now, change)
 			if err != nil {
@@ -564,57 +547,52 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 }
 
 func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, reg models.Registration, issuer uint, request *uint, teen bool, now time.Time, ip string) ([]uint, error) {
-	var existing models.OccurrenceAccess
-	if err := tx.Where("subject_user_id = ? AND occurrence_id = ? AND status = ?", *reg.UserID, occ.ID, policy.OccurrenceAccessActive).Limit(1).Find(&existing).Error; err != nil {
-		return nil, err
-	}
-	if existing.ID != 0 {
+	if reg.UserID == nil {
 		return nil, nil
 	}
-	organizer := policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
-	if ev.GroupID != nil {
-		organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
-	}
-	row := models.OccurrenceAccess{SubjectUserID: *reg.UserID, OccurrenceID: occ.ID, EventID: ev.ID, OrganizerType: organizer.Type, OrganizerID: organizer.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer, RequestID: request, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now}
-	if err := tx.Create(&row).Error; err != nil {
+	// The grant is a write to the registration row that already seats the
+	// person, so a live grant is the same "already added" answer as before: no
+	// second grant, no second notice. An ended grant is replaced, and the
+	// trigger decides whether this add may do so.
+	row, granted, err := grantRegistrationAccess(tx, reg.ID, accessScopeOf(ev), accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer, RequestID: request}, &issuer, now, ip)
+	if err != nil || !granted {
 		return nil, err
 	}
 	// A new account invitation is fresh authority, not a revival of a
 	// previous promotion link. Existing invitations and guest/proxy rows
 	// never pass this new-provenance boundary.
-	if err := tx.Model(&models.Registration{}).Where("id = ? AND user_id = ?", reg.ID, row.SubjectUserID).Update("manage_token_hash", "").Error; err != nil {
+	if err := tx.Model(&models.Registration{}).Where("id = ? AND user_id = ?", row.ID, *row.UserID).Update("manage_token_hash", "").Error; err != nil {
 		return nil, err
 	}
-	if err := audit.Write(tx, audit.Entry{Actor: &issuer, Action: audit.OccurrenceAccessAdded, TargetType: "occurrence_access", TargetID: row.ID, IP: ip, Meta: map[string]any{"subjectUserId": row.SubjectUserID, "eventId": ev.ID, "occurrenceId": occ.ID}}); err != nil {
-		return nil, err
-	}
-	recipients := []uint{row.SubjectUserID}
+	recipients := []uint{*row.UserID}
 	if teen {
-		guardians, err := contactGuardians(tx, row.SubjectUserID)
+		guardians, err := contactGuardians(tx, *row.UserID)
 		if err != nil {
 			return nil, err
 		}
 		recipients = append(recipients, guardians...)
 	}
-	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: "occurrence-added:" + strconv.FormatUint(uint64(row.ID), 10)})
+	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: accessAddedKey(row)})
 }
 
-func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[uint]models.OccurrenceAccess, error) {
-	var rows []models.OccurrenceAccess
-	if err := tx.Where("occurrence_id IN ? AND status = ?", occurrenceIDs, policy.OccurrenceAccessActive).Find(&rows).Error; err != nil {
+// occurrenceNoticeAccesses maps date -> person -> that person's live grant row,
+// so a notice about the date can say "invited" instead of the ordinary wording.
+func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[uint]models.Registration, error) {
+	var rows []models.Registration
+	if err := tx.Where("registrations.occurrence_id IN ? AND registrations.user_id IS NOT NULL AND "+registrationAccessLiveSQL, occurrenceIDs).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := map[uint]map[uint]models.OccurrenceAccess{}
+	out := map[uint]map[uint]models.Registration{}
 	for _, row := range rows {
 		if out[row.OccurrenceID] == nil {
-			out[row.OccurrenceID] = map[uint]models.OccurrenceAccess{}
+			out[row.OccurrenceID] = map[uint]models.Registration{}
 		}
-		out[row.OccurrenceID][row.SubjectUserID] = row
+		out[row.OccurrenceID][*row.UserID] = row
 	}
 	return out, nil
 }
-func sendOccurrenceNotice(tx *gorm.DB, row models.OccurrenceAccess, occ *models.EventOccurrence, kind, key string) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{row.SubjectUserID}, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(row.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key})
+func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.EventOccurrence, kind, key string) ([]uint, error) {
+	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{*row.UserID}, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(occ.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key})
 }
 
 // Unlike the general manager loader, this entry point must audit every

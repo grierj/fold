@@ -1190,6 +1190,13 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 		return err
 	}
 	if len(occIDs) > 0 {
+		// Hard-deleting a registration needs its exact-date grant ended first,
+		// with its snapshots: end any live grant as event_deleted, no notices
+		// (the dates are about to disappear). Already-ended grants keep their
+		// own reason.
+		if _, err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC(), false); err != nil {
+			return err
+		}
 		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.Registration{}).Error; err != nil {
 			return err
 		}

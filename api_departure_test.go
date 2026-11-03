@@ -161,7 +161,7 @@ func departureWriteCounts(t *testing.T, app *App) map[string]int64 {
 	out := map[string]int64{}
 	for name, model := range map[string]any{
 		"groups": &models.Group{}, "memberships": &models.Membership{}, "registrations": &models.Registration{},
-		"accesses": &models.OccurrenceAccess{}, "audits": &models.AuditLog{}, "notices": &models.Notification{},
+		"audits": &models.AuditLog{}, "notices": &models.Notification{},
 	} {
 		var count int64
 		if err := app.DB.Unscoped().Model(model).Count(&count).Error; err != nil {
@@ -169,6 +169,11 @@ func departureWriteCounts(t *testing.T, app *App) map[string]int64 {
 		}
 		out[name] = count
 	}
+	var grants int64
+	if err := app.DB.Model(&models.Registration{}).Where("access_origin <> ''").Count(&grants).Error; err != nil {
+		t.Fatal(err)
+	}
+	out["accesses"] = grants
 	return out
 }
 
@@ -416,11 +421,7 @@ func TestDepartureSnapshotTamperBindingAndChangeDetection(t *testing.T) {
 		}},
 		{"access provenance", func(t *testing.T, f departureTestFixture, occ models.EventOccurrence, reg models.Registration, now time.Time) {
 			issuer := f.leader.ID
-			if err := f.app.DB.Create(&models.OccurrenceAccess{SubjectUserID: f.subject.ID, OccurrenceID: occ.ID, EventID: occ.EventID,
-				OrganizerType: policy.ContactGroup, OrganizerID: f.group.ID, Origin: policy.OccurrenceOriginManagerAdd,
-				IssuerID: &issuer, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now}).Error; err != nil {
-				t.Fatal(err)
-			}
+			seedAccessGrant(t, f.app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer}, &issuer, now)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -544,17 +545,12 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 	past, pastReg := addDepartureRegistration(t, f, f.subject, "Past stays", models.VisibilityPrivate, nil, now.Add(-3*time.Hour), now.Add(-2*time.Hour), models.OccurrenceScheduled, models.RegGoing)
 	_ = past
 	cutoff, cutoffReg := addDepartureRegistration(t, f, f.subject, "Keep private", models.VisibilityPrivate, nil, now.Add(time.Hour), now.Add(2*time.Hour), models.OccurrenceScheduled, models.RegGoing)
-	public, _ := addDepartureRegistration(t, f, f.subject, "Keep public", models.VisibilityPublic, nil, now.Add(4*time.Hour), now.Add(5*time.Hour), models.OccurrenceScheduled, models.RegMaybe)
+	public, publicReg := addDepartureRegistration(t, f, f.subject, "Keep public", models.VisibilityPublic, nil, now.Add(4*time.Hour), now.Add(5*time.Hour), models.OccurrenceScheduled, models.RegMaybe)
 	ended, endedReg := addDepartureRegistration(t, f, f.subject, "End private", models.VisibilityPrivate, nil, now.Add(5*time.Hour), now.Add(6*time.Hour), models.OccurrenceScheduled, models.RegGoing)
 	addDepartureProxyRegistration(t, f, ended)
 
 	issuer := f.leader.ID
-	existing := models.OccurrenceAccess{SubjectUserID: f.subject.ID, OccurrenceID: cutoff.ID, EventID: cutoff.EventID,
-		OrganizerType: policy.ContactGroup, OrganizerID: f.group.ID, Origin: policy.OccurrenceOriginManagerAdd,
-		IssuerID: &issuer, RegistrationID: cutoffReg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now}
-	if err := f.app.DB.Create(&existing).Error; err != nil {
-		t.Fatal(err)
-	}
+	existing := seedAccessGrant(t, f.app.DB, cutoffReg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer}, &issuer, now)
 	previewPath := "/api/v1/groups/" + itoa(f.group.ID) + "/departure-preview"
 	preview := getDeparturePreview(t, f.subjectC, previewPath, http.StatusOK)
 	w := confirmDeparturePreview(t, f.subjectC, "POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", preview, []uint{cutoff.ID, public.ID}, "")
@@ -577,26 +573,20 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 	if got := regStatus(t, f.app, f.subject.ID, ended.ID); got != models.RegCancelled {
 		t.Fatalf("ended registration=%q", got)
 	}
-	var refreshed models.OccurrenceAccess
-	if err := f.app.DB.First(&refreshed, existing.ID).Error; err != nil || refreshed.Status != policy.OccurrenceAccessEnded ||
-		refreshed.EndReason != policy.OccurrenceDepartureSuperseded || refreshed.EndedBy == nil || *refreshed.EndedBy != f.subject.ID ||
-		refreshed.Origin != policy.OccurrenceOriginManagerAdd || refreshed.IssuerID == nil || *refreshed.IssuerID != issuer || refreshed.RegistrationID != cutoffReg.ID {
-		t.Fatalf("manager access history not preserved: %+v err=%v", refreshed, err)
+	// The manager grant's history is its two snapshots: it was added by the
+	// issuer and ended as superseded by the departing member, then the same
+	// registration row carries the departure grant.
+	superseded := accessSnapshotsFor(t, f.app.DB, cutoffReg.ID)
+	if len(superseded) != 3 || superseded[0].Action != audit.OccurrenceAccessAdded || superseded[0].Meta["origin"] != policy.OccurrenceOriginManagerAdd ||
+		ptrUint(existing.IssuerID) != issuer || superseded[1].Action != audit.OccurrenceAccessEnded || superseded[1].Meta["endReason"] != policy.OccurrenceDepartureSuperseded ||
+		superseded[1].Meta["endedBy"] != float64(f.subject.ID) || superseded[1].Meta["origin"] != policy.OccurrenceOriginManagerAdd || superseded[1].Meta["issuerId"] != float64(issuer) ||
+		superseded[1].Meta["registrationId"] != float64(cutoffReg.ID) || superseded[2].Action != audit.OccurrenceAccessAdded || superseded[2].Meta["origin"] != policy.OccurrenceOriginDepartureSelf {
+		t.Fatalf("manager access history not preserved: %+v", superseded)
 	}
-	var retained []models.OccurrenceAccess
-	if err := f.app.DB.Where("subject_user_id = ? AND occurrence_id IN ?", f.subject.ID, []uint{cutoff.ID, public.ID}).Order("occurrence_id, id").Find(&retained).Error; err != nil {
-		t.Fatal(err)
-	}
-	activeByOccurrence := map[uint]models.OccurrenceAccess{}
-	for _, row := range retained {
-		if row.Status == policy.OccurrenceAccessActive {
-			activeByOccurrence[row.OccurrenceID] = row
-		}
-	}
-	for _, occurrenceID := range []uint{cutoff.ID, public.ID} {
-		row := activeByOccurrence[occurrenceID]
-		if row.Origin != policy.OccurrenceOriginDepartureSelf || row.DepartureMembershipID == nil || row.DepartureActorID == nil || *row.DepartureActorID != f.subject.ID {
-			t.Fatalf("retained provenance for %d: %+v", occurrenceID, row)
+	for _, regID := range []uint{cutoffReg.ID, publicReg.ID} {
+		row := loadAccessRow(t, f.app.DB, regID)
+		if row.Status != policy.OccurrenceAccessActive || row.Origin != policy.OccurrenceOriginDepartureSelf || row.DepartureMembershipID == nil || row.DepartureActorID == nil || *row.DepartureActorID != f.subject.ID {
+			t.Fatalf("retained provenance for registration %d: %+v", regID, row)
 		}
 	}
 	var proxyCount int64
@@ -611,7 +601,7 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 		t.Fatalf("notices left=%d subject=%d per-date=%d", leftNotices, subjectNotices, perDateNotices)
 	}
 	if auditCount(t, f.app, audit.RoleChanged) != 1 || auditCount(t, f.app, audit.RegistrationChanged) != 1 ||
-		auditCount(t, f.app, audit.OccurrenceAccessAdded) != 2 || auditCount(t, f.app, audit.OccurrenceAccessEnded) != 1 {
+		auditCount(t, f.app, audit.OccurrenceAccessAdded) != 3 || auditCount(t, f.app, audit.OccurrenceAccessEnded) != 1 {
 		t.Fatal("departure audits missing")
 	}
 	if w := f.subjectC.do("GET", "/api/v1/groups/"+itoa(f.group.ID), nil, false); w.Code != http.StatusNotFound {
@@ -638,10 +628,9 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 			occ, reg := addDepartureRegistration(t, f, f.subject, "Superseded retained date", models.VisibilityInviteOnly, nil,
 				now.Add(time.Hour), now.Add(2*time.Hour), models.OccurrenceScheduled, models.RegGoing)
 			issuer := f.leader.ID
-			manager := models.OccurrenceAccess{SubjectUserID: f.subject.ID, OccurrenceID: occ.ID, EventID: occ.EventID,
-				OrganizerType: policy.ContactGroup, OrganizerID: f.group.ID, Origin: policy.OccurrenceOriginManagerAdd,
-				IssuerID: &issuer, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now.Add(-time.Hour)}
+			manager := accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer}
 			var requestID uint
+			var managerRow accessRow
 			if err := f.app.DB.Transaction(func(tx *gorm.DB) error {
 				if action == "manager" {
 					created, decided, completed := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-90*time.Minute)
@@ -657,7 +646,9 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 					}
 					requestID, manager.RequestID = request.ID, &request.ID
 				}
-				return tx.Create(&manager).Error
+				var err error
+				managerRow, err = seedAccessGrantIn(tx, reg.ID, manager, &issuer, now.Add(-time.Hour))
+				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -683,25 +674,33 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 				t.Fatalf("departure response included roster: %s", w.Body.String())
 			}
 
-			var history []models.OccurrenceAccess
-			if err := f.app.DB.Where("subject_user_id = ? AND occurrence_id = ?", f.subject.ID, occ.ID).Order("id").Find(&history).Error; err != nil {
-				t.Fatal(err)
-			}
-			if len(history) != 2 {
-				t.Fatalf("access history=%+v", history)
-			}
-			old, current := history[0], history[1]
-			if old.ID != manager.ID || old.Origin != policy.OccurrenceOriginManagerAdd || old.IssuerID == nil || *old.IssuerID != issuer ||
-				old.RegistrationID != reg.ID || ptrUint(old.RequestID) != requestID || old.Status != policy.OccurrenceAccessEnded ||
-				old.EndReason != policy.OccurrenceDepartureSuperseded || old.EndedBy == nil || *old.EndedBy != actorID {
-				t.Fatalf("manager history changed: %+v", old)
-			}
+			// One registration row carries the departure grant; the manager
+			// grant it superseded survives as its two audit snapshots.
+			current := loadAccessRow(t, f.app.DB, reg.ID)
 			if current.Origin != wantOrigin || current.Status != policy.OccurrenceAccessActive || current.DepartureMembershipID == nil ||
 				current.DepartureActorID == nil || current.RegistrationID != reg.ID {
 				t.Fatalf("departure successor: %+v", current)
 			}
+			history := accessSnapshotsFor(t, f.app.DB, reg.ID)
+			if len(history) != 3 {
+				t.Fatalf("access history=%+v", history)
+			}
+			added, ended, successor := history[0], history[1], history[2]
+			if added.Action != audit.OccurrenceAccessAdded || added.Meta["origin"] != policy.OccurrenceOriginManagerAdd || added.Meta["issuerId"] != float64(issuer) ||
+				added.Meta["registrationId"] != float64(reg.ID) || metaUint(added.Meta["requestId"]) != requestID {
+				t.Fatalf("manager added snapshot changed: %+v", added)
+			}
+			if ended.Action != audit.OccurrenceAccessEnded || ended.Meta["origin"] != policy.OccurrenceOriginManagerAdd || ended.Meta["issuerId"] != float64(issuer) ||
+				ended.Meta["endReason"] != policy.OccurrenceDepartureSuperseded || ended.Meta["endedBy"] != float64(actorID) ||
+				ended.Meta["grantedAtMicro"] != float64(managerRow.GrantedAt.UTC().UnixMicro()) || metaUint(ended.Meta["requestId"]) != requestID {
+				t.Fatalf("manager history changed: %+v", ended)
+			}
+			if successor.Action != audit.OccurrenceAccessAdded || successor.Meta["origin"] != wantOrigin ||
+				successor.Meta["grantedAtMicro"] != float64(current.GrantedAt.UTC().UnixMicro()) || ended.Meta["endedAtMicro"] != successor.Meta["grantedAtMicro"] {
+				t.Fatalf("departure successor snapshot (the end and the new grant share one instant): %+v", successor)
+			}
 			var active int64
-			if err := f.app.DB.Model(&models.OccurrenceAccess{}).Where("subject_user_id = ? AND occurrence_id = ? AND status = ?", f.subject.ID, occ.ID, policy.OccurrenceAccessActive).Count(&active).Error; err != nil || active != 1 {
+			if err := f.app.DB.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ? AND access_origin <> '' AND access_ended_at IS NULL", f.subject.ID, occ.ID).Count(&active).Error; err != nil || active != 1 {
 				t.Fatalf("active access=%d err=%v", active, err)
 			}
 			var perDate int64
@@ -751,8 +750,8 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.app.DB.First(&current, current.ID).Error; err != nil || current.Status != policy.OccurrenceAccessEnded || current.EndReason != policy.OccurrenceEnded {
-				t.Fatalf("missed-sweep move did not persist expiry: %+v err=%v", current, err)
+			if current = loadAccessRow(t, f.app.DB, reg.ID); current.Status != policy.OccurrenceAccessEnded || current.EndReason != policy.OccurrenceEnded {
+				t.Fatalf("missed-sweep move did not persist expiry: %+v", current)
 			}
 			apiDo(t, f.subjectC, "GET", "/api/v1/events/"+itoa(occ.EventID)+"/dates/"+models.FormatCalendarDate(occ.OriginalDate), nil, http.StatusNotFound)
 
@@ -769,9 +768,9 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 			if w.Code != wantAdd {
 				t.Fatalf("manager safeguard after supersession: %d %s, want %d", w.Code, w.Body.String(), wantAdd)
 			}
-			var historyCount int64
-			if err := f.app.DB.Model(&models.OccurrenceAccess{}).Where("subject_user_id = ? AND occurrence_id = ?", f.subject.ID, occ.ID).Count(&historyCount).Error; err != nil || historyCount != 2 {
-				t.Fatalf("manager refusal changed access history: %d err=%v", historyCount, err)
+			// The refused add left every snapshot as it was: manager add, supersession end, departure add and the expiry end.
+			if after := accessSnapshotsFor(t, f.app.DB, reg.ID); len(after) != 4 {
+				t.Fatalf("manager refusal changed access history: %+v", after)
 			}
 		})
 	}
@@ -787,24 +786,17 @@ func TestDepartureKeepsExistingDepartureOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	actorID := f.subject.ID
-	existing := models.OccurrenceAccess{SubjectUserID: f.subject.ID, OccurrenceID: occ.ID, EventID: occ.EventID,
-		OrganizerType: policy.ContactGroup, OrganizerID: f.group.ID, Origin: policy.OccurrenceOriginDepartureSelf,
-		RegistrationID: reg.ID, DepartureMembershipID: &membership.ID, DepartureActorID: &actorID,
-		Status: policy.OccurrenceAccessActive, GrantedAt: now}
-	if err := f.app.DB.Create(&existing).Error; err != nil {
-		t.Fatal(err)
-	}
+	existing := seedAccessGrant(t, f.app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginDepartureSelf, DepartureMembershipID: &membership.ID, DepartureActorID: &actorID}, &actorID, now)
 	preview := getDeparturePreview(t, f.subjectC, "/api/v1/groups/"+itoa(f.group.ID)+"/departure-preview", http.StatusOK)
 	w := confirmDeparturePreview(t, f.subjectC, "POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", preview, []uint{occ.ID}, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
 	}
-	var rows []models.OccurrenceAccess
-	if err := f.app.DB.Where("subject_user_id = ? AND occurrence_id = ?", f.subject.ID, occ.ID).Find(&rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].ID != existing.ID || rows[0].Origin != policy.OccurrenceOriginDepartureSelf || rows[0].Status != policy.OccurrenceAccessActive {
-		t.Fatalf("existing departure provenance was rewritten: %+v", rows)
+	// A live departure grant is left alone: same stamp, same provenance and no
+	// further snapshot (only the seeded one exists).
+	row := loadAccessRow(t, f.app.DB, reg.ID)
+	if row.Origin != policy.OccurrenceOriginDepartureSelf || row.Status != policy.OccurrenceAccessActive || !row.GrantedAt.Equal(existing.GrantedAt) || len(accessSnapshotsFor(t, f.app.DB, reg.ID)) != 1 {
+		t.Fatalf("existing departure provenance was rewritten: %+v", row)
 	}
 }
 
@@ -1390,7 +1382,7 @@ func TestDepartureDisabledSubjectPreviewEndsRegistrationsWithoutRetainedAccess(t
 		t.Fatal("disabled cleanup did not remove membership and registrations")
 	}
 	var activeAccess int64
-	if err := f.app.DB.Model(&models.OccurrenceAccess{}).Where("subject_user_id = ? AND status = ?", f.subject.ID, policy.OccurrenceAccessActive).Count(&activeAccess).Error; err != nil || activeAccess != 0 {
+	if err := f.app.DB.Model(&models.Registration{}).Where("user_id = ? AND access_origin <> '' AND access_ended_at IS NULL", f.subject.ID).Count(&activeAccess).Error; err != nil || activeAccess != 0 {
 		t.Fatalf("disabled subject active access=%d err=%v", activeAccess, err)
 	}
 	var savedCutoff, savedFuture models.Registration
