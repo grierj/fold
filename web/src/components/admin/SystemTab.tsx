@@ -11,17 +11,41 @@ import { Skeleton } from "../ui/Skeleton";
 
 const tries = (n: number) => `${n} ${n === 1 ? "try" : "tries"}`;
 
-// One calm line about email: counts only, and only the parts that are not zero.
-// Retry stays on the dead-job list; no recipient or error text comes here.
-function deliveryLine(d: AdminDeliverySummary | null | undefined): string | null {
-  if (!d) return null;
+// One calm paragraph about email: counts only, never a recipient or error
+// text. Each sentence names its noun and says what happens next; the retry
+// hint points at a dead notify.deliver task only when one is listed.
+function deliveryLine(d: AdminDeliverySummary | null | undefined, jobs: AdminJob[] | null, more: boolean): string | null {
+  if (!d || (d.queued === 0 && d.deferred === 0 && d.failed === 0)) return null;
   const parts: string[] = [];
   if (d.queued > 0) {
-    parts.push(`${d.queued} waiting to send${d.oldestQueuedAt ? ` (oldest ${lowerLead(formatWhen(d.oldestQueuedAt, undefined, undefined, true))})` : ""}`);
+    const one = d.queued === 1;
+    const when = d.oldestQueuedAt ? lowerLead(formatWhen(d.oldestQueuedAt, undefined, undefined, true)) : "";
+    let s = one ? "1 email is waiting to send." : `${d.queued} emails are waiting to send.`;
+    if (d.oldestQueuedAt) s += one ? ` It has waited since ${when}.` : ` The oldest has waited since ${when}.`;
+    s += one ? " Fold sends it on its own." : " Fold sends them on its own.";
+    parts.push(s);
   }
-  if (d.deferred > 0) parts.push(`${d.deferred} gave up; you can try again from the list below`);
-  if (d.failed > 0) parts.push(`${d.failed} could not be sent this week`);
-  return parts.length > 0 ? `Email: ${parts.join(", ")}` : null;
+  if (d.deferred > 0) {
+    const one = d.deferred === 1;
+    const listed = jobs?.find((j) => j.kind === "notify.deliver");
+    if (listed) {
+      parts.push(one
+        ? `1 email stopped after too many tries. To send it, use Retry now on “${listed.label}” below.`
+        : `${d.deferred} emails stopped after too many tries. To send them, use Retry now on each “${listed.label}” task below.`);
+    } else if (!more) {
+      parts.push(one ? "1 email is being tried again." : `${d.deferred} emails are being tried again.`);
+    } else {
+      parts.push(one
+        ? "1 email stopped after too many tries. Its task will show below once you retry or dismiss the tasks listed."
+        : `${d.deferred} emails stopped after too many tries. Their tasks will show below once you retry or dismiss the tasks listed.`);
+    }
+  }
+  if (d.failed > 0) {
+    parts.push(d.failed === 1
+      ? "1 email could not be sent in the last 7 days. The mail service refused it, or email isn't set up."
+      : `${d.failed} emails could not be sent in the last 7 days. The mail service refused them, or email isn't set up.`);
+  }
+  return parts.join(" ");
 }
 
 // One background task that kept failing: what it does, when it gave up,
@@ -106,18 +130,18 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
     if (status.n > 0) statusRef.current?.focus();
   }, [status.n]);
 
-  const delivery = deliveryLine(deliveries);
+  const delivery = deliveryLine(deliveries, jobs, more);
   return (
     <section aria-labelledby="system-heading" className="space-y-3">
       <h2 id="system-heading" className="text-xl font-bold">Background tasks</h2>
       <p className="text-text-muted">
         Fold does some work in the background, like adding upcoming event dates. A task that keeps failing shows here.
       </p>
-      {delivery && <p className="text-sm text-text-muted">{delivery}</p>}
+      {!error && <p aria-live="polite" aria-atomic="true" className={delivery ? "text-sm text-text-muted" : "sr-only"}>{delivery ?? ""}</p>}
       <p key={status.n} ref={statusRef} role="status" tabIndex={-1} className={status.text ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{status.text}</p>
       {error && <ErrorNotice message={error} onRetry={reload} />}
       {!error && jobs === null && <Skeleton kind="lines" label="Loading background tasks…" />}
-      {!error && jobs !== null && jobs.length === 0 && (
+      {!error && jobs !== null && jobs.length === 0 && delivery === null && (
         <EmptyState title="Nothing needs attention." body="Background tasks are running normally." />
       )}
       {!error && jobs !== null && jobs.length > 0 && (

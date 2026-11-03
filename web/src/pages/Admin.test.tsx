@@ -894,10 +894,10 @@ it("refreshes the email counts after a task is retried", async () => {
     .mockResolvedValue({ jobs: [], more: false, deliveries: { queued: 1, deferred: 0, failed: 0, oldestQueuedAt: null } });
   vi.mocked(AdminJobs.retry).mockResolvedValue({ status: "ok" });
   render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
-  expect(await screen.findByText("Email: 1 gave up; you can try again from the list below")).toBeInTheDocument();
+  expect(await screen.findByText("1 email stopped after too many tries. To send it, use Retry now on “Sending an email” below.")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /Retry now/ }));
-  expect(await screen.findByText("Email: 1 waiting to send")).toBeInTheDocument();
-  expect(screen.queryByText(/gave up/)).not.toBeInTheDocument();
+  expect(await screen.findByText("1 email is waiting to send. Fold sends it on its own.")).toBeInTheDocument();
+  expect(screen.queryByText(/stopped after too many tries/)).not.toBeInTheDocument();
   expect(AdminJobs.list).toHaveBeenCalledTimes(2);
 });
 
