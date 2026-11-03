@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,13 +108,15 @@ func waitSeriesOccurrenceWaiter(t *testing.T, app *App) {
 // before that read, after the answer has committed and before the response
 // is ready. Mail is no longer sent in the request, so it cannot be the
 // synchronization point; this uses a test-only GORM callback on the receipt
-// lock instead. Later requests pass through. The returned release is
-// idempotent and also runs at cleanup so a failed test cannot leave a handler
-// blocked.
+// lock instead. An atomic flag picks the first request; later ones pass
+// through at once (a blocking sync.Once would hold them too). The returned
+// release is idempotent and also runs at cleanup so a failed test cannot
+// leave a handler blocked.
 func blockSeriesReceiptFinalization(t *testing.T, app *App) (started <-chan struct{}, release func()) {
 	t.Helper()
 	startedCh, releaseCh := make(chan struct{}), make(chan struct{})
-	var first, once sync.Once
+	var once sync.Once
+	var claimed atomic.Bool
 	const name = "series:block-receipt-finalization"
 	err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(db *gorm.DB) {
 		if db.Statement.Table != "series_undo_receipts" {
@@ -122,13 +125,14 @@ func blockSeriesReceiptFinalization(t *testing.T, app *App) (started <-chan stru
 		if _, locked := db.Statement.Clauses["FOR"]; !locked {
 			return
 		}
-		first.Do(func() {
-			close(startedCh)
-			select {
-			case <-releaseCh:
-			case <-time.After(30 * time.Second):
-			}
-		})
+		if !claimed.CompareAndSwap(false, true) {
+			return
+		}
+		close(startedCh)
+		select {
+		case <-releaseCh:
+		case <-time.After(30 * time.Second):
+		}
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -599,6 +603,11 @@ func TestSeriesReceiptFinalizationDoesNotResurrectReplacedUndo(t *testing.T) {
 	second := postSeriesAnswer(loginAPI(t, app, "undo-replace-actor", "password1234"), ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
 	if second == nil || second.UndoToken == "" {
 		t.Fatalf("replacement receipt=%+v", second)
+	}
+	select {
+	case <-firstResponse:
+		t.Fatal("first response returned before release()")
+	default:
 	}
 	release()
 	w := awaitContactResponse(t, firstResponse)
