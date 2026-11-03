@@ -468,7 +468,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		return
 	}
 	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, guestZone, askedAccount); err != nil {
-		log.Printf("guest confirmation email to %s: %v", guestEmail, err)
+		log.Printf("guest confirmation email: %s", jobs.CleanError(err))
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": display, "manageToken": manageRaw})
 }
@@ -797,7 +797,9 @@ func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
 			intro += fmt.Sprintf("\n\nYou're number %d in line. We'll email you if a spot opens.", *d.WaitlistPosition)
 		}
 	}
-	return a.Mailer.Send(context.Background(), foldmail.Message{
+	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
+	defer cancel()
+	return a.Mailer.Send(ctx, foldmail.Message{
 		To:      to,
 		Subject: headline,
 		Text: intro + fmt.Sprintf(`

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,6 +85,80 @@ func guestConfirm(t *testing.T, app *App, c *apiClient, eventID uint, name, emai
 		t.Fatal("confirm returned no manage token")
 	}
 	return res.Registration, res.ManageToken
+}
+
+// Confirmation stays synchronous because the browser and email share the manage
+// capability. A provider failure must not undo the registration or expose that
+// capability or recipient in the log, and its context must bound provider I/O.
+func TestGuestConfirmationMailIsBoundedAndKeepsLogsPrivate(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	token := tokenInEmail(t, latestEmail(t, app, f.email))
+	var sendCtx context.Context
+	var calls int
+	var emailedManageToken string
+	const providerSecret = "providerCapability0123456789012345678901234567890123456789"
+	app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
+		calls++
+		sendCtx = ctx
+		deadline, ok := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !ok || remaining <= 0 || remaining > syncMailTimeout || remaining >= httpWriteTimeout/2 {
+			t.Fatal("confirmation send must leave at least half the HTTP write budget for transaction work and the manage-link response")
+		}
+		if msg.To != f.email || !strings.Contains(msg.Subject, "You're registered") {
+			t.Fatalf("unexpected confirmation message: %+v", msg)
+		}
+		_, tail, found := strings.Cut(msg.Text, "/guest/manage/")
+		if !found || len(strings.Fields(tail)) == 0 {
+			t.Fatal("confirmation email lost its manage link")
+		}
+		emailedManageToken = strings.Fields(tail)[0]
+		// Read through the application handle while sending, so this observes
+		// committed data rather than the redemption transaction's private view.
+		user := guestUser(t, app, f.email)
+		reg := guestRegistrationRow(t, app, user.ID)
+		if reg.Status != models.RegGoing || reg.ManageTokenHash != hashToken(emailedManageToken) {
+			t.Fatal("confirmation send ran before the registration committed")
+		}
+		return fmt.Errorf("451 rejected %s at https://mailer.example/private-confirmation?token=%s key=%s\nprivate provider detail", msg.To, emailedManageToken, providerSecret)
+	})
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	w := f.anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirmation failure changed the answer: %d %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Registration guestRegistrationJSON `json:"registration"`
+		ManageToken  string                `json:"manageToken"`
+	}
+	decodeJSON(t, w, &res)
+	if calls != 1 || emailedManageToken == "" || res.ManageToken != emailedManageToken || res.Registration.Status != models.RegGoing {
+		t.Fatalf("confirmation must synchronously send the browser's manage link once: calls=%d, response=%+v", calls, res)
+	}
+	if sendCtx == nil || !errors.Is(sendCtx.Err(), context.Canceled) {
+		t.Fatal("confirmation send context was not cancelled after sending")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "guest confirmation email: 451 rejected [email]") {
+		t.Fatalf("provider failure was not logged with a cleaned error: %q", out)
+	}
+	for _, secret := range []string{f.email, emailedManageToken, token, providerSecret, "private-confirmation", "private provider detail"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("confirmation log leaked private data: %q", out)
+		}
+	}
+	// Even when the email fails, the browser's capability still manages the
+	// committed registration; no delayed job rotates it out from under them.
+	apiDo(t, f.anon, "GET", "/api/v1/guest-registrations/manage/"+res.ManageToken, nil, http.StatusOK)
+	apiDo(t, f.anon, "POST", "/api/v1/guest-registrations/manage/"+res.ManageToken+"/cancel", nil, http.StatusOK)
+	user := guestUser(t, app, f.email)
+	if reg := guestRegistrationRow(t, app, user.ID); reg.Status != models.RegCancelled {
+		t.Fatalf("browser manage link no longer cancels after mail failure: %+v", reg)
+	}
 }
 
 // M1.4 acceptance: a guest registers without an account, gets a

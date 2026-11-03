@@ -95,7 +95,7 @@ Claim a milestone here before starting, as usual.
 | M5.1 Published image + CI compose smoke (R1 slices 1–2) | done: slice 1 [#251](https://github.com/grierj/fold/pull/251), slice 2 `feat/m5.1b-compose-smoke`; first release tag, public GHCR package and `compose` as a required check wait on Grier | Claude | `feat/m5.1b-compose-smoke` |
 | M7.3 Secret rotation + expiring links (R12) | not started; brief ready | | |
 | M7.4 Account erasure (R4) | not started; brief ready (inventory first) | | |
-| M7.5 Notification outbox (R6) | S4-a through S4-d committed; S4-e through S4-g remain | Codex | `autoflow/m75-s4-20261103` |
+| M7.5 Notification outbox (R6) | in review; S4 direct-mail jobs, guard hardening and regression tests implemented | Codex | `autoflow/m75-s4-20261103` |
 | M7.6 Query ceilings + pool cap (R11) | not started; brief ready | | |
 | M7.7 Baseline squash (R9) | not started; brief ready; DEC-138 + counters landed in PLAN | | |
 | M7.8 People/own-data export (R3) | not started; brief ready (with M4.9) | | |
@@ -104,6 +104,77 @@ Claim a milestone here before starting, as usual.
 | M7.11 Contact row locks (R19) | not started; brief ready; freeze DEC-141 landed | | |
 | M7.12 Cut execution + maintenance tax (R17.1/R18) | not started; brief ready; DEC-139/140 wording landed in PLAN | | |
 | Audit docs: AUDIT + briefs + DEC-138–145 + PLAN 14.10 | written Nov 1–2, 2026; rebased over #236/#241 | Muse | (docs; lands with this change) |
+
+### M7.5 S4 direct mail
+
+S1–S3 are merged in [#253](https://github.com/grierj/fold/pull/253),
+[#254](https://github.com/grierj/fold/pull/254) and
+[#255](https://github.com/grierj/fold/pull/255). S4 moves reset, account-request,
+existing-account hint, invitation/conversion, email-verification, guardian-consent
+and guest-verification mail onto the existing job runner. `runInBackground` and
+`App.background` have been removed. No schema, product controls or deployment
+components are added by S4.
+
+Domain changes, audits and their jobs commit together. Standalone hints and
+guardian resends durably enqueue before answering. Payloads are exactly
+`{userId}`, `{requestId, case}`, `{invitationId}`, `{accountTokenId}`,
+`{guardianLinkId}` or `{guestSignupId}`. The request-mail `case` is one of
+`received`, `approved`, `exists`, `conversion_approved`, `rejected`; addresses,
+rejection notes, rendered bodies and raw capabilities stay out of job payloads.
+Delivery prepares from stored facts, commits the capability, then contacts the
+provider without database locks. Account flows match redemption's contact gate,
+user, link and token order; invitation and guest preparation lock only their own
+row. Final claims match the submitted hash, unused state and live wall-clock
+deadline. Eight attempts use the runner's backoff, dead state and admin alert.
+Delivery is at least once at the provider boundary, so a retry may produce a
+replacement email and invalidate the previous attempt's link.
+
+S4 retains four accepted departures from the R6-4 slice table:
+
+- Invitation delivery rotates only the hash, keeps the original expiry and says
+  "expires within 24 hours". A provider retry must not extend the invitation.
+- Email verification uses `{accountTokenId}` and hash-only rotation of that exact
+  request. It preserves the original verify/cancel lifetime, so stale work cannot
+  reopen a cancelled or superseded request or outlive its cancellation window.
+- Approved setup mail derives its consent sentence from the locked user's current
+  state. A teen already consented at delivery is not told to wait for consent.
+- Direct jobs share the existing 60-second `deliverSendTimeout`, replacing the
+  old 30-second `resetMailTimeout`.
+
+Two synchronous exceptions remain. `App.sendEmailChangeNotice` needs the old
+address and cancellation capability, which cannot be rebuilt after verification.
+`App.sendGuestConfirmationEmail` shares the manage capability returned to the
+browser; delayed rotation would invalidate that displayed link. The unchanged
+composer test send is a separate synchronous path. Both account exceptions use
+a 20-second `syncMailTimeout`, leaving 40 seconds of the server's 60-second write
+budget for transaction work and the response. Jobs keep their 60-second send
+bound. Provider errors are cleaned without adding recipients or capabilities
+to logs. The parsed-source guard scans production Go directories and limits
+account exceptions to immediate calls in their named methods. Callers must also
+invoke those methods immediately after commit, outside closures, `go` and `defer`,
+without capturing method values. The guard follows concrete mail sender types,
+constructors and each position of same-package helper results, and leaves
+`api_dev.go`'s outbox reads read-only. It checks syntax rather than transaction
+completion; its remaining parse-only analysis limits are documented in AGENTS.md.
+
+`TestDirectMailDeadJobPrivacyAndDecisions` exercises transient failure, eight
+attempts, dead-job alerts, admin Retry and Dismiss through the real runner.
+It advances `run_at` explicitly and does not assert the backoff schedule. After
+Dismiss it runs the worker and asserts no send or token rotation; a repeated
+decision must not duplicate the alert or audit. Guard fixtures include nested
+production directories and same-package senders and multiple-result helpers
+declared in another file. Handler deadline tests require enough headroom for
+the HTTP response, and the job deadline test retains its longer send budget.
+`TestGuestConfirmationMailIsBoundedAndKeepsLogsPrivate` checks the synchronous
+send's deadline, cancellation, private failure log and surviving browser manage
+link. `.deadcode-allow` is unchanged. Merge requires the CI checks and separate
+four-concern review described in AGENTS.md.
+
+Deferred work remains deferred: send-time visibility rechecks for stored notice
+email, recalling queued pushes on Dismiss, and the `notifications(created_at)`
+index pending R11's EXPLAIN gate. The first-church checklist includes the real
+provider recovery check. After S4 merges, M7.5 is complete; stop before starting
+another milestone.
 
 ## Remaining follow-ups
 

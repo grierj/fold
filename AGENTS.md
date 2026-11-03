@@ -122,6 +122,61 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   and size. Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`. Commits: short imperative
   summary; PRs describe the behavior change.
 
+## Direct account mail (M7.5, R6-4)
+
+- Reconstructible account mail uses `mailKinds` on the existing job runner, with eight attempts.
+  Enqueue with the domain change and audit in one transaction; standalone hints and guardian
+  resends must durably enqueue before answering. Keep public answers uniform.
+- Payloads contain only `userId` (reset and existing-account hints), `requestId` plus a fixed
+  `case` (received, approved, exists, conversion_approved, rejected), `invitationId`,
+  `accountTokenId` (email verification), `guardianLinkId`, or `guestSignupId`. Never queue an
+  address, note, rendered message or raw capability.
+- Prepare from current stored facts in a transaction, mint or rotate the capability there, commit,
+  then send through the suppression-aware mailer without holding database locks. Match
+  redemption's lock order: contact gate then user/link/token for account flows; invitation and
+  guest mail each lock only their own row and read authority facts without earlier-order locks.
+  Claims recheck the submitted hash, unused state and wall-clock expiry after locking.
+- Delivery is at least once at the provider boundary. A retry may replace an already accepted
+  email's link; only the newest capability works. Do not promise exactly-once email delivery.
+- Accepted departures from the original R6-4 table: invitation delivery rotates only the hash,
+  preserving its deadline, and says "expires within 24 hours"; email verification queues
+  `{accountTokenId}` and preserves the original verify/cancel lifetime rather than reminting a
+  pair; approved setup consent wording follows the locked user's current state rather than
+  approval-time state; direct jobs reuse the 60-second `deliverSendTimeout` instead of the old
+  30-second reset timeout. These preserve closed requests and cancellation windows, avoid stale
+  consent instructions, and share the existing send bound.
+- Two synchronous exceptions remain: `App.sendEmailChangeNotice` in `api_profile.go` needs the
+  old address and cancellation capability, which cannot be reconstructed after verification;
+  `App.sendGuestConfirmationEmail` in `api_guest.go` shares its manage capability with the browser,
+  so delayed rotation would invalidate the displayed link. The composer's test send in
+  `api_message_preview.go` also remains synchronous by design, separate from those exceptions.
+  Both account exceptions use the 20-second `syncMailTimeout`, leaving 40 seconds of the
+  server's 60-second write budget for transaction work and the response. Delivery jobs keep
+  the 60-second `deliverSendTimeout`. Failure logs use `jobs.CleanError` and never add a
+  recipient address or capability.
+- `TestMailGoesThroughJobs` recursively parses production Go directories, including `models`,
+  `storage` and `migrations`. Only `internal/mail` is exempt from send checks because it owns
+  sender implementations; legacy post-commit notice helpers and `runInBackground` are forbidden
+  there too. Tests, `testdata`, frontend dependencies, vendored code and hidden directories are
+  excluded. Root delivery-file allowances do not grant permission to same-named nested files.
+- The guard follows mail import aliases and dot imports, `mail.Unwrap`, assigned senders and
+  package variables across files in one directory. It recognizes `mail.Sender`, `Adapter`,
+  `SMTPSender`, `Postmark`, `DevOutbox`, `Suppressing` and `NoSender` in typed parameters, fields,
+  variables, assertions and literals. Same-package helper signatures track each result position,
+  including multiple results; `mail.New*` and `mail.WithSuppressions` return a sender in the first
+  position, including through assigned constructor functions. Add new sender types to this list
+  and the guard together.
+- Synchronous exceptions allow sends only as immediate calls in their named App methods.
+  Calls to those methods must also be immediate, never inside closures, `go` or `defer`, or
+  captured as method values, even in delivery files. Transaction closures may finish before
+  the call; the guard checks syntax, not whether a transaction committed. `api_dev.go` may
+  unwrap and read the outbox, never send.
+- This is parse-only analysis, not a type checker or call graph. Field and method names match
+  conservatively. Arbitrary helper bodies, cross-package helper results, helper function values
+  other than known mail constructors/Unwrap, type aliases, embedded forwarding and senders hidden
+  in untyped interfaces or containers need review. The guard uses parser-local bindings with a
+  narrow, reasoned SA1019 exemption; it does not claim to resolve Go type identity.
+
 ## Uploads and blob storage
 
 - Avatars and covers go through `storage.Store` (`storage/storage.go`, `App.Uploads`), never raw
@@ -304,7 +359,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
 | Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
-| Notices are delivered by the `notify.deliver` job `notify.Send` queues, never by a caller; only listed files call the mailer | `TestNoticesAreDeliveredBySendNotByCallers`, `TestNoticeGuardCatchesPostCommitDelivery` |
+| Notices use `notify.deliver`; reconstructible direct mail uses ID-based jobs; synchronous mail is limited to the documented methods and composer test | `TestNoticesAreDeliveredBySendNotByCallers`, `TestMailGoesThroughJobs`, `TestNoticeGuardCatchesPostCommitDelivery`, `TestMailGuardCatchesBypasses`, `TestMailGuardScopesSynchronousExceptions`, `TestMailGuardAllowsDeliveryAndReadOnlyOutbox` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |

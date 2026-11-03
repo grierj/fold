@@ -55,7 +55,11 @@ func queueResetMail(t *testing.T, app *App, user *models.User) models.Job {
 	if len(rows) == 0 {
 		t.Fatal("reset did not queue a delivery duty")
 	}
-	return rows[len(rows)-1]
+	job := rows[len(rows)-1]
+	if !payloadEquals(job, userMailJob{UserID: user.ID}) || job.MaxAttempts != directMailAttempts || job.UniqueKey != nil {
+		t.Fatalf("reset must queue exactly the user ID as a distinct delivery duty: %+v", job)
+	}
+	return job
 }
 
 // runResetMail runs the next due direct-mail job through the real runner. The
@@ -452,6 +456,8 @@ func TestPasswordResetSendDeadlineCancellationAndCommittedPreparation(t *testing
 					if deadline.After(parentDeadline) {
 						return errors.New("send extended the job deadline")
 					}
+				} else if time.Until(deadline) <= syncMailTimeout {
+					return errors.New("delivery job lost its longer send budget to the synchronous handler bound")
 				}
 				// A different session can take both preparation locks and read
 				// the committed hash while provider I/O is in progress.
@@ -523,6 +529,9 @@ func TestDirectMailDeadJobPrivacyAndDecisions(t *testing.T) {
 			if got.Status != models.JobDead || got.Attempts != directMailAttempts {
 				t.Fatalf("exhaustion=%+v", got)
 			}
+			if len(capabilities) != directMailAttempts {
+				t.Fatalf("runner sent %d times, want %d", len(capabilities), directMailAttempts)
+			}
 			alerts := deadAlerts(t, app, job.ID)
 			if len(alerts) != 1 || alerts[0].UserID != adminUser.ID || !alerts[0].Waiting || !strings.Contains(alerts[0].Title, "Sending a password reset link") {
 				t.Fatalf("dead reset must alert the admin with its label: %+v", alerts)
@@ -553,6 +562,28 @@ func TestDirectMailDeadJobPrivacyAndDecisions(t *testing.T) {
 				if fresh := tokenInEmail(t, latestEmail(t, app, user.Email)); fresh == raw {
 					t.Fatal("admin retry reused the failed capability")
 				}
+			} else {
+				// The dismissed job is already due. Exercise the production
+				// runner again: it must neither send nor mint another link.
+				before := raw
+				ran, err := app.newRunner(app.backgroundKinds()...).RunOnce(context.Background(), "test:dismissed-mail")
+				if err != nil || ran || len(capabilities) != directMailAttempts || mailCount(t, app, user.Email) != 0 {
+					t.Fatalf("dismissed mail ran: ran=%v err=%v sends=%d", ran, err, len(capabilities))
+				}
+				var tok models.AccountToken
+				if err := app.DB.Where("user_id = ? AND kind = ?", user.ID, models.TokenPasswordReset).First(&tok).Error; err != nil {
+					t.Fatal(err)
+				}
+				if tok.TokenHash != hashToken(before) || reloadJob(t, app, job.ID).Status != models.JobDismissed {
+					t.Fatal("dismissed mail rotated its capability or changed status")
+				}
+			}
+			// A second admin action cannot reopen the resolved alert, and a
+			// successful retry or a dismissed job cannot announce a new death.
+			apiDo(t, admin, "POST", "/api/v1/admin/jobs/"+itoa(job.ID)+"/"+decision, nil, http.StatusConflict)
+			app.alertDeadJob(job.ID, job.Kind, directMailAttempts)
+			if after := deadAlerts(t, app, job.ID); len(after) != 1 || after[0].ID != alerts[0].ID || after[0].Resolution != resolution || auditCount(t, app, action) != 1 {
+				t.Fatal("handled mail job reopened or duplicated its alert or audit")
 			}
 		})
 	}
@@ -2195,14 +2226,18 @@ func TestEmailChangeNoticeIsBoundedAndKeepsAddressesOutOfLogs(t *testing.T) {
 	client.holdNotices = true
 	const newEmail = "alice.new@example.com"
 	var calls int
-	var deadline time.Time
-	var hasDeadline bool
+	var sendCtx context.Context
 	app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
 		if msg.To != user.Email {
 			return nil
 		}
 		calls++
-		deadline, hasDeadline = ctx.Deadline()
+		sendCtx = ctx
+		deadline, ok := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !ok || remaining <= 0 || remaining > syncMailTimeout || remaining >= httpWriteTimeout/2 {
+			t.Fatal("the old-address notice must leave at least half the HTTP write budget for transaction work and the verification response")
+		}
 		return fmt.Errorf("550 5.1.1 <%s> mailbox unavailable", msg.To)
 	})
 	var logs bytes.Buffer
@@ -2216,8 +2251,8 @@ func TestEmailChangeNoticeIsBoundedAndKeepsAddressesOutOfLogs(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("the notice must be sent once, synchronously: %d", calls)
 	}
-	if !hasDeadline || time.Until(deadline) <= 0 || time.Until(deadline) > deliverSendTimeout {
-		t.Fatalf("the notice send is not bounded by the shared timeout: %v %v", hasDeadline, deadline)
+	if sendCtx == nil || !errors.Is(sendCtx.Err(), context.Canceled) {
+		t.Fatal("the notice send context was not cancelled after sending")
 	}
 	out := logs.String()
 	if !strings.Contains(out, fmt.Sprintf("email change notice for user %d: ", user.ID)) {

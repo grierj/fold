@@ -178,6 +178,11 @@ const (
 	httpWriteTimeout      = 60 * time.Second
 	httpIdleTimeout       = 120 * time.Second
 	httpMaxHeaderBytes    = 1 << 20
+
+	// Leave 40 seconds of the write budget for transaction work and the
+	// response carrying the browser's guest manage link or verification state.
+	// Delivery jobs retain their separate 60-second deliverSendTimeout.
+	syncMailTimeout = 20 * time.Second
 )
 
 // newHTTPServer builds the production server with its timeouts, so a slow or

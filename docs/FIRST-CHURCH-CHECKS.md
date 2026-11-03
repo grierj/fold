@@ -50,6 +50,8 @@ Follow the directions page at `/notifications/setup` literally, on each device b
 
 - [ ] **A real mail provider outage (M7.5, R6-3).** Set the mail provider's credentials to a wrong value, then cause a notice that emails (for example, approve a group). You should see the notice retry, then go dead after its last attempt, with the email left Deferred and one bell alert per admin titled "A background task stopped: …" with no address, key or error text in it. Put the right credentials back, open Admin → System, and press Retry on that task: you should see the email sent once, the alert close for every admin, and the task leave the list. Dismissing it instead should close the alerts as dismissed and send nothing. The alert is written after the task dies and is not atomic with it, so if the server was stopped at that instant the task is still on Admin → System without a bell alert.
 
+- [ ] **A direct account email after recovery (M7.5, R6-4).** With a test account and the real provider, briefly make the provider unreachable, request a password reset, and restart Fold after the request finishes. Restore the connection before retries run out. You should receive a working reset link after recovery, without requesting another. If the provider accepted an earlier attempt before the connection failed, more than one email may arrive; use the latest link, and confirm earlier links no longer work. Then try an invitation and an email change: delayed mail must not gain a later expiry, and cancelling the email change must prevent its queued verification from changing the address.
+
 ## UI on real browsers (PR #225 follow-up)
 
 Listed when #232 merged (DEC-128). An agent can shoot Chromium and WebKit in CI; these need a real Safari stack and a real inbox.

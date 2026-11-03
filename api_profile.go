@@ -270,11 +270,11 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 }
 
 // sendEmailChangeNotice tells the old address what's happening (10.1). It is
-// synchronous, so the provider call is bounded like every other direct send:
-// a hung provider can delay the response by deliverSendTimeout, not forever.
+// synchronous, so its send budget leaves headroom under the HTTP write timeout
+// for the transaction and response. Delivery jobs use a separate, longer bound.
 func (a *App) sendEmailChangeNotice(to, newEmail, cancelRaw string) error {
 	link := a.emailBaseURL() + "/cancel-email-change?token=" + cancelRaw
-	ctx, cancel := context.WithTimeout(context.Background(), deliverSendTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
 	defer cancel()
 	return a.Mailer.Send(ctx, mail.Message{
 		To:      to,
