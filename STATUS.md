@@ -95,7 +95,7 @@ Claim a milestone here before starting, as usual.
 | M5.1 Published image + CI compose smoke (R1 slices 1–2) | done: slice 1 [#251](https://github.com/grierj/fold/pull/251), slice 2 `feat/m5.1b-compose-smoke`; first release tag, public GHCR package and `compose` as a required check wait on Grier | Claude | `feat/m5.1b-compose-smoke` |
 | M7.3 Secret rotation + expiring links (R12) | not started; brief ready | | |
 | M7.4 Account erasure (R4) | not started; brief ready (inventory first) | | |
-| M7.5 Notification outbox (R6) | not started; brief ready | | |
+| M7.5 Notification outbox (R6) | S4 claimed: direct-mail jobs, starting with password reset (S4-a); checks and independent review pending | Codex | `autoflow/m75-s4-20261103` |
 | M7.6 Query ceilings + pool cap (R11) | not started; brief ready | | |
 | M7.7 Baseline squash (R9) | not started; brief ready; DEC-138 + counters landed in PLAN | | |
 | M7.8 People/own-data export (R3) | not started; brief ready (with M4.9) | | |

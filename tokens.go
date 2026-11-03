@@ -86,7 +86,7 @@ func consumeAccountToken(tx *gorm.DB, kind, raw string) (*models.AccountToken, e
 		return nil, errTokenInvalid
 	}
 	now := time.Now().UTC()
-	res = tx.Model(&models.AccountToken{}).Where("id = ? AND used_at IS NULL", tok.ID).
+	res = tx.Model(&models.AccountToken{}).Where("id = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", tok.ID, hashToken(raw)).
 		Update("used_at", now)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return nil, errTokenInvalid // lost the race: someone else used it

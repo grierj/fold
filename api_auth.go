@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	foldmail "fold/internal/mail"
+	"fold/internal/jobs"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -413,9 +413,9 @@ func (a *App) targetAllow(ctx context.Context, key string) (bool, error) {
 }
 
 // apiRequestPasswordReset starts a password reset. It always answers 200
-// with the uniform message. A known address gets a single-use link valid
-// for 24 hours. Inside the IP/address budget, both known and unknown
-// addresses pay a dummy bcrypt comparison; exhausted budgets return before
+// with the uniform message. A known address queues a single-use link valid
+// for 24 hours from delivery preparation. Inside the IP/address budget, both
+// known and unknown addresses pay a dummy bcrypt comparison; exhausted budgets return before
 // account lookup or bcrypt, independent of account existence (10.1).
 func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	var body struct {
@@ -445,20 +445,18 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	found := a.DB.Where("email = ? AND status = ?", email, models.UserActive).
 		Limit(1).Find(&user).RowsAffected == 1
 	// Both paths pay the same password-check cost, and neither waits on
-	// the email: the send runs in the background, so response time doesn't
+	// the email: the job sends it later, so response time doesn't
 	// reveal whether the account exists (#93).
 	(&models.User{}).CheckPassword("not a real password")
 	if !found {
 		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}
-	var raw string
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		// A reset request racing disable/deletion must not issue a new
-		// capability after that operation has revoked the existing ones.
+		// Recheck the address and account while credential changes are excluded.
 		var fresh models.User
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, user.ID).Error; err != nil {
 			return err
@@ -466,9 +464,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		if fresh.Status != models.UserActive || normalizeEmail(fresh.Email) != email {
 			return errTokenInvalid
 		}
-		var err error
-		raw, err = createAccountToken(tx, models.TokenPasswordReset, user.ID, nil, tokenTTL)
-		if err != nil {
+		if _, err := jobs.Enqueue(tx, kindPasswordResetMail, userMailJob{UserID: user.ID}, time.Now(), "", directMailAttempts); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.PasswordResetRequested,
@@ -477,24 +473,12 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	if err != nil {
 		// Logged, not leaked: an error status here would tell the caller
 		// the account exists.
-		log.Printf("password reset for user %d: %v", user.ID, err)
+		log.Printf("password reset for user %d: %s", user.ID, jobs.CleanError(err))
 		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}
-	a.runInBackground(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), resetMailTimeout)
-		defer cancel()
-		if err := a.sendPasswordResetEmail(ctx, email, raw); err != nil {
-			// The token is stored; the send failure is logged, not leaked.
-			log.Printf("password reset email to %s: %v", email, err)
-		}
-	})
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 }
-
-// resetMailTimeout bounds a background reset send, so a hung SMTP server
-// can't pile up goroutines.
-const resetMailTimeout = 30 * time.Second
 
 // runInBackground runs f without making the response wait for it. A panic
 // in f is logged and recovered, so it can't take the server down.
@@ -512,22 +496,6 @@ func (a *App) runInBackground(f func()) {
 		return
 	}
 	go safe()
-}
-
-// sendPasswordResetEmail sends the single-use reset link (C6: plain text).
-func (a *App) sendPasswordResetEmail(ctx context.Context, to, raw string) error {
-	link := a.emailBaseURL() + "/reset-password?token=" + raw
-	return a.Mailer.Send(ctx, foldmail.Message{
-		To:      to,
-		Subject: "Reset your Fold password",
-		Text: fmt.Sprintf(`Someone asked to reset the password for this email address at %s.
-
-Reset it here (the link works once and expires in 24 hours):
-%s
-
-If that wasn't you, you can ignore this email — your password won't change.`,
-			a.siteName(), link),
-	})
 }
 
 // apiConfirmPasswordReset redeems a reset token and sets the new password.

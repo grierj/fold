@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fold/models"
 	"net/http"
 	"testing"
+	"time"
+
+	"gorm.io/gorm"
 )
 
 // Issuing a token revokes the previous unused one of the same kind, so
@@ -66,5 +70,50 @@ func TestSecondTokenRevokesFirst(t *testing.T) {
 	var u models.User
 	if err := app.DB.Where("email = ?", "alice.two@example.com").First(&u).Error; err != nil {
 		t.Fatalf("email not changed to the second address: %v", err)
+	}
+}
+
+// A capability may be rotated after the initial lookup. The final UPDATE must
+// still match the presented hash, expiry and unused state, not just the row ID.
+func TestConsumeAccountTokenRechecksAtClaim(t *testing.T) {
+	for _, change := range []string{"hash", "expiry", "used"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reached, release := pauseDBRead(t, app.DB, "consume", "account_tokens")
+			_, done := startDBSession(t, app.DB, "consume", func(db *gorm.DB) error {
+				return db.Transaction(func(tx *gorm.DB) error {
+					_, err := consumeAccountToken(tx, models.TokenPasswordReset, raw)
+					return err
+				})
+			})
+			awaitDBSignal(t, reached)
+			updates := map[string]any{}
+			switch change {
+			case "hash":
+				updates["token_hash"] = hashToken("replacement-capability")
+			case "expiry":
+				updates["expires_at"] = time.Now().Add(-time.Hour)
+			case "used":
+				updates["used_at"] = time.Now()
+			}
+			if err := app.DB.Model(&models.AccountToken{}).Where("token_hash = ?", hashToken(raw)).Updates(updates).Error; err != nil {
+				t.Fatal(err)
+			}
+			release()
+			if err := awaitDBResult(t, done); !errors.Is(err, errTokenInvalid) {
+				t.Fatalf("stale %s claim succeeded: %v", change, err)
+			}
+			if change == "hash" {
+				// The failed stale claim must leave the rotated capability usable.
+				if _, err := consumeAccountToken(app.DB, models.TokenPasswordReset, "replacement-capability"); err != nil {
+					t.Fatalf("stale claim consumed the replacement: %v", err)
+				}
+			}
+		})
 	}
 }

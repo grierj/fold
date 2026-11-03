@@ -1186,9 +1186,9 @@ var mailerCallRe = regexp.MustCompile(`\.Mailer\.Send\(|\.SendEmail\(`)
 // notices (they shrink as they move to notify.Send).
 var mailerSendFiles = map[string]string{
 	"notify_deliver.go":           "the notify.deliver job sends notice mail",
+	"mail_jobs.go":                "direct account mail is sent by durable jobs after preparation commits",
 	"messages_send.go":            "announcement mail goes through its own send path",
 	"api_message_preview.go":      "the composer's test send is synchronous by design (brief section 4)",
-	"api_auth.go":                 "direct mail: password reset and sign-in links",
 	"api_account_requests.go":     "direct mail: account request and setup links",
 	"api_invitations.go":          "direct mail: invitations into Fold",
 	"api_household_conversion.go": "direct mail: household conversion invitation",

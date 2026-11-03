@@ -64,8 +64,8 @@ func lockAccountTokenUser(tx *gorm.DB, kind, raw string) (*models.User, error) {
 // lockAndConsumeAccountToken is lockAccountTokenUser followed by the atomic
 // single-use claim, with one token lookup instead of two. The order is the
 // same: contact gate, then the user lock, then the claim. The claim is an
-// UPDATE ... WHERE used_at IS NULL, so a racing second redeemer gets
-// errTokenInvalid.
+// UPDATE rechecks the hash, expiry and unused state, so a stale read cannot
+// claim a rotated token and a racing second redeemer gets errTokenInvalid.
 func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *models.AccountToken, error) {
 	if err := lockContacts(tx); err != nil {
 		return nil, nil, err
@@ -89,7 +89,7 @@ func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *m
 	}
 	now := time.Now().UTC()
 	res := tx.Model(&models.AccountToken{}).
-		Where("id = ? AND used_at IS NULL AND expires_at > now()", tok.ID).
+		Where("id = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", tok.ID, hashToken(raw)).
 		Update("used_at", now)
 	if res.Error != nil {
 		return nil, nil, res.Error
