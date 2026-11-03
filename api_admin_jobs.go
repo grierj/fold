@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -95,7 +97,7 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 	var job models.Job
 	found, handled := true, false
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Select("id, kind").First(&job, id).Error; err != nil {
+		if err := tx.Select("id, kind, payload").First(&job, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				found = false
 				return nil
@@ -108,6 +110,14 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 			return res.Error
 		}
 		handled = true
+		if action == audit.JobDismissed && job.Kind == notify.DeliverKind {
+			var p notifyDeliverJob
+			if json.Unmarshal([]byte(job.Payload), &p) == nil && p.NotificationID != 0 {
+				if err := updateEmailDelivery(tx, p.NotificationID, models.DeliverySuppressed, emailDismissed, ""); err != nil {
+					return err
+				}
+			}
+		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action, TargetType: "job", TargetID: job.ID,
 			Meta: map[string]any{"kind": job.Kind}, IP: c.ClientIP()})
 	})

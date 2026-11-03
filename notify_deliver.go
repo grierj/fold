@@ -31,6 +31,7 @@ const (
 	// emailKindUnknown is the ledger reason when this version of Fold
 	// doesn't know the notice's kind.
 	emailKindUnknown = "this version of Fold doesn't know this kind of notice"
+	emailDismissed   = "an admin set this notice aside"
 	// notifyUnknownWait and notifyUnknownGrace mirror jobs.unknownKindWait
 	// and jobs.unknownKindGrace. A notice this build doesn't know waits an
 	// hour without spending an attempt, and is suppressed after a week.
@@ -67,6 +68,8 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 	db := a.DB.WithContext(ctx)
 	var afterAt time.Time
 	var afterID uint
+	// A key in any status means the job path owns the row; a dead key goes
+	// to the admin alert, and dismissing it settles the ledger.
 	for {
 		var rows []models.NotificationDelivery
 		if err := db.Raw(`SELECT nd.notification_id, nd.created_at, nd.id
@@ -74,10 +77,10 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 			WHERE nd.channel = ? AND nd.status = ? AND nd.created_at < ?
 			  AND (nd.created_at, nd.id) > (?, ?)
 			  AND NOT EXISTS (SELECT 1 FROM jobs j
-				WHERE j.unique_key = ? || nd.notification_id AND j.status IN ?)
+				WHERE j.unique_key = ? || nd.notification_id)
 			ORDER BY nd.created_at, nd.id LIMIT ?`,
 			models.DeliveryEmail, models.DeliveryQueued, now.Add(-10*time.Minute), afterAt, afterID,
-			notify.DeliverKind+":", []string{models.JobQueued, models.JobRunning, models.JobFailed}, notifyReconcileBatch).
+			notify.DeliverKind+":", notifyReconcileBatch).
 			Scan(&rows).Error; err != nil {
 			return err
 		}
@@ -96,6 +99,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 		afterAt, afterID = last.CreatedAt, last.ID
 	}
 	afterAt, afterID = time.Time{}, 0
+	// No notifications created_at index by choice: at church scale, <=180 days kept makes the hourly scan small; R11-0's EXPLAIN pack, statement 5 (reconcile scans), decides whether one is needed.
 	for {
 		var rows []models.Notification
 		if err := db.Raw(`SELECT n.id, n.user_id, n.kind, n.subject_id, n.created_at
@@ -121,8 +125,10 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 }
 
 // queueReconciledNotifications uses the persisted request flags to preserve
-// pre-outbox duplicate and honeypot notices as bell-only. Read the page's
-// requests together and queue each group in the same transaction.
+// pre-outbox duplicate and honeypot notices as bell-only. Account requests
+// deliver only with a found request and parsed, clean flags; missing subjects,
+// missing requests and invalid flags stay bell-only. Read requests together
+// and queue each group in the same transaction.
 func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification) error {
 	var eligible []models.Notification
 	var requestIDs []uint
@@ -143,20 +149,26 @@ func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification) error
 			return err
 		}
 		for _, request := range requests {
-			flags[request.ID] = parseRequestFlags(request.Flags)
+			var f models.RequestFlags
+			if json.Unmarshal([]byte(request.Flags), &f) == nil {
+				flags[request.ID] = f
+			}
 		}
 	}
 	var deliver, bellOnly []models.Notification
 	for _, row := range eligible {
-		var f models.RequestFlags
-		if row.Kind == notify.AccountRequested && row.SubjectID != nil {
-			f = flags[*row.SubjectID]
+		if row.Kind == notify.AccountRequested {
+			var f models.RequestFlags
+			var found bool
+			if row.SubjectID != nil {
+				f, found = flags[*row.SubjectID]
+			}
+			if !found || f.Duplicate || f.Honeypot {
+				bellOnly = append(bellOnly, row)
+				continue
+			}
 		}
-		if f.Duplicate || f.Honeypot {
-			bellOnly = append(bellOnly, row)
-		} else {
-			deliver = append(deliver, row)
-		}
+		deliver = append(deliver, row)
 	}
 	if err := notify.QueueDelivery(tx, false, deliver...); err != nil {
 		return err

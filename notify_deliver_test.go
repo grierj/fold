@@ -829,12 +829,12 @@ func TestNotifyReconcileRequeuesOrphans(t *testing.T) {
 	}
 }
 
-func TestNotifyReconcilePaginatesPastCollisions(t *testing.T) {
+func TestNotifyReconcileExcludesTerminalKeys(t *testing.T) {
 	app := testApp(t)
 	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
 	now := time.Now().UTC()
 	// Identical created_at values force the id tie-breaker to advance.
-	// All 501 keys collide, but none is live, so pass (a) must page past
+	// All 501 keys exist in terminal states, so pass (a) must exclude
 	// them without reviving done, dead or dismissed work.
 	if err := app.DB.Exec(`WITH notices AS (
 		INSERT INTO notifications (user_id, kind, category, title, link, created_at)
@@ -862,10 +862,10 @@ func TestNotifyReconcilePaginatesPastCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two orphan pages and one empty backfill page, independent of how
-	// many unique-key collisions EnqueueMany skipped.
-	if reads := qc.Reads(); reads != 3 {
-		t.Fatalf("reconcile page reads = %d, want 3", reads)
+	// One orphan page and one empty backfill page: terminal keys aren't
+	// selected as candidates, even while their email rows remain queued.
+	if reads := qc.Reads(); reads != 2 {
+		t.Fatalf("reconcile page reads = %d, want 2", reads)
 	}
 	var rows []models.Job
 	if err := app.DB.Order("id").Find(&rows).Error; err != nil {
@@ -884,6 +884,54 @@ func TestNotifyReconcilePaginatesPastCollisions(t *testing.T) {
 		if job.Status != models.JobDone && job.Status != models.JobDead && job.Status != models.JobDismissed {
 			t.Fatalf("revived a collided key: %+v", job)
 		}
+	}
+}
+
+func TestNotifyReconcileAccountRequestsFailClosed(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name       string
+		flags      string
+		wantQueued bool
+	}{
+		{name: "nil subject"},
+		{name: "missing request"},
+		{name: "invalid flags", flags: `{"duplicate":"invalid"}`},
+		{name: "clean flags", flags: `{}`, wantQueued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var subjectID *uint
+			if tc.name == "missing request" {
+				missing := ^uint(0) >> 1
+				subjectID = &missing
+			} else if tc.flags != "" {
+				r := models.AccountRequest{Name: "New person", Email: "new@example.com", Source: "self_signup",
+					Flags: tc.flags, ExpiresAt: now.Add(24 * time.Hour)}
+				if err := app.DB.Create(&r).Error; err != nil {
+					t.Fatal(err)
+				}
+				subjectID = &r.ID
+			}
+			n := preOutboxNotice(t, app, u, notify.AccountRequested, now.Add(-time.Hour), subjectID)
+			if err := app.reconcileNotifications(context.Background(), now); err != nil {
+				t.Fatal(err)
+			}
+			d := emailDeliveryOf(t, app, n.ID)
+			wantStatus, wantReason := models.DeliverySuppressed, "bell only"
+			var wantJobs int64
+			if tc.wantQueued {
+				wantStatus, wantReason, wantJobs = models.DeliveryQueued, "", 1
+			}
+			if d.Status != wantStatus || d.Reason != wantReason {
+				t.Fatalf("email ledger: %+v, want %s %q", d, wantStatus, wantReason)
+			}
+			var count int64
+			if err := app.DB.Model(&models.Job{}).Where("unique_key = ?", notify.DeliverKey(n.ID)).Count(&count).Error; err != nil || count != wantJobs {
+				t.Fatalf("delivery jobs = %d, want %d: %v", count, wantJobs, err)
+			}
+		})
 	}
 }
 

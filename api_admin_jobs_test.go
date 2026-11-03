@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -10,8 +11,80 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/notify"
 	"fold/models"
 )
+
+func TestDeadNoticeJobDecisions(t *testing.T) {
+	for _, status := range []string{models.DeliveryQueued, models.DeliveryDeferred} {
+		for _, decision := range []struct {
+			name string
+			kind string
+		}{
+			{"dismiss", notify.DeliverKind},
+			{"retry", notify.DeliverKind},
+			{"dismiss", "contact.sweep"},
+		} {
+			t.Run(status+"/"+decision.name+"/"+decision.kind, func(t *testing.T) {
+				app := testApp(t)
+				u := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+				admin := loginAPI(t, app, "admin", "password1234")
+				admin.holdNotices = true
+				id, job := seedNotifyDeliver(t, app, u, 1)
+				now := time.Now().UTC()
+				if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", id).
+					Updates(map[string]any{"status": status, "reason": "waiting", "created_at": now.Add(-time.Hour), "updated_at": now.Add(-time.Hour)}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&job).Updates(map[string]any{"status": models.JobDead, "kind": decision.kind}).Error; err != nil {
+					t.Fatal(err)
+				}
+				before := emailDeliveryOf(t, app, id)
+				path := "/api/v1/admin/jobs/" + itoa(job.ID) + "/" + decision.name
+				if w := admin.do("POST", path, nil, true); w.Code != http.StatusOK {
+					t.Fatalf("%s: %d %s", decision.name, w.Code, w.Body.String())
+				}
+				action, jobStatus := audit.JobDismissed, models.JobDismissed
+				if decision.name == "retry" {
+					action, jobStatus = audit.JobRetried, models.JobQueued
+				}
+				if got := reloadJob(t, app, job.ID); got.Status != jobStatus {
+					t.Fatalf("job status = %s, want %s", got.Status, jobStatus)
+				}
+				if auditCount(t, app, action) != 1 {
+					t.Fatal("decision should be audited")
+				}
+				after := emailDeliveryOf(t, app, id)
+				if decision.name != "dismiss" || decision.kind != notify.DeliverKind {
+					if after.Status != before.Status || after.Reason != before.Reason || !after.UpdatedAt.Equal(before.UpdatedAt) {
+						t.Fatalf("decision changed the email ledger: %+v -> %+v", before, after)
+					}
+					return
+				}
+				if after.Status != models.DeliverySuppressed || after.Reason != emailDismissed || !after.UpdatedAt.After(before.UpdatedAt) {
+					t.Fatalf("dismissed email: %+v", after)
+				}
+				if n, err := jobs.PruneDone(app.DB, now.Add(time.Hour)); err != nil || n != 1 {
+					t.Fatalf("prune: %d %v", n, err)
+				}
+				var count int64
+				if err := app.DB.Model(&models.Job{}).Where("id = ?", job.ID).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("pruned job remains: %d %v", count, err)
+				}
+				if err := app.reconcileNotifications(context.Background(), now); err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&models.Job{}).Where("kind = ?", notify.DeliverKind).Count(&count).Error; err != nil || count != 0 {
+					t.Fatalf("requeued dismissed notice: %d %v", count, err)
+				}
+				drainNotices(t, app)
+				if mailCount(t, app, "") != 0 || len(pushJobsFor(t, app, id)) != 0 {
+					t.Fatal("dismissed notice sent mail or queued push")
+				}
+			})
+		}
+	}
+}
 
 func deadJob(t *testing.T, app *App, kind, key, lastError string) models.Job {
 	t.Helper()
