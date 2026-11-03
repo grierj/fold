@@ -9,6 +9,7 @@ import (
 
 	"fold/internal/jobs"
 	"fold/internal/mail"
+	"fold/internal/policy"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -19,6 +20,7 @@ const (
 	kindPasswordResetMail  = "account.password_reset_mail"
 	kindAccountRequestMail = "account.request_mail"
 	kindAccountExistsMail  = "account.exists_mail"
+	kindInvitationMail     = "invitation.mail"
 	directMailAttempts     = 8
 )
 
@@ -41,6 +43,10 @@ type userMailJob struct {
 type requestMailJob struct {
 	RequestID uint   `json:"requestId"`
 	Case      string `json:"case"`
+}
+
+type invitationMailJob struct {
+	InvitationID uint `json:"invitationId"`
 }
 
 func (a *App) mailKinds() []jobs.Kind {
@@ -77,7 +83,130 @@ func (a *App) mailKinds() []jobs.Kind {
 				return a.prepareExistingAccountHint(tx, p.UserID)
 			})
 		},
+	}, {
+		Name: kindInvitationMail, Label: "Sending an account invitation", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p invitationMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindInvitationMail, p.InvitationID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareInvitationMail(tx, p.InvitationID)
+			})
+		},
 	}}
+}
+
+// prepareInvitationMail locks only the invitation. Acceptance takes earlier
+// user, household, group and email locks, so taking any of those here would
+// reverse its lock order. Authority reads are checked but remain read-only;
+// acceptance checks them again before granting anything.
+func (a *App) prepareInvitationMail(tx *gorm.DB, id uint) (mail.Message, bool, error) {
+	none := mail.Message{}
+	var inv models.Invitation
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()").First(&inv, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	var inviter models.User
+	err = tx.Where("status = ?", models.UserActive).First(&inviter, inv.InvitedBy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	if inv.HouseholdPersonID != nil {
+		var person models.HouseholdPerson
+		err := tx.First(&person, *inv.HouseholdPersonID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return none, false, nil
+		}
+		if err != nil {
+			return none, false, err
+		}
+		allowed, err := a.conversionAllowed(tx, &inviter, &person)
+		if errors.Is(err, errConversionHolder) {
+			return none, false, nil
+		}
+		if err != nil || !allowed {
+			return none, false, err
+		}
+		disabled, err := conversionInviterDisabled(tx, &inv)
+		if err != nil || disabled {
+			return none, false, err
+		}
+		inv.Name, inv.AccountType = person.FullName(), person.Kind
+	} else {
+		leadsTarget, leadsAnywhere := false, false
+		if inv.GroupID != nil {
+			err := tx.First(&inv.Group, *inv.GroupID).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return none, false, nil
+			}
+			if err != nil {
+				return none, false, err
+			}
+			if !policy.CanInviteIntoGroup(inv.Group.Status) {
+				return none, false, nil
+			}
+			var membership models.Membership
+			err = tx.Where("user_id = ? AND group_id = ?", inviter.ID, inv.Group.ID).First(&membership).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return none, false, err
+			}
+			leadsTarget = err == nil && membershipRel(membership).Leader
+		} else {
+			var err error
+			if leadsAnywhere, err = leadsApprovedGroup(tx, inviter.ID); err != nil {
+				return none, false, err
+			}
+		}
+		if !policy.CanInvite(asPerson(&inviter), inv.GroupID != nil, leadsTarget, leadsAnywhere) {
+			return none, false, nil
+		}
+		// Capacity is checked at acceptance. A temporarily full group does
+		// not make an invitation permanently ineligible for delivery.
+	}
+	raw, err := rotateInvitationToken(tx, inv.ID)
+	if errors.Is(err, errTokenInvalid) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	site, err := siteNameIn(tx)
+	if err != nil {
+		return none, false, err
+	}
+	return a.invitationMessage(&inv, &inviter, raw, site), true, nil
+}
+
+func (a *App) invitationMessage(inv *models.Invitation, inviter *models.User, raw, site string) mail.Message {
+	link := a.emailBaseURL() + "/invite?token=" + raw
+	if inv.HouseholdPersonID != nil {
+		timing := "Your past and upcoming event sign-ups will move to your account after an admin approves. Until then, your household keeps managing them."
+		if inv.AccountType == models.AccountTeen {
+			timing = "Your account needs admin approval, consent, and a fresh check of your guardian link. Your household keeps managing your event sign-ups until all three are complete."
+		}
+		return mail.Message{To: inv.Email, Subject: "Create your own account at " + site,
+			Text: fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s\n\nThis link expires within 24 hours. If this invitation is not for you, ignore it.", inviter.PublicName(), inv.Name, timing, link)}
+	}
+	groupPart := ""
+	if inv.Group.ID != 0 {
+		groupPart = fmt.Sprintf(" at %s", inv.Group.Name)
+	}
+	return mail.Message{To: inv.Email, Subject: fmt.Sprintf("You've been invited to %s", site),
+		Text: fmt.Sprintf(`%s invited you to join %s%s.
+
+Set your password here (the link works once and expires within 24 hours):
+%s
+
+If you weren't expecting this, you can ignore it.`, inviter.PublicName(), site, groupPart, link)}
 }
 
 // prepareAndSend commits the capability before contacting the provider. No

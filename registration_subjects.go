@@ -102,11 +102,19 @@ func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink,
 }
 
 func (a *App) householdClock(now time.Time) time.Time {
-	loc, err := time.LoadLocation(a.churchTimezone())
+	clock, err := householdClockIn(a.DB, now)
 	if err != nil {
 		return now.UTC()
 	}
-	return now.In(loc)
+	return clock
+}
+
+func householdClockIn(db *gorm.DB, now time.Time) (time.Time, error) {
+	loc, err := churchLocationIn(db)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return now.In(loc), nil
 }
 
 // eligibleRegistration reads current eligibility without taking earlier-order

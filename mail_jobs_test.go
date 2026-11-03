@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -958,5 +960,569 @@ func TestAccountRequestMailCasesRenderFromStoredFacts(t *testing.T) {
 	}
 	if got := mailCount(t, app, declined.Email); got != 1 {
 		t.Fatalf("mismatched cases sent mail: %d", got)
+	}
+}
+
+// heldInvitationMail creates through the real API but leaves its delivery duty
+// queued, so each test can change authority before the worker reads it.
+type heldInvitationMail struct {
+	inv     models.Invitation
+	job     models.Job
+	inviter *models.User
+	group   *models.Group
+	person  householdPersonJSON
+	client  *apiClient
+	admin   *apiClient
+}
+
+func queueHeldInvitationMail(t *testing.T, app *App, conversion, bound bool) heldInvitationMail {
+	t.Helper()
+	adminUser := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	admin.holdNotices = true
+	f := heldInvitationMail{admin: admin}
+	if conversion {
+		f.inviter, f.client, f.person, _ = householdFamily(t, app, admin, "parent")
+		f.client.holdNotices = true
+		f.group = newTestGroup(t, app, adminUser, "Conversion dates", models.GroupActive)
+		apiDo(t, f.client, "POST", conversionPath(f.person.ID), map[string]any{"email": "invited@example.com"}, http.StatusCreated)
+	} else {
+		f.inviter = newTestUser(t, app, "leader", "password1234", models.RoleMember)
+		f.group = newTestGroup(t, app, f.inviter, "Invitation group", models.GroupActive)
+		f.client = loginAPI(t, app, "leader", "password1234")
+		f.client.holdNotices = true
+		body := map[string]any{"email": "invited@example.com", "name": "Invited Person"}
+		if bound {
+			body["groupId"] = f.group.ID
+		}
+		apiDo(t, f.client, "POST", "/api/v1/invitations", body, http.StatusCreated)
+	}
+	if err := app.DB.Where("email = ?", "invited@example.com").First(&f.inv).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := mailJobsOfKind(t, app, kindInvitationMail)
+	if len(rows) != 1 || !payloadEquals(rows[0], invitationMailJob{InvitationID: f.inv.ID}) || rows[0].MaxAttempts != directMailAttempts || rows[0].UniqueKey != nil || mailCount(t, app, f.inv.Email) != 0 {
+		t.Fatalf("creation must queue only an invitation ID, without sending: %+v", rows)
+	}
+	f.job = rows[0]
+	return f
+}
+
+func invitationIn(t *testing.T, app *App, id uint) models.Invitation {
+	t.Helper()
+	var inv models.Invitation
+	if err := app.DB.First(&inv, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return inv
+}
+
+func TestInvitationMailRetryPreservesDeadline(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%v", conversion), func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, conversion, true)
+			var sent []mail.Message
+			app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+				sent = append(sent, msg)
+				// Preparation must commit and release the invitation lock before I/O.
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := app.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					return tx.Exec("SELECT id FROM invitations WHERE id = ? FOR UPDATE NOWAIT", f.inv.ID).Error
+				}); err != nil {
+					return fmt.Errorf("invitation still locked during send: %w", err)
+				}
+				if len(sent) == 1 {
+					return errors.New("451 try again")
+				}
+				return nil
+			})
+			runResetMail(t, app)
+			failed := reloadJob(t, app, f.job.ID)
+			if failed.Status != models.JobFailed || failed.Attempts != 1 || len(sent) != 1 {
+				t.Fatalf("transient send did not remain retryable: %+v", failed)
+			}
+			first := tokenRe.FindStringSubmatch(sent[0].Text)[1]
+			inv := invitationIn(t, app, f.inv.ID)
+			if inv.TokenHash != hashToken(first) || !inv.ExpiresAt.Equal(f.inv.ExpiresAt) {
+				t.Fatal("first preparation did not commit only the new hash")
+			}
+			if err := app.DB.Model(&models.Job{}).Where("id = ?", f.job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || got.Attempts != 2 || len(sent) != 2 {
+				t.Fatalf("retry did not finish: %+v", got)
+			}
+			last := tokenRe.FindStringSubmatch(sent[1].Text)[1]
+			inv = invitationIn(t, app, f.inv.ID)
+			if last == first || inv.TokenHash != hashToken(last) || !inv.ExpiresAt.Equal(f.inv.ExpiresAt) {
+				t.Fatal("retry reused a capability or extended the deadline")
+			}
+			for _, msg := range sent {
+				if !strings.Contains(msg.Text, "expires within 24 hours") || msg.To != f.inv.Email || msg.Optional {
+					t.Fatalf("invitation copy/recipient changed: %+v", msg)
+				}
+			}
+			anon := anonClient(t, app, "10.7.3.1")
+			body := map[string]string{"ageBand": "adult", "token": first, "name": "Invited Person", "password": "password1234"}
+			apiDo(t, anon, "POST", "/api/v1/invitations/accept", body, http.StatusBadRequest)
+			body["token"] = last
+			apiDo(t, anon, "POST", "/api/v1/invitations/accept", body, http.StatusOK)
+			apiDo(t, anon, "POST", "/api/v1/invitations/accept", body, http.StatusBadRequest)
+		})
+	}
+}
+
+func TestInvitationMailSkipsClosedInvitations(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		for _, state := range []string{"accepted", "revoked", "expired", "missing", "disabled inviter", "deleted inviter"} {
+			t.Run(fmt.Sprintf("conversion=%v/%s", conversion, state), func(t *testing.T) {
+				app := testApp(t)
+				f := queueHeldInvitationMail(t, app, conversion, true)
+				var err error
+				switch state {
+				case "accepted":
+					err = app.DB.Model(&f.inv).Update("accepted_at", time.Now()).Error
+				case "revoked":
+					err = app.DB.Model(&f.inv).Update("revoked_at", time.Now()).Error
+				case "expired":
+					err = app.DB.Model(&f.inv).Update("expires_at", time.Now().Add(-time.Hour)).Error
+				case "missing":
+					err = app.DB.Delete(&f.inv).Error
+				case "disabled inviter":
+					err = app.DB.Model(f.inviter).Update("status", models.UserDisabled).Error
+				case "deleted inviter":
+					err = app.DB.Delete(f.inviter).Error
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				runResetMail(t, app)
+				if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || mailCount(t, app, f.inv.Email) != 0 {
+					t.Fatalf("closed invitation was not a no-op: %+v", got)
+				}
+				if state != "missing" && invitationIn(t, app, f.inv.ID).TokenHash != f.inv.TokenHash {
+					t.Fatal("closed invitation rotated its hash")
+				}
+			})
+		}
+	}
+}
+
+func TestInvitationMailRechecksOrdinaryAuthority(t *testing.T) {
+	for _, change := range []string{"admin demoted", "leadership lost", "membership missing", "only led group archived", "bound group archived", "bound group pending", "bound group deleted", "full group"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, false, change != "only led group archived")
+			var err error
+			switch change {
+			case "admin demoted":
+				// Issue as an admin with no leadership, then demote them.
+				var admin models.User
+				if err := app.DB.Where("role = ?", models.RoleAdmin).First(&admin).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&f.inv).Update("invited_by", admin.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				err = app.DB.Model(&admin).Update("role", models.RoleMember).Error
+			case "leadership lost":
+				err = app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.inviter.ID, f.group.ID).Update("role", models.MembershipMember).Error
+			case "membership missing":
+				err = app.DB.Where("user_id = ? AND group_id = ?", f.inviter.ID, f.group.ID).Delete(&models.Membership{}).Error
+			case "only led group archived", "bound group archived":
+				err = app.DB.Model(f.group).Update("status", models.GroupArchived).Error
+			case "bound group pending":
+				err = app.DB.Model(f.group).Update("status", models.GroupPending).Error
+			case "bound group deleted":
+				err = app.DB.Delete(f.group).Error
+			case "full group":
+				err = app.DB.Model(f.group).Update("member_limit", 1).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			wantMail := int64(0)
+			if change == "full group" {
+				wantMail = 1
+			}
+			if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || mailCount(t, app, f.inv.Email) != wantMail {
+				t.Fatalf("authority change %s: %+v", change, got)
+			}
+			if rotated := invitationIn(t, app, f.inv.ID).TokenHash != f.inv.TokenHash; rotated != (wantMail == 1) {
+				t.Fatal("authority loss rotated a capability or capacity prevented delivery")
+			}
+		})
+	}
+}
+
+func TestInvitationMailRechecksConversionAuthority(t *testing.T) {
+	for _, change := range []string{"household authority lost", "person removed", "person converted", "blocked holder", "inviter disabled then reenabled", "person renamed"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, true, false)
+			var err error
+			switch change {
+			case "household authority lost":
+				err = app.DB.Where("user_id = ?", f.inviter.ID).Delete(&models.HouseholdAccount{}).Error
+			case "person removed":
+				err = app.DB.Delete(&models.HouseholdPerson{}, f.person.ID).Error
+			case "person converted":
+				converted := newTestUser(t, app, "converted", "password1234", models.RoleMember)
+				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", f.person.ID).Update("converted_user_id", converted.ID).Error
+			case "blocked holder":
+				id, date := seedCappedEvent(t, app, f.admin, itoa(f.group.ID), intPtr(5), true)
+				batchAnswer(t, f.client, id, date, map[string]any{"people": []map[string]any{{"personId": f.person.ID, "status": "going"}}}, http.StatusOK)
+				// Keep the inviter active and authorized while another responsible
+				// holder becomes unavailable, isolating errConversionHolder.
+				holder := newTestUser(t, app, "holder", "password1234", models.RoleMember)
+				var acct models.HouseholdAccount
+				if err := app.DB.Where("user_id = ?", f.inviter.ID).First(&acct).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: acct.HouseholdID, UserID: holder.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&models.Registration{}).Where("household_person_id = ?", f.person.ID).Update("registered_by", holder.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				err = app.DB.Model(holder).Update("status", models.UserDisabled).Error
+			case "inviter disabled then reenabled":
+				apiDo(t, f.admin, "PUT", "/api/v1/admin/users/"+itoa(f.inviter.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+				apiDo(t, f.admin, "PUT", "/api/v1/admin/users/"+itoa(f.inviter.ID), map[string]any{"status": "active"}, http.StatusOK)
+			case "person renamed":
+				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", f.person.ID).Update("first_name", "Current Name").Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			wantMail := int64(0)
+			if change == "person renamed" {
+				wantMail = 1
+			}
+			if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || mailCount(t, app, f.inv.Email) != wantMail {
+				t.Fatalf("conversion eligibility %s: %+v", change, got)
+			}
+			if rotated := invitationIn(t, app, f.inv.ID).TokenHash != f.inv.TokenHash; rotated != (wantMail == 1) {
+				t.Fatal("ineligible conversion rotated its capability")
+			}
+			if wantMail == 1 && !strings.Contains(latestEmail(t, app, f.inv.Email).Body, "Current Name") {
+				t.Fatal("conversion mailed stale person facts")
+			}
+		})
+	}
+}
+
+func TestInvitationMailAuthorityReadFailuresRetry(t *testing.T) {
+	for _, failure := range []struct {
+		name       string
+		conversion bool
+		bound      bool
+		table      string
+		scan       bool
+	}{
+		{name: "bound membership database error", bound: true, table: "memberships"},
+		{name: "bound membership scan error", bound: true, table: "memberships", scan: true},
+		{name: "groupless leadership", table: "memberships"},
+		{name: "group", bound: true, table: "groups"},
+		{name: "conversion person", conversion: true, table: "household_people"},
+		{name: "conversion household authority", conversion: true, table: "household_accounts"},
+		{name: "conversion guardians", conversion: true, table: "guardian_links"},
+		{name: "conversion holders", conversion: true, table: "registrations"},
+		{name: "conversion timezone", conversion: true, table: "settings"},
+		{name: "conversion disable audit", conversion: true, table: "audit_logs"},
+		{name: "site name after rotation", bound: true, table: "settings"},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, failure.conversion, failure.bound)
+			name := fmt.Sprintf("test:invitation_authority_failure:%d", queryCounterSeq.Add(1))
+			var scanFailedWithoutAbort bool
+			if err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
+				if tx.Statement.Table != failure.table {
+					return
+				}
+				if failure.scan {
+					// The statement is valid PostgreSQL, but its text id cannot
+					// scan into Membership.ID. COMMIT would succeed if ignored.
+					tx.Statement.Selects = []string{"'not-a-number' AS id"}
+					return
+				}
+				tx.AddError(tx.Session(&gorm.Session{NewDB: true}).Exec("SELECT 1 / 0").Error)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after := name + ":after"
+			if err := app.DB.Callback().Query().After("gorm:query").Register(after, func(tx *gorm.DB) {
+				if failure.scan && tx.Statement.Table == failure.table && tx.Error != nil {
+					_, err := tx.Statement.ConnPool.ExecContext(tx.Statement.Context, "SELECT 1")
+					scanFailedWithoutAbort = err == nil
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			remove := func() {
+				_ = app.DB.Callback().Query().Remove(name)
+				_ = app.DB.Callback().Query().Remove(after)
+			}
+			t.Cleanup(remove)
+			if err := deliverMailJob(context.Background(), app, kindInvitationMail, invitationMailJob{InvitationID: f.inv.ID}); err == nil {
+				t.Fatal("authority read error was swallowed by the handler")
+			}
+			runResetMail(t, app)
+			remove()
+			got := reloadJob(t, app, f.job.ID)
+			if got.Status != models.JobFailed || got.Attempts != 1 || got.LastError == "" ||
+				invitationIn(t, app, f.inv.ID).TokenHash != f.inv.TokenHash || mailCount(t, app, f.inv.Email) != 0 {
+				t.Fatalf("read failure did not preserve a retryable unchanged invitation: %+v", got)
+			}
+			if failure.scan && !scanFailedWithoutAbort {
+				t.Fatal("scan failure must leave PostgreSQL usable; retry cannot depend on COMMIT detecting an abort")
+			}
+			if err := app.DB.Model(&models.Job{}).Where("id = ?", f.job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || got.Attempts != 2 || mailCount(t, app, f.inv.Email) != 1 {
+				t.Fatalf("healed authority read did not deliver: %+v", got)
+			}
+		})
+	}
+}
+
+func TestInvitationMailEnqueueFailureRollsBackCreationAndResend(t *testing.T) {
+	for _, path := range []string{"ordinary", "conversion create", "conversion resend", "conversion replace expired"} {
+		t.Run(path, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			admin.holdNotices = true
+			client, target := admin, "/api/v1/invitations"
+			var before models.Invitation
+			if path != "ordinary" {
+				_, c, person, _ := householdFamily(t, app, admin, "parent")
+				client, target = c, conversionPath(person.ID)
+				client.holdNotices = true
+				if path != "conversion create" {
+					apiDo(t, client, "POST", target, map[string]any{"email": "invited@example.com"}, http.StatusCreated)
+					if err := app.DB.Where("household_person_id = ?", person.ID).First(&before).Error; err != nil {
+						t.Fatal(err)
+					}
+					if path == "conversion resend" {
+						target += "/resend"
+					} else {
+						if err := app.DB.Model(&before).Update("expires_at", time.Now().Add(-time.Hour)).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					before = invitationIn(t, app, before.ID)
+				}
+			}
+			audits := auditCount(t, app, audit.InvitationCreated) + auditCount(t, app, audit.InvitationResent) + auditCount(t, app, audit.InvitationRevoked)
+			jobsBefore := len(mailJobsOfKind(t, app, kindInvitationMail))
+			stop := failJobEnqueue(t, app.DB, kindInvitationMail)
+			apiDo(t, client, "POST", target, map[string]any{"email": "invited@example.com", "name": "New Person"}, http.StatusInternalServerError)
+			stop()
+			if len(mailJobsOfKind(t, app, kindInvitationMail)) != jobsBefore || audits != auditCount(t, app, audit.InvitationCreated)+auditCount(t, app, audit.InvitationResent)+auditCount(t, app, audit.InvitationRevoked) {
+				t.Fatal("failed enqueue committed an invitation audit or job")
+			}
+			var rows []models.Invitation
+			if err := app.DB.Where("email = ?", "invited@example.com").Find(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			if before.ID == 0 {
+				if len(rows) != 0 {
+					t.Fatal("failed enqueue left a new invitation")
+				}
+			} else if len(rows) != 1 || !reflect.DeepEqual(rows[0], before) {
+				t.Fatal("failed enqueue changed or revoked the existing invitation")
+			}
+			if mailCount(t, app, "invited@example.com") != 0 {
+				t.Fatal("failed enqueue sent mail")
+			}
+		})
+	}
+}
+
+// pauseInvitationLock stops the selected participant after it has taken the
+// invitation lock. Ordinary acceptance takes it with UPDATE; conversion and
+// preparation take it with SELECT FOR UPDATE after their discovery reads.
+func pauseInvitationLock(t *testing.T, db *gorm.DB, operation string, read bool) (<-chan struct{}, func()) {
+	t.Helper()
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var paused atomic.Bool
+	name := fmt.Sprintf("test:pause_invitation_lock:%d", queryCounterSeq.Add(1))
+	pause := func(tx *gorm.DB) {
+		if tx.Statement.Table != "invitations" || tx.Statement.Context.Value(testDBOperationKey{}) != operation || tx.Error != nil {
+			return
+		}
+		if read {
+			if _, locked := tx.Statement.Clauses["FOR"]; !locked {
+				return
+			}
+		}
+		if paused.Swap(true) {
+			return
+		}
+		close(reached)
+		select {
+		case <-resume:
+		case <-tx.Statement.Context.Done():
+			tx.AddError(tx.Statement.Context.Err())
+		}
+	}
+	var remove func()
+	if read {
+		if err := db.Callback().Query().After("gorm:query").Register(name, pause); err != nil {
+			t.Fatal(err)
+		}
+		remove = func() { _ = db.Callback().Query().Remove(name) }
+	} else {
+		if err := db.Callback().Update().After("gorm:update").Register(name, pause); err != nil {
+			t.Fatal(err)
+		}
+		remove = func() { _ = db.Callback().Update().Remove(name) }
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(resume) }) }
+	t.Cleanup(func() { release(); remove() })
+	return reached, release
+}
+
+func TestInvitationMailAndAcceptanceLockOrders(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		for _, first := range []string{"delivery", "acceptance"} {
+			t.Run(fmt.Sprintf("conversion=%v/%s first", conversion, first), func(t *testing.T) {
+				app := testApp(t)
+				f := queueHeldInvitationMail(t, app, conversion, true)
+				// Run the handler directly on a known session, retiring its job so
+				// later outbox reads cannot trigger an extra delivery.
+				if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				old := "previous-invitation-capability"
+				if err := app.DB.Model(&f.inv).Update("token_hash", hashToken(old)).Error; err != nil {
+					t.Fatal(err)
+				}
+				expected := http.StatusBadRequest
+				if first == "acceptance" {
+					expected = http.StatusOK
+				}
+				work := func(operation string) func(*gorm.DB) error {
+					return func(db *gorm.DB) error {
+						a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+						if operation == "delivery" {
+							return deliverMailJob(db.Statement.Context, a, kindInvitationMail, invitationMailJob{InvitationID: f.inv.ID})
+						}
+						w := httptest.NewRecorder()
+						c, _ := gin.CreateTestContext(w)
+						c.Request = httptest.NewRequest("POST", "/api/v1/invitations/accept", strings.NewReader(jsonString(map[string]string{
+							"token": old, "name": "Invited Person", "password": "password1234", "ageBand": "adult",
+						}))).WithContext(db.Statement.Context)
+						c.Request.Header.Set("Content-Type", "application/json")
+						a.apiAcceptInvitation(c)
+						if w.Code != expected {
+							return fmt.Errorf("acceptance: got %d %s, want %d", w.Code, w.Body.String(), expected)
+						}
+						return nil
+					}
+				}
+				second := "acceptance"
+				if first == "acceptance" {
+					second = "delivery"
+				}
+				reached, release := pauseInvitationLock(t, app.DB, first, first == "delivery" || conversion)
+				winner, winnerDone := startDBSession(t, app.DB, first, work(first))
+				awaitDBSignal(t, reached)
+				loser, loserDone := startDBSession(t, app.DB, second, work(second))
+				waitDBBlocked(t, app.DB, loser, winner)
+				release()
+				if err := awaitDBResult(t, winnerDone); err != nil {
+					t.Fatal(err)
+				}
+				if err := awaitDBResult(t, loserDone); err != nil {
+					t.Fatal(err)
+				}
+				inv := invitationIn(t, app, f.inv.ID)
+				var accounts, memberships, requests int64
+				if err := app.DB.Model(&models.User{}).Where("email = ?", f.inv.Email).Count(&accounts).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&models.Membership{}).Joins("JOIN users ON users.id = memberships.user_id").Where("users.email = ?", f.inv.Email).Count(&memberships).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Model(&models.AccountRequest{}).Where("email = ?", f.inv.Email).Count(&requests).Error; err != nil {
+					t.Fatal(err)
+				}
+				if first == "acceptance" {
+					wantAccounts, wantMemberships, wantRequests := int64(1), int64(1), int64(0)
+					if conversion {
+						wantAccounts, wantMemberships, wantRequests = 0, 0, 1
+					}
+					if inv.AcceptedAt == nil || inv.TokenHash != hashToken(old) || mailCount(t, app, f.inv.Email) != 0 ||
+						accounts != wantAccounts || memberships != wantMemberships || requests != wantRequests || auditCount(t, app, audit.InvitationAccepted) != 1 {
+						t.Fatal("acceptance first did not make waiting delivery a no-op")
+					}
+					return
+				}
+				if inv.AcceptedAt != nil || inv.TokenHash == hashToken(old) || !inv.ExpiresAt.Equal(f.inv.ExpiresAt) ||
+					accounts != 0 || memberships != 0 || requests != 0 || auditCount(t, app, audit.InvitationAccepted) != 0 || auditCount(t, app, audit.AccountRequested) != 0 {
+					t.Fatal("rotation first allowed a stale claim or leaked its account, membership, request or audit")
+				}
+				fresh := tokenInEmail(t, latestEmail(t, app, f.inv.Email))
+				anon := anonClient(t, app, "10.7.3.2")
+				apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]string{
+					"token": fresh, "name": "Invited Person", "password": "password1234", "ageBand": "adult",
+				}, http.StatusOK)
+			})
+		}
+	}
+}
+
+func TestInvitationMailPreparationUsesSingleConnection(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%v", conversion), func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, conversion, true)
+			if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Grace Church"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Boise"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			var dbName string
+			if err := app.DB.Raw("SELECT current_database()").Scan(&dbName).Error; err != nil {
+				t.Fatal(err)
+			}
+			db, err := testdb.Open(dbName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			sqlDB.SetMaxOpenConns(1)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			app.DB = db.WithContext(ctx)
+			var sent []mail.Message
+			app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+				sent = append(sent, msg)
+				return nil
+			})
+			if err := deliverMailJob(ctx, app, kindInvitationMail, invitationMailJob{InvitationID: f.inv.ID}); err != nil {
+				t.Fatalf("one-connection invitation delivery: %v", err)
+			}
+			if len(sent) != 1 || sent[0].To != f.inv.Email || !strings.Contains(sent[0].Subject, "Grace Church") ||
+				!strings.Contains(sent[0].Text, f.inviter.PublicName()) || !invitationIn(t, app, f.inv.ID).ExpiresAt.Equal(f.inv.ExpiresAt) {
+				t.Fatal("preparation did not use the current facts and preserve the deadline")
+			}
+		})
 	}
 }

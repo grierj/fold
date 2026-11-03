@@ -1185,15 +1185,13 @@ var mailerCallRe = regexp.MustCompile(`\.Mailer\.Send\(|\.SendEmail\(`)
 // of the direct-mail group are the account and invitation mails that are not
 // notices (they shrink as they move to notify.Send).
 var mailerSendFiles = map[string]string{
-	"notify_deliver.go":           "the notify.deliver job sends notice mail",
-	"mail_jobs.go":                "direct account mail is sent by durable jobs after preparation commits",
-	"messages_send.go":            "announcement mail goes through its own send path",
-	"api_message_preview.go":      "the composer's test send is synchronous by design (brief section 4)",
-	"api_invitations.go":          "direct mail: invitations into Fold",
-	"api_household_conversion.go": "direct mail: household conversion invitation",
-	"api_profile.go":              "direct mail: address change confirmation",
-	"api_guest.go":                "direct mail: guest verification and manage links",
-	"api_guardian_email.go":       "direct mail: guardian consent link",
+	"notify_deliver.go":      "the notify.deliver job sends notice mail",
+	"mail_jobs.go":           "direct account mail is sent by durable jobs after preparation commits",
+	"messages_send.go":       "announcement mail goes through its own send path",
+	"api_message_preview.go": "the composer's test send is synchronous by design (brief section 4)",
+	"api_profile.go":         "direct mail: address change confirmation",
+	"api_guest.go":           "direct mail: guest verification and manage links",
+	"api_guardian_email.go":  "direct mail: guardian consent link",
 }
 
 // noticeDeliveryViolations scans one production file's source. The legacy

@@ -37,11 +37,13 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   await shoot(page, "teen-conversion-invitation");
   await page.getByRole("button", { name: "Send account invitation" }).click();
   await expect(page.getByText(`Invitation pending: ${email(ownName)}`, { exact: false })).toBeVisible();
-  const html = await (await request.get("/dev/outbox")).text();
-  const section = html.split("<section").find((part) => part.includes(`To: ${email(ownName)}`));
-  const link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0];
-  expect(link).toBeTruthy();
-  if (!link) throw new Error("Conversion email did not contain its invitation");
+  let link = "";
+  await expect.poll(async () => {
+    const html = await (await request.get("/dev/outbox")).text();
+    const section = html.split("<section").find((part) => part.includes(`To: ${email(ownName)}`));
+    link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
+    return link;
+  }).not.toBe("");
   await signOut(page);
   await page.goto(new URL(link).pathname + new URL(link).search);
   await expect(page.getByText(/consent is granted, and the new guardian link is confirmed/)).toBeVisible();

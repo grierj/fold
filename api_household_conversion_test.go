@@ -271,6 +271,9 @@ func TestHouseholdConversionMailLimitCountsResends(t *testing.T) {
 	if count != leaderInviteDailyLimit || after.TokenHash != before.TokenHash || after.TokenHash != hashToken(token) {
 		t.Fatal("suppressed send changed token or exceeded limit")
 	}
+	if got := len(mailJobsOfKind(t, app, kindInvitationMail)); got != leaderInviteDailyLimit {
+		t.Fatalf("suppressed resends queued extra delivery duties: %d", got)
+	}
 }
 
 func TestHouseholdConversionUnavailableEmailsConsumeActorLimit(t *testing.T) {
@@ -359,6 +362,9 @@ func TestHouseholdConversionIdempotentCreatesConsumeActorLimit(t *testing.T) {
 	}
 	if created != 1 || resent != 0 || refused != leaderInviteDailyLimit-1 || mails != 1 {
 		t.Fatalf("idempotent attempt accounting: created=%d resent=%d refused=%d mails=%d", created, resent, refused, mails)
+	}
+	if got := len(mailJobsOfKind(t, app, kindInvitationMail)); got != 1 {
+		t.Fatalf("idempotent creates or suppressed resend queued extra mail: %d", got)
 	}
 }
 
@@ -700,6 +706,9 @@ func TestHouseholdConversionSuppressedFirstSendSavesNothing(t *testing.T) {
 	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "newcomer@example.com").Count(&count)
 	if count != 0 {
 		t.Fatal("suppressed send mailed")
+	}
+	if got := len(mailJobsOfKind(t, app, kindInvitationMail)); got != leaderInviteDailyLimit {
+		t.Fatalf("suppressed first send queued an extra duty: %d", got)
 	}
 }
 

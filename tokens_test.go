@@ -117,3 +117,53 @@ func TestConsumeAccountTokenRechecksAtClaim(t *testing.T) {
 		})
 	}
 }
+
+func TestRotateInvitationTokenPreservesDeadlineAndRequiresLiveState(t *testing.T) {
+	for _, state := range []string{"live", "accepted", "revoked", "expired", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			app := testApp(t)
+			inviter := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			inv := models.Invitation{Email: "new@example.com", InvitedBy: inviter.ID, TokenHash: hashToken("old"), ExpiresAt: time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)}
+			now := time.Now().UTC()
+			switch state {
+			case "accepted":
+				inv.AcceptedAt = &now
+			case "revoked":
+				inv.RevokedAt = &now
+			case "expired":
+				inv.ExpiresAt = now.Add(-time.Hour).Truncate(time.Microsecond)
+			}
+			if err := app.DB.Create(&inv).Error; err != nil {
+				t.Fatal(err)
+			}
+			if state == "missing" {
+				if err := app.DB.Delete(&inv).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, err := rotateInvitationToken(app.DB, inv.ID)
+			if state != "live" {
+				if !errors.Is(err, errTokenInvalid) || raw != "" {
+					t.Fatalf("closed invitation rotation = %q, %v", raw, err)
+				}
+				if state != "missing" && invitationIn(t, app, inv.ID).TokenHash != inv.TokenHash {
+					t.Fatal("ineligible invitation changed its hash")
+				}
+				return
+			}
+			if err != nil || raw == "" || raw == "old" {
+				t.Fatalf("live rotation = %q, %v", raw, err)
+			}
+			got := invitationIn(t, app, inv.ID)
+			if got.TokenHash != hashToken(raw) || !got.ExpiresAt.Equal(inv.ExpiresAt) {
+				t.Fatal("rotation did not change only the hash")
+			}
+			if _, err := liveInvitation(app.DB, "old"); !errors.Is(err, errTokenInvalid) {
+				t.Fatal("rotation kept the old capability alive")
+			}
+			if _, err := liveInvitation(app.DB, raw); err != nil {
+				t.Fatalf("replacement capability is unusable: %v", err)
+			}
+		})
+	}
+}

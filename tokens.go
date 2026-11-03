@@ -104,6 +104,25 @@ func createInvitationToken() (raw, hash string, err error) {
 	return raw, hashToken(raw), nil
 }
 
+// rotateInvitationToken replaces only the capability, never its deadline.
+// The caller locks the invitation before rechecking the facts that allow mail.
+func rotateInvitationToken(tx *gorm.DB, id uint) (string, error) {
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		return "", err
+	}
+	res := tx.Model(&models.Invitation{}).
+		Where("id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", id).
+		Update("token_hash", hash)
+	if res.Error != nil {
+		return "", res.Error
+	}
+	if res.RowsAffected != 1 {
+		return "", errTokenInvalid
+	}
+	return raw, nil
+}
+
 // liveInvitation finds an invitation by its raw token: not accepted and
 // not expired.
 func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {
