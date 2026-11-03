@@ -301,8 +301,7 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 
 // cancelLosers cancels upcoming registrations of people who could not see
 // ev at newVis, writing one registration.cancelled audit row per person;
-// the person gets a stored notification. It returns the notification IDs
-// for post-commit email delivery.
+// the person gets a stored notification. It returns the notification IDs.
 func (a *App) cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) ([]uint, error) {
 	return a.cancelDateLosers(c, tx, ev, newVis, now, 0)
 }

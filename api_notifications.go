@@ -1,11 +1,9 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,13 +14,11 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
-	"fold/internal/providers"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -808,13 +804,8 @@ func (a *App) actorName(id *uint) string {
 // ---------------------------------------------------------------------------
 // Email delivery (5.12, M1.2). notify.deliver uses these recipient facts and
 // rendering helpers. Sensitive kinds use the link-only RenderEmailSafe
-// variant, which names nobody. The legacy send helpers remain until the
-// post-commit callers have been removed.
+// variant, which names nobody.
 // ---------------------------------------------------------------------------
-
-// deliverNotificationEmails remains while callers are migrated. Send now writes
-// durable delivery intent in its transaction; post-commit calls must send nothing.
-func (a *App) deliverNotificationEmails(ids []uint) {}
 
 // readEmailRecipients loads each account with the email consent scopes they
 // opted out of (DEC-97), the address's open suppressions (DEC-112), and the
@@ -921,51 +912,7 @@ func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error)
 
 func categoryScope(category string) string { return "category:" + category }
 
-// deliverNotificationEmail sends one row to its preloaded recipient (nil
-// when the account is gone). optedOut holds the recipient's email consent
-// scopes that opt out; only optional kinds consult it (DEC-97).
-func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool, suppressions []string, footer footerFacts) {
-	k, ok := notify.Lookup(n.Kind)
-	if !ok || !k.AllowEmail {
-		return
-	}
-	if !k.Required && optedOut[categoryScope(k.Category)] {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "optional email turned off", "")
-		return
-	}
-	if u == nil ||
-		(u.Status != models.UserActive && u.Status != models.UserGuest) {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active", "")
-		return
-	}
-	// The suppressions came with the recipient, so the send skips the
-	// wrapper's own read (one per batch, not one per person).
-	msg := a.notificationEmailMessage(n, u, k, footer)
-	// The provider's id for the message lets its delivery and bounce reports
-	// find this row (M3.2).
-	var providerID string
-	err := mail.Blocked(suppressions, msg)
-	sender := mail.Unwrap(a.Mailer)
-	if err != nil {
-		// refused: recorded below
-	} else if tracked, ok := sender.(providers.EmailSender); ok {
-		providerID, err = tracked.SendEmail(ctx, msg)
-	} else {
-		err = sender.Send(ctx, msg)
-	}
-	if mail.IsSuppressed(err) {
-		a.recordDelivery(n.ID, u.ID, models.DeliverySuppressed, strings.TrimPrefix(err.Error(), "mail: "), "")
-		return
-	}
-	if err != nil {
-		log.Printf("notification email for notification %d: %v", n.ID, err)
-		a.recordDelivery(n.ID, u.ID, models.DeliveryFailed, err.Error(), "")
-		return
-	}
-	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "", providerID)
-}
-
-// notificationEmailMessage is the mail deliverNotificationEmail sends: the
+// notificationEmailMessage is the mail notify.deliver sends: the
 // stored email text, the absolute link, and, for an optional kind, the
 // footer and one-click unsubscribe. A spam complaint stops optional mail,
 // not required notices (DEC-112). Required mail never offers an unsubscribe.
@@ -982,28 +929,6 @@ func (a *App) notificationEmailMessage(n *models.Notification, u *models.User, k
 		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
 	return msg
-}
-
-// recordDelivery writes one notification_deliveries row. The unique
-// (notification_id, channel) keeps a second delivery of the same row from
-// duplicating the record.
-func (a *App) recordDelivery(notificationID, userID uint, status, reason, providerID string) {
-	var sentAt *time.Time
-	var pid *string
-	if providerID != "" {
-		pid = &providerID
-	}
-	if status == models.DeliverySent {
-		now := time.Now().UTC()
-		sentAt = &now
-	}
-	_ = a.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "notification_id"}, {Name: "channel"}},
-		DoNothing: true,
-	}).Create(&models.NotificationDelivery{
-		NotificationID: notificationID, Channel: models.DeliveryEmail,
-		UserID: userID, Status: status, Reason: reason, SentAt: sentAt, ProviderMessageID: pid,
-	}).Error
 }
 
 // emailBaseURL is the absolute base for links in transactional email:

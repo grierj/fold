@@ -144,7 +144,7 @@ func writeVAPIDKeys(tx *gorm.DB, secret []byte) (int64, error) {
 // ensureVAPIDKeys runs at boot: it makes the pair if it is missing, and
 // makes it again if the private half no longer decrypts (SESSION_SECRET
 // changed), removing every device and telling the admins in the same
-// transaction. It returns the notices written, for email after commit.
+// transaction. It returns the IDs of the notices written.
 func ensureVAPIDKeys(db *gorm.DB, secret []byte) ([]uint, error) {
 	var notices []uint
 	err := db.Transaction(func(tx *gorm.DB) error {

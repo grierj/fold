@@ -128,7 +128,7 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 // completeTeenConversionIfReady is called with lockTeenLifecycleUsers held.
 // At eighteen the same operation completes after the age job makes the user an
 // adult. Consent and guardian requirements then end; an admin suspension does not.
-func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, today time.Time, ip string, mailed *[]uint) error {
+func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, today time.Time, ip string) error {
 	stage, err := stagedTeenConversionIn(tx, user.ID)
 	if err != nil || stage == nil {
 		return err
@@ -192,5 +192,5 @@ func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, toda
 		return err
 	}
 	user.Status = models.UserActive
-	return a.transferHouseholdConversion(tx, inv, person, locked, ids, user, ip, mailed)
+	return a.transferHouseholdConversion(tx, inv, person, locked, ids, user, ip)
 }

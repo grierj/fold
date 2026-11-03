@@ -538,8 +538,8 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 // pass time.Now().UTC(), tests pass a fixed clock. Inside the 2-hour
 // cutoff nobody is promoted; the leaders or hosts get one cutoff notice
 // instead. A promoted row becomes going, keeps waitlisted_at as history,
-// and gets a rotated manage token for the "I can't come" link. Returns
-// notification ids to email after commit.
+// and gets a rotated manage token for the "I can't come" link. Returns the
+// notification ids written.
 func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, now time.Time, actor *uint) ([]uint, error) {
 	if o.Status != models.OccurrenceScheduled {
 		// Nobody is promoted into a cancelled date.

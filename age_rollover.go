@@ -178,8 +178,7 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 			return false, err
 		}
 	}
-	var mailed []uint // completeTeenConversionIfReady still reports notice IDs
-	if err := a.completeTeenConversionIfReady(tx, user, today, "", &mailed); err != nil {
+	if err := a.completeTeenConversionIfReady(tx, user, today, ""); err != nil {
 		return false, err
 	}
 	if err := audit.Write(tx, audit.Entry{Action: audit.UserTurned18, TargetType: "user", TargetID: user.ID,

@@ -457,7 +457,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var userID uint
 	var created, upgraded bool
 	var raw string
-	var mailed []uint // approveHouseholdConversion still reports notice IDs
 	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
 		var consentActor *models.User
 		var conversionLocked map[uint]*models.User
@@ -534,7 +533,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
 			var err error
-			userID, err = a.approveHouseholdConversion(tx, c, req, conversionLocked, &mailed)
+			userID, err = a.approveHouseholdConversion(tx, c, req, conversionLocked)
 			if err != nil {
 				return err
 			}

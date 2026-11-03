@@ -334,7 +334,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	errHandled := errors.New("already handled")
 	errSelfConfirm := errors.New("another admin must confirm your own guardian link")
-	var emailed []uint // completeTeenConversionIfReady still reports notice IDs
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if link.TeenUserID != nil {
 			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
@@ -412,7 +411,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
 				return err
 			}
-			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed); err != nil {
+			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
 				return err
 			}
 		}
@@ -690,7 +689,6 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		}
 	}
 	if len(updates) > 0 || body.Status != nil {
-		var emailed []uint // completeTeenConversionIfReady still reports notice IDs
 		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
 		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
@@ -798,7 +796,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if err := tx.Model(u).Updates(updates).Error; err != nil {
 				return err
 			}
-			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed)
+			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP())
 		})
 		if needSuccessors(c, err) {
 			return

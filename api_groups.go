@@ -740,15 +740,14 @@ type memberAddOptions struct {
 func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions,
 	allow func(me, target *models.User, actorRel, targetRel policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
-	var emailed []uint // changeRoleIn reports notice IDs for callers that want them
 	return a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
-		return a.changeRoleIn(tx, actor, c.ClientIP(), g, userID, newRole, overLimit, add, allow, &emailed)
+		return a.changeRoleIn(tx, actor, c.ClientIP(), g, userID, newRole, overLimit, add, allow)
 	})
 }
 
 // changeRoleIn requires the contact gate and caller-owned transaction. It locks
 // users before the group/membership capacity protocol and never commits or sends emails.
-func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions, allow func(*models.User, *models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions, allow func(*models.User, *models.User, policy.Rel, policy.Rel, int) bool) error {
 	sessionErr := errSecuritySession
 	if add != nil {
 		sessionErr = errPeopleAddForbidden
@@ -858,13 +857,12 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		}
 		return nil
 	}
-	ids, err := auditAndNotifyLeadership(tx, audit.Entry{
+	_, err := auditAndNotifyLeadership(tx, audit.Entry{
 		Actor: &actor.ID, Action: audit.RoleChanged,
 		TargetType: "group", TargetID: g.ID,
 		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
 		IP:   ip,
 	})
-	*emailed = append(*emailed, ids...)
 	return err
 }
 
@@ -1029,7 +1027,7 @@ func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string)
 
 // auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
 // tells the other admins about a leadership change in the same transaction.
-// It returns the notification IDs for post-commit email delivery.
+// It returns the notification IDs.
 func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	if err := audit.Write(tx, e); err != nil {
 		return nil, err
