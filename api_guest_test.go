@@ -1181,10 +1181,8 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 	if err := app.DB.Create(&guest).Error; err != nil {
 		t.Fatal(err)
 	}
-	// The account hint is a durable job; the verification mail is still sent
-	// in the background until it moves too.
-	var deferred []func()
-	app.background = func(f func()) { deferred = append(deferred, f) }
+	// Both mails are durable jobs: a new address and a returning guest get a
+	// verification job, an account gets the hint. Nothing is sent in the request.
 	anon := anonClient(t, app, "10.4.1.1")
 	anon.holdNotices = true
 	var answer string
@@ -1198,17 +1196,36 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 			t.Fatalf("mail was not deferred for %s: %d", email, n)
 		}
 	}
-	if len(deferred) != 2 {
-		t.Fatalf("deferred verification mails = %d, want 2", len(deferred))
-	}
 	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
 		t.Fatalf("account hint was not queued by id: %+v", hints)
 	}
 	if guestSignupCount(t, app, member.Email) != 0 || guestSignupCount(t, app, "new@example.com") != 1 || guestSignupCount(t, app, guest.Email) != 1 {
 		t.Fatal("wrong signup rows for account/new/returning guest")
 	}
-	for _, job := range deferred {
-		job()
+	verifications := mailJobsOfKind(t, app, kindGuestVerifyMail)
+	if len(verifications) != 2 {
+		t.Fatalf("verification jobs = %d, want 2", len(verifications))
+	}
+	for i, email := range []string{"new@example.com", guest.Email} {
+		var signup models.GuestSignup
+		if err := app.DB.Where("email = ?", email).First(&signup).Error; err != nil {
+			t.Fatal(err)
+		}
+		job := verifications[i]
+		if !payloadEquals(job, guestVerifyMailJob{GuestSignupID: signup.ID}) || job.UniqueKey != nil ||
+			job.MaxAttempts != directMailAttempts || job.Status != models.JobQueued {
+			t.Fatalf("verification job for %s: %+v", email, job)
+		}
+		if strings.Contains(job.Payload, email) || strings.Contains(job.Payload, signup.TokenHash) {
+			t.Fatalf("verification payload carries more than the signup id: %s", job.Payload)
+		}
+	}
+	// Submitting created neither a guest account nor a registration.
+	var registrations, strangers int64
+	app.DB.Model(&models.Registration{}).Count(&registrations)
+	app.DB.Model(&models.User{}).Where("email = ?", "new@example.com").Count(&strangers)
+	if registrations != 0 || strangers != 0 {
+		t.Fatalf("submit created %d registrations and %d users", registrations, strangers)
 	}
 	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
@@ -1298,11 +1315,9 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
-			// Verification mail still goes through the background seam; the
-			// account hint is a durable job.
-			jobs := 0
-			app.background = func(func()) { jobs++ }
+			// Verification mail and the account hint are both durable jobs.
 			anon := anonClient(t, app, ip)
+			anon.holdNotices = true
 			body := guestBody("Guest", email, true)
 			if tt.gate == "honeypot" {
 				body["website"] = "bot"
@@ -1313,6 +1328,7 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 				t.Fatalf("nonuniform answer: %s", answer)
 			}
 			hints := len(mailJobsOfKind(t, app, kindAccountExistsMail))
+			jobs := len(mailJobsOfKind(t, app, kindGuestVerifyMail))
 			if tt.gate != "" {
 				if lookupAt != 0 || jobs != 0 || hints != 0 || guestSignupCount(t, app, email) != 0 {
 					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d hints=%d", lookupAt, jobs, hints)

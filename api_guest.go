@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,14 @@ type guestRegistrationJSON struct {
 // invite-only event keeps its group hidden.
 func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence,
 	ev *models.Event, grp *models.Group) guestRegistrationJSON {
+	return a.guestDisplayWith(a.siteName, reg, occ, ev, grp)
+}
+
+// guestDisplayWith takes the church name from siteName, called only when the
+// event is the church's own. Mail preparation passes a value it already read in
+// its transaction, so rendering opens no second connection.
+func (a *App) guestDisplayWith(siteName func() string, reg *models.Registration, occ *models.EventOccurrence,
+	ev *models.Event, grp *models.Group) guestRegistrationJSON {
 	shown := a.groupShownTo(nil, grp, policy.Rel{})
 	loc := ""
 	if shown != nil {
@@ -82,7 +91,7 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 	if ev.GroupID != nil && shown != nil {
 		out.GroupName = shown.Name
 	} else {
-		out.HostedBy = a.siteName()
+		out.HostedBy = siteName()
 	}
 	if out.Title == "" {
 		out.Title = "Church event"
@@ -93,20 +102,21 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 	return out
 }
 
-// loadGuestEvent loads the event in :id for a signed-out visitor. It
-// answers 404 unless a guest may register for it, like every other
-// hidden thing in the API.
-func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, *models.EventOccurrence, eventFacts, bool) {
+// loadGuestOccurrence loads the date in :id/date for a signed-out visitor. It
+// answers 404 unless a guest may register for it, like every other hidden
+// thing in the API. Its visibility rule is the one verification and
+// redemption run again later (policy.CanRegisterGuest).
+func (a *App) loadGuestOccurrence(c *gin.Context, date string) (*models.EventOccurrence, bool) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var ev models.Event
 	if err := a.DB.First(&ev, id).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, nil, eventFacts{}, false
+		return nil, false
 	}
 	var occ models.EventOccurrence
 	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&occ).Error != nil {
 		jsonError(c, 404, "event not found")
-		return nil, nil, eventFacts{}, false
+		return nil, false
 	}
 	f := a.factsFor(nil, dateEvent(&ev, &occ))
 	gp := policy.Group{}
@@ -115,9 +125,9 @@ func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, *model
 	}
 	if !policy.CanRegisterGuest(f.view, gp) {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, nil, eventFacts{}, false
+		return nil, false
 	}
-	return &ev, &occ, f, true
+	return &occ, true
 }
 
 type guestRegistrationInput struct {
@@ -140,7 +150,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ev, occ, f, ok := a.loadGuestEvent(c, strings.TrimSpace(body.Date))
+	occ, ok := a.loadGuestOccurrence(c, strings.TrimSpace(body.Date))
 	if !ok {
 		return
 	}
@@ -209,7 +219,9 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
-	raw, hash, err := createInvitationToken()
+	// Only the hash is kept. Delivery rotates it and mints the link the guest
+	// receives, so no capability exists until the mail is about to be sent.
+	_, hash, err := createInvitationToken()
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -222,15 +234,20 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	if _, err := events.LoadZone(body.Timezone); err == nil {
 		signup.Timezone = strings.TrimSpace(body.Timezone)
 	}
-	if err := a.DB.Create(&signup).Error; err != nil {
+	// The signup and its mail job commit together, so an accepted submission
+	// always has a delivery duty. No request context: a disconnect cannot abort
+	// the durable write. The job carries the signup's ID and nothing else.
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&signup).Error; err != nil {
+			return err
+		}
+		_, err := jobs.Enqueue(tx, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "", directMailAttempts)
+		return err
+	}); err != nil {
+		log.Printf("guest registration: %s", jobs.CleanError(err))
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
 	}
-	a.runInBackground(func() {
-		if err := a.sendGuestVerificationEmail(&signup, raw, ev, occ, f); err != nil {
-			log.Printf("guest verification email to %s: %v", email, err)
-		}
-	})
 	c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 }
 
@@ -279,7 +296,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	var fullNoWaitlist bool
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var signup models.GuestSignup
-		if err := tx.Where("token_hash = ? AND confirmed_at IS NULL AND expires_at > now()",
+		if err := tx.Where("token_hash = ? AND confirmed_at IS NULL AND "+sqlStillLive,
 			hashToken(body.Token)).First(&signup).Error; err != nil {
 			return errTokenInvalid
 		}
@@ -333,8 +350,9 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			// No seat and no waitlist: the link dies here (the update
 			// commits), nothing is created, and the page says the
 			// event is full.
-			if err := tx.Model(&models.GuestSignup{}).Where("id = ?", signup.ID).
-				Update("confirmed_at", time.Now().UTC()).Error; err != nil {
+			// The same hash-checked claim as below: a verification mail that
+			// rotated the link after this read must not be consumed here.
+			if err := claimGuestSignup(tx, &signup, time.Now().UTC()); err != nil {
 				return err
 			}
 			fullNoWaitlist = true
@@ -344,14 +362,8 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		// Claim the link atomically: a second redeem of the same token
 		// loses here instead of registering twice.
 		now := time.Now().UTC()
-		res := tx.Model(&models.GuestSignup{}).
-			Where("id = ? AND confirmed_at IS NULL", signup.ID).
-			Update("confirmed_at", now)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errTokenInvalid
+		if err := claimGuestSignup(tx, &signup, now); err != nil {
+			return err
 		}
 		if found {
 			if user.Name != signup.Name {
@@ -459,6 +471,38 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		log.Printf("guest confirmation email to %s: %v", guestEmail, err)
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": display, "manageToken": manageRaw})
+}
+
+// claimGuestSignup marks the link used. It locks the row, then matches the hash
+// that was read and the live deadline, so a link rotated or expired since the read claims nothing.
+// A lost claim returns errTokenInvalid and the caller's transaction rolls back
+// everything it had created.
+func claimGuestSignup(tx *gorm.DB, signup *models.GuestSignup, at time.Time) error {
+	// Take the signup's row lock last, in its own statement, so the claim
+	// below reads the wall clock after any wait. A delivery worker holds this
+	// row FOR UPDATE and commits it unchanged when the date closed; an UPDATE
+	// that waited on such a lock would resume without re-evaluating its
+	// deadline test. Redemption has locked the occurrence already, and the
+	// mail job locks only this row, so the order cannot deadlock.
+	var held models.GuestSignup
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+		Where("id = ? AND token_hash = ? AND confirmed_at IS NULL", signup.ID, signup.TokenHash).
+		Limit(1).Find(&held).Error; err != nil {
+		return err
+	}
+	if held.ID == 0 {
+		return errTokenInvalid // rotated or claimed while we waited
+	}
+	res := tx.Model(&models.GuestSignup{}).
+		Where("id = ? AND token_hash = ? AND confirmed_at IS NULL AND "+sqlStillLive, signup.ID, signup.TokenHash).
+		Update("confirmed_at", at)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return errTokenInvalid
+	}
+	return nil
 }
 
 // createGuestUpgradeRequest opens the guest_upgrade account request a
@@ -713,7 +757,9 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// Guest emails (C6: plain text through the minimal sender). Both name
+// Guest emails (C6: plain text through the minimal sender). Verification is a
+// stored job (mail_jobs.go); the confirmation below stays synchronous because
+// its manage link is also returned to the browser. Both name
 // the event as a signed-out visitor may see it; a hidden group is
 // never named.
 // ---------------------------------------------------------------------------
@@ -726,26 +772,6 @@ func guestWithLine(d guestRegistrationJSON) string {
 		return " hosted by " + d.HostedBy
 	}
 	return ""
-}
-
-func (a *App) sendGuestVerificationEmail(signup *models.GuestSignup, raw string,
-	ev *models.Event, occ *models.EventOccurrence, f eventFacts) error {
-	pending := models.Registration{Status: models.RegGoing}
-	d := a.guestDisplay(&pending, occ, ev, f.group)
-	link := a.emailBaseURL() + "/guest/confirm?token=" + raw
-	return a.Mailer.Send(context.Background(), foldmail.Message{
-		To:      signup.Email,
-		Subject: fmt.Sprintf("Confirm your registration for %s", d.Title),
-		Text: fmt.Sprintf(`Hi %s,
-
-Someone used this email address to register as a guest for %s%s at %s, on %s.
-
-Confirm your registration here (the link works once and expires in 24 hours):
-%s
-
-If that wasn't you, ignore this email and nothing will be registered.`,
-			signup.Name, d.Title, guestWithLine(d), a.siteName(), formatWhen(d.StartsAt, zoneOrChurch(a.DB, signup.Timezone)), link),
-	})
 }
 
 func (a *App) sendGuestConfirmationEmail(to, manageRaw string,

@@ -649,21 +649,6 @@ func TestPasswordResetDoesNotWaitOnEmail(t *testing.T) {
 	}
 }
 
-// A panic in background work is recovered, not fatal to the server.
-func TestRunInBackgroundRecoversPanics(t *testing.T) {
-	app := &App{}
-	done := make(chan struct{})
-	app.runInBackground(func() {
-		defer close(done)
-		panic("boom")
-	})
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("background task never ran")
-	}
-}
-
 func TestLoginFailureLimitPolicy(t *testing.T) {
 	for _, tt := range []struct {
 		key  string

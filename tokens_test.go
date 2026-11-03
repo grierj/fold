@@ -237,3 +237,80 @@ func TestRotateAccountTokenPreservesPayloadAndDeadlineAndRequiresLiveState(t *te
 		})
 	}
 }
+
+func TestRotateGuestSignupTokenPreservesDeadlineAndRequiresLiveState(t *testing.T) {
+	for _, state := range []string{"live", "confirmed", "expired", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldGuestVerify(t, app, false)
+			signup := f.signup
+			switch state {
+			case "confirmed":
+				if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", signup.ID).Update("confirmed_at", time.Now()).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", signup.ID).Update("expires_at", time.Now().Add(-time.Minute)).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := app.DB.Delete(&models.GuestSignup{}, signup.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := models.GuestSignup{}
+			app.DB.Where("id = ?", signup.ID).Limit(1).Find(&before)
+			raw, err := rotateGuestSignupToken(app.DB, signup.ID)
+			if state != "live" {
+				if !errors.Is(err, errTokenInvalid) || raw != "" {
+					t.Fatalf("closed signup rotation = %q, %v", raw, err)
+				}
+				if state != "missing" && guestSignupIn(t, app, signup.ID).TokenHash != before.TokenHash {
+					t.Fatal("ineligible signup changed its hash")
+				}
+				return
+			}
+			if err != nil || raw == "" {
+				t.Fatalf("live rotation = %q, %v", raw, err)
+			}
+			got := guestSignupIn(t, app, signup.ID)
+			if got.TokenHash != hashToken(raw) || got.TokenHash == signup.TokenHash || !got.ExpiresAt.Equal(signup.ExpiresAt) ||
+				got.ConfirmedAt != nil || got.Email != signup.Email || got.Name != signup.Name || got.OccurrenceID != signup.OccurrenceID {
+				t.Fatalf("rotation did not change only the hash: %+v", got)
+			}
+		})
+	}
+}
+
+// A claim made with a hash that was read before a rotation, or after the
+// deadline, or twice, claims nothing and says so.
+func TestClaimGuestSignupRequiresTheHashItReadAndALiveDeadline(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	stale := f.signup // carries the hash read before the rotation below
+	if _, err := rotateGuestSignupToken(app.DB, stale.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimGuestSignup(app.DB, &stale, time.Now()); !errors.Is(err, errTokenInvalid) {
+		t.Fatalf("a stale hash claimed the rotated row: %v", err)
+	}
+	current := guestSignupIn(t, app, stale.ID)
+	if current.ConfirmedAt != nil {
+		t.Fatal("the stale claim marked the link used")
+	}
+	if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", current.ID).Update("expires_at", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := claimGuestSignup(app.DB, &current, time.Now()); !errors.Is(err, errTokenInvalid) {
+		t.Fatalf("an expired link was claimed: %v", err)
+	}
+	if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", current.ID).Update("expires_at", time.Now().Add(time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := claimGuestSignup(app.DB, &current, time.Now()); err != nil {
+		t.Fatalf("the current link could not be claimed: %v", err)
+	}
+	if err := claimGuestSignup(app.DB, &current, time.Now()); !errors.Is(err, errTokenInvalid) {
+		t.Fatalf("a link was claimed twice: %v", err)
+	}
+}

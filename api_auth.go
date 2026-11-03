@@ -480,24 +480,6 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 }
 
-// runInBackground runs f without making the response wait for it. A panic
-// in f is logged and recovered, so it can't take the server down.
-func (a *App) runInBackground(f func()) {
-	safe := func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("background task panicked: %v", r)
-			}
-		}()
-		f()
-	}
-	if a.background != nil {
-		a.background(safe)
-		return
-	}
-	go safe()
-}
-
 // apiConfirmPasswordReset redeems a reset token and sets the new password.
 // Unknown, expired, or already-used tokens all get the same answer, and a
 // successful reset signs the person in.

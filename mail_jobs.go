@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"time"
 
+	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/policy"
@@ -24,6 +26,7 @@ const (
 	kindInvitationMail      = "invitation.mail"
 	kindEmailVerifyMail     = "account.email_verify_mail"
 	kindGuardianConsentMail = "guardian.consent_mail"
+	kindGuestVerifyMail     = "guest.verify_mail"
 	directMailAttempts      = 8
 )
 
@@ -60,6 +63,12 @@ type accountTokenMailJob struct {
 
 type guardianConsentMailJob struct {
 	GuardianLinkID uint `json:"guardianLinkId"`
+}
+
+// guestVerifyMailJob names the stored signup, never the visitor: the address
+// and name stay in guest_signups until delivery.
+type guestVerifyMailJob struct {
+	GuestSignupID uint `json:"guestSignupId"`
 }
 
 func (a *App) mailKinds() []jobs.Kind {
@@ -129,7 +138,119 @@ func (a *App) mailKinds() []jobs.Kind {
 				return a.prepareGuardianConsentMail(tx, p.GuardianLinkID)
 			})
 		},
+	}, {
+		Name: kindGuestVerifyMail, Label: "Sending a guest registration confirmation link", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p guestVerifyMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindGuestVerifyMail, p.GuestSignupID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareGuestVerification(tx, p.GuestSignupID)
+			})
+		},
 	}}
+}
+
+// prepareGuestVerification rotates the hash of one pending guest signup and
+// renders its link from the event as it is now. Redemption reads the signup
+// without a lock, locks the occurrence, and only then writes the signup row, so
+// this takes the signup row alone and never an occurrence, event or group lock:
+// no reverse order exists. Anything that closed the door (confirmed, expired,
+// date cancelled, event or group tightened or gone) leaves the row untouched
+// and finishes quietly, using redemption's own guest rule. The deadline never
+// moves, so a retry replaces the link without extending the window.
+func (a *App) prepareGuestVerification(tx *gorm.DB, signupID uint) (mail.Message, bool, error) {
+	none := mail.Message{}
+	var signup models.GuestSignup
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("confirmed_at IS NULL AND "+sqlStillLive).First(&signup, signupID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	var occ models.EventOccurrence
+	err = tx.First(&occ, signup.OccurrenceID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	if occ.Status != models.OccurrenceScheduled {
+		return none, false, nil
+	}
+	var ev models.Event
+	err = tx.First(&ev, occ.EventID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	var grp *models.Group
+	gp := policy.Group{}
+	if ev.GroupID != nil {
+		var g models.Group
+		err := tx.First(&g, *ev.GroupID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return none, false, nil
+		}
+		if err != nil {
+			return none, false, err
+		}
+		grp, gp = &g, asGroup(&g)
+	}
+	// The same rule redemption runs, on the date's effective visibility.
+	if !policy.CanRegisterGuest(viewOf(dateEvent(&ev, &occ), false), gp) {
+		return none, false, nil
+	}
+	site, err := siteNameIn(tx)
+	if err != nil {
+		return none, false, err
+	}
+	loc, err := guestMailZone(tx, signup.Timezone)
+	if err != nil {
+		return none, false, err
+	}
+	raw, err := rotateGuestSignupToken(tx, signup.ID)
+	if errors.Is(err, errTokenInvalid) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	d := a.guestDisplayWith(func() string { return site }, &models.Registration{Status: models.RegGoing}, &occ, &ev, grp)
+	return a.guestVerificationMessage(&signup, raw, site, d, loc), true, nil
+}
+
+// guestMailZone is the zone a guest reads times in: the one their form sent, else
+// the church's. A failed read of the church zone is returned so the job retries
+// instead of guessing UTC.
+func guestMailZone(tx *gorm.DB, tz string) (*time.Location, error) {
+	if loc, err := events.LoadZone(tz); err == nil {
+		return loc, nil
+	}
+	return churchZoneErr(tx)
+}
+
+func (a *App) guestVerificationMessage(signup *models.GuestSignup, raw, site string, d guestRegistrationJSON, loc *time.Location) mail.Message {
+	link := a.emailBaseURL() + "/guest/confirm?token=" + raw
+	return mail.Message{
+		To:      signup.Email,
+		Subject: fmt.Sprintf("Confirm your registration for %s", d.Title),
+		Text: fmt.Sprintf(`Hi %s,
+
+Someone used this email address to register as a guest for %s%s at %s, on %s.
+
+Confirm your registration here (the link works once and expires within 24 hours):
+%s
+
+If that wasn't you, ignore this email and nothing will be registered.`,
+			signup.Name, d.Title, guestWithLine(d), site, formatWhen(d.StartsAt, loc), link),
+	}
 }
 
 // Preparation shares redemption's order: contact gate, users in ID order

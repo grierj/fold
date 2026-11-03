@@ -37,7 +37,7 @@ func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
 	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", admin.Email} {
 		if n := mailsTo(app, email); n != 1 {
-			t.Fatalf("background mail for %s: %d", email, n)
+			t.Fatalf("delivered mail for %s: %d, want 1", email, n)
 		}
 	}
 }

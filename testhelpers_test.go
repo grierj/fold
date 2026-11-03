@@ -100,8 +100,6 @@ func testApp(t *testing.T) *App {
 		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes"), SetupToken: strings.Repeat("a", 64)},
 		Uploads: uploads,
 		Mailer:  mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>")),
-		// Inline, so a test can read the outbox right after a request.
-		background: func(f func()) { f() },
 	}
 }
 

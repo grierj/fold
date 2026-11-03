@@ -1190,7 +1190,7 @@ var mailerSendFiles = map[string]string{
 	"messages_send.go":       "announcement mail goes through its own send path",
 	"api_message_preview.go": "the composer's test send is synchronous by design (brief section 4)",
 	"api_profile.go":         "direct mail: address change confirmation",
-	"api_guest.go":           "direct mail: guest verification and manage links",
+	"api_guest.go":           "direct mail: guest confirmation with its manage link (synchronous by design)",
 }
 
 // noticeDeliveryViolations scans one production file's source. The legacy

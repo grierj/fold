@@ -158,6 +158,27 @@ func rotateInvitationToken(tx *gorm.DB, id uint) (string, error) {
 	return raw, nil
 }
 
+// rotateGuestSignupToken replaces only the capability of a pending guest
+// verification, never its deadline. It changes nothing unless that row is
+// still unconfirmed and unexpired, so a stale caller can neither revive a used
+// link nor extend its window. The caller holds the signup row lock.
+func rotateGuestSignupToken(tx *gorm.DB, id uint) (string, error) {
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		return "", err
+	}
+	res := tx.Model(&models.GuestSignup{}).
+		Where("id = ? AND confirmed_at IS NULL AND "+sqlStillLive, id).
+		Update("token_hash", hash)
+	if res.Error != nil {
+		return "", res.Error
+	}
+	if res.RowsAffected != 1 {
+		return "", errTokenInvalid
+	}
+	return raw, nil
+}
+
 // liveInvitation finds an invitation by its raw token: not accepted and
 // not expired.
 func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {

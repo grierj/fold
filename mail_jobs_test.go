@@ -1355,11 +1355,19 @@ func TestInvitationMailEnqueueFailureRollsBackCreationAndResend(t *testing.T) {
 // after their discovery reads.
 func pauseInvitationLock(t *testing.T, db *gorm.DB, operation string, read bool) (<-chan struct{}, func()) {
 	t.Helper()
+	return pauseTableLock(t, db, "invitations", operation, read)
+}
+
+// pauseTableLock pauses one named participant just after it locks a row of
+// table (read: a locking SELECT) or writes one (an UPDATE), so a test can hold
+// that row lock while the other participant is observed waiting for it.
+func pauseTableLock(t *testing.T, db *gorm.DB, table, operation string, read bool) (<-chan struct{}, func()) {
+	t.Helper()
 	reached, resume := make(chan struct{}), make(chan struct{})
 	var paused atomic.Bool
-	name := fmt.Sprintf("test:pause_invitation_lock:%d", queryCounterSeq.Add(1))
+	name := fmt.Sprintf("test:pause_table_lock:%d", queryCounterSeq.Add(1))
 	pause := func(tx *gorm.DB) {
-		if tx.Statement.Table != "invitations" || tx.Statement.Context.Value(testDBOperationKey{}) != operation || tx.Error != nil {
+		if tx.Statement.Table != table || tx.Statement.Context.Value(testDBOperationKey{}) != operation || tx.Error != nil {
 			return
 		}
 		if read {
@@ -2602,5 +2610,587 @@ func TestGuardianEmailRedemptionRefusesExpiryDuringLockWait(t *testing.T) {
 				t.Fatalf("expired capability changed teen status: %v %+v", err, teen)
 			}
 		})
+	}
+}
+
+// heldGuestVerify submits the real guest form and leaves its verification
+// mail queued, so a test can change the world (or race a redemption) before
+// delivery. With full, the one seat is taken and the waitlist is off, so
+// redeeming takes the full-without-waitlist branch.
+type heldGuestVerify struct {
+	admin   *apiClient
+	anon    *apiClient
+	groupID uint
+	event   eventJSON
+	occ     models.EventOccurrence
+	email   string
+	signup  models.GuestSignup
+	job     models.Job
+}
+
+func queueHeldGuestVerify(t *testing.T, app *App, full bool) heldGuestVerify {
+	t.Helper()
+	f := heldGuestVerify{email: "gail@example.com"}
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	f.admin = loginAPI(t, app, "admin", "password1234")
+	f.admin.holdNotices = true // the admin's own requests must not drain the guest job
+	f.groupID = createGroupAs(t, f.admin, "Garden Club", models.VisibilityPublic)
+	f.event = scheduleGroupEvent(t, f.admin, f.groupID, "Picnic")
+	if err := app.DB.Where("event_id = ?", f.event.ID).First(&f.occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if full {
+		apiDo(t, f.admin, "PUT", fmt.Sprintf("/api/v1/events/%d", f.event.ID),
+			map[string]any{"capacity": 1, "waitlistEnabled": false}, http.StatusOK)
+		member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+		var g models.Group
+		if err := app.DB.First(&g, f.groupID).Error; err != nil {
+			t.Fatal(err)
+		}
+		addMember(t, app, member, &g, models.MembershipMember)
+		if code, _ := registerAs(loginAPI(t, app, "member", "password1234"), f.event.ID, f.occ.OriginalDate, "going", nil); code != http.StatusOK {
+			t.Fatalf("member going: %d", code)
+		}
+	}
+	f.anon = anonClient(t, app, "10.8.1.1")
+	f.anon.holdNotices = true
+	body := guestBody("Gail Guest", f.email, true)
+	body["timezone"] = "America/Boise"
+	if answer := guestSubmit(t, f.anon, f.event.ID, body, http.StatusOK); !strings.Contains(answer, signupThanks) {
+		t.Fatalf("submit answer: %s", answer)
+	}
+	if err := app.DB.Where("email = ?", f.email).First(&f.signup).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := mailJobsOfKind(t, app, kindGuestVerifyMail)
+	if len(rows) != 1 || !payloadEquals(rows[0], guestVerifyMailJob{GuestSignupID: f.signup.ID}) || rows[0].UniqueKey != nil ||
+		rows[0].MaxAttempts != directMailAttempts || rows[0].Status != models.JobQueued {
+		t.Fatalf("submit must queue one ID-only verification job: %+v", rows)
+	}
+	f.job = rows[0]
+	if strings.Contains(f.job.Payload, f.email) || strings.Contains(f.job.Payload, f.signup.TokenHash) {
+		t.Fatalf("job payload carries more than the signup ID: %s", f.job.Payload)
+	}
+	var users, regs int64
+	app.DB.Model(&models.User{}).Where("email = ?", f.email).Count(&users)
+	app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm).Count(&regs)
+	if users != 0 || regs != 0 || mailCount(t, app, f.email) != 0 {
+		t.Fatalf("submit created a guest or sent mail before delivery: users=%d registrations=%d", users, regs)
+	}
+	return f
+}
+
+func guestSignupIn(t *testing.T, app *App, id uint) models.GuestSignup {
+	t.Helper()
+	var signup models.GuestSignup
+	if err := app.DB.First(&signup, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return signup
+}
+
+// captureMail replaces the sender with one that records every message and
+// succeeds. Messages are filtered by subject because the confirmation mail, which
+// the redemption handler still sends itself, lands in the same list.
+func captureMail(app *App) func(subjectPrefix string) []mail.Message {
+	var mu sync.Mutex
+	var all []mail.Message
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+		mu.Lock()
+		defer mu.Unlock()
+		all = append(all, msg)
+		return nil
+	})
+	return func(prefix string) []mail.Message {
+		mu.Lock()
+		defer mu.Unlock()
+		var out []mail.Message
+		for _, m := range all {
+			if strings.HasPrefix(m.Subject, prefix) {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+}
+
+const guestVerifySubject = "Confirm your registration for"
+
+func TestGuestVerifyMailRetryReplacesItsLinkAndKeepsTheDeadline(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	var sent []mail.Message
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+		sent = append(sent, msg)
+		// Preparation must commit and release its row lock before provider I/O.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := app.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT id FROM guest_signups WHERE id = ? FOR UPDATE NOWAIT", f.signup.ID).Error
+		}); err != nil {
+			return fmt.Errorf("signup still locked during send: %w", err)
+		}
+		if len(sent) == 1 {
+			return errors.New("451 try again")
+		}
+		return nil
+	})
+	runResetMail(t, app)
+	failed := reloadJob(t, app, f.job.ID)
+	if failed.Status != models.JobFailed || failed.Attempts != 1 || len(sent) != 1 {
+		t.Fatalf("transient send did not remain retryable: %+v", failed)
+	}
+	first := tokenRe.FindStringSubmatch(sent[0].Text)[1]
+	row := guestSignupIn(t, app, f.signup.ID)
+	if row.TokenHash != hashToken(first) || row.TokenHash == f.signup.TokenHash || row.ConfirmedAt != nil || !row.ExpiresAt.Equal(f.signup.ExpiresAt) {
+		t.Fatalf("first preparation must change only the hash: %+v", row)
+	}
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", f.job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	runResetMail(t, app)
+	if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || got.Attempts != 2 || len(sent) != 2 {
+		t.Fatalf("retry did not finish: %+v", got)
+	}
+	last := tokenRe.FindStringSubmatch(sent[1].Text)[1]
+	row = guestSignupIn(t, app, f.signup.ID)
+	if last == first || row.TokenHash != hashToken(last) || !row.ExpiresAt.Equal(f.signup.ExpiresAt) {
+		t.Fatal("retry reused a capability or extended the deadline")
+	}
+	for _, msg := range sent {
+		if msg.To != f.email || msg.Optional || msg.Subject != "Confirm your registration for Picnic" ||
+			!strings.Contains(msg.Text, "expires within 24 hours") || !strings.Contains(msg.Text, "/guest/confirm?token=") ||
+			!strings.Contains(msg.Text, "Hi Gail Guest,") || !strings.Contains(msg.Text, "with Garden Club") ||
+			!strings.Contains(msg.Text, "Tue, Dec 1 · 12:00 PM MST") {
+			t.Fatalf("verification copy or recipient changed: %+v", msg)
+		}
+	}
+	// The first link was replaced by the retry; the last one works once.
+	confirm := func(token string, want int) string {
+		return apiDo(t, f.anon, "POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, want)
+	}
+	confirm(first, http.StatusBadRequest)
+	var users int64
+	app.DB.Model(&models.User{}).Where("email = ?", f.email).Count(&users)
+	if users != 0 {
+		t.Fatal("a replaced link created a guest")
+	}
+	if body := confirm(last, http.StatusOK); !strings.Contains(body, `"manageToken"`) {
+		t.Fatalf("confirmation did not return the manage link: %s", body)
+	}
+	confirm(last, http.StatusBadRequest)
+}
+
+func TestGuestVerifyMailSkipsSubjectsThatAreNoLongerAvailable(t *testing.T) {
+	type tweak func(t *testing.T, app *App, f heldGuestVerify)
+	setEvent := func(visibility string) tweak {
+		return func(t *testing.T, app *App, f heldGuestVerify) {
+			apiDo(t, f.admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", f.event.ID),
+				map[string]any{"visibility": visibility, "confirm": true}, http.StatusOK)
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		do   tweak
+	}{
+		{"confirmed", func(t *testing.T, app *App, f heldGuestVerify) {
+			if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("confirmed_at", time.Now()).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"expired", func(t *testing.T, app *App, f heldGuestVerify) {
+			if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("expires_at", time.Now().Add(-time.Minute)).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"missing", func(t *testing.T, app *App, f heldGuestVerify) {
+			if err := app.DB.Delete(&models.GuestSignup{}, f.signup.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"occurrence cancelled", func(t *testing.T, app *App, f heldGuestVerify) {
+			if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.occ.ID).Update("status", models.OccurrenceCancelled).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"series made private", setEvent(models.VisibilityPrivate)},
+		{"series made invite-only", setEvent(models.VisibilityInviteOnly)},
+		{"date made private", func(t *testing.T, app *App, f heldGuestVerify) {
+			apiDo(t, f.admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", f.event.ID, guestDate),
+				map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+		}},
+		{"group archived", func(t *testing.T, app *App, f heldGuestVerify) {
+			if err := app.DB.Model(&models.Group{}).Where("id = ?", f.groupID).Update("status", models.GroupArchived).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldGuestVerify(t, app, false)
+			sent := captureMail(app)
+			tt.do(t, app, f)
+			var before models.GuestSignup
+			found := app.DB.Where("id = ?", f.signup.ID).Limit(1).Find(&before).RowsAffected == 1
+			if err := deliverMailJob(context.Background(), app, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: f.signup.ID}); err != nil {
+				t.Fatalf("an unavailable subject must finish quietly: %v", err)
+			}
+			if got := sent(guestVerifySubject); len(got) != 0 {
+				t.Fatalf("sent a verification for an unavailable subject: %+v", got)
+			}
+			if !found {
+				return
+			}
+			after := guestSignupIn(t, app, f.signup.ID)
+			if after.TokenHash != before.TokenHash || !after.ExpiresAt.Equal(before.ExpiresAt) ||
+				(before.ConfirmedAt == nil) != (after.ConfirmedAt == nil) {
+				t.Fatalf("an unavailable subject changed the signup: before=%+v after=%+v", before, after)
+			}
+			if after.TokenHash != f.signup.TokenHash {
+				t.Fatal("the initial capability was rotated")
+			}
+		})
+	}
+}
+
+// Closing the door only pauses mail: reopening the date before the job's
+// deadline lets the same job deliver, with the event as it is then.
+func TestGuestVerifyMailFollowsTheDateOverrideBothWays(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	sent := captureMail(app)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", f.event.ID, guestDate)
+	apiDo(t, f.admin, "PUT", path, map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+	job := guestVerifyMailJob{GuestSignupID: f.signup.ID}
+	if err := deliverMailJob(context.Background(), app, kindGuestVerifyMail, job); err != nil || len(sent(guestVerifySubject)) != 0 {
+		t.Fatalf("a private date must not mail event facts: %v %+v", err, sent(guestVerifySubject))
+	}
+	apiDo(t, f.admin, "PUT", path, map[string]any{"visibility": "public"}, http.StatusOK)
+	if err := deliverMailJob(context.Background(), app, kindGuestVerifyMail, job); err != nil {
+		t.Fatal(err)
+	}
+	got := sent(guestVerifySubject)
+	if len(got) != 1 || got[0].To != f.email || guestSignupIn(t, app, f.signup.ID).TokenHash != hashToken(tokenRe.FindStringSubmatch(got[0].Text)[1]) {
+		t.Fatalf("reopened date did not deliver a working link: %+v", got)
+	}
+}
+
+func TestGuestVerifyMailEnqueueFailureLeavesNoSignup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.8.1.2")
+	anon.holdNotices = true
+	stop := failJobEnqueue(t, app.DB, kindGuestVerifyMail)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Gail Guest", "gail@example.com", true), http.StatusInternalServerError)
+	if !strings.Contains(body, `"code":"server_error"`) || strings.Contains(body, "could not save") ||
+		guestSignupCount(t, app, "gail@example.com") != 0 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 0 {
+		t.Fatalf("a failed enqueue must leave no signup and no job: %s", body)
+	}
+	stop()
+	if answer := guestSubmit(t, anon, ev.ID, guestBody("Gail Guest", "gail@example.com", true), http.StatusOK); !strings.Contains(answer, signupThanks) {
+		t.Fatalf("retry answer: %s", answer)
+	}
+	if guestSignupCount(t, app, "gail@example.com") != 1 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 1 {
+		t.Fatal("retry did not store exactly one signup and one job")
+	}
+}
+
+// A visitor who closes the tab right after submitting still gets their mail:
+// the signup and its job commit without the request context.
+func TestGuestVerifyMailSurvivesClientDisconnect(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.8.1.3")
+	anon.holdNotices = true
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	anon.ctx = ctx
+	cancelOnJobEnqueue(t, app.DB, kindGuestVerifyMail, cancel)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Gail Guest", "gail@example.com", true), http.StatusOK)
+	if !strings.Contains(body, signupThanks) || ctx.Err() == nil {
+		t.Fatalf("submit after disconnect: %s (cancelled=%v)", body, ctx.Err() != nil)
+	}
+	if guestSignupCount(t, app, "gail@example.com") != 1 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 1 {
+		t.Fatal("disconnect lost the signup or its job")
+	}
+}
+
+func TestGuestVerifyMailPreparationUsesSingleConnection(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Grace Church"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Chicago"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// No form zone, so the church's zone is read while preparation holds its lock.
+	if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("timezone", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	var dbName string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&dbName).Error; err != nil {
+		t.Fatal(err)
+	}
+	db, err := testdb.Open(dbName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app.DB = db.WithContext(ctx)
+	sent := captureMail(app)
+	if err := deliverMailJob(ctx, app, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: f.signup.ID}); err != nil {
+		t.Fatalf("one-connection guest delivery: %v", err)
+	}
+	got := sent(guestVerifySubject)
+	if len(got) != 1 || !strings.Contains(got[0].Text, "at Grace Church,") || !strings.Contains(got[0].Text, "Tue, Dec 1 · 1:00 PM CST") {
+		t.Fatalf("delivery did not use the current site name and church zone: %+v", got)
+	}
+}
+
+// Delivery rotates the link while a visitor redeems an earlier one. Delivery
+// takes only the signup row; redemption takes the occurrence and then claims
+// that same row. Both orders finish without a deadlock. A claim that read the
+// hash before rotation cannot register anyone or consume the new link, and a
+// claim that committed first leaves the waiting delivery nothing to do. Both
+// redemption branches write the claim: a seat (normal) and the dead end on a
+// full event without a waitlist (full).
+func TestGuestVerifyMailAndConfirmationLockOrders(t *testing.T) {
+	for _, branch := range []string{"seat", "full"} {
+		for _, first := range []string{"delivery", "confirmation"} {
+			t.Run(branch+"/"+first+" first", func(t *testing.T) {
+				app := testApp(t)
+				f := queueHeldGuestVerify(t, app, branch == "full")
+				// The race runs the handler on a known session, so retire the
+				// queued job that would otherwise deliver again.
+				if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				old := "previous-guest-capability"
+				if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("token_hash", hashToken(old)).Error; err != nil {
+					t.Fatal(err)
+				}
+				sent := captureMail(app)
+				expected := http.StatusBadRequest
+				if first == "confirmation" {
+					expected = http.StatusOK
+					if branch == "full" {
+						expected = http.StatusConflict
+					}
+				}
+				work := func(operation string) func(*gorm.DB) error {
+					return func(db *gorm.DB) error {
+						a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+						if operation == "delivery" {
+							return deliverMailJob(db.Statement.Context, a, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: f.signup.ID})
+						}
+						w := httptest.NewRecorder()
+						c, _ := gin.CreateTestContext(w)
+						c.Request = httptest.NewRequest("POST", "/api/v1/guest-registrations/confirm",
+							strings.NewReader(jsonString(map[string]string{"token": old}))).WithContext(db.Statement.Context)
+						c.Request.Header.Set("Content-Type", "application/json")
+						a.apiConfirmGuestRegistration(c)
+						if w.Code != expected {
+							return fmt.Errorf("confirmation: got %d %s, want %d", w.Code, w.Body.String(), expected)
+						}
+						return nil
+					}
+				}
+				second := "confirmation"
+				if first == "confirmation" {
+					second = "delivery"
+				}
+				// The winner holds the signup row; the loser must wait for it.
+				reached, release := pauseTableLock(t, app.DB, "guest_signups", first, first == "delivery")
+				winner, winnerDone := startDBSession(t, app.DB, first, work(first))
+				awaitDBSignal(t, reached)
+				loser, loserDone := startDBSession(t, app.DB, second, work(second))
+				waitDBBlocked(t, app.DB, loser, winner)
+				release()
+				if err := awaitDBResult(t, winnerDone); err != nil {
+					t.Fatal(err)
+				}
+				if err := awaitDBResult(t, loserDone); err != nil {
+					t.Fatal(err)
+				}
+				row := guestSignupIn(t, app, f.signup.ID)
+				var users, guestRegs int64
+				app.DB.Model(&models.User{}).Where("email = ?", f.email).Count(&users)
+				app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm).Count(&guestRegs)
+				verifications := sent(guestVerifySubject)
+				if first == "confirmation" {
+					// The claim committed first: the waiting delivery sent nothing
+					// and left the consumed row as it was.
+					wantUsers, wantRegs := int64(1), int64(1)
+					if branch == "full" {
+						wantUsers, wantRegs = 0, 0
+					}
+					if row.ConfirmedAt == nil || row.TokenHash != hashToken(old) || len(verifications) != 0 || users != wantUsers || guestRegs != wantRegs {
+						t.Fatalf("confirmation first: row=%+v mails=%d users=%d registrations=%d", row, len(verifications), users, guestRegs)
+					}
+					return
+				}
+				// Rotation first: the stale claim registered nobody and left the
+				// replacement link unused.
+				if len(verifications) != 1 || row.ConfirmedAt != nil || row.TokenHash == hashToken(old) || !row.ExpiresAt.Equal(f.signup.ExpiresAt) ||
+					users != 0 || guestRegs != 0 {
+					t.Fatalf("delivery first: row=%+v mails=%d users=%d registrations=%d", row, len(verifications), users, guestRegs)
+				}
+				fresh := tokenRe.FindStringSubmatch(verifications[0].Text)[1]
+				if row.TokenHash != hashToken(fresh) {
+					t.Fatal("the stored hash is not the one mailed")
+				}
+				anon := anonClient(t, app, "10.8.1.9")
+				if branch == "full" {
+					if body := apiDo(t, anon, "POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": fresh}, http.StatusConflict); !strings.Contains(body, `"full":true`) {
+						t.Fatalf("replacement link: %s", body)
+					}
+					if guestSignupIn(t, app, f.signup.ID).ConfirmedAt == nil {
+						t.Fatal("the replacement link was not consumed by its own redemption")
+					}
+					return
+				}
+				apiDo(t, anon, "POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": fresh}, http.StatusOK)
+				if guestSignupIn(t, app, f.signup.ID).ConfirmedAt == nil {
+					t.Fatal("the replacement link did not complete the registration")
+				}
+			})
+		}
+	}
+}
+
+// A request whose transaction began before the deadline must not claim once it
+// gets the lock after the deadline, in either branch.
+func TestGuestConfirmationRefusesADeadlinePassedDuringALockWait(t *testing.T) {
+	for _, branch := range []string{"seat", "full"} {
+		t.Run(branch, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldGuestVerify(t, app, branch == "full")
+			if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			old := "expiring-guest-capability"
+			if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("token_hash", hashToken(old)).Error; err != nil {
+				t.Fatal(err)
+			}
+			race := holdThenExpire(t, app, func(tx *gorm.DB) error {
+				// The occurrence lock redemption takes first, so the lookup has
+				// already passed and only the final claim can refuse.
+				return tx.Exec("SELECT id FROM event_occurrences WHERE id = ? FOR UPDATE", f.occ.ID).Error
+			}, expireRowNow("guest_signups", f.signup.ID))
+			err := race.run(t, app, "confirmation", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/api/v1/guest-registrations/confirm",
+					strings.NewReader(jsonString(map[string]string{"token": old}))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				a.apiConfirmGuestRegistration(c)
+				if w.Code != http.StatusBadRequest {
+					return fmt.Errorf("got %d %s, want 400", w.Code, w.Body.String())
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var users, regs int64
+			app.DB.Model(&models.User{}).Where("email = ?", f.email).Count(&users)
+			app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm).Count(&regs)
+			if guestSignupIn(t, app, f.signup.ID).ConfirmedAt != nil || users != 0 || regs != 0 {
+				t.Fatalf("an expired link was claimed: users=%d registrations=%d", users, regs)
+			}
+		})
+	}
+}
+
+// A delivery worker locks the signup row FOR UPDATE and leaves it unchanged
+// when the date closed. A confirmation that already qualified and waits on that
+// lock resumes without its row being re-read, so the claim must take the lock
+// in a statement of its own and test the deadline afterwards, in both branches.
+// The holder releases only after the deadline and writes nothing.
+func TestGuestConfirmationRefusesADeadlinePassedDuringAnUnchangedRowLockWait(t *testing.T) {
+	for _, branch := range []string{"seat", "full"} {
+		t.Run(branch, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldGuestVerify(t, app, branch == "full")
+			if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			const old = "expiring-guest-capability"
+			if err := app.DB.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Updates(map[string]any{
+				"token_hash": hashToken(old),
+				"expires_at": gorm.Expr("clock_timestamp() + interval '2 seconds'"),
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			before := guestSignupIn(t, app, f.signup.ID)
+			race := holdThenExpire(t, app, func(tx *gorm.DB) error {
+				return tx.Exec("SELECT id FROM guest_signups WHERE id = ? FOR UPDATE", f.signup.ID).Error
+			}, passDeadlineUnchanged("guest_signups", f.signup.ID))
+			err := race.run(t, app, "confirmation", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/api/v1/guest-registrations/confirm",
+					strings.NewReader(jsonString(map[string]string{"token": old}))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				a.apiConfirmGuestRegistration(c)
+				if w.Code != http.StatusBadRequest {
+					return fmt.Errorf("got %d %s, want 400", w.Code, w.Body.String())
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var users, regs int64
+			app.DB.Model(&models.User{}).Where("email = ?", f.email).Count(&users)
+			app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm).Count(&regs)
+			row := guestSignupIn(t, app, f.signup.ID)
+			if row.ConfirmedAt != nil || row.TokenHash != before.TokenHash || !row.ExpiresAt.Equal(before.ExpiresAt) || users != 0 || regs != 0 {
+				t.Fatalf("an expired link was claimed after waiting on an unchanged row lock: %+v users=%d registrations=%d", row, users, regs)
+			}
+		})
+	}
+}
+
+// The confirmation mail names a manage link that the browser also receives, so
+// it stays in the request. Verification mail leaves no raw capability in the
+// logs, the System errors or the job payload when the provider refuses it.
+func TestGuestVerifyMailFailuresKeepCapabilitiesAndAddressesOutOfLogs(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	var raw string
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+		raw = tokenRe.FindStringSubmatch(msg.Text)[1]
+		return fmt.Errorf("451 rejected %s at https://mailer.example/private-path?token=%s", msg.To, raw)
+	})
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	runResetMail(t, app)
+	job := reloadJob(t, app, f.job.ID)
+	if job.Status != models.JobFailed || raw == "" {
+		t.Fatalf("a refused send must stay retryable: %+v", job)
+	}
+	for name, text := range map[string]string{"logs": logs.String(), "last error": job.LastError, "payload": job.Payload} {
+		if strings.Contains(text, raw) || strings.Contains(text, f.email) || strings.Contains(text, "private-path") {
+			t.Fatalf("%s leaked an address or capability: %q", name, text)
+		}
 	}
 }

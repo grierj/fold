@@ -40,11 +40,6 @@ type App struct {
 	Uploads storage.Store // blob store for avatars and group covers
 	Mailer  mail.Sender   // transactional email (C6, M1.2)
 
-	// background runs guest verification mail, the one send that has not yet
-	// moved to durable jobs. nil runs it on a new goroutine; tests set it to run
-	// inline so they can read the outbox straight after the request.
-	background func(func())
-
 	// seriesClock is a per-App clock seam for lock-boundary tests. Production
 	// leaves it nil and reads the current UTC time.
 	seriesClock func() time.Time
