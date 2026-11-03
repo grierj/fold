@@ -147,6 +147,16 @@ type Runner struct {
 	// Lease is how long a claimed job may run before another worker may
 	// take it back (its process stopped mid-job).
 	Lease time.Duration
+	// OnDead, when set, is called once after a job's move to dead lands (it
+	// ran out of attempts, its worker stopped while running it, or its kind
+	// went unknown past the grace). errText is the CleanError text the row
+	// keeps. It is not called for a retry, Later or success, nor when this
+	// worker no longer held the job. It runs after the dead UPDATE has
+	// committed, outside that transaction, so a process that dies in between
+	// loses the call: the job is still dead on the System list, so the hook
+	// is a notice, not the record. A panic in it is recovered and logged and
+	// never changes what finish returns.
+	OnDead func(jobID uint, kind string, attempts int, errText string)
 	// ID names this process in locked_by.
 	ID  string
 	Rnd func() float64
@@ -277,6 +287,7 @@ func (r *Runner) finish(job claimed, worker string, runErr error, final bool) er
 	var updates map[string]any
 	msg := ""
 	var later laterError
+	dead := false
 	switch {
 	case errors.As(runErr, &later) && !final:
 		updates = map[string]any{"status": models.JobQueued, "attempts": gorm.Expr("attempts - 1"), "locked_at": nil,
@@ -284,6 +295,7 @@ func (r *Runner) finish(job claimed, worker string, runErr error, final bool) er
 	case runErr == nil:
 		updates = map[string]any{"status": models.JobDone, "locked_at": nil, "last_error": "", "updated_at": time.Now()}
 	case final || job.Attempts >= job.MaxAttempts:
+		dead = true
 		msg = CleanError(runErr)
 		log.Printf("jobs: %s #%d is dead after %d attempts: %s", job.Kind, job.ID, job.Attempts, msg)
 		updates = map[string]any{"status": models.JobDead, "locked_at": nil, "last_error": msg, "updated_at": time.Now()}
@@ -300,7 +312,21 @@ func (r *Runner) finish(job claimed, worker string, runErr error, final bool) er
 		// worker's outcome stands.
 		log.Printf("jobs: %s #%d ran past its lease; another worker took it over", job.Kind, job.ID)
 	}
+	if dead && res.Error == nil && res.RowsAffected == 1 && r.OnDead != nil {
+		r.callOnDead(job, msg)
+	}
 	return res.Error
+}
+
+// callOnDead runs the OnDead hook so that its panic goes no further than
+// the log.
+func (r *Runner) callOnDead(job claimed, msg string) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("jobs: the dead-job hook for %s #%d panicked: %v", job.Kind, job.ID, p)
+		}
+	}()
+	r.OnDead(job.ID, job.Kind, job.Attempts, msg)
 }
 
 var emailLike = regexp.MustCompile(`[^\s<>"'(),;:]+@[^\s<>"'(),;:]+`)
