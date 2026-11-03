@@ -97,7 +97,7 @@ Claim a milestone here before starting, as usual.
 | M7.4 Account erasure (R4) | not started; brief ready (inventory first) | | |
 | M7.5 Notification outbox (R6) | in review; S4 direct-mail jobs, guard hardening and regression tests implemented | Codex | `autoflow/m75-s4-20261103` |
 | M7.6 Query ceilings + pool cap (R11) | not started; brief ready | | |
-| M7.7 Baseline squash (R9) | not started; brief ready; DEC-138 + counters landed in PLAN | | |
+| M7.7 Baseline squash (R9) | in progress, four PRs: S1 documents the sequence and the agreed technical corrections (docs only; this branch), S2 generates and proves the baseline and activates the replacement rules, S3 stores calendar dates as `date`, S4 folds exact-date provenance into `registrations`. DEC-138 + counters already landed in PLAN. S2 does not open, and no migration is edited, until the R9 section 9 squash preflight (refreshed release and deployment evidence, isolated proof databases, announced migration freeze) is met | Claude | `autoflow/m77-s1-20261103` |
 | M7.8 People/own-data export (R3) | not started; brief ready (with M4.9) | | |
 | M7.9 Frontend speed/discoverability (R15) | not started; brief ready | | |
 | M7.10 Generated web types (R16) | not started; brief ready | | |

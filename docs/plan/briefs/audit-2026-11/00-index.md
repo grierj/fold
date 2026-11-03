@@ -24,7 +24,8 @@ implementer notes the drift in the PR.
 5. Briefs cite `file:line` at audit time (HEAD `3ec934e`, plus the SEC1 fix
    `28268b3`). Re-check each cited body before editing; line numbers drift.
 6. Migrations: new goose file, next free number at implementation time —
-   except M7.7, which is the one licensed baseline rewrite (DEC-138).
+   except M7.7, which is the one licensed baseline rewrite (DEC-138). Even
+   there, no migration is edited until R9's squash preflight (§9) is met.
 
 ## Brief files
 
@@ -34,7 +35,7 @@ implementer notes the drift in the PR.
 | `SEC1-R5-R12-security.md` | SEC1 verify, R5 bundle, R12 rotation | M7.1, M7.2, M7.3 | M ×3 |
 | `R2-R3-R4-people.md` | R2 import, R3 TOTP+export, R4 erasure | M4.5, M4.9, M7.8, M7.4 | M ×3 |
 | `R6-R11-reliability-perf.md` | R6 outbox, R11 query ceilings | M7.5, M7.6 | M ×2 |
-| `R9-baseline-squash.md` | R9 baseline + types + provenance fold | M7.7 | L |
+| `R9-baseline-squash.md` | R9 baseline + types + provenance fold; four PRs (S1 docs, S2 baseline, S3 dates, S4 provenance) | M7.7 | L |
 | `R10-R14-features.md` | R10 attendance, R14 sign-up sheets | M6.3, M6.2 | M ×2 |
 | `R15-R16-frontend.md` | R15 speed/discoverability, R16 type codegen | M7.9, M7.10 | M ×2 |
 | `R13-R17-R18-R19-governance.md` | R13 bets, R17 cuts, R18 tax, R19 locks | DEC-139–141, M7.11, M7.12 | S/M |
@@ -45,9 +46,16 @@ closed). Its brief section is a verify-and-close checklist for the PR, not a
 build spec. R13 and the wording half of R17 landed in PLAN with
 DEC-139/DEC-140; their brief sections keep the exact applied text and the
 remaining reference-fix list. Likewise DEC-138's row and the DEC counters
-already landed; R9 slice S1's remaining work is the `AGENTS.md`
-expand/contract replacement, which lands with the squash itself (the old
-rule describes the tree correctly until then).
+already landed. R9's S1 is a documentation-only PR: it claims M7.7, records
+the four-PR sequence, the owner's statements and the agreed technical
+corrections, and changes no migration and no operative rule. The
+`AGENTS.md` expand/contract replacement and the matching PLAN 14.1, C1 and
+"Done means" edits (reviewed in R9 §8) activate in S2, together with the
+squash itself; the old rule describes the tree correctly until then. R9
+§9 separates the documentation preflight (met for S1) from the squash
+preflight (refreshed release and deployment evidence, isolated proof
+databases and an announced migration freeze), which stays mandatory before
+S2 opens or any migration is edited.
 
 ## R1 verdict (DEC-142)
 
@@ -86,7 +94,8 @@ serial with its wave-mates — coordinate in STATUS claims.
   outbox slices). M7.2 and M7.5 both touch auth/notify code — run R5's
   session slices before R6 moves reset mail.
 - **Wave 2 (schema window):** M7.7 baseline (R9). Hard gate: its
-  preconditions proof. Everything that adds tables lands after this wave
+  preconditions proof, refreshed when S2 opens (S1 is docs only and may
+  proceed before that). Everything that adds tables lands after this wave
   (M4.5 import runs, M4.9 TOTP secrets, M6.3/M6.2 tables, M7.4 any new
   columns, M7.5 leftovers) or folds its table into the baseline in the
   same PR series. M7.6 (R11) code-only fixes may ride Wave 1; its index
