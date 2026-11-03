@@ -96,6 +96,7 @@ var tsContracts = []struct {
 	{pushSubscribeJSON{}, "PushSubscribeResponse"},
 	{pushTestJSON{}, "PushTestResponse"},
 	{adminJobJSON{}, "AdminJob"},
+	{adminDeliverySummaryJSON{}, "AdminDeliverySummary"},
 	{roomSuggestionJSON{}, "RoomSuggestion"},
 	{roomSuggestionsJSON{}, "RoomSuggestions"},
 	{roomFeedJSON{}, "RoomFeed"},

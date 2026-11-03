@@ -154,6 +154,85 @@ func TestSystemPageListsDeadJobsForAdmins(t *testing.T) {
 	}
 }
 
+func TestAdminJobsDeliverySummary(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	member := loginAPI(t, app, "member", "password1234")
+	admin.holdNotices, member.holdNotices = true, true
+	readSummary := func() adminDeliverySummaryJSON {
+		t.Helper()
+		w := admin.do("GET", "/api/v1/admin/jobs", nil, false)
+		var out struct {
+			Deliveries adminDeliverySummaryJSON `json:"deliveries"`
+		}
+		decodeJSON(t, w, &out)
+		var raw struct {
+			Deliveries map[string]any `json:"deliveries"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		keys := []string{}
+		for k := range raw.Deliveries {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if strings.Join(keys, ",") != "deferred,failed,oldestQueuedAt,queued" {
+			t.Fatalf("delivery summary carries %v", keys)
+		}
+		return out.Deliveries
+	}
+	if got := readSummary(); got != (adminDeliverySummaryJSON{}) {
+		t.Fatalf("empty summary: %+v", got)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	oldest := now.Add(-10 * 24 * time.Hour)
+	for _, channel := range []string{models.DeliveryEmail, models.DeliveryPush} {
+		for _, row := range []struct {
+			status  string
+			created time.Time
+			updated time.Time
+		}{
+			{models.DeliveryQueued, oldest, oldest},
+			{models.DeliveryQueued, now.Add(-time.Hour), now},
+			{models.DeliveryDeferred, oldest.Add(-time.Hour), oldest},
+			{models.DeliveryFailed, oldest, now},
+			{models.DeliveryFailed, now.Add(-6 * 24 * time.Hour), now.Add(-6 * 24 * time.Hour)},
+			{models.DeliveryFailed, oldest, now.Add(-8 * 24 * time.Hour)},
+			{models.DeliverySent, oldest, now},
+			{models.DeliverySuppressed, oldest, now},
+		} {
+			id, _ := seedNotifyDeliver(t, app, u, 1)
+			created := row.created
+			if channel == models.DeliveryPush {
+				created = created.Add(-24 * time.Hour)
+			}
+			if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", id).
+				Updates(map[string]any{"channel": channel, "status": row.status,
+					"created_at": created, "updated_at": row.updated, "reason": "private@example.com delivery error"}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got := readSummary()
+	if got.Queued != 2 || got.Deferred != 1 || got.Failed != 2 || got.OldestQueuedAt == nil || !got.OldestQueuedAt.Equal(oldest) {
+		t.Fatalf("delivery summary: %+v, want queued 2, deferred 1, failed 2, oldest %v", got, oldest)
+	}
+	if w := member.do("GET", "/api/v1/admin/jobs", nil, false); w.Code != http.StatusForbidden {
+		t.Fatalf("member: %d %s", w.Code, w.Body.String())
+	}
+	if err := app.DB.Model(&models.NotificationDelivery{}).Where("channel = ? AND status = ?", models.DeliveryEmail, models.DeliveryQueued).
+		Update("status", models.DeliverySent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := readSummary(); got.Queued != 0 || got.OldestQueuedAt != nil {
+		t.Fatalf("no queued emails: %+v", got)
+	}
+}
+
 func TestRetryAndDismissDeadJobs(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)

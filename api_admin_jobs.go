@@ -34,6 +34,14 @@ type adminJobJSON struct {
 	FailedAt  time.Time `json:"failedAt"`
 }
 
+// adminDeliverySummaryJSON contains email delivery totals without recipient details.
+type adminDeliverySummaryJSON struct {
+	Queued         int64      `json:"queued"`
+	Deferred       int64      `json:"deferred"`
+	Failed         int64      `json:"failed"`
+	OldestQueuedAt *time.Time `json:"oldestQueuedAt"`
+}
+
 // maxDeadJobsListed bounds the System page; it says when there are more.
 const maxDeadJobsListed = 100
 
@@ -64,6 +72,16 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load background jobs")
 		return
 	}
+	var deliveries adminDeliverySummaryJSON
+	if err := a.DB.Raw(`SELECT
+		count(*) FILTER (WHERE status = 'queued') AS queued,
+		count(*) FILTER (WHERE status = 'deferred') AS deferred,
+		count(*) FILTER (WHERE status = 'failed' AND updated_at > now() - interval '7 days') AS failed,
+		min(created_at) FILTER (WHERE status = 'queued') AS oldest_queued_at
+		FROM notification_deliveries WHERE channel = 'email'`).Scan(&deliveries).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load background jobs")
+		return
+	}
 	more := len(rows) > maxDeadJobsListed
 	if more {
 		rows = rows[:maxDeadJobsListed]
@@ -79,7 +97,7 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 		out = append(out, adminJobJSON{ID: j.ID, Kind: j.Kind, Label: label, RunsDaily: k.Daily,
 			Attempts: j.Attempts, LastError: j.LastError, FailedAt: j.UpdatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{"jobs": out, "more": more})
+	c.JSON(http.StatusOK, gin.H{"jobs": out, "more": more, "deliveries": deliveries})
 }
 
 // errJobHandled: the job is no longer dead (another admin, or a second

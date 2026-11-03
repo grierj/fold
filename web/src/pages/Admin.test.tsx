@@ -44,7 +44,7 @@ const user = (id: number, name: string, extra: Partial<User> = {}): User => ({ i
 const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): GroupSummary => ({ id, name, description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null, ...extra });
 
 beforeEach(() => {
-  vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false });
+  vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
@@ -878,7 +878,7 @@ describe("room booking approval (M2.1d)", () => {
 });
 
 it("shows failed background tasks on the System tab, counted only when there are some", async () => {
-  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: [{ id: 4, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5, lastError: "boom", failedAt: "2026-10-30T13:00:00Z" }], more: false });
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: [{ id: 4, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5, lastError: "boom", failedAt: "2026-10-30T13:00:00Z" }], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   const tab = await screen.findByRole("tab", { name: "System, 1" });
   expect(tab).toHaveTextContent("System 1");
@@ -895,7 +895,7 @@ it("shows no count on the System tab when nothing failed", async () => {
 
 it("says more than 100 on the System tab when more tasks failed than the list holds", async () => {
   const many = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, kind: "x", label: `Task ${i}`, runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" }));
-  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true });
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByRole("tab", { name: "System, more than 100" })).toHaveTextContent("System 100+");
 });
