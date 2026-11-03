@@ -1048,7 +1048,7 @@ func TestFormControlGuardCatchesPlaceholderLabel(t *testing.T) {
 
 // --- Notification categories are one list ---
 //
-// notify.Categories, the notifications.category CHECK (migration 00010)
+// notify.Categories, the notifications.category CHECK (the baseline migration)
 // and the TS Notification["category"] union must name the same set (#79).
 
 func TestNotificationCategoriesMatch(t *testing.T) {
@@ -1072,7 +1072,8 @@ func TestNotificationCategoriesMatch(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	sqlCats := pick("migrations/00010_notifications.sql", regexp.MustCompile(`CHECK \(category IN \(([^)]*)\)\)`))
+	// The baseline is a pg_dump, so Postgres renders the CHECK as an ANY(ARRAY[...]).
+	sqlCats := pick("migrations/00001_baseline.sql", regexp.MustCompile(`notifications_category_check CHECK \(\(category = ANY \(\(?ARRAY\[([^\]]*)\]`))
 	tsCats := pick("web/src/types.ts", regexp.MustCompile(`(?s)interface Notification \{.*?category: ([^;]*);`))
 	if !reflect.DeepEqual(sqlCats, want) {
 		t.Errorf("SQL CHECK categories %v, notify.Categories %v", sqlCats, want)

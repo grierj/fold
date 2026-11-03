@@ -71,8 +71,10 @@ func TestMigrateStatusNeedsOnlyDatabaseURL(t *testing.T) {
 	}
 }
 
-func TestMigrateDownOneRefusesAdvancedMembershipTenure(t *testing.T) {
-	name := testdb.Fresh(t, false)
+// The baseline Down destroys the schema, so `fold migrate down-one` on a
+// database that holds a user must fail, exit nonzero and change nothing.
+func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
+	name := testdb.Fresh(t, true)
 	db, err := testdb.OpenSQL(name)
 	if err != nil {
 		t.Fatal(err)
@@ -83,50 +85,48 @@ func TestMigrateDownOneRefusesAdvancedMembershipTenure(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := p.UpTo(ctx, 36); err != nil {
+	if _, err := db.Exec(`INSERT INTO users(id,email,status,role) VALUES(1,'cli-down@example.com','active','member')`); err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{
-		`INSERT INTO users(id,email,status,role) VALUES(1,'cli-tenure@example.com','active','member')`,
-		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'CLI tenure group',1,'active','public')`,
-		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,1,10,'member','active')`,
-		`UPDATE memberships SET status='removed' WHERE id=50`,
-		`UPDATE memberships SET status='active' WHERE id=50`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
+	var tablesBefore int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesBefore); err != nil {
+		t.Fatal(err)
 	}
 	url, err := testdb.URL(name)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("APP_ENV", "")
+	t.Setenv("SESSION_SECRET", "")
 	t.Setenv("DATABASE_URL", url)
 
 	var out, errOut bytes.Buffer
 	if code := run([]string{"migrate", "down-one"}, &out, &errOut); code != 1 {
 		t.Fatalf("down-one: code %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "fold: migrate down-one:") || !strings.Contains(errOut.String(), "advanced membership tenure exists; cannot downgrade safely") {
+	if !strings.Contains(errOut.String(), "fold: migrate down-one:") || !strings.Contains(errOut.String(), "baseline down would destroy data; refusing") {
 		t.Fatalf("down-one stderr = %q", errOut.String())
 	}
-	var tenure int64
-	if err := db.QueryRow(`SELECT tenure FROM memberships WHERE id=50`).Scan(&tenure); err != nil || tenure != 2 {
-		t.Fatalf("preserved tenure=%d err=%v, want 2", tenure, err)
+	var email string
+	if err := db.QueryRow(`SELECT email FROM users WHERE id=1`).Scan(&email); err != nil || email != "cli-down@example.com" {
+		t.Fatalf("the refused down-one changed the user row: %q %v", email, err)
 	}
-	var trigger, function bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='memberships'::regclass AND tgname='memberships_tenure_guard' AND NOT tgisinternal)`).Scan(&trigger); err != nil {
-		t.Fatal(err)
+	var tablesAfter int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesAfter); err != nil || tablesAfter != tablesBefore {
+		t.Fatalf("tables after the refusal = %d (%v), want %d", tablesAfter, err, tablesBefore)
 	}
-	if err := db.QueryRow(`SELECT to_regprocedure('guard_membership_tenure()') IS NOT NULL`).Scan(&function); err != nil {
-		t.Fatal(err)
+	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("version after the refusal = %d, %v, want 1", version, err)
 	}
-	version, err := p.GetDBVersion(ctx)
-	if err != nil || version != 36 || !trigger || !function {
-		t.Fatalf("preserved version=%d trigger=%v function=%v err=%v", version, trigger, function, err)
+	// The database still works: status reports the baseline applied.
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"migrate", "status", "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("status after the refusal: code %d, stderr %q", code, errOut.String())
 	}
-	if _, err := db.Exec(`UPDATE memberships SET tenure=9 WHERE id=50`); err == nil {
-		t.Fatal("down-one failure left tenure trigger inactive")
+	var rows []struct{ State string }
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0].State != "applied" {
+		t.Fatalf("status --json = %q (%v)", out.String(), err)
 	}
 }
 

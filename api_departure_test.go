@@ -17,7 +17,6 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
-	"fold/migrations"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -1131,79 +1130,6 @@ func TestDepartureSelfLeaveCancelsRatherThanDeclines(t *testing.T) {
 	}
 }
 
-func TestDepartureLeftMigrationRepairsOnlyAuditedSelfLeaves(t *testing.T) {
-	f := newDepartureTestFixture(t)
-	managerRemoved := newTestUser(t, f.app, "historical manager removal", "password1234", models.RoleMember)
-	unknown := newTestUser(t, f.app, "historical unknown departure", "password1234", models.RoleMember)
-	for _, user := range []*models.User{managerRemoved, unknown} {
-		addMember(t, f.app, user, f.group, models.MembershipMember)
-	}
-	selfAudit := func(user *models.User) {
-		t.Helper()
-		if err := audit.Write(f.app.DB, audit.Entry{Actor: &user.ID, Action: audit.RoleChanged,
-			TargetType: "group", TargetID: f.group.ID, Meta: map[string]any{
-				"userId": user.ID, "oldRole": "member", "newRole": "none", "keptCount": 0, "endedCount": 0,
-			}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	selfAudit(f.subject)
-	selfAudit(managerRemoved)
-	if err := audit.Write(f.app.DB, audit.Entry{Actor: &f.leader.ID, Action: audit.MemberRemoved,
-		TargetType: "group", TargetID: f.group.ID, Meta: map[string]any{"userId": managerRemoved.ID, "oldRole": "member"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.app.DB.Model(&models.Membership{}).Where("group_id = ? AND user_id IN ?", f.group.ID,
-		[]uint{f.subject.ID, managerRemoved.ID, unknown.ID}).Update("status", memberRemoved).Error; err != nil {
-		t.Fatal(err)
-	}
-	var original models.Membership
-	if err := f.app.DB.Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).First(&original).Error; err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, err := f.app.DB.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := migrations.NewProvider(sqlDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if _, err := provider.Up(context.Background()); err != nil {
-			t.Errorf("restore latest migrations: %v", err)
-		}
-	})
-	if _, err := provider.DownTo(context.Background(), 38); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.UpTo(context.Background(), 39); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		user   *models.User
-		status string
-	}{{f.subject, models.MembershipLeft}, {managerRemoved, memberRemoved}, {unknown, memberRemoved}, {f.leader, "active"}} {
-		if got := membershipStatus(f.app, tc.user, f.group); got != tc.status {
-			t.Fatalf("user %d status=%q, want %q", tc.user.ID, got, tc.status)
-		}
-	}
-	var corrected models.Membership
-	if err := f.app.DB.First(&corrected, original.ID).Error; err != nil || corrected.Tenure != original.Tenure || !corrected.JoinedAt.Equal(original.JoinedAt) {
-		t.Fatalf("migration changed membership identity/tenure: %+v err=%v", corrected, err)
-	}
-	var logs []models.AuditLog
-	if err := f.app.DB.Where("action = ?", "membership.departure_corrected").Find(&logs).Error; err != nil || len(logs) != 1 || logs[0].ActorID != nil {
-		t.Fatalf("correction audit=%+v err=%v", logs, err)
-	}
-	if _, err := provider.DownTo(context.Background(), 38); err == nil || !strings.Contains(err.Error(), "left memberships exist; cannot downgrade safely") {
-		t.Fatalf("unsafe downgrade allowed: %v", err)
-	}
-	if version, err := provider.GetDBVersion(context.Background()); err != nil || version != 39 {
-		t.Fatalf("version after refused downgrade=%d err=%v", version, err)
-	}
-}
-
 func TestDepartureSelfRejoinKeepsNormalGroupRules(t *testing.T) {
 	for _, tc := range []struct {
 		name, visibility string
@@ -1301,34 +1227,14 @@ func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T
 	if reactivated.ID != original.ID || !reactivated.JoinedAt.Equal(original.JoinedAt) || reactivated.Tenure != original.Tenure+1 {
 		t.Fatalf("reactivation tenure/identity: before=%+v after=%+v", original, reactivated)
 	}
-	// The real provider may roll back newer migrations first, but migration 36
-	// must preserve tenure 2 and its version before this old tenure-1 snapshot is
-	// tested through the ordinary confirmation endpoint.
-	sqlDB, err := f.app.DB.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := migrations.NewProvider(sqlDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if _, err := provider.Up(context.Background()); err != nil {
-			t.Errorf("restore latest migrations: %v", err)
-		}
-	})
-	if _, err := provider.DownTo(context.Background(), 35); err == nil || !strings.Contains(err.Error(), "advanced membership tenure exists; cannot downgrade safely") {
-		t.Fatalf("attempted rollback did not preserve advanced tenure: %v", err)
-	}
-	version, err := provider.GetDBVersion(context.Background())
-	if err != nil || version != 36 {
-		t.Fatalf("version after refused tenure rollback=%d err=%v, want 36", version, err)
+	// The tenure guard (now part of the baseline schema) keeps tenure 2: a direct
+	// write is refused, so this old tenure-1 snapshot is tested through the
+	// ordinary confirmation endpoint.
+	if err := f.app.DB.Exec(`UPDATE memberships SET tenure = ? WHERE id = ?`, original.Tenure, reactivated.ID).Error; err == nil {
+		t.Fatal("a direct tenure write was accepted")
 	}
 	if err := f.app.DB.First(&reactivated, reactivated.ID).Error; err != nil || reactivated.Tenure != original.Tenure+1 {
-		t.Fatalf("tenure after refused rollback=%d err=%v", reactivated.Tenure, err)
-	}
-	if _, err := provider.Up(context.Background()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("tenure after the refused write=%d err=%v", reactivated.Tenure, err)
 	}
 	beforeReplay := departureWriteCounts(t, f.app)
 	if w := confirmDeparturePreview(t, f.subjectC, "POST", leavePath, old, nil, ""); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"departure_stale"`) {

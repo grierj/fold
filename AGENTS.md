@@ -84,7 +84,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   (display only). Leadership is `Membership.Role = leader`; a group can have several leaders.
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in the same transaction as
   the change. Admin notices are separate stored notification rows written in that transaction.
-- Migrations: every schema change is a **new** goose file `NNNNN_name.sql`; never edit an old one.
+- Migrations: every schema change is a **new** goose file `NNNNN_name.sql`; never edit an old one; the one exception is the pre-live baseline window in DEC-138.
   The model change and `models.All()` go in the same PR.
 - Tests: `make test` (`go test ./...` against `DATABASE_URL`; `scripts/go-test.sh` shards the root
   package; starts the dev database if unset). Tests hash passwords at bcrypt's cheapest cost; a
@@ -234,17 +234,20 @@ together, or changes 3+ tables. Smaller work is exempt.
 
 - Split such milestones early into thin end-to-end slices. Build each slice database, then API and
   internals, then UI. New logic can ship hidden until its UI lands.
-- Once live, schema changes use expand and contract:
-  1. Expand: additive changes only, plus data migration. Add a trigger on the old columns that
-     logs any INSERT or UPDATE to an audit table.
-  2. Wait: at least 14 days, or two runs of the slowest job touching the columns, whichever is
-     longer. Reset `pg_stat_statements` at the start.
-  3. Contract: the migration refuses to run if the audit table has any hits, if any
-     `pg_stat_statements` query mentions the old column, or if the deployed build SHA (health
-     endpoint) predates the expand commit. In CI, each contract migration names its expand
-     migration and fails if that one is under 14 days old.
-- Don't rename columns at expand; it breaks old versions still running. Before go-live, contract
-  can follow right away.
+- Schema changes are additive first (DEC-138). A release may add tables,
+  columns, indexes and constraints and backfill data, but never drops or
+  renames anything the previous release still reads or writes. Code in
+  that release writes the new shape and reads new-then-old. The next
+  release may drop the old shape (the contract step): its migration names
+  the expand migration it contracts, and CI fails when that expand is not
+  in an earlier tagged release. There are no audit triggers on old
+  columns and no waiting period: one binary runs at a time
+  (`docker compose up`), so the previous release is the only old version
+  that can still be running.
+- Never edit a migration any tagged release has applied. Before the first
+  church, DEC-138 allows editing the baseline migration directly; that
+  window closes at the first tagged release or first church deployment,
+  whichever comes first.
 
 ## Development
 
@@ -263,6 +266,19 @@ database" message, in dev too. Env vars: `config.go`, `.env.example`; `SESSION_S
 unless `APP_ENV=dev`. CLI (C11, PLAN 11.4): `fold` (same as `fold serve`), `fold healthcheck`,
 `fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), `fold version` (needs nothing);
 `--json` gives machine-readable output.
+
+The migration chain is one generated baseline (M7.7, DEC-138). `scripts/baseline-proof.sh generate`
+made it from the frozen pre-squash chain (commit `be61e582c3011263307e4db4497056f7fd70bfd9`, 63
+files through `00064`) and `scripts/baseline-proof.sh proof` re-proves a tree against that chain
+with a normalized `pg_dump` diff, on a scratch server only (`--help` lists the arguments). Before
+it changes anything it proves that `--server-url` (the Go driver) and `--client-url` (psql and
+`pg_dump`) reach the same cluster, database and role, clears every `PG*` variable, and requires a
+free `--boot-port`. The
+baseline's Down destroys the schema and refuses while any user exists; it is for scratch databases
+and the down/up test, never application rollback. A development database migrated by the old chain
+stores versions up to 64: the unchanged runner treats it as current and does not refuse it, so its
+owner must recreate it before running a new binary on it. There is no converter
+(`docs/plan/briefs/audit-2026-11/R9-baseline-squash.md` section 7.7).
 
 ### Before every push: quick sanity checks
 
