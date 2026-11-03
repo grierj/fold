@@ -2178,7 +2178,9 @@ and existing milestones until a first church is live (DEC-145).
 - Brief: [`R6-R11-reliability-perf.md`](briefs/audit-2026-11/R6-R11-reliability-perf.md) (R11).
 
 **M7.7 Baseline squash (R9, DEC-138)**
-- Scope: one generated baseline replacing 61 migrations, real `date` types where the brief allows, provenance folded into `registrations`, additive-first rule replacing expand/contract. Preconditions gate in the brief is a hard stop.
+- Scope: one generated baseline replacing the current chain (63 SQL files through `00064`, with `00021` absent; the audit saw 61 files through `00062`), real `date` types where the brief allows, provenance folded into `registrations`, additive-first rule replacing expand/contract. Preconditions gate in the brief is a hard stop.
+- Sequence: four reviewed PRs. **S1** (documentation only) records the sequence, the owner's statements and the agreed technical corrections. **S2** generates the schema-equivalent baseline, proves it by `pg_dump` diff and activates the replacement rules (`AGENTS.md`, 14.1, C1, "Done means"). **S3** changes the two date columns. **S4** folds exact-date provenance into `registrations`. S1 changes no migration and no operative rule; S2 opens only after the brief's squash preflight (refreshed release and deployment evidence, isolated proof databases, an announced migration freeze).
+- Status: claimed in [STATUS.md](../../STATUS.md) Nov 3, 2026 with S1, the documentation PR. Baseline generation and migration editing have not begun.
 - Brief: [`R9-baseline-squash.md`](briefs/audit-2026-11/R9-baseline-squash.md).
 
 **M7.8 People and own-data export (R3 export half)**
