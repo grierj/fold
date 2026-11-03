@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
 import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushBadge, pushHistoryLine, pushLine, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
@@ -52,9 +52,16 @@ describe("counts", () => {
   });
 
   it("asks before sending with the count", () => {
-    expect(confirmLine(133, null, "America/Boise")).toBe("Send to 133 people now?");
-    expect(confirmLine(1, "2026-11-05T16:00:00Z", "America/Boise")).toMatch(/^Send to 1 person on Thu, Nov 5 at 9:00 AM( MST)?\?$/);
-    expect(confirmLine(1, "2026-11-05T16:00:00Z", "Asia/Kolkata")).toBe("Send to 1 person on Thu, Nov 5 at 9:30 PM GMT+5:30?");
+    // Keep the scheduled date beyond tomorrow in both time zones.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-02T18:00:00Z"));
+    try {
+      expect(confirmLine(133, null, "America/Boise")).toBe("Send to 133 people now?");
+      expect(confirmLine(1, "2026-11-05T16:00:00Z", "America/Boise")).toMatch(/^Send to 1 person on Thu, Nov 5 at 9:00 AM( MST)?\?$/);
+      expect(confirmLine(1, "2026-11-05T16:00:00Z", "Asia/Kolkata")).toBe("Send to 1 person on Thu, Nov 5 at 9:30 PM GMT+5:30?");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names every status in words", () => {
