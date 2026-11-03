@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/notify"
 	"fold/models"
 )
 
@@ -389,6 +390,13 @@ func TestRemoveBlocksSelfRegisterUntilAdded(t *testing.T) {
 	if titles := notificationTitles(t, c); len(titles) != 1 {
 		t.Fatalf("notifications for removed person = %d, want 1 (%v)", len(titles), titles)
 	}
+	var removedNotice models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", u.ID, notify.RegistrationRemoved).First(&removedNotice).Error; err != nil {
+		t.Fatalf("removed notice: %v", err)
+	}
+	if got := noticeDataDate(t, removedNotice); got != date {
+		t.Fatalf("removed notice date = %q, want %q", got, date)
+	}
 	// Self-registration is blocked with 409.
 	if code, _ := registerAs(c, eventID, date, "going", nil); code != http.StatusConflict {
 		t.Fatalf("removed re-register: %d, want 409", code)
@@ -600,6 +608,13 @@ func TestPromoteActionSeatsWaitlisted(t *testing.T) {
 	// The promoted person is told.
 	if titles := notificationTitles(t, c2); len(titles) != 1 {
 		t.Fatalf("notifications for promoted person = %d, want 1 (%v)", len(titles), titles)
+	}
+	var promotedNotice models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", u2.ID, notify.RegistrationPromoted).First(&promotedNotice).Error; err != nil {
+		t.Fatalf("promoted notice: %v", err)
+	}
+	if got := noticeDataDate(t, promotedNotice); got != date {
+		t.Fatalf("promoted notice date = %q, want %q", got, date)
 	}
 }
 
@@ -1947,7 +1962,7 @@ func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
 				t.Fatal(err)
 			}
 			person := addMyPerson(t, f.client, map[string]any{"firstName": "Mary", "kind": "adult", "birthDate": "1990-01-01"})
-			answer := batchAnswer(t, f.client, f.event.ID, f.dates[1].OriginalDate, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+			answer := batchAnswer(t, f.client, f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate), map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
 			if len(answer.People) != 1 || answer.People[0].Status != models.RegWaitlisted {
 				t.Fatal("household not waitlisted", answer)
 			}
@@ -1958,7 +1973,7 @@ func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
 				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("capacity", 2).Error; err != nil {
 					t.Fatal(err)
 				}
-				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/promote", map[string]any{"date": f.dates[1].OriginalDate, "registrationId": answer.People[0].RegistrationID}, 200)
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/promote", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "registrationId": answer.People[0].RegistrationID}, 200)
 			}
 			var reg models.Registration
 			if err := f.app.DB.First(&reg, answer.People[0].RegistrationID).Error; err != nil {

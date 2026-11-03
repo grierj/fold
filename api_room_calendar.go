@@ -62,7 +62,7 @@ const maxRoomCalendarSlots = 2000
 func roomCalendarWindow(view, date string, zone *time.Location, now time.Time) (first, last time.Time, ok bool) {
 	day := now.In(zone)
 	if date != "" {
-		d, err := time.Parse("2006-01-02", date)
+		d, err := models.ParseCalendarDate(date)
 		if err != nil {
 			return time.Time{}, time.Time{}, false
 		}
@@ -128,13 +128,12 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 	// booking with no pending request lost its room and holds nothing.
 	type bookingRow struct {
 		models.RoomBooking
-		EventID      uint
-		OriginalDate string
-		Waiting      bool
+		EventID uint
+		Waiting bool
 	}
 	var rows []bookingRow
 	q := a.DB.Table("room_bookings b").
-		Select(`b.*, o.event_id, o.original_date, (b.status = ?) AS waiting`, models.BookingRequested).
+		Select(`b.*, o.event_id, (b.status = ?) AS waiting`, models.BookingRequested).
 		Joins("JOIN event_occurrences o ON o.id = b.occurrence_id").
 		Where("b.room_id IN ? AND b.starts_at < ? AND b.ends_at > ? AND o.status = ?",
 			roomIDs, windowEnd, windowStart, models.OccurrenceScheduled)
@@ -197,10 +196,10 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 		case occ == nil:
 		case ev != nil && vs.canSeeDate(me, ev, occ):
 			full := occurrenceToJSON(ev, occ, "")
-			slot = roomSlotJSON{StartsAt: r.StartsAt, EndsAt: r.EndsAt, EventID: ev.ID, Date: occ.OriginalDate,
+			slot = roomSlotJSON{StartsAt: r.StartsAt, EndsAt: r.EndsAt, EventID: ev.ID, Date: models.FormatCalendarDate(occ.OriginalDate),
 				Title: full.Title, ChurchWide: ev.GroupID == nil}
 			if !vs.canSeeSeries(me, ev) {
-				slot.DateURL = occurrenceDatePath(ev.ID, occ.OriginalDate)
+				slot.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
 			}
 			grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
 			if shown := a.groupShownTo(me, grp, rel); shown != nil {
@@ -220,8 +219,8 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 			// the series or its group.
 			read := scoped[occ.ID]
 			full := occurrenceToJSON(&read.Event, occ, "")
-			slot = roomSlotJSON{StartsAt: r.StartsAt, EndsAt: r.EndsAt, EventID: read.Event.ID, Date: occ.OriginalDate,
-				DateURL: occurrenceDatePath(read.Event.ID, occ.OriginalDate), Title: full.Title,
+			slot = roomSlotJSON{StartsAt: r.StartsAt, EndsAt: r.EndsAt, EventID: read.Event.ID, Date: models.FormatCalendarDate(occ.OriginalDate),
+				DateURL: occurrenceDatePath(read.Event.ID, models.FormatCalendarDate(occ.OriginalDate)), Title: full.Title,
 				ChurchWide: read.Event.GroupID == nil}
 		}
 		// Only an admin gets waiting rows. One for a date even an admin

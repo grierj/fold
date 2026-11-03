@@ -215,6 +215,24 @@ func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess, now t
 	return ""
 }
 
+// isCalendarDate is true for a real YYYY-MM-DD. Date inputs that go into a
+// lookup check it first: events.original_date is a date column, so a
+// shape-only string such as 2026-02-30 would fail inside Postgres (SQLSTATE
+// 22008) instead of simply matching no row.
+func isCalendarDate(s string) bool {
+	_, err := models.ParseCalendarDate(s)
+	return err == nil
+}
+
+// firstScheduledOn loads the scheduled date of an event, or reports not found
+// for a date that cannot exist.
+func firstScheduledOn(db *gorm.DB, eventID uint, date string, out *models.EventOccurrence) error {
+	if !isCalendarDate(date) {
+		return gorm.ErrRecordNotFound
+	}
+	return db.Where("event_id = ? AND original_date = ? AND status = ?", eventID, date, models.OccurrenceScheduled).First(out).Error
+}
+
 func occurrenceDatePath(eventID uint, date string) string {
 	return "/events/" + strconv.FormatUint(uint64(eventID), 10) + "/dates/" + date
 }
@@ -268,7 +286,7 @@ func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupL
 		actor, access, facts = invited.Account, invited.Access, invited.Facts
 	}
 	canVideo := policy.CanSeeOccurrenceVideo(actor, ordinary, manager, access, facts, now, videoRevealOf(ev), reg.Status)
-	out := dateOccurrenceJSON{ID: occ.ID, EventID: ev.ID, Date: occ.OriginalDate, DateURL: occurrenceDatePath(ev.ID, occ.OriginalDate),
+	out := dateOccurrenceJSON{ID: occ.ID, EventID: ev.ID, Date: models.FormatCalendarDate(occ.OriginalDate), DateURL: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
 		Title: full.Title, Location: full.Location, StartsAt: full.StartsAt, EndsAt: full.EndsAt,
 		StartsLocal: full.StartsLocal, EndsLocal: full.EndsLocal, TZID: full.TZID, DurationMinutes: full.DurationMinutes,
 		RemoteAvailable: events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity), GuestsAllowed: full.GuestsAllowed,
@@ -337,7 +355,7 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	date := c.Param("date")
-	if _, dateErr := time.Parse("2006-01-02", date); err != nil || id == 0 || dateErr != nil {
+	if _, dateErr := models.ParseCalendarDate(date); err != nil || id == 0 || dateErr != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return dateOccurrenceJSON{}, false
 	}

@@ -681,7 +681,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	}
 	type next struct {
 		UID          uint
-		OriginalDate string
+		OriginalDate time.Time
 		StartsAt     time.Time
 	}
 	var dates []next
@@ -711,7 +711,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	for _, d := range dates {
 		if v := out[d.UID]; v != nil {
 			v[content.FieldEventTime] = formatWhen(d.StartsAt, loc)
-			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, d.OriginalDate))
+			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
 		}
 	}
 	return out, nil

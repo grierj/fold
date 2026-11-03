@@ -77,7 +77,7 @@ func TestReminderSendsOnceToGoingAndWaitlist(t *testing.T) {
 	got := reminderMails(t, f.app, f.teen.Email)
 	if len(got) != 1 || !strings.HasPrefix(got[0].Subject, "Reminder: Book night on ") ||
 		!strings.Contains(got[0].Body, "Hi "+firstName(f.teen.PublicName())) ||
-		!strings.Contains(got[0].HTMLBody, occurrenceDatePath(f.groupEvent.ID, f.groupOcc.OriginalDate)) ||
+		!strings.Contains(got[0].HTMLBody, occurrenceDatePath(f.groupEvent.ID, models.FormatCalendarDate(f.groupOcc.OriginalDate))) ||
 		!strings.Contains(got[0].Body, "You're getting event updates") || strings.Contains(got[0].FromAddress, " via ") {
 		t.Fatalf("going: %+v", got)
 	}
@@ -228,7 +228,7 @@ func TestReminderMessageReadableByEventManagers(t *testing.T) {
 	m := got.Message
 	if w.Code != http.StatusOK || m.Category != models.MessageCategoryReminder || m.Editable || m.AuthorName != "" || m.Reminder == nil ||
 		m.Reminder.Kind != reminderGoing || m.Reminder.EventTitle != "Book night" || m.Reminder.OccurrenceID != f.groupOcc.ID ||
-		m.Reminder.EventID != f.groupEvent.ID || m.Reminder.Date != f.groupOcc.OriginalDate || m.FailedCount != 1 {
+		m.Reminder.EventID != f.groupEvent.ID || m.Reminder.Date != f.groupOcc.StartsAt.UTC().Format("2006-01-02") || m.FailedCount != 1 {
 		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
 	}
 	// The heading reads as the emails did; the subject itself stays as written.
@@ -357,7 +357,7 @@ func TestDateRemindersForManagersOnly(t *testing.T) {
 	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("waitlist_enabled", true)
 	waiting := newTestUser(t, f.app, "waiting", "password1234", models.RoleMember)
 	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &waiting.ID, Status: models.RegWaitlisted})
-	path := "/api/v1/events/" + itoa(f.groupEvent.ID) + "/dates/" + f.groupOcc.OriginalDate
+	path := "/api/v1/events/" + itoa(f.groupEvent.ID) + "/dates/" + models.FormatCalendarDate(f.groupOcc.OriginalDate)
 	read := func(c *apiClient) (dateOccurrenceJSON, string) {
 		t.Helper()
 		w := c.do("GET", path, nil, false)
@@ -441,7 +441,7 @@ func TestMessageListRemindersForAdminsOnly(t *testing.T) {
 	}
 	admin := list(f.admin, "")
 	if m, ok := admin[id]; !ok || m.Category != models.MessageCategoryReminder || m.Reminder == nil || m.Reminder.EventTitle != "Book night" ||
-		m.Reminder.Date != f.groupOcc.OriginalDate || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) || m.Reminder.TZID != "UTC" {
+		m.Reminder.Date != f.groupOcc.StartsAt.UTC().Format("2006-01-02") || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) || m.Reminder.TZID != "UTC" {
 		t.Fatalf("admin list: %+v", m)
 	}
 	if m := admin[own]; m.Category != models.MessageCategoryAnnouncement || m.Reminder != nil || m.DisplaySubject != "" {

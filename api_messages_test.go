@@ -111,6 +111,11 @@ func TestComposerOffersOnlyWhatTheAuthorMayMessage(t *testing.T) {
 	if len(f.options(t, f.leader).Events[0].Dates) != 1 {
 		t.Fatal("events list their upcoming dates")
 	}
+	// A listed date is the plain YYYY-MM-DD; the fixture's event starts at
+	// 19:00 UTC, so its start time names the date independently.
+	if d := f.options(t, f.leader).Events[0].Dates[0]; d.OccurrenceID != f.groupOcc.ID || d.Date != f.groupOcc.StartsAt.UTC().Format("2006-01-02") {
+		t.Fatalf("composer date = %+v, want occurrence %d on %s", d, f.groupOcc.ID, f.groupOcc.StartsAt.UTC().Format("2006-01-02"))
+	}
 }
 
 // ?event=<id> answers only that event, by the same rules, for the date

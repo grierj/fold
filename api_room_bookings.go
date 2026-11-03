@@ -195,7 +195,7 @@ func (a *App) managedOccurrence(c *gin.Context) (*models.Event, *models.EventOcc
 		return nil, nil, false
 	}
 	date := c.Param("date")
-	if _, err := time.Parse("2006-01-02", date); err != nil {
+	if _, err := models.ParseCalendarDate(date); err != nil {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return nil, nil, false
 	}
@@ -393,7 +393,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 				return nil
 			}
 			return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingReleased, TargetType: "occurrence", TargetID: occ.ID,
-				Meta: map[string]any{"roomId": old.RoomID, "eventId": ev.ID, "date": occ.OriginalDate}, IP: c.ClientIP()})
+				Meta: map[string]any{"roomId": old.RoomID, "eventId": ev.ID, "date": models.FormatCalendarDate(occ.OriginalDate)}, IP: c.ClientIP()})
 		}
 		lockedRoom, err := lockRoom(tx, *body.RoomID)
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !lockedRoom.Active) {
@@ -445,7 +445,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 			}
 		}
 		action := audit.RoomBookingBooked
-		meta := map[string]any{"roomId": room.ID, "eventId": ev.ID, "date": occ.OriginalDate, "setupMinutes": setup, "teardownMinutes": teardown}
+		meta := map[string]any{"roomId": room.ID, "eventId": ev.ID, "date": models.FormatCalendarDate(occ.OriginalDate), "setupMinutes": setup, "teardownMinutes": teardown}
 		if req != nil {
 			meta["requestId"] = req.ID
 		}
@@ -550,7 +550,7 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 			if err := move(models.BookingRequested); err != nil {
 				return nil, err
 			}
-			lost = append(lost, occ.OriginalDate)
+			lost = append(lost, models.FormatCalendarDate(occ.OriginalDate))
 		}
 	}
 	return lost, nil

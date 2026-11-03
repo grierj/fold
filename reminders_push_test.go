@@ -116,7 +116,7 @@ func TestPushReminderGoesOnceTwoHoursBefore(t *testing.T) {
 	// the tap opens the date page.
 	note := pushPayload(t, fp, phone)
 	if note.Title != "Reminder: Book night" || note.Body != "Starts at 7:00 PM" ||
-		!strings.HasSuffix(note.Navigate, occurrenceDatePath(f.groupEvent.ID, f.groupOcc.OriginalDate)) {
+		!strings.HasSuffix(note.Navigate, "/events/"+itoa(f.groupEvent.ID)+"/dates/"+f.groupOcc.StartsAt.UTC().Format("2006-01-02")) {
 		t.Fatalf("lock screen: %+v", note)
 	}
 	if strings.Contains(note.Title+note.Body, "Elm") || strings.Contains(note.Title+note.Body, "412") {

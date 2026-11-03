@@ -74,7 +74,7 @@ func (f *fixture) use(room, event uint, days int, override string) uint {
 	f.seq++
 	start := f.now.AddDate(0, 0, days).Add(time.Duration(f.seq) * time.Minute)
 	// An event's original dates are unique; each use gets its own.
-	occ := models.EventOccurrence{EventID: event, OriginalDate: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, f.seq).Format("2006-01-02"),
+	occ := models.EventOccurrence{EventID: event, OriginalDate: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, f.seq),
 		StartsAt: start, EndsAt: start.Add(time.Hour), Status: "scheduled"}
 	if override != "" {
 		occ.VisibilityOverride = &override
@@ -329,7 +329,7 @@ func TestSuggestionRanking(t *testing.T) {
 	sameKind := f.event(f.group("Study 4", public, "study"), public)
 	at := f.now.AddDate(0, 0, -50)
 	for _, r := range []uint{small, fits, big} {
-		occ := models.EventOccurrence{EventID: sameKind, OriginalDate: fmt.Sprintf("2020-01-%02d", r%28+1), StartsAt: at, EndsAt: at.Add(time.Hour), Status: "scheduled"}
+		occ := models.EventOccurrence{EventID: sameKind, OriginalDate: time.Date(2020, 1, int(r%28)+1, 0, 0, 0, 0, time.UTC), StartsAt: at, EndsAt: at.Add(time.Hour), Status: "scheduled"}
 		f.db.Create(&occ)
 		f.db.Exec(`INSERT INTO room_bookings (occurrence_id, room_id, starts_at, ends_at, padded_range, status, allow_overlap, overlap_reason) VALUES (?, ?, ?, ?, tstzrange(?, ?, '[)'), 'confirmed', true, 'test')`,
 			occ.ID, r, at, at.Add(time.Hour), at, at.Add(time.Hour))
@@ -442,7 +442,7 @@ func seedLoad(t testing.TB, f *fixture) Subject {
 		t.Fatal(err)
 	}
 	exec(`INSERT INTO event_occurrences (event_id, original_date, starts_at, ends_at, status, created_at, updated_at)
-		SELECT e.id, to_char(date '2000-01-01' + n, 'YYYY-MM-DD'),
+		SELECT e.id, date '2000-01-01' + n,
 			now() - interval '365 days' + (n * 547 / 50) * interval '1 day' + (e.id % 24) * interval '1 hour',
 			now() - interval '365 days' + (n * 547 / 50) * interval '1 day' + (e.id % 24) * interval '1 hour' + interval '1 hour', 'scheduled', now(), now()
 		FROM events e CROSS JOIN generate_series(1, 50) n`)
@@ -480,7 +480,7 @@ func TestSuggestionBusyCheck(t *testing.T) {
 	// minutes of setup: it holds [18:30, 20:00).
 	other := f.event(f.group("Other", public, ""), public)
 	start := time.Date(f.now.Year(), f.now.Month(), f.now.Day(), 19, 0, 0, 0, time.UTC).AddDate(0, 0, 3)
-	occ := models.EventOccurrence{EventID: other, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: "scheduled"}
+	occ := models.EventOccurrence{EventID: other, OriginalDate: start, StartsAt: start, EndsAt: start.Add(time.Hour), Status: "scheduled"}
 	if err := f.db.Create(&occ).Error; err != nil {
 		t.Fatal(err)
 	}

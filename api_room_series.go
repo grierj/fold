@@ -198,7 +198,7 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 		Date, RoomName, Status string
 		Waiting                bool
 	}
-	if err := a.DB.Raw(`SELECT o.original_date AS date, r.name AS room_name, b.status,
+	if err := a.DB.Raw(`SELECT to_char(o.original_date, 'YYYY-MM-DD') AS date, r.name AS room_name, b.status,
 			EXISTS (SELECT 1 FROM room_requests q WHERE q.id = b.request_id AND q.status = ?) AS waiting
 		FROM room_bookings b JOIN event_occurrences o ON o.id = b.occurrence_id JOIN rooms r ON r.id = b.room_id
 		WHERE o.event_id = ? AND o.status = ? AND o.starts_at > ? AND b.status IN ?
@@ -386,7 +386,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 		}
 		switch result {
 		case bookedRequested:
-			out.Lost = append(out.Lost, occ.OriginalDate)
+			out.Lost = append(out.Lost, models.FormatCalendarDate(occ.OriginalDate))
 		case bookedPending:
 			out.Pending++
 		default:
@@ -494,7 +494,7 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 		}
 		switch result {
 		case bookedRequested:
-			lost = append(lost, occs[i].OriginalDate)
+			lost = append(lost, models.FormatCalendarDate(occs[i].OriginalDate))
 		case bookedPending:
 			waiting++
 		}

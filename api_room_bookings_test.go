@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -95,6 +96,10 @@ func TestRoomBookingOneDate(t *testing.T) {
 	if contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.RoomBookingBooked) != 1 {
 		t.Fatal("the booking should be audited")
 	}
+	// The audit data holds the exact YYYY-MM-DD, not a time.
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND meta_json->>'date' = ?", audit.RoomBookingBooked, feedDate(f.startOn)) != 1 {
+		t.Fatalf("the booking audit should name the date %s", feedDate(f.startOn))
+	}
 
 	// B at 20:20 wants [19:50, 21:20): busy, and refused without a reason.
 	decodeJSON(t, f.leader.do("GET", f.path(f.eventB, "/rooms"), nil, false), &picker)
@@ -116,6 +121,9 @@ func TestRoomBookingOneDate(t *testing.T) {
 	// leader can't book over it.
 	if code, _ := f.book(t, f.leader, f.eventA, map[string]any{"roomId": nil}); code != http.StatusOK {
 		t.Fatalf("release A: %d", code)
+	}
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND meta_json->>'date' = ?", audit.RoomBookingReleased, feedDate(f.startOn)) != 1 {
+		t.Fatalf("the release audit should name the date %s", feedDate(f.startOn))
 	}
 	if code, body := f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID}); code != http.StatusConflict {
 		t.Fatalf("booking over a double-booking: %d %s", code, body)
@@ -227,6 +235,16 @@ func TestRoomBookingMovesWithItsDate(t *testing.T) {
 	}
 	if n.Title != "Room lost on 1 date: Event A" {
 		t.Fatalf("notice title %q", n.Title)
+	}
+	// The notice's Data lists the lost dates as plain YYYY-MM-DD strings.
+	var lostData struct {
+		Dates []string `json:"dates"`
+	}
+	if err := json.Unmarshal([]byte(n.Data), &lostData); err != nil {
+		t.Fatalf("room lost data %q: %v", n.Data, err)
+	}
+	if len(lostData.Dates) != 1 || lostData.Dates[0] != feedDate(f.startOn) {
+		t.Fatalf("room lost dates = %v, want [%s]", lostData.Dates, feedDate(f.startOn))
 	}
 }
 

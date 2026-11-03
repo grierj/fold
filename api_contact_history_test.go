@@ -242,13 +242,13 @@ func TestContactHistoryAddPathWalk(t *testing.T) {
 		if err := f.app.DB.Where("request_id = ?", r.ID).First(&access).Error; err != nil {
 			t.Fatal(err)
 		}
-		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": access.RegistrationID, "date": f.dates[0].OriginalDate}, 200)
+		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": access.RegistrationID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
 		r = createOccurrenceAsk(t, f, f.other, f.dates[2], nil)
 		if w := addDecision(f.stranger, r.ID, "subject", "approved"); w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
 		}
-		apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, f.dates[2].OriginalDate)+"/block", nil, 200)
-		apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, f.dates[2].OriginalDate)+"/decline", nil, 404)
+		apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate))+"/block", nil, 200)
+		apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate))+"/decline", nil, 404)
 		for _, id := range []uint{f.other.ID, f.issuer.ID} {
 			entries := getHistory(t, f.admin, id, "?limit=100").Entries
 			for _, action := range []string{audit.AddRequested, audit.AddDecision, audit.AddCompleted, audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded, audit.OccurrenceBlocked, audit.RegistrationRemoved} {
@@ -264,7 +264,7 @@ func TestContactHistoryAddPathWalk(t *testing.T) {
 			t.Fatal(err)
 		}
 		direct := newTestUser(t, f.app, "direct history adult", "password1234", models.RoleMember)
-		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": direct.ID, "date": f.dates[1].OriginalDate}, 200)
+		apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": direct.ID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
 		for _, action := range []string{audit.RegistrationAdded, audit.OccurrenceAccessAdded} {
 			historyHas(t, getHistory(t, f.admin, direct.ID, "").Entries, action)
 		}

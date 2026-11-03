@@ -95,6 +95,22 @@ func TestAddRequestPageReadBudgetAndScalarParity(t *testing.T) {
 	if len(got) != 100 || many > small+3 || many > 20 {
 		t.Fatalf("pending rows %d reads one=%d many=%d (budget20)", len(got), small, many)
 	}
+	// The rows that name an occurrence carry its plain YYYY-MM-DD. The
+	// fixture's series runs at 19:00 UTC, so each start time names its date.
+	allowed := map[string]bool{f.dates[0].StartsAt.UTC().Format("2006-01-02"): true, f.dates[2].StartsAt.UTC().Format("2006-01-02"): true}
+	named := 0
+	for _, row := range got {
+		if row.Purpose != policy.RequestOccurrenceAdd {
+			continue
+		}
+		named++
+		if !allowed[row.Date] || row.StartsAt == nil || row.Date != row.StartsAt.UTC().Format("2006-01-02") {
+			t.Fatalf("add request date = %q (startsAt %v), want one of %v", row.Date, row.StartsAt, allowed)
+		}
+	}
+	if named != 80 {
+		t.Fatalf("checked %d occurrence add request dates, want 80", named)
+	}
 	// Compare every DTO with the existing scalar presenter under the same clock.
 	op := &contactOperation{actor: f.issuer, now: now, zone: time.UTC}
 	var rs []models.ContactRequest

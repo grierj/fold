@@ -242,7 +242,7 @@ func TestRoomCalendarExactDateInvitation(t *testing.T) {
 	seedReadInvitation(t, f.app, f.leaderUser, f.memberUser, f.secret, occ)
 	cal, body := f.calendar(t, f.member, "date="+feedDate(f.startOn))
 	b := roomByName(cal, "Fellowship Hall").Bookings[1]
-	if b.Reserved || b.Title != "Quiet circle night" || b.DateURL != occurrenceDatePath(f.secret.ID, occ.OriginalDate) {
+	if b.Reserved || b.Title != "Quiet circle night" || b.DateURL != occurrenceDatePath(f.secret.ID, models.FormatCalendarDate(occ.OriginalDate)) {
 		t.Fatalf("invited date: %+v", b)
 	}
 	if b.GroupID != nil || strings.Contains(body, `"groupName":"Quiet circle"`) {
@@ -311,7 +311,7 @@ func TestRoomCalendarDateVisibilityAndRoles(t *testing.T) {
 		t.Fatalf("a date made invite-only should be Reserved: %+v", a)
 	}
 	reservedKeysOK(t, a)
-	if opened.Reserved || opened.Title != "Quiet circle night" || opened.DateURL != occurrenceDatePath(f.secret.ID, occSecret.OriginalDate) ||
+	if opened.Reserved || opened.Title != "Quiet circle night" || opened.DateURL != occurrenceDatePath(f.secret.ID, models.FormatCalendarDate(occSecret.OriginalDate)) ||
 		opened.GroupID != nil || opened.HostedBy == "" || strings.Contains(body, "Quiet circle\"") {
 		t.Fatalf("an opened date of a hidden series: %+v", opened)
 	}

@@ -143,7 +143,7 @@ func TestMessagePipelineDedupesAcrossEvents(t *testing.T) {
 		map[string]any{"type": "occurrence", "occurrenceId": f.groupOcc.ID})
 	runMessageJobs(t, f.app)
 	got, _ := devOutbox(t, f.app).LatestTo(f.teen.Email)
-	if !strings.Contains(got.HTML, occurrenceDatePath(f.groupEvent.ID, f.groupOcc.OriginalDate)) || strings.Contains(got.Body, "{{") {
+	if !strings.Contains(got.HTML, "/events/"+itoa(f.groupEvent.ID)+"/dates/"+f.groupOcc.StartsAt.UTC().Format("2006-01-02")) || strings.Contains(got.Body, "{{") {
 		t.Fatalf("message %d: %s", id, got.Body)
 	}
 }
@@ -376,7 +376,7 @@ func TestMessagePipelineSeriesDateFollowsTheReader(t *testing.T) {
 	f.scheduleNow(t, f.leader, "Weekly", `<p><a href="{{manage_link}}">Your date</a></p>`, map[string]any{"type": "event_series", "eventId": ev.ID})
 	runMessageJobs(t, f.app)
 	got, _ := devOutbox(t, f.app).LatestTo(f.teen.Email)
-	if !strings.Contains(got.HTML, occurrenceDatePath(ev.ID, occs[1].OriginalDate)) {
+	if !strings.Contains(got.HTML, "/events/"+itoa(ev.ID)+"/dates/"+occs[1].StartsAt.UTC().Format("2006-01-02")) {
 		t.Fatalf("manage link: %s", got.HTML)
 	}
 }

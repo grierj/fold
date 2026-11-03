@@ -228,7 +228,7 @@ func endOccurrenceAccess(tx *gorm.DB, row *models.OccurrenceAccess, reason strin
 		return nil, nil
 	}
 	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: "occurrence_access", SubjectID: row.ID,
-		Link: occurrenceDatePath(row.EventID, occ.OriginalDate), DedupeKey: "occurrence-ended:" + strconv.FormatUint(uint64(row.ID), 10)})
+		Link: occurrenceDatePath(row.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: "occurrence-ended:" + strconv.FormatUint(uint64(row.ID), 10)})
 }
 
 // liveOccurrenceInvitationIn is transaction authority only while the contact
@@ -257,7 +257,7 @@ func (a *App) apiRegisterOccurrence(c *gin.Context) { a.mutateOwnOccurrence(c, "
 func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 	eventID, parseErr := strconv.ParseUint(c.Param("id"), 10, 64)
 	date := c.Param("date")
-	_, dateErr := time.Parse("2006-01-02", date)
+	_, dateErr := models.ParseCalendarDate(date)
 	var input struct {
 		Status            string  `json:"status"`
 		GuestCount        *int    `json:"guestCount"`
@@ -391,7 +391,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err := tx.First(&reg, reg.ID).Error; err != nil {
 			return err
 		}
-		result = registrationJSON{RegistrationID: reg.ID, UserID: actor.ID, EventID: ev.ID, OccurrenceID: locked.ID, Date: locked.OriginalDate, Status: reg.Status, GuestCount: reg.GuestCount, AttendanceMode: reg.AttendanceMode, ChildcareCount: reg.ChildcareCount, ChildcareAgesNote: reg.ChildcareAgesNote}
+		result = registrationJSON{RegistrationID: reg.ID, UserID: actor.ID, EventID: ev.ID, OccurrenceID: locked.ID, Date: models.FormatCalendarDate(locked.OriginalDate), Status: reg.Status, GuestCount: reg.GuestCount, AttendanceMode: reg.AttendanceMode, ChildcareCount: reg.ChildcareCount, ChildcareAgesNote: reg.ChildcareAgesNote}
 		if reg.Status == models.RegWaitlisted {
 			pos, err := waitlistPosition(tx, locked.ID, reg.ID)
 			if err != nil {
@@ -596,7 +596,7 @@ func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *mod
 		}
 		recipients = append(recipients, guardians...)
 	}
-	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, occ.OriginalDate), DedupeKey: "occurrence-added:" + strconv.FormatUint(uint64(row.ID), 10)})
+	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: "occurrence-added:" + strconv.FormatUint(uint64(row.ID), 10)})
 }
 
 func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[uint]models.OccurrenceAccess, error) {
@@ -614,7 +614,7 @@ func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[u
 	return out, nil
 }
 func sendOccurrenceNotice(tx *gorm.DB, row models.OccurrenceAccess, occ *models.EventOccurrence, kind, key string) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{row.SubjectUserID}, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(row.EventID, occ.OriginalDate), DedupeKey: key})
+	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{row.SubjectUserID}, SubjectType: "occurrence_access", SubjectID: row.ID, Link: occurrenceDatePath(row.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key})
 }
 
 // Unlike the general manager loader, this entry point must audit every

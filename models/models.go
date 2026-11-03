@@ -311,15 +311,15 @@ type Event struct {
 	// Video is a link out to a call (5.8, M1.8, DEC-16): none, a pasted
 	// link, or a generated Jitsi room. VideoReveal decides who may see
 	// the URL; see policy.CanSeeVideoLink.
-	VideoProvider   string  `gorm:"not null;default:none"`            // none | link | jitsi
-	VideoURL        string  `gorm:"type:text;not null;default:''"`    // empty unless a provider is set
-	VideoReveal     string  `gorm:"not null;default:registered_only"` // always | registered_only
-	StartsLocal     string  `gorm:"not null"`                         // YYYY-MM-DDTHH:MM, no offset
-	DurationMinutes int     `gorm:"not null"`
-	TZID            string  `gorm:"column:tzid;not null"`
-	RRule           string  `gorm:"column:rrule;not null"`
-	RRuleUntil      *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
-	Location        string  `gorm:"not null"`           // empty = the group's location
+	VideoProvider   string     `gorm:"not null;default:none"`            // none | link | jitsi
+	VideoURL        string     `gorm:"type:text;not null;default:''"`    // empty unless a provider is set
+	VideoReveal     string     `gorm:"not null;default:registered_only"` // always | registered_only
+	StartsLocal     string     `gorm:"not null"`                         // YYYY-MM-DDTHH:MM, no offset
+	DurationMinutes int        `gorm:"not null"`
+	TZID            string     `gorm:"column:tzid;not null"`
+	RRule           string     `gorm:"column:rrule;not null"`
+	RRuleUntil      *time.Time `gorm:"column:rrule_until;type:date"` // inclusive calendar date; nil = no end (FormatCalendarDate)
+	Location        string     `gorm:"not null"`                     // empty = the group's location
 	// DefaultRoomID is the series room (M2.1c): new dates are booked in it.
 	DefaultRoomID *uint
 	// DefaultRoomPending: the series room still awaits an admin's approval
@@ -355,7 +355,7 @@ type EventOccurrence struct {
 	ID                 uint      `gorm:"primaryKey"`
 	EventID            uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
 	Event              Event     `gorm:"foreignKey:EventID"`
-	OriginalDate       string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
+	OriginalDate       time.Time `gorm:"type:date;not null;uniqueIndex:idx_event_original_date"` // calendar date; FormatCalendarDate renders YYYY-MM-DD
 	StartsAt           time.Time `gorm:"not null;index"`
 	EndsAt             time.Time `gorm:"not null"`
 	Status             string    `gorm:"not null;default:scheduled"` // scheduled | cancelled

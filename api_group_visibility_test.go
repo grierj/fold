@@ -190,11 +190,11 @@ func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
 	o.ID = 0
 	o.StartsAt = o.StartsAt.AddDate(0, 0, 7)
 	o.EndsAt = o.EndsAt.AddDate(0, 0, 7)
-	o.OriginalDate = o.StartsAt.Format("2006-01-02")
+	o.OriginalDate = calDate(o.StartsAt.Format("2006-01-02"))
 	if err := app.DB.Omit("Event").Create(&o).Error; err != nil {
 		t.Fatal(err)
 	}
-	answer(o.OriginalDate)
+	answer(models.FormatCalendarDate(o.OriginalDate))
 	var ev models.Event
 	app.DB.First(&ev, eventID)
 	impact, err := eventImpactOf(app.DB, &ev, models.VisibilityInviteOnly)
@@ -233,7 +233,7 @@ func TestOccurrenceInvitationVisibilityImpactAndCommitAgree(t *testing.T) {
 			if err != nil || len(impact.Tightened) != 1 || impact.Tightened[0].Registrants != 0 {
 				t.Fatal("live exact invite counted as loser", impact, err)
 			}
-			apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[0].OriginalDate, "status": "going"}, 200)
+			apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[0].OriginalDate), "status": "going"}, 200)
 			impact, err = eventImpactOf(f.app.DB, &ev, models.VisibilityInviteOnly)
 			if err != nil || impact.Tightened[0].Registrants != 1 {
 				t.Fatal("sibling not counted", impact, err)
@@ -249,7 +249,7 @@ func TestOccurrenceInvitationVisibilityImpactAndCommitAgree(t *testing.T) {
 			if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.RegistrationID) != 1 || savedOccurrenceAccess(t, f).Status != "active" {
 				t.Fatal("explicit date cancelled")
 			}
-			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 200)
+			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 200)
 			apiDo(t, f.client, "GET", "/api/v1/events/"+itoa(f.event.ID), nil, 404)
 		})
 	}
@@ -372,7 +372,7 @@ func TestVisibilityBatchExcludesEndedAndUnconsentedInvitations(t *testing.T) {
 				if contactCount(t, f.app, &models.Registration{}, "id = ? AND status <> ?", f.access.RegistrationID, models.RegCancelled) != 0 {
 					t.Fatal("stale invitation kept registration")
 				}
-				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)
+				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 404)
 			})
 		}
 	}
@@ -382,7 +382,7 @@ func TestUpdateGroupTighteningUsesLockedVisibilityAndDecisions(t *testing.T) {
 	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
 	gid := *ev.GroupID
 	path := "/api/v1/groups/" + itoa(gid)
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": models.VisibilityPublic}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": models.VisibilityPublic}, http.StatusOK)
 	opened := scheduleGroupEvent(t, admin, gid, "Opened series")
 	setVisibility(t, admin, opened.ID, models.VisibilityPublic, "", http.StatusOK)
 	gate := holdContactGate(t, app)

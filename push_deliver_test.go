@@ -996,7 +996,7 @@ func TestDateChangesForTheMorningSkipQuietHours(t *testing.T) {
 	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
 	ev, morning := seedEvent(t, app, g, leader.ID, time.Date(2030, 1, 16, 7, 0, 0, 0, denverZone))
 	_, far := seedEvent(t, app, g, leader.ID, clock.at.Add(72*time.Hour))
-	farLater := models.EventOccurrence{EventID: ev.ID, OriginalDate: "2030-01-25", StartsAt: clock.at.Add(10 * 24 * time.Hour),
+	farLater := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate("2030-01-25"), StartsAt: clock.at.Add(10 * 24 * time.Hour),
 		EndsAt: clock.at.Add(10*24*time.Hour + time.Hour), Status: models.OccurrenceScheduled}
 	if err := app.DB.Create(&farLater).Error; err != nil {
 		t.Fatal(err)
@@ -1012,9 +1012,9 @@ func TestDateChangesForTheMorningSkipQuietHours(t *testing.T) {
 	}
 	in := send(notify.Msg{Kind: notify.RegistrationPromoted, SubjectType: "occurrence", SubjectID: morning.ID})
 	roomSoon := send(notify.Msg{Kind: notify.RoomLost, SubjectType: "event", SubjectID: ev.ID,
-		Data: map[string]any{"eventId": ev.ID, "dates": []string{farLater.OriginalDate, morning.OriginalDate}}})
+		Data: map[string]any{"eventId": ev.ID, "dates": []string{models.FormatCalendarDate(farLater.OriginalDate), models.FormatCalendarDate(morning.OriginalDate)}}})
 	roomLater := send(notify.Msg{Kind: notify.RoomLost, SubjectType: "event", SubjectID: far.EventID,
-		Data: map[string]any{"eventId": far.EventID, "dates": []string{far.OriginalDate}}})
+		Data: map[string]any{"eventId": far.EventID, "dates": []string{models.FormatCalendarDate(far.OriginalDate)}}})
 	for _, id := range []uint{in, roomSoon, roomLater} {
 		runPushJobs(t, app, id, phone)
 	}
@@ -1155,7 +1155,7 @@ func TestPushForADateAlreadyOverIsStale(t *testing.T) {
 	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
 	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
 	ev, done := seedEvent(t, app, g, leader.ID, clock.at.Add(-3*time.Hour)) // ended at 1 AM
-	ahead := models.EventOccurrence{EventID: ev.ID, OriginalDate: "2030-01-16-b", StartsAt: clock.at.Add(5 * time.Hour),
+	ahead := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate("2030-01-17"), StartsAt: clock.at.Add(5 * time.Hour),
 		EndsAt: clock.at.Add(6 * time.Hour), Status: models.OccurrenceScheduled}
 	if err := app.DB.Create(&ahead).Error; err != nil {
 		t.Fatal(err)
@@ -1174,12 +1174,12 @@ func TestPushForADateAlreadyOverIsStale(t *testing.T) {
 	}
 	k, _ := notify.Lookup(notify.RoomLost)
 	both := &models.Notification{Kind: notify.RoomLost, SubjectType: "event", SubjectID: &ev.ID,
-		Data: fmt.Sprintf(`{"dates": [%q, %q]}`, done.OriginalDate, ahead.OriginalDate)}
+		Data: fmt.Sprintf(`{"dates": [%q, %q]}`, models.FormatCalendarDate(done.OriginalDate), models.FormatCalendarDate(ahead.OriginalDate))}
 	if soon, over, err := app.startsSoon(context.Background(), k, both, clock.at); err != nil || !soon || over {
 		t.Fatalf("one date over, one ahead: soon %v over %v (%v)", soon, over, err)
 	}
 	onlyDone := &models.Notification{Kind: notify.RoomLost, SubjectType: "event", SubjectID: &ev.ID,
-		Data: fmt.Sprintf(`{"dates": [%q]}`, done.OriginalDate)}
+		Data: fmt.Sprintf(`{"dates": [%q]}`, models.FormatCalendarDate(done.OriginalDate))}
 	if soon, over, err := app.startsSoon(context.Background(), k, onlyDone, clock.at); err != nil || soon || !over {
 		t.Fatalf("only a date over: soon %v over %v (%v)", soon, over, err)
 	}

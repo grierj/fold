@@ -5,7 +5,7 @@
 | Audit item | R9 [CHANGE], `docs/AUDIT-2026-11-01.md:151` |
 | Priority | P1 (audit sequence step 3, `docs/AUDIT-2026-11-01.md:263`) |
 | Effort | L |
-| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) is in progress; the squash preflight (§9) is met and recorded. S3 and S4 follow. The migration freeze covers S2 through S4. |
+| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) merged as PR #264. S3 (date types) is implemented on `autoflow/m77-s3-20261103`; its date-output assertions and full Go suite passed; independent review found four bounded issues, with fixes verified and awaiting independent re-review before publication (notes at the end of §9, S3). S4 follows. The migration freeze covers S2 through S4. |
 | New decision | DEC-138 (draft text in §8; landed in PLAN Nov 2026 — PR #236 took DEC-137 for branding first, so the audit block runs DEC-138–DEC-145) |
 
 This brief is the one explicit exception to "never edit an old migration"
@@ -1415,6 +1415,125 @@ assertions and date-binding regressions changed in tests. `internal/events`
 `Spec`/`When`/`Expand` keep string dates internally (§6.2). Recheck the
 editing window and freeze before starting. No UI, JSON shape, policy or
 error-contract change.
+
+*S3 implementation notes (implemented; see the verification status at the end of these notes).*
+
+- Schema: `00001_baseline.sql` changes `events.rrule_until` to nullable `date`,
+  `event_occurrences.original_date` to `date NOT NULL`, and adds
+  `events_starts_local_check` and `events_tzid_check` (placed where `pg_dump`
+  would sort them). Index names, the 38 tables, functions and triggers are
+  untouched; the baseline was edited, not regenerated.
+- Helpers: `models.ParseCalendarDate` (strict `time.Parse`, plus Postgres's
+  no-year-0 rule) and `models.FormatCalendarDate` (the value's own year, month
+  and day, no zone conversion) in `models/calendar_date.go`. `Event.RRuleUntil`
+  is `*time.Time`, `EventOccurrence.OriginalDate` is `time.Time`; `Spec`,
+  `When`, DTOs and the wire stay strings, `omitempty` until stays `""`.
+- Binding rule as implemented: validated ISO strings stay as binds
+  (`original_date = ?`, `>= ? AND <= ?`, `IN ?` and `rrule_until >= ?`). Where
+  a date input could reach SQL without a real-date check, `isCalendarDate` or
+  `firstScheduledOn` (`api_occurrence_access.go`) gates it first: the
+  registration, guest and per-date visibility lookups, and stored `dates` in
+  `push_deliver.go`. The existing `time.Parse` checks (event window, cancel,
+  date edit, date page, room date, series scope, room calendar day) now call
+  `ParseCalendarDate`, so `0000-01-01` stays a 400/404 too. `events.Expand`
+  uses it for `rruleUntil`.
+- Text projections use `to_char(..., 'YYYY-MM-DD')`, never `date::text`:
+  `extend.go` (dedupe), `restoreSeriesDates` (audit `dates`),
+  `api_messages.go` (reminder and composer dates), `api_room_series.go`
+  (needs-room dates), `api_room_requests.go` (first date). `messages_send.go`
+  scans a `time.Time` and formats it. The room calendar no longer selects its
+  unused `original_date`.
+- Dynamic sinks formatted at the write: notification `Data` in
+  `api_registrations.go` (promoted, cutoff, changed, removed, not restored) and
+  `api_notifications.go` (cancelled, restored); audit `Meta` in
+  `api_room_bookings.go` (booked, released) and `api_occurrence_visibility.go`;
+  room-lost `dates` lists (`api_room_series.go`, `api_room_requests.go`,
+  `api_room_bookings.go`); series results, refusals and undo items;
+  departure facts and previews; date and impact titles; every `DateURL`, feed
+  and calendar URL.
+- One consequence of the new CHECK: `time.Parse` accepts a one-digit hour, so
+  `specFrom` pads it (`2026-10-20T9:00` is stored as `T09:00`) and the edit
+  keeps answering 200 instead of failing at the insert.
+- Tests: `models/calendar_date_test.go` (leap and impossible dates, year 0, the
+  UTC-boundary formatting); `internal/events/extend_test.go` (separate pools in
+  Pacific/Kiritimati with ISO, America/Los_Angeles with SQL DMY and
+  Pacific/Kiritimati with German DMY, each checked to be in force; writes from
+  a zone-shifted `time.Time`, reads, `=`/range/`IN` binds, extension
+  idempotence across pools, inclusive and null `rrule_until`, the
+  yesterday boundary, a leap-day series, and the database refusing impossible
+  dates and bad `starts_local`/`tzid`); `api_events_test.go` (impossible dates
+  keep their answers, leap until and padded hour, restored-date audit and
+  notice strings, stored until); `api_occurrence_visibility_test.go` and
+  `api_room_bookings_test.go` (audit `Meta` dates); `api_registrations_test.go`,
+  `api_guest_test.go`, `api_teen_consent_test.go`, `api_notifications_test.go`
+  (notification `Data` dates via `noticeDataDate`). Fixtures that wrote string
+  dates now use `calDate` (`testhelpers_test.go`).
+- Sink-to-assertion inventory (every place a stored date becomes outward text,
+  and the test that pins the exact `YYYY-MM-DD`). Expected values come from the
+  fixture's own start time or a literal, not from `FormatCalendarDate`, except
+  where noted (some older assertions still derive the expected text from the
+  formatter on a fixture row; the departure, composer, series, room-request and feed rows below use independent values).
+
+  | Family | Production site | Assertion |
+  |---|---|---|
+  | Notification `Data` promoted | `api_registrations.go` (`notifyRegistrationPromoted`), guest path | `TestPromoteActionSeatsWaitlisted` (hand promotion) and `api_guest_test.go` (guest promotion, `guestDate`) via `noticeDataDate` |
+  | Notification `Data` waitlist cutoff | `api_registrations.go` (`notifyWaitlistCutoff`) | `TestSeriesRegistrationRefreshesClockAfterContactAndOccurrenceLocks`, cutoff subtest |
+  | Notification `Data` changed | `api_registrations.go` (`notifyEventChanged`) | `TestHouseholdEventNoticesDeduplicateByHolder` |
+  | Notification `Data` removed / not restored | `api_registrations.go` | `api_registrations_test.go` (removed), `api_teen_consent_test.go` (not restored) |
+  | Notification `Data` cancelled / restored | `api_notifications.go` | `api_notifications_test.go`; series restore notice dates in `api_events_test.go` |
+  | Notification `Data` room lost `dates` | `api_room_bookings.go` (`notifyRoomLost`) | `api_room_bookings_test.go` (decoded as `[]string`) |
+  | Audit `Meta` booked / released | `api_room_bookings.go` | `api_room_bookings_test.go` (`meta_json->>'date'`) |
+  | Audit `Meta` date visibility | `api_occurrence_visibility.go` | `TestDateVisibilityAuditAndPreviewUseExactDates` |
+  | Audit `Meta` series restored | `api_events.go` `restoreSeriesDates` (`to_char` Pluck) | `api_events_test.go` (exact ordered `dates`) |
+  | Audit `Meta` room request `lost` | `api_room_requests.go` | `TestRoomApprovalSeries` (response and `meta_json->'lost'`) |
+  | Series results, refusals, undo items | `api_series_registrations.go` | `TestSeriesRegistrationThisAndFollowingPreservesEarlierAndRemoved` (results, refusal and the persisted `series_undo_receipts.snapshot`), `TestSeriesUndoRestoresNoAnswerAndIsActorBoundSingleUse` |
+  | Departure preview | `api_departure.go` | `TestDeparturePreviewDateRulesParityAndReadOnly` (`date` per row) |
+  | Composer options | `api_messages.go` (`to_char`) | `TestComposerOffersOnlyWhatTheAuthorMayMessage` |
+  | Reminder projection | `api_messages.go` (`to_char`) | `TestReminderMessageReadableByEventManagers` and the push-reminder read in `reminders_test.go` |
+  | Message `manage_link` | `messages_send.go` (scan `time.Time`, format) | `messages_send_test.go` (date and series readers) |
+  | Room request `firstDate` | `api_room_requests.go` (`to_char(min(...))`) | `TestRoomApprovalSeries` |
+  | Room needs-room dates, series `lost` | `api_room_series.go` (`to_char`, format) | `api_room_series_test.go` |
+  | Room calendar slots, `DateURL` | `api_room_calendar.go` | `api_room_calendar_test.go` |
+  | Room-location busy date | `api_room_locations.go` | `TestRoomLocationMatching` (exact busy date) |
+  | Room feed event link | `api_room_feeds.go` | `TestRoomFeedContents` (link in the unfolded description) |
+  | Personal feed UID and link | `api_feeds.go` | `TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate` |
+  | Calendar rows, `DateURL`, occurrence links | `api_calendar.go`, `api_occurrence_access.go`, `api_occurrence_mutations.go` | `api_calendar_test.go`, `api_occurrence_mutations_test.go` |
+  | Push reminder navigate link | `reminders_push.go` | `reminders_push_test.go` (lock-screen payload) |
+  | Add-request and contact previews | `api_add_request_reads.go`, `api_contact.go` | `TestAddRequestPageReadBudgetAndScalarParity` (each row's `date`); `api_occurrence_mutations_test.go` (contact-style date) |
+  | Group visibility impact (date entries) | `api_group_visibility.go`, `api_occurrence_visibility.go` | `TestGroupTighteningRequiresDateDecision` (`date`); title suffix in `api_occurrence_visibility_test.go` |
+  | Date cancellation notice Title and EmailTitle | `api_group_visibility.go` | `TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption` (complete title with independent date) |
+  | Date visibility-override notice Title and EmailTitle | `api_occurrence_visibility.go` | `TestDateVisibilityAuditAndPreviewUseExactDates` (eligible recipient, complete title) |
+  | Event DTO `rruleUntil`, instance dates | `api_events.go` | `api_events_test.go` (leap-day and null `until`, stored until) |
+  | Extension dedupe and writes | `internal/events/extend.go` | `internal/events/extend_test.go` |
+
+  Raw SQL that produces a date string: `to_char(..., 'YYYY-MM-DD')` in
+  `internal/events/extend.go`, `api_events.go` (`restoreSeriesDates`),
+  `api_messages.go` (two), `api_room_series.go` and `api_room_requests.go`;
+  each appears above. Raw SQL that scans a `date` into `time.Time` is
+  `messages_send.go` only. Date inputs that only bind (`original_date = ?`,
+  range, `IN ?`) produce no outward text and are covered by `extend_test.go`
+  and the existing 400/404 tests: `api_event_access.go`, `api_registrations.go`,
+  `api_guest.go`, `api_occurrence_*`, `api_room_bookings.go`, `api_events.go`,
+  `api_series_registrations.go` and `push_deliver.go`. No site was found that
+  needed a production change.
+- Verification status. The date-output assertions and full Go root suite
+  (977 tests) passed, with build, vet, lint, deadcode, shell, TypeScript,
+  Knip and docs checks. Earlier web results (1,434 tests), end-to-end results
+  (118 passed, 7 skipped) and schema proof (two type changes and two CHECKs,
+  38 tables) remain applicable to the subsequent test/documentation additions.
+  Independent review found four bounded issues: year-zero event starts reached
+  persistence, an add-request assertion skipped empty dates, two notification
+  titles lacked exact assertions, and the inventory/status needed reconciliation.
+  The fixes validate generated dates before persistence, assert all 80
+  occurrence-add rows and complete notice titles, and update this record.
+  All five targeted regression tests passed with caching disabled. The full Go
+  suite, including jobs, and the build, vet, lint, deadcode, shell, TypeScript,
+  Knip and docs checks also passed against the unchanged candidate. The fixes
+  await independent re-review; publication is pending.
+  One earlier
+  `TestNewJobStartsWithinTwoSeconds` timeout in `internal/jobs` did not
+  reproduce (five focused runs, the full package and the full `make test` all
+  passed); its cause is unknown and no code was changed for it.
 
 **S4 — Provenance fold (§7).** Files: `migrations/00001_baseline.sql`
 (`access_*` columns, CHECKs, indexes, `registration_access_provenance()`,

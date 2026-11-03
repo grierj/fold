@@ -336,7 +336,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		a.presentGroup(&inst, ev, g, me, rel, siteName)
 		if !vs.canSeeSeries(me, ev) {
 			inst.hideSeries = true
-			inst.DateURL = occurrenceDatePath(ev.ID, o.OriginalDate)
+			inst.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(o.OriginalDate))
 			inst.RecurrenceRule = ""
 			inst.RRuleUntil = ""
 			inst.SeriesStartsLocal = ""
@@ -382,10 +382,10 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 	}
 	until := ""
 	if ev.RRuleUntil != nil {
-		until = *ev.RRuleUntil
+		until = models.FormatCalendarDate(*ev.RRuleUntil)
 	}
 	inst := occurrenceJSON{
-		ID: o.ID, EventID: ev.ID, Date: o.OriginalDate,
+		ID: o.ID, EventID: ev.ID, Date: models.FormatCalendarDate(o.OriginalDate),
 		VisibilityOverride: o.VisibilityOverride, SeriesVisibility: ev.Visibility,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		StartsLocal: events.FormatWall(start, loc), EndsLocal: events.FormatWall(end, loc),
@@ -419,7 +419,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 	end := start.Add(time.Duration(ev.DurationMinutes) * time.Minute)
 	until := ""
 	if ev.RRuleUntil != nil {
-		until = *ev.RRuleUntil
+		until = models.FormatCalendarDate(*ev.RRuleUntil)
 	}
 	j := eventJSON{
 		ID: ev.ID, GroupID: ev.GroupID, Title: ev.Title, Description: ev.Description,
@@ -567,7 +567,7 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 		spec.TZID = base.TZID
 		spec.RRule = base.RRule
 		if base.RRuleUntil != nil {
-			spec.Until = *base.RRuleUntil
+			spec.Until = models.FormatCalendarDate(*base.RRuleUntil)
 		}
 	}
 	if body.StartsLocal != nil {
@@ -585,6 +585,7 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	if body.RRuleUntil != nil {
 		spec.Until = strings.TrimSpace(*body.RRuleUntil)
 	}
+	spec.StartsLocal = padWallHour(spec.StartsLocal)
 	if creating && (body.StartsLocal == nil || body.DurationMinutes == nil) {
 		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
 		return spec, nil, false
@@ -605,7 +606,24 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 		specError(c, err)
 		return spec, nil, false
 	}
+	for _, when := range whens {
+		if _, err := models.ParseCalendarDate(when.OriginalDate); err != nil {
+			specError(c, err)
+			return spec, nil, false
+		}
+	}
 	return spec, whens, true
+}
+
+// padWallHour makes 2026-10-20T9:00 into 2026-10-20T09:00. ParseWall accepts
+// a one-digit hour, while the events_starts_local_check column rule wants the
+// full YYYY-MM-DDTHH:MM, so such an edit is stored padded instead of failing
+// at the insert. Anything else is left for ParseWall to judge.
+func padWallHour(s string) string {
+	if len(s) == len("2006-01-02T9:04") && s[10] == 'T' && s[12] == ':' {
+		return s[:11] + "0" + s[11:]
+	}
+	return s
 }
 
 // specError answers a rejected series rule. A rule that makes too many dates
@@ -627,11 +645,13 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	ev.DurationMinutes = spec.DurationMinutes
 	ev.TZID = spec.TZID
 	ev.RRule = spec.RRule
-	if spec.Until == "" {
-		ev.RRuleUntil = nil
-	} else {
-		u := spec.Until
-		ev.RRuleUntil = &u
+	// specFrom already ran spec through events.Expand, which refuses a
+	// date that is not a real YYYY-MM-DD, so the parse here cannot fail.
+	ev.RRuleUntil = nil
+	if spec.Until != "" {
+		if u, err := models.ParseCalendarDate(spec.Until); err == nil {
+			ev.RRuleUntil = &u
+		}
 	}
 	if body.Title != nil {
 		ev.Title = strings.TrimSpace(*body.Title)
@@ -710,8 +730,8 @@ func parseDateWindow(c *gin.Context) (from, to string, ok bool) {
 	if to == "" {
 		to = now.AddDate(0, 0, 90).Format("2006-01-02")
 	}
-	fd, err1 := time.Parse("2006-01-02", from)
-	td, err2 := time.Parse("2006-01-02", to)
+	fd, err1 := models.ParseCalendarDate(from)
+	td, err2 := models.ParseCalendarDate(to)
 	if err1 != nil || err2 != nil {
 		jsonError(c, http.StatusBadRequest, "from and to must be YYYY-MM-DD")
 		return "", "", false
@@ -937,7 +957,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		existing := make([]events.Existing, len(occs))
 		for i, o := range occs {
 			existing[i] = events.Existing{
-				ID: o.ID, OriginalDate: o.OriginalDate, StartsAt: o.StartsAt, EndsAt: o.EndsAt,
+				ID: o.ID, OriginalDate: models.FormatCalendarDate(o.OriginalDate), StartsAt: o.StartsAt, EndsAt: o.EndsAt,
 				TimeFrozen: o.TimeFrozen(), Keep: o.Customized(),
 				SeriesCancelled: o.SeriesCancelled(),
 			}
@@ -978,8 +998,12 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 				restored = append(restored, act.ID)
 			case "add":
+				addDate, err := models.ParseCalendarDate(act.When.OriginalDate)
+				if err != nil {
+					return err
+				}
 				row := models.EventOccurrence{
-					EventID: ev.ID, OriginalDate: act.When.OriginalDate,
+					EventID: ev.ID, OriginalDate: addDate,
 					StartsAt: act.When.StartsAt, EndsAt: act.When.EndsAt,
 					Status: models.OccurrenceScheduled,
 				}
@@ -1199,7 +1223,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "date is required (YYYY-MM-DD)")
 		return
 	}
-	if _, err := time.Parse("2006-01-02", body.Date); err != nil {
+	if _, err := models.ParseCalendarDate(body.Date); err != nil {
 		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
@@ -1242,7 +1266,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		return
 	}
 	date := c.Param("date")
-	if _, err := time.Parse("2006-01-02", date); err != nil {
+	if _, err := models.ParseCalendarDate(date); err != nil {
 		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
@@ -1502,7 +1526,8 @@ func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, oc
 		return nil, nil
 	}
 	var dates []string
-	if err := tx.Model(&models.EventOccurrence{}).Where("id IN ?", occIDs).Order("original_date").Pluck("original_date", &dates).Error; err != nil {
+	if err := tx.Model(&models.EventOccurrence{}).Where("id IN ?", occIDs).Order("original_date").
+		Pluck("to_char(original_date, 'YYYY-MM-DD')", &dates).Error; err != nil {
 		return nil, err
 	}
 	if err := audit.Write(tx, audit.Entry{Actor: &actor, Action: audit.EventDatesRestored, TargetType: "event", TargetID: ev.ID,

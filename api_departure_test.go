@@ -73,7 +73,7 @@ func addDepartureRegistration(t *testing.T, f departureTestFixture, subject *mod
 		t.Fatal(err)
 	}
 	occ := models.EventOccurrence{
-		EventID: ev.ID, OriginalDate: start.UTC().Format("2006-01-02"), StartsAt: start.UTC(), EndsAt: end.UTC(),
+		EventID: ev.ID, OriginalDate: calDate(start.UTC().Format("2006-01-02")), StartsAt: start.UTC(), EndsAt: end.UTC(),
 		Status: occurrenceStatus, VisibilityOverride: override,
 	}
 	if err := f.app.DB.Create(&occ).Error; err != nil {
@@ -221,6 +221,18 @@ func TestDeparturePreviewDateRulesParityAndReadOnly(t *testing.T) {
 		}
 		if strings.Contains(d.Title, "Past") || strings.Contains(d.Title, "Proxy") {
 			t.Fatalf("historical/proxy date leaked: %+v", d)
+		}
+	}
+	// Each preview date is the plain YYYY-MM-DD of the occurrence, which the
+	// fixture sets from its own start time (UTC).
+	wantDate := map[string]string{
+		"Underway private":   now.Add(-30 * time.Minute).UTC().Format("2006-01-02"),
+		"Cutoff invite only": now.Add(time.Hour).UTC().Format("2006-01-02"),
+		"Opened public date": now.Add(4 * time.Hour).UTC().Format("2006-01-02"),
+	}
+	for _, d := range self.Dates {
+		if d.Date != wantDate[d.Title] {
+			t.Fatalf("preview date for %q = %q, want %q", d.Title, d.Date, wantDate[d.Title])
 		}
 	}
 
@@ -605,7 +617,7 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 	if w := f.subjectC.do("GET", "/api/v1/groups/"+itoa(f.group.ID), nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("hidden parent group leaked: %d %s", w.Code, w.Body.String())
 	}
-	if w := f.subjectC.do("GET", "/api/v1/events/"+itoa(cutoff.EventID)+"/dates/"+cutoff.OriginalDate, nil, false); w.Code != http.StatusOK {
+	if w := f.subjectC.do("GET", "/api/v1/events/"+itoa(cutoff.EventID)+"/dates/"+models.FormatCalendarDate(cutoff.OriginalDate), nil, false); w.Code != http.StatusOK {
 		t.Fatalf("kept exact date unavailable: %d %s", w.Code, w.Body.String())
 	}
 	var unchanged models.Registration
@@ -742,7 +754,7 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 			if err := f.app.DB.First(&current, current.ID).Error; err != nil || current.Status != policy.OccurrenceAccessEnded || current.EndReason != policy.OccurrenceEnded {
 				t.Fatalf("missed-sweep move did not persist expiry: %+v err=%v", current, err)
 			}
-			apiDo(t, f.subjectC, "GET", "/api/v1/events/"+itoa(occ.EventID)+"/dates/"+occ.OriginalDate, nil, http.StatusNotFound)
+			apiDo(t, f.subjectC, "GET", "/api/v1/events/"+itoa(occ.EventID)+"/dates/"+models.FormatCalendarDate(occ.OriginalDate), nil, http.StatusNotFound)
 
 			wantAdd := http.StatusConflict // repeat adds still need a new approved request
 			if action == "self" {
@@ -752,7 +764,7 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 				wantAdd = http.StatusForbidden // organizer blocks still win
 			}
 			w = f.leaderC.do("POST", "/api/v1/events/"+itoa(occ.EventID)+"/registrations/add", map[string]any{
-				"userId": f.subject.ID, "date": occ.OriginalDate,
+				"userId": f.subject.ID, "date": models.FormatCalendarDate(occ.OriginalDate),
 			}, true)
 			if w.Code != wantAdd {
 				t.Fatalf("manager safeguard after supersession: %d %s, want %d", w.Code, w.Body.String(), wantAdd)
@@ -1062,7 +1074,7 @@ func TestDepartureConfirmationConcurrentNewRSVPStalesPreview(t *testing.T) {
 	if err := f.app.DB.Create(&ev).Error; err != nil {
 		t.Fatal(err)
 	}
-	occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: now.Add(4 * time.Hour).Format("2006-01-02"), StartsAt: now.Add(4 * time.Hour), EndsAt: now.Add(5 * time.Hour), Status: models.OccurrenceScheduled}
+	occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(now.Add(4 * time.Hour).Format("2006-01-02")), StartsAt: now.Add(4 * time.Hour), EndsAt: now.Add(5 * time.Hour), Status: models.OccurrenceScheduled}
 	if err := f.app.DB.Create(&occ).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1080,7 +1092,7 @@ func TestDepartureConfirmationConcurrentNewRSVPStalesPreview(t *testing.T) {
 	rsvpClient := cloneContactClient(f.subjectC)
 	rsvp := queueContact(func() *httptest.ResponseRecorder {
 		return rsvpClient.do("PUT", "/api/v1/events/"+itoa(ev.ID)+"/registrations", map[string]any{
-			"date": occ.OriginalDate, "status": models.RegGoing, "attendanceMode": models.AttendanceInPerson,
+			"date": models.FormatCalendarDate(occ.OriginalDate), "status": models.RegGoing, "attendanceMode": models.AttendanceInPerson,
 		}, true)
 	})
 	waitOccurrenceDomainWaiter(t, f.app)
@@ -1125,7 +1137,7 @@ func TestDepartureSelfLeaveCancelsRatherThanDeclines(t *testing.T) {
 		t.Fatal("leave counted as Can't go on leader roster")
 	}
 	// Public self-registration is allowed again, not manager-only Removed.
-	if code, body := registerAs(f.subjectC, occ.EventID, occ.OriginalDate, models.RegGoing, nil); code != http.StatusOK {
+	if code, body := registerAs(f.subjectC, occ.EventID, models.FormatCalendarDate(occ.OriginalDate), models.RegGoing, nil); code != http.StatusOK {
 		t.Fatalf("public self-RSVP after leave: %d %s", code, body)
 	}
 }

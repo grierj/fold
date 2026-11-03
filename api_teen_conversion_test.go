@@ -33,7 +33,7 @@ func pendingTeenConversion(t *testing.T, app *App, admin *apiClient, gid, name s
 	now := time.Now().UTC().Truncate(time.Second)
 	for i, status := range []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted, models.RegCancelled, models.RegDeclined, models.RegRemoved} {
 		at := now.AddDate(0, 0, 10+i)
-		occurrence := models.EventOccurrence{EventID: event.ID, OriginalDate: at.Format("2006-01-02"), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceScheduled}
+		occurrence := models.EventOccurrence{EventID: event.ID, OriginalDate: calDate(at.Format("2006-01-02")), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceScheduled}
 		if err := app.DB.Create(&occurrence).Error; err != nil {
 			t.Fatal(err)
 		}

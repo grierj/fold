@@ -198,7 +198,18 @@ func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notificat
 		if json.Unmarshal([]byte(n.Data), &data) != nil || len(data.Dates) == 0 {
 			return false, false, nil
 		}
-		db = db.Where("event_id = ? AND original_date IN ?", *n.SubjectID, data.Dates)
+		// original_date is a date column: a stored value that is not a real
+		// date names no date, rather than failing the whole read.
+		dates := make([]string, 0, len(data.Dates))
+		for _, d := range data.Dates {
+			if isCalendarDate(d) {
+				dates = append(dates, d)
+			}
+		}
+		if len(dates) == 0 {
+			return false, false, nil
+		}
+		db = db.Where("event_id = ? AND original_date IN ?", *n.SubjectID, dates)
 	default:
 		return false, false, nil
 	}

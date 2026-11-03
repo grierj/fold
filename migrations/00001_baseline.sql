@@ -626,7 +626,7 @@ ALTER SEQUENCE public.event_hosts_id_seq OWNED BY public.event_hosts.id;
 CREATE TABLE public.event_occurrences (
     id bigint NOT NULL,
     event_id bigint NOT NULL,
-    original_date text NOT NULL,
+    original_date date NOT NULL,
     starts_at timestamp with time zone NOT NULL,
     ends_at timestamp with time zone NOT NULL,
     status text DEFAULT 'scheduled'::text NOT NULL,
@@ -680,7 +680,7 @@ CREATE TABLE public.events (
     duration_minutes bigint NOT NULL,
     tzid text NOT NULL,
     rrule text NOT NULL,
-    rrule_until text,
+    rrule_until date,
     location text NOT NULL,
     created_by bigint NOT NULL,
     created_at timestamp with time zone,
@@ -712,6 +712,8 @@ CREATE TABLE public.events (
     CONSTRAINT events_guests_allowed_check CHECK (((guests_allowed >= 0) AND (guests_allowed <= 5))),
     CONSTRAINT events_reminder_email_minutes_check CHECK ((reminder_email_minutes = ANY (ARRAY[(0)::bigint, (120)::bigint, (1440)::bigint, (2880)::bigint, (10080)::bigint]))),
     CONSTRAINT events_remote_capacity_check CHECK (((remote_capacity IS NULL) OR (remote_capacity >= 0))),
+    CONSTRAINT events_starts_local_check CHECK ((starts_local ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$'::text)),
+    CONSTRAINT events_tzid_check CHECK (((char_length(tzid) >= 1) AND (char_length(tzid) <= 64))),
     CONSTRAINT events_video_provider_check CHECK ((video_provider = ANY (ARRAY['none'::text, 'link'::text, 'jitsi'::text]))),
     CONSTRAINT events_video_reveal_check CHECK ((video_reveal = ANY (ARRAY['always'::text, 'registered_only'::text]))),
     CONSTRAINT events_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'private'::text, 'invite_only'::text])))

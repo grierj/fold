@@ -147,6 +147,11 @@ func TestRoomFeedContents(t *testing.T) {
 			t.Errorf("feed lacks %q:\n%s", want, body)
 		}
 	}
+	// A described booking's description ends with its date page link, with
+	// YYYY-MM-DD in the path (unfolded: iCalendar wraps long lines).
+	if unfolded := strings.ReplaceAll(body, "\r\n ", ""); !strings.Contains(unfolded, "/events/"+itoa(f.eventA.ID)+"/dates/"+feedDate(f.startOn)) {
+		t.Errorf("feed lacks Event A's date link for %s:\n%s", feedDate(f.startOn), body)
+	}
 	if n := strings.Count(body, "SUMMARY:Reserved"); n != 4 {
 		t.Errorf("want 4 Reserved bookings, got %d:\n%s", n, body)
 	}

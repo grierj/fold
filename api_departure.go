@@ -356,7 +356,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 			access = &copy
 		}
 		facts.Dates = append(facts.Dates, departureDateFact{
-			OccurrenceID: o.ID, EventID: ev.ID, OriginalDate: o.OriginalDate, Title: title,
+			OccurrenceID: o.ID, EventID: ev.ID, OriginalDate: models.FormatCalendarDate(o.OriginalDate), Title: title,
 			StartsAt: o.StartsAt.UTC().UnixNano(), EndsAt: o.EndsAt.UTC().UnixNano(), OccurrenceStatus: o.Status,
 			EffectiveVisibility: visibility, Keepable: decision.Keepable, DefaultKeep: decision.DefaultKeep, KeepReason: decision.KeepReason,
 			Registration: departureRegistrationSnapshot(r), Access: departureAccessSnapshot(access),

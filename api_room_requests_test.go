@@ -117,6 +117,11 @@ func TestRoomApprovalSeries(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].Dates != 4 || !reqs[0].Series {
 		t.Fatalf("requests: %+v", reqs)
 	}
+	// firstDate is the earliest waiting date as plain YYYY-MM-DD, taken here
+	// from the start the test chose, not from the code that renders it.
+	if reqs[0].FirstDate != feedDate(start) {
+		t.Fatalf("request firstDate = %q, want %q", reqs[0].FirstDate, feedDate(start))
+	}
 	var picker struct {
 		NeedsRoom []needsRoomJSON `json:"needsRoom"`
 		Pending   int             `json:"pending"`
@@ -151,6 +156,17 @@ func TestRoomApprovalSeries(t *testing.T) {
 	w := f.admin.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/confirm", map[string]any{}, true)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"confirmed":3`) || !strings.Contains(w.Body.String(), feedDate(second)) {
 		t.Fatalf("confirm the series: %d %s", w.Code, w.Body.String())
+	}
+	// The dates that lost their room are strings, exactly the busy date.
+	var confirmed struct {
+		Lost []string `json:"lost"`
+	}
+	decodeJSON(t, w, &confirmed)
+	if len(confirmed.Lost) != 1 || confirmed.Lost[0] != feedDate(second) {
+		t.Fatalf("lost dates = %v, want [%s]", confirmed.Lost, feedDate(second))
+	}
+	if n := contactCount(t, f.app, &models.AuditLog{}, "meta_json->'lost' = ?::jsonb", `["`+feedDate(second)+`"]`); n != 1 {
+		t.Fatalf("%d audit rows record the lost date %s as a string", n, feedDate(second))
 	}
 	decodeJSON(t, f.leader.do("GET", "/api/v1/events/"+itoa(series.ID)+"/rooms", nil, false), &picker)
 	if len(picker.NeedsRoom) != 1 || picker.NeedsRoom[0].Date != feedDate(second) || picker.NeedsRoom[0].Status != models.BookingRequested || picker.Pending != 0 {

@@ -375,7 +375,7 @@ func TestAgeRolloverSuspendedStageKeepsHouseholdUntilEnable(t *testing.T) {
 	app.DB.First(&occurrence, f.rows[0].OccurrenceID)
 	var event models.Event
 	app.DB.First(&event, occurrence.EventID)
-	apiDo(t, f.parent, "PUT", "/api/v1/events/"+itoa2(event.ID)+"/registrations", map[string]any{"date": occurrence.OriginalDate, "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+	apiDo(t, f.parent, "PUT", "/api/v1/events/"+itoa2(event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(occurrence.OriginalDate), "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "active"}, 200)
 	app.DB.First(&person, person.ID)
 	if person.ConvertedUserID == nil || *person.ConvertedUserID != f.user.ID {
