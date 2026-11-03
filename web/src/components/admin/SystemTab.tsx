@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AdminJobs } from "../../api";
 import { errorText } from "../../lib/errors";
-import { formatWhen } from "../../lib/when";
-import type { AdminJob } from "../../types";
+import { formatWhen, lowerLead } from "../../lib/when";
+import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { ErrorNotice } from "../ErrorNotice";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -10,6 +10,19 @@ import { FormError } from "../ui/Field";
 import { Skeleton } from "../ui/Skeleton";
 
 const tries = (n: number) => `${n} ${n === 1 ? "try" : "tries"}`;
+
+// One calm line about email: counts only, and only the parts that are not zero.
+// Retry stays on the dead-job list; no recipient or error text comes here.
+function deliveryLine(d: AdminDeliverySummary | null | undefined): string | null {
+  if (!d) return null;
+  const parts: string[] = [];
+  if (d.queued > 0) {
+    parts.push(`${d.queued} waiting to send${d.oldestQueuedAt ? ` (oldest ${lowerLead(formatWhen(d.oldestQueuedAt, undefined, undefined, true))})` : ""}`);
+  }
+  if (d.deferred > 0) parts.push(`${d.deferred} will be tried again`);
+  if (d.failed > 0) parts.push(`${d.failed} could not be sent this week`);
+  return parts.length > 0 ? `Email: ${parts.join(", ")}` : null;
+}
 
 // One background task that kept failing: what it does, when it gave up,
 // and Retry now or Dismiss. The error text is for whoever runs Fold, so it
@@ -74,7 +87,9 @@ function JobRow({ job, onDone }: { job: AdminJob; onDone: (id: number, message: 
 // Admin → System (M3.1b, DEC-111): background tasks that ran out of
 // attempts. Admins aren't told about them elsewhere until message sending
 // brings failures they can fix (M3.5).
-export function SystemTab({ jobs, more, error, reload, onRemoved }: {
+export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = null }: {
+  // Email counts from the same load; null until loaded.
+  deliveries?: AdminDeliverySummary | null;
   // Null until loaded.
   jobs: AdminJob[] | null;
   more: boolean;
@@ -91,12 +106,14 @@ export function SystemTab({ jobs, more, error, reload, onRemoved }: {
     if (status.n > 0) statusRef.current?.focus();
   }, [status.n]);
 
+  const delivery = deliveryLine(deliveries);
   return (
     <section aria-labelledby="system-heading" className="space-y-3">
       <h2 id="system-heading" className="text-xl font-bold">Background tasks</h2>
       <p className="text-text-muted">
         Fold does some work in the background, like adding upcoming event dates. A task that keeps failing shows here.
       </p>
+      {delivery && <p className="text-sm text-text-muted">{delivery}</p>}
       <p key={status.n} ref={statusRef} role="status" tabIndex={-1} className={status.text ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{status.text}</p>
       {error && <ErrorNotice message={error} onRetry={reload} />}
       {!error && jobs === null && <Skeleton kind="lines" label="Loading background tasks…" />}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AdminJobs, ApiError } from "../../api";
 import { ERROR_COPY } from "../../lib/errors";
-import type { AdminJob } from "../../types";
+import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { SystemTab } from "./SystemTab";
 
 vi.mock("../../api", async (actual) => ({
@@ -100,4 +100,27 @@ it("fetches the next tasks after an action when more failed than were listed", a
   render(<Harness initial={[job(1), job(2)]} more reload={reload} />);
   await userEvent.click(screen.getAllByRole("button", { name: "Retry now Adding upcoming event dates" })[0]);
   await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+});
+
+const summary = (extra: Partial<AdminDeliverySummary> = {}): AdminDeliverySummary => ({ queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null, ...extra });
+
+it("shows no email line when every delivery count is zero", () => {
+  render(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary()} />);
+  expect(screen.queryByText(/^Email:/)).not.toBeInTheDocument();
+});
+
+it("shows waiting emails with the oldest time, and nothing else when only those are non-zero", () => {
+  const oldest = "2026-10-30T15:14:00Z";
+  render(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ queued: 3, oldestQueuedAt: oldest })} />);
+  const line = screen.getByText(/^Email:/);
+  expect(line).toHaveTextContent(/^Email: 3 waiting to send \(oldest .*\d{1,2}:\d{2}.*\)$/);
+  expect(line).not.toHaveTextContent(/tried again|could not be sent/);
+  expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+});
+
+it("shows the tried-again and could-not-be-sent counts, with no recipient or error text", () => {
+  render(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ deferred: 1, failed: 2 })} />);
+  expect(screen.getByText("Email: 1 will be tried again, 2 could not be sent this week")).toBeInTheDocument();
+  expect(screen.queryByText(/waiting to send/)).not.toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/@|pq:|smtp/i);
 });
