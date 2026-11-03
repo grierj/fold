@@ -657,7 +657,7 @@ func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) ([]uint
 	})
 }
 
-func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]models.EventOccurrence, keep map[uint]bool, now time.Time, note, ip string, mailed *[]uint) (departureConfirmationJSON, error) {
+func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]models.EventOccurrence, keep map[uint]bool, now time.Time, note, ip string) (departureConfirmationJSON, error) {
 	if !policy.CanRetainOccurrenceAfterDeparture(facts.Origin, asPersonFact(facts.Actor), asPersonFact(facts.Subject),
 		membershipFactRel(facts.ActorMembership), membershipFactRel(facts.SubjectMembership), facts.LeaderCount) {
 		return departureConfirmationJSON{}, errDepartureStale
@@ -713,11 +713,10 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			change.next.RemovalNote = note
 			change.auditAction = audit.RegistrationRemoved
 		}
-		ids, err := a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
+		_, err = a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
 		if err != nil {
 			return departureConfirmationJSON{}, err
 		}
-		*mailed = append(*mailed, ids...)
 		if access.ID != 0 {
 			reason, endedBy := policy.OccurrenceDeclined, facts.Subject.ID
 			if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
@@ -756,12 +755,10 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		if note != "" {
 			meta["note"] = note
 		}
-		ids, err := auditAndNotifyLeadership(tx, audit.Entry{Actor: &facts.Actor.ID, Action: audit.MemberRemoved,
-			TargetType: "group", TargetID: facts.GroupID, Meta: meta, IP: ip})
-		if err != nil {
+		if _, err := auditAndNotifyLeadership(tx, audit.Entry{Actor: &facts.Actor.ID, Action: audit.MemberRemoved,
+			TargetType: "group", TargetID: facts.GroupID, Meta: meta, IP: ip}); err != nil {
 			return departureConfirmationJSON{}, err
 		}
-		*mailed = append(*mailed, ids...)
 	} else {
 		entry := audit.Entry{Actor: &facts.Actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: facts.GroupID,
 			Meta: map[string]any{"userId": facts.Subject.ID, "oldRole": oldRole, "newRole": "none", "keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}, IP: ip}
@@ -769,18 +766,14 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			return departureConfirmationJSON{}, err
 		}
 		if oldRole == models.MembershipLeader {
-			ids, err := notifyLeadership(tx, entry)
-			if err != nil {
+			if _, err := notifyLeadership(tx, entry); err != nil {
 				return departureConfirmationJSON{}, err
 			}
-			*mailed = append(*mailed, ids...)
 		}
 	}
-	ids, err := notifyDeparture(tx, facts, len(keep), len(facts.Dates)-len(keep))
-	if err != nil {
+	if _, err := notifyDeparture(tx, facts, len(keep), len(facts.Dates)-len(keep)); err != nil {
 		return departureConfirmationJSON{}, err
 	}
-	*mailed = append(*mailed, ids...)
 	action := "remove"
 	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
 		action = "leave"
@@ -814,7 +807,6 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 	actorAtRequest := apiUser(c)
 	groupID := uint(groupID64)
 	var result departureConfirmationJSON
-	var mailed []uint
 	err := a.contactMutation(contactChange{UserID: subjectID}, func(tx *gorm.DB) error {
 		var group models.Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, groupID).Error; err != nil {
@@ -853,7 +845,7 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 		if err != nil {
 			return err
 		}
-		result, err = a.applyDeparture(tx, current, locked, keep, now, body.Note, c.ClientIP(), &mailed)
+		result, err = a.applyDeparture(tx, current, locked, keep, now, body.Note, c.ClientIP())
 		return err
 	})
 	switch {
@@ -873,7 +865,6 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 		jsonError(c, http.StatusInternalServerError, "could not complete group departure")
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{"departure": result})
 }
 

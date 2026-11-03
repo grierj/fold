@@ -151,7 +151,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		Visibility:  visibility,
 		MemberLimit: limit,
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&g).Error; err != nil {
 			return err
@@ -164,8 +163,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 			return err
 		}
 		if g.Status == models.GroupPending {
-			ids, err := notifyGroupPending(tx, &g, u.ID)
-			emailed = append(emailed, ids...)
+			_, err := notifyGroupPending(tx, &g, u.ID)
 			return err
 		}
 		return nil
@@ -174,7 +172,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create group")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusCreated, gin.H{"group": a.groupSummary(&g)})
 }
 
@@ -400,7 +397,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	errHidden := errors.New("group not found")
 	errForbidden := errors.New("group edit forbidden")
 	var impact visibilityImpactJSON
-	var emailed []uint
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		// Contact gate -> actor -> group -> membership, before domain writes.
 		var actor models.User
@@ -462,11 +458,9 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		if body.Visibility != nil {
 			var err error
-			var ids []uint
-			if impact, ids, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, _, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
-			emailed = append(emailed, ids...)
 		}
 		// An admin activating or archiving a pending group by editing it
 		// decides the approval task too.
@@ -481,11 +475,9 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			// Only an admin's decision is news to the leaders; a leader
 			// archiving their own pending group is not "an admin decided".
 			if policy.IsAdmin(asPerson(u)) {
-				ids, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, "")
-				if err != nil {
+				if _, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, ""); err != nil {
 					return err
 				}
-				emailed = append(emailed, ids...)
 			}
 			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: action, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()}); err != nil {
 				return err
@@ -520,7 +512,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update group")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(g)})
 }
 
@@ -749,14 +740,10 @@ type memberAddOptions struct {
 func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions,
 	allow func(me, target *models.User, actorRel, targetRel policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
-	var emailed []uint
-	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
+	var emailed []uint // changeRoleIn reports notice IDs for callers that want them
+	return a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
 		return a.changeRoleIn(tx, actor, c.ClientIP(), g, userID, newRole, overLimit, add, allow, &emailed)
 	})
-	if err == nil {
-		a.deliverNotificationEmails(emailed)
-	}
-	return err
 }
 
 // changeRoleIn requires the contact gate and caller-owned transaction. It locks
@@ -990,21 +977,18 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "the group still has other members")
 		return
 	}
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&models.Group{}).Where("id = ? AND NOT deletion_requested", g.ID).Update("deletion_requested", true)
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error // already requested: the admins already have the task
 		}
-		ids, err := notifyDeletionRequested(tx, g, u.ID)
-		emailed = append(emailed, ids...)
+		_, err := notifyDeletionRequested(tx, g, u.ID)
 		return err
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not request deletion")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	g.DeletionRequested = true
 	c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(g)})
 }
