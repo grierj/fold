@@ -1349,8 +1349,10 @@ func TestInvitationMailEnqueueFailureRollsBackCreationAndResend(t *testing.T) {
 }
 
 // pauseInvitationLock stops the selected participant after it has taken the
-// invitation lock. Ordinary acceptance takes it with UPDATE; conversion and
-// preparation take it with SELECT FOR UPDATE after their discovery reads.
+// invitation lock. Ordinary acceptance takes it with a locking select just
+// before its claim UPDATE and keeps it, so pausing after that UPDATE still
+// holds the lock; conversion and preparation take it with SELECT FOR UPDATE
+// after their discovery reads.
 func pauseInvitationLock(t *testing.T, db *gorm.DB, operation string, read bool) (<-chan struct{}, func()) {
 	t.Helper()
 	reached, resume := make(chan struct{}), make(chan struct{})
@@ -1524,5 +1526,699 @@ func TestInvitationMailPreparationUsesSingleConnection(t *testing.T) {
 				t.Fatal("preparation did not use the current facts and preserve the deadline")
 			}
 		})
+	}
+}
+
+// heldEmailChange requests an address change through the real API and leaves
+// the verification mail queued, so a test can change the world before
+// delivery. The old-address notice is synchronous and is already sent.
+type heldEmailChange struct {
+	user      *models.User
+	client    *apiClient
+	newEmail  string
+	job       models.Job
+	verify    models.AccountToken
+	cancel    models.AccountToken
+	cancelRaw string
+}
+
+func rawMailTo(t *testing.T, app *App, to string) string {
+	t.Helper()
+	var m models.MailOutbox
+	if err := app.DB.Where("to_address = ?", to).Order("id DESC").First(&m).Error; err != nil {
+		t.Fatalf("no mail to %s: %v", to, err)
+	}
+	return tokenInEmail(t, mail.OutboxMessage{To: m.ToAddress, Body: m.Body})
+}
+
+func queueHeldEmailChange(t *testing.T, app *App) heldEmailChange {
+	t.Helper()
+	f := heldEmailChange{newEmail: "alice.new@example.com"}
+	f.user = newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	f.client = loginAPI(t, app, "alice", "password1234")
+	f.client.holdNotices = true
+	answer := apiDo(t, f.client, "PUT", "/api/v1/me", map[string]string{"email": f.newEmail, "currentPassword": "password1234"}, http.StatusOK)
+	if !strings.Contains(answer, `"verificationSent":true`) {
+		t.Fatalf("request did not report the verification as sent: %s", answer)
+	}
+	verify := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+	cancel := accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)
+	rows := mailJobsOfKind(t, app, kindEmailVerifyMail)
+	if len(verify) != 1 || len(cancel) != 1 || len(rows) != 1 {
+		t.Fatalf("request must leave one verify token, one cancel token and one job: %d %d %d", len(verify), len(cancel), len(rows))
+	}
+	f.verify, f.cancel, f.job = verify[0], cancel[0], rows[0]
+	if !payloadEquals(f.job, accountTokenMailJob{AccountTokenID: f.verify.ID}) || f.job.MaxAttempts != directMailAttempts || f.job.UniqueKey != nil {
+		t.Fatalf("job must carry only the verification token's ID: %+v", f.job)
+	}
+	if strings.Contains(f.job.Payload, f.newEmail) || strings.Contains(f.job.Payload, f.verify.TokenHash) {
+		t.Fatalf("job payload leaked the address or hash: %s", f.job.Payload)
+	}
+	if mailCount(t, app, f.newEmail) != 0 {
+		t.Fatal("request sent the verification mail before the job ran")
+	}
+	// The old-address notice is attempted synchronously, with the cancel link.
+	if mailCount(t, app, f.user.Email) != 1 {
+		t.Fatal("request did not send the old-address notice synchronously")
+	}
+	f.cancelRaw = rawMailTo(t, app, f.user.Email)
+	if hashToken(f.cancelRaw) != f.cancel.TokenHash {
+		t.Fatal("notice does not carry the stored cancel capability")
+	}
+	if f.verify.ExpiresAt.After(f.cancel.ExpiresAt) {
+		t.Fatalf("verification outlives cancellation: %v > %v", f.verify.ExpiresAt, f.cancel.ExpiresAt)
+	}
+	return f
+}
+
+func TestEmailVerifyMailRetryPreservesDeadlineAndCancellationWindow(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldEmailChange(t, app)
+	var sent []mail.Message
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+		sent = append(sent, msg)
+		// Preparation must commit and release its locks before provider I/O.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := app.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("SELECT id FROM account_tokens WHERE id = ? FOR UPDATE NOWAIT", f.verify.ID).Error; err != nil {
+				return err
+			}
+			return tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", f.user.ID).Error
+		}); err != nil {
+			return fmt.Errorf("rows still locked during send: %w", err)
+		}
+		if len(sent) == 1 {
+			return errors.New("451 try again")
+		}
+		return nil
+	})
+	runResetMail(t, app)
+	failed := reloadJob(t, app, f.job.ID)
+	if failed.Status != models.JobFailed || failed.Attempts != 1 || len(sent) != 1 {
+		t.Fatalf("transient send did not remain retryable: %+v", failed)
+	}
+	first := tokenRe.FindStringSubmatch(sent[0].Text)[1]
+	rows := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+	if len(rows) != 1 || rows[0].ID != f.verify.ID || rows[0].TokenHash != hashToken(first) ||
+		!rows[0].ExpiresAt.Equal(f.verify.ExpiresAt) || rows[0].Payload != f.verify.Payload {
+		t.Fatalf("first preparation must change only the hash: %+v", rows)
+	}
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", f.job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	runResetMail(t, app)
+	if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || got.Attempts != 2 || len(sent) != 2 {
+		t.Fatalf("retry did not finish: %+v", got)
+	}
+	last := tokenRe.FindStringSubmatch(sent[1].Text)[1]
+	rows = accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+	cancel := accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)
+	if last == first || len(rows) != 1 || rows[0].TokenHash != hashToken(last) || !rows[0].ExpiresAt.Equal(f.verify.ExpiresAt) {
+		t.Fatal("retry reused a capability or extended the deadline")
+	}
+	if len(cancel) != 1 || !cancel[0].ExpiresAt.Equal(f.cancel.ExpiresAt) || cancel[0].TokenHash != f.cancel.TokenHash || rows[0].ExpiresAt.After(cancel[0].ExpiresAt) {
+		t.Fatalf("rotation touched the cancellation capability or outlived it: %+v", cancel)
+	}
+	for _, msg := range sent {
+		if msg.To != f.newEmail || msg.Optional || !strings.Contains(msg.Subject, "Verify") || !strings.Contains(msg.Text, "expires within 24 hours") ||
+			!strings.Contains(msg.Text, "/verify-email?token=") {
+			t.Fatalf("verification copy or recipient changed: %+v", msg)
+		}
+	}
+	anon := anonClient(t, app, "10.7.5.1")
+	apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": first}, http.StatusBadRequest)
+	apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": last}, http.StatusOK)
+	var fresh models.User
+	if err := app.DB.First(&fresh, f.user.ID).Error; err != nil || fresh.Email != f.newEmail {
+		t.Fatalf("recovered link did not complete the change: %v %+v", err, fresh)
+	}
+	// Completion revokes the cancel capability; it can no longer be used.
+	apiDo(t, anon, "POST", "/api/v1/me/email/cancel", map[string]string{"token": f.cancelRaw}, http.StatusBadRequest)
+}
+
+func TestEmailVerifyMailRetryAfterExpiryDoesNotRevive(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldEmailChange(t, app)
+	var sent []string
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+		sent = append(sent, tokenRe.FindStringSubmatch(msg.Text)[1])
+		return errors.New("451 try again")
+	})
+	runResetMail(t, app)
+	if len(sent) != 1 {
+		t.Fatalf("first attempt sent %d", len(sent))
+	}
+	hashAfterFirst := hashToken(sent[0])
+	if err := app.DB.Model(&models.AccountToken{}).Where("id = ?", f.verify.ID).Update("expires_at", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", f.job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	runResetMail(t, app)
+	rows := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+	if got := reloadJob(t, app, f.job.ID); got.Status != models.JobDone || len(sent) != 1 {
+		t.Fatalf("expired retry must finish quietly without sending: %+v sent=%d", got, len(sent))
+	}
+	if len(rows) != 1 || rows[0].TokenHash != hashAfterFirst {
+		t.Fatalf("expired retry changed the hash: %+v", rows)
+	}
+	anon := anonClient(t, app, "10.7.5.2")
+	apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": sent[0]}, http.StatusBadRequest)
+}
+
+func TestEmailVerifyMailSkipsClosedRequests(t *testing.T) {
+	for _, state := range []string{"cancelled", "completed", "superseded", "expired", "used", "disabled", "deleted", "no longer able to sign in"} {
+		t.Run(state, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldEmailChange(t, app)
+			anon := anonClient(t, app, "10.7.5.3")
+			var err error
+			switch state {
+			case "cancelled":
+				apiDo(t, anon, "POST", "/api/v1/me/email/cancel", map[string]string{"token": f.cancelRaw}, http.StatusOK)
+			case "completed":
+				raw, changed, rotateErr := rotateAccountToken(app.DB, f.verify.ID, models.TokenEmailVerify, f.user.ID)
+				if rotateErr != nil || !changed {
+					t.Fatalf("rotate: %v %v", changed, rotateErr)
+				}
+				apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": raw}, http.StatusOK)
+			case "superseded":
+				apiDo(t, f.client, "PUT", "/api/v1/me", map[string]string{"email": "other.new@example.com", "currentPassword": "password1234"}, http.StatusOK)
+			case "expired":
+				err = app.DB.Model(&models.AccountToken{}).Where("id = ?", f.verify.ID).Update("expires_at", time.Now().Add(-time.Minute)).Error
+			case "used":
+				err = app.DB.Model(&models.AccountToken{}).Where("id = ?", f.verify.ID).Update("used_at", time.Now()).Error
+			case "disabled":
+				err = app.DB.Model(f.user).Update("status", models.UserDisabled).Error
+			case "deleted":
+				err = app.DB.Delete(f.user).Error
+			case "no longer able to sign in":
+				err = app.DB.Model(f.user).Update("password_hash", nil).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+			sendsBefore := mailCount(t, app, f.newEmail)
+			// Run only the original job, directly, so a superseding request's
+			// own job does not mask a stale one.
+			if err := deliverMailJob(context.Background(), app, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: f.verify.ID}); err != nil {
+				t.Fatal(err)
+			}
+			after := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("stale job changed a token: before=%+v after=%+v", before, after)
+			}
+			if mailCount(t, app, f.newEmail) != sendsBefore || mailCount(t, app, "other.new@example.com") != 0 {
+				t.Fatal("stale job sent a verification link")
+			}
+			if state == "superseded" {
+				// The replacement request's own job still works.
+				if len(after) != 1 || after[0].ID == f.verify.ID {
+					t.Fatalf("superseding request must hold the only live row: %+v", after)
+				}
+				if err := deliverMailJob(context.Background(), app, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: after[0].ID}); err != nil {
+					t.Fatal(err)
+				}
+				if mailCount(t, app, "other.new@example.com") != 1 {
+					t.Fatal("superseding request's job did not deliver")
+				}
+			}
+		})
+	}
+}
+
+func TestEmailVerifyMailEnqueueFailureRollsBackBothTokensAndNotice(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldEmailChange(t, app)
+	tokensBefore := append(accountTokens(t, app, f.user.ID, models.TokenEmailVerify), accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)...)
+	audits := auditCount(t, app, audit.EmailChangeRequested)
+	mails := mailCount(t, app, "")
+	stop := failJobEnqueue(t, app.DB, kindEmailVerifyMail)
+	apiDo(t, f.client, "PUT", "/api/v1/me", map[string]string{"email": "second.new@example.com", "currentPassword": "password1234"}, http.StatusInternalServerError)
+	stop()
+	tokensAfter := append(accountTokens(t, app, f.user.ID, models.TokenEmailVerify), accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)...)
+	if !reflect.DeepEqual(tokensBefore, tokensAfter) {
+		t.Fatalf("failed enqueue changed the earlier pending pair: %+v -> %+v", tokensBefore, tokensAfter)
+	}
+	if len(mailJobsOfKind(t, app, kindEmailVerifyMail)) != 1 || auditCount(t, app, audit.EmailChangeRequested) != audits {
+		t.Fatal("failed enqueue committed a job or audit")
+	}
+	if mailCount(t, app, "") != mails || mailCount(t, app, "second.new@example.com") != 0 {
+		t.Fatal("failed enqueue attempted the old-address notice or a verification mail")
+	}
+	// The same request succeeds once enqueue works, and replaces the pair.
+	apiDo(t, f.client, "PUT", "/api/v1/me", map[string]string{"email": "second.new@example.com", "currentPassword": "password1234"}, http.StatusOK)
+	if len(mailJobsOfKind(t, app, kindEmailVerifyMail)) != 2 || mailCount(t, app, f.user.Email) != 2 {
+		t.Fatal("retry after enqueue recovery did not queue the job and send the notice")
+	}
+}
+
+func TestEmailVerifyMailAndRedemptionLockOrders(t *testing.T) {
+	for _, first := range []string{"delivery", "redemption"} {
+		t.Run(first+" first", func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldEmailChange(t, app)
+			// The race runs the handler directly, so retire the queued job that
+			// would otherwise deliver again while the test reads the outbox.
+			if err := app.DB.Where("kind = ?", kindEmailVerifyMail).Delete(&models.Job{}).Error; err != nil {
+				t.Fatal(err)
+			}
+			old, changed, err := rotateAccountToken(app.DB, f.verify.ID, models.TokenEmailVerify, f.user.ID)
+			if err != nil || !changed {
+				t.Fatalf("rotate: %v %v", changed, err)
+			}
+			expected := http.StatusBadRequest
+			if first == "redemption" {
+				expected = http.StatusOK
+			}
+			work := func(operation string) func(*gorm.DB) error {
+				return func(db *gorm.DB) error {
+					a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+					if operation == "delivery" {
+						return deliverMailJob(db.Statement.Context, a, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: f.verify.ID})
+					}
+					w := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(w)
+					c.Request = httptest.NewRequest("POST", "/api/v1/me/email/verify",
+						strings.NewReader(jsonString(map[string]string{"token": old}))).WithContext(db.Statement.Context)
+					c.Request.Header.Set("Content-Type", "application/json")
+					a.apiVerifyEmailChange(c)
+					if w.Code != expected {
+						return fmt.Errorf("redemption: got %d %s, want %d", w.Code, w.Body.String(), expected)
+					}
+					return nil
+				}
+			}
+			second := "redemption"
+			if first == "redemption" {
+				second = "delivery"
+			}
+			reached, release := pauseDBRead(t, app.DB, first, "users")
+			winner, winnerDone := startDBSession(t, app.DB, first, work(first))
+			awaitDBSignal(t, reached) // winner holds the contact gate and the user lock
+			loser, loserDone := startDBSession(t, app.DB, second, work(second))
+			waitDBBlocked(t, app.DB, loser, winner)
+			release()
+			if err := awaitDBResult(t, winnerDone); err != nil {
+				t.Fatal(err)
+			}
+			if err := awaitDBResult(t, loserDone); err != nil {
+				t.Fatal(err)
+			}
+			var fresh models.User
+			if err := app.DB.First(&fresh, f.user.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			rows := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+			if first == "redemption" {
+				// The change completed first: the waiting delivery sends nothing
+				// and mints nothing. Redemption keeps its consumed row as history
+				// (only unused tokens are revoked), unchanged except for UsedAt;
+				// the unused cancel capability is gone.
+				if fresh.Email != f.newEmail || mailCount(t, app, f.newEmail) != 0 ||
+					len(accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)) != 0 {
+					t.Fatalf("redemption first: user=%+v tokens=%+v", fresh, rows)
+				}
+				if len(rows) != 1 || rows[0].ID != f.verify.ID || rows[0].UsedAt == nil || rows[0].TokenHash != hashToken(old) ||
+					!rows[0].ExpiresAt.Equal(f.verify.ExpiresAt) || rows[0].Payload != f.verify.Payload {
+					t.Fatalf("redemption first: the waiting delivery rotated or replaced the consumed row: %+v", rows)
+				}
+				return
+			}
+			// Rotation came first: the old link is dead and the address unchanged.
+			if fresh.Email != f.user.Email || len(rows) != 1 || rows[0].TokenHash == hashToken(old) || rows[0].UsedAt != nil ||
+				!rows[0].ExpiresAt.Equal(f.verify.ExpiresAt) {
+				t.Fatalf("delivery first: user=%+v tokens=%+v", fresh, rows)
+			}
+			newRaw := rawMailTo(t, app, f.newEmail)
+			anon := anonClient(t, app, "10.7.5.4")
+			apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": old}, http.StatusBadRequest)
+			apiDo(t, anon, "POST", "/api/v1/me/email/verify", map[string]string{"token": newRaw}, http.StatusOK)
+			if err := app.DB.First(&fresh, f.user.ID).Error; err != nil || fresh.Email != f.newEmail {
+				t.Fatalf("replacement link did not complete the change: %v %+v", err, fresh)
+			}
+		})
+	}
+}
+
+// expiryRace holds a real lock while another transaction, begun before the
+// deadline, waits for it. Once that waiter is observed blocked behind the
+// holder, the holder moves the deadline to the present in its own transaction
+// and commits. The deadline therefore falls after the waiter's transaction
+// began (so a now() test still passes) and before it can proceed (so only a
+// wall-clock test refuses). Both participants are real, reserved sessions.
+type expiryRace struct {
+	holder int
+	locked chan struct{}
+	waiter chan int
+	done   <-chan error
+}
+
+func holdThenExpire(t *testing.T, app *App, lock func(*gorm.DB) error, expire func(*gorm.DB) (time.Time, error)) *expiryRace {
+	t.Helper()
+	r := &expiryRace{locked: make(chan struct{}), waiter: make(chan int, 1)}
+	r.holder, r.done = startDBSession(t, app.DB, "holder", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			if err := lock(tx); err != nil {
+				return err
+			}
+			close(r.locked)
+			var waiter int
+			select {
+			case waiter = <-r.waiter:
+			case <-tx.Statement.Context.Done():
+				return tx.Statement.Context.Err()
+			}
+			deadline, err := expire(tx)
+			if err != nil {
+				return err
+			}
+			var began bool
+			if err := tx.Raw("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = ? AND xact_start < ?)", waiter, deadline).Scan(&began).Error; err != nil {
+				return err
+			}
+			if !began {
+				return errors.New("the waiter's transaction began after the deadline, so this race proves nothing")
+			}
+			// Let the wall clock pass the deadline before the waiter resumes.
+			return tx.Exec("SELECT pg_sleep(0.02)").Error
+		})
+	})
+	return r
+}
+
+// run starts the waiter, waits until it is blocked behind the holder, lets the
+// holder expire and release, and returns the waiter's own result.
+func (r *expiryRace) run(t *testing.T, app *App, operation string, work func(*gorm.DB) error) error {
+	t.Helper()
+	awaitDBSignal(t, r.locked)
+	waiter, waiterDone := startDBSession(t, app.DB, operation, work)
+	waitDBBlocked(t, app.DB, waiter, r.holder)
+	r.waiter <- waiter
+	if err := awaitDBResult(t, r.done); err != nil {
+		t.Fatal(err)
+	}
+	return awaitDBResult(t, waiterDone)
+}
+
+func lockUserRow(id uint) func(*gorm.DB) error {
+	return func(tx *gorm.DB) error {
+		return tx.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", id).Error
+	}
+}
+
+func lockInvitationRow(id uint) func(*gorm.DB) error {
+	return func(tx *gorm.DB) error {
+		return tx.Exec("SELECT id FROM invitations WHERE id = ? FOR UPDATE", id).Error
+	}
+}
+
+func expireRowNow(table string, id uint) func(*gorm.DB) (time.Time, error) {
+	return func(tx *gorm.DB) (time.Time, error) {
+		var at time.Time
+		err := tx.Raw("UPDATE "+table+" SET expires_at = clock_timestamp() WHERE id = ? RETURNING expires_at", id).Scan(&at).Error
+		return at, err
+	}
+}
+
+// A request whose transaction began before the deadline must not rotate, mail
+// or redeem once it gets its lock after the deadline. The wait is on the
+// contact gate (so the first lookup is late) or on the user row (so the lookup
+// has already passed and only the final rotation or claim can refuse).
+func TestEmailVerifyMailAndRedemptionRefuseADeadlinePassedDuringALockWait(t *testing.T) {
+	for _, operation := range []string{"delivery", "redemption"} {
+		for _, wait := range []string{"contact gate", "user lock"} {
+			t.Run(operation+" waiting on the "+wait, func(t *testing.T) {
+				app := testApp(t)
+				f := queueHeldEmailChange(t, app)
+				if err := app.DB.Where("kind = ?", kindEmailVerifyMail).Delete(&models.Job{}).Error; err != nil {
+					t.Fatal(err)
+				}
+				old, changed, err := rotateAccountToken(app.DB, f.verify.ID, models.TokenEmailVerify, f.user.ID)
+				if err != nil || !changed {
+					t.Fatalf("rotate: %v %v", changed, err)
+				}
+				lock := lockContacts
+				if wait == "user lock" {
+					lock = lockUserRow(f.user.ID)
+				}
+				race := holdThenExpire(t, app, lock, expireRowNow("account_tokens", f.verify.ID))
+				err = race.run(t, app, operation, func(db *gorm.DB) error {
+					a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+					if operation == "delivery" {
+						return deliverMailJob(db.Statement.Context, a, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: f.verify.ID})
+					}
+					w := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(w)
+					c.Request = httptest.NewRequest("POST", "/api/v1/me/email/verify",
+						strings.NewReader(jsonString(map[string]string{"token": old}))).WithContext(db.Statement.Context)
+					c.Request.Header.Set("Content-Type", "application/json")
+					a.apiVerifyEmailChange(c)
+					if w.Code != http.StatusBadRequest {
+						return fmt.Errorf("redemption: got %d %s, want 400", w.Code, w.Body.String())
+					}
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fresh models.User
+				if err := app.DB.First(&fresh, f.user.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				rows := accountTokens(t, app, f.user.ID, models.TokenEmailVerify)
+				cancel := accountTokens(t, app, f.user.ID, models.TokenEmailChangeCancel)
+				if fresh.Email != f.user.Email || mailCount(t, app, f.newEmail) != 0 {
+					t.Fatalf("an expired link changed the address or was mailed: %+v", fresh)
+				}
+				if len(rows) != 1 || rows[0].TokenHash != hashToken(old) || rows[0].UsedAt != nil || rows[0].Payload != f.verify.Payload {
+					t.Fatalf("an expired verification row was rotated or redeemed: %+v", rows)
+				}
+				if len(cancel) != 1 || cancel[0].TokenHash != f.cancel.TokenHash || cancel[0].UsedAt != nil {
+					t.Fatalf("a refused request touched the cancellation capability: %+v", cancel)
+				}
+			})
+		}
+	}
+}
+
+func TestInvitationMailRefusesADeadlinePassedDuringALockWait(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%v", conversion), func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, conversion, true)
+			if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			race := holdThenExpire(t, app, lockInvitationRow(f.inv.ID), expireRowNow("invitations", f.inv.ID))
+			err := race.run(t, app, "delivery", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				return deliverMailJob(db.Statement.Context, a, kindInvitationMail, invitationMailJob{InvitationID: f.inv.ID})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inv := invitationIn(t, app, f.inv.ID)
+			if inv.TokenHash != f.inv.TokenHash || inv.AcceptedAt != nil || mailCount(t, app, f.inv.Email) != 0 {
+				t.Fatalf("an expired invitation was rotated or mailed: %+v", inv)
+			}
+		})
+	}
+}
+
+// The acceptance transaction reads the invitation, then waits for the inviter's
+// row lock; only the final claim can notice that the deadline has passed.
+func TestInvitationAcceptanceRefusesADeadlinePassedDuringALockWait(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldInvitationMail(t, app, false, true)
+	if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	const raw = "known-invitation-capability"
+	if err := app.DB.Model(&f.inv).Update("token_hash", hashToken(raw)).Error; err != nil {
+		t.Fatal(err)
+	}
+	race := holdThenExpire(t, app, lockUserRow(f.inv.InvitedBy), expireRowNow("invitations", f.inv.ID))
+	err := race.run(t, app, "acceptance", func(db *gorm.DB) error {
+		a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/api/v1/invitations/accept", strings.NewReader(jsonString(map[string]string{
+			"token": raw, "name": "Invited Person", "password": "password1234", "ageBand": "adult",
+		}))).WithContext(db.Statement.Context)
+		c.Request.Header.Set("Content-Type", "application/json")
+		a.apiAcceptInvitation(c)
+		if w.Code != http.StatusBadRequest {
+			return fmt.Errorf("acceptance: got %d %s, want 400", w.Code, w.Body.String())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := invitationIn(t, app, f.inv.ID)
+	var accounts, memberships int64
+	if err := app.DB.Model(&models.User{}).Where("email = ?", f.inv.Email).Count(&accounts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Model(&models.Membership{}).Joins("JOIN users ON users.id = memberships.user_id").Where("users.email = ?", f.inv.Email).Count(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if inv.AcceptedAt != nil || accounts != 0 || memberships != 0 || auditCount(t, app, audit.InvitationAccepted) != 0 {
+		t.Fatalf("an expired invitation was accepted: %+v accounts=%d memberships=%d", inv, accounts, memberships)
+	}
+}
+
+// passDeadlineUnchanged is the expire step for a holder that only locks its
+// row, as a delivery worker does: nothing is written, so a waiter's qualifying
+// read is never invalidated and only the clock can refuse it. The deadline was
+// set ahead of time; the holder checks the waiter reached it first (a late
+// waiter would be refused for the wrong reason and prove nothing) and then
+// waits out the remaining time inside its transaction.
+func passDeadlineUnchanged(table string, id uint) func(*gorm.DB) (time.Time, error) {
+	return func(tx *gorm.DB) (time.Time, error) {
+		var at time.Time
+		if err := tx.Raw("SELECT expires_at FROM "+table+" WHERE id = ?", id).Scan(&at).Error; err != nil {
+			return at, err
+		}
+		var early bool
+		if err := tx.Raw("SELECT clock_timestamp() < ?", at).Scan(&early).Error; err != nil {
+			return at, err
+		}
+		if !early {
+			return at, errors.New("the waiter was blocked only after the deadline, so this race proves nothing")
+		}
+		return at, tx.Exec("SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM (? ::timestamptz - clock_timestamp()))))", at).Error
+	}
+}
+
+// A delivery worker locks the invitation row FOR UPDATE and leaves it unchanged.
+// Acceptance that already qualified and waits on that lock resumes without its
+// row being re-read, so the claim must take the lock in a statement of its own
+// and test the deadline afterwards. The holder releases only after the deadline
+// and writes nothing; the earlier locks are not what the waiter waits on.
+func TestInvitationAcceptanceRefusesADeadlinePassedDuringAnUnchangedRowLockWait(t *testing.T) {
+	for _, conversion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%v", conversion), func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, conversion, true)
+			if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			const raw = "known-invitation-capability"
+			if err := app.DB.Model(&f.inv).Updates(map[string]any{
+				"token_hash": hashToken(raw),
+				"expires_at": gorm.Expr("clock_timestamp() + interval '2 seconds'"),
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			before := invitationIn(t, app, f.inv.ID)
+			race := holdThenExpire(t, app, lockInvitationRow(f.inv.ID), passDeadlineUnchanged("invitations", f.inv.ID))
+			err := race.run(t, app, "acceptance", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/api/v1/invitations/accept", strings.NewReader(jsonString(map[string]string{
+					"token": raw, "name": "Invited Person", "password": "password1234", "ageBand": "adult",
+				}))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				a.apiAcceptInvitation(c)
+				if w.Code != http.StatusBadRequest {
+					return fmt.Errorf("acceptance: got %d %s, want 400", w.Code, w.Body.String())
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inv := invitationIn(t, app, f.inv.ID)
+			var accounts, memberships int64
+			if err := app.DB.Model(&models.User{}).Where("email = ?", f.inv.Email).Count(&accounts).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Model(&models.Membership{}).Joins("JOIN users ON users.id = memberships.user_id").Where("users.email = ?", f.inv.Email).Count(&memberships).Error; err != nil {
+				t.Fatal(err)
+			}
+			if inv.AcceptedAt != nil || inv.TokenHash != before.TokenHash || !inv.ExpiresAt.Equal(before.ExpiresAt) ||
+				accounts != 0 || memberships != 0 || auditCount(t, app, audit.InvitationAccepted) != 0 {
+				t.Fatalf("an expired invitation was accepted after waiting on an unchanged row lock: %+v accounts=%d memberships=%d", inv, accounts, memberships)
+			}
+		})
+	}
+}
+
+// Password reset and account setup redeem through lockAndConsumeAccountToken.
+func TestLockAndConsumeAccountTokenRefusesADeadlinePassedDuringALockWait(t *testing.T) {
+	app := testApp(t)
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := accountTokens(t, app, user.ID, models.TokenPasswordReset)
+	if len(rows) != 1 {
+		t.Fatalf("want one reset token, got %d", len(rows))
+	}
+	race := holdThenExpire(t, app, lockUserRow(user.ID), expireRowNow("account_tokens", rows[0].ID))
+	err = race.run(t, app, "redemption", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			_, _, err := lockAndConsumeAccountToken(tx, models.TokenPasswordReset, raw)
+			return err
+		})
+	})
+	if !errors.Is(err, errTokenInvalid) {
+		t.Fatalf("an expired token was redeemed after a lock wait: %v", err)
+	}
+	after := accountTokens(t, app, user.ID, models.TokenPasswordReset)
+	if len(after) != 1 || after[0].UsedAt != nil {
+		t.Fatalf("the refused redemption marked the token used: %+v", after)
+	}
+}
+
+// The old-address notice stays synchronous and keeps the public answer, but its
+// provider call is bounded and its failure log carries no address.
+func TestEmailChangeNoticeIsBoundedAndKeepsAddressesOutOfLogs(t *testing.T) {
+	app := testApp(t)
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	client := loginAPI(t, app, "alice", "password1234")
+	client.holdNotices = true
+	const newEmail = "alice.new@example.com"
+	var calls int
+	var deadline time.Time
+	var hasDeadline bool
+	app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
+		if msg.To != user.Email {
+			return nil
+		}
+		calls++
+		deadline, hasDeadline = ctx.Deadline()
+		return fmt.Errorf("550 5.1.1 <%s> mailbox unavailable", msg.To)
+	})
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	answer := apiDo(t, client, "PUT", "/api/v1/me", map[string]string{"email": newEmail, "currentPassword": "password1234"}, http.StatusOK)
+	if !strings.Contains(answer, `"verificationSent":true`) {
+		t.Fatalf("a failed notice changed the public answer: %s", answer)
+	}
+	if calls != 1 {
+		t.Fatalf("the notice must be sent once, synchronously: %d", calls)
+	}
+	if !hasDeadline || time.Until(deadline) <= 0 || time.Until(deadline) > deliverSendTimeout {
+		t.Fatalf("the notice send is not bounded by the shared timeout: %v %v", hasDeadline, deadline)
+	}
+	out := logs.String()
+	if !strings.Contains(out, fmt.Sprintf("email change notice for user %d: ", user.ID)) {
+		t.Fatalf("the failed notice was not logged by user ID: %q", out)
+	}
+	if strings.Contains(out, user.Email) || strings.Contains(out, newEmail) {
+		t.Fatalf("the notice failure log leaked an address: %q", out)
+	}
+	if len(mailJobsOfKind(t, app, kindEmailVerifyMail)) != 1 {
+		t.Fatal("the durable verification job was not queued")
 	}
 }

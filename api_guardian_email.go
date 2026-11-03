@@ -87,7 +87,7 @@ func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken,
 		return nil, payload, errTokenInvalid
 	}
 	var row models.AccountToken
-	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", models.TokenTeenConsent, hashToken(raw)).Limit(1).Find(&row)
+	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, models.TokenTeenConsent, hashToken(raw)).Limit(1).Find(&row)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return nil, payload, errTokenInvalid
 	}

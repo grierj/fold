@@ -21,6 +21,7 @@ const (
 	kindAccountRequestMail = "account.request_mail"
 	kindAccountExistsMail  = "account.exists_mail"
 	kindInvitationMail     = "invitation.mail"
+	kindEmailVerifyMail    = "account.email_verify_mail"
 	directMailAttempts     = 8
 )
 
@@ -47,6 +48,12 @@ type requestMailJob struct {
 
 type invitationMailJob struct {
 	InvitationID uint `json:"invitationId"`
+}
+
+// accountTokenMailJob names one stored request, not a person: it identifies
+// the verification row so a retry can rotate its hash and nothing else.
+type accountTokenMailJob struct {
+	AccountTokenID uint `json:"accountTokenId"`
 }
 
 func (a *App) mailKinds() []jobs.Kind {
@@ -94,7 +101,81 @@ func (a *App) mailKinds() []jobs.Kind {
 				return a.prepareInvitationMail(tx, p.InvitationID)
 			})
 		},
+	}, {
+		Name: kindEmailVerifyMail, Label: "Sending an email change verification link", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p accountTokenMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindEmailVerifyMail, p.AccountTokenID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareEmailVerification(tx, p.AccountTokenID)
+			})
+		},
 	}}
+}
+
+// prepareEmailVerification rotates the hash of one stored verification token
+// and renders the link for the address in its payload. The lock order matches
+// redemption and cancellation: contact gate, token read, user lock, then the
+// conditional write. Anything that closed the request (cancelled, verified,
+// superseded, expired, account disabled or deleted) leaves the row unchanged
+// and finishes quietly. The deadline never moves: a retry replaces the link
+// but cannot outlive the cancellation window set at request time.
+func (a *App) prepareEmailVerification(tx *gorm.DB, tokenID uint) (mail.Message, bool, error) {
+	none := mail.Message{}
+	if err := lockContacts(tx); err != nil {
+		return none, false, err
+	}
+	var tok models.AccountToken
+	err := tx.Where("kind = ? AND used_at IS NULL AND "+sqlStillLive, models.TokenEmailVerify).First(&tok, tokenID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	var user models.User
+	err = tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&user, tok.UserID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	if !user.CanSignIn() {
+		return none, false, nil
+	}
+	var payload struct {
+		NewEmail string `json:"new_email"`
+	}
+	if err := json.Unmarshal([]byte(tok.Payload), &payload); err != nil || !validEmail(payload.NewEmail) {
+		return none, false, nil
+	}
+	raw, changed, err := rotateAccountToken(tx, tok.ID, models.TokenEmailVerify, user.ID)
+	if err != nil || !changed {
+		return none, false, err
+	}
+	site, err := siteNameIn(tx)
+	if err != nil {
+		return none, false, err
+	}
+	return a.emailVerificationMessage(payload.NewEmail, raw, site), true, nil
+}
+
+func (a *App) emailVerificationMessage(to, raw, site string) mail.Message {
+	link := a.emailBaseURL() + "/verify-email?token=" + raw
+	return mail.Message{
+		To:      to,
+		Subject: "Verify your new Fold email",
+		Text: fmt.Sprintf(`Someone asked to change the sign-in email for an account at %s to this address.
+
+Verify it here (the link works once and expires within 24 hours):
+%s
+
+The change takes effect only after you use the link. If that wasn't you, you can ignore this email.`,
+			site, link),
+	}
 }
 
 // prepareInvitationMail locks only the invitation. Acceptance takes earlier
@@ -105,7 +186,7 @@ func (a *App) prepareInvitationMail(tx *gorm.DB, id uint) (mail.Message, bool, e
 	none := mail.Message{}
 	var inv models.Invitation
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()").First(&inv, id).Error
+		Where("accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive).First(&inv, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return none, false, nil
 	}

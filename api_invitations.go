@@ -404,10 +404,25 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return err
 		}
 		now := time.Now().UTC()
+		// Take the invitation's row lock last, in its own statement, so the
+		// claim below reads the wall clock after any wait. A delivery worker
+		// holds this row FOR UPDATE without changing it; an UPDATE that
+		// waited on such a lock would resume without re-evaluating its
+		// deadline test. The mail job locks only this row, so taking it after
+		// the contact, email, group and inviter locks cannot deadlock with it.
+		var held models.Invitation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL", inv.ID, hashToken(body.Token)).
+			Limit(1).Find(&held).Error; err != nil {
+			return err
+		}
+		if held.ID == 0 {
+			return errTokenInvalid // rotated, revoked or claimed while we waited
+		}
 		// Claim the invitation atomically: a concurrent accept of the same
 		// token must lose here, not rely on the users.email unique index.
 		res := tx.Model(&models.Invitation{}).
-			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", inv.ID, hashToken(body.Token)).
+			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive, inv.ID, hashToken(body.Token)).
 			Update("accepted_at", now)
 		if res.Error != nil {
 			return res.Error

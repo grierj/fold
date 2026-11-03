@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fold/models"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -163,6 +164,75 @@ func TestRotateInvitationTokenPreservesDeadlineAndRequiresLiveState(t *testing.T
 			}
 			if _, err := liveInvitation(app.DB, raw); err != nil {
 				t.Fatalf("replacement capability is unusable: %v", err)
+			}
+		})
+	}
+}
+
+func TestRotateAccountTokenPreservesPayloadAndDeadlineAndRequiresLiveState(t *testing.T) {
+	for _, state := range []string{"live", "used", "expired", "deleted", "wrong kind", "wrong user"} {
+		t.Run(state, func(t *testing.T) {
+			app := testApp(t)
+			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			other := newTestUser(t, app, "bob", "password1234", models.RoleMember)
+			if _, err := createAccountToken(app.DB, models.TokenEmailVerify, user.ID, map[string]any{"new_email": "new@example.com"}, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			var before models.AccountToken
+			if err := app.DB.Where("user_id = ?", user.ID).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			kind, userID := models.TokenEmailVerify, user.ID
+			switch state {
+			case "used":
+				if err := app.DB.Model(&before).Update("used_at", time.Now()).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				if err := app.DB.Model(&before).Update("expires_at", time.Now().Add(-time.Minute)).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "deleted":
+				if err := app.DB.Delete(&before).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "wrong kind":
+				kind = models.TokenEmailChangeCancel
+			case "wrong user":
+				userID = other.ID
+			}
+			var held models.AccountToken
+			if state != "deleted" {
+				if err := app.DB.First(&held, before.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, changed, err := rotateAccountToken(app.DB, before.ID, kind, userID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state != "live" {
+				if changed || raw != "" {
+					t.Fatalf("%s token rotated: %q %v", state, raw, changed)
+				}
+				if state != "deleted" {
+					var got models.AccountToken
+					if err := app.DB.First(&got, before.ID).Error; err != nil || !reflect.DeepEqual(got, held) {
+						t.Fatalf("%s token changed: %+v vs %+v (%v)", state, got, held, err)
+					}
+				}
+				return
+			}
+			if !changed || raw == "" {
+				t.Fatalf("live rotation = %q, %v", raw, changed)
+			}
+			var got models.AccountToken
+			if err := app.DB.First(&got, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got.TokenHash != hashToken(raw) || got.TokenHash == before.TokenHash || !got.ExpiresAt.Equal(before.ExpiresAt) ||
+				got.Payload != before.Payload || got.UsedAt != nil || got.UserID != before.UserID || got.Kind != before.Kind {
+				t.Fatalf("rotation must change only the hash: %+v -> %+v", before, got)
 			}
 		})
 	}

@@ -562,7 +562,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 				return err
 			}
 
-			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
+			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive+" AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
 			if claim.Error != nil {
 				return claim.Error
 			}

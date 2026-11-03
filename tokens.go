@@ -26,6 +26,12 @@ func jsonString(v any) string {
 // valid 24 hours (10.1).
 const tokenTTL = 24 * time.Hour
 
+// sqlStillLive is the deadline test for a token or invitation. now() is fixed
+// when the transaction begins, so a request that waited for a lock could pass
+// it after the deadline. Every deadline check after a lock wait, whether a
+// lookup, a rotation or the single-use claim, reads the wall clock instead.
+const sqlStillLive = "expires_at > clock_timestamp()"
+
 // newRawToken makes a 256-bit token, encoded for URLs.
 func newRawToken() (string, error) {
 	b := make([]byte, 32)
@@ -48,13 +54,20 @@ func hashToken(raw string) string {
 // at most one live link exists per kind: requesting a fresh reset link
 // kills the previous one instead of leaving it usable until expiry.
 func createAccountToken(tx *gorm.DB, kind string, userID uint, payload map[string]any, ttl time.Duration) (string, error) {
+	raw, _, err := issueAccountToken(tx, kind, userID, payload, ttl)
+	return raw, err
+}
+
+// issueAccountToken is createAccountToken for callers that also need the new
+// row's ID, such as a job that rotates the capability at delivery time.
+func issueAccountToken(tx *gorm.DB, kind string, userID uint, payload map[string]any, ttl time.Duration) (string, uint, error) {
 	raw, err := newRawToken()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if err := tx.Where("kind = ? AND user_id = ? AND used_at IS NULL", kind, userID).
 		Delete(&models.AccountToken{}).Error; err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var payloadJSON string
 	if len(payload) > 0 {
@@ -67,9 +80,31 @@ func createAccountToken(tx *gorm.DB, kind string, userID uint, payload map[strin
 		Payload: payloadJSON, ExpiresAt: time.Now().UTC().Add(ttl),
 	}
 	if err := tx.Create(&tok).Error; err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return raw, nil
+	return raw, tok.ID, nil
+}
+
+// rotateAccountToken replaces only the capability of one stored token, never
+// its payload or deadline. It changes nothing unless that exact row, of that
+// kind and user, is still unused and unexpired; changed is false then, so a
+// stale caller can neither revive a closed request nor extend its window.
+// The caller holds the contact gate and the user lock.
+func rotateAccountToken(tx *gorm.DB, id uint, kind string, userID uint) (raw string, changed bool, err error) {
+	raw, err = newRawToken()
+	if err != nil {
+		return "", false, err
+	}
+	res := tx.Model(&models.AccountToken{}).
+		Where("id = ? AND kind = ? AND user_id = ? AND used_at IS NULL AND "+sqlStillLive, id, kind, userID).
+		Update("token_hash", hashToken(raw))
+	if res.Error != nil {
+		return "", false, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return "", false, nil
+	}
+	return raw, true, nil
 }
 
 // errTokenInvalid: the token is unknown, expired, or already used. Callers
@@ -80,13 +115,13 @@ var errTokenInvalid = errors.New("invalid or expired token")
 // used, atomically. Single use: a second call with the same token fails.
 func consumeAccountToken(tx *gorm.DB, kind, raw string) (*models.AccountToken, error) {
 	var tok models.AccountToken
-	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()",
+	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive,
 		kind, hashToken(raw)).First(&tok)
 	if res.Error != nil {
 		return nil, errTokenInvalid
 	}
 	now := time.Now().UTC()
-	res = tx.Model(&models.AccountToken{}).Where("id = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", tok.ID, hashToken(raw)).
+	res = tx.Model(&models.AccountToken{}).Where("id = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, tok.ID, hashToken(raw)).
 		Update("used_at", now)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return nil, errTokenInvalid // lost the race: someone else used it
@@ -112,7 +147,7 @@ func rotateInvitationToken(tx *gorm.DB, id uint) (string, error) {
 		return "", err
 	}
 	res := tx.Model(&models.Invitation{}).
-		Where("id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", id).
+		Where("id = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive, id).
 		Update("token_hash", hash)
 	if res.Error != nil {
 		return "", res.Error
@@ -127,7 +162,7 @@ func rotateInvitationToken(tx *gorm.DB, id uint) (string, error) {
 // not expired.
 func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {
 	var inv models.Invitation
-	res := tx.Where("token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()",
+	res := tx.Where("token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive,
 		hashToken(raw)).First(&inv)
 	if res.Error != nil {
 		return nil, errTokenInvalid
