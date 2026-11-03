@@ -901,6 +901,27 @@ it("refreshes the email counts after a task is retried", async () => {
   expect(AdminJobs.list).toHaveBeenCalledTimes(2);
 });
 
+it("keeps the email line steady between a dismiss and the reload", async () => {
+  const dead = { id: 4, kind: "notify.deliver", label: "Sending an email", runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" };
+  let finish!: (v: Awaited<ReturnType<typeof AdminJobs.list>>) => void;
+  const second = new Promise<Awaited<ReturnType<typeof AdminJobs.list>>>((r) => { finish = r; });
+  vi.mocked(AdminJobs.list)
+    .mockResolvedValueOnce({ jobs: [dead], more: false, deliveries: { queued: 0, deferred: 1, failed: 0, oldestQueuedAt: null } })
+    .mockReturnValueOnce(second);
+  vi.mocked(AdminJobs.dismiss).mockResolvedValue({ status: "dismissed" });
+  render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
+  const stopped = "1 email stopped after too many tries. To send it, use Retry now on “Sending an email” below.";
+  expect(await screen.findByText(stopped)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
+  await waitFor(() => expect(AdminJobs.list).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Sending an email" })).not.toBeInTheDocument());
+  expect(screen.queryByText(/being tried again/)).not.toBeInTheDocument();
+  expect(screen.getByText(stopped)).toBeInTheDocument();
+  finish({ jobs: [], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
+  expect(await screen.findByText("Nothing needs attention.")).toBeInTheDocument();
+  expect(screen.queryByText(/stopped after too many tries/)).not.toBeInTheDocument();
+});
+
 it("shows no count on the System tab when nothing failed", async () => {
   render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByText("Nothing needs attention.")).toBeInTheDocument();

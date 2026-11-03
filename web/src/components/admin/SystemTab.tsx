@@ -36,8 +36,8 @@ function deliveryLine(d: AdminDeliverySummary | null | undefined, jobs: AdminJob
       parts.push(one ? "1 email is being tried again." : `${d.deferred} emails are being tried again.`);
     } else {
       parts.push(one
-        ? "1 email stopped after too many tries. Its task will show below once you retry or dismiss the tasks listed."
-        : `${d.deferred} emails stopped after too many tries. Their tasks will show below once you retry or dismiss the tasks listed.`);
+        ? "1 email stopped after too many tries and isn't among the tasks listed."
+        : `${d.deferred} emails stopped after too many tries and aren't among the tasks listed.`);
     }
   }
   if (d.failed > 0) {
@@ -111,7 +111,11 @@ function JobRow({ job, onDone }: { job: AdminJob; onDone: (id: number, message: 
 // Admin → System (M3.1b, DEC-111): background tasks that ran out of
 // attempts. Admins aren't told about them elsewhere until message sending
 // brings failures they can fix (M3.5).
-export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = null }: {
+export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = null, lineJobs }: {
+  // The jobs from the same server response as `deliveries`. The email line reads
+  // these, not `jobs`, so removing a row at once (before the reload returns)
+  // never rewrites the sentence. Defaults to `jobs`.
+  lineJobs?: AdminJob[] | null;
   // Email counts from the same load; null until loaded.
   deliveries?: AdminDeliverySummary | null;
   // Null until loaded.
@@ -130,7 +134,7 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
     if (status.n > 0) statusRef.current?.focus();
   }, [status.n]);
 
-  const delivery = deliveryLine(deliveries, jobs, more);
+  const delivery = deliveryLine(deliveries, lineJobs === undefined ? jobs : lineJobs, more);
   return (
     <section aria-labelledby="system-heading" className="space-y-3">
       <h2 id="system-heading" className="text-xl font-bold">Background tasks</h2>

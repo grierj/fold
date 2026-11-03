@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -138,9 +138,13 @@ it("says stopped emails are being tried again when no task is listed", () => {
   expect(screen.queryByText("Nothing needs attention.")).not.toBeInTheDocument();
 });
 
-it("says the task will show later when more tasks failed than are listed", () => {
+it("says a stopped email is not among the tasks listed when more tasks failed than fit", () => {
   renderTab(summary({ deferred: 1 }), [job(1)], { more: true });
-  expect(screen.getByText("1 email stopped after too many tries. Its task will show below once you retry or dismiss the tasks listed.")).toBeInTheDocument();
+  expect(screen.getByText("1 email stopped after too many tries and isn't among the tasks listed.")).toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/will show below/);
+  cleanup();
+  renderTab(summary({ deferred: 3 }), [job(1)], { more: true });
+  expect(screen.getByText("3 emails stopped after too many tries and aren't among the tasks listed.")).toBeInTheDocument();
 });
 
 it("says refused emails could not be sent, with no recipient or error text", () => {

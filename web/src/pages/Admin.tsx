@@ -1510,6 +1510,8 @@ export function AdminPage() {
   const [moreJobs, setMoreJobs] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<AdminDeliverySummary | null>(null);
+  // The jobs as the server sent them with `deliveries`, for the email line only.
+  const [snapshotJobs, setSnapshotJobs] = useState<AdminJob[] | null>(null);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1558,6 +1560,7 @@ export function AdminPage() {
     try {
       const { jobs, more, deliveries } = await AdminJobs.list();
       setDeadJobs(jobs);
+      setSnapshotJobs(jobs);
       setDeliveries(deliveries ?? null);
       setMoreJobs(more);
     } catch (e) {
@@ -1657,7 +1660,7 @@ export function AdminPage() {
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
-      {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} deliveries={deliveries} />}
+      {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} deliveries={deliveries} lineJobs={snapshotJobs} />}
       </Tabs>
     </div>
   );
