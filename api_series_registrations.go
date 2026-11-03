@@ -165,7 +165,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		return
 	}
 	if body.Scope == seriesScopeThisAndFollowing {
-		if _, err := time.Parse("2006-01-02", body.Date); err != nil {
+		if _, err := models.ParseCalendarDate(body.Date); err != nil {
 			jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
 			return
 		}
@@ -305,7 +305,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			// governs both date eligibility and the shared promotion cutoff path.
 			dateNow := a.seriesTime()
 			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(dateNow) ||
-				(body.Scope == seriesScopeThisAndFollowing && o.OriginalDate < body.Date) {
+				(body.Scope == seriesScopeThisAndFollowing && models.FormatCalendarDate(o.OriginalDate) < body.Date) {
 				continue
 			}
 			// A hidden per-date override is omitted rather than returned as a
@@ -318,7 +318,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			change, err := prepareRegistration(old, o, userSubject(actor.ID), body.Status, guests, mode, care, nil, dateNow)
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
-					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: o.OriginalDate, Code: code})
+					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Code: code})
 					continue
 				}
 				return err
@@ -333,7 +333,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
 						return rollbackErr
 					}
-					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: o.OriginalDate, Code: code})
+					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Code: code})
 					continue
 				}
 				return err
@@ -350,8 +350,8 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 				}
 				afterState.WaitlistPosition = &position
 			}
-			response.Results = append(response.Results, seriesRegistrationResult{OccurrenceID: o.ID, Date: o.OriginalDate, Before: beforeState, After: afterState})
-			undoItems = append(undoItems, seriesUndoItem{OccurrenceID: o.ID, Date: o.OriginalDate, Before: undoState(old), After: undoState(after)})
+			response.Results = append(response.Results, seriesRegistrationResult{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Before: beforeState, After: afterState})
+			undoItems = append(undoItems, seriesUndoItem{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Before: undoState(old), After: undoState(after)})
 
 			// An ordinarily-authorized bulk Can't go still ends exact-date
 			// provenance on that date, matching the single-date path. The

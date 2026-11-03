@@ -140,7 +140,7 @@ func (a *App) apiAdminMatchLocation(c *gin.Context) {
 			if result == notBooked {
 				busyTotal++
 				if len(busy) < maxMatchBusy {
-					busy = append(busy, matchBusyJSON{EventID: occs[i].EventID, EventTitle: titles[occs[i].EventID], Date: occs[i].OriginalDate})
+					busy = append(busy, matchBusyJSON{EventID: occs[i].EventID, EventTitle: titles[occs[i].EventID], Date: models.FormatCalendarDate(occs[i].OriginalDate)})
 				}
 				continue
 			}

@@ -54,9 +54,9 @@ func TestDateVisibilityParsing(t *testing.T) {
 
 func TestOpenedDateDiscoveryAndFeedPrivacy(t *testing.T) {
 	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public", "reason": "Welcome our neighbours"}, 200)
-	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate)
+	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	raw := apiDo(t, anon, "GET", exact, nil, 200)
 	for _, forbidden := range []string{"groupId", "groupName", "SECRET GROUP PLACE", "Hidden fellowship", "recurrenceRule", "attendees", "hosts", "seriesStartsLocal"} {
 		if strings.Contains(raw, forbidden) {
@@ -64,13 +64,13 @@ func TestOpenedDateDiscoveryAndFeedPrivacy(t *testing.T) {
 		}
 	}
 	apiDo(t, anon, "GET", fmt.Sprintf("/api/v1/events/%d", ev.ID), nil, 404)
-	apiDo(t, anon, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[1].OriginalDate), nil, 404)
-	listed := app.occurrencesForEvents([]uint{ev.ID}, dates[0].OriginalDate, dates[3].OriginalDate, nil, nil)
+	apiDo(t, anon, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[1].OriginalDate)), nil, 404)
+	listed := app.occurrencesForEvents([]uint{ev.ID}, models.FormatCalendarDate(dates[0].OriginalDate), models.FormatCalendarDate(dates[3].OriginalDate), nil, nil)
 	if len(listed) != 1 || listed[0].GroupID != nil || listed[0].RecurrenceRule != "" || listed[0].Location != "" || listed[0].AttendeesVisible {
 		t.Fatalf("list: %+v", listed)
 	}
 	feed := events.RenderFeed(mustBuildFeed(t, app, nil, feedOptions{name: "Church"}, time.Now().UTC()))
-	if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 1 || !strings.Contains(string(feed), "/dates/"+dates[0].OriginalDate) || strings.Contains(string(feed), "SECRET") {
+	if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 1 || !strings.Contains(string(feed), "/dates/"+models.FormatCalendarDate(dates[0].OriginalDate)) || strings.Contains(string(feed), "SECRET") {
 		t.Fatalf("feed: %s", feed)
 	}
 	var n int64
@@ -89,10 +89,10 @@ func TestOpenedDateDiscoveryAndFeedPrivacy(t *testing.T) {
 
 func TestSeriesVisibilityPreservesAndResetsDates(t *testing.T) {
 	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "invite_only"}, 200)
-	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate)
+	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, anon, "GET", exact, nil, 200)
 	var impact visibilityImpactJSON
 	decodeJSON(t, admin.do("GET", fmt.Sprintf("/api/v1/events/%d/visibility-impact?visibility=invite_only", ev.ID), nil, false), &impact)
@@ -110,12 +110,17 @@ func TestSeriesVisibilityPreservesAndResetsDates(t *testing.T) {
 
 func TestGroupTighteningRequiresDateDecision(t *testing.T) {
 	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, 200)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": "public"}, 200)
 	var impact visibilityImpactJSON
 	groupPath := fmt.Sprintf("/api/v1/groups/%d", *ev.GroupID)
 	decodeJSON(t, admin.do("GET", groupPath+"/visibility-impact?visibility=invite_only", nil, false), &impact)
 	if len(impact.LeaderOpened) != 1 || impact.LeaderOpened[0].DecisionKey != dateDecisionKey(dates[0].ID) {
 		t.Fatalf("date review: %+v", impact)
+	}
+	// The date-level entry names its date as plain YYYY-MM-DD; the fixture
+	// runs at 18:00 UTC, so the start time gives the expected text.
+	if got, want := impact.LeaderOpened[0].Date, dates[0].StartsAt.UTC().Format("2006-01-02"); got != want {
+		t.Fatalf("date review names %q, want %q", got, want)
 	}
 	apiDo(t, admin, "PUT", groupPath, map[string]any{"visibility": "invite_only"}, 409)
 	var group models.Group
@@ -124,18 +129,18 @@ func TestGroupTighteningRequiresDateDecision(t *testing.T) {
 		t.Fatal("missing decision did not roll back")
 	}
 	apiDo(t, admin, "PUT", groupPath, map[string]any{"visibility": "invite_only", "openedEvents": map[string]string{dateDecisionKey(dates[0].ID): "tighten"}}, 200)
-	apiDo(t, anon, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate), nil, 404)
+	apiDo(t, anon, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), nil, 404)
 }
 
 func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.T) {
 	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
 	for i := 0; i < 2; i++ {
-		apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[i].OriginalDate), map[string]any{"visibility": "public"}, 200)
+		apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[i].OriginalDate)), map[string]any{"visibility": "public"}, 200)
 	}
 	email := "date-guest@example.com"
 	var manageToken string
 	for i := 0; i < 2; i++ {
-		guestSubmit(t, anon, ev.ID, map[string]any{"name": "Guest", "email": email, "date": dates[i].OriginalDate, "over18": true}, 200)
+		guestSubmit(t, anon, ev.ID, map[string]any{"name": "Guest", "email": email, "date": models.FormatCalendarDate(dates[i].OriginalDate), "over18": true}, 200)
 		token := tokenInEmail(t, latestEmail(t, app, email))
 		w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]any{"token": token}, true)
 		if w.Code != 200 {
@@ -150,9 +155,9 @@ func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.
 		}
 	}
 	pending := "pending-date@example.com"
-	guestSubmit(t, anon, ev.ID, map[string]any{"name": "Waiting Guest", "email": pending, "date": dates[0].OriginalDate, "over18": true}, 200)
+	guestSubmit(t, anon, ev.ID, map[string]any{"name": "Waiting Guest", "email": pending, "date": models.FormatCalendarDate(dates[0].OriginalDate), "over18": true}, 200)
 	token := tokenInEmail(t, latestEmail(t, app, pending))
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": nil}, 409)
 	var n int64
 	app.DB.Model(&models.Registration{}).Count(&n)
@@ -190,14 +195,15 @@ func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.
 	}
 	var notices []models.Notification
 	app.DB.Where("kind = ?", "registration.cancelled").Find(&notices)
-	if len(notices) != 1 || !strings.Contains(notices[0].Title, dates[0].OriginalDate) || strings.Contains(notices[0].Body, "Hidden fellowship") {
+	wantTitle := "Registration cancelled: Open evening · " + dates[0].StartsAt.UTC().Format("2006-01-02")
+	if len(notices) != 1 || notices[0].Title != wantTitle || notices[0].EmailTitle != wantTitle || strings.Contains(notices[0].Body, "Hidden fellowship") {
 		t.Fatalf("date cancellation notices: %+v", notices)
 	}
 }
 
 func TestVisibilityOverrideProtectsDateFromSeriesClockEdit(t *testing.T) {
 	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, 200)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": "public"}, 200)
 	changed := dates[0].StartsAt.UTC().Add(time.Hour).Format("2006-01-02T15:04")
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), map[string]any{"startsLocal": changed, "tzid": "UTC"}, 200)
 	var first, second models.EventOccurrence
@@ -210,7 +216,7 @@ func TestVisibilityOverrideProtectsDateFromSeriesClockEdit(t *testing.T) {
 
 func TestConcurrentRegistrationVersusDateTightening(t *testing.T) {
 	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
 	clients := make([]*apiClient, 8)
 	for i := range clients {
@@ -223,7 +229,7 @@ func TestConcurrentRegistrationVersusDateTightening(t *testing.T) {
 	for _, c := range clients {
 		go func(c *apiClient) {
 			<-start
-			w := c.do("PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": dates[0].OriginalDate, "status": "going"}, true)
+			w := c.do("PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": "going"}, true)
 			results <- w.Code
 		}(c)
 	}
@@ -269,10 +275,10 @@ func TestChurchWideHostDateVisibilityAndInvitationFallback(t *testing.T) {
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", event.ID).First(&occ)
 	grant := seedReadInvitation(t, app, &issuer, recipient, event, occ)
-	p := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", event.ID, occ.OriginalDate)
+	p := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", event.ID, models.FormatCalendarDate(occ.OriginalDate))
 	apiDo(t, admin, "PUT", p, map[string]any{"visibility": "public"}, 200)
 	apiDo(t, admin, "PUT", p, map[string]any{"visibility": "invite_only"}, 200)
-	apiDo(t, client, "GET", dateReadPath(event.ID, occ.OriginalDate), nil, 200)
+	apiDo(t, client, "GET", dateReadPath(event.ID, models.FormatCalendarDate(occ.OriginalDate)), nil, 200)
 	var n int64
 	app.DB.Model(&models.Registration{}).Where("id = ?", grant.RegistrationID).Count(&n)
 	if n != 1 {
@@ -283,7 +289,7 @@ func TestChurchWideHostDateVisibilityAndInvitationFallback(t *testing.T) {
 
 func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T) {
 	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	before := fetchFeed(t, anon, "/cal/public.ics")
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "invite_only"}, 200)
 	after := fetchFeedIf(t, anon, "/cal/public.ics", before.Header().Get("ETag"))
@@ -291,7 +297,7 @@ func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T)
 		t.Fatalf("unchanged ETag: %d", after.Code)
 	}
 	body := after.Body.String()
-	if strings.Contains(body, "RRULE") || strings.Count(body, "BEGIN:VEVENT") != 3 || strings.Contains(body, "/dates/"+dates[0].OriginalDate) {
+	if strings.Contains(body, "RRULE") || strings.Count(body, "BEGIN:VEVENT") != 3 || strings.Contains(body, "/dates/"+models.FormatCalendarDate(dates[0].OriginalDate)) {
 		t.Fatalf("partial recurrence feed: %s", body)
 	}
 	for _, opts := range []feedOptions{{name: "Public"}, {name: "Group", onlyGroupID: ev.GroupID}} {
@@ -305,10 +311,10 @@ func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T)
 func TestOpenedDateOrdinaryRSVPAndWithdrawal(t *testing.T) {
 	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
 	app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"remote_available": true, "guests_allowed": 3})
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, 200)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": "public"}, 200)
 	u := newTestUser(t, app, "ordinary-date", "password1234", models.RoleMember)
 	client := loginAPI(t, app, "ordinary-date", "password1234")
-	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate)
+	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	var read struct {
 		Occurrence dateOccurrenceJSON `json:"occurrence"`
 	}
@@ -317,7 +323,7 @@ func TestOpenedDateOrdinaryRSVPAndWithdrawal(t *testing.T) {
 		t.Fatalf("ordinary authority/options: %+v", read)
 	}
 	for _, status := range []string{"going", "declined"} {
-		apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": dates[0].OriginalDate, "status": status, "attendanceMode": "remote", "guestCount": 2}, 200)
+		apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": status, "attendanceMode": "remote", "guestCount": 2}, 200)
 		decodeJSON(t, client.do("GET", exact, nil, false), &read)
 		if read.Occurrence.MyRegistration == nil || *read.Occurrence.MyRegistration != status {
 			t.Fatalf("answer: %+v", read)
@@ -340,13 +346,13 @@ func TestVisibilityCancellationPromotesSurvivors(t *testing.T) {
 				capacity = 2
 			}
 			app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"capacity": capacity, "waitlist_enabled": true, "guests_allowed": 1})
-			path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+			path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 			if scope != "group_series" {
 				apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
 			}
 			loser := newTestUser(t, app, "losing-date", "password1234", models.RoleMember)
 			client := loginAPI(t, app, "losing-date", "password1234")
-			answer := map[string]any{"date": dates[0].OriginalDate, "status": "going"}
+			answer := map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": "going"}
 			apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), answer, 200)
 			if scope == "combined_capacity" {
 				answer["guestCount"] = 1
@@ -392,11 +398,11 @@ func TestVisibilityCancellationPromotesSurvivors(t *testing.T) {
 func TestOpenedDateNoticesUseEffectiveTitle(t *testing.T) {
 	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
 	app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("title", "CONFIDENTIAL PARENT")
-	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public", "title": "Community supper"}, 200)
 	u := newTestUser(t, app, "notice-date", "password1234", models.RoleMember)
 	client := loginAPI(t, app, "notice-date", "password1234")
-	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": dates[0].OriginalDate, "status": "going"}, 200)
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": "going"}, 200)
 	apiDo(t, admin, "PUT", path, map[string]any{"location": "New room", "startsLocal": dates[0].StartsAt.Add(time.Hour).Format("2006-01-02T15:04")}, 200)
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "series", "confirm": true}, 200)
 	var notices []models.Notification
@@ -418,14 +424,14 @@ func TestVisibilityCancellationRevokesPromotedAccountManageToken(t *testing.T) {
 	user := newTestUser(t, app, "promoted-token", "password1234", models.RoleMember)
 	client := loginAPI(t, app, "promoted-token", "password1234")
 	root := fmt.Sprintf("/api/v1/events/%d", ev.ID)
-	answer := map[string]any{"date": dates[0].OriginalDate, "status": "going"}
+	answer := map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": "going"}
 	apiDo(t, admin, "PUT", root+"/registrations", answer, 200)
 	apiDo(t, client, "PUT", root+"/registrations", answer, 200)
-	apiDo(t, admin, "PUT", root+"/registrations", map[string]any{"date": dates[0].OriginalDate, "status": "declined"}, 200)
+	apiDo(t, admin, "PUT", root+"/registrations", map[string]any{"date": models.FormatCalendarDate(dates[0].OriginalDate), "status": "declined"}, 200)
 	raw := manageTokenInEmail(t, latestEmail(t, app, user.Email))
 	manage := "/api/v1/guest-registrations/manage/" + raw
 	apiDo(t, anon, "GET", manage, nil, 200)
-	path := root + "/occurrences/" + dates[0].OriginalDate
+	path := root + "/occurrences/" + models.FormatCalendarDate(dates[0].OriginalDate)
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "invite_only", "confirm": true}, 200)
 	apiDo(t, admin, "PUT", path, map[string]any{"title": "PRIVATE PROMOTED TITLE", "location": "PRIVATE PROMOTED PLACE", "startsLocal": dates[0].StartsAt.Add(2 * time.Hour).UTC().Format("2006-01-02T15:04")}, 200)
 	for _, method := range []string{"GET", "POST"} {
@@ -447,4 +453,51 @@ func TestVisibilityCancellationRevokesPromotedAccountManageToken(t *testing.T) {
 	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
 	apiDo(t, anon, "GET", manage, nil, 200)
 	apiDo(t, anon, "POST", manage+"/cancel", nil, 200)
+}
+
+// A date reaches audit data and the impact preview as text the compiler
+// cannot check, so both are read back here. A date that cannot exist is
+// answered like any other missing one, never as a database error.
+//
+// The preview lists a date only when the change would make it more private
+// (dateImpactOf: policy.MoreOpen(current, next)). Opening the invite-only
+// date to public is not that, so the date is opened first and the preview
+// then asks about closing it again.
+func TestDateVisibilityAuditAndPreviewUseExactDates(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
+	recipient := newTestUser(t, app, "other-admin", "password1234", models.RoleAdmin)
+	// The fixture's events run at 18:00 UTC, so the start time names the
+	// date without going through the formatter being tested.
+	date := dates[0].StartsAt.UTC().Format("2006-01-02")
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, date)
+
+	var opening visibilityImpactJSON
+	decodeJSON(t, admin.do("GET", path+"/visibility-impact?visibility=public", nil, false), &opening)
+	if len(opening.Tightened) != 0 || len(opening.LeaderOpened) != 0 {
+		t.Fatalf("opening an invite-only date to public previews %+v, want nothing", opening)
+	}
+
+	apiDo(t, admin, "GET", fmt.Sprintf("/api/v1/events/%d/occurrences/2026-02-30/visibility-impact?visibility=public", ev.ID), nil, 404)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/2026-02-30", ev.ID), map[string]any{"visibility": "public"}, 400)
+
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public", "reason": "Welcome our neighbours"}, 200)
+	var notices []models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", recipient.ID, "event.visibility_override").Find(&notices).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantTitle := "Event opened up: Open evening · " + date
+	if len(notices) != 1 || notices[0].Title != wantTitle || notices[0].EmailTitle != wantTitle {
+		t.Fatalf("visibility override notices: %+v, want title and email title %q", notices, wantTitle)
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("target_type = 'event' AND target_id = ? AND meta_json->>'original_date' = ?", ev.ID, date).Count(&n)
+	if n != 1 {
+		t.Fatalf("audit rows naming %s = %d, want 1", date, n)
+	}
+
+	var preview visibilityImpactJSON
+	decodeJSON(t, admin.do("GET", path+"/visibility-impact?visibility=invite_only", nil, false), &preview)
+	if len(preview.Tightened) != 1 || preview.Tightened[0].Title != "Open evening · "+date || preview.Tightened[0].Visibility != models.VisibilityPublic {
+		t.Fatalf("date preview: %+v, want one public entry whose title ends in %s", preview.Tightened, date)
+	}
 }

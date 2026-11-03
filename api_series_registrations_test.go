@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func seedSeriesEvent(t *testing.T, app *App, g *models.Group, createdBy uint, ca
 	occs := make([]models.EventOccurrence, count)
 	for i := range occs {
 		at := start.AddDate(0, 0, i*7)
-		occs[i] = models.EventOccurrence{EventID: ev.ID, OriginalDate: at.Format("2006-01-02"), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceScheduled}
+		occs[i] = models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(at.Format("2006-01-02")), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceScheduled}
 		if err := app.DB.Create(&occs[i]).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -154,6 +155,30 @@ func awaitSeriesSignal(t *testing.T, ch <-chan struct{}, what string) {
 	}
 }
 
+// seriesUndoSnapshotDates reads the persisted undo receipt for an event and
+// returns each item's date by occurrence ID. The snapshot is a jsonb column
+// built from structs, so the date is decoded as a string: a timestamp or a
+// number there fails the decode.
+func seriesUndoSnapshotDates(t *testing.T, app *App, eventID uint) map[uint]string {
+	t.Helper()
+	var receipt models.SeriesUndoReceipt
+	if err := app.DB.Where("event_id = ?", eventID).Order("id DESC").First(&receipt).Error; err != nil {
+		t.Fatal(err)
+	}
+	var items []struct {
+		OccurrenceID uint   `json:"occurrenceId"`
+		Date         string `json:"date"`
+	}
+	if err := json.Unmarshal([]byte(receipt.Snapshot), &items); err != nil {
+		t.Fatalf("snapshot %q: %v", receipt.Snapshot, err)
+	}
+	out := make(map[uint]string, len(items))
+	for _, it := range items {
+		out[it.OccurrenceID] = it.Date
+	}
+	return out
+}
+
 func TestSeriesRegistrationThisAndFollowingPreservesEarlierAndRemoved(t *testing.T) {
 	app := testApp(t)
 	leader := newTestUser(t, app, "series-leader", "password1234", models.RoleMember)
@@ -173,12 +198,27 @@ func TestSeriesRegistrationThisAndFollowingPreservesEarlierAndRemoved(t *testing
 	}
 
 	client := loginAPI(t, app, "series-actor", "password1234")
-	out := postSeriesAnswer(client, ev.ID, map[string]any{"date": occs[1].OriginalDate, "scope": seriesScopeThisAndFollowing, "status": models.RegGoing})
+	out := postSeriesAnswer(client, ev.ID, map[string]any{"date": models.FormatCalendarDate(occs[1].OriginalDate), "scope": seriesScopeThisAndFollowing, "status": models.RegGoing})
 	if out == nil {
 		t.Fatal("series answer failed")
 	}
 	if len(out.Results) != 2 || len(out.Refusals) != 1 || out.Refusals[0].Code != "registration_removed" {
 		t.Fatalf("results=%+v refusals=%+v", out.Results, out.Refusals)
+	}
+	// The dates in results and refusals are plain YYYY-MM-DD. The expected
+	// strings come from the fixture's own start times (UTC), not from the
+	// formatter under test.
+	for i, want := range []int{1, 3} {
+		if got, wantDate := out.Results[i].Date, occs[want].StartsAt.Format("2006-01-02"); got != wantDate || out.Results[i].OccurrenceID != occs[want].ID {
+			t.Fatalf("result %d date=%q occurrence=%d, want %q occurrence %d", i, got, out.Results[i].OccurrenceID, wantDate, occs[want].ID)
+		}
+	}
+	if got, want := out.Refusals[0].Date, occs[2].StartsAt.Format("2006-01-02"); got != want || out.Refusals[0].OccurrenceID != occs[2].ID {
+		t.Fatalf("refusal date=%q occurrence=%d, want %q occurrence %d", got, out.Refusals[0].OccurrenceID, want, occs[2].ID)
+	}
+	snapshot := seriesUndoSnapshotDates(t, app, ev.ID)
+	if len(snapshot) != 2 || snapshot[occs[1].ID] != occs[1].StartsAt.Format("2006-01-02") || snapshot[occs[3].ID] != occs[3].StartsAt.Format("2006-01-02") {
+		t.Fatalf("persisted undo snapshot dates=%v", snapshot)
 	}
 	if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegMaybe {
 		t.Fatalf("earlier status=%q", got)
@@ -246,7 +286,7 @@ func TestSeriesRegistrationMixedCapacityAndLaterExtension(t *testing.T) {
 	}
 
 	laterAt := occs[2].StartsAt.AddDate(0, 0, 7)
-	later := models.EventOccurrence{EventID: ev.ID, OriginalDate: laterAt.Format("2006-01-02"), StartsAt: laterAt, EndsAt: laterAt.Add(time.Hour), Status: models.OccurrenceScheduled}
+	later := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(laterAt.Format("2006-01-02")), StartsAt: laterAt, EndsAt: laterAt.Add(time.Hour), Status: models.OccurrenceScheduled}
 	if err := app.DB.Create(&later).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -416,6 +456,9 @@ func TestSeriesRegistrationRefreshesClockAfterContactAndOccurrenceLocks(t *testi
 		if !strings.Contains(notice.Body, "within 2 hours") || !strings.Contains(notice.Body, "nobody was promoted automatically") {
 			t.Fatalf("cutoff notice body=%q", notice.Body)
 		}
+		if got, want := noticeDataDate(t, notice), occs[0].StartsAt.Format("2006-01-02"); got != want {
+			t.Fatalf("cutoff notice date=%q, want %q", got, want)
+		}
 	})
 }
 
@@ -436,6 +479,15 @@ func TestSeriesUndoRestoresNoAnswerAndIsActorBoundSingleUse(t *testing.T) {
 	out := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe})
 	if out == nil || out.UndoToken == "" || out.UndoExpiresAt == nil {
 		t.Fatalf("missing receipt: %+v", out)
+	}
+	for i := range occs {
+		if got, want := out.Results[i].Date, occs[i].StartsAt.Format("2006-01-02"); got != want {
+			t.Fatalf("result %d date=%q, want %q", i, got, want)
+		}
+	}
+	snapshot := seriesUndoSnapshotDates(t, app, ev.ID)
+	if len(snapshot) != 2 || snapshot[occs[0].ID] != occs[0].StartsAt.Format("2006-01-02") || snapshot[occs[1].ID] != occs[1].StartsAt.Format("2006-01-02") {
+		t.Fatalf("persisted undo snapshot dates=%v", snapshot)
 	}
 	if w := undoSeriesAnswer(loginAPI(t, app, "undo-other", "password1234"), ev.ID, out.UndoToken, true); w.Code != http.StatusForbidden {
 		t.Fatalf("other actor=%d %s", w.Code, w.Body.String())
@@ -557,7 +609,7 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	}
 	var undone seriesRegistrationResponse
 	decodeJSON(t, undo, &undone)
-	if len(undone.CapacityLoss) != 1 || undone.CapacityLoss[0] != occs[0].OriginalDate {
+	if len(undone.CapacityLoss) != 1 || undone.CapacityLoss[0] != models.FormatCalendarDate(occs[0].OriginalDate) {
 		t.Fatalf("current-capacity loss=%v", undone.CapacityLoss)
 	}
 	if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegWaitlisted {
@@ -780,7 +832,7 @@ func TestSeriesRegistrationDisabledActorAndConcurrentNormalMutation(t *testing.T
 	}()
 	go func() {
 		defer wg.Done()
-		codes[1], _ = registerAs(normal, ev.ID, occs[1].OriginalDate, models.RegMaybe, nil)
+		codes[1], _ = registerAs(normal, ev.ID, models.FormatCalendarDate(occs[1].OriginalDate), models.RegMaybe, nil)
 	}()
 	wg.Wait()
 	if codes[0] != http.StatusOK || codes[1] != http.StatusOK {

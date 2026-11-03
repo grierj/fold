@@ -204,7 +204,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 					if occ.TitleOverride != nil {
 						j.EventTitle = *occ.TitleOverride
 					}
-					j.Date, j.StartsAt, j.EndsAt, j.TZID = occ.OriginalDate, &occ.StartsAt, &occ.EndsAt, ev.TZID
+					j.Date, j.StartsAt, j.EndsAt, j.TZID = models.FormatCalendarDate(occ.OriginalDate), &occ.StartsAt, &occ.EndsAt, ev.TZID
 				}
 			}
 		} else if r.Purpose == policy.RequestGroupAdd {

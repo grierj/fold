@@ -244,12 +244,12 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 		}
 		details := projectFeedSeriesDetails(ev, vs.canSeeSeries(viewer, ev), videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
-			EventID: ev.ID, OriginalDate: occ.OriginalDate,
+			EventID: ev.ID, OriginalDate: models.FormatCalendarDate(occ.OriginalDate),
 			Title: eff.Title, Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location),
 			VideoURL: details.videoURL, RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity),
 			ChildcareAvailable: details.childcareAvailable, ChildcareAges: details.childcareAges,
 			TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
-			URL:       a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			URL:       a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: "CONFIRMED",
 		})
 	}
@@ -332,11 +332,11 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		}
 		details := projectFeedSeriesDetails(ev, seriesVisible, videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
-			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
+			EventID: ev.ID, OriginalDate: models.FormatCalendarDate(occ.OriginalDate), Title: eff.Title,
 			Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location), TZID: ev.TZID,
 			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: details.videoURL,
 			RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity), ChildcareAvailable: details.childcareAvailable,
-			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
 		})
 	}

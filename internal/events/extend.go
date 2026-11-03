@@ -32,7 +32,7 @@ func Extend(db *gorm.DB, now time.Time, after AfterEnsure) error {
 	// A one-time event has all its dates from creation, and a series whose end
 	// date has passed cannot make new ones, so neither is loaded.
 	var evs []models.Event
-	if err := db.Where("rrule <> '' AND (rrule_until IS NULL OR rrule_until >= ?)", now.AddDate(0, 0, -1).Format("2006-01-02")).
+	if err := db.Where("rrule <> '' AND (rrule_until IS NULL OR rrule_until >= ?)", models.FormatCalendarDate(now.AddDate(0, 0, -1))).
 		Order("id").Find(&evs).Error; err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func Ensure(db *gorm.DB, ev *models.Event, now time.Time) error {
 func ensure(db *gorm.DB, ev *models.Event, now time.Time) ([]string, error) {
 	until := ""
 	if ev.RRuleUntil != nil {
-		until = *ev.RRuleUntil
+		until = models.FormatCalendarDate(*ev.RRuleUntil)
 	}
 	start, _, err := ParseWall(ev.StartsLocal, ev.TZID)
 	if err != nil {
@@ -85,9 +85,11 @@ func ensure(db *gorm.DB, ev *models.Event, now time.Time) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("event %d: %w", ev.ID, err)
 	}
+	// The dates come out as text from to_char, not date::text, which follows
+	// the session's DateStyle.
 	var dates []string
 	if err := db.Model(&models.EventOccurrence{}).Where("event_id = ?", ev.ID).
-		Pluck("original_date", &dates).Error; err != nil {
+		Pluck("to_char(original_date, 'YYYY-MM-DD')", &dates).Error; err != nil {
 		return nil, err
 	}
 	have := make(map[string]bool, len(dates))
@@ -99,8 +101,12 @@ func ensure(db *gorm.DB, ev *models.Event, now time.Time) ([]string, error) {
 		if have[w.OriginalDate] {
 			continue
 		}
+		date, err := models.ParseCalendarDate(w.OriginalDate)
+		if err != nil {
+			return nil, fmt.Errorf("event %d: %w", ev.ID, err)
+		}
 		rows = append(rows, models.EventOccurrence{
-			EventID: ev.ID, OriginalDate: w.OriginalDate,
+			EventID: ev.ID, OriginalDate: date,
 			StartsAt: w.StartsAt, EndsAt: w.EndsAt,
 			Status: models.OccurrenceScheduled,
 		})
@@ -110,7 +116,7 @@ func ensure(db *gorm.DB, ev *models.Event, now time.Time) ([]string, error) {
 	}
 	added := make([]string, len(rows))
 	for i, r := range rows {
-		added[i] = r.OriginalDate
+		added[i] = models.FormatCalendarDate(r.OriginalDate)
 	}
 	return added, db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "event_id"}, {Name: "original_date"}},

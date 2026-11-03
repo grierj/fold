@@ -100,7 +100,7 @@ func dateImpactOf(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, ne
 		if err := losersForDate(tx, ev, next, time.Now().UTC(), occ.ID).Count(&count).Error; err != nil {
 			return impact, err
 		}
-		impact.Tightened = append(impact.Tightened, impactEventJSON{ID: ev.ID, Title: ev.Title + " · " + occ.OriginalDate, Visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), Registrants: count})
+		impact.Tightened = append(impact.Tightened, impactEventJSON{ID: ev.ID, Title: ev.Title + " · " + models.FormatCalendarDate(occ.OriginalDate), Visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), Registrants: count})
 	}
 	return impact, nil
 }
@@ -123,7 +123,7 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 	if f.group != nil && policy.MoreOpen(after, f.group.Visibility) {
 		action = audit.VisibilityOverride
 	}
-	meta := map[string]any{"original_date": occ.OriginalDate, "oldVisibility": old, "newVisibility": value, "reason": reason}
+	meta := map[string]any{"original_date": models.FormatCalendarDate(occ.OriginalDate), "oldVisibility": old, "newVisibility": value, "reason": reason}
 	if f.group != nil {
 		meta["groupVisibility"] = f.group.Visibility
 	}
@@ -143,7 +143,7 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 	}
 	if action == audit.VisibilityOverride && f.group != nil {
 		date := *ev
-		date.Title = ev.Title + " · " + occ.OriginalDate
+		date.Title = ev.Title + " · " + models.FormatCalendarDate(occ.OriginalDate)
 		ids, err := notifyVisibilityOverride(tx, apiUser(c).ID, &date, f.group, after, reason)
 		if err != nil {
 			return nil, err
@@ -164,7 +164,7 @@ func (a *App) apiDateVisibilityImpact(c *gin.Context) {
 		return
 	}
 	var occ models.EventOccurrence
-	if a.DB.Where("event_id = ? AND original_date = ?", ev.ID, c.Param("date")).First(&occ).Error != nil {
+	if !isCalendarDate(c.Param("date")) || a.DB.Where("event_id = ? AND original_date = ?", ev.ID, c.Param("date")).First(&occ).Error != nil {
 		jsonError(c, 404, "event not found")
 		return
 	}

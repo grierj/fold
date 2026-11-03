@@ -73,8 +73,8 @@ func (a *App) apiCalendar(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "tz must be an IANA name, for example America/Denver")
 		return
 	}
-	fd, _ := time.Parse("2006-01-02", from)
-	td, _ := time.Parse("2006-01-02", to)
+	fd, _ := models.ParseCalendarDate(from)
+	td, _ := models.ParseCalendarDate(to)
 	windowStart := time.Date(fd.Year(), fd.Month(), fd.Day(), 0, 0, 0, 0, zone)
 	windowEnd := time.Date(td.Year(), td.Month(), td.Day()+1, 0, 0, 0, 0, zone)
 
@@ -225,7 +225,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		}
 		row := calendarOccurrenceJSON{
 			EventID:            ev.ID,
-			Date:               occ.OriginalDate,
+			Date:               models.FormatCalendarDate(occ.OriginalDate),
 			StartsAt:           full.StartsAt,
 			EndsAt:             full.EndsAt,
 			Title:              full.Title,
@@ -235,7 +235,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 			ChildcareAvailable: ev.ChildcareAvailable,
 		}
 		if !vs.canSeeSeries(me, ev) {
-			row.DateURL = occurrenceDatePath(ev.ID, occ.OriginalDate)
+			row.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
 		}
 		if shown != nil {
 			gid := shown.ID

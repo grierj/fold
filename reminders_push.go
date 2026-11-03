@@ -370,7 +370,7 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 	head, text := reminderPushText(title, occ.StartsAt, loc, now)
 	what := fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
-		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, occ.OriginalDate)), Tag: "r" + historyID(occ.ID),
+		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + historyID(occ.ID),
 	}))
 	if err != nil {
 		return record(models.RecipientFailed, pushWhyTooLarge)

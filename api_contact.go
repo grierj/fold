@@ -718,7 +718,7 @@ func (a *App) presentAddRequest(tx *gorm.DB, op *contactOperation, r models.Cont
 			if occ.TitleOverride != nil {
 				out.EventTitle = *occ.TitleOverride
 			}
-			out.Date, out.StartsAt, out.EndsAt, out.TZID = occ.OriginalDate, &occ.StartsAt, &occ.EndsAt, ev.TZID
+			out.Date, out.StartsAt, out.EndsAt, out.TZID = models.FormatCalendarDate(occ.OriginalDate), &occ.StartsAt, &occ.EndsAt, ev.TZID
 		}
 		return out, nil
 	}

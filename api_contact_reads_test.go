@@ -52,7 +52,7 @@ func newContactReadFixture(t *testing.T) *contactReadFixture {
 	if err := f.app.DB.Model(&f.groupOcc).Update("visibility_override", public).Error; err != nil {
 		t.Fatal(err)
 	}
-	cancelled := models.EventOccurrence{EventID: f.groupEvent.ID, OriginalDate: f.now.AddDate(0, 1, 0).Format("2006-01-02"), StartsAt: f.now.AddDate(0, 1, 0), EndsAt: f.now.AddDate(0, 1, 0).Add(time.Hour), Status: models.OccurrenceCancelled}
+	cancelled := models.EventOccurrence{EventID: f.groupEvent.ID, OriginalDate: calDate(f.now.AddDate(0, 1, 0).Format("2006-01-02")), StartsAt: f.now.AddDate(0, 1, 0), EndsAt: f.now.AddDate(0, 1, 0).Add(time.Hour), Status: models.OccurrenceCancelled}
 	if err := f.app.DB.Create(&cancelled).Error; err != nil {
 		t.Fatal(err)
 	}

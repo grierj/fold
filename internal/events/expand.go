@@ -10,6 +10,8 @@ import (
 	"time"
 	_ "time/tzdata" // distroless has no zoneinfo; the binary carries it
 
+	"fold/models"
+
 	"github.com/teambition/rrule-go"
 )
 
@@ -119,7 +121,7 @@ func Expand(spec Spec, horizonEnd time.Time) ([]When, error) {
 	}
 	until := strings.TrimSpace(spec.Until)
 	if until != "" {
-		if _, err := time.Parse("2006-01-02", until); err != nil {
+		if _, err := models.ParseCalendarDate(until); err != nil {
 			return nil, fmt.Errorf("rruleUntil must be YYYY-MM-DD")
 		}
 	}

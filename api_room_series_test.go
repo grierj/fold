@@ -298,7 +298,7 @@ func TestRoomSeriesSwitchRooms(t *testing.T) {
 		RoomID       uint
 		Status       string
 	}
-	f.app.DB.Raw(`SELECT o.original_date, b.room_id, b.status FROM room_bookings b JOIN event_occurrences o ON o.id = b.occurrence_id
+	f.app.DB.Raw(`SELECT to_char(o.original_date, 'YYYY-MM-DD') AS original_date, b.room_id, b.status FROM room_bookings b JOIN event_occurrences o ON o.id = b.occurrence_id
 		WHERE o.event_id = ?`, series.ID).Scan(&rows)
 	for _, r := range rows {
 		rooms[r.OriginalDate+" "+r.Status] = r.RoomID

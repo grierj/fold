@@ -277,7 +277,7 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 			eff := occurrenceToJSON(ev, occ, groupLoc)
 			single.Title = eff.Title
 			single.Location = placeLine(&occurrenceRoomJSON{ID: room.ID, Name: room.Name, Building: room.Building}, eff.Location)
-			single.URL = a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate)
+			single.URL = a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
 			single.UpdatedAt = laterTime(laterTime(ev.UpdatedAt, occ.UpdatedAt), b.UpdatedAt)
 			// Only a public series contributes its description; a private or hidden
 			// series opened for one date shows the title alone.

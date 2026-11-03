@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +90,7 @@ func TestGroupListReadBudgetsAndSummaryValues(t *testing.T) {
 				if err := app.DB.Create(&ev).Error; err != nil {
 					t.Fatal(err)
 				}
-				o := models.EventOccurrence{EventID: ev.ID, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+				o := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(start.Format("2006-01-02")), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
 				if err := app.DB.Create(&o).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -565,7 +567,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 	}
 
 	var drop models.EventOccurrence
-	if err := app.DB.Where("event_id = ? AND original_date <> ?", created.Event.ID, cancel.OriginalDate).First(&drop).Error; err != nil {
+	if err := app.DB.Where("event_id = ? AND original_date <> ?", created.Event.ID, models.FormatCalendarDate(cancel.OriginalDate)).First(&drop).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := app.DB.Delete(&drop).Error; err != nil {
@@ -590,7 +592,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var missing int64
-	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, drop.OriginalDate).Count(&missing)
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, models.FormatCalendarDate(drop.OriginalDate)).Count(&missing)
 	if missing != 0 {
 		t.Fatal("extend ran while the advisory lock was held")
 	}
@@ -600,7 +602,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
-	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, drop.OriginalDate).Count(&missing)
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, models.FormatCalendarDate(drop.OriginalDate)).Count(&missing)
 	if missing != 1 {
 		t.Fatalf("missing date not restored: %d", missing)
 	}
@@ -1306,7 +1308,7 @@ func TestOpenEventsSiteNameReadBudget(t *testing.T) {
 		if err := app.DB.Create(&ev).Error; err != nil {
 			t.Fatal(err)
 		}
-		o := models.EventOccurrence{EventID: ev.ID, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+		o := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(start.Format("2006-01-02")), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
 		if err := app.DB.Create(&o).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -1355,7 +1357,7 @@ func TestGroupEventsContinuationBeyond100Dates(t *testing.T) {
 		o := first
 		if i > 0 {
 			date := start.AddDate(0, 0, i)
-			o = models.EventOccurrence{EventID: ev.ID, OriginalDate: date.Format("2006-01-02"), StartsAt: date, EndsAt: date.Add(time.Hour), Status: models.OccurrenceScheduled}
+			o = models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(date.Format("2006-01-02")), StartsAt: date, EndsAt: date.Add(time.Hour), Status: models.OccurrenceScheduled}
 			if err := app.DB.Create(&o).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -1568,10 +1570,10 @@ func TestHiddenSeriesListHidesDescriptionChildcareAndVideo(t *testing.T) {
 		"childcareCapacity": 7,
 		"videoProvider":     "link", "videoUrl": "https://example.com/SECRET-VIDEO", "videoReveal": "registered_only",
 	}, http.StatusOK)
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate),
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)),
 		map[string]any{"visibility": "public", "reason": "Open"}, http.StatusOK)
 
-	listed, err := app.occurrencesForEventsErr([]uint{ev.ID}, dates[0].OriginalDate, dates[3].OriginalDate, nil, nil)
+	listed, err := app.occurrencesForEventsErr([]uint{ev.ID}, models.FormatCalendarDate(dates[0].OriginalDate), models.FormatCalendarDate(dates[3].OriginalDate), nil, nil)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("list: %v %+v", err, listed)
 	}
@@ -1600,7 +1602,7 @@ func TestDatePageIgnoresCancelledRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := loginAPI(t, app, "cancelled-member", "password1234")
-	raw := apiDo(t, c, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate), nil, http.StatusOK)
+	raw := apiDo(t, c, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), nil, http.StatusOK)
 	if strings.Contains(raw, `"myRegistration":"cancelled"`) {
 		t.Fatalf("cancelled registration came back: %s", raw)
 	}
@@ -1681,6 +1683,41 @@ func TestSeriesEditRestoresSeriesCancelledDates(t *testing.T) {
 		return n
 	}
 	before := registrations()
+	// The dates in notice data and audit rows are the dynamic sinks the
+	// compiler cannot check: they must read exactly YYYY-MM-DD.
+	noticeDates := func(kind string) []string {
+		t.Helper()
+		var rows []models.Notification
+		if err := app.DB.Where("kind = ?", kind).Find(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, n := range rows {
+			var data struct {
+				Date string `json:"date"`
+			}
+			if err := json.Unmarshal([]byte(n.Data), &data); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, data.Date)
+		}
+		sort.Strings(out)
+		return out
+	}
+	storedUntil := func() string {
+		t.Helper()
+		var ev models.Event
+		if err := app.DB.First(&ev, created.Event.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if ev.RRuleUntil == nil {
+			return ""
+		}
+		return models.FormatCalendarDate(*ev.RRuleUntil)
+	}
+	if storedUntil() != "" {
+		t.Fatalf("a series with no end has until %q", storedUntil())
+	}
 
 	// A person cancels d4 by hand. Sam is told once.
 	if w := admin.do("POST", "/api/v1/events/"+eid+"/cancel", map[string]any{"date": d4}, true); w.Code != http.StatusOK {
@@ -1704,6 +1741,12 @@ func TestSeriesEditRestoresSeriesCancelledDates(t *testing.T) {
 	}
 	if got := count(sam, "Cancelled: Prayer"); got != 3 {
 		t.Fatalf("sam cancelled notices = %d, want 3 (d2, d3, d4)", got)
+	}
+	if got := storedUntil(); got != d1 {
+		t.Fatalf("stored until = %q, want %q", got, d1)
+	}
+	if got, want := strings.Join(noticeDates(notify.OccurrenceCancelled), ","), strings.Join([]string{d2, d3, d4}, ","); got != want {
+		t.Fatalf("cancelled notice dates = %q, want %q", got, want)
 	}
 	if got := count(pat, "Cancelled: Prayer"); got != 0 {
 		t.Fatalf("pat (maybe) cancelled notices = %d", got)
@@ -1733,10 +1776,56 @@ func TestSeriesEditRestoresSeriesCancelledDates(t *testing.T) {
 	if registrations() != before {
 		t.Fatalf("restoring changed registrations: %d then %d", before, registrations())
 	}
+	if storedUntil() != "" {
+		t.Fatalf("clearing the end date left until %q", storedUntil())
+	}
+	if got, want := strings.Join(noticeDates(notify.OccurrenceRestored), ","), strings.Join([]string{d2, d3}, ","); got != want {
+		t.Fatalf("restored notice dates = %q, want %q", got, want)
+	}
 	var audits int64
 	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'event' AND target_id = ?", audit.EventDatesRestored, created.Event.ID).Count(&audits)
 	if audits != 1 {
 		t.Fatalf("restore audit rows = %d", audits)
+	}
+	var restoredAudit models.AuditLog
+	if err := app.DB.Where("action = ? AND target_type = 'event' AND target_id = ?", audit.EventDatesRestored, created.Event.ID).First(&restoredAudit).Error; err != nil {
+		t.Fatal(err)
+	}
+	var restoredMeta struct {
+		Dates []string `json:"dates"`
+	}
+	if err := json.Unmarshal([]byte(restoredAudit.MetaJSON), &restoredMeta); err != nil {
+		t.Fatal(err)
+	}
+	// restoreSeriesDates records every occurrence the edit brought back, not
+	// only the ones someone registered for. The series has no end date again,
+	// so that is each generated date after d1 except the manually cancelled d4,
+	// in date order. The people told (noticeDates above) are only d2 and d3.
+	var generated []models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", created.Event.ID).Order("original_date").Find(&generated).Error; err != nil {
+		t.Fatal(err)
+	}
+	wantRestored := []string{}
+	for _, o := range generated {
+		if day := models.FormatCalendarDate(o.OriginalDate); day > d1 && o.Status == models.OccurrenceScheduled && o.CancelSource == "" {
+			wantRestored = append(wantRestored, day)
+		}
+	}
+	if len(wantRestored) <= 2 || wantRestored[0] != d2 || wantRestored[1] != d3 {
+		t.Fatalf("restored series dates %v, want d2 %s and d3 %s first, then the rest of the series", wantRestored, d2, d3)
+	}
+	for _, day := range wantRestored {
+		if day == d4 {
+			t.Fatalf("manually cancelled %s counted as restored in %v", d4, wantRestored)
+		}
+	}
+	for _, day := range restoredMeta.Dates {
+		if parsed, err := time.Parse("2006-01-02", day); err != nil || parsed.Format("2006-01-02") != day {
+			t.Fatalf("restore audit date %q is not YYYY-MM-DD", day)
+		}
+	}
+	if strings.Join(restoredMeta.Dates, ",") != strings.Join(wantRestored, ",") {
+		t.Fatalf("restore audit dates = %v, want %v", restoredMeta.Dates, wantRestored)
 	}
 
 	// Cancelling again after a restore tells people again.
@@ -1745,5 +1834,107 @@ func TestSeriesEditRestoresSeriesCancelledDates(t *testing.T) {
 	}
 	if got := count(sam, "Cancelled: Prayer"); got != 5 {
 		t.Fatalf("sam cancelled notices after second cut = %d, want 5", got)
+	}
+}
+
+// events.original_date and events.rrule_until are date columns, so a date
+// that cannot exist would fail inside Postgres. Every place that takes one
+// answers as it did when the columns were text: a missing date, or a 400 where
+// the field is checked first.
+func TestImpossibleDatesKeepTheirAnswers(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Impossible dates")
+	eventID, _ := seedCappedEvent(t, app, admin, gid, intPtr(5), false)
+	snapshot := func() string {
+		t.Helper()
+		var state struct {
+			Events []models.Event
+			Dates  []models.EventOccurrence
+		}
+		if err := app.DB.Order("id").Find(&state.Events).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Order("id").Find(&state.Dates).Error; err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	before := snapshot()
+	apiDo(t, admin, "POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Never", "startsLocal": "0000-01-01T09:00", "durationMinutes": 60, "tzid": "UTC",
+	}, http.StatusBadRequest)
+	if snapshot() != before {
+		t.Fatal("rejected year-zero creation changed events or occurrences")
+	}
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", eventID), map[string]any{
+		"title": "Never updated", "startsLocal": "0000-01-01T09:00", "recurrenceRule": "", "rruleUntil": "",
+	}, http.StatusBadRequest)
+	if snapshot() != before {
+		t.Fatal("rejected year-zero update changed events or occurrences")
+	}
+	absent, _ := registerAs(admin, eventID, "2099-12-31", "going", nil)
+	for _, bad := range []string{"2026-02-30", "2027-02-29", "2026-13-01", "2026-04-31", "0000-01-01"} {
+		if code, body := registerAs(admin, eventID, bad, "going", nil); code != absent || code >= http.StatusInternalServerError {
+			t.Fatalf("register on %s: %d %s, want %d like any other date the event lacks", bad, code, body, absent)
+		}
+		apiDo(t, admin, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", eventID, bad), nil, http.StatusNotFound)
+		apiDo(t, admin, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s/calendar.ics", eventID, bad), nil, http.StatusNotFound)
+		apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/cancel", eventID), map[string]any{"date": bad}, http.StatusBadRequest)
+		apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, bad), map[string]any{"location": "Hall"}, http.StatusBadRequest)
+		// parseDateWindow checks from and to on the group list and the calendar.
+		// The church-wide /api/v1/events list takes no window (it uses
+		// upcomingWindow), so it ignores the parameters and answers 200 as it did
+		// before the columns became dates.
+		apiDo(t, admin, "GET", "/api/v1/groups/"+gid+"/events?from="+bad+"&to=2030-01-01", nil, http.StatusBadRequest)
+		apiDo(t, admin, "GET", "/api/v1/groups/"+gid+"/events?from=2030-01-01&to="+bad, nil, http.StatusBadRequest)
+		apiDo(t, admin, "GET", "/api/v1/calendar?from="+bad+"&to=2030-01-01", nil, http.StatusBadRequest)
+		apiDo(t, admin, "GET", "/api/v1/events?from="+bad+"&to=2030-01-01", nil, http.StatusOK)
+		apiDo(t, admin, "POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+			"title": "Never", "startsLocal": "2030-01-07T19:00", "durationMinutes": 60, "tzid": "UTC",
+			"recurrenceRule": "FREQ=WEEKLY", "rruleUntil": bad,
+		}, http.StatusBadRequest)
+	}
+}
+
+// A leap day is a real end date, kept as written; a one-digit hour that
+// time.Parse accepts is stored in the full YYYY-MM-DDTHH:MM the column's
+// check wants.
+func TestEventStoresLeapUntilAndPaddedHour(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Leap")
+	start := atUTC(time.Now().AddDate(0, 0, 14), 9, 0)
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Leap day", "startsLocal": start.Format("2006-01-02") + "T9:00",
+		"durationMinutes": 60, "tzid": "UTC", "recurrenceRule": weeklyRule(start), "rruleUntil": "2032-02-29",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if created.Event.RRuleUntil != "2032-02-29" || created.Event.StartsLocal != start.Format("2006-01-02")+"T09:00" {
+		t.Fatalf("created event: until %q, startsLocal %q", created.Event.RRuleUntil, created.Event.StartsLocal)
+	}
+	var stored models.Event
+	if err := app.DB.First(&stored, created.Event.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.RRuleUntil == nil || models.FormatCalendarDate(*stored.RRuleUntil) != "2032-02-29" || stored.StartsLocal != start.Format("2006-01-02")+"T09:00" {
+		t.Fatalf("stored event: %+v", stored)
+	}
+	// Clearing the end date stores NULL, not an empty or zero date.
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", created.Event.ID), map[string]any{"rruleUntil": ""}, http.StatusOK)
+	var cleared models.Event
+	if err := app.DB.First(&cleared, created.Event.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if cleared.RRuleUntil != nil {
+		t.Fatalf("a cleared end date is stored as %v, want NULL", cleared.RRuleUntil)
 	}
 }

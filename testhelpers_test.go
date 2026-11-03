@@ -33,6 +33,30 @@ import (
 	"gorm.io/gorm"
 )
 
+// calDate reads a YYYY-MM-DD for a date column such as OriginalDate. It panics
+// on a bad date, since a test fixture that cannot be parsed is a typo.
+func calDate(s string) time.Time {
+	d, err := models.ParseCalendarDate(s)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+// noticeDataDate is the "date" in a stored notification's Data. Data is built
+// from a map, so nothing in the compiler checks that the date in it is the
+// plain YYYY-MM-DD the notice readers expect.
+func noticeDataDate(t *testing.T, n models.Notification) string {
+	t.Helper()
+	var data struct {
+		Date string `json:"date"`
+	}
+	if err := json.Unmarshal([]byte(n.Data), &data); err != nil {
+		t.Fatalf("notification %d data %q: %v", n.ID, n.Data, err)
+	}
+	return data.Date
+}
+
 func loginAs(t *testing.T, app *App, name, password string) *apiClient {
 	t.Helper()
 	return loginAPI(t, app, name, password)
@@ -484,7 +508,7 @@ func seedEvent(t *testing.T, app *App, g *models.Group, createdBy uint, start ti
 		t.Fatalf("seed event: %v", err)
 	}
 	occ := models.EventOccurrence{
-		EventID: ev.ID, OriginalDate: start.Format("2006-01-02"),
+		EventID: ev.ID, OriginalDate: calDate(start.Format("2006-01-02")),
 		StartsAt: start, EndsAt: start.Add(time.Hour),
 		Status: models.OccurrenceScheduled,
 	}

@@ -398,7 +398,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationPromoted, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
 }
@@ -429,7 +429,7 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		sent, err := notify.Send(tx, notify.Msg{
 			Kind: notify.WaitlistCutoff, To: []uint{uid}, Actor: actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+			Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 			ExpiresAt: &end,
 		})
 		if err != nil {
@@ -482,7 +482,7 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		sent, err := notify.Send(tx, notify.Msg{
 			Kind: notify.EventChanged, To: []uint{uid}, Actor: &actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate, "change": variant},
+			Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate), "change": variant},
 			ExpiresAt: &end,
 		})
 		if err != nil {
@@ -511,7 +511,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: &actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
 }
@@ -528,7 +528,7 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
 }
@@ -991,7 +991,7 @@ func (a *App) apiRegister(c *gin.Context) {
 	// event gets, before any answer that depends on the event's settings or
 	// dates (no oracle for hidden events).
 	var o models.EventOccurrence
-	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error != nil {
+	if !isCalendarDate(body.Date) || a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error != nil {
 		if !a.canRegisterAnyDate(a.DB, u, ev) {
 			jsonError(c, 404, "event not found")
 			return
@@ -1302,8 +1302,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		return
 	}
 	var o models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
-		ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error; err != nil {
+	if err := firstScheduledOn(a.DB, ev.ID, body.Date, &o); err != nil {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
@@ -1429,8 +1428,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		return
 	}
 	var o models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
-		ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error; err != nil {
+	if err := firstScheduledOn(a.DB, ev.ID, body.Date, &o); err != nil {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
@@ -1614,8 +1612,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		}
 	}
 	var o models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
-		ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error; err != nil {
+	if err := firstScheduledOn(a.DB, ev.ID, body.Date, &o); err != nil {
 		a.managerDateAddError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
@@ -1894,7 +1891,7 @@ func previouslyRegisteredPerson(tx *gorm.DB, eventID, occurrenceID, personID, ho
 
 func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date string, personID, holderID uint, mode string, namedCare *bool, overCapacity bool) {
 	var o models.EventOccurrence
-	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&o).Error != nil {
+	if firstScheduledOn(a.DB, ev.ID, date, &o) != nil {
 		a.managerDateAddError(c, 404, "that date is not on this event")
 		return
 	}

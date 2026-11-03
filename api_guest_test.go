@@ -499,7 +499,7 @@ func TestPromotedGuestEmailHidesPrivateGroup(t *testing.T) {
 	// The member declines; the guest is promoted and emailed.
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", ev.ID).First(&occ)
-	if code, _ := registerAs(memC, ev.ID, occ.OriginalDate, "declined", nil); code != http.StatusOK {
+	if code, _ := registerAs(memC, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "declined", nil); code != http.StatusOK {
 		t.Fatalf("member decline: %d", code)
 	}
 	u := guestUser(t, app, "gail@example.com")
@@ -517,6 +517,9 @@ func TestPromotedGuestEmailHidesPrivateGroup(t *testing.T) {
 	}
 	if n.Link != fmt.Sprintf("/events/%d", ev.ID) {
 		t.Fatalf("promotion link = %q, want /events/%d", n.Link, ev.ID)
+	}
+	if got, want := noticeDataDate(t, n), guestDate; got != want {
+		t.Fatalf("promotion notice date = %q, want %q", got, want)
 	}
 }
 
@@ -674,7 +677,7 @@ func TestGuestRedeemOnFullEventWaitlists(t *testing.T) {
 	mc := loginAPI(t, app, "member", "password1234")
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", ev.ID).First(&occ)
-	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+	if code, _ := registerAs(mc, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "going", nil); code != http.StatusOK {
 		t.Fatalf("member going: %d", code)
 	}
 
@@ -726,7 +729,7 @@ func TestGuestRedeemOnFullEventWithoutWaitlistCreatesNothing(t *testing.T) {
 	mc := loginAPI(t, app, "member", "password1234")
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", ev.ID).First(&occ)
-	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+	if code, _ := registerAs(mc, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "going", nil); code != http.StatusOK {
 		t.Fatalf("member going: %d", code)
 	}
 
@@ -772,7 +775,7 @@ func TestPromotedGuestGetsEmail(t *testing.T) {
 	mc := loginAPI(t, app, "member", "password1234")
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", ev.ID).First(&occ)
-	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+	if code, _ := registerAs(mc, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "going", nil); code != http.StatusOK {
 		t.Fatalf("member going: %d", code)
 	}
 	anon := anonClient(t, app, "10.4.0.3")
@@ -784,7 +787,7 @@ func TestPromotedGuestGetsEmail(t *testing.T) {
 	}
 
 	// The member cancels; the guest is promoted and emailed.
-	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "declined", nil); code != http.StatusOK {
+	if code, _ := registerAs(mc, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "declined", nil); code != http.StatusOK {
 		t.Fatalf("member cancel: %d", code)
 	}
 	m := latestEmail(t, app, "gail@example.com")
@@ -1455,7 +1458,7 @@ func TestGuestReconfirmDoesNotCountOwnSeat(t *testing.T) {
 				app.DB.First(&g, gid)
 				addMember(t, app, member, &g, models.MembershipMember)
 				mc := loginAPI(t, app, "member", "password1234")
-				if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+				if code, _ := registerAs(mc, ev.ID, models.FormatCalendarDate(occ.OriginalDate), "going", nil); code != http.StatusOK {
 					t.Fatalf("member going: %d", code)
 				}
 			}

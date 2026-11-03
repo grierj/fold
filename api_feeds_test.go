@@ -361,13 +361,15 @@ func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": "public"}, http.StatusOK)
 
 	path := createFeedLink(t, client, models.CalendarFeedAll)
-	dateUID := fmt.Sprintf("UID:event-%d-%s@", ev.ID, strings.ReplaceAll(dates[0].OriginalDate, "-", ""))
+	// The fixture runs at 18:00 UTC, so the start time names the date without the formatter under test.
+	d0 := dates[0].StartsAt.UTC().Format("2006-01-02")
+	dateUID := fmt.Sprintf("UID:event-%d-%s@", ev.ID, strings.ReplaceAll(d0, "-", ""))
 	assertDateOnly := func(scope, raw string) {
 		t.Helper()
-		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, dateUID) || !strings.Contains(raw, "SUMMARY:Opened community date") || !strings.Contains(raw, "LOCATION:Opened date place") || !strings.Contains(raw, occurrenceDatePath(ev.ID, dates[0].OriginalDate)) {
+		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, dateUID) || !strings.Contains(raw, "SUMMARY:Opened community date") || !strings.Contains(raw, "LOCATION:Opened date place") || !strings.Contains(raw, "/events/"+itoa(ev.ID)+"/dates/"+d0) {
 			t.Fatalf("scope=%s did not export the one opened date as a standalone event: %s", scope, raw)
 		}
 		if !strings.Contains(raw, "Remote attendance available") {
@@ -377,7 +379,7 @@ func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.
 			"Childcare available", "Hidden nursery ages",
 			fmt.Sprintf("UID:event-%d@", ev.ID), "RRULE:", "EXDATE", "RECURRENCE-ID",
 			"Hidden fellowship", "SECRET GROUP PLACE", "Hidden parent series", hiddenDescription, hiddenVideo,
-			strings.ReplaceAll(dates[1].OriginalDate, "-", ""), strings.ReplaceAll(dates[2].OriginalDate, "-", ""),
+			strings.ReplaceAll(models.FormatCalendarDate(dates[1].OriginalDate), "-", ""), strings.ReplaceAll(models.FormatCalendarDate(dates[2].OriginalDate), "-", ""),
 		} {
 			if strings.Contains(raw, forbidden) {
 				t.Fatalf("scope=%s leaked %q: %s", scope, forbidden, raw)
@@ -393,7 +395,7 @@ func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.
 		t.Fatalf("mine included an unanswered outsider date: %s", mineBefore)
 	}
 
-	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"status": models.RegGoing, "date": dates[0].OriginalDate}, http.StatusOK)
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"status": models.RegGoing, "date": models.FormatCalendarDate(dates[0].OriginalDate)}, http.StatusOK)
 	mineAfter := unfoldFeed(feedBody(t, client, path))
 	assertDateOnly("mine after RSVP", mineAfter)
 	apiDo(t, client, "PUT", "/api/v1/me/calendar-feed", map[string]any{"scope": models.CalendarFeedAll}, http.StatusOK)
@@ -438,12 +440,12 @@ func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
 		t.Fatalf("occurrences: %v count=%d", err, len(occs))
 	}
 	target := occs[1]
-	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": models.RegGoing, "date": target.OriginalDate}, http.StatusOK)
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": models.RegGoing, "date": models.FormatCalendarDate(target.OriginalDate)}, http.StatusOK)
 	path := createFeedLink(t, client, models.CalendarFeedMine)
 	before := unfoldFeed(feedBody(t, client, path))
-	uidPrefix := fmt.Sprintf("event-%d-%s@", series.ID, strings.ReplaceAll(target.OriginalDate, "-", ""))
+	uidPrefix := fmt.Sprintf("event-%d-%s@", series.ID, strings.ReplaceAll(models.FormatCalendarDate(target.OriginalDate), "-", ""))
 	beforeBlock := feedEventWithUIDPrefix(before, uidPrefix)
-	if beforeBlock == "" || !strings.Contains(beforeBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T190000") || strings.Contains(before, "RECURRENCE-ID") {
+	if beforeBlock == "" || !strings.Contains(beforeBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(models.FormatCalendarDate(target.OriginalDate), "-", "")+"T190000") || strings.Contains(before, "RECURRENCE-ID") {
 		t.Fatalf("before edit identity/clock: %s", before)
 	}
 	beforeUIDs := strings.Join(feedUIDs(before), "\n")
@@ -451,7 +453,7 @@ func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", series.ID), map[string]any{"startsLocal": feedDate(start) + "T20:00"}, http.StatusOK)
 	after := unfoldFeed(feedBody(t, client, path))
 	afterBlock := feedEventWithUIDPrefix(after, uidPrefix)
-	if afterBlock == "" || !strings.Contains(afterBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T200000") || strings.Contains(after, "RECURRENCE-ID") {
+	if afterBlock == "" || !strings.Contains(afterBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(models.FormatCalendarDate(target.OriginalDate), "-", "")+"T200000") || strings.Contains(after, "RECURRENCE-ID") {
 		t.Fatalf("after edit identity/clock: %s", after)
 	}
 	if afterUIDs := strings.Join(feedUIDs(after), "\n"); afterUIDs != beforeUIDs {
@@ -461,7 +463,7 @@ func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
 	if err := app.DB.First(&moved, target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if moved.ID != target.ID || moved.OriginalDate != target.OriginalDate || !moved.StartsAt.Equal(target.StartsAt.Add(time.Hour)) {
+	if moved.ID != target.ID || models.FormatCalendarDate(moved.OriginalDate) != models.FormatCalendarDate(target.OriginalDate) || !moved.StartsAt.Equal(target.StartsAt.Add(time.Hour)) {
 		t.Fatalf("series edit did not preserve occurrence identity: before=%+v after=%+v", target, moved)
 	}
 	var reg models.Registration
@@ -469,7 +471,7 @@ func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
 		t.Fatalf("registration did not stay on the preserved occurrence: %+v err=%v", reg, err)
 	}
 	public := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics"))
-	if publicBlock := feedEventWithUIDPrefix(public, uidPrefix); publicBlock == "" || !strings.Contains(publicBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T200000") || strings.Contains(public, "RRULE:") {
+	if publicBlock := feedEventWithUIDPrefix(public, uidPrefix); publicBlock == "" || !strings.Contains(publicBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(models.FormatCalendarDate(target.OriginalDate), "-", "")+"T200000") || strings.Contains(public, "RRULE:") {
 		t.Fatalf("public date did not keep the same identity and edited clock: %s", public)
 	}
 }
@@ -515,11 +517,11 @@ func TestPersonalFeedMixedRSVPStatesAreRecurrenceSafe(t *testing.T) {
 	if got := strings.Count(body, "STATUS:TENTATIVE"); got != 3 {
 		t.Fatalf("tentative=%d:\n%s", got, body)
 	}
-	declinedUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[3].OriginalDate, "-", ""))
+	declinedUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(models.FormatCalendarDate(occs[3].OriginalDate), "-", ""))
 	if strings.Contains(body, declinedUID) {
 		t.Fatalf("Can't go date remained in feed:\n%s", body)
 	}
-	unansweredUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[4].OriginalDate, "-", ""))
+	unansweredUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(models.FormatCalendarDate(occs[4].OriginalDate), "-", ""))
 	if !strings.Contains(body, unansweredUID) {
 		t.Fatalf("own-group Not answered date missing:\n%s", body)
 	}
@@ -527,13 +529,13 @@ func TestPersonalFeedMixedRSVPStatesAreRecurrenceSafe(t *testing.T) {
 	// Existing subscriptions update in place: changing one answer changes the
 	// ETag and STATUS while retaining the immutable date-specific UID.
 	etag := first.Header().Get("ETag")
-	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": "maybe", "date": occs[0].OriginalDate}, http.StatusOK)
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": "maybe", "date": models.FormatCalendarDate(occs[0].OriginalDate)}, http.StatusOK)
 	updated := fetchFeedIf(t, anon, path, etag)
 	if updated.Code != http.StatusOK || updated.Header().Get("ETag") == etag {
 		t.Fatalf("updated feed cache response: %d old=%q new=%q", updated.Code, etag, updated.Header().Get("ETag"))
 	}
 	updatedBody := updated.Body.String()
-	firstUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[0].OriginalDate, "-", ""))
+	firstUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(models.FormatCalendarDate(occs[0].OriginalDate), "-", ""))
 	if !strings.Contains(updatedBody, firstUID) || strings.Contains(updatedBody, "RECURRENCE-ID") || strings.Count(updatedBody, "STATUS:CONFIRMED") != 0 || strings.Count(updatedBody, "STATUS:TENTATIVE") != 4 {
 		t.Fatalf("updated subscription lost identity or status:\n%s", updatedBody)
 	}
@@ -934,10 +936,10 @@ func TestPersonalFeedScopedInvitationAlwaysStandalone(t *testing.T) {
 	for _, scope := range []string{models.CalendarFeedMine, models.CalendarFeedAll} {
 		path := createFeedLink(t, f.client, scope)
 		raw := unfoldFeed(feedBody(t, f.client, path))
-		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, "SUMMARY:Invited date title") || !strings.Contains(raw, "LOCATION:Invited date place") || !strings.Contains(raw, occurrenceDatePath(f.event.ID, f.dates[1].OriginalDate)) || !strings.Contains(raw, "private-video") {
+		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, "SUMMARY:Invited date title") || !strings.Contains(raw, "LOCATION:Invited date place") || !strings.Contains(raw, occurrenceDatePath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate))) || !strings.Contains(raw, "private-video") {
 			t.Fatalf("wrong scoped feed (%s): %s", scope, raw)
 		}
-		for _, forbidden := range []string{"RRULE:", "EXDATE", "RECURRENCE-ID", "Hidden series", "Hidden group", f.issuer.Email, strings.ReplaceAll(f.dates[0].OriginalDate, "-", ""), strings.ReplaceAll(f.dates[2].OriginalDate, "-", "")} {
+		for _, forbidden := range []string{"RRULE:", "EXDATE", "RECURRENCE-ID", "Hidden series", "Hidden group", f.issuer.Email, strings.ReplaceAll(models.FormatCalendarDate(f.dates[0].OriginalDate), "-", ""), strings.ReplaceAll(models.FormatCalendarDate(f.dates[2].OriginalDate), "-", "")} {
 			if strings.Contains(raw, forbidden) {
 				t.Fatalf("scope=%s feed leaked %q: %s", scope, forbidden, raw)
 			}
@@ -951,7 +953,7 @@ func TestPersonalFeedScopedInvitationAlwaysStandalone(t *testing.T) {
 		t.Fatal("revoked invitation still exported", gone)
 	}
 	raw := feedBody(t, f.stranger, createFeedLink(t, f.stranger, models.CalendarFeedAll))
-	if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, occurrenceDatePath(f.event.ID, f.dates[2].OriginalDate)) || strings.Contains(raw, "Invited date title") {
+	if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, occurrenceDatePath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate))) || strings.Contains(raw, "Invited date title") {
 		t.Fatal("cross-recipient feed", raw)
 	}
 	public := feedBody(t, newAPIClient(t, f.app), "/cal/public.ics")
@@ -977,12 +979,12 @@ func TestPublicAndGroupFeedsOpenedDateHidesSeriesDetails(t *testing.T) {
 			}).Error; err != nil {
 				t.Fatal(err)
 			}
-			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{
 				"visibility": "public", "title": "Opened community date", "location": "Opened date place",
 			}, http.StatusOK)
 			for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", *ev.GroupID)} {
 				raw := unfoldFeed(feedBody(t, anon, path))
-				for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Opened community date", "LOCATION:Opened date place", "Remote attendance available", occurrenceDatePath(ev.ID, dates[0].OriginalDate), dates[0].StartsAt.UTC().Format("20060102T150405")} {
+				for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Opened community date", "LOCATION:Opened date place", "Remote attendance available", occurrenceDatePath(ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), dates[0].StartsAt.UTC().Format("20060102T150405")} {
 					if !strings.Contains(raw, want) {
 						t.Fatalf("%s missing %q: %s", path, want, raw)
 					}
@@ -1021,7 +1023,7 @@ func TestOpenedDateFeedsUseEffectiveRemoteAvailability(t *testing.T) {
 	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"visibility": "public"}, http.StatusOK)
 	for _, tc := range []struct {
 		name     string
 		enabled  bool
@@ -1042,11 +1044,11 @@ func TestOpenedDateFeedsUseEffectiveRemoteAvailability(t *testing.T) {
 			if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"remote_available": tc.enabled, "remote_capacity": tc.capacity}).Error; err != nil {
 				t.Fatal(err)
 			}
-			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"remoteCapacityOverride": tc.override}, http.StatusOK)
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), map[string]any{"remoteCapacityOverride": tc.override}, http.StatusOK)
 			var body struct {
 				Occurrence dateOccurrenceJSON `json:"occurrence"`
 			}
-			dateResponse := anon.do("GET", dateReadPath(ev.ID, dates[0].OriginalDate), nil, false)
+			dateResponse := anon.do("GET", dateReadPath(ev.ID, models.FormatCalendarDate(dates[0].OriginalDate)), nil, false)
 			if dateResponse.Code != http.StatusOK {
 				t.Fatalf("date API: %d %s", dateResponse.Code, dateResponse.Body.String())
 			}
@@ -1085,11 +1087,11 @@ func TestRecurringFeedsUseDateRemoteCapacityAndRefresh(t *testing.T) {
 	if err := app.DB.Where("event_id = ?", ev.ID).Order("original_date").Find(&dates).Error; err != nil || len(dates) != 3 {
 		t.Fatalf("dates: %v count=%d", err, len(dates))
 	}
-	datePath := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	datePath := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[0].OriginalDate))
 	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": 0, "location": ""}, http.StatusOK)
-	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[1].OriginalDate), map[string]any{"remoteCapacityOverride": 2}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(dates[1].OriginalDate)), map[string]any{"remoteCapacityOverride": 2}, http.StatusOK)
 	// Fill the inherited positive pool: offered means configured, not free seats.
-	if code, body := registerModeAs(member, ev.ID, dates[2].OriginalDate, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+	if code, body := registerModeAs(member, ev.ID, models.FormatCalendarDate(dates[2].OriginalDate), models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
 		t.Fatalf("remote RSVP: %d %s", code, body)
 	}
 	anon := newAPIClient(t, app)
@@ -1103,7 +1105,7 @@ func TestRecurringFeedsUseDateRemoteCapacityAndRefresh(t *testing.T) {
 				t.Fatalf("%s dates: %v %s", path, err, body)
 			}
 			for i, date := range dates {
-				uid := fmt.Sprintf("event-%d-%s@", ev.ID, strings.ReplaceAll(date.OriginalDate, "-", ""))
+				uid := fmt.Sprintf("event-%d-%s@", ev.ID, strings.ReplaceAll(models.FormatCalendarDate(date.OriginalDate), "-", ""))
 				block := feedEventWithUIDPrefix(body, uid)
 				if block == "" || strings.Contains(block, "RRULE:") {
 					t.Fatalf("%s missing standalone date %s", path, uid)
@@ -1150,7 +1152,7 @@ func TestFeedDateWindowIgnoresSeriesAnchor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, start := range []time.Time{from, until.Add(-time.Second), until, now, now.Add(time.Hour), now.Add(2 * time.Hour)} {
-		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: fmt.Sprintf("1980-01-%02d", i+2), StartsAt: start, EndsAt: start.Add(90 * time.Minute), DurationOverride: intPtr(90), Status: models.OccurrenceScheduled}
+		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(fmt.Sprintf("1980-01-%02d", i+2)), StartsAt: start, EndsAt: start.Add(90 * time.Minute), DurationOverride: intPtr(90), Status: models.OccurrenceScheduled}
 		if i == 3 {
 			occ.Status = models.OccurrenceCancelled
 		}
@@ -1168,7 +1170,7 @@ func TestFeedDateWindowIgnoresSeriesAnchor(t *testing.T) {
 			t.Fatalf("window exported %d dates, want from, until-1s and moved-in date", len(feed.Singles))
 		}
 		for _, date := range feed.Singles {
-			if date.OriginalDate == first.OriginalDate || date.StartsAt.Before(from) || !date.StartsAt.Before(until) || date.EndsAt.Sub(date.StartsAt) != 90*time.Minute {
+			if date.OriginalDate == models.FormatCalendarDate(first.OriginalDate) || date.StartsAt.Before(from) || !date.StartsAt.Before(until) || date.EndsAt.Sub(date.StartsAt) != 90*time.Minute {
 				t.Fatalf("wrong effective date: %+v", date)
 			}
 		}
@@ -1356,7 +1358,7 @@ func TestPersonalFeedHouseholdScopeKeepsOwnRSVPPrecedence(t *testing.T) {
 				t.Fatalf("fixture has %d dates, want %d", len(dates), len(states))
 			}
 			for i, occ := range dates {
-				batchAnswer(t, client, occ.EventID, occ.OriginalDate, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": models.RegGoing}}}, http.StatusOK)
+				batchAnswer(t, client, occ.EventID, models.FormatCalendarDate(occ.OriginalDate), map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": models.RegGoing}}}, http.StatusOK)
 				if states[i] != "" {
 					reg := models.Registration{UserID: &owner.ID, OccurrenceID: occ.ID, Status: states[i], AttendanceMode: models.AttendanceInPerson, Source: "web"}
 					if err := app.DB.Create(&reg).Error; err != nil {
@@ -1370,7 +1372,7 @@ func TestPersonalFeedHouseholdScopeKeepsOwnRSVPPrecedence(t *testing.T) {
 					t.Fatalf("scope=%s recreated an omitted date: %s", scope, raw)
 				}
 				for i, occ := range dates {
-					uid := fmt.Sprintf("event-%d-%s@", occ.EventID, strings.ReplaceAll(occ.OriginalDate, "-", ""))
+					uid := fmt.Sprintf("event-%d-%s@", occ.EventID, strings.ReplaceAll(models.FormatCalendarDate(occ.OriginalDate), "-", ""))
 					block := feedEventWithUIDPrefix(raw, uid)
 					if states[i] == models.RegDeclined {
 						if block != "" {

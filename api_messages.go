@@ -163,7 +163,7 @@ func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
 		// what the reminder was for.
 		var rows []messageReminderJSON
 		if err := a.DB.Raw(`SELECT o.id AS occurrence_id, o.event_id, COALESCE(o.title_override, e.title) AS event_title,
-			o.original_date AS date, o.starts_at, e.tzid FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE o.id IN ?`,
+			to_char(o.original_date, 'YYYY-MM-DD') AS date, o.starts_at, e.tzid FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE o.id IN ?`,
 			dedupeIDs(occs)).Scan(&rows).Error; err != nil {
 			return out, err
 		}
@@ -432,7 +432,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		OriginalDate string
 		StartsAt     time.Time
 	}
-	if err := a.DB.Raw(`SELECT event_id, id, original_date, starts_at FROM (
+	if err := a.DB.Raw(`SELECT event_id, id, to_char(original_date, 'YYYY-MM-DD') AS original_date, starts_at FROM (
 		SELECT event_id, id, original_date, starts_at, row_number() OVER (PARTITION BY event_id ORDER BY starts_at, id) AS n
 		FROM event_occurrences WHERE event_id IN ? AND status = ? AND starts_at >= ?) d WHERE n <= ? ORDER BY starts_at, id`,
 		append(eids, 0), models.OccurrenceScheduled, now, maxComposeDates).Scan(&dates).Error; err != nil {

@@ -152,7 +152,7 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 	}
 	if err := a.DB.Raw(`SELECT q.id, q.event_id, e.title AS event_title, coalesce(g.name, '') AS group_name,
 			q.room_id, r.name AS room_name, r.building, q.series, q.requested_by AS requested_by_id, q.created_at,
-			count(*) AS dates, min(o.original_date) AS first_date, min(o.starts_at) AS first_starts_at,
+			count(*) AS dates, to_char(min(o.original_date), 'YYYY-MM-DD') AS first_date, min(o.starts_at) AS first_starts_at,
 			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM room_bookings c WHERE c.room_id = b.room_id AND c.status = 'confirmed'
 				AND c.starts_at < b.ends_at + interval '480 minutes' AND c.starts_at > b.starts_at - interval '8 days' -- an event lasts at most 7 days (events.MaxDurationMinutes), padding 4 hours
 				AND c.occurrence_id <> b.occurrence_id AND c.padded_range && b.padded_range)) AS busy_dates
@@ -297,7 +297,7 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 				if err := tx.Exec(`UPDATE room_bookings SET request_id = NULL, updated_at = now() WHERE id = ?`, b.ID).Error; err != nil {
 					return err
 				}
-				lost = append(lost, occ.OriginalDate)
+				lost = append(lost, models.FormatCalendarDate(occ.OriginalDate))
 			}
 		}
 		if req.Series && ev.DefaultRoomID != nil && *ev.DefaultRoomID == req.RoomID {

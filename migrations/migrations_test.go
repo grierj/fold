@@ -1170,7 +1170,7 @@ func TestMembershipAndRegistrationLookupPlans(t *testing.T) {
 		`INSERT INTO groups (id, name, leader_id) SELECT n, 'Group ' || n, 1 FROM generate_series(1, 150) n`,
 		`INSERT INTO memberships (user_id, group_id, status) SELECT ((g * 40 + n) % 2000) + 1, g, 'active' FROM generate_series(1, 150) g CROSS JOIN generate_series(1, 40) n`,
 		`INSERT INTO events (id, group_id, title, starts_local, duration_minutes, tzid, rrule, location, created_by, visibility, description) VALUES (1, 1, 'Lookup', '2030-01-01T12:00', 60, 'UTC', '', '', 1, 'public', '')`,
-		`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at) SELECT n, 1, ('2030-01-01'::date + n)::text, now() + n * interval '1 day', now() + n * interval '1 day' + interval '1 hour' FROM generate_series(1, 64) n`,
+		`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at) SELECT n, 1, '2030-01-01'::date + n, now() + n * interval '1 day', now() + n * interval '1 day' + interval '1 hour' FROM generate_series(1, 64) n`,
 		`INSERT INTO registrations (occurrence_id, user_id, registered_by, status) SELECT o, u, NULL, 'going' FROM generate_series(1, 64) o CROSS JOIN generate_series(1, 1950) u`,
 		`ANALYZE users`, `ANALYZE memberships`, `ANALYZE registrations`, `ANALYZE event_occurrences`,
 	} {

@@ -45,7 +45,7 @@ func TestHouseholdConversionTransfersEveryRow(t *testing.T) {
 	for i, status := range []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted, models.RegCancelled, models.RegDeclined, models.RegRemoved} {
 		for j, days := range []int{-100, 100} {
 			start := now.AddDate(0, 0, days+i)
-			occurrence := models.EventOccurrence{EventID: eventID, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+			occurrence := models.EventOccurrence{EventID: eventID, OriginalDate: calDate(start.Format("2006-01-02")), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
 			if j == 0 {
 				occurrence.Status = models.OccurrenceCancelled
 			}
@@ -599,7 +599,7 @@ func TestHouseholdConversionLargeHistoryIsAtomic(t *testing.T) {
 	const total = 300
 	for i := range total {
 		at := start.AddDate(0, 0, i)
-		o := models.EventOccurrence{EventID: eventID, OriginalDate: at.Format("2006-01-02"), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceCancelled}
+		o := models.EventOccurrence{EventID: eventID, OriginalDate: calDate(at.Format("2006-01-02")), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceCancelled}
 		if err := app.DB.Create(&o).Error; err != nil {
 			t.Fatal(err)
 		}

@@ -259,7 +259,7 @@ func TestAnonymousEverythingUsesThirtyDayWindow(t *testing.T) {
 		if err := app.DB.Create(&ev).Error; err != nil {
 			t.Fatal(err)
 		}
-		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: startsAt.UTC().Format("2006-01-02"), StartsAt: startsAt.UTC(), EndsAt: startsAt.UTC().Add(time.Hour), Status: models.OccurrenceScheduled}
+		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(startsAt.UTC().Format("2006-01-02")), StartsAt: startsAt.UTC(), EndsAt: startsAt.UTC().Add(time.Hour), Status: models.OccurrenceScheduled}
 		if err := app.DB.Create(&occ).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +273,7 @@ func TestAnonymousEverythingUsesThirtyDayWindow(t *testing.T) {
 	seedNamed(&discovery, "Far public", now.AddDate(0, 0, 60))
 	answered, answeredOcc := seedNamed(&discovery, "Far answered", now.AddDate(0, 0, 60).Add(time.Hour))
 	seedNamed(&own, "Far own group", now.AddDate(0, 0, 60).Add(2*time.Hour))
-	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", answered.ID), map[string]any{"status": models.RegMaybe, "date": answeredOcc.OriginalDate}, http.StatusOK)
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", answered.ID), map[string]any{"status": models.RegMaybe, "date": models.FormatCalendarDate(answeredOcc.OriginalDate)}, http.StatusOK)
 
 	query := "from=2030-01-14&to=2030-03-17&tz=UTC"
 	anon := newAPIClient(t, app)
@@ -566,14 +566,14 @@ func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
 func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
 	seedReadInvitation(t, f.app, f.issuer, f.other, f.event, f.dates[2])
-	window := "from=" + f.dates[0].OriginalDate + "&to=" + f.dates[2].OriginalDate + "&tz=UTC"
+	window := "from=" + models.FormatCalendarDate(f.dates[0].OriginalDate) + "&to=" + models.FormatCalendarDate(f.dates[2].OriginalDate) + "&tz=UTC"
 	for _, mine := range []string{"", "&mine=1"} {
 		page, raw := getCalendar(t, f.client, window+mine, 200)
 		if len(page.Occurrences) != 1 {
 			t.Fatalf("calendar broadened: %s", raw)
 		}
 		row := page.Occurrences[0]
-		if row.Date != f.dates[1].OriginalDate || row.DateURL != occurrenceDatePath(f.event.ID, row.Date) || row.MyStatus == nil || *row.MyStatus != "going" || row.Title != "Invited date title" || row.Location != "Invited date place" {
+		if row.Date != models.FormatCalendarDate(f.dates[1].OriginalDate) || row.DateURL != occurrenceDatePath(f.event.ID, row.Date) || row.MyStatus == nil || *row.MyStatus != "going" || row.Title != "Invited date title" || row.Location != "Invited date place" {
 			t.Fatalf("wrong invited row: %+v", row)
 		}
 		for _, forbidden := range []string{"Hidden group", "Hidden series", `"groupId"`, `"groupName"`, `"hostedBy"`, `"attendees"`, `"registrations"`, `"capacity"`, `"seatsUsed"`, `"recurrenceRule"`, f.issuer.Email} {
@@ -583,7 +583,7 @@ func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {
 		}
 	}
 	other, _ := getCalendar(t, f.stranger, window+"&mine=1", 200)
-	if len(other.Occurrences) != 1 || other.Occurrences[0].Date != f.dates[2].OriginalDate {
+	if len(other.Occurrences) != 1 || other.Occurrences[0].Date != models.FormatCalendarDate(f.dates[2].OriginalDate) {
 		t.Fatalf("distinct recipient scope: %+v", other)
 	}
 	getCalendar(t, f.client, window+"&group="+itoa(f.group), 404)
@@ -675,7 +675,7 @@ func TestCalendarOwnScopeStatusAndThirtyDayWindow(t *testing.T) {
 
 func TestCalendarScopedInvitationLoadingIsBatched(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
-	window := "from=" + f.dates[0].OriginalDate + "&to=" + f.dates[2].OriginalDate + "&tz=UTC"
+	window := "from=" + models.FormatCalendarDate(f.dates[0].OriginalDate) + "&to=" + models.FormatCalendarDate(f.dates[2].OriginalDate) + "&tz=UTC"
 	counter := countDBReads(t, f.app.DB)
 	getCalendar(t, f.client, window, 200)
 	counter.Stop()

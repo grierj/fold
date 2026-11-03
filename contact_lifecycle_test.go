@@ -353,7 +353,7 @@ func TestContactEventGraceAndHostRemoval(t *testing.T) {
 			case "grace":
 				boundary := occ.EndsAt.Add(policy.ContactEventGrace)
 				// Another earlier date must not be mistaken for the final occurrence.
-				earlier := models.EventOccurrence{EventID: ev.ID, OriginalDate: "2025-01-01", StartsAt: occ.StartsAt.Add(-time.Hour), EndsAt: occ.EndsAt.Add(-time.Hour), Status: models.OccurrenceScheduled}
+				earlier := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate("2025-01-01"), StartsAt: occ.StartsAt.Add(-time.Hour), EndsAt: occ.EndsAt.Add(-time.Hour), Status: models.OccurrenceScheduled}
 				f.app.DB.Create(&earlier)
 				if err := f.app.sweepContacts(context.Background(), boundary.Add(-time.Microsecond)); err != nil {
 					t.Fatal(err)
@@ -373,7 +373,7 @@ func TestContactEventGraceAndHostRemoval(t *testing.T) {
 			case "registration-loss":
 				// Move date to future so the ordinary pruning path applies.
 				f.app.DB.Model(&occ).Updates(map[string]any{"starts_at": now.Add(time.Hour), "ends_at": now.Add(2 * time.Hour)})
-				w = f.lc.do("POST", "/api/v1/events/"+itoa(ev.ID)+"/registrations/remove", map[string]any{"date": occ.OriginalDate, "registrationId": reg.ID}, true)
+				w = f.lc.do("POST", "/api/v1/events/"+itoa(ev.ID)+"/registrations/remove", map[string]any{"date": models.FormatCalendarDate(occ.OriginalDate), "registrationId": reg.ID}, true)
 				if w.Code != 200 {
 					t.Fatalf("remove registration %d %s", w.Code, w.Body.String())
 				}

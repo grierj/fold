@@ -79,6 +79,13 @@ func TestTeenConsentInitialGrantKeepsExistingPlaces(t *testing.T) {
 	if noticeCount != 1 {
 		t.Fatal("missing ask-a-leader notice for non-restored place")
 	}
+	var notRestored models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", teen.ID, notify.RegistrationNotRestored).First(&notRestored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := noticeDataDate(t, notRestored); got != date {
+		t.Fatalf("not-restored notice date = %q, want %q", got, date)
+	}
 }
 
 func TestTeenConsentAuthorityAndAtomicRollback(t *testing.T) {

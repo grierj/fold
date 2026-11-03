@@ -766,11 +766,17 @@ func TestHouseholdEventNoticesDeduplicateByHolder(t *testing.T) {
 	if len(notices) != 1 || notices[0].UserID != holder.ID {
 		t.Fatalf("event notices %+v", notices)
 	}
+	if got := noticeDataDate(t, notices[0]); got != date {
+		t.Fatalf("event notice date = %q, want %q", got, date)
+	}
 	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/cancel", eventID), map[string]any{"date": date}, http.StatusOK)
 	notices = nil
 	app.DB.Where("kind = ?", notify.OccurrenceCancelled).Find(&notices)
 	if len(notices) != 1 || notices[0].UserID != holder.ID {
 		t.Fatalf("cancellation notices %+v", notices)
+	}
+	if got := noticeDataDate(t, notices[0]); got != date {
+		t.Fatalf("cancellation notice date = %q, want %q", got, date)
 	}
 }
 

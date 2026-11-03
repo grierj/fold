@@ -2683,7 +2683,7 @@ func queueHeldGuestVerify(t *testing.T, app *App, full bool) heldGuestVerify {
 			t.Fatal(err)
 		}
 		addMember(t, app, member, &g, models.MembershipMember)
-		if code, _ := registerAs(loginAPI(t, app, "member", "password1234"), f.event.ID, f.occ.OriginalDate, "going", nil); code != http.StatusOK {
+		if code, _ := registerAs(loginAPI(t, app, "member", "password1234"), f.event.ID, models.FormatCalendarDate(f.occ.OriginalDate), "going", nil); code != http.StatusOK {
 			t.Fatalf("member going: %d", code)
 		}
 	}

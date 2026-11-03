@@ -680,7 +680,7 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 		sent, err := notify.Send(tx, notify.Msg{
 			Kind: kind, To: []uint{r.UserID}, Actor: &actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data: map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+			Data: map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 			// A date can be cancelled, restored and cancelled again, so the key
 			// carries the moment of this change (the row was just updated).
 			DedupeKey: fmt.Sprintf("%s:%d:%d", kind, o.ID, o.UpdatedAt.UnixNano()), ExpiresAt: &end,

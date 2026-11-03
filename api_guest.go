@@ -84,7 +84,7 @@ func (a *App) guestDisplayWith(siteName func() string, reg *models.Registration,
 	}
 	inst := occurrenceToJSON(ev, occ, loc)
 	out := guestRegistrationJSON{
-		EventID: ev.ID, OccurrenceID: occ.ID, Date: occ.OriginalDate,
+		EventID: ev.ID, OccurrenceID: occ.ID, Date: models.FormatCalendarDate(occ.OriginalDate),
 		Title: inst.Title, Status: reg.Status, StartsAt: inst.StartsAt,
 		Location: inst.Location,
 	}
@@ -114,7 +114,7 @@ func (a *App) loadGuestOccurrence(c *gin.Context, date string) (*models.EventOcc
 		return nil, false
 	}
 	var occ models.EventOccurrence
-	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&occ).Error != nil {
+	if !isCalendarDate(date) || a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&occ).Error != nil {
 		jsonError(c, 404, "event not found")
 		return nil, false
 	}

@@ -167,7 +167,7 @@ func newDepartureReadFixture(t *testing.T, visibility, status, origin string) oc
 
 func TestOccurrenceDateReadExactAuthorityAndAllowlist(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
-	path := dateReadPath(f.event.ID, f.dates[1].OriginalDate)
+	path := dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate))
 	w := f.client.do("GET", path, nil, false)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
@@ -199,28 +199,28 @@ func TestOccurrenceDateReadExactAuthorityAndAllowlist(t *testing.T) {
 	}
 	apiDo(t, f.stranger, "GET", path, nil, 404)
 	apiDo(t, newAPIClient(t, f.app), "GET", path, nil, 404)
-	for _, date := range []string{f.dates[0].OriginalDate, f.dates[2].OriginalDate, "not-a-date"} {
+	for _, date := range []string{models.FormatCalendarDate(f.dates[0].OriginalDate), models.FormatCalendarDate(f.dates[2].OriginalDate), "not-a-date"} {
 		apiDo(t, f.client, "GET", dateReadPath(f.event.ID, date), nil, 404)
 	}
 	for _, path := range []string{fmt.Sprintf("/api/v1/events/%d", f.event.ID), fmt.Sprintf("/api/v1/groups/%d", f.group), fmt.Sprintf("/api/v1/groups/%d/members", f.group), fmt.Sprintf("/api/v1/groups/%d/events", f.group)} {
 		apiDo(t, f.client, "GET", path, nil, 404)
 	}
 	apiDo(t, f.client, "PUT", fmt.Sprintf("/api/v1/events/%d", f.event.ID), map[string]any{"title": "No authority"}, 404)
-	apiDo(t, f.client, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/add", f.event.ID), map[string]any{"date": f.dates[1].OriginalDate, "userId": f.other.ID}, 404)
+	apiDo(t, f.client, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/add", f.event.ID), map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "userId": f.other.ID}, 404)
 	// Rich lists remain ordinary-only, even when a caller guesses the parent ID.
-	if rows := f.app.occurrencesForEvents([]uint{f.event.ID}, f.dates[0].OriginalDate, f.dates[2].OriginalDate, nil, f.recipient); len(rows) != 0 {
+	if rows := f.app.occurrencesForEvents([]uint{f.event.ID}, models.FormatCalendarDate(f.dates[0].OriginalDate), models.FormatCalendarDate(f.dates[2].OriginalDate), nil, f.recipient); len(rows) != 0 {
 		t.Fatal("ordinary list widened", rows)
 	}
 	seedReadInvitation(t, f.app, f.issuer, f.other, f.event, f.dates[2])
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[2].OriginalDate), nil, 200)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate)), nil, 200)
 	apiDo(t, f.stranger, "GET", path, nil, 404)
-	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[2].OriginalDate), nil, 404)
+	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate)), nil, 404)
 	// Independent membership preserves the existing rich, series-level view.
 	member := newTestUser(t, f.app, "independent member", "password1234", models.RoleMember)
 	if err := f.app.DB.Create(&models.Membership{UserID: member.ID, GroupID: f.group, Role: models.MembershipMember, Status: "active"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	rows := f.app.occurrencesForEvents([]uint{f.event.ID}, f.dates[0].OriginalDate, f.dates[2].OriginalDate, nil, member)
+	rows := f.app.occurrencesForEvents([]uint{f.event.ID}, models.FormatCalendarDate(f.dates[0].OriginalDate), models.FormatCalendarDate(f.dates[2].OriginalDate), nil, member)
 	if len(rows) != 3 || rows[0].GroupID == nil || rows[0].RecurrenceRule == "" {
 		t.Fatalf("ordinary view changed: %+v", rows)
 	}
@@ -266,7 +266,7 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 			if err := tc.mutate(f); err != nil {
 				t.Fatal(err)
 			}
-			w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, false)
+			w := f.client.do("GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, false)
 			if w.Code != 404 && !((tc.name == "disabled" || tc.name == "account deleted") && w.Code == 401) {
 				t.Fatal(w.Code, w.Body.String())
 			}
@@ -274,7 +274,7 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 			if err != nil || len(reads) != 0 {
 				t.Fatalf("live facts did not close: %v %+v", err, reads)
 			}
-			page, raw := getCalendar(t, f.client, "from="+f.dates[0].OriginalDate+"&to="+f.dates[2].OriginalDate+"&tz=UTC&mine=1", 200)
+			page, raw := getCalendar(t, f.client, "from="+models.FormatCalendarDate(f.dates[0].OriginalDate)+"&to="+models.FormatCalendarDate(f.dates[2].OriginalDate)+"&tz=UTC&mine=1", 200)
 			if len(page.Occurrences) != 0 {
 				t.Fatal("calendar retained invalid invitation", raw)
 			}
@@ -288,7 +288,7 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 
 func TestOccurrenceDateReadStableRescheduleAndIssuerIndependence(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
-	path := dateReadPath(f.event.ID, f.dates[1].OriginalDate)
+	path := dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate))
 	next := f.dates[1].StartsAt.Add(3 * time.Hour)
 	if err := f.app.DB.Model(&f.dates[1]).Updates(map[string]any{"starts_at": next, "ends_at": next.Add(time.Hour), "starts_at_override": next}).Error; err != nil {
 		t.Fatal(err)
@@ -304,11 +304,11 @@ func TestOccurrenceDateReadStableRescheduleAndIssuerIndependence(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), next.UTC().Format(time.RFC3339)) {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	added := models.EventOccurrence{EventID: f.event.ID, OriginalDate: next.AddDate(0, 0, 1).Format("2006-01-02"), StartsAt: next.AddDate(0, 0, 1), EndsAt: next.AddDate(0, 0, 1).Add(time.Hour), Status: models.OccurrenceScheduled}
+	added := models.EventOccurrence{EventID: f.event.ID, OriginalDate: calDate(next.AddDate(0, 0, 1).Format("2006-01-02")), StartsAt: next.AddDate(0, 0, 1), EndsAt: next.AddDate(0, 0, 1).Add(time.Hour), Status: models.OccurrenceScheduled}
 	if err := f.app.DB.Create(&added).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, added.OriginalDate), nil, 404)
+	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(added.OriginalDate)), nil, 404)
 	// A block does not cancel a different already accepted date.
 	if err := f.app.DB.Create(&models.ManagerAddBlock{SubjectUserID: f.recipient.ID, OrganizerType: "group", OrganizerID: f.group}).Error; err != nil {
 		t.Fatal(err)
@@ -342,7 +342,7 @@ func TestOccurrenceDateReadTeenConsentAndVideoAreCurrent(t *testing.T) {
 	}
 	seedReadInvitation(t, f.app, f.issuer, teen, f.event, f.dates[0])
 	client := loginAPI(t, f.app, teen.Name, "password1234")
-	path := dateReadPath(f.event.ID, f.dates[0].OriginalDate)
+	path := dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))
 	apiDo(t, client, "GET", path, nil, 200)
 	// Fail closed even if status cleanup has not yet changed the active user.
 	revoked := models.TeenConsent{TeenUserID: teen.ID, Scope: models.TeenConsentAccount, Status: models.ConsentRevoked, GrantedBy: f.issuer.ID, GranterRole: models.ConsentAdmin, EvidenceText: "Written guardian consent", At: time.Now()}
@@ -359,7 +359,7 @@ func TestOccurrenceDateReadTeenConsentAndVideoAreCurrent(t *testing.T) {
 	if err := f.app.DB.Model(&models.Registration{}).Where("id = ?", f.access.RegistrationID).Update("status", models.RegMaybe).Error; err != nil {
 		t.Fatal(err)
 	}
-	w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, false)
+	w := f.client.do("GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "private-video") || !strings.Contains(w.Body.String(), `"canSeeVideo":false`) || !strings.Contains(w.Body.String(), `"videoHidden":true`) {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -383,8 +383,8 @@ func TestOccurrenceDateReadPendingAskAndRegistrationAreNotAuthority(t *testing.T
 	if err := f.app.DB.Create(&reg).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[0].OriginalDate), nil, 404)
-	page, raw := getCalendar(t, f.stranger, "from="+f.dates[0].OriginalDate+"&to="+f.dates[2].OriginalDate+"&mine=1", 200)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate)), nil, 404)
+	page, raw := getCalendar(t, f.stranger, "from="+models.FormatCalendarDate(f.dates[0].OriginalDate)+"&to="+models.FormatCalendarDate(f.dates[2].OriginalDate)+"&mine=1", 200)
 	if len(page.Occurrences) != 0 {
 		t.Fatal("pending ask or registration widened calendar", raw)
 	}
@@ -509,7 +509,7 @@ func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
 			if err := f.app.sweepContacts(t.Context(), time.Now().UTC()); err != nil || savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
 				t.Fatal("standing departure access was ended by a manager-add block", err)
 			}
-			path := dateReadPath(f.event.ID, f.dates[1].OriginalDate)
+			path := dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate))
 			w := f.client.do("GET", path, nil, false)
 			if w.Code != http.StatusOK {
 				t.Fatal(w.Code, w.Body.String())
@@ -523,7 +523,7 @@ func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
 			if !strings.Contains(raw, `"title":"Retained date title"`) || !strings.Contains(raw, `"location":"Retained date place"`) || !strings.Contains(raw, `"myRegistration":"`+tc.status+`"`) {
 				t.Fatal("sanitized retained date incomplete", raw)
 			}
-			for _, hidden := range []string{f.dates[0].OriginalDate, f.dates[2].OriginalDate} {
+			for _, hidden := range []string{models.FormatCalendarDate(f.dates[0].OriginalDate), models.FormatCalendarDate(f.dates[2].OriginalDate)} {
 				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, hidden), nil, http.StatusNotFound)
 			}
 			apiDo(t, f.client, "GET", fmt.Sprintf("/api/v1/events/%d", f.event.ID), nil, http.StatusNotFound)
@@ -533,8 +533,8 @@ func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
 				}
 			}
 
-			page, calendarRaw := getCalendar(t, f.client, "from="+f.dates[0].OriginalDate+"&to="+f.dates[2].OriginalDate+"&tz=UTC&mine=1", http.StatusOK)
-			if len(page.Occurrences) != 1 || page.Occurrences[0].Date != f.dates[1].OriginalDate || page.Occurrences[0].MyStatus == nil || *page.Occurrences[0].MyStatus != tc.status {
+			page, calendarRaw := getCalendar(t, f.client, "from="+models.FormatCalendarDate(f.dates[0].OriginalDate)+"&to="+models.FormatCalendarDate(f.dates[2].OriginalDate)+"&tz=UTC&mine=1", http.StatusOK)
+			if len(page.Occurrences) != 1 || page.Occurrences[0].Date != models.FormatCalendarDate(f.dates[1].OriginalDate) || page.Occurrences[0].MyStatus == nil || *page.Occurrences[0].MyStatus != tc.status {
 				t.Fatalf("retained calendar=%+v raw=%s", page.Occurrences, calendarRaw)
 			}
 			if strings.Contains(calendarRaw, "Retained hidden group") || strings.Contains(calendarRaw, "Retained hidden series") || strings.Contains(calendarRaw, "groupId") {
@@ -584,7 +584,7 @@ func TestDepartureOccurrenceAccessExactEndAndMoveCannotResurrect(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, http.StatusNotFound)
+	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, http.StatusNotFound)
 	if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessEnded {
 		t.Fatal("reschedule resurrected retained access")
 	}
@@ -627,7 +627,7 @@ func TestOccurrenceDateOrganizerFollowsOrdinaryGroupVisibility(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
 	read := func() dateOccurrenceJSON {
 		t.Helper()
-		w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, false)
+		w := f.client.do("GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, false)
 		if w.Code != http.StatusOK {
 			t.Fatalf("read date: %d %s", w.Code, w.Body.String())
 		}
@@ -680,7 +680,7 @@ func TestOccurrenceDateChurchWideOrganizer(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ?", created.Event.ID).Order("starts_at").First(&date).Error; err != nil {
 		t.Fatal(err)
 	}
-	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, date.OriginalDate), nil, false)
+	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, models.FormatCalendarDate(date.OriginalDate)), nil, false)
 	if w.Code != http.StatusOK {
 		t.Fatalf("public church date: %d %s", w.Code, w.Body.String())
 	}
@@ -697,20 +697,20 @@ func TestOccurrenceDateChurchWideOrganizer(t *testing.T) {
 // 404s, the same video rule, and the feeds' UID.
 func TestOccurrenceCalendarFollowsTheDatePage(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
-	path := dateReadPath(f.event.ID, f.dates[1].OriginalDate) + "/calendar.ics"
+	path := dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)) + "/calendar.ics"
 	for name, client := range map[string]*apiClient{"stranger": f.stranger, "signed out": newAPIClient(t, f.app)} {
 		if w := client.do("GET", path, nil, false); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "VCALENDAR") {
 			t.Fatalf("%s: %d %s", name, w.Code, w.Body.String())
 		}
 	}
-	if w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/calendar.ics", nil, false); w.Code != http.StatusNotFound {
+	if w := f.client.do("GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/calendar.ics", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("another date of the hidden series: %d", w.Code)
 	}
 
 	w := f.client.do("GET", path, nil, false)
 	body := w.Body.String()
 	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/calendar") ||
-		w.Header().Get("Content-Disposition") != `attachment; filename="event-`+f.dates[1].OriginalDate+`.ics"` {
+		w.Header().Get("Content-Disposition") != `attachment; filename="event-`+models.FormatCalendarDate(f.dates[1].OriginalDate)+`.ics"` {
 		t.Fatalf("download: %d %v", w.Code, w.Header())
 	}
 	for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Invited date title", "LOCATION:Invited date place", "private-video", "STATUS:CONFIRMED"} {
@@ -754,7 +754,7 @@ func TestOccurrenceCalendarPublicDateSignedOut(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ?", created.Event.ID).First(&date).Error; err != nil {
 		t.Fatal(err)
 	}
-	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, date.OriginalDate)+"/calendar.ics", nil, false)
+	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, models.FormatCalendarDate(date.OriginalDate))+"/calendar.ics", nil, false)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "SUMMARY:Church picnic") || strings.Contains(w.Body.String(), "STATUS:") {
 		t.Fatalf("public date: %d %s", w.Code, w.Body.String())
 	}

@@ -174,7 +174,7 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 						t.Fatal("unsafe notice", notice)
 					}
 				}
-				if notice.Link != occurrenceDatePath(row.EventID, f.dates[1].OriginalDate) {
+				if notice.Link != occurrenceDatePath(row.EventID, models.FormatCalendarDate(f.dates[1].OriginalDate)) {
 					t.Fatal("not exact-date navigation", notice.Link)
 				}
 			}
@@ -208,7 +208,7 @@ func TestDepartureOccurrenceLifecycleTerminatesWithoutMembershipCoupling(t *test
 				if adminView.Code != http.StatusOK || !strings.Contains(adminView.Body.String(), `"addedByLeader":false`) || strings.Contains(adminView.Body.String(), `"addedByLeader":true`) {
 					t.Fatal("departure provenance mislabeled as manager add", adminView.Code, adminView.Body.String())
 				}
-				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": f.access.RegistrationID, "date": f.dates[1].OriginalDate}, 200)
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": f.access.RegistrationID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
 			case "disable":
 				if err := f.app.contactMutation(contactChange{UserID: f.recipient.ID}, func(tx *gorm.DB) error {
 					return tx.Model(f.recipient).Update("status", models.UserDisabled).Error
@@ -251,7 +251,7 @@ func TestDepartureOccurrenceAccessDoesNotActForHouseholdOrProxyRegistrations(t *
 	if err := f.app.DB.Create(&proxy).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, http.StatusNotFound)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, http.StatusNotFound)
 	apiDo(t, f.client, "POST", occurrenceMutationPath(f, "decline"), nil, http.StatusOK)
 	if err := f.app.DB.First(&proxy, proxy.ID).Error; err != nil || proxy.Status != models.RegGoing {
 		t.Fatalf("own retained decline changed proxy registration: %+v err=%v", proxy, err)
@@ -309,7 +309,7 @@ func TestOccurrenceMutationLifecycleIssuerBlockAndRescheduleIndependence(t *test
 	if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
 		t.Fatal("issuer/block/reschedule ended accepted date")
 	}
-	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 200)
+	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 200)
 }
 
 func TestOccurrenceMutationPendingPurposeDispatchAndNoResurrection(t *testing.T) {
@@ -376,16 +376,16 @@ func TestOccurrenceMutationParallelCancellationEndsOnce(t *testing.T) {
 	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "going"}, 200)
+	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "going"}, 200)
 	path := "/api/v1/events/" + itoa(f.event.ID) + "/cancel"
 	gate := holdContactGate(t, f.app)
 	firstClient, secondClient := cloneContactClient(f.admin), cloneContactClient(f.admin)
 	first := queueContact(func() *httptest.ResponseRecorder {
-		return firstClient.do("POST", path, map[string]string{"date": f.dates[1].OriginalDate}, true)
+		return firstClient.do("POST", path, map[string]string{"date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, true)
 	})
 	waitContactWaiters(t, f.app, 1)
 	second := queueContact(func() *httptest.ResponseRecorder {
-		return secondClient.do("POST", path, map[string]string{"date": f.dates[1].OriginalDate}, true)
+		return secondClient.do("POST", path, map[string]string{"date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, true)
 	})
 	waitContactWaiters(t, f.app, 2)
 	if err := gate.Commit().Error; err != nil {
@@ -402,9 +402,9 @@ func TestOccurrenceMutationParallelCancellationEndsOnce(t *testing.T) {
 	if n := contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.OccurrenceAccessEnded, f.access.ID); n != 1 {
 		t.Fatal("duplicate end audit", n)
 	}
-	apiDo(t, f.admin, "POST", path, map[string]string{"date": f.dates[1].OriginalDate}, 200)
+	apiDo(t, f.admin, "POST", path, map[string]string{"date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
 	var notices []models.Notification
-	if err := f.app.DB.Where("user_id = ? AND kind = ? AND link = ?", f.recipient.ID, notify.OccurrenceUpdated, occurrenceDatePath(f.event.ID, f.dates[1].OriginalDate)).Find(&notices).Error; err != nil {
+	if err := f.app.DB.Where("user_id = ? AND kind = ? AND link = ?", f.recipient.ID, notify.OccurrenceUpdated, occurrenceDatePath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate))).Find(&notices).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(notices) != 1 {
@@ -459,7 +459,7 @@ func TestOccurrenceMutationConsentLossEndsBeforeRegrant(t *testing.T) {
 }
 
 func occurrenceMutationPath(f occurrenceReadFixture, action string) string {
-	return dateReadPath(f.event.ID, f.dates[1].OriginalDate) + "/" + action
+	return dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)) + "/" + action
 }
 
 func TestOccurrenceRecipientControlsHiddenScopeAndNoRevival(t *testing.T) {
@@ -496,8 +496,8 @@ func TestOccurrenceRecipientControlsHiddenScopeAndNoRevival(t *testing.T) {
 			if otherDate.Status != "active" {
 				t.Fatal("other accepted date cancelled")
 			}
-			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)
-			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[2].OriginalDate), nil, 200)
+			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 404)
+			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[2].OriginalDate)), nil, 200)
 			apiDo(t, f.client, "PUT", occurrenceMutationPath(f, "registration"), map[string]any{"status": "going"}, 404)
 			if operation == "block" {
 				if contactCount(t, f.app, &models.ManagerAddBlock{}, "subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", f.recipient.ID, "group", f.group) != 1 {
@@ -508,11 +508,11 @@ func TestOccurrenceRecipientControlsHiddenScopeAndNoRevival(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, target := range []map[string]any{{"userId": f.recipient.ID}, {"email": f.recipient.Email}} {
-					target["date"] = f.dates[0].OriginalDate
+					target["date"] = models.FormatCalendarDate(f.dates[0].OriginalDate)
 					apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", target, 403)
 				}
 				// Voluntary ordinary RSVP is independent; it cannot reopen access.
-				apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "going"}, 200)
+				apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "going"}, 200)
 				if savedOccurrenceAccess(t, f).Status != "ended" {
 					t.Fatal("ordinary RSVP revived provenance")
 				}
@@ -527,13 +527,13 @@ func TestOccurrenceScopedRSVPSafeAndCurrent(t *testing.T) {
 	if savedOccurrenceAccess(t, f).Status != "active" {
 		t.Fatal("maybe ended invitation")
 	}
-	w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, false)
+	w := f.client.do("GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, false)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "private-video") {
 		t.Fatal("maybe retained video", w.Body.String())
 	}
 	apiDo(t, f.client, "PUT", occurrenceMutationPath(f, "registration"), map[string]any{"status": "going", "people": []map[string]any{{"personId": 1, "status": "going"}}}, 404)
 	apiDo(t, f.client, "PUT", occurrenceMutationPath(f, "registration"), map[string]any{"status": "going"}, 200)
-	apiDo(t, f.client, "PUT", dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/registration", map[string]any{"status": "going"}, 404)
+	apiDo(t, f.client, "PUT", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/registration", map[string]any{"status": "going"}, 404)
 }
 
 func TestOccurrenceRecipientBlockClosesOnlyConflictingPendingAsks(t *testing.T) {
@@ -576,7 +576,7 @@ func TestOccurrenceRecipientEndPromotesOnceAndAuditFailureRollsBack(t *testing.T
 	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Updates(map[string]any{"visibility": models.VisibilityPublic, "capacity": 1, "waitlist_enabled": true}).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "going"}, 200)
+	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "going"}, 200)
 	name := "occurrence:test_recipient_audit_failure"
 	if err := f.app.DB.Callback().Create().Before("gorm:create").Register(name, func(db *gorm.DB) {
 		if row, ok := db.Statement.Dest.(*models.AuditLog); ok && row.Action == audit.OccurrenceAccessEnded {
@@ -611,7 +611,7 @@ func TestOccurrenceOrdinaryRSVPDeclineEndsInvitationImmediately(t *testing.T) {
 	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "declined"}, 200)
+	apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "declined"}, 200)
 	if savedOccurrenceAccess(t, f).Status != "ended" {
 		t.Fatal("ordinary RSVP decline left special access")
 	}
@@ -622,16 +622,16 @@ func TestOccurrenceManagerRemovalUsesCurrentAuthorityAndPromotes(t *testing.T) {
 	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Updates(map[string]any{"visibility": models.VisibilityPublic, "capacity": 1, "waitlist_enabled": true}).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "going"}, 200)
+	apiDo(t, f.stranger, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "going"}, 200)
 	path := "/api/v1/events/" + itoa(f.event.ID) + "/registrations/remove"
-	apiDo(t, f.admin, "POST", path, map[string]any{"registrationId": f.access.RegistrationID, "date": f.dates[1].OriginalDate, "note": "Never disclose hidden management reason"}, 200)
+	apiDo(t, f.admin, "POST", path, map[string]any{"registrationId": f.access.RegistrationID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate), "note": "Never disclose hidden management reason"}, 200)
 	if savedOccurrenceAccess(t, f).EndReason != policy.OccurrenceRemoved {
 		t.Fatal("manager removal not immediate")
 	}
 	if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND status = ?", f.other.ID, models.RegGoing) != 1 {
 		t.Fatal("manager removal did not release invitation seat")
 	}
-	apiDo(t, f.admin, "POST", path, map[string]any{"registrationId": f.access.RegistrationID, "date": f.dates[1].OriginalDate}, 404)
+	apiDo(t, f.admin, "POST", path, map[string]any{"registrationId": f.access.RegistrationID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 404)
 }
 
 func TestOccurrenceRecipientGateRaceAndStaleSession(t *testing.T) {
@@ -645,7 +645,7 @@ func TestOccurrenceRecipientGateRaceAndStaleSession(t *testing.T) {
 			if scenario == "manager_role_loss" {
 				path = "/api/v1/events/" + itoa(f.event.ID) + "/registrations/remove"
 				client = cloneContactClient(f.admin)
-				body = map[string]any{"registrationId": f.access.RegistrationID, "date": f.dates[1].OriginalDate}
+				body = map[string]any{"registrationId": f.access.RegistrationID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}
 			}
 			first := queueContact(func() *httptest.ResponseRecorder { return client.do("POST", path, body, true) })
 			waitContactWaiters(t, f.app, 1)
@@ -726,7 +726,7 @@ func TestOccurrenceRecipientChurchWideBlockIsEventScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedReadInvitation(t, f.app, f.issuer, f.recipient, b.Event, occ)
-	apiDo(t, f.client, "POST", dateReadPath(b.Event.ID, occ.OriginalDate)+"/block", nil, 200)
+	apiDo(t, f.client, "POST", dateReadPath(b.Event.ID, models.FormatCalendarDate(occ.OriginalDate))+"/block", nil, 200)
 	if contactCount(t, f.app, &models.ManagerAddBlock{}, "subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", f.recipient.ID, "event", b.Event.ID) != 1 {
 		t.Fatal("church-wide block not event-scoped")
 	}
@@ -755,7 +755,7 @@ func TestOccurrenceRecipientConsentLossRefusesMutation(t *testing.T) {
 		if action == "registration" {
 			method, body = "PUT", map[string]any{"status": "going"}
 		}
-		apiDo(t, client, method, dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/"+action, body, 404)
+		apiDo(t, client, method, dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/"+action, body, 404)
 	}
 }
 
@@ -842,13 +842,13 @@ func TestOccurrenceAskAdultExactPreviewAndAtomicCompletion(t *testing.T) {
 			t.Fatal("unsafe preview", key, w.Body.String())
 		}
 	}
-	if r.EventTitle == "" || r.Date != f.dates[0].OriginalDate || r.StartsAt == nil {
+	if r.EventTitle == "" || r.Date != models.FormatCalendarDate(f.dates[0].OriginalDate) || r.StartsAt == nil {
 		t.Fatal("missing minimal preview", r)
 	}
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[0].OriginalDate), nil, 404)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate)), nil, 404)
 	apiDo(t, f.stranger, "POST", "/api/v1/add-requests/"+itoa(r.ID)+"/decision", map[string]string{"party": "subject", "decision": "approved"}, 200)
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[0].OriginalDate), nil, 200)
-	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate)), nil, 200)
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 404)
 	apiDo(t, f.stranger, "GET", "/api/v1/events/"+itoa(f.event.ID), nil, 404)
 	if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ? AND status = ?", r.ID, "active") != 1 {
 		t.Fatal("missing request access")
@@ -943,7 +943,7 @@ func TestOccurrenceAskTeenBothOrdersAndSafeGuardianNotice(t *testing.T) {
 			if err := f.app.DB.Where("kind = ? AND user_id = ?", notify.OccurrenceAdded, guardian.ID).Find(&notices).Error; err != nil {
 				t.Fatal(err)
 			}
-			if len(notices) != 1 || notices[0].Link != occurrenceDatePath(f.event.ID, f.dates[0].OriginalDate) {
+			if len(notices) != 1 || notices[0].Link != occurrenceDatePath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate)) {
 				t.Fatal("guardian safe copy", notices)
 			}
 		})
@@ -972,7 +972,7 @@ func TestOccurrenceAskParallelCompletionAndNewAskAfterEnd(t *testing.T) {
 	if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 1 || contactCount(t, f.app, &models.Registration{}, "occurrence_id = ? AND user_id = ?", f.dates[0].ID, f.other.ID) != 1 {
 		t.Fatal("duplicate effects")
 	}
-	apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/decline", nil, 200)
+	apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/decline", nil, 200)
 	next := createOccurrenceAsk(t, f, f.other, f.dates[0], nil)
 	apiDo(t, f.stranger, "POST", "/api/v1/add-requests/"+itoa(next.ID)+"/decision", map[string]string{"party": "subject", "decision": "approved"}, 200)
 	if contactCount(t, f.app, &models.OccurrenceAccess{}, "subject_user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 2 {
@@ -995,7 +995,7 @@ func TestOccurrenceDirectAdultsRaceCapacityProvenanceAndRateLimit(t *testing.T) 
 	for i, u := range users {
 		client, target := cloneContactClient(f.admin), u
 		channels = append(channels, queueContact(func() *httptest.ResponseRecorder {
-			return client.do("POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": target.ID, "date": f.dates[1].OriginalDate}, true)
+			return client.do("POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": target.ID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, true)
 		}))
 		waitContactWaiters(t, f.app, i+1)
 	}
@@ -1017,14 +1017,14 @@ func TestOccurrenceDirectAdultsRaceCapacityProvenanceAndRateLimit(t *testing.T) 
 	if err := f.app.DB.Where("occurrence_id = ? AND request_id IS NULL", f.dates[1].ID).First(&added).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": added.SubjectUserID, "date": f.dates[1].OriginalDate}, 200)
+	apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": added.SubjectUserID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
 	if contactCount(t, f.app, &models.OccurrenceAccess{}, "subject_user_id = ? AND occurrence_id = ?", added.SubjectUserID, added.OccurrenceID) != 1 {
 		t.Fatal("duplicate provenance")
 	}
 	if err := f.app.DB.Model(&models.LoginThrottle{}).Where("key = ?", "manager-date-add:"+itoa(f.issuer.ID)).Update("failures", managerDateAddLimit).Error; err != nil {
 		t.Fatal(err)
 	}
-	w := f.admin.do("POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"email": users[0].Email, "date": f.dates[0].OriginalDate}, true)
+	w := f.admin.do("POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"email": users[0].Email, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, true)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "date_add_throttled") {
 		t.Fatal("throttle", w.Code, w.Body.String())
 	}
@@ -1112,7 +1112,7 @@ func TestOccurrenceAskTerminalChangesPreventCompletion(t *testing.T) {
 				if err := f.app.DB.Create(&reg).Error; err != nil {
 					t.Fatal(err)
 				}
-				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": reg.ID, "date": f.dates[0].OriginalDate}, 200)
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": reg.ID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
 			}
 			// A still-active admin can retry, but no terminal request can complete.
 			client := f.stranger
@@ -1134,7 +1134,7 @@ func TestOccurrenceNewInvitationInvalidatesPromotionToken(t *testing.T) {
 	}
 	path := "/api/v1/events/" + itoa(f.event.ID) + "/registrations"
 	answer := func(c *apiClient, status string) {
-		apiDo(t, c, "PUT", path, map[string]any{"date": f.dates[0].OriginalDate, "status": status}, 200)
+		apiDo(t, c, "PUT", path, map[string]any{"date": models.FormatCalendarDate(f.dates[0].OriginalDate), "status": status}, 200)
 	}
 	answer(f.client, "going")
 	answer(f.stranger, "going")
@@ -1143,7 +1143,7 @@ func TestOccurrenceNewInvitationInvalidatesPromotionToken(t *testing.T) {
 	manage := "/api/v1/guest-registrations/manage/" + raw
 	anon := anonClient(t, f.app, "10.3.8.1")
 	apiDo(t, anon, "GET", manage, nil, 200)
-	apiDo(t, f.admin, "POST", path+"/add", map[string]any{"userId": f.other.ID, "date": f.dates[0].OriginalDate}, 200)
+	apiDo(t, f.admin, "POST", path+"/add", map[string]any{"userId": f.other.ID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
 	apiDo(t, anon, "GET", manage, nil, 404)
 	apiDo(t, anon, "POST", manage+"/cancel", nil, 404)
 	// Ordinary promotion during an active invitation rotates a credential
@@ -1159,7 +1159,7 @@ func TestOccurrenceNewInvitationInvalidatesPromotionToken(t *testing.T) {
 	if retained.ManageTokenHash == "" {
 		t.Fatal("real active-invitation promotion did not rotate credential")
 	}
-	apiDo(t, f.admin, "POST", path+"/add", map[string]any{"userId": f.other.ID, "date": f.dates[0].OriginalDate}, 200)
+	apiDo(t, f.admin, "POST", path+"/add", map[string]any{"userId": f.other.ID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate)}, 200)
 	var updated models.Registration
 	if err := f.app.DB.First(&updated, retained.ID).Error; err != nil {
 		t.Fatal(err)
@@ -1167,7 +1167,7 @@ func TestOccurrenceNewInvitationInvalidatesPromotionToken(t *testing.T) {
 	if updated.ManageTokenHash != retained.ManageTokenHash {
 		t.Fatal("active invitation update invalidated credential")
 	}
-	apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/decline", nil, 200)
+	apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/decline", nil, 200)
 	r := createOccurrenceAsk(t, f, f.other, f.dates[0], nil)
 	apiDo(t, f.stranger, "POST", "/api/v1/add-requests/"+itoa(r.ID)+"/decision", map[string]string{"party": "subject", "decision": "approved"}, 200)
 	apiDo(t, anon, "GET", manage, nil, 404)
@@ -1191,9 +1191,9 @@ func TestOccurrenceAddPreservesTokenOnActiveUpdateAndFailedAdd(t *testing.T) {
 				t.Fatal(err)
 			}
 			regID := f.access.RegistrationID
-			date := f.dates[1].OriginalDate
+			date := models.FormatCalendarDate(f.dates[1].OriginalDate)
 			if scenario == "failed_add" {
-				date = f.dates[0].OriginalDate
+				date = models.FormatCalendarDate(f.dates[0].OriginalDate)
 				reg := models.Registration{UserID: &f.recipient.ID, OccurrenceID: f.dates[0].ID, Status: models.RegMaybe, AttendanceMode: models.AttendanceInPerson}
 				if err := f.app.DB.Create(&reg).Error; err != nil {
 					t.Fatal(err)
@@ -1249,7 +1249,7 @@ func TestOccurrenceOrdinaryRSVPRetryRevalidatesEndedInvitation(t *testing.T) {
 			}
 			client := cloneContactClient(f.client)
 			rsvp := queueContact(func() *httptest.ResponseRecorder {
-				return client.do("PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[1].OriginalDate, "status": "going"}, true)
+				return client.do("PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(f.dates[1].OriginalDate), "status": "going"}, true)
 			})
 			n := 1
 			if scenario == "tighten_then_end" {
@@ -1297,7 +1297,7 @@ func TestOccurrenceDirectAddEveryPreflightRefusalAuditedSafely(t *testing.T) {
 			for _, auditFailure := range []bool{false, true} {
 				path := "/api/v1/events/" + itoa(f.event.ID) + "/registrations/add"
 				client, want := f.admin, 400
-				body := map[string]any{"userId": f.other.ID, "date": f.dates[0].OriginalDate, "email": "secret@example.org", "selectionId": "secret-selection", "reason": "secret-reason"}
+				body := map[string]any{"userId": f.other.ID, "date": models.FormatCalendarDate(f.dates[0].OriginalDate), "email": "secret@example.org", "selectionId": "secret-selection", "reason": "secret-reason"}
 				// Keep private submitted data on destination failures; valid target shape
 				// on option failures proves we reach the specific validation branch.
 				switch scenario {

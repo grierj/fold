@@ -185,7 +185,7 @@ func impactOf(tx *gorm.DB, g *models.Group, newVis string, lock bool) (visibilit
 		if err := losersForDate(tx, ev, newVis, now, date.ID).Count(&count).Error; err != nil {
 			return visibilityImpactJSON{}, nil, nil, err
 		}
-		leaderOpened = append(leaderOpened, impactEventJSON{ID: ev.ID, Title: ev.Title, Date: date.OriginalDate, OccurrenceID: date.ID, DecisionKey: dateDecisionKey(date.ID), Visibility: *date.VisibilityOverride, Registrants: count})
+		leaderOpened = append(leaderOpened, impactEventJSON{ID: ev.ID, Title: ev.Title, Date: models.FormatCalendarDate(date.OriginalDate), OccurrenceID: date.ID, DecisionKey: dateDecisionKey(date.ID), Visibility: *date.VisibilityOverride, Registrants: count})
 	}
 	return visibilityImpactJSON{Visibility: newVis, Tightened: tightened, LeaderOpened: leaderOpened}, auto, opened, nil
 }
@@ -358,7 +358,7 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 		noticeEvent.Title = title
 		if occurrenceID != 0 {
 			date := dates[occurrenceID]
-			noticeEvent.Title = effectiveOccurrenceTitle(ev, date) + " · " + date.OriginalDate
+			noticeEvent.Title = effectiveOccurrenceTitle(ev, date) + " · " + models.FormatCalendarDate(date.OriginalDate)
 		}
 		ids, err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder)
 		if err != nil {
