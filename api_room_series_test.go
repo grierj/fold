@@ -206,8 +206,7 @@ func TestRoomSeriesExtenderBooksNewDates(t *testing.T) {
 		t.Fatalf("book the other event: %d %s", w.Code, w.Body.String())
 	}
 
-	var emailed []uint
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 3 {
@@ -221,7 +220,7 @@ func TestRoomSeriesExtenderBooksNewDates(t *testing.T) {
 		t.Fatalf("the leader should hear the new date lost its room: %v", err)
 	}
 	// Running it again books nothing twice.
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", series.ID); n != 4 {
@@ -343,8 +342,7 @@ func TestRoomSeriesChurchWideAndRoomsOff(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ?", ev.ID).Delete(&models.EventOccurrence{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	var emailed []uint
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if n := contactCount(t, f.app, &models.EventOccurrence{}, "event_id = ?", ev.ID); n != 2 {

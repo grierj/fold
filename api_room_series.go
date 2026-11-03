@@ -256,7 +256,6 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	}
 	user := apiUser(c)
 	var out seriesBookingJSON
-	var emailed []uint
 	errNotManager := errors.New("not a manager")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
@@ -267,9 +266,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 			return errNotManager
 		}
 		var err error
-		var ids []uint
-		out, ids, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
-		emailed = ids
+		out, _, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
 		return err
 	})
 	switch {
@@ -282,7 +279,6 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:
-		a.deliverNotificationEmails(emailed)
 		c.JSON(http.StatusOK, out)
 	}
 }
@@ -534,11 +530,11 @@ func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uin
 	return append(emailed, ids...), err
 }
 
-// afterExtend books the series room for dates the daily extender adds,
-// collecting notification ids to email once the run is over. While rooms
+// afterExtend books the series room for dates the daily extender adds;
+// its notices queue their own delivery in the same transaction. While rooms
 // are off it books nothing and tells no one. A failure here is logged and
 // undone on its own, so it never stops the event's new dates being added.
-func (a *App) afterExtend(emailed *[]uint) events.AfterEnsure {
+func (a *App) afterExtend() events.AfterEnsure {
 	return func(tx *gorm.DB, ev *models.Event, added []string) error {
 		if ev.DefaultRoomID == nil || !a.roomsEnabled() {
 			return nil
@@ -546,19 +542,19 @@ func (a *App) afterExtend(emailed *[]uint) events.AfterEnsure {
 		if err := tx.SavePoint("rooms").Error; err != nil {
 			return err
 		}
-		sent, err := func() ([]uint, error) {
+		err := func() error {
 			var ids []uint
 			if err := tx.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date IN ?", ev.ID, added).
 				Pluck("id", &ids).Error; err != nil {
-				return nil, err
+				return err
 			}
-			return settleDateRooms(tx, ev, nil, ids, nil)
+			_, err := settleDateRooms(tx, ev, nil, ids, nil)
+			return err
 		}()
 		if err != nil {
 			log.Printf("occurrences: event %d: series room: %v", ev.ID, err)
 			return tx.RollbackTo("rooms").Error
 		}
-		*emailed = append(*emailed, sent...)
 		return nil
 	}
 }

@@ -350,7 +350,6 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	}
 	errRoomGone, errRestricted, errBusy := errors.New("room gone"), errors.New("restricted"), errors.New("busy")
 	errDateGone, errAdminBooking := errors.New("date gone"), errors.New("admin booking")
-	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// The event first, as every series and approval path takes it, so a
 		// date's booking and an admin deciding its request can't deadlock.
@@ -440,8 +439,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 			return errBusy
 		}
 		if result == bookedPending {
-			ids, err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
-			emailed = append(emailed, ids...)
+			_, err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
 			if err != nil {
 				return err
 			}
@@ -480,7 +478,6 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	booking, err := a.dateBooking(a.DB, occ.ID, seatsWanted(a.DB, ev, occ))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the room")
