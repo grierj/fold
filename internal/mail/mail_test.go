@@ -156,6 +156,135 @@ func TestSMTPSendsThroughTestServer(t *testing.T) {
 	}
 }
 
+// A connected SMTP server can stop replying at any point. Both deadline
+// expiry and cancellation without a deadline must interrupt the exchange.
+func TestSMTPContextAfterDial(t *testing.T) {
+	for _, mode := range []string{"deadline", "cancel"} {
+		for _, stage := range []string{"greeting", "implicit-tls", "starttls", "body", "quit"} {
+			t.Run(mode+"/"+stage, func(t *testing.T) {
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				serverCtx, stopServer := context.WithCancel(context.Background())
+				stalled, release, serverDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				var serverErr error
+				go func() {
+					defer close(serverDone)
+					conn, err := ln.Accept()
+					if err != nil {
+						serverErr = err
+						return
+					}
+					defer conn.Close()
+					stop := context.AfterFunc(serverCtx, func() { conn.Close() })
+					defer stop()
+					c := textproto.NewConn(conn)
+					type step struct{ name, command, reply string }
+					steps := []step{
+						{"greeting", "", "220 fake ESMTP"},
+						{"hello", "EHLO ", "250 fake"},
+						{"mail", "MAIL FROM:", "250 ok"},
+						{"rcpt", "RCPT TO:", "250 ok"},
+						{"data", "DATA", "354 go ahead"},
+						{"body", ".", "250 queued"},
+						{"quit", "QUIT", "221 bye"},
+					}
+					if stage == "implicit-tls" {
+						steps = []step{{"implicit-tls", "", ""}}
+					} else if stage == "starttls" {
+						steps = []step{
+							{"greeting", "", "220 fake ESMTP"},
+							{"hello", "EHLO ", "250-fake\r\n250 STARTTLS"},
+							{"upgrade", "STARTTLS", "220 go ahead"},
+							{"starttls", "", ""},
+						}
+					}
+					for _, s := range steps {
+						if s.command == "." {
+							var body []byte
+							body, serverErr = c.ReadDotBytes()
+							if serverErr == nil && !strings.Contains(string(body), "plain body") {
+								serverErr = errors.New("SMTP server received no message body")
+							}
+						} else if s.command != "" {
+							var line string
+							line, serverErr = c.ReadLine()
+							if serverErr == nil && !strings.HasPrefix(line, s.command) {
+								serverErr = fmt.Errorf("SMTP server expected %q, got %q", s.command, line)
+							}
+						}
+						if serverErr != nil {
+							return
+						}
+						if s.name == stage {
+							close(stalled)
+							<-release // Only test cleanup releases the stalled server.
+							return
+						}
+						if serverErr = c.PrintfLine("%s", s.reply); serverErr != nil {
+							return
+						}
+					}
+				}()
+				t.Cleanup(func() {
+					close(release)
+					stopServer()
+					ln.Close()
+					<-serverDone
+				})
+				scheme := "smtp://"
+				if stage == "implicit-tls" {
+					scheme = "smtps://"
+				}
+				s, err := NewSMTP(scheme+ln.Addr().String(), "Fold <noreply@example.com>")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var ctx context.Context
+				var cancel context.CancelFunc
+				if mode == "deadline" {
+					ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+				} else {
+					ctx, cancel = context.WithCancel(context.Background())
+				}
+				defer cancel()
+				type result struct {
+					id  string
+					err error
+				}
+				sent := make(chan result, 1)
+				go func() {
+					id, err := s.SendEmail(ctx, Message{To: "sam@example.com", Subject: "Hello", Text: "plain body"})
+					sent <- result{id, err}
+				}()
+				select {
+				case <-stalled:
+				case <-serverDone:
+					t.Fatalf("SMTP server exited before stalling: %v", serverErr)
+				case <-time.After(3 * time.Second):
+					t.Fatal("SMTP sender did not reach the stalled exchange")
+				}
+				if mode == "cancel" {
+					cancel()
+				}
+				select {
+				case got := <-sent:
+					if stage == "quit" {
+						if got.err != nil || got.id == "" {
+							t.Fatalf("mail accepted before QUIT must stay sent: %+v", got)
+						}
+					} else if got.err == nil || got.id != "" || IsPermanent(got.err) {
+						t.Fatalf("interrupted send must be retryable: %+v", got)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("SMTP sender ignored context after dial")
+				}
+			})
+		}
+	}
+}
+
 func TestSMTPRequiresEncryptionOutsideLoopback(t *testing.T) {
 	for _, allow := range []bool{false, true} {
 		t.Run(fmt.Sprintf("allow-insecure=%v", allow), func(t *testing.T) {

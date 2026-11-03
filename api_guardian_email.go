@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -9,11 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
-	foldmail "fold/internal/mail"
+	"fold/internal/jobs"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -87,7 +85,7 @@ func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken,
 		return nil, payload, errTokenInvalid
 	}
 	var row models.AccountToken
-	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", models.TokenTeenConsent, hashToken(raw)).Limit(1).Find(&row)
+	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, models.TokenTeenConsent, hashToken(raw)).Limit(1).Find(&row)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return nil, payload, errTokenInvalid
 	}
@@ -165,36 +163,6 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// This is transactional safeguarding mail. It names nobody, and GET only
-// previews the signed action so email scanners cannot give consent.
-func (a *App) sendGuardianConsentEmail(linkID uint) error {
-	var link models.GuardianLink
-	if err := a.DB.First(&link, linkID).Error; err != nil {
-		return err
-	}
-	if link.TeenUserID == nil {
-		return nil
-	}
-	var raw, email string
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		guardian, teen, _, err := lockedTeenGuardian(tx, link.GuardianUserID, *link.TeenUserID, link.ID)
-		if err != nil {
-			return err
-		}
-		email = guardian.Email
-		raw, err = a.createGuardianEmailToken(tx, guardian, teen, link.ID)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	if a.Mailer == nil {
-		return fmt.Errorf("consent email sender is unavailable")
-	}
-	return a.Mailer.Send(context.Background(), foldmail.Message{To: email, Subject: "Review teen account consent in Fold",
-		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in 24 hours and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."})
-}
-
 func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 	link, err := ownTeenLink(a.DB, c)
 	if err != nil || link.Status != models.GuardianConfirmed {
@@ -203,10 +171,12 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 	}
 	me := apiUser(c)
 	allowed, err := a.targetAllow(c.Request.Context(), "guardian-email:addr:"+normalizeEmail(me.Email))
-	if err != nil || !allowed {
-		log.Printf("guardian consent email limited: actor=%d err=%v", me.ID, err)
-	} else if err := a.sendGuardianConsentEmail(link.ID); err != nil {
-		log.Printf("guardian consent email: link=%d err=%v", link.ID, err)
+	if err != nil {
+		log.Printf("guardian consent email limited: actor=%d err=%s", me.ID, jobs.CleanError(err))
+	} else if !allowed {
+		log.Printf("guardian consent email limited: actor=%d", me.ID)
+	} else if _, err := jobs.Enqueue(a.DB, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+		log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in 24 hours."})
 }

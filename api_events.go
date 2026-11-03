@@ -27,14 +27,28 @@ const (
 )
 
 func (a *App) churchTimezone() string {
+	loc, err := churchLocationIn(a.DB)
+	if err != nil {
+		return "UTC"
+	}
+	return loc.String()
+}
+
+// churchLocationIn keeps the UTC fallback for missing or invalid settings.
+// Database failures return to the caller so mail preparation can retry.
+func churchLocationIn(db *gorm.DB) (*time.Location, error) {
 	var s models.Setting
-	if err := a.DB.Where("key = ?", settingTimezone).First(&s).Error; err != nil {
-		return "UTC"
+	if err := db.Where("key = ?", settingTimezone).First(&s).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return time.UTC, nil
+		}
+		return nil, err
 	}
-	if _, err := events.LoadZone(s.Value); err != nil {
-		return "UTC"
+	loc, err := events.LoadZone(s.Value)
+	if err != nil {
+		return time.UTC, nil
 	}
-	return s.Value
+	return loc, nil
 }
 
 func (a *App) apiSite(c *gin.Context) {

@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/mail"
+	"fold/internal/jobs"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -158,7 +155,6 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		return
 	}
 
-	var raw string
 	var refusal error
 	overLimit := body.OverLimit && g != nil
 	inv := models.Invitation{
@@ -216,11 +212,11 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		if n > 0 {
 			return refuse(errConversionEmail, "pending_invitation")
 		}
-		token, hash, err := createInvitationToken()
+		_, hash, err := createInvitationToken()
 		if err != nil {
 			return err
 		}
-		raw, inv.TokenHash = token, hash
+		inv.TokenHash = hash
 		if err := tx.Create(&inv).Error; err != nil {
 			return err
 		}
@@ -228,8 +224,12 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		if g != nil {
 			meta["groupId"] = g.ID
 		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.InvitationCreated,
-			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()})
+		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.InvitationCreated,
+			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		_, err = jobs.Enqueue(tx, kindInvitationMail, invitationMailJob{InvitationID: inv.ID}, time.Now(), "", directMailAttempts)
+		return err
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create invitation")
@@ -252,30 +252,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	if g != nil {
 		inv.Group = *g
 	}
-	if err := a.sendInvitationEmail(&inv, me, raw); err != nil {
-		log.Printf("invitation email to %s: %v", email, err)
-	}
 	c.JSON(http.StatusCreated, gin.H{"invitation": a.toInvitationJSON(&inv)})
-}
-
-// sendInvitationEmail sends the single-use accept link (C6: plain text).
-func (a *App) sendInvitationEmail(inv *models.Invitation, inviter *models.User, raw string) error {
-	link := a.emailBaseURL() + "/invite?token=" + raw
-	groupPart := ""
-	if inv.Group.ID != 0 {
-		groupPart = fmt.Sprintf(" at %s", inv.Group.Name)
-	}
-	return a.Mailer.Send(context.Background(), mail.Message{
-		To:      inv.Email,
-		Subject: fmt.Sprintf("You've been invited to %s", a.siteName()),
-		Text: fmt.Sprintf(`%s invited you to join %s%s.
-
-Set your password here (the link works once and expires in 24 hours):
-%s
-
-If you weren't expecting this, you can ignore it.`,
-			inviter.PublicName(), a.siteName(), groupPart, link),
-	})
 }
 
 // apiGetInvitation shows what an invitation is for, so the public accept
@@ -427,10 +404,25 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return err
 		}
 		now := time.Now().UTC()
+		// Take the invitation's row lock last, in its own statement, so the
+		// claim below reads the wall clock after any wait. A delivery worker
+		// holds this row FOR UPDATE without changing it; an UPDATE that
+		// waited on such a lock would resume without re-evaluating its
+		// deadline test. The mail job locks only this row, so taking it after
+		// the contact, email, group and inviter locks cannot deadlock with it.
+		var held models.Invitation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL", inv.ID, hashToken(body.Token)).
+			Limit(1).Find(&held).Error; err != nil {
+			return err
+		}
+		if held.ID == 0 {
+			return errTokenInvalid // rotated, revoked or claimed while we waited
+		}
 		// Claim the invitation atomically: a concurrent accept of the same
 		// token must lose here, not rely on the users.email unique index.
 		res := tx.Model(&models.Invitation{}).
-			Where("id = ? AND accepted_at IS NULL", inv.ID).
+			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive, inv.ID, hashToken(body.Token)).
 			Update("accepted_at", now)
 		if res.Error != nil {
 			return res.Error

@@ -57,11 +57,13 @@ test("an ordinary invitation asks the recipient's age without logging in a pendi
   test.skip((await request.get("/dev/outbox")).status() !== 200, "Requires dev outbox to open the emailed invitation");
   const admin = await apiAs(request, "grier");
   await admin("POST", "/invitations", { name: "Invited Teen", email: email("invited-teen") });
-  const html = await (await request.get("/dev/outbox")).text();
-  const section = html.split("<section").find((part) => part.includes(`To: ${email("invited-teen")}`));
-  const link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0];
-  expect(link).toBeTruthy();
-  if (!link) throw new Error("Invitation email did not contain its link");
+  let link = "";
+  await expect.poll(async () => {
+    const html = await (await request.get("/dev/outbox")).text();
+    const section = html.split("<section").find((part) => part.includes(`To: ${email("invited-teen")}`));
+    link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
+    return link;
+  }).not.toBe("");
   await page.goto(new URL(link).pathname + new URL(link).search);
   await page.getByLabel("Under 13", { exact: true }).check();
   await expect(page.getByRole("button", { name: "Create my account" })).toBeDisabled();

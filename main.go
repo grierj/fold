@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -38,12 +39,6 @@ type App struct {
 	Config  Config
 	Uploads storage.Store // blob store for avatars and group covers
 	Mailer  mail.Sender   // transactional email (C6, M1.2)
-
-	// background runs work the response must not wait for, such as a
-	// password-reset email whose send time would otherwise reveal that the
-	// account exists (#93). nil runs it on a new goroutine; tests set it to
-	// run inline so they can read the outbox straight after the request.
-	background func(func())
 
 	// seriesClock is a per-App clock seam for lock-boundary tests. Production
 	// leaves it nil and reads the current UTC time.
@@ -183,6 +178,11 @@ const (
 	httpWriteTimeout      = 60 * time.Second
 	httpIdleTimeout       = 120 * time.Second
 	httpMaxHeaderBytes    = 1 << 20
+
+	// Leave 40 seconds of the write budget for transaction work and the
+	// response carrying the browser's guest manage link or verification state.
+	// Delivery jobs retain their separate 60-second deliverSendTimeout.
+	syncMailTimeout = 20 * time.Second
 )
 
 // newHTTPServer builds the production server with its timeouts, so a slow or
@@ -548,11 +548,27 @@ func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 }
 
 func (a *App) siteName() string {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", "site_name").First(&s).Error; err != nil || s.Value == "" {
+	name, err := siteNameIn(a.DB)
+	if err != nil {
 		return "Fold"
 	}
-	return s.Value
+	return name
+}
+
+// siteNameIn uses the caller's connection and context. Mail preparation passes
+// its transaction so this read needs no second connection and failures retry.
+func siteNameIn(db *gorm.DB) (string, error) {
+	var s models.Setting
+	if err := db.Where("key = ?", "site_name").First(&s).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "Fold", nil
+		}
+		return "", err
+	}
+	if s.Value == "" {
+		return "Fold", nil
+	}
+	return s.Value, nil
 }
 
 // setupRequired redirects everything to the setup wizard until an admin

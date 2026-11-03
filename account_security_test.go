@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"fold/migrations"
 	"fold/models"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -28,6 +32,116 @@ func pendingSecurityCapabilities(t *testing.T, app *App, user *models.User) map[
 		out[kind] = raw
 	}
 	return out
+}
+
+func TestLockedAccountTokenClaimRejectsRotatedHash(t *testing.T) {
+	app := testApp(t)
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached, release := pauseDBRead(t, app.DB, "locked-claim", "account_tokens")
+	_, done := startDBSession(t, app.DB, "locked-claim", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			_, _, err := lockAndConsumeAccountToken(tx, models.TokenPasswordReset, raw)
+			return err
+		})
+	})
+	awaitDBSignal(t, reached)
+	// Model a token writer that rotated the row after this lookup. The guarded
+	// UPDATE must reject the stale hash even though the row's ID is unchanged.
+	if err := app.DB.Model(&models.AccountToken{}).Where("token_hash = ?", hashToken(raw)).Update("token_hash", hashToken("rotated-capability")).Error; err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := awaitDBResult(t, done); !errors.Is(err, errTokenInvalid) {
+		t.Fatalf("locked claim accepted a rotated hash: %v", err)
+	}
+	if _, err := consumeAccountToken(app.DB, models.TokenPasswordReset, "rotated-capability"); err != nil {
+		t.Fatalf("stale claim consumed the replacement: %v", err)
+	}
+}
+
+func TestPasswordResetDeliveryAndRedemptionLockOrders(t *testing.T) {
+	for _, first := range []string{"delivery", "redemption"} {
+		t.Run(first+" first", func(t *testing.T) {
+			app := testApp(t)
+			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			old, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := http.StatusBadRequest
+			if first == "redemption" {
+				expected = http.StatusOK
+			}
+			work := func(operation string) func(*gorm.DB) error {
+				return func(db *gorm.DB) error {
+					// Build an App on the reserved connection without copying App's
+					// mutexes. Delivery still uses the normal configured sender.
+					a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+					if operation == "delivery" {
+						return deliverResetMail(db.Statement.Context, a, user.ID)
+					}
+					w := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(w)
+					c.Request = httptest.NewRequest("POST", "/api/v1/auth/password-reset/confirm",
+						strings.NewReader(jsonString(map[string]string{"token": old, "password": "replacement1234"}))).WithContext(db.Statement.Context)
+					c.Request.Header.Set("Content-Type", "application/json")
+					a.apiConfirmPasswordReset(c)
+					if w.Code != expected {
+						return fmt.Errorf("redemption: got %d %s, want %d", w.Code, w.Body.String(), expected)
+					}
+					return nil
+				}
+			}
+			second := "redemption"
+			if first == "redemption" {
+				second = "delivery"
+			}
+			reached, release := pauseDBRead(t, app.DB, first, "users")
+			winner, winnerDone := startDBSession(t, app.DB, first, work(first))
+			awaitDBSignal(t, reached) // winner holds contact gate and user lock
+			loser, loserDone := startDBSession(t, app.DB, second, work(second))
+			waitDBBlocked(t, app.DB, loser, winner)
+			release()
+			if err := awaitDBResult(t, winnerDone); err != nil {
+				t.Fatal(err)
+			}
+			if err := awaitDBResult(t, loserDone); err != nil {
+				t.Fatal(err)
+			}
+			var fresh models.User
+			if err := app.DB.First(&fresh, user.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			password := "password1234"
+			if first == "redemption" {
+				password = "replacement1234"
+			}
+			if !fresh.CheckPassword(password) {
+				t.Fatalf("%s first left the wrong password", first)
+			}
+			var oldRow models.AccountToken
+			err = app.DB.Where("token_hash = ?", hashToken(old)).First(&oldRow).Error
+			if first == "redemption" {
+				if err != nil || oldRow.UsedAt == nil {
+					t.Fatal("delivery resurrected or removed the consumed token")
+				}
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				t.Fatalf("rotation did not revoke the old capability: %v", err)
+			}
+			newRaw := tokenInEmail(t, latestEmail(t, app, user.Email))
+			if newRaw == old {
+				t.Fatal("delivery reused the consumed or revoked capability")
+			}
+			anon := newAPIClient(t, app)
+			anon.fetchCSRF()
+			apiDo(t, anon, "POST", "/api/v1/auth/password-reset/confirm", map[string]string{"token": old, "password": "anotherpassword1234"}, http.StatusBadRequest)
+			apiDo(t, anon, "POST", "/api/v1/auth/password-reset/confirm", map[string]string{"token": newRaw, "password": "anotherpassword1234"}, http.StatusOK)
+		})
+	}
 }
 
 func TestCredentialChangesRevokeEveryPendingAccountToken(t *testing.T) {

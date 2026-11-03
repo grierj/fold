@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,8 +100,6 @@ func testApp(t *testing.T) *App {
 		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes"), SetupToken: strings.Repeat("a", 64)},
 		Uploads: uploads,
 		Mailer:  mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>")),
-		// Inline, so a test can read the outbox right after a request.
-		background: func(f func()) { f() },
 	}
 }
 
@@ -170,13 +169,14 @@ func newTestUser(t *testing.T, app *App, name, password, role string) *models.Us
 // apiClient wraps a router with cookie-jar + CSRF handling for API tests.
 type apiClient struct {
 	app         *App
-	holdNotices bool // leave durable notification jobs queued for explicit assertions
+	holdNotices bool // leave durable notice and direct-mail jobs queued for explicit assertions
 	t           *testing.T
 	router      http.Handler
 	jar         map[string]*http.Cookie
 	token       string
-	ip          string // client address for requests; empty uses httptest's default
-	ua          string // User-Agent for requests; empty sends none
+	ip          string          // client address for requests; empty uses httptest's default
+	ua          string          // User-Agent for requests; empty sends none
+	ctx         context.Context // request context; nil uses httptest's background context
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -218,6 +218,9 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 		rdr = bytes.NewReader(nil)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if c.ctx != nil {
+		req = req.WithContext(c.ctx)
+	}
 	if c.ua != "" {
 		req.Header.Set("User-Agent", c.ua)
 	}
@@ -718,14 +721,14 @@ func findKind(ns []notificationJSON, kind string) *notificationJSON {
 	return nil
 }
 
-// drainNotices gives handler tests the old immediate outbox behaviour without
+// drainNotices drains notice and direct-mail jobs for immediate outbox reads without
 // claiming push, message, or other jobs as unknown kinds. Failures wait an hour
 // so a failing sender cannot keep this loop busy. Later keeps its due time.
 func drainNotices(t *testing.T, app *App) {
 	t.Helper()
 	kinds := map[string]jobs.Kind{}
 	var names []string
-	for _, k := range app.notifyKinds() {
+	for _, k := range append(app.notifyKinds(), app.mailKinds()...) {
 		kinds[k.Name] = k
 		names = append(names, k.Name)
 	}
@@ -765,6 +768,166 @@ func drainNotices(t *testing.T, app *App) {
 		}
 		if err := app.DB.Model(&models.Job{}).Where("id = ? AND status = ? AND locked_by = ?", job.ID, models.JobRunning, "test:notices").Updates(updates).Error; err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// failJobEnqueue injects failure at jobs.Enqueue's INSERT, which uses Exec
+// rather than GORM Create. Removing the callback is safe both explicitly and
+// during cleanup, including when an assertion stops the test early.
+func failJobEnqueue(t *testing.T, db *gorm.DB, kind string) func() {
+	t.Helper()
+	name := fmt.Sprintf("test:fail_enqueue:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "INSERT INTO jobs ") {
+			for _, arg := range tx.Statement.Vars {
+				if value, ok := arg.(string); ok && value == kind {
+					tx.AddError(errors.New("injected job enqueue failure"))
+					return
+				}
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	stop := func() { once.Do(func() { _ = db.Callback().Raw().Remove(name) }) }
+	t.Cleanup(stop)
+	return stop
+}
+
+// cancelOnJobEnqueue runs cancel just before a job of kind is inserted, as if
+// the client disconnected between the request's checks and its durable write.
+// A write that rides the request context then fails; one that does not is
+// unaffected.
+func cancelOnJobEnqueue(t *testing.T, db *gorm.DB, kind string, cancel context.CancelFunc) {
+	t.Helper()
+	name := fmt.Sprintf("test:cancel_enqueue:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "INSERT INTO jobs ") {
+			for _, arg := range tx.Statement.Vars {
+				if value, ok := arg.(string); ok && value == kind {
+					cancel()
+					return
+				}
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+}
+
+type testDBOperationKey struct{}
+
+// pauseDBRead pauses one named participant just after its first read of table.
+// Operation names are scoped to the database context, so observer queries and
+// other participants never trip the barrier. Release precedes callback removal
+// on cleanup, so even a failed assertion cannot strand the worker.
+func pauseDBRead(t *testing.T, db *gorm.DB, operation, table string) (<-chan struct{}, func()) {
+	t.Helper()
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var paused atomic.Bool
+	name := fmt.Sprintf("test:pause_read:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table != table || tx.Statement.Context.Value(testDBOperationKey{}) != operation || paused.Swap(true) {
+			return
+		}
+		close(reached)
+		select {
+		case <-resume:
+		case <-tx.Statement.Context.Done():
+			tx.AddError(tx.Statement.Context.Err())
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(resume) }) }
+	t.Cleanup(func() { release(); _ = db.Callback().Query().Remove(name) })
+	return reached, release
+}
+
+// startDBSession reserves the actual connection the participant uses, exposing
+// its backend PID so a race test can prove that this session reached a lock.
+func startDBSession(t *testing.T, db *gorm.DB, operation string, work func(*gorm.DB) error) (int, <-chan error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx = context.WithValue(ctx, testDBOperationKey{}, operation)
+	pid := make(chan int, 1)
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		done <- db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
+			conn = conn.Session(&gorm.Session{NewDB: true})
+			var id int
+			if err := conn.Raw("SELECT pg_backend_pid()").Scan(&id).Error; err != nil {
+				return err
+			}
+			pid <- id
+			return work(conn)
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("database participant did not stop")
+		}
+	})
+	select {
+	case id := <-pid:
+		return id, done
+	case err := <-done:
+		t.Fatalf("reserve database participant: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out reserving database participant")
+	}
+	return 0, done
+}
+
+func awaitDBSignal(t *testing.T, reached <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("database participant did not reach the barrier")
+	}
+}
+
+func awaitDBResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("database participant did not finish")
+		return nil
+	}
+}
+
+// waitDBBlocked observes the specific waiter and blocker, rather than counting
+// unrelated sessions or assuming that a goroutine has started after a sleep.
+func waitDBBlocked(t *testing.T, db *gorm.DB, waiter, blocker int) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var blocked bool
+		if err := db.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, waiter).Scan(&blocked).Error; err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("session %d never waited on session %d", waiter, blocker)
 		}
 	}
 }

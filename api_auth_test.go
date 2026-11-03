@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fold/internal/audit"
 	foldmail "fold/internal/mail"
 	"fold/models"
@@ -600,86 +601,51 @@ func TestLoginSuccessDoesNotCountAgainstIP(t *testing.T) {
 	}
 }
 
-// slowMailer stands in for a slow SMTP server.
-type slowMailer struct {
-	delay time.Duration
-	sent  chan string
-}
-
-func (m *slowMailer) Send(_ context.Context, msg foldmail.Message) error {
-	time.Sleep(m.delay)
-	m.sent <- msg.To
-	return nil
-}
-
 // #93: a known address doesn't wait on the email send, so response time
 // doesn't reveal which addresses have accounts.
 func TestPasswordResetDoesNotWaitOnEmail(t *testing.T) {
 	app := testApp(t)
-	newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	mailer := &slowMailer{delay: 2 * time.Second, sent: make(chan string, 1)}
-	app.Mailer = mailer
-	app.background = nil // the real, asynchronous path
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	calls := 0
+	app.Mailer = directMailSenderFunc(func(_ context.Context, msg foldmail.Message) error {
+		calls++
+		if msg.To != user.Email {
+			t.Errorf("sent to %q", msg.To)
+		}
+		return nil
+	})
 
 	anon := newAPIClient(t, app)
+	anon.holdNotices = true
 	anon.fetchCSRF()
-	start := time.Now()
 	w := anon.do("POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, true)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), resetRequestMessage) {
 		t.Fatalf("reset: %d %s", w.Code, w.Body.String())
 	}
-	if d := time.Since(start); d >= mailer.delay {
-		t.Fatalf("response waited on the email: %v", d)
+	if calls != 0 {
+		t.Fatal("response called the mailer instead of deferring delivery")
 	}
-	select {
-	case to := <-mailer.sent:
-		if to != "alice@example.com" {
-			t.Fatalf("sent to %q", to)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("reset email never sent")
+	var rows []models.Job
+	if err := app.DB.Where("kind = ?", kindPasswordResetMail).Find(&rows).Error; err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A panic in background work is recovered, not fatal to the server.
-func TestRunInBackgroundRecoversPanics(t *testing.T) {
-	app := &App{}
-	done := make(chan struct{})
-	app.runInBackground(func() {
-		defer close(done)
-		panic("boom")
-	})
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("background task never ran")
+	if len(rows) != 1 || rows[0].Status != models.JobQueued || rows[0].UniqueKey != nil || rows[0].MaxAttempts != directMailAttempts {
+		t.Fatalf("reset delivery duty: %+v", rows)
 	}
-}
-
-// deadlineMailer records whether the send carried a deadline.
-type deadlineMailer struct{ deadline chan time.Duration }
-
-func (m *deadlineMailer) Send(ctx context.Context, _ foldmail.Message) error {
-	d, ok := ctx.Deadline()
-	if !ok {
-		m.deadline <- 0
-		return nil
+	var payload map[string]uint
+	if err := json.Unmarshal([]byte(rows[0].Payload), &payload); err != nil || len(payload) != 1 || payload["userId"] != user.ID {
+		t.Fatalf("reset job must contain only its user ID: %q, %v", rows[0].Payload, err)
 	}
-	m.deadline <- time.Until(d)
-	return nil
-}
-
-// The background reset send is bounded by resetMailTimeout.
-func TestPasswordResetSendHasTimeout(t *testing.T) {
-	app := testApp(t)
-	newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	mailer := &deadlineMailer{deadline: make(chan time.Duration, 1)}
-	app.Mailer = mailer
-	anon := newAPIClient(t, app)
-	anon.fetchCSRF()
-	apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, http.StatusOK)
-	if d := <-mailer.deadline; d <= 0 || d > resetMailTimeout {
-		t.Fatalf("send deadline %v, want within %v", d, resetMailTimeout)
+	var tokens int64
+	if err := app.DB.Model(&models.AccountToken{}).Count(&tokens).Error; err != nil {
+		t.Fatal(err)
+	}
+	if tokens != 0 || auditCount(t, app, audit.PasswordResetRequested) != 1 {
+		t.Fatalf("request must commit the audit and job only, tokens=%d", tokens)
+	}
+	drainNotices(t, app)
+	if calls != 1 {
+		t.Fatalf("drained sends=%d, want 1", calls)
 	}
 }
 
@@ -865,9 +831,8 @@ func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
-				jobs := 0
-				app.background = func(func()) { jobs++ }
 				anon := anonClient(t, app, ip)
+				anon.holdNotices = true
 				lookups = 0 // Ignore the first-request setup gate during CSRF.
 				started := time.Now()
 				answer := apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": email}, http.StatusOK)
@@ -875,9 +840,10 @@ func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
 				if answer != "{\"message\":\""+resetRequestMessage+"\"}" {
 					t.Fatalf("nonuniform answer: %s", answer)
 				}
-				var tokens, audits int64
+				var tokens, audits, jobs int64
 				app.DB.Model(&models.AccountToken{}).Count(&tokens)
 				app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.PasswordResetRequested).Count(&audits)
+				app.DB.Model(&models.Job{}).Where("kind = ?", kindPasswordResetMail).Count(&jobs)
 				if budget != "available" {
 					if lookups != 0 || tokens != 0 || audits != 0 || jobs != 0 {
 						t.Fatalf("throttled account work: lookups=%d tokens=%d audits=%d mail=%d", lookups, tokens, audits, jobs)
@@ -891,7 +857,7 @@ func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
 				if status == models.UserActive {
 					want = 1
 				}
-				if tokens != want || audits != want || int64(jobs) != want {
+				if tokens != 0 || audits != want || jobs != want {
 					t.Fatalf("in-budget reset: tokens=%d audits=%d mail=%d, want %d", tokens, audits, jobs, want)
 				}
 			})

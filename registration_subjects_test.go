@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +186,83 @@ func TestHouseholdAttendeeCareProjection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHouseholdClockInUsesTransactionTimezone(t *testing.T) {
+	app := testApp(t)
+	if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: "UTC"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	if err := tx.Model(&models.Setting{}).Where("key = ?", settingTimezone).Update("value", "America/Boise").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// The church date changes at local midnight, including across DST.
+	for _, tt := range []struct {
+		instant, want string
+	}{
+		{"2026-10-22T00:30:00Z", "2026-10-21T18:30:00-06:00"},
+		{"2026-11-01T07:30:00Z", "2026-11-01T01:30:00-06:00"},
+		{"2026-11-01T08:30:00Z", "2026-11-01T01:30:00-07:00"},
+	} {
+		now, err := time.Parse(time.RFC3339, tt.instant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := householdClockIn(tx, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Equal(now) || got.Format(time.RFC3339) != tt.want || got.Location().String() != "America/Boise" {
+			t.Fatalf("transaction clock for %s = %s in %s; want %s in America/Boise", tt.instant, got.Format(time.RFC3339), got.Location(), tt.want)
+		}
+		if outside := app.householdClock(now); outside.Location() != time.UTC || !outside.Equal(now) {
+			t.Fatalf("request clock read uncommitted timezone: %v", outside)
+		}
+	}
+}
+
+func TestHouseholdClockInFallbackAndReadFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name, value string
+	}{
+		{name: "missing"},
+		{name: "empty"},
+		{name: "server local", value: "Local"},
+		{name: "invalid", value: "Not/AZone"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			if tt.name != "missing" {
+				if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: tt.value}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Date(2026, 10, 22, 0, 30, 0, 0, time.FixedZone("input", 2*60*60))
+			got, err := householdClockIn(app.DB, now)
+			if err != nil || !got.Equal(now) || got.Location() != time.UTC {
+				t.Fatalf("fallback clock = %v, %v; want %v in UTC", got, err, now.UTC())
+			}
+		})
+	}
+
+	app := testApp(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := app.DB.WithContext(ctx)
+	now := time.Date(2026, 10, 22, 0, 30, 0, 0, time.FixedZone("input", 2*60*60))
+	if got, err := householdClockIn(db, now); !errors.Is(err, context.Canceled) || !got.IsZero() {
+		t.Fatalf("failed transaction clock = %v, %v; want zero time and context cancellation", got, err)
+	}
+	requestApp := &App{DB: db}
+	if got := requestApp.householdClock(now); !got.Equal(now) || got.Location() != time.UTC {
+		t.Fatalf("failed request clock = %v; want %v in UTC", got, now.UTC())
 	}
 }
 

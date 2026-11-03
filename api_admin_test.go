@@ -7,6 +7,7 @@ import (
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -701,6 +702,9 @@ func TestAdminGuardianLinksConfirmReject(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirm link: %d %s", w.Code, w.Body.String())
 	}
+	if n := len(mailJobsOfKind(t, app, kindGuardianConsentMail)); n != 0 {
+		t.Fatalf("household-person confirmation queued %d teen-account consent mail jobs, want 0", n)
+	}
 	var decided struct {
 		GuardianLink guardianLinkJSON `json:"guardianLink"`
 	}
@@ -759,6 +763,9 @@ func TestAdminGuardianLinksConfirmReject(t *testing.T) {
 	// A missing link is a 404 for an admin too.
 	if w := admin.do("POST", "/api/v1/admin/guardian-links/999999/confirm", map[string]string{"checkNote": "x"}, true); w.Code != http.StatusNotFound {
 		t.Fatalf("missing link: %d, want 404", w.Code)
+	}
+	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 0 {
+		t.Fatal("household-person decisions queued a teen-account consent email")
 	}
 }
 
@@ -1309,5 +1316,62 @@ func TestHasContactDetails(t *testing.T) {
 		if got := hasContactDetails(s); got != want {
 			t.Errorf("hasContactDetails(%q) = %v, want %v", s, got, want)
 		}
+	}
+}
+
+func TestGuardianLinkConsentMailEnqueueIsAtomic(t *testing.T) {
+	app, guardian, _, link, _, admin := pendingGuardianEmailSetup(t)
+	var before []models.Notification
+	if err := app.DB.Order("id").Find(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(before) == 0 {
+		t.Fatal("expected the pending guardian review task")
+	}
+	path := "/api/v1/admin/guardian-links/" + itoa(link.ID) + "/confirm"
+	stop := failJobEnqueue(t, app.DB, kindGuardianConsentMail)
+	apiDo(t, admin, "POST", path, map[string]string{"checkNote": "known family"}, http.StatusInternalServerError)
+	stop()
+	var after []models.Notification
+	if err := app.DB.Order("id").Find(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	var fresh models.GuardianLink
+	if err := app.DB.First(&fresh, link.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != models.GuardianPending || fresh.ConfirmedBy != nil || fresh.DecidedAt != nil || fresh.CheckNote != "" ||
+		auditCount(t, app, audit.GuardianLinkConfirmed) != 0 || len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 0 ||
+		!reflect.DeepEqual(before, after) || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || mailCount(t, app, "") != 0 {
+		t.Fatal("enqueue failure committed confirmation, task resolution, audit, token or mail")
+	}
+	apiDo(t, admin, "POST", path, map[string]string{"checkNote": "known family"}, http.StatusOK)
+	jobs := mailJobsOfKind(t, app, kindGuardianConsentMail)
+	if len(jobs) != 1 || jobs[0].Status != models.JobQueued || jobs[0].UniqueKey != nil || jobs[0].MaxAttempts != directMailAttempts ||
+		!payloadEquals(jobs[0], guardianConsentMailJob{GuardianLinkID: link.ID}) || auditCount(t, app, audit.GuardianLinkConfirmed) != 1 {
+		t.Fatal("confirmation did not commit its audit and ID-only job together")
+	}
+	if len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || mailCount(t, app, "") != 0 {
+		t.Fatal("confirmation minted a token or sent mail before durable delivery")
+	}
+	if err := app.DB.Order("id").Find(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range after {
+		if row.SubjectID != nil && *row.SubjectID == link.ID && row.Waiting && row.ResolvedAt == nil {
+			t.Fatal("confirmation left a review task waiting")
+		}
+	}
+	apiDo(t, admin, "POST", path, map[string]string{"checkNote": "known family"}, http.StatusConflict)
+	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 1 {
+		t.Fatal("a repeated confirmation queued another duty")
+	}
+}
+
+func TestGuardianLinkRejectionDoesNotQueueConsentMail(t *testing.T) {
+	app, guardian, _, link, _, admin := pendingGuardianEmailSetup(t)
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/reject", map[string]string{"note": "not confirmed"}, http.StatusOK)
+	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 0 || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || auditCount(t, app, audit.GuardianLinkRejected) != 1 {
+		t.Fatal("rejection queued consent mail or did not record its decision")
 	}
 }

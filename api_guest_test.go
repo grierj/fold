@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,6 +85,80 @@ func guestConfirm(t *testing.T, app *App, c *apiClient, eventID uint, name, emai
 		t.Fatal("confirm returned no manage token")
 	}
 	return res.Registration, res.ManageToken
+}
+
+// Confirmation stays synchronous because the browser and email share the manage
+// capability. A provider failure must not undo the registration or expose that
+// capability or recipient in the log, and its context must bound provider I/O.
+func TestGuestConfirmationMailIsBoundedAndKeepsLogsPrivate(t *testing.T) {
+	app := testApp(t)
+	f := queueHeldGuestVerify(t, app, false)
+	token := tokenInEmail(t, latestEmail(t, app, f.email))
+	var sendCtx context.Context
+	var calls int
+	var emailedManageToken string
+	const providerSecret = "providerCapability0123456789012345678901234567890123456789"
+	app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
+		calls++
+		sendCtx = ctx
+		deadline, ok := ctx.Deadline()
+		remaining := time.Until(deadline)
+		if !ok || remaining <= 0 || remaining > syncMailTimeout || remaining >= httpWriteTimeout/2 {
+			t.Fatal("confirmation send must leave at least half the HTTP write budget for transaction work and the manage-link response")
+		}
+		if msg.To != f.email || !strings.Contains(msg.Subject, "You're registered") {
+			t.Fatalf("unexpected confirmation message: %+v", msg)
+		}
+		_, tail, found := strings.Cut(msg.Text, "/guest/manage/")
+		if !found || len(strings.Fields(tail)) == 0 {
+			t.Fatal("confirmation email lost its manage link")
+		}
+		emailedManageToken = strings.Fields(tail)[0]
+		// Read through the application handle while sending, so this observes
+		// committed data rather than the redemption transaction's private view.
+		user := guestUser(t, app, f.email)
+		reg := guestRegistrationRow(t, app, user.ID)
+		if reg.Status != models.RegGoing || reg.ManageTokenHash != hashToken(emailedManageToken) {
+			t.Fatal("confirmation send ran before the registration committed")
+		}
+		return fmt.Errorf("451 rejected %s at https://mailer.example/private-confirmation?token=%s key=%s\nprivate provider detail", msg.To, emailedManageToken, providerSecret)
+	})
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	w := f.anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirmation failure changed the answer: %d %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Registration guestRegistrationJSON `json:"registration"`
+		ManageToken  string                `json:"manageToken"`
+	}
+	decodeJSON(t, w, &res)
+	if calls != 1 || emailedManageToken == "" || res.ManageToken != emailedManageToken || res.Registration.Status != models.RegGoing {
+		t.Fatalf("confirmation must synchronously send the browser's manage link once: calls=%d, response=%+v", calls, res)
+	}
+	if sendCtx == nil || !errors.Is(sendCtx.Err(), context.Canceled) {
+		t.Fatal("confirmation send context was not cancelled after sending")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "guest confirmation email: 451 rejected [email]") {
+		t.Fatalf("provider failure was not logged with a cleaned error: %q", out)
+	}
+	for _, secret := range []string{f.email, emailedManageToken, token, providerSecret, "private-confirmation", "private provider detail"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("confirmation log leaked private data: %q", out)
+		}
+	}
+	// Even when the email fails, the browser's capability still manages the
+	// committed registration; no delayed job rotates it out from under them.
+	apiDo(t, f.anon, "GET", "/api/v1/guest-registrations/manage/"+res.ManageToken, nil, http.StatusOK)
+	apiDo(t, f.anon, "POST", "/api/v1/guest-registrations/manage/"+res.ManageToken+"/cancel", nil, http.StatusOK)
+	user := guestUser(t, app, f.email)
+	if reg := guestRegistrationRow(t, app, user.ID); reg.Status != models.RegCancelled {
+		t.Fatalf("browser manage link no longer cancels after mail failure: %+v", reg)
+	}
 }
 
 // M1.4 acceptance: a guest registers without an account, gets a
@@ -1180,9 +1258,10 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 	if err := app.DB.Create(&guest).Error; err != nil {
 		t.Fatal(err)
 	}
-	var jobs []func()
-	app.background = func(f func()) { jobs = append(jobs, f) }
+	// Both mails are durable jobs: a new address and a returning guest get a
+	// verification job, an account gets the hint. Nothing is sent in the request.
 	anon := anonClient(t, app, "10.4.1.1")
+	anon.holdNotices = true
 	var answer string
 	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
 		body := guestSubmit(t, anon, ev.ID, guestBody("Guest", email, true), http.StatusOK)
@@ -1194,15 +1273,38 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 			t.Fatalf("mail was not deferred for %s: %d", email, n)
 		}
 	}
-	if len(jobs) != 3 {
-		t.Fatalf("deferred jobs = %d, want 3", len(jobs))
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("account hint was not queued by id: %+v", hints)
 	}
 	if guestSignupCount(t, app, member.Email) != 0 || guestSignupCount(t, app, "new@example.com") != 1 || guestSignupCount(t, app, guest.Email) != 1 {
 		t.Fatal("wrong signup rows for account/new/returning guest")
 	}
-	for _, job := range jobs {
-		job()
+	verifications := mailJobsOfKind(t, app, kindGuestVerifyMail)
+	if len(verifications) != 2 {
+		t.Fatalf("verification jobs = %d, want 2", len(verifications))
 	}
+	for i, email := range []string{"new@example.com", guest.Email} {
+		var signup models.GuestSignup
+		if err := app.DB.Where("email = ?", email).First(&signup).Error; err != nil {
+			t.Fatal(err)
+		}
+		job := verifications[i]
+		if !payloadEquals(job, guestVerifyMailJob{GuestSignupID: signup.ID}) || job.UniqueKey != nil ||
+			job.MaxAttempts != directMailAttempts || job.Status != models.JobQueued {
+			t.Fatalf("verification job for %s: %+v", email, job)
+		}
+		if strings.Contains(job.Payload, email) || strings.Contains(job.Payload, signup.TokenHash) {
+			t.Fatalf("verification payload carries more than the signup id: %s", job.Payload)
+		}
+	}
+	// Submitting created neither a guest account nor a registration.
+	var registrations, strangers int64
+	app.DB.Model(&models.Registration{}).Count(&registrations)
+	app.DB.Model(&models.User{}).Where("email = ?", "new@example.com").Count(&strangers)
+	if registrations != 0 || strangers != 0 {
+		t.Fatalf("submit created %d registrations and %d users", registrations, strangers)
+	}
+	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
 		if n := mailsTo(app, email); n != 1 {
 			t.Fatalf("deferred mail for %s = %d, want 1", email, n)
@@ -1290,9 +1392,9 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
-			jobs := 0
-			app.background = func(func()) { jobs++ }
+			// Verification mail and the account hint are both durable jobs.
 			anon := anonClient(t, app, ip)
+			anon.holdNotices = true
 			body := guestBody("Guest", email, true)
 			if tt.gate == "honeypot" {
 				body["website"] = "bot"
@@ -1302,20 +1404,25 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 			if !strings.Contains(answer, signupThanks) {
 				t.Fatalf("nonuniform answer: %s", answer)
 			}
+			hints := len(mailJobsOfKind(t, app, kindAccountExistsMail))
+			jobs := len(mailJobsOfKind(t, app, kindGuestVerifyMail))
 			if tt.gate != "" {
-				if lookupAt != 0 || jobs != 0 || guestSignupCount(t, app, email) != 0 {
-					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d", lookupAt, jobs)
+				if lookupAt != 0 || jobs != 0 || hints != 0 || guestSignupCount(t, app, email) != 0 {
+					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d hints=%d", lookupAt, jobs, hints)
 				}
 			} else {
 				if lookupAt < minimumWork {
 					t.Fatalf("account lookup before bcrypt work: %v, want >= %v", lookupAt, minimumWork)
 				}
-				wantJobs := 1
-				if tt.exhausted {
-					wantJobs = 0
+				wantJobs, wantHints := 1, 0
+				if tt.account {
+					wantJobs, wantHints = 0, 1
 				}
-				if jobs != wantJobs {
-					t.Fatalf("mail jobs = %d, want %d", jobs, wantJobs)
+				if tt.exhausted {
+					wantJobs, wantHints = 0, 0
+				}
+				if jobs != wantJobs || hints != wantHints {
+					t.Fatalf("verification mails = %d (want %d), hint jobs = %d (want %d)", jobs, wantJobs, hints, wantHints)
 				}
 			}
 		})
@@ -1377,5 +1484,54 @@ func TestGuestReconfirmDoesNotCountOwnSeat(t *testing.T) {
 				t.Fatalf("waitlist place lost: %v -> %v", before.WaitlistedAt, after.WaitlistedAt)
 			}
 		})
+	}
+}
+
+// The existing-account hint is queued before the answer. If it cannot be, the
+// guest door fails like its stored path does.
+func TestGuestHintEnqueueFailureMatchesStoredFailure(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest hint", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.4.1.9")
+	anon.holdNotices = true
+	stop := failJobEnqueue(t, app.DB, kindAccountExistsMail)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusInternalServerError)
+	// The public error contract hides the internal wording.
+	if !strings.Contains(body, `"code":"server_error"`) || strings.Contains(body, "could not save") || len(mailJobsOfKind(t, app, kindAccountExistsMail)) != 0 {
+		t.Fatalf("hint failure answer %s", body)
+	}
+	stop()
+	if answer := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusOK); !strings.Contains(answer, signupThanks) {
+		t.Fatalf("retry answer %s", answer)
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("hint not queued after retry: %+v", hints)
+	}
+}
+
+// The guest door's hint likewise survives a client that disconnects before it.
+func TestGuestHintSurvivesClientDisconnect(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest hint", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.4.1.10")
+	anon.holdNotices = true
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	anon.ctx = ctx
+	cancelOnJobEnqueue(t, app.DB, kindAccountExistsMail, cancel)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusOK)
+	if !strings.Contains(body, signupThanks) || ctx.Err() == nil {
+		t.Fatalf("hint after disconnect: %s (cancelled=%v)", body, ctx.Err() != nil)
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("disconnect lost the hint: %+v", hints)
 	}
 }

@@ -3,17 +3,18 @@ import { apiAs, email, PASSWORD, signIn } from "./helpers";
 
 // Run with E2E_APP_ENV=dev to exercise the real mail and acceptance path.
 // Production-mode runs keep the outbox closed.
-async function latestInvite(page: Page, address: string): Promise<string> {
+async function latestInvite(page: Page, address: string, previous = ""): Promise<string> {
   let link = "";
   await expect.poll(async () => {
     const response = await page.request.get("/dev/outbox");
     const html = await response.text();
     const sections = html.split("<section");
     const section = sections.find((part) => part.includes(`To: ${address}`));
-    link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
-    return link;
-  }).not.toBe("");
-  return new URL(link).pathname + new URL(link).search;
+    const raw = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0];
+    link = raw ? new URL(raw).pathname + new URL(raw).search : "";
+    return link !== "" && link !== previous;
+  }).toBe(true);
+  return link;
 }
 
 // With SCREENS_DIR set, capture a state at 390 and 1280 px.
@@ -57,7 +58,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   const first = await latestInvite(page, destination);
   await page.getByRole("button", { name: "Resend invitation", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Invitation resent");
-  const second = await latestInvite(page, destination);
+  const second = await latestInvite(page, destination, first);
   expect(second).not.toBe(first);
   await page.getByRole("button", { name: "Cancel invitation" }).click();
   await expect(page.getByRole("status")).toContainText("Invitation cancelled");
@@ -65,7 +66,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   await page.getByLabel("Their email address").fill(destination);
   await page.getByRole("button", { name: "Send account invitation" }).click();
   await expect(page.getByRole("status")).toContainText("Invitation sent");
-  const final = await latestInvite(page, destination);
+  const final = await latestInvite(page, destination, second);
   await page.context().clearCookies();
   await page.goto(second);
   await expect(page.getByRole("heading", { name: "This link can't be used" })).toBeVisible();

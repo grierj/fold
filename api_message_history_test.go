@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -61,10 +62,18 @@ func TestMessageHistoryPrivacy(t *testing.T) {
 	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
 	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
 	id := f.sendWithOneFailure(t)
-	const raw = "550" // the refusing server's own words: "mail: rcpt: 550 no"
+	// The space keeps timestamps from matching; the marker also catches
+	// provider errors with the "mail: rcpt:" prefix stripped.
+	const privateMarker = "550 "
+	sender := pickySender{bad: f.leaderUser.Email, code: 550}
+	_, providerErr := sender.SendEmail(context.Background(), mail.Message{To: f.leaderUser.Email})
+	if providerErr == nil || !strings.Contains(providerErr.Error(), privateMarker) {
+		t.Fatalf("expected a provider error containing %q: %v", privateMarker, providerErr)
+	}
+	raw := providerErr.Error()
 
 	lead, body := f.history(t, f.leader, id)
-	if strings.Contains(body, "@") || strings.Contains(body, parent.PublicName()) || strings.Contains(body, raw) {
+	if strings.Contains(body, "@") || strings.Contains(body, parent.PublicName()) || strings.Contains(body, privateMarker) {
 		t.Fatalf("an address, a guardian's name or a provider error in the leader's history: %s", body)
 	}
 	c := lead.Counts
@@ -112,14 +121,18 @@ func TestMessageHistoryPrivacy(t *testing.T) {
 	w := f.leader.do("GET", "/api/v1/messages", nil, false)
 	decodeJSON(t, w, &list)
 	if len(list.Messages) != 1 || list.Messages[0].FailedCount != 1 || list.Messages[0].Status != models.MessageSent ||
-		list.Messages[0].Error != whyProvider || strings.Contains(w.Body.String(), raw) {
+		list.Messages[0].Error != whyProvider || strings.Contains(w.Body.String(), privateMarker) {
 		t.Fatalf("list: %+v", list.Messages)
 	}
-	if b := f.leader.do("GET", "/api/v1/messages/"+itoa(id), nil, false).Body.String(); strings.Contains(b, raw) || !strings.Contains(b, "The email service didn") {
+	if b := f.leader.do("GET", "/api/v1/messages/"+itoa(id), nil, false).Body.String(); strings.Contains(b, privateMarker) || !strings.Contains(b, "The email service didn") {
 		t.Fatalf("leader's message: %s", b)
 	}
-	if b := f.admin.do("GET", "/api/v1/messages/"+itoa(id), nil, false).Body.String(); !strings.Contains(b, raw) {
-		t.Fatalf("admin's message: %s", b)
+	var detail struct {
+		Message messageJSON `json:"message"`
+	}
+	decodeJSON(t, f.admin.do("GET", "/api/v1/messages/"+itoa(id), nil, false), &detail)
+	if detail.Message.Error != raw {
+		t.Fatalf("admin's message error: got %q, want %q", detail.Message.Error, raw)
 	}
 }
 

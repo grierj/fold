@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -11,7 +10,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/mail"
+	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -106,7 +105,13 @@ func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID u
 	if err != nil {
 		return nil, err
 	}
-	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs, links)
+	var acct models.HouseholdAccount
+	err = tx.Where("user_id = ?", actor.ID).First(&acct).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	rel := householdRelOf(acct, err == nil && acct.HouseholdID == householdID)
+	return a.loadConversionBatchFor(tx, actor, rel, personIDs, links)
 }
 
 // householdPersonRow builds one person's JSON for a single-person response.
@@ -123,7 +128,13 @@ func (a *App) householdPersonRow(tx *gorm.DB, person *models.HouseholdPerson, vi
 // loadConversionBatchFor takes a relation the caller already knows, so
 // GET /me/household doesn't read the viewer's account twice (Whittler, PR 111).
 func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint, links map[uint][]models.GuardianLink) (*conversionBatch, error) {
-	b := &conversionBatch{links: links, actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}, rel: rel}
+	// Use the caller's transaction, including its context and connection. A
+	// mail job must not take another connection while holding an invitation.
+	today, err := householdClockIn(tx, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	b := &conversionBatch{links: links, actor: actor, today: today, blocked: map[uint]bool{}, rel: rel}
 	if actor == nil || len(personIDs) == 0 {
 		return b, nil
 	}
@@ -222,6 +233,14 @@ func conversionSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) 
 	return byEmail < leaderInviteDailyLimit, nil
 }
 
+// Re-enabling an inviter requires a fresh issue or explicit resend. Delivery
+// and acceptance use the same cutoff without taking any authority locks.
+func conversionInviterDisabled(tx *gorm.DB, inv *models.Invitation) (bool, error) {
+	var disabled int64
+	err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND at >= COALESCE((SELECT max(at) FROM audit_logs WHERE target_type = 'invitation' AND target_id = ? AND action IN ?), ?)", audit.UserDisabled, inv.InvitedBy, inv.ID, []string{audit.InvitationCreated, audit.InvitationResent}, inv.CreatedAt).Count(&disabled).Error
+	return disabled > 0, err
+}
+
 func (a *App) apiCreateHouseholdConversion(c *gin.Context) { a.issueHouseholdConversion(c, false) }
 func (a *App) apiResendHouseholdConversion(c *gin.Context) { a.issueHouseholdConversion(c, true) }
 
@@ -244,11 +263,9 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			return
 		}
 	}
-	var raw string
 	var refusal error
 	var inv models.Invitation
 	actor := *apiUser(c)
-	send := false
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actor.ID).Error; err != nil {
 			return err
@@ -317,11 +334,10 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			// check still spends an actor attempt rather than becoming free.
 			return writeInvitationRefusal(tx, actor.ID, "household_invitation_open", c.ClientIP())
 		}
-		token, hash, err := createInvitationToken()
+		_, hash, err := createInvitationToken()
 		if err != nil {
 			return err
 		}
-		raw = token
 		if !resend && inv.ID != 0 {
 			if err := revokeConversionInvitation(tx, &inv, actor.ID, c.ClientIP()); err != nil {
 				return err
@@ -341,8 +357,11 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 				return err
 			}
 		}
-		send = allowed
-		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID, "householdId": person.HouseholdID}, IP: c.ClientIP()})
+		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID, "householdId": person.HouseholdID}, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		_, err = jobs.Enqueue(tx, kindInvitationMail, invitationMailJob{InvitationID: inv.ID}, time.Now(), "", directMailAttempts)
+		return err
 	})
 	if err != nil {
 		conversionError(c, err)
@@ -351,11 +370,6 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 	if refusal != nil {
 		conversionError(c, refusal)
 		return
-	}
-	if send {
-		if err := a.sendConversionEmail(&inv, &actor, raw); err != nil {
-			log.Printf("household invitation delivery failed for invitation %d: %v", inv.ID, err)
-		}
 	}
 	status := http.StatusCreated
 	if resend {
@@ -429,15 +443,6 @@ func (a *App) apiCancelHouseholdConversion(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
-}
-
-func (a *App) sendConversionEmail(inv *models.Invitation, actor *models.User, raw string) error {
-	timing := "Your past and upcoming event sign-ups will move to your account after an admin approves. Until then, your household keeps managing them."
-	if inv.AccountType == models.AccountTeen {
-		timing = "Your account needs admin approval, consent, and a fresh check of your guardian link. Your household keeps managing your event sign-ups until all three are complete."
-	}
-	text := fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s/invite?token=%s\n\nThis link expires in 24 hours. If this invitation is not for you, ignore it.", actor.PublicName(), inv.Name, timing, a.emailBaseURL(), raw)
-	return a.Mailer.Send(context.Background(), mail.Message{To: inv.Email, Subject: "Create your own account at " + a.siteName(), Text: text})
 }
 
 // Discover every earlier-order user lock before taking the household lock.
@@ -539,11 +544,11 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 				return errConversionUnavailable
 			}
 			// Re-enabling an inviter requires a fresh issue or resend.
-			var disabled int64
-			if err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND at >= COALESCE((SELECT max(at) FROM audit_logs WHERE target_type = 'invitation' AND target_id = ? AND action IN ?), ?)", audit.UserDisabled, inviter.ID, inv.ID, []string{audit.InvitationCreated, audit.InvitationResent}, inv.CreatedAt).Count(&disabled).Error; err != nil {
+			disabled, err := conversionInviterDisabled(tx, &inv)
+			if err != nil {
 				return err
 			}
-			if disabled > 0 {
+			if disabled {
 				return errConversionUnavailable
 			}
 			if err := lockInvitationEmail(tx, inv.Email); err != nil {
@@ -557,7 +562,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 				return err
 			}
 
-			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
+			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive+" AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
 			if claim.Error != nil {
 				return claim.Error
 			}

@@ -42,7 +42,7 @@ func lockAccountTokenUser(tx *gorm.DB, kind, raw string) (*models.User, error) {
 		return nil, err
 	}
 	var initial models.AccountToken
-	if err := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", kind, hashToken(raw)).First(&initial).Error; err != nil {
+	if err := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, kind, hashToken(raw)).First(&initial).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errTokenInvalid
 		}
@@ -64,14 +64,14 @@ func lockAccountTokenUser(tx *gorm.DB, kind, raw string) (*models.User, error) {
 // lockAndConsumeAccountToken is lockAccountTokenUser followed by the atomic
 // single-use claim, with one token lookup instead of two. The order is the
 // same: contact gate, then the user lock, then the claim. The claim is an
-// UPDATE ... WHERE used_at IS NULL, so a racing second redeemer gets
-// errTokenInvalid.
+// UPDATE rechecks the hash, expiry and unused state, so a stale read cannot
+// claim a rotated token and a racing second redeemer gets errTokenInvalid.
 func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *models.AccountToken, error) {
 	if err := lockContacts(tx); err != nil {
 		return nil, nil, err
 	}
 	var tok models.AccountToken
-	if err := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", kind, hashToken(raw)).First(&tok).Error; err != nil {
+	if err := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, kind, hashToken(raw)).First(&tok).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil, errTokenInvalid
 		}
@@ -89,7 +89,7 @@ func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *m
 	}
 	now := time.Now().UTC()
 	res := tx.Model(&models.AccountToken{}).
-		Where("id = ? AND used_at IS NULL AND expires_at > now()", tok.ID).
+		Where("id = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, tok.ID, hashToken(raw)).
 		Update("used_at", now)
 	if res.Error != nil {
 		return nil, nil, res.Error
@@ -107,7 +107,7 @@ func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *m
 // keeps expensive work outside the global contact gate.
 func prepareTokenPassword(db *gorm.DB, kind, raw, plaintext string) (string, error) {
 	var token models.AccountToken
-	if err := db.Select("id").Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", kind, hashToken(raw)).First(&token).Error; err != nil {
+	if err := db.Select("id").Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, kind, hashToken(raw)).First(&token).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", errTokenInvalid
 		}

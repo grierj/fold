@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,12 +17,22 @@ import (
 
 func guardianEmailSetup(t *testing.T) (*App, *models.User, *models.User, *models.GuardianLink, *apiClient, string) {
 	t.Helper()
+	app, guardian, teen, link, client, admin := pendingGuardianEmailSetup(t)
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]string{"checkNote": "known family"}, 200)
+	return app, guardian, teen, link, client, guardianEmailRaw(t, app, guardian.Email)
+}
+
+func pendingGuardianEmailSetup(t *testing.T) (*App, *models.User, *models.User, *models.GuardianLink, *apiClient, *apiClient) {
+	t.Helper()
 	app := testApp(t)
 	app.Config.SessionSecret = []byte("test-guardian-email-signing-key-32bytes")
 	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	guardian := newTestUser(t, app, "guardian", "pw", models.RoleMember)
 	teen := guardianTestTeen(t, app, "teen")
 	client := loginAPI(t, app, "guardian", "pw")
+	admin := loginAPI(t, app, "admin", "pw")
+	admin.holdNotices = true
+	client.holdNotices = true
 	apiDo(t, client, "POST", "/api/v1/me/guardian-claims", map[string]string{"email": teen.Email}, 200)
 	var link models.GuardianLink
 	if err := app.DB.Where("teen_user_id = ?", teen.ID).First(&link).Error; err != nil {
@@ -32,9 +43,7 @@ func guardianEmailSetup(t *testing.T) (*App, *models.User, *models.User, *models
 	if body := apiDo(t, client, "GET", "/api/v1/me/guardian-teens", nil, 200); body != `{"teens":[]}` {
 		t.Fatalf("pending claim disclosed teen: %s", body)
 	}
-	admin := loginAPI(t, app, "admin", "pw")
-	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]string{"checkNote": "known family"}, 200)
-	return app, guardian, teen, &link, client, guardianEmailRaw(t, app, guardian.Email)
+	return app, guardian, teen, &link, client, admin
 }
 
 func guardianConsentPath(linkID uint) string {
@@ -44,12 +53,73 @@ func guardianConsentPath(linkID uint) string {
 func guardianEmailRaw(t *testing.T, app *App, email string) string {
 	t.Helper()
 	mail := latestEmail(t, app, email)
-	match := regexp.MustCompile(`https?://[^\s]+/guardian-consent\?token=[^\s]+`).FindString(mail.Body)
+	return guardianTokenFromText(t, mail.Body)
+}
+
+func guardianTokenFromText(t *testing.T, body string) string {
+	t.Helper()
+	match := regexp.MustCompile(`https?://[^\s]+/guardian-consent\?token=[^\s]+`).FindString(body)
 	parsed, err := url.Parse(match)
 	if err != nil || parsed.Query().Get("token") == "" {
-		t.Fatalf("missing consent URL: %s", mail.Body)
+		t.Fatalf("missing consent URL: %s", body)
 	}
 	return parsed.Query().Get("token")
+}
+
+func TestGuardianEmailResendEnqueuesBeforeItsFixedResponse(t *testing.T) {
+	app, guardian, _, link, client, raw := guardianEmailSetup(t)
+	path := "/api/v1/me/guardian-links/" + itoa(link.ID) + "/consent-email"
+	tokensBefore := accountTokens(t, app, guardian.ID, models.TokenTeenConsent)
+	mailsBefore := mailCount(t, app, "")
+	stop := failJobEnqueue(t, app.DB, kindGuardianConsentMail)
+	want := `{"message":"Check your email for a consent link. It expires in 24 hours."}`
+	if got := apiDo(t, client, "POST", path, nil, http.StatusOK); got != want {
+		t.Fatalf("enqueue failure changed resend answer: %s", got)
+	}
+	stop()
+	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 1 || !reflect.DeepEqual(tokensBefore, accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) || mailCount(t, app, "") != mailsBefore {
+		t.Fatal("failed resend left a partial job, changed the token or sent mail")
+	}
+	// The failed enqueue spent its allowance. Two more requests enqueue,
+	// then the hourly limit keeps returning exactly the same public answer.
+	for range targetHourLimit + 1 {
+		if got := apiDo(t, client, "POST", path, nil, http.StatusOK); got != want {
+			t.Fatalf("resend answer changed: %s", got)
+		}
+	}
+	rows := mailJobsOfKind(t, app, kindGuardianConsentMail)
+	if len(rows) != targetHourLimit || mailCount(t, app, "") != mailsBefore || !reflect.DeepEqual(tokensBefore, accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) {
+		t.Fatal("resend did not defer token preparation and mail, or bypassed its limit")
+	}
+	for _, job := range rows {
+		if !payloadEquals(job, guardianConsentMailJob{GuardianLinkID: link.ID}) || job.UniqueKey != nil || job.MaxAttempts != directMailAttempts {
+			t.Fatalf("resend did not keep a distinct ID-only delivery duty: %+v", job)
+		}
+	}
+	drainNotices(t, app)
+	fresh := guardianEmailRaw(t, app, guardian.Email)
+	if fresh == raw {
+		t.Fatal("durable resends did not replace the old capability")
+	}
+	anon := newAPIClient(t, app)
+	apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+url.QueryEscape(raw), nil, http.StatusBadRequest)
+	apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+url.QueryEscape(fresh), nil, http.StatusOK)
+}
+
+func TestGuardianEmailResendRequiresOwnConfirmedTeenLink(t *testing.T) {
+	app, _, _, link, client, admin := pendingGuardianEmailSetup(t)
+	path := "/api/v1/me/guardian-links/" + itoa(link.ID) + "/consent-email"
+	apiDo(t, client, "POST", path, nil, http.StatusForbidden)
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]string{"checkNote": "known family"}, http.StatusOK)
+	apiDo(t, admin, "POST", path, nil, http.StatusForbidden)
+	if err := app.DB.Model(link).Update("status", models.GuardianRevoked).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, client, "POST", path, nil, http.StatusForbidden)
+	apiDo(t, client, "POST", "/api/v1/me/guardian-links/999999/consent-email", nil, http.StatusForbidden)
+	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 1 {
+		t.Fatal("unauthorized resend queued mail")
+	}
 }
 
 func TestGuardianEmailPreviewAndExplicitSingleUseGrant(t *testing.T) {
@@ -169,24 +239,20 @@ func TestGuardianEmailRejectsStaleAuthority(t *testing.T) {
 }
 
 func TestGuardianEmailPerLinkReplacementAndConcurrentUse(t *testing.T) {
-	app, guardian, _, first, _, rawFirst := guardianEmailSetup(t)
+	app, guardian, _, first, client, rawFirst := guardianEmailSetup(t)
 	secondTeen := guardianTestTeen(t, app, "second-teen")
 	second := models.GuardianLink{GuardianUserID: guardian.ID, TeenUserID: &secondTeen.ID, Status: models.GuardianConfirmed}
 	if err := app.DB.Create(&second).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := app.sendGuardianConsentEmail(second.ID); err != nil {
-		t.Fatal(err)
-	}
+	apiDo(t, client, "POST", "/api/v1/me/guardian-links/"+itoa(second.ID)+"/consent-email", nil, 200)
 	rawSecond := guardianEmailRaw(t, app, guardian.Email)
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
 	apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+url.QueryEscape(rawFirst), nil, 200)
 	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": rawSecond}, 200)
 	// A resend replaces this teen's old email without replacing the other teen.
-	if err := app.sendGuardianConsentEmail(first.ID); err != nil {
-		t.Fatal(err)
-	}
+	apiDo(t, client, "POST", "/api/v1/me/guardian-links/"+itoa(first.ID)+"/consent-email", nil, 200)
 	fresh := guardianEmailRaw(t, app, guardian.Email)
 	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": rawFirst}, 400)
 	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": fresh[:len(fresh)-1] + "!"}, 400)

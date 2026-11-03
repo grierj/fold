@@ -20,6 +20,7 @@ import (
 	"fold/internal/accounts"
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -223,13 +224,15 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		return
 	}
 	oldEmail := u.Email
-	var raw, cancelRaw string
+	var cancelRaw string
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if _, err := lockCurrentCredentials(tx, u); err != nil {
 			return err
 		}
-		var err error
-		raw, err = createAccountToken(tx, models.TokenEmailVerify, u.ID,
+		// The verification row is created first, so its deadline cannot pass
+		// the cancellation token's. Its raw value is discarded: the queued job
+		// rotates the hash and mails the only usable link.
+		_, verifyID, err := issueAccountToken(tx, models.TokenEmailVerify, u.ID,
 			map[string]any{"new_email": newEmail}, tokenTTL)
 		if err != nil {
 			return err
@@ -238,9 +241,13 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		if err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChangeRequested,
+		if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChangeRequested,
 			TargetType: "user", TargetID: u.ID,
-			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()})
+			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		_, err = jobs.Enqueue(tx, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "", directMailAttempts)
+		return err
 	})
 	if errors.Is(err, errSecuritySession) {
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
@@ -250,35 +257,26 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		jsonError(c, http.StatusInternalServerError, "could not start email change")
 		return
 	}
-	if err := a.sendEmailVerification(newEmail, raw); err != nil {
-		log.Printf("email verification to %s: %v", newEmail, err)
-	}
+	// The old-address notice stays synchronous: once the change is verified
+	// the cancellation capability is revoked and the old address survives only
+	// in the audit row, so a delayed job could mint nothing or mail a stale
+	// address. Failure is logged; the verification job is already durable.
 	if err := a.sendEmailChangeNotice(oldEmail, newEmail, cancelRaw); err != nil {
-		log.Printf("email change notice to %s: %v", oldEmail, err)
+		// Like every direct-mail log line: the user ID and a cleaned error, never
+		// the address a provider refusal may echo back.
+		log.Printf("email change notice for user %d: %s", u.ID, jobs.CleanError(err))
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
 }
 
-// sendEmailVerification sends the new-address verification link (C6).
-func (a *App) sendEmailVerification(to, raw string) error {
-	link := a.emailBaseURL() + "/verify-email?token=" + raw
-	return a.Mailer.Send(context.Background(), mail.Message{
-		To:      to,
-		Subject: "Verify your new Fold email",
-		Text: fmt.Sprintf(`Someone asked to change the sign-in email for a Fold account to this address.
-
-Verify it here (the link works once and expires in 24 hours):
-%s
-
-The change takes effect only after you use the link. If that wasn't you, you can ignore this email.`,
-			link),
-	})
-}
-
-// sendEmailChangeNotice tells the old address what's happening (10.1).
+// sendEmailChangeNotice tells the old address what's happening (10.1). It is
+// synchronous, so its send budget leaves headroom under the HTTP write timeout
+// for the transaction and response. Delivery jobs use a separate, longer bound.
 func (a *App) sendEmailChangeNotice(to, newEmail, cancelRaw string) error {
 	link := a.emailBaseURL() + "/cancel-email-change?token=" + cancelRaw
-	return a.Mailer.Send(context.Background(), mail.Message{
+	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
+	defer cancel()
+	return a.Mailer.Send(ctx, mail.Message{
 		To:      to,
 		Subject: "Your Fold sign-in email is changing",
 		Text: fmt.Sprintf(`The sign-in email for your Fold account at %s is being changed to %s.

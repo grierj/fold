@@ -17,6 +17,49 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestChurchLocationInPreservesFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name, value, want string
+	}{
+		{name: "missing", want: "UTC"},
+		{name: "empty", want: "UTC"},
+		{name: "server local", value: "Local", want: "UTC"},
+		{name: "invalid", value: "Not/AZone", want: "UTC"},
+		{name: "configured", value: "America/Boise", want: "America/Boise"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			if tt.name != "missing" {
+				if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: tt.value}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			loc, err := churchLocationIn(app.DB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := loc.String(); got != tt.want || app.churchTimezone() != tt.want {
+				t.Fatalf("time zone = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChurchLocationInReturnsReadFailure(t *testing.T) {
+	app := testApp(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	db := app.DB.WithContext(ctx)
+	if _, err := churchLocationIn(db); !errors.Is(err, context.Canceled) {
+		t.Fatalf("time zone read failure = %v; want context cancellation", err)
+	}
+	// Request callers keep their existing fallback even when the read fails.
+	requestApp := &App{DB: db}
+	if got := requestApp.churchTimezone(); got != "UTC" {
+		t.Fatalf("request time zone = %q; want UTC", got)
+	}
+}
+
 func TestGroupListReadBudgetsAndSummaryValues(t *testing.T) {
 	for _, path := range []string{"/api/v1/groups", "/api/v1/me/groups", "/api/v1/admin/groups", "/api/v1/admin/pending", "/api/v1/admin/deletions"} {
 		t.Run(path, func(t *testing.T) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/models"
@@ -14,8 +15,6 @@ func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
 	app := testApp(t)
 	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	member := newTestUser(t, app, "member", "pw", models.RoleMember)
-	var jobs []func()
-	app.background = func(f func()) { jobs = append(jobs, f) }
 	anon := anonClient(t, app, "10.1.0.1")
 	anon.holdNotices = true
 	for _, email := range []string{member.Email, "new@example.com"} {
@@ -27,17 +26,126 @@ func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
 			t.Fatalf("response waited on mail for %s: %d", email, n)
 		}
 	}
-	if len(jobs) != 2 || mailsTo(app, admin.Email) != 0 {
-		t.Fatalf("want two deferred batches and no admin mail, jobs=%d", len(jobs))
-	}
-	for _, job := range jobs {
-		job()
+	// Both answers committed a durable job that carries ids only.
+	req := pendingRequest(t, app, "new@example.com")
+	hints, received := mailJobsOfKind(t, app, kindAccountExistsMail), mailJobsOfKind(t, app, kindAccountRequestMail)
+	if len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) ||
+		len(received) != 1 || !payloadEquals(received[0], requestMailJob{RequestID: req.ID, Case: requestMailReceived}) ||
+		mailsTo(app, admin.Email) != 0 {
+		t.Fatalf("want one hint job and one received job, no admin mail: %+v %+v", hints, received)
 	}
 	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", admin.Email} {
 		if n := mailsTo(app, email); n != 1 {
-			t.Fatalf("background mail for %s: %d", email, n)
+			t.Fatalf("delivered mail for %s: %d, want 1", email, n)
 		}
+	}
+}
+
+// A duplicate pending request, a honeypot fill and the member invite door
+// each store what they always did and queue no mail for the requester.
+func TestAccountRequestDuplicateHoneypotAndInviteQueueNoDirectMail(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	anon := anonClient(t, app, "10.1.1.1")
+	anon.holdNotices = true
+	apiDo(t, anon, "POST", "/api/v1/account-requests", signupBody("Dupe", "dupe@example.com", "adult", ""), 200)
+	apiDo(t, anon, "POST", "/api/v1/account-requests", signupBody("Dupe", "dupe@example.com", "adult", ""), 200)
+	bot := signupBody("Bot", "bot@example.com", "adult", "")
+	bot["website"] = "spam"
+	apiDo(t, anon, "POST", "/api/v1/account-requests", bot, 200)
+	bot["email"] = member.Email
+	apiDo(t, anon, "POST", "/api/v1/account-requests", bot, 200)
+	sam := loginAPI(t, app, "member", "pw")
+	sam.holdNotices = true
+	apiDo(t, sam, "POST", "/api/v1/account-requests/invite-friend", signupBody("Friend", "friend@example.com", "adult", ""), 200)
+	if requestCount(t, app, "dupe@example.com") != 2 || requestCount(t, app, "bot@example.com") != 1 || requestCount(t, app, "friend@example.com") != 1 {
+		t.Fatal("requests were not stored as before")
+	}
+	first := pendingRequest(t, app, "dupe@example.com").ID
+	received := mailJobsOfKind(t, app, kindAccountRequestMail)
+	if len(received) != 1 || !payloadEquals(received[0], requestMailJob{RequestID: first, Case: requestMailReceived}) {
+		t.Fatalf("only the first self-signup is mailed: %+v", received)
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 0 {
+		t.Fatalf("honeypot against an account queued a hint: %+v", hints)
+	}
+}
+
+// Forced enqueue failures: a stored request is not saved without its mail, a
+// hint answers like the stored path's database failure, and a decision rolls
+// back whole (the account, the audit and the bell item).
+func TestAccountRequestMailEnqueueFailures(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	anon := anonClient(t, app, "10.1.2.1")
+	anon.holdNotices = true
+	stop := failJobEnqueue(t, app.DB, kindAccountRequestMail)
+	w := anon.do("POST", "/api/v1/account-requests", signupBody("New", "new@example.com", "adult", ""), true)
+	if w.Code != http.StatusInternalServerError || requestCount(t, app, "new@example.com") != 0 ||
+		auditCount(t, app, audit.AccountRequested) != 0 || len(mailJobsOfKind(t, app, kindAccountRequestMail)) != 0 {
+		t.Fatalf("failed enqueue left a request: %d %s", w.Code, w.Body.String())
+	}
+	storedFailure := w.Body.String()
+	var bells int64
+	app.DB.Model(&models.Notification{}).Where("kind = ?", notify.AccountRequested).Count(&bells)
+	if bells != 0 {
+		t.Fatal("failed enqueue left an admin bell item")
+	}
+	stop()
+	apiDo(t, anon, "POST", "/api/v1/account-requests", signupBody("New", "new@example.com", "adult", ""), 200)
+	req := pendingRequest(t, app, "new@example.com")
+
+	// A decision whose mail cannot be queued decides nothing.
+	adminClient := loginAPI(t, app, "admin", "pw")
+	adminClient.holdNotices = true
+	stop = failJobEnqueue(t, app.DB, kindAccountRequestMail)
+	w = adminClient.do("POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, true)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("approval with failed enqueue: %d %s", w.Code, w.Body.String())
+	}
+	app.DB.First(&req, req.ID)
+	var users int64
+	app.DB.Model(&models.User{}).Where("email = ?", req.Email).Count(&users)
+	if req.Status != models.RequestPending || req.ApprovedUserID != nil || users != 0 || auditCount(t, app, audit.AccountApproved) != 0 ||
+		adminNotification(t, app, admin.ID, req.ID).ResolvedAt != nil {
+		t.Fatalf("failed enqueue committed part of the decision: %+v users=%d", req, users)
+	}
+	stop()
+
+	// Both hint doors answer with their stored path's failure.
+	failJobEnqueue(t, app.DB, kindAccountExistsMail) // removed by t.Cleanup
+	w = anon.do("POST", "/api/v1/account-requests", signupBody("Member", member.Email, "adult", ""), true)
+	// The public error contract hides the internal wording, so the hint's
+	// failure is exactly the stored path's sanitized server error.
+	if w.Code != http.StatusInternalServerError || w.Body.String() != storedFailure || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("hint enqueue failure on signup: %d %s, stored path answered %s", w.Code, w.Body.String(), storedFailure)
+	}
+	if n := len(mailJobsOfKind(t, app, kindAccountExistsMail)); n != 0 {
+		t.Fatalf("failed hint left %d jobs", n)
+	}
+}
+
+// The hint is a durable write that does not depend on the client staying
+// connected: a disconnect right before it still queues the mail, as the stored
+// request's transaction would commit.
+func TestAccountRequestHintSurvivesClientDisconnect(t *testing.T) {
+	app := testApp(t)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	anon := anonClient(t, app, "10.1.3.1")
+	anon.holdNotices = true
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	anon.ctx = ctx
+	cancelOnJobEnqueue(t, app.DB, kindAccountExistsMail, cancel)
+	w := anon.do("POST", "/api/v1/account-requests", signupBody("Member", member.Email, "adult", ""), true)
+	if w.Code != http.StatusOK || ctx.Err() == nil {
+		t.Fatalf("hint after disconnect: %d (cancelled=%v) %s", w.Code, ctx.Err() != nil, w.Body.String())
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("disconnect lost the hint: %+v", hints)
 	}
 }
 

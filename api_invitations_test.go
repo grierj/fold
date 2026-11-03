@@ -8,6 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // M1.2 acceptance: admin invites with no group, the invitee sets a password
@@ -423,5 +427,60 @@ func TestInvitationAcceptRechecksApprovedGroupLeadership(t *testing.T) {
 	app.DB.Model(&models.User{}).Where("email = ?", "new@example.com").Count(&count)
 	if count != 0 {
 		t.Fatal("account created from a rejected leader's invitation")
+	}
+}
+
+// Live-state changes can commit after the initial lookup without taking any of
+// acceptance's user/group locks. The final claim must roll back the new account.
+func TestInvitationAcceptanceRechecksLiveStateAtClaim(t *testing.T) {
+	for _, change := range []string{"revoked", "expired"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			f := queueHeldInvitationMail(t, app, false, true)
+			const raw = "invitation-under-acceptance"
+			if err := app.DB.Delete(&models.Job{}, f.job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Model(&f.inv).Update("token_hash", hashToken(raw)).Error; err != nil {
+				t.Fatal(err)
+			}
+			reached, release := pauseDBRead(t, app.DB, "acceptance", "users")
+			_, done := startDBSession(t, app.DB, "acceptance", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/api/v1/invitations/accept", strings.NewReader(jsonString(map[string]string{
+					"token": raw, "name": "Invited Person", "password": "password1234", "ageBand": "adult",
+				}))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				a.apiAcceptInvitation(c)
+				if w.Code != http.StatusBadRequest {
+					return fmt.Errorf("stale acceptance: %d %s", w.Code, w.Body.String())
+				}
+				return nil
+			})
+			awaitDBSignal(t, reached)
+			column, value := "revoked_at", time.Now()
+			if change == "expired" {
+				column, value = "expires_at", time.Now().Add(-time.Hour)
+			}
+			if err := app.DB.Model(&f.inv).Update(column, value).Error; err != nil {
+				t.Fatal(err)
+			}
+			release()
+			if err := awaitDBResult(t, done); err != nil {
+				t.Fatal(err)
+			}
+			var accounts, memberships int64
+			if err := app.DB.Model(&models.User{}).Where("email = ?", f.inv.Email).Count(&accounts).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Model(&models.Membership{}).Joins("JOIN users ON users.id = memberships.user_id").Where("users.email = ?", f.inv.Email).Count(&memberships).Error; err != nil {
+				t.Fatal(err)
+			}
+			if accounts != 0 || memberships != 0 || invitationIn(t, app, f.inv.ID).AcceptedAt != nil || auditCount(t, app, audit.InvitationAccepted) != 0 {
+				t.Fatal("failed live-state claim committed an account, membership, or acceptance audit")
+			}
+		})
 	}
 }

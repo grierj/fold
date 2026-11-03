@@ -292,8 +292,17 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mail: dial: %w", err)
 	}
-	// A stuck server must not block the calling handler forever.
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	// Keep the SMTP exchange's cap even if the caller has a longer deadline.
+	deadline := time.Now().Add(30 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	_ = conn.SetDeadline(deadline)
+	// net/smtp has no context-aware commands. Close the underlying socket on
+	// cancellation, including during STARTTLS and after an implicit TLS wrap.
+	socket := conn
+	stop := context.AfterFunc(ctx, func() { socket.Close() })
+	defer stop()
 	if s.implicit {
 		// smtps://: TLS from the first byte, before any SMTP greeting.
 		tconn := tls.Client(conn, s.tlsCfg())
