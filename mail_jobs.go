@@ -16,14 +16,31 @@ import (
 )
 
 const (
-	kindPasswordResetMail = "account.password_reset_mail"
-	directMailAttempts    = 8
+	kindPasswordResetMail  = "account.password_reset_mail"
+	kindAccountRequestMail = "account.request_mail"
+	kindAccountExistsMail  = "account.exists_mail"
+	directMailAttempts     = 8
+)
+
+// Account-request mail cases. The case is the only non-ID payload value: it
+// names which stored decision the job reports, never any rendered content.
+const (
+	requestMailReceived           = "received"
+	requestMailApproved           = "approved"
+	requestMailExists             = "exists"
+	requestMailConversionApproved = "conversion_approved"
+	requestMailRejected           = "rejected"
 )
 
 // Direct-mail jobs carry IDs only. Capabilities are minted in preparation,
 // committed, and kept only in memory until the provider send finishes.
 type userMailJob struct {
 	UserID uint `json:"userId"`
+}
+
+type requestMailJob struct {
+	RequestID uint   `json:"requestId"`
+	Case      string `json:"case"`
 }
 
 func (a *App) mailKinds() []jobs.Kind {
@@ -36,6 +53,28 @@ func (a *App) mailKinds() []jobs.Kind {
 			}
 			return a.prepareAndSend(ctx, kindPasswordResetMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
 				return a.preparePasswordReset(tx, p.UserID)
+			})
+		},
+	}, {
+		Name: kindAccountRequestMail, Label: "Sending an account request email", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p requestMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindAccountRequestMail, p.RequestID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareAccountRequestMail(tx, p.RequestID, p.Case)
+			})
+		},
+	}, {
+		Name: kindAccountExistsMail, Label: "Sending an already-have-an-account email", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p userMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindAccountExistsMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareExistingAccountHint(tx, p.UserID)
 			})
 		},
 	}}
@@ -126,4 +165,125 @@ Reset it here (the link works once and expires in 24 hours):
 If that wasn't you, you can ignore this email — your password won't change.`,
 			site, link),
 	}
+}
+
+// existingNonGuestUser loads a user who is not deleted and not a guest.
+// Disabled accounts stay eligible: the hint is informational and never
+// grants anything, matching both public doors.
+func existingNonGuestUser(tx *gorm.DB, userID uint) (*models.User, error) {
+	var user models.User
+	// A missing or soft-deleted user has nothing to send; any other database
+	// error is returned so the job retries.
+	err := tx.First(&user, userID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if user.Status == models.UserGuest {
+		return nil, nil
+	}
+	return &user, nil
+}
+
+// prepareExistingAccountHint addresses the hint to the user's current stored
+// email, so an address change before delivery never mails the old one.
+func (a *App) prepareExistingAccountHint(tx *gorm.DB, userID uint) (mail.Message, bool, error) {
+	user, err := existingNonGuestUser(tx, userID)
+	if err != nil || user == nil {
+		return mail.Message{}, false, err
+	}
+	site, err := siteNameIn(tx)
+	if err != nil {
+		return mail.Message{}, false, err
+	}
+	return a.existingAccountMessage(user.Email, site), true, nil
+}
+
+// prepareAccountRequestMail rebuilds one account-request email from stored
+// facts. Only the approved setup mail takes locks and mints a capability.
+func (a *App) prepareAccountRequestMail(tx *gorm.DB, requestID uint, kind string) (mail.Message, bool, error) {
+	none := mail.Message{}
+	if kind == requestMailApproved {
+		// Same order as setup redemption: contact gate, user lock, token.
+		if err := lockContacts(tx); err != nil {
+			return none, false, err
+		}
+	}
+	var req models.AccountRequest
+	err := tx.First(&req, requestID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	conversion := req.Source == models.RequestHouseholdConversion
+	switch kind {
+	case requestMailReceived:
+		if req.Status != models.RequestPending {
+			return none, false, nil
+		}
+	case requestMailRejected:
+		if req.Status != models.RequestRejected {
+			return none, false, nil
+		}
+	case requestMailConversionApproved:
+		if req.Status != models.RequestApproved || !conversion {
+			return none, false, nil
+		}
+	case requestMailExists, requestMailApproved:
+		if req.Status != models.RequestApproved || req.ApprovedUserID == nil || (kind == requestMailApproved && conversion) {
+			return none, false, nil
+		}
+	default:
+		return none, false, fmt.Errorf("unknown account request mail case %q", kind)
+	}
+	to, raw, needsConsent := req.Email, "", false
+	switch kind {
+	case requestMailExists:
+		user, err := existingNonGuestUser(tx, *req.ApprovedUserID)
+		if err != nil || user == nil {
+			return none, false, err
+		}
+		to = user.Email
+	case requestMailApproved:
+		var user models.User
+		err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&user, *req.ApprovedUserID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return none, false, nil
+		}
+		if err != nil {
+			return none, false, err
+		}
+		switch user.Status {
+		case models.UserInvited, models.UserPendingConsent, models.UserActive:
+		default:
+			return none, false, nil
+		}
+		if user.PasswordHash != nil {
+			return none, false, nil
+		}
+		if raw, err = createAccountToken(tx, models.TokenAccountSetup, user.ID, nil, tokenTTL); err != nil {
+			return none, false, err
+		}
+		to = user.Email
+		needsConsent = user.AccountType == models.AccountTeen && user.Status == models.UserPendingConsent
+	}
+	site, err := siteNameIn(tx)
+	if err != nil {
+		return none, false, err
+	}
+	switch kind {
+	case requestMailReceived:
+		return a.requestReceivedMessage(to, site), true, nil
+	case requestMailRejected:
+		return a.accountRejectedMessage(to, site, req.DecisionNote), true, nil
+	case requestMailConversionApproved:
+		return a.conversionApprovedMessage(to, site, req.AccountType == models.AccountTeen), true, nil
+	case requestMailExists:
+		return a.existingAccountMessage(to, site), true, nil
+	}
+	return a.accountApprovedMessage(to, raw, site, needsConsent), true, nil
 }

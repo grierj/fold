@@ -12,6 +12,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/jobs"
 	foldmail "fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
@@ -190,11 +191,15 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		// The hint is an email to that address too, so it shares the
 		// per-address limit (3 an hour, 10 a day) whatever the IP (10.1).
 		if ok, err := a.targetAllow(c.Request.Context(), "guestreg:hint:"+email); err == nil && ok {
-			a.runInBackground(func() {
-				if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
-					log.Printf("account-exists email to %s: %v", email, err)
-				}
-			})
+			// The hint is queued by account id; delivery mails the address
+			// the account has then. A failed write is the same failure as a
+			// failed stored registration. No request context: a disconnect
+			// cannot abort the durable write, as in the stored path.
+			if _, err := jobs.Enqueue(a.DB, kindAccountExistsMail, userMailJob{UserID: existing.ID}, time.Now(), "", directMailAttempts); err != nil {
+				log.Printf("account-exists hint: %s", jobs.CleanError(err))
+				jsonError(c, http.StatusInternalServerError, "could not save your registration")
+				return
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return

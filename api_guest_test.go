@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
@@ -1180,9 +1181,12 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 	if err := app.DB.Create(&guest).Error; err != nil {
 		t.Fatal(err)
 	}
-	var jobs []func()
-	app.background = func(f func()) { jobs = append(jobs, f) }
+	// The account hint is a durable job; the verification mail is still sent
+	// in the background until it moves too.
+	var deferred []func()
+	app.background = func(f func()) { deferred = append(deferred, f) }
 	anon := anonClient(t, app, "10.4.1.1")
+	anon.holdNotices = true
 	var answer string
 	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
 		body := guestSubmit(t, anon, ev.ID, guestBody("Guest", email, true), http.StatusOK)
@@ -1194,15 +1198,19 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 			t.Fatalf("mail was not deferred for %s: %d", email, n)
 		}
 	}
-	if len(jobs) != 3 {
-		t.Fatalf("deferred jobs = %d, want 3", len(jobs))
+	if len(deferred) != 2 {
+		t.Fatalf("deferred verification mails = %d, want 2", len(deferred))
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("account hint was not queued by id: %+v", hints)
 	}
 	if guestSignupCount(t, app, member.Email) != 0 || guestSignupCount(t, app, "new@example.com") != 1 || guestSignupCount(t, app, guest.Email) != 1 {
 		t.Fatal("wrong signup rows for account/new/returning guest")
 	}
-	for _, job := range jobs {
+	for _, job := range deferred {
 		job()
 	}
+	drainNotices(t, app)
 	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
 		if n := mailsTo(app, email); n != 1 {
 			t.Fatalf("deferred mail for %s = %d, want 1", email, n)
@@ -1290,6 +1298,8 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
+			// Verification mail still goes through the background seam; the
+			// account hint is a durable job.
 			jobs := 0
 			app.background = func(func()) { jobs++ }
 			anon := anonClient(t, app, ip)
@@ -1302,20 +1312,24 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 			if !strings.Contains(answer, signupThanks) {
 				t.Fatalf("nonuniform answer: %s", answer)
 			}
+			hints := len(mailJobsOfKind(t, app, kindAccountExistsMail))
 			if tt.gate != "" {
-				if lookupAt != 0 || jobs != 0 || guestSignupCount(t, app, email) != 0 {
-					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d", lookupAt, jobs)
+				if lookupAt != 0 || jobs != 0 || hints != 0 || guestSignupCount(t, app, email) != 0 {
+					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d hints=%d", lookupAt, jobs, hints)
 				}
 			} else {
 				if lookupAt < minimumWork {
 					t.Fatalf("account lookup before bcrypt work: %v, want >= %v", lookupAt, minimumWork)
 				}
-				wantJobs := 1
-				if tt.exhausted {
-					wantJobs = 0
+				wantJobs, wantHints := 1, 0
+				if tt.account {
+					wantJobs, wantHints = 0, 1
 				}
-				if jobs != wantJobs {
-					t.Fatalf("mail jobs = %d, want %d", jobs, wantJobs)
+				if tt.exhausted {
+					wantJobs, wantHints = 0, 0
+				}
+				if jobs != wantJobs || hints != wantHints {
+					t.Fatalf("verification mails = %d (want %d), hint jobs = %d (want %d)", jobs, wantJobs, hints, wantHints)
 				}
 			}
 		})
@@ -1377,5 +1391,54 @@ func TestGuestReconfirmDoesNotCountOwnSeat(t *testing.T) {
 				t.Fatalf("waitlist place lost: %v -> %v", before.WaitlistedAt, after.WaitlistedAt)
 			}
 		})
+	}
+}
+
+// The existing-account hint is queued before the answer. If it cannot be, the
+// guest door fails like its stored path does.
+func TestGuestHintEnqueueFailureMatchesStoredFailure(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest hint", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.4.1.9")
+	anon.holdNotices = true
+	stop := failJobEnqueue(t, app.DB, kindAccountExistsMail)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusInternalServerError)
+	// The public error contract hides the internal wording.
+	if !strings.Contains(body, `"code":"server_error"`) || strings.Contains(body, "could not save") || len(mailJobsOfKind(t, app, kindAccountExistsMail)) != 0 {
+		t.Fatalf("hint failure answer %s", body)
+	}
+	stop()
+	if answer := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusOK); !strings.Contains(answer, signupThanks) {
+		t.Fatalf("retry answer %s", answer)
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("hint not queued after retry: %+v", hints)
+	}
+}
+
+// The guest door's hint likewise survives a client that disconnects before it.
+func TestGuestHintSurvivesClientDisconnect(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest hint", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	anon := anonClient(t, app, "10.4.1.10")
+	anon.holdNotices = true
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	anon.ctx = ctx
+	cancelOnJobEnqueue(t, app.DB, kindAccountExistsMail, cancel)
+	body := guestSubmit(t, anon, ev.ID, guestBody("Guest", member.Email, true), http.StatusOK)
+	if !strings.Contains(body, signupThanks) || ctx.Err() == nil {
+		t.Fatalf("hint after disconnect: %s (cancelled=%v)", body, ctx.Err() != nil)
+	}
+	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
+		t.Fatalf("disconnect lost the hint: %+v", hints)
 	}
 }

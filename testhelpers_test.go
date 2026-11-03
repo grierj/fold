@@ -176,8 +176,9 @@ type apiClient struct {
 	router      http.Handler
 	jar         map[string]*http.Cookie
 	token       string
-	ip          string // client address for requests; empty uses httptest's default
-	ua          string // User-Agent for requests; empty sends none
+	ip          string          // client address for requests; empty uses httptest's default
+	ua          string          // User-Agent for requests; empty sends none
+	ctx         context.Context // request context; nil uses httptest's background context
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -219,6 +220,9 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 		rdr = bytes.NewReader(nil)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if c.ctx != nil {
+		req = req.WithContext(c.ctx)
+	}
 	if c.ua != "" {
 		req.Header.Set("User-Agent", c.ua)
 	}
@@ -792,6 +796,28 @@ func failJobEnqueue(t *testing.T, db *gorm.DB, kind string) func() {
 	stop := func() { once.Do(func() { _ = db.Callback().Raw().Remove(name) }) }
 	t.Cleanup(stop)
 	return stop
+}
+
+// cancelOnJobEnqueue runs cancel just before a job of kind is inserted, as if
+// the client disconnected between the request's checks and its durable write.
+// A write that rides the request context then fails; one that does not is
+// unaffected.
+func cancelOnJobEnqueue(t *testing.T, db *gorm.DB, kind string, cancel context.CancelFunc) {
+	t.Helper()
+	name := fmt.Sprintf("test:cancel_enqueue:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "INSERT INTO jobs ") {
+			for _, arg := range tx.Statement.Vars {
+				if value, ok := arg.(string); ok && value == kind {
+					cancel()
+					return
+				}
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
 }
 
 type testDBOperationKey struct{}

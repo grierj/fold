@@ -1189,7 +1189,6 @@ var mailerSendFiles = map[string]string{
 	"mail_jobs.go":                "direct account mail is sent by durable jobs after preparation commits",
 	"messages_send.go":            "announcement mail goes through its own send path",
 	"api_message_preview.go":      "the composer's test send is synchronous by design (brief section 4)",
-	"api_account_requests.go":     "direct mail: account request and setup links",
 	"api_invitations.go":          "direct mail: invitations into Fold",
 	"api_household_conversion.go": "direct mail: household conversion invitation",
 	"api_profile.go":              "direct mail: address change confirmation",

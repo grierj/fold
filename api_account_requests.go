@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	foldmail "fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -240,11 +241,17 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		// Same answer and about the same cost as a stored request; the
 		// hint travels by email to the address instead (10.1).
 		if !v.honeypot {
-			a.runInBackground(func() {
-				if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
-					log.Printf("account-exists email to %s: %v", v.email, err)
-				}
-			})
+			// The job carries the user's id only; delivery mails whatever
+			// address the account has then. The hint's durable record is
+			// the answer's only side effect, so a failed write is the same
+			// failure as a failed stored request. It uses no request context,
+			// like the stored paths' transactions: a client that disconnects
+			// cannot turn the durable write into a failure.
+			if _, err := jobs.Enqueue(a.DB, kindAccountExistsMail, userMailJob{UserID: existing.ID}, time.Now(), "", directMailAttempts); err != nil {
+				log.Printf("account-exists hint: %s", jobs.CleanError(err))
+				jsonError(c, http.StatusInternalServerError, "could not save your request")
+				return false
+			}
 		}
 		a.answerAccountRequest(c, source)
 		return false
@@ -276,24 +283,22 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
-		_, err := notifyAccountRequested(tx, &req, flags)
-		return err
+		if _, err := notifyAccountRequested(tx, &req, flags); err != nil {
+			return err
+		}
+		// A duplicate of a pending request is stored and flagged on the bell,
+		// but sends nothing: the requester and the admins were already
+		// emailed about the first one (#91). The job is queued with the
+		// request, so neither exists without the other.
+		if source == models.RequestSelfSignup && !flags.Duplicate && !flags.Honeypot {
+			_, err := jobs.Enqueue(tx, kindAccountRequestMail, requestMailJob{RequestID: req.ID, Case: requestMailReceived}, time.Now(), "", directMailAttempts)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return false
-	}
-	// A duplicate of a pending request is stored and flagged on the bell,
-	// but sends nothing: the requester and the admins were already
-	// emailed about the first one (#91).
-	if !flags.Duplicate && !flags.Honeypot {
-		a.runInBackground(func() {
-			if source == models.RequestSelfSignup {
-				if err := a.sendRequestReceivedEmail(v.email); err != nil {
-					log.Printf("request-received email to %s: %v", v.email, err)
-				}
-			}
-		})
 	}
 	a.answerAccountRequest(c, source)
 	return true
@@ -456,7 +461,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	}
 	var userID uint
 	var created, upgraded bool
-	var raw string
 	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
 		var consentActor *models.User
 		var conversionLocked map[uint]*models.User
@@ -557,11 +561,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 					return err
 				}
 				userID, upgraded = existing.ID, true
-				var err error
-				raw, err = createAccountToken(tx, models.TokenAccountSetup, existing.ID, nil, tokenTTL)
-				if err != nil {
-					return err
-				}
 			} else if found {
 				if consentEvidence != nil {
 					return errConsentExistingAccount
@@ -582,11 +581,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 					return err
 				}
 				userID, created = u.ID, true
-				var err error
-				raw, err = createAccountToken(tx, models.TokenAccountSetup, u.ID, nil, tokenTTL)
-				if err != nil {
-					return err
-				}
 			}
 			meta["userId"] = userID
 			meta["created"] = created
@@ -612,6 +606,22 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			}); err != nil {
 				return err
 			}
+		}
+		// The decision mail is queued with the decision. It carries the
+		// request id and a fixed case; delivery rebuilds the text, mints any
+		// setup link, and uses the account's address as it is then.
+		mailCase := requestMailRejected
+		switch {
+		case !approve:
+		case req.Source == models.RequestHouseholdConversion:
+			mailCase = requestMailConversionApproved
+		case created || upgraded:
+			mailCase = requestMailApproved
+		default:
+			mailCase = requestMailExists
+		}
+		if _, err := jobs.Enqueue(tx, kindAccountRequestMail, requestMailJob{RequestID: req.ID, Case: mailCase}, time.Now(), "", directMailAttempts); err != nil {
+			return err
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
 			return err
@@ -642,21 +652,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not decide that request")
 		return
-	}
-	if approve {
-		if req.Source == models.RequestHouseholdConversion {
-			if err := a.sendConversionApprovedEmail(req); err != nil {
-				log.Printf("account approved email to %s: %v", req.Email, err)
-			}
-		} else if created || upgraded {
-			if err := a.sendAccountApprovedEmail(req, raw, consentEvidence == nil); err != nil {
-				log.Printf("account approved email to %s: %v", req.Email, err)
-			}
-		} else if err := a.sendAlreadyHaveAccountEmail(req.Email); err != nil {
-			log.Printf("account-exists email to %s: %v", req.Email, err)
-		}
-	} else if err := a.sendAccountRejectedEmail(req, note); err != nil {
-		log.Printf("account rejected email to %s: %v", req.Email, err)
 	}
 	var fresh models.AccountRequest
 	a.DB.First(&fresh, req.ID)
@@ -781,23 +776,23 @@ func (a *App) expirePendingRequests() (int64, error) {
 // Decision and hint emails (C6: plain text through the minimal sender)
 // ---------------------------------------------------------------------------
 
-func (a *App) sendRequestReceivedEmail(to string) error {
-	return a.Mailer.Send(context.Background(), foldmail.Message{
+func (a *App) requestReceivedMessage(to, site string) foldmail.Message {
+	return foldmail.Message{
 		To:      to,
-		Subject: fmt.Sprintf("We got your %s account request", a.siteName()),
+		Subject: fmt.Sprintf("We got your %s account request", site),
 		Text: fmt.Sprintf(`Thanks for asking for an account at %s.
 
 An admin will review your request. We'll email you again when there's a decision — if you're approved, that email has the link to set your password.
 
 If that wasn't you, you can ignore this email.`,
-			a.siteName()),
-	})
+			site),
+	}
 }
 
-func (a *App) sendAlreadyHaveAccountEmail(to string) error {
-	return a.Mailer.Send(context.Background(), foldmail.Message{
+func (a *App) existingAccountMessage(to, site string) foldmail.Message {
+	return foldmail.Message{
 		To:      to,
-		Subject: fmt.Sprintf("You already have a %s account", a.siteName()),
+		Subject: fmt.Sprintf("You already have a %s account", site),
 		Text: fmt.Sprintf(`Someone asked for a %s account with this email address, but you already have one.
 
 Sign in here:
@@ -805,54 +800,57 @@ Sign in here:
 
 Forgot your password? Reset it here:
 %s/forgot-password`,
-			a.siteName(), a.emailBaseURL(), a.emailBaseURL()),
-	})
+			site, a.emailBaseURL(), a.emailBaseURL()),
+	}
 }
 
-func (a *App) sendAccountApprovedEmail(req *models.AccountRequest, raw string, needsConsent bool) error {
+// accountApprovedMessage carries the set-password link. The consent sentence
+// follows the account's state at delivery, so a teen whose guardian already
+// consented is not told to wait for it.
+func (a *App) accountApprovedMessage(to, raw, site string, needsConsent bool) foldmail.Message {
 	link := a.emailBaseURL() + "/set-password?token=" + raw
 	extra := ""
-	if req.AccountType == models.AccountTeen && needsConsent {
+	if needsConsent {
 		extra = "\n\nBecause you're 13 to 17, your account also needs a parent or guardian's consent before you can use groups and events. Setting your password now is still the right first step."
 	}
-	return a.Mailer.Send(context.Background(), foldmail.Message{
-		To:      req.Email,
-		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
+	return foldmail.Message{
+		To:      to,
+		Subject: fmt.Sprintf("Your %s account is approved", site),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
 Set your password here (the link works once and expires in 24 hours):
 %s%s
 
-After that you can sign in with this email address.`, a.siteName(), link, extra),
-	})
+After that you can sign in with this email address.`, site, link, extra),
+	}
 }
 
-func (a *App) sendConversionApprovedEmail(req *models.AccountRequest) error {
+func (a *App) conversionApprovedMessage(to, site string, teen bool) foldmail.Message {
 	extra := ""
-	if req.AccountType == models.AccountTeen {
+	if teen {
 		extra = "\n\nYour account is waiting for consent and a fresh guardian-link check. You can sign in to check its status. Your household keeps managing your sign-ups until those checks are complete."
 	}
-	return a.Mailer.Send(context.Background(), foldmail.Message{
-		To:      req.Email,
-		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
+	return foldmail.Message{
+		To:      to,
+		Subject: fmt.Sprintf("Your %s account is approved", site),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
-You can now sign in at %s/login with this email address and the password you chose.%s`, a.siteName(), a.emailBaseURL(), extra),
-	})
+You can now sign in at %s/login with this email address and the password you chose.%s`, site, a.emailBaseURL(), extra),
+	}
 }
 
-func (a *App) sendAccountRejectedEmail(req *models.AccountRequest, note string) error {
+func (a *App) accountRejectedMessage(to, site, note string) foldmail.Message {
 	notePart := ""
 	if note != "" {
 		notePart = "\n\nNote from the church office: " + note
 	}
-	return a.Mailer.Send(context.Background(), foldmail.Message{
-		To:      req.Email,
-		Subject: fmt.Sprintf("About your %s account request", a.siteName()),
+	return foldmail.Message{
+		To:      to,
+		Subject: fmt.Sprintf("About your %s account request", site),
 		Text: fmt.Sprintf(`Thanks for asking for an account at %s.
 
 We're not able to approve this request.%s
 
-If you think this is a mistake, contact your church office and they'll help.`, a.siteName(), notePart),
-	})
+If you think this is a mistake, contact your church office and they'll help.`, site, notePart),
+	}
 }
