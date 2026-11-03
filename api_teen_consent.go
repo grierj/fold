@@ -253,7 +253,6 @@ func (a *App) apiChangeTeenConsent(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	var mailed []uint
 	err = a.contactMutation(contactChange{UserID: uint(id)}, func(tx *gorm.DB) error {
 		actor, teen, err := lockConsentUsers(tx, me.ID, uint(id))
 		if err != nil {
@@ -262,13 +261,12 @@ func (a *App) apiChangeTeenConsent(c *gin.Context) {
 		if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
 			return errConsentForbidden
 		}
-		mailed, err = a.changeTeenConsent(tx, c, teen, actor, teenConsentChange{Scope: body.Scope, Status: body.Status, EvidenceText: body.EvidenceText})
+		_, err = a.changeTeenConsent(tx, c, teen, actor, teenConsentChange{Scope: body.Scope, Status: body.Status, EvidenceText: body.EvidenceText})
 		return err
 	})
 	if err != nil {
 		consentError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{})
 }

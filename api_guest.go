@@ -270,7 +270,6 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	var manageRaw, guestEmail string
 	guestZone := time.UTC
 	var askedAccount bool
-	var emailed []uint
 	var waitlistPos *int
 	var fullNoWaitlist bool
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -417,11 +416,10 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		}
 		askedAccount = signup.CreateAccount
 		if signup.CreateAccount {
-			ids, err := createGuestUpgradeRequest(tx, &signup)
+			_, err := createGuestUpgradeRequest(tx, &signup)
 			if err != nil {
 				return err
 			}
-			emailed = ids
 		}
 		display = a.guestDisplay(&reg, occ, &ev, grp)
 		display.WaitlistPosition = waitlistPos
@@ -452,7 +450,6 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		c.JSON(http.StatusConflict, body)
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, guestZone, askedAccount); err != nil {
 		log.Printf("guest confirmation email to %s: %v", guestEmail, err)
 	}
@@ -650,7 +647,6 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		return
 	}
 	var display guestRegistrationJSON
-	var emailed []uint
 	err = a.contactMutation(contactChange{EventID: scope.ID}, func(tx *gorm.DB) error {
 		reg, occ, ev, grp, err := a.authorizedTokenManage(tx, c.Param("token"))
 		if err != nil {
@@ -696,11 +692,10 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			return err
 		}
 		if before == models.RegGoing {
-			ids, err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
+			_, err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
 			if err != nil {
 				return err
 			}
-			emailed = ids
 		}
 		display = a.guestDisplay(reg, occ, ev, grp)
 		return nil
@@ -709,7 +704,6 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
 	}
-	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"registration": display})
 }
 

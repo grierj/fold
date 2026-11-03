@@ -136,7 +136,6 @@ type contactOperation struct {
 	actor             *models.User
 	now               time.Time
 	zone              *time.Location
-	mailed            []uint
 	refused           bool
 	refusalMessage    string
 	refusalStatus     int
@@ -184,7 +183,6 @@ func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn 
 		jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
 		return
 	}
-	a.deliverNotificationEmails(op.mailed)
 	if op.refused {
 		if op.refusalMessage == "" {
 			op.refusalMessage = "direct-contact access is unavailable; refresh the request"
@@ -275,11 +273,10 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 			}
 			return refuseContact(tx, op, r, "invalid_request", c.ClientIP())
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: op.actor.ID})
+		_, err := a.reconcileContacts(tx, op.now, contactChange{UserID: op.actor.ID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		f, _, err := a.loadContactFacts(tx, contactScope(r), op.now)
 		if err != nil {
 			return err
@@ -307,21 +304,19 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
 			return err
 		}
-		ids, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
+		_, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		if r.NeedsAdmin {
 			admins, err := activeAdminIDs(tx)
 			if err != nil {
 				return err
 			}
-			ids, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
+			_, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
 			if err != nil {
 				return err
 			}
-			op.mailed = append(op.mailed, ids...)
 		}
 		out, err = a.presentContactRequest(tx, op, r)
 		return err
@@ -386,11 +381,10 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
 			return err
 		}
@@ -442,11 +436,10 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 			}
 			recipients = append(recipients, guardians...)
 		}
-		ids, err = contactNotice(tx, r, notify.ContactUpdated, recipients, "decision:"+body.Party)
+		_, err = contactNotice(tx, r, notify.ContactUpdated, recipients, "decision:"+body.Party)
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		out, err = a.presentContactRequest(tx, op, r)
 		return err
 	})
@@ -464,11 +457,10 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
 			return err
 		}
@@ -485,8 +477,7 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 		if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
 			return err
 		}
-		ids, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
-		op.mailed = append(op.mailed, ids...)
+		_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
 		return err
 	})
 	if !c.Writer.Written() {
@@ -545,11 +536,10 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 		if err != nil {
 			return err
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: discovered.LeaderID})
+		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: discovered.LeaderID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		var r models.ContactRequest
 		if err = tx.Where("purpose = ?", policy.RequestContact).Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, discovered.RequestID).Error; err != nil {
 			return err
@@ -588,8 +578,7 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 		if reason == "" {
 			return refuseContact(tx, op, r, "revoke", c.ClientIP())
 		}
-		ids, err = endContactGrant(tx, &g, r, reason, &op.actor.ID, op.now, c.ClientIP())
-		op.mailed = append(op.mailed, ids...)
+		_, err = endContactGrant(tx, &g, r, reason, &op.actor.ID, op.now, c.ClientIP())
 		return err
 	})
 	// The transaction (including contact.reveal audit) has COMMITTED here. No
@@ -826,11 +815,10 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		} else if body.OccurrenceID != 0 || body.OverCapacity || body.AttendanceMode != nil || body.GuestCount != nil || body.ChildcareCount != nil || body.ChildcareAgesNote != nil {
 			return refuseAdd(tx, op, r, "options", c.ClientIP())
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		f, err := a.loadAddFacts(tx, r, op.now)
 		if err != nil {
 			return err
@@ -861,21 +849,19 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
 			return err
 		}
-		ids, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
+		_, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		if r.NeedsAdmin {
 			admins, err := activeAdminIDs(tx)
 			if err != nil {
 				return err
 			}
-			ids, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
+			_, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
 			if err != nil {
 				return err
 			}
-			op.mailed = append(op.mailed, ids...)
 		}
 		out, err = a.presentAddRequest(tx, op, r)
 		return err
@@ -948,7 +934,7 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 	}
 	err = a.changeRoleIn(tx, requester, ip, &g, r.SubjectUserID, models.MembershipMember, r.AddOverLimit, &memberAddOptions{KeepExistingRole: true, approved: &verifiedGroupAdd{r.ID, op.now}}, func(me, _ *models.User, rel, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), rel)
-	}, &op.mailed)
+	}, new([]uint)) // changeRoleIn still reports notice IDs
 	if errors.Is(err, errGroupFull) {
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "group_full", ip)
 	}
@@ -985,8 +971,7 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 		}
 		recipients = append(recipients, guardians...)
 	}
-	ids, err := contactNotice(tx, *r, notify.ContactUpdated, recipients, "completed")
-	op.mailed = append(op.mailed, ids...)
+	_, err = contactNotice(tx, *r, notify.ContactUpdated, recipients, "completed")
 	return err
 }
 func (a *App) apiDecideAddRequest(c *gin.Context)   { a.mutateAddRequest(c, "decision") }
@@ -1010,11 +995,10 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		ids, err := a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
-		op.mailed = append(op.mailed, ids...)
 		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
 			return err
 		}
@@ -1055,11 +1039,10 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 					return err
 				}
 			}
-			ids, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
+			_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
 			if err != nil {
 				return err
 			}
-			op.mailed = append(op.mailed, ids...)
 			if err = a.completeAddAsk(tx, op, &r, c.ClientIP()); err != nil {
 				return err
 			}
@@ -1077,11 +1060,10 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 			if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
 				return err
 			}
-			ids, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
+			_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
 			if err != nil {
 				return err
 			}
-			op.mailed = append(op.mailed, ids...)
 		case "complete":
 			if !policy.CanFinalizeAddRequest(p, f) {
 				return refuseAdd(tx, op, r, operation, c.ClientIP())

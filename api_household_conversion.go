@@ -481,10 +481,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		conversionError(c, err)
 		return
 	}
-	var mailed []uint
 	var err error
 	for attempt := 0; attempt < 4; attempt++ {
-		mailed = nil
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			discovery, err := liveInvitation(tx, raw)
 			if err != nil || discovery.HouseholdPersonID == nil {
@@ -554,7 +552,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
 				return err
 			}
-			mailed, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
+			_, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -576,7 +574,6 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		conversionError(c, err)
 		return
 	}
-	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingApproval: true})
 }
 

@@ -266,7 +266,6 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		Flags: string(flagsJSON), IP: c.ClientIP(),
 		ExpiresAt: time.Now().UTC().Add(requestLifetime),
 	}
-	var emailed []uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&req).Error; err != nil {
 			return err
@@ -277,8 +276,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
-		ids, err := notifyAccountRequested(tx, &req, flags)
-		emailed = ids
+		_, err := notifyAccountRequested(tx, &req, flags)
 		return err
 	})
 	if err != nil {
@@ -290,7 +288,6 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// emailed about the first one (#91).
 	if !flags.Duplicate && !flags.Honeypot {
 		a.runInBackground(func() {
-			a.deliverNotificationEmails(emailed)
 			if source == models.RequestSelfSignup {
 				if err := a.sendRequestReceivedEmail(v.email); err != nil {
 					log.Printf("request-received email to %s: %v", v.email, err)
@@ -460,7 +457,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var userID uint
 	var created, upgraded bool
 	var raw string
-	var mailed []uint
+	var mailed []uint // approveHouseholdConversion still reports notice IDs
 	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
 		var consentActor *models.User
 		var conversionLocked map[uint]*models.User
@@ -597,11 +594,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if upgraded {
 				meta["upgradedGuest"] = true
 			}
-			ids, err := nominateTeenGuardian(tx, req, userID)
-			if err != nil {
+			if _, err := nominateTeenGuardian(tx, req, userID); err != nil {
 				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if approve && userID != 0 {
 			if err := tx.Model(&models.AccountRequest{}).Where("id = ?", req.ID).Update("approved_user_id", userID).Error; err != nil {
@@ -613,13 +608,11 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if err := tx.First(&teen, userID).Error; err != nil {
 				return err
 			}
-			ids, err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
+			if _, err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
 				Scope: models.TeenConsentAccount, Status: models.ConsentGranted, EvidenceText: *consentEvidence,
-			})
-			if err != nil {
+			}); err != nil {
 				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
 			return err
@@ -651,9 +644,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		jsonError(c, http.StatusInternalServerError, "could not decide that request")
 		return
 	}
-	// Decision emails go out after the decision is committed; the
-	// person is emailed either way (M1.3 acceptance).
-	a.deliverNotificationEmails(mailed)
 	if approve {
 		if req.Source == models.RequestHouseholdConversion {
 			if err := a.sendConversionApprovedEmail(req); err != nil {
