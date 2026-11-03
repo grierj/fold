@@ -1165,3 +1165,51 @@ func TestNotifyReconcileHourlyRetriesErrors(t *testing.T) {
 		t.Fatalf("hourly read failure did not retry: %+v", job)
 	}
 }
+
+func TestNotifyReconcileBackfillSkipsClosedNotices(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleAdmin)
+	now := time.Now().UTC()
+	at := now.Add(-time.Hour)
+	set := func(n models.Notification, col string, v any) models.Notification {
+		t.Helper()
+		if err := app.DB.Model(&models.Notification{}).Where("id = ?", n.ID).Update(col, v).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	resolved := preOutboxNotice(t, app, u, notify.GroupPending, at, nil)
+	set(resolved, "waiting", true)
+	set(resolved, "resolved_at", at.Add(time.Minute))
+	expired := set(preOutboxNotice(t, app, u, notify.GroupApproved, at, nil), "expires_at", now.Add(-time.Minute))
+	archived := set(preOutboxNotice(t, app, u, notify.GroupApproved, at, nil), "archived_at", at.Add(time.Minute))
+	read := set(preOutboxNotice(t, app, u, notify.GroupApproved, at, nil), "read_at", at.Add(time.Minute))
+	open := preOutboxNotice(t, app, u, notify.GroupPending, at, nil)
+	set(open, "waiting", true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.reconcileNotifications(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		id     uint
+		closed bool
+	}{"resolved task": {resolved.ID, true}, "expired": {expired.ID, true}, "archived": {archived.ID, true},
+		"read ordinary": {read.ID, false}, "open task": {open.ID, false}} {
+		var d models.NotificationDelivery
+		if err := app.DB.Where("notification_id = ? AND channel = ?", tc.id, models.DeliveryEmail).First(&d).Error; err != nil {
+			t.Fatalf("%s: no email row: %v", name, err)
+		}
+		var njobs int64
+		if err := app.DB.Model(&models.Job{}).Where("unique_key = ?", notify.DeliverKey(tc.id)).Count(&njobs).Error; err != nil {
+			t.Fatal(err)
+		}
+		if tc.closed && (d.Status != models.DeliverySuppressed || d.Reason != "bell only" || njobs != 0) {
+			t.Errorf("%s: want suppressed bell only with no job, got %q %q and %d jobs", name, d.Status, d.Reason, njobs)
+		}
+		if !tc.closed && (d.Status != models.DeliveryQueued || njobs != 1) {
+			t.Errorf("%s: want queued with one job, got %q and %d jobs", name, d.Status, njobs)
+		}
+	}
+}

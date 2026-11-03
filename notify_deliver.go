@@ -102,7 +102,8 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 	// No notifications created_at index by choice: at church scale, <=180 days kept makes the hourly scan small; R11-0's EXPLAIN pack, statement 5 (reconcile scans), decides whether one is needed.
 	for {
 		var rows []models.Notification
-		if err := db.Raw(`SELECT n.id, n.user_id, n.kind, n.subject_id, n.created_at
+		if err := db.Raw(`SELECT n.id, n.user_id, n.kind, n.subject_id, n.created_at,
+			n.waiting, n.resolved_at, n.expires_at, n.archived_at
 			FROM notifications n
 			WHERE n.created_at > ? AND (n.created_at, n.id) > (?, ?)
 			  AND NOT EXISTS (SELECT 1 FROM notification_deliveries nd
@@ -113,7 +114,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 			Scan(&rows).Error; err != nil {
 			return err
 		}
-		if err := db.Transaction(func(tx *gorm.DB) error { return queueReconciledNotifications(tx, rows) }); err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error { return queueReconciledNotifications(tx, rows, now) }); err != nil {
 			return err
 		}
 		if len(rows) < notifyReconcileBatch {
@@ -129,7 +130,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 // deliver only with a found request and parsed, clean flags; missing subjects,
 // missing requests and invalid flags stay bell-only. Read requests together
 // and queue each group in the same transaction.
-func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification) error {
+func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now time.Time) error {
 	var eligible []models.Notification
 	var requestIDs []uint
 	for _, row := range rows {
@@ -157,6 +158,15 @@ func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification) error
 	}
 	var deliver, bellOnly []models.Notification
 	for _, row := range eligible {
+		// A backfill is a late repair, not an ordinary send: a notice already resolved,
+		// expired or archived before the sweep found it stays bell-only, as push would
+		// drop it (pushStale). A notice the person read still mails; whether email skips
+		// read notices is R6 open question 3, left at its default (no). Ordinary sends
+		// and admin retries do not use this rule.
+		if pushStale(&row, now) == pushWhyStale {
+			bellOnly = append(bellOnly, row)
+			continue
+		}
 		if row.Kind == notify.AccountRequested {
 			var f models.RequestFlags
 			var found bool
