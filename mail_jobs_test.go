@@ -2222,3 +2222,385 @@ func TestEmailChangeNoticeIsBoundedAndKeepsAddressesOutOfLogs(t *testing.T) {
 		t.Fatal("the durable verification job was not queued")
 	}
 }
+
+func queueHeldGuardianConsentMail(t *testing.T) (*App, *models.User, *models.User, *models.GuardianLink, models.Job) {
+	t.Helper()
+	app, guardian, teen, link, _, admin := pendingGuardianEmailSetup(t)
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]string{"checkNote": "known family"}, http.StatusOK)
+	rows := mailJobsOfKind(t, app, kindGuardianConsentMail)
+	if len(rows) != 1 || !payloadEquals(rows[0], guardianConsentMailJob{GuardianLinkID: link.ID}) || rows[0].UniqueKey != nil || rows[0].MaxAttempts != directMailAttempts {
+		t.Fatal("confirmation did not queue a distinct ID-only consent mail")
+	}
+	if len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || mailCount(t, app, "") != 0 {
+		t.Fatal("confirmation prepared or sent mail before its job ran")
+	}
+	return app, guardian, teen, link, rows[0]
+}
+
+func TestGuardianConsentMailRetryReplacesOnlyItsLink(t *testing.T) {
+	app, guardian, teen, link, job := queueHeldGuardianConsentMail(t)
+	otherTeen := guardianTestTeen(t, app, "other-teen")
+	if err := app.DB.Model(teen).Update("name", "Private teen name").Error; err != nil {
+		t.Fatal(err)
+	}
+	otherLink := models.GuardianLink{GuardianUserID: guardian.ID, TeenUserID: &otherTeen.ID, Status: models.GuardianConfirmed}
+	if err := app.DB.Create(&otherLink).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sent []mail.Message
+	app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
+		if _, ok := ctx.Deadline(); !ok || msg.Optional {
+			return errors.New("consent mail must use bounded required delivery")
+		}
+		// The provider can take all preparation locks on another connection
+		// and read the committed hash. No token or lock rides the send.
+		raw := guardianTokenFromText(t, msg.Text)
+		if err := app.DB.Transaction(func(tx *gorm.DB) error {
+			var available bool
+			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", contactLockID).Scan(&available).Error; err != nil {
+				return err
+			}
+			if !available {
+				return errors.New("provider I/O holds the contact gate")
+			}
+			if err := tx.Exec("SELECT id FROM users WHERE id IN ? FOR NO KEY UPDATE NOWAIT", []uint{guardian.ID, teen.ID, otherTeen.ID}).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec("SELECT id FROM guardian_links WHERE id IN ? FOR UPDATE NOWAIT", []uint{link.ID, otherLink.ID}).Error; err != nil {
+				return err
+			}
+			return tx.Where("token_hash = ? AND used_at IS NULL", hashToken(raw)).First(&models.AccountToken{}).Error
+		}); err != nil {
+			return err
+		}
+		sent = append(sent, msg)
+		if len(sent) == 2 { // other teen first, then this job's first attempt
+			return errors.New("temporary provider failure")
+		}
+		return nil
+	})
+	if err := deliverMailJob(context.Background(), app, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: otherLink.ID}); err != nil {
+		t.Fatal(err)
+	}
+	rawOther := guardianTokenFromText(t, sent[0].Text)
+	runResetMail(t, app)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobFailed || got.Attempts != 1 || len(sent) != 2 {
+		t.Fatalf("transient consent send did not retry: %+v", got)
+	}
+	old := guardianTokenFromText(t, sent[1].Text)
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	runResetMail(t, app)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.Attempts != 2 || len(sent) != 3 {
+		t.Fatalf("consent retry did not finish: %+v", got)
+	}
+	fresh := guardianTokenFromText(t, sent[2].Text)
+	if fresh == old || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 2 {
+		t.Fatal("retry did not keep one capability per guardian link")
+	}
+	for _, msg := range sent {
+		if msg.To != guardian.Email || msg.Subject != "Review teen account consent in Fold" ||
+			!strings.Contains(msg.Text, "Opening it does not give consent.") || strings.Contains(msg.Text, teen.PublicName()) || strings.Contains(msg.Text, otherTeen.PublicName()) {
+			t.Fatal("consent mail changed its safe text or recipient")
+		}
+	}
+	anon := newAPIClient(t, app)
+	anon.holdNotices = true
+	anon.fetchCSRF()
+	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": old}, http.StatusBadRequest)
+	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": rawOther}, http.StatusOK)
+	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": fresh}, http.StatusOK)
+	for _, user := range []*models.User{teen, otherTeen} {
+		if err := app.DB.First(user, user.ID).Error; err != nil || user.Status != models.UserActive {
+			t.Fatalf("independent consent link did not activate its teen: %v %+v", err, user)
+		}
+	}
+}
+
+func TestGuardianConsentMailRebuildsCurrentAuthority(t *testing.T) {
+	app, guardian, teen, _, job := queueHeldGuardianConsentMail(t)
+	if err := app.DB.Model(guardian).Updates(map[string]any{"email": "current.guardian@example.com", "session_version": guardian.SessionVersion + 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.First(guardian, guardian.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	consent := models.TeenConsent{TeenUserID: teen.ID, Scope: models.TeenConsentAccount, Status: models.ConsentRevoked,
+		GrantedBy: guardian.ID, GranterRole: models.ConsentGuardian}
+	if err := app.DB.Create(&consent).Error; err != nil {
+		t.Fatal(err)
+	}
+	runResetMail(t, app)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || mailCount(t, app, "guardian@example.com") != 0 || mailCount(t, app, guardian.Email) != 1 {
+		t.Fatalf("delivery did not use current guardian authority: %+v", got)
+	}
+	raw := guardianEmailRaw(t, app, guardian.Email)
+	var token models.AccountToken
+	if err := app.DB.Where("token_hash = ?", hashToken(raw)).First(&token).Error; err != nil {
+		t.Fatal(err)
+	}
+	var authority guardianEmailAuthority
+	if err := json.Unmarshal([]byte(token.Payload), &authority); err != nil || authority.ConsentID != consent.ID || authority.GuardianEmail != guardian.Email || authority.SessionVersion != guardian.SessionVersion {
+		t.Fatalf("delivery bound stale authority: %v %+v", err, authority)
+	}
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+raw, nil, http.StatusOK)
+	if auditCount(t, app, audit.TeenConsentGranted) != 0 {
+		t.Fatal("delivery or preview gave consent")
+	}
+	apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": raw}, http.StatusOK)
+}
+
+func TestGuardianConsentMailSkipsUnauthorizedRelationships(t *testing.T) {
+	for _, state := range []string{"pending", "rejected", "revoked", "removed", "guardian disabled", "guardian deleted", "guardian is teen", "teen deleted", "teen is adult", "household person"} {
+		t.Run(state, func(t *testing.T) {
+			app, guardian, teen, link, job := queueHeldGuardianConsentMail(t)
+			var err error
+			switch state {
+			case "pending", "rejected", "revoked":
+				err = app.DB.Model(link).Update("status", state).Error
+			case "removed":
+				err = app.DB.Delete(link).Error
+			case "guardian disabled":
+				err = app.DB.Model(guardian).Update("status", models.UserDisabled).Error
+			case "guardian deleted":
+				err = app.DB.Delete(guardian).Error
+			case "guardian is teen":
+				err = app.DB.Model(guardian).Update("account_type", models.AccountTeen).Error
+			case "teen deleted":
+				err = app.DB.Delete(teen).Error
+			case "teen is adult":
+				err = app.DB.Model(teen).Update("account_type", models.AccountAdult).Error
+			case "household person":
+				household := models.Household{Name: "Family", CreatedBy: guardian.ID}
+				if err := app.DB.Create(&household).Error; err != nil {
+					t.Fatal(err)
+				}
+				person := models.HouseholdPerson{HouseholdID: household.ID, FirstName: "Child", Kind: models.AccountTeen, BirthDate: teen.BirthDate, CreatedBy: guardian.ID}
+				if err := app.DB.Create(&person).Error; err != nil {
+					t.Fatal(err)
+				}
+				err = app.DB.Model(link).Updates(map[string]any{"teen_user_id": nil, "person_id": person.ID}).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || mailCount(t, app, "") != 0 {
+				t.Fatalf("unauthorized relationship minted or mailed a capability: %+v", got)
+			}
+		})
+	}
+}
+
+func TestGuardianConsentMailPreparationErrorsRetryWithoutReplacingToken(t *testing.T) {
+	for _, failure := range []string{"link discovery", "locked link", "users", "consent", "token insert"} {
+		t.Run(failure, func(t *testing.T) {
+			app, guardian, _, link, job := queueHeldGuardianConsentMail(t)
+			if err := deliverMailJob(context.Background(), app, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}); err != nil {
+				t.Fatal(err)
+			}
+			before := accountTokens(t, app, guardian.ID, models.TokenTeenConsent)
+			sent := 0
+			app.Mailer = directMailSenderFunc(func(context.Context, mail.Message) error { sent++; return nil })
+			name := fmt.Sprintf("test:guardian_mail_failure:%d", queryCounterSeq.Add(1))
+			inject := func(tx *gorm.DB) {
+				_, locking := tx.Statement.Clauses["FOR"]
+				if (failure == "link discovery" && tx.Statement.Table == "guardian_links" && !locking) ||
+					(failure == "locked link" && tx.Statement.Table == "guardian_links" && locking) ||
+					(failure == "users" && tx.Statement.Table == "users") ||
+					(failure == "consent" && tx.Statement.Table == "teen_consents") ||
+					(failure == "token insert" && tx.Statement.Table == "account_tokens") {
+					// A callback error leaves PostgreSQL usable. The handler must
+					// return it explicitly rather than rely on an aborted COMMIT.
+					tx.AddError(errors.New("injected guardian mail database failure"))
+				}
+			}
+			var remove func()
+			if failure == "token insert" {
+				if err := app.DB.Callback().Create().Before("gorm:create").Register(name, inject); err != nil {
+					t.Fatal(err)
+				}
+				remove = func() { _ = app.DB.Callback().Create().Remove(name) }
+			} else {
+				if err := app.DB.Callback().Query().Before("gorm:query").Register(name, inject); err != nil {
+					t.Fatal(err)
+				}
+				remove = func() { _ = app.DB.Callback().Query().Remove(name) }
+			}
+			t.Cleanup(remove)
+			runResetMail(t, app)
+			remove()
+			if got := reloadJob(t, app, job.ID); got.Status != models.JobFailed || got.Attempts != 1 || got.LastError == "" || sent != 0 || !reflect.DeepEqual(before, accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) {
+				t.Fatalf("preparation error did not roll back and retry: %+v", got)
+			}
+			if err := app.DB.Model(&models.Job{}).Where("id = ?", job.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+				t.Fatal(err)
+			}
+			runResetMail(t, app)
+			if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.Attempts != 2 || sent != 1 || reflect.DeepEqual(before, accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) {
+				t.Fatalf("recovered preparation did not replace and deliver: %+v", got)
+			}
+		})
+	}
+}
+
+func TestGuardianConsentMailWithoutSenderFinishesQuietly(t *testing.T) {
+	app, guardian, _, _, job := queueHeldGuardianConsentMail(t)
+	app.Mailer = nil
+	runResetMail(t, app)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.LastError != "" || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 1 || mailCount(t, app, "") != 0 {
+		t.Fatalf("nil sender must finish quietly: %+v", got)
+	}
+}
+
+func TestGuardianConsentMailAndAuthorityChangesLockOrders(t *testing.T) {
+	for _, action := range []string{"redemption", "consent revocation", "link revocation"} {
+		for _, first := range []string{"delivery", action} {
+			t.Run(first+" before "+action, func(t *testing.T) {
+				app, guardian, teen, link, _, old := guardianEmailSetup(t)
+				sendsBefore := mailCount(t, app, guardian.Email)
+				var delivered string
+				sender := app.Mailer
+				app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
+					delivered = msg.Text
+					return sender.Send(ctx, msg)
+				})
+				work := func(operation string) func(*gorm.DB) error {
+					return func(db *gorm.DB) error {
+						a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+						if operation == "delivery" {
+							return deliverMailJob(db.Statement.Context, a, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID})
+						}
+						if operation == "link revocation" {
+							// Teen links have no standalone revoke endpoint. Model
+							// revocation under the same lifecycle locks used by
+							// account and guardian changes.
+							return a.contactMutation(contactChange{UserID: teen.ID}, func(tx *gorm.DB) error {
+								if _, _, _, err := lockedTeenGuardian(tx, guardian.ID, teen.ID, link.ID); err != nil {
+									return err
+								}
+								return tx.Model(&models.GuardianLink{}).Where("id = ?", link.ID).Update("status", models.GuardianRevoked).Error
+							})
+						}
+						body := map[string]string{"token": old}
+						expected := http.StatusOK
+						if operation == "consent revocation" {
+							body = map[string]string{"scope": models.TeenConsentAccount, "status": models.ConsentRevoked}
+						} else if first == "delivery" {
+							expected = http.StatusBadRequest
+						}
+						w := httptest.NewRecorder()
+						c, _ := gin.CreateTestContext(w)
+						c.Request = httptest.NewRequest("POST", "/api/v1/guardian-consent", strings.NewReader(jsonString(body))).WithContext(db.Statement.Context)
+						c.Request.Header.Set("Content-Type", "application/json")
+						if operation == "consent revocation" {
+							c.Set("apiUser", guardian)
+							c.Params = gin.Params{{Key: "id", Value: itoa(link.ID)}}
+							a.apiGuardianChangeConsent(c)
+						} else {
+							a.apiUseGuardianEmail(c)
+						}
+						if w.Code != expected {
+							return fmt.Errorf("%s: got %d %s, want %d", operation, w.Code, w.Body.String(), expected)
+						}
+						return nil
+					}
+				}
+				second := action
+				if first == action {
+					second = "delivery"
+				}
+				reached, release := pauseDBRead(t, app.DB, first, "users")
+				winner, winnerDone := startDBSession(t, app.DB, first, work(first))
+				awaitDBSignal(t, reached) // winner holds the gate and ordered user locks
+				loser, loserDone := startDBSession(t, app.DB, second, work(second))
+				waitDBBlocked(t, app.DB, loser, winner)
+				release()
+				if err := awaitDBResult(t, winnerDone); err != nil {
+					t.Fatal(err)
+				}
+				if err := awaitDBResult(t, loserDone); err != nil {
+					t.Fatal(err)
+				}
+				expectedMails := sendsBefore + 1
+				if first == "link revocation" {
+					expectedMails = sendsBefore
+				}
+				if mailCount(t, app, guardian.Email) != expectedMails {
+					t.Fatal("waiting delivery ignored current relationship authority")
+				}
+				var wantGrants int64
+				if first == "redemption" {
+					wantGrants = 1
+				}
+				if auditCount(t, app, audit.TeenConsentGranted) != wantGrants {
+					t.Fatal("a replaced or revoked capability granted consent")
+				}
+				if err := app.DB.First(teen, teen.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if action == "consent revocation" && teen.Status != models.UserDisabled {
+					t.Fatal("delivery undid consent revocation")
+				}
+				anon := newAPIClient(t, app)
+				anon.holdNotices = true
+				anon.fetchCSRF()
+				apiDo(t, anon, "POST", "/api/v1/guardian-consent", map[string]string{"token": old}, http.StatusBadRequest)
+				if expectedMails > sendsBefore {
+					fresh := guardianTokenFromText(t, delivered)
+					if fresh == old {
+						t.Fatal("delivery reused its prior capability")
+					}
+					expectedPreview := http.StatusOK
+					if action == "link revocation" || (action == "consent revocation" && first == "delivery") {
+						expectedPreview = http.StatusBadRequest
+					}
+					// A fresh link after consent revocation may offer a new
+					// explicit grant. A link from before it cannot do that.
+					apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+fresh, nil, expectedPreview)
+				}
+			})
+		}
+	}
+}
+
+func TestGuardianEmailRedemptionRefusesExpiryDuringLockWait(t *testing.T) {
+	for _, wait := range []string{"contact gate", "user lock"} {
+		t.Run(wait, func(t *testing.T) {
+			app, guardian, teen, _, _, raw := guardianEmailSetup(t)
+			var token models.AccountToken
+			if err := app.DB.Where("token_hash = ?", hashToken(raw)).First(&token).Error; err != nil {
+				t.Fatal(err)
+			}
+			lock := lockContacts
+			if wait == "user lock" {
+				lock = lockUserRow(guardian.ID)
+			}
+			race := holdThenExpire(t, app, lock, expireRowNow("account_tokens", token.ID))
+			err := race.run(t, app, "redemption", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config}
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/api/v1/guardian-consent", strings.NewReader(jsonString(map[string]string{"token": raw}))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				a.apiUseGuardianEmail(c)
+				if w.Code != http.StatusBadRequest {
+					return fmt.Errorf("expired redemption: %d %s", w.Code, w.Body.String())
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.First(&token, token.ID).Error; err != nil || token.UsedAt != nil || auditCount(t, app, audit.TeenConsentGranted) != 0 {
+				t.Fatalf("expired capability was consumed: %v %+v", err, token)
+			}
+			if err := app.DB.First(teen, teen.ID).Error; err != nil || teen.Status != models.UserPendingConsent {
+				t.Fatalf("expired capability changed teen status: %v %+v", err, teen)
+			}
+		})
+	}
+}

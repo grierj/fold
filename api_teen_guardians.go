@@ -129,7 +129,10 @@ func lockedTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.U
 	}
 	var link models.GuardianLink
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND guardian_user_id = ? AND teen_user_id = ?", linkID, guardianID, teenID).First(&link).Error; err != nil {
-		return nil, nil, nil, errGuardianUnavailable
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, nil, errGuardianUnavailable
+		}
+		return nil, nil, nil, err
 	}
 	if guardian.Status != models.UserActive || !policy.CanRequestGuardianLink(asPerson(guardian)) || teen.AccountType != models.AccountTeen || link.Status != models.GuardianConfirmed {
 		return nil, nil, nil, errGuardianUnavailable

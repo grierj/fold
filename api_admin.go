@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -414,6 +414,9 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
 				return err
 			}
+			if _, err := jobs.Enqueue(tx, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+				return err
+			}
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
 			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: c.ClientIP()})
@@ -436,11 +439,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	var fresh models.GuardianLink
 	a.DB.First(&fresh, link.ID)
-	if confirm && fresh.TeenUserID != nil {
-		if err := a.sendGuardianConsentEmail(fresh.ID); err != nil {
-			log.Printf("guardian consent email: link=%d err=%v", fresh.ID, err)
-		}
-	}
 	c.JSON(http.StatusOK, gin.H{"guardianLink": a.toGuardianLinkJSON(&fresh)})
 }
 

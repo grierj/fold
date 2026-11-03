@@ -1191,7 +1191,6 @@ var mailerSendFiles = map[string]string{
 	"api_message_preview.go": "the composer's test send is synchronous by design (brief section 4)",
 	"api_profile.go":         "direct mail: address change confirmation",
 	"api_guest.go":           "direct mail: guest verification and manage links",
-	"api_guardian_email.go":  "direct mail: guardian consent link",
 }
 
 // noticeDeliveryViolations scans one production file's source. The legacy

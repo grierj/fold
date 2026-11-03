@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 
 	"fold/internal/jobs"
 	"fold/internal/mail"
@@ -17,12 +18,13 @@ import (
 )
 
 const (
-	kindPasswordResetMail  = "account.password_reset_mail"
-	kindAccountRequestMail = "account.request_mail"
-	kindAccountExistsMail  = "account.exists_mail"
-	kindInvitationMail     = "invitation.mail"
-	kindEmailVerifyMail    = "account.email_verify_mail"
-	directMailAttempts     = 8
+	kindPasswordResetMail   = "account.password_reset_mail"
+	kindAccountRequestMail  = "account.request_mail"
+	kindAccountExistsMail   = "account.exists_mail"
+	kindInvitationMail      = "invitation.mail"
+	kindEmailVerifyMail     = "account.email_verify_mail"
+	kindGuardianConsentMail = "guardian.consent_mail"
+	directMailAttempts      = 8
 )
 
 // Account-request mail cases. The case is the only non-ID payload value: it
@@ -54,6 +56,10 @@ type invitationMailJob struct {
 // the verification row so a retry can rotate its hash and nothing else.
 type accountTokenMailJob struct {
 	AccountTokenID uint `json:"accountTokenId"`
+}
+
+type guardianConsentMailJob struct {
+	GuardianLinkID uint `json:"guardianLinkId"`
 }
 
 func (a *App) mailKinds() []jobs.Kind {
@@ -112,7 +118,54 @@ func (a *App) mailKinds() []jobs.Kind {
 				return a.prepareEmailVerification(tx, p.AccountTokenID)
 			})
 		},
+	}, {
+		Name: kindGuardianConsentMail, Label: "Sending a guardian consent link", MaxAttempts: directMailAttempts,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p guardianConsentMailJob
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, kindGuardianConsentMail, p.GuardianLinkID, func(tx *gorm.DB) (mail.Message, bool, error) {
+				return a.prepareGuardianConsentMail(tx, p.GuardianLinkID)
+			})
+		},
 	}}
+}
+
+// Preparation shares redemption's order: contact gate, users in ID order
+// (and any conversion household), link, then token. Discover the relationship
+// without locking it first; lockedTeenGuardian rechecks its current authority.
+func (a *App) prepareGuardianConsentMail(tx *gorm.DB, linkID uint) (mail.Message, bool, error) {
+	none := mail.Message{}
+	if err := lockContacts(tx); err != nil {
+		return none, false, err
+	}
+	var link models.GuardianLink
+	err := tx.First(&link, linkID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	if link.Status != models.GuardianConfirmed || link.TeenUserID == nil {
+		return none, false, nil
+	}
+	guardian, teen, _, err := lockedTeenGuardian(tx, link.GuardianUserID, *link.TeenUserID, link.ID)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, errGuardianUnavailable) || errors.Is(err, errConsentForbidden) {
+		return none, false, nil
+	}
+	if err != nil {
+		return none, false, err
+	}
+	raw, err := a.createGuardianEmailToken(tx, guardian, teen, link.ID)
+	if err != nil {
+		return none, false, err
+	}
+	// Safeguarding mail names nobody. GET only previews the signed action;
+	// the existing explicit POST is still the only way to give consent.
+	return mail.Message{To: guardian.Email, Subject: "Review teen account consent in Fold",
+		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in 24 hours and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."}, true, nil
 }
 
 // prepareEmailVerification rotates the hash of one stored verification token
