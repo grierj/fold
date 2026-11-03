@@ -5,7 +5,7 @@
 | Audit item | R9 [CHANGE], `docs/AUDIT-2026-11-01.md:151` |
 | Priority | P1 (audit sequence step 3, `docs/AUDIT-2026-11-01.md:263`) |
 | Effort | L |
-| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) merged as PR #264. S3 (date types) merged as PR #265. S4 (the provenance fold, with the S5 close-out in the same PR) is implemented on `autoflow/m77-s4-20261103` with passing checks and schema allowlist review; additional lifecycle regressions and the full Go suite passed; final independent re-review and publication remain pending (notes at the end of §9, S4). The migration freeze covers S2 through S4. |
+| Status | Complete Nov 3, 2026. S1 #258, S2 #264, S3 #265 and S4 #266 merged after checks and independent review. The S5 record in section 9 contains the merge SHAs, owner attestation and verification evidence. Migration freeze released after S4 merge. |
 | New decision | DEC-138 (draft text in §8; landed in PLAN Nov 2026 — PR #236 took DEC-137 for branding first, so the audit block runs DEC-138–DEC-145) |
 
 This brief is the one explicit exception to "never edit an old migration"
@@ -1556,8 +1556,8 @@ move to the registration row (for example `savedOccurrenceAccess` in
 
 *S4 implementation notes (implemented on `autoflow/m77-s4-20261103`; checks, schema review and additional regressions passed).*
 The verification record below describes the completed checks and remaining
-limitations. Final review, publication and merge remain pending; M7.7 is
-incomplete and the migration freeze remains active through S4 merge.
+limitations. Final review passed and S4 merged as #266; the S5 record below
+closes M7.7 and records release of the migration freeze.
 
 - Schema (`00001_baseline.sql`, edited, not regenerated; no new migration):
   `registrations` gains the nine `access_*` columns of §7.2, the CHECKs
@@ -1667,9 +1667,9 @@ incomplete and the migration freeze remains active through S4 merge.
   The stale-request fixture deliberately inserts an otherwise unreachable
   pending request; the series-undo fixture uses the production grant writer
   because the real manager-add endpoint changes the undo revision. Those
-  fixture limits require explicit review. Final independent re-review,
-  publication and merge remain pending; M7.7 is incomplete and the
-  migration freeze remains active. The earlier S3 jobs timeout has not recurred
+  fixture limits were accepted in independent re-review as defensive-boundary
+  evidence, not claims that those endpoint sequences are reachable.
+  S4 merged as #266 after all four CI jobs passed. The earlier S3 jobs timeout has not recurred
   in later runs; its cause remains unknown.
 
 **S5 — Close-out (rides in S4's PR unless it grows).** Update `docs/API.md`
@@ -1677,6 +1677,32 @@ storage and migration references (JSON itself is unchanged). Close the
 `STATUS.md` M7.7 row, which S1 claimed, with actual evidence; close-out does
 need a milestone entry. After merge, the host records the four merge SHAs
 and the §4 attestation evidence and releases the freeze.
+
+**Completed Nov 3, 2026.** All four slices merged with normal merge commits:
+
+| Slice | PR | Merge commit |
+|---|---|---|
+| S1 | [#258](https://github.com/grierj/fold/pull/258) | `be61e582c3011263307e4db4497056f7fd70bfd9` |
+| S2 | [#264](https://github.com/grierj/fold/pull/264) | `ecffd58ac4af11e172c87fda7cf0e8037feddf4c` |
+| S3 | [#265](https://github.com/grierj/fold/pull/265) | `695cf7d9f9e30afc684f2beb7653d8467deb0598` |
+| S4 | [#266](https://github.com/grierj/fold/pull/266) | `c52540432342ab577c68c9046b35384be581ab38` |
+
+The owner statements in §4 remain the gate evidence: no other churches or
+developers use Fold, no Fold image has ever been published, and all known
+database rows, including those in `deploy-db-1`, are disposable development/test
+data. The S4 merge refresh found no tags, releases, deployments or retained
+release-workflow runs. Registry authorization failures did not establish absence.
+No owner database was reset. The host released the S2–S4 migration freeze after
+recording these merge commits and attestation evidence. DEC-138's pre-live
+baseline window still closes at the first tagged release or church deployment.
+
+Final verification includes 991 root Go tests, all four added lifecycle tests,
+1,434 frontend tests under Node 24, 118 e2e passes with seven skips, strict model
+drift and the complete 37-table schema allowlist review. Independent review
+closed all findings across correctness, security, database/performance and
+unaffected UI/UX. The `test`, `web`, `provision` and `compose` CI jobs passed on
+S4 head `08a8b2cc6cb481c2a962ba49dfea04cbffceea24`. The final status reconciliation
+is a documentation-only follow-up; it changes no runtime or schema behavior.
 
 ## 10. Verification proof
 
