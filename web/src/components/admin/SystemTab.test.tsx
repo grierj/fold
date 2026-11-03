@@ -1,10 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AdminJobs, ApiError } from "../../api";
 import { ERROR_COPY } from "../../lib/errors";
-import type { AdminJob } from "../../types";
+import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { SystemTab } from "./SystemTab";
 
 vi.mock("../../api", async (actual) => ({
@@ -95,9 +95,84 @@ it("gives the cursor back to the pressed button when an action fails, and announ
   await waitFor(() => expect(dismiss).toHaveFocus());
 });
 
-it("fetches the next tasks after an action when more failed than were listed", async () => {
+it("refreshes from the server after an action, even when nothing more was listed", async () => {
   const reload = vi.fn();
-  render(<Harness initial={[job(1), job(2)]} more reload={reload} />);
+  render(<Harness initial={[job(1), job(2)]} reload={reload} />);
   await userEvent.click(screen.getAllByRole("button", { name: "Retry now Adding upcoming event dates" })[0]);
   await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+});
+
+const summary = (extra: Partial<AdminDeliverySummary> = {}): AdminDeliverySummary => ({ queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null, ...extra });
+
+const deliverJob = (id: number) => job(id, { kind: "notify.deliver", label: "Sending a notice by email and to devices", runsDaily: false });
+const renderTab = (deliveries: AdminDeliverySummary | null, jobs: AdminJob[] | null = [], extra: { more?: boolean; error?: string | null } = {}) =>
+  render(<SystemTab jobs={jobs} more={extra.more ?? false} error={extra.error ?? null} reload={() => {}} onRemoved={() => {}} deliveries={deliveries} />);
+
+it("says nothing about email when every delivery count is zero", () => {
+  renderTab(summary());
+  expect(document.body).not.toHaveTextContent(/email/i);
+  expect(screen.getByText("Nothing needs attention.")).toBeInTheDocument();
+});
+
+it("says waiting emails send on their own, with the oldest time, and offers no Retry", () => {
+  renderTab(summary({ queued: 3, oldestQueuedAt: "2026-10-30T15:14:00Z" }));
+  expect(screen.getByText(/^3 emails are waiting to send\. The oldest has waited since .*\d{1,2}:\d{2}.*\. Fold sends them on its own\.$/)).toBeInTheDocument();
+  expect(screen.queryByText("Nothing needs attention.")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+});
+
+it("words one waiting email without an oldest time", () => {
+  renderTab(summary({ queued: 1 }));
+  expect(screen.getByText("1 email is waiting to send. Fold sends it on its own.")).toBeInTheDocument();
+});
+
+it("points a stopped email at the listed notify.deliver task", () => {
+  renderTab(summary({ deferred: 1 }), [deliverJob(5)]);
+  expect(screen.getByText("1 email stopped after too many tries. To send it, use Retry now on “Sending a notice by email and to devices” below.")).toBeInTheDocument();
+});
+
+it("says stopped emails are being tried again when no task is listed", () => {
+  renderTab(summary({ deferred: 2 }), [], { more: false });
+  expect(screen.getByText("2 emails are being tried again.")).toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/below/);
+  expect(screen.queryByText("Nothing needs attention.")).not.toBeInTheDocument();
+});
+
+it("says a stopped email is not among the tasks listed when more tasks failed than fit", () => {
+  renderTab(summary({ deferred: 1 }), [job(1)], { more: true });
+  expect(screen.getByText("1 email stopped after too many tries and isn't among the tasks listed.")).toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/will show below/);
+  cleanup();
+  renderTab(summary({ deferred: 3 }), [job(1)], { more: true });
+  expect(screen.getByText("3 emails stopped after too many tries and aren't among the tasks listed.")).toBeInTheDocument();
+});
+
+it("says refused emails could not be sent, with no recipient or error text", () => {
+  renderTab(summary({ failed: 2 }));
+  expect(screen.getByText("2 emails could not be sent in the last 7 days. The mail service refused them, or email isn't set up.")).toBeInTheDocument();
+  expect(screen.queryByText("Nothing needs attention.")).not.toBeInTheDocument();
+  expect(document.body).not.toHaveTextContent(/@|pq:|smtp/i);
+});
+
+it("joins queued, stopped and refused emails into one paragraph", () => {
+  renderTab(summary({ queued: 1, deferred: 2, failed: 1 }), [deliverJob(5)]);
+  expect(screen.getByText(
+    "1 email is waiting to send. Fold sends it on its own. " +
+    "2 emails stopped after too many tries. To send them, use Retry now on each “Sending a notice by email and to devices” task below. " +
+    "1 email could not be sent in the last 7 days. The mail service refused it, or email isn't set up.",
+  )).toBeInTheDocument();
+});
+
+it("shows no email counts beside a load error", () => {
+  renderTab(summary({ queued: 3, failed: 2 }), null, { error: "We couldn't load the background tasks." });
+  expect(document.body).not.toHaveTextContent(/emails? (is|are|could)/);
+  expect(screen.queryByText("Nothing needs attention.")).not.toBeInTheDocument();
+});
+
+it("announces changed email counts politely in the same element", () => {
+  const { rerender } = renderTab(summary({ deferred: 1 }), [deliverJob(5)]);
+  const line = screen.getByText(/^1 email stopped/);
+  expect(line).toHaveAttribute("aria-live", "polite");
+  rerender(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ queued: 1 })} />);
+  expect(line).toHaveTextContent("1 email is waiting to send. Fold sends it on its own.");
 });

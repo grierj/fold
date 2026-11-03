@@ -1096,6 +1096,13 @@ export interface RoomRequest {
   createdAt: string;
 }
 
+export interface AdminDeliverySummary {
+  queued: number;
+  deferred: number;
+  failed: number;
+  oldestQueuedAt: string | null;
+}
+
 // A background job that ran out of attempts (M3.1b, DEC-111), as the admin
 // System page shows it. label says what it does; runsDaily means tomorrow's
 // run tries again by itself. Never its payload.

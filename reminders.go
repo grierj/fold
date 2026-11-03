@@ -82,7 +82,9 @@ func (a *App) reminderKinds() []jobs.Kind {
 // hourlyKinds are queued once an hour (jobs_daily.go).
 func (a *App) hourlyKinds() []jobs.Kind {
 	return []jobs.Kind{{Name: kindReminderSweep, Label: "Lining up event reminders", MaxAttempts: jobs.DefaultMaxAttempts,
-		Run: func(ctx context.Context, _ json.RawMessage) error { return a.sweepReminders(ctx, time.Now()) }}}
+		Run: func(ctx context.Context, _ json.RawMessage) error { return a.sweepReminders(ctx, time.Now()) }},
+		{Name: kindNotifyReconcile, Label: "Checking for notices that still need sending", MaxAttempts: jobs.DefaultMaxAttempts,
+			Run: func(ctx context.Context, _ json.RawMessage) error { return a.reconcileNotifications(ctx, time.Now()) }}}
 }
 
 // sweepReminders queues reminder.send for each scheduled date whose

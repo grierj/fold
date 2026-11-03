@@ -266,6 +266,105 @@ func TestExpiredLeases(t *testing.T) {
 	}
 }
 
+type deadCall struct {
+	id       uint
+	kind     string
+	attempts int
+	text     string
+}
+
+// OnDead fires once, with the job's id, kind, attempts and cleaned error,
+// when a job dies; a retrying failure and a Later never call it.
+func TestOnDeadFiresOnceWhenAJobDies(t *testing.T) {
+	db := testdb.Shared(t)
+	var calls []deadCall
+	r := runner(db,
+		Kind{Name: "die", Run: func(context.Context, json.RawMessage) error { return errors.New("provider down\nsecond line") }},
+		Kind{Name: "retry", Run: func(context.Context, json.RawMessage) error { return errors.New("try later") }},
+		Kind{Name: "wait", Run: func(context.Context, json.RawMessage) error { return Later(time.Now().Add(time.Hour)) }},
+	)
+	r.OnDead = func(id uint, kind string, attempts int, errText string) {
+		calls = append(calls, deadCall{id, kind, attempts, errText})
+	}
+	Enqueue(db, "retry", nil, time.Now().Add(-3*time.Second), "", 3)
+	Enqueue(db, "wait", nil, time.Now().Add(-2*time.Second), "", 1)
+	Enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
+	for range 3 {
+		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
+			t.Fatalf("run: %v %v", ran, err)
+		}
+	}
+	var die models.Job
+	db.Where("kind = ?", "die").First(&die)
+	if die.Status != models.JobDead {
+		t.Fatalf("die: %+v", die)
+	}
+	want := deadCall{die.ID, "die", 1, "provider down"}
+	if len(calls) != 1 || calls[0] != want {
+		t.Fatalf("hook calls %+v, want just %+v", calls, want)
+	}
+	// Nothing is due now (one in backoff, one waiting), and a dead job is not run again.
+	if ran, _ := r.RunOnce(context.Background(), "w"); ran || len(calls) != 1 {
+		t.Fatalf("ran %v, hook calls %+v", ran, calls)
+	}
+}
+
+// A late finish by a worker that lost its lease lands no rows, so the job is
+// not announced dead by it; the holder that landed the change is.
+func TestOnDeadSkippedWhenLeaseLost(t *testing.T) {
+	db := testdb.Shared(t)
+	var calls []deadCall
+	r := runner(db)
+	r.OnDead = func(id uint, kind string, attempts int, errText string) {
+		calls = append(calls, deadCall{id, kind, attempts, errText})
+	}
+	Enqueue(db, "work", nil, time.Now(), "", 1)
+	var j models.Job
+	db.First(&j)
+	db.Model(&j).Updates(map[string]any{"status": models.JobRunning, "attempts": 1, "locked_at": time.Now(), "locked_by": "holder"})
+	job := claimed{ID: j.ID, Kind: "work", Attempts: 1, MaxAttempts: 1}
+	if err := r.finish(job, "gone", errors.New("late"), false); err != nil {
+		t.Fatal(err)
+	}
+	db.First(&j, j.ID)
+	if len(calls) != 0 || j.Status != models.JobRunning {
+		t.Fatalf("a lost lease announced a death: %+v, %+v", calls, j)
+	}
+	if err := r.finish(job, "holder", errors.New("boom"), false); err != nil {
+		t.Fatal(err)
+	}
+	db.First(&j, j.ID)
+	if want := (deadCall{j.ID, "work", 1, "boom"}); j.Status != models.JobDead || len(calls) != 1 || calls[0] != want {
+		t.Fatalf("holder finish: %+v, %+v", calls, j)
+	}
+}
+
+// A hook that panics is logged and nothing more: the job stays dead, finish
+// returns no error and the worker goes on to the next job.
+func TestOnDeadPanicDoesNotStopWorker(t *testing.T) {
+	db := testdb.Shared(t)
+	ran := 0
+	r := runner(db,
+		Kind{Name: "die", Run: func(context.Context, json.RawMessage) error { return errors.New("nope") }},
+		Kind{Name: "ok", Run: func(context.Context, json.RawMessage) error { ran++; return nil }},
+	)
+	hook := 0
+	r.OnDead = func(uint, string, int, string) { hook++; panic("hook broke") }
+	Enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
+	Enqueue(db, "ok", nil, time.Now(), "", 1)
+	for i := range 2 {
+		if got, err := r.RunOnce(context.Background(), "w"); !got || err != nil {
+			t.Fatalf("run %d: %v %v", i, got, err)
+		}
+	}
+	var die, ok models.Job
+	db.Where("kind = ?", "die").First(&die)
+	db.Where("kind = ?", "ok").First(&ok)
+	if hook != 1 || die.Status != models.JobDead || ok.Status != models.JobDone || ran != 1 {
+		t.Fatalf("hook %d, die %+v, ok %+v", hook, die, ok)
+	}
+}
+
 // Six workers (app processes) contend for 200 jobs: every job runs exactly
 // once (FOR UPDATE SKIP LOCKED).
 func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {

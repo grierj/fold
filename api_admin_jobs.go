@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -30,6 +32,14 @@ type adminJobJSON struct {
 	Attempts  int       `json:"attempts"`
 	LastError string    `json:"lastError"`
 	FailedAt  time.Time `json:"failedAt"`
+}
+
+// adminDeliverySummaryJSON contains email delivery totals without recipient details.
+type adminDeliverySummaryJSON struct {
+	Queued         int64      `json:"queued"`
+	Deferred       int64      `json:"deferred"`
+	Failed         int64      `json:"failed"`
+	OldestQueuedAt *time.Time `json:"oldestQueuedAt"`
 }
 
 // maxDeadJobsListed bounds the System page; it says when there are more.
@@ -62,6 +72,16 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load background jobs")
 		return
 	}
+	var deliveries adminDeliverySummaryJSON
+	if err := a.DB.Raw(`SELECT
+		count(*) FILTER (WHERE status = 'queued') AS queued,
+		count(*) FILTER (WHERE status = 'deferred') AS deferred,
+		count(*) FILTER (WHERE status = 'failed' AND updated_at > now() - interval '7 days') AS failed,
+		min(created_at) FILTER (WHERE status = 'queued') AS oldest_queued_at
+		FROM notification_deliveries WHERE channel = 'email'`).Scan(&deliveries).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load background jobs")
+		return
+	}
 	more := len(rows) > maxDeadJobsListed
 	if more {
 		rows = rows[:maxDeadJobsListed]
@@ -77,7 +97,7 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 		out = append(out, adminJobJSON{ID: j.ID, Kind: j.Kind, Label: label, RunsDaily: k.Daily,
 			Attempts: j.Attempts, LastError: j.LastError, FailedAt: j.UpdatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{"jobs": out, "more": more})
+	c.JSON(http.StatusOK, gin.H{"jobs": out, "more": more, "deliveries": deliveries})
 }
 
 // errJobHandled: the job is no longer dead (another admin, or a second
@@ -95,7 +115,7 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 	var job models.Job
 	found, handled := true, false
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Select("id, kind").First(&job, id).Error; err != nil {
+		if err := tx.Select("id, kind, payload").First(&job, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				found = false
 				return nil
@@ -108,6 +128,25 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 			return res.Error
 		}
 		handled = true
+		if action == audit.JobDismissed && job.Kind == notify.DeliverKind {
+			var p notifyDeliverJob
+			if json.Unmarshal([]byte(job.Payload), &p) == nil && p.NotificationID != 0 {
+				if err := updateEmailDelivery(tx, p.NotificationID, models.DeliverySuppressed, emailDismissed, ""); err != nil {
+					return err
+				}
+			}
+		}
+		// The alert for this death is done: close every admin's copy. The status
+		// UPDATE above holds the job row, so alertDeadJob (which locks it and
+		// rechecks) either ran first and is resolved here, or runs after and
+		// sees a job that is no longer dead.
+		resolution := "retried"
+		if action == audit.JobDismissed {
+			resolution = "dismissed"
+		}
+		if _, err := notify.Resolve(tx, notify.SystemJobDead, job.ID, &me.ID, resolution); err != nil {
+			return err
+		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action, TargetType: "job", TargetID: job.ID,
 			Meta: map[string]any{"kind": job.Kind}, IP: c.ClientIP()})
 	})

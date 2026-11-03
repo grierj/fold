@@ -61,6 +61,7 @@ const (
 	HouseholdChildTurned13  = "household.child_turned_13"
 	PushKeysReset           = "push.keys_reset"
 	PushDevicesOff          = "push.devices_off"
+	SystemJobDead           = "system.job_dead"
 	YourRole                = "group.your_role"
 )
 
@@ -91,7 +92,7 @@ type Vars struct {
 	Visibility string // new visibility, in words
 	GroupVis   string // the group's visibility, in words
 	Note       string // a short reason the actor gave
-	Count      int    // set by Send: how many events this row covers
+	Count      int    // how many events this row covers; Send sets it (to 1 for a new row) unless the caller gave one, as system.job_dead does for its tries
 	KeptCount  int    // departure summary: exact dates retained
 	EndedCount int    // departure summary: upcoming registrations ended
 	Teen       bool   // the subject is a teen account (badge in words; no contact details ever)
@@ -667,6 +668,20 @@ func init() {
 		Key: PushDevicesOff, Category: CatAdmin,
 		Render: func(Vars) (string, string) {
 			return "Notifications on your devices were turned off", "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications."
+		},
+	})
+	register(Kind{
+		// A background job ran out of attempts and is dead (M7.5, R6-3). A
+		// task for the admins, resolved when one retries or sets the job aside
+		// on Admin, System. Bell only: the commonest cause is the mail or push
+		// service being down, so an alert that needed either would chain. It
+		// renders only from Change (what the task does, in words) and Count
+		// (the tries); a job's payload and error text can name people, so they
+		// never reach it.
+		Key: SystemJobDead, Category: CatAdmin, Waiting: true,
+		Render: func(v Vars) (string, string) {
+			return "A background task stopped: " + or(v.Change, "a task"),
+				fmt.Sprintf("It could not finish after %d tries. Open Admin, then System to try it again or set it aside.", v.Count)
 		},
 	})
 	register(Kind{

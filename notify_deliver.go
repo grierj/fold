@@ -24,11 +24,14 @@ import (
 const (
 	notifyDeliverAttempts = 8
 	deliverSendTimeout    = 60 * time.Second
+	kindNotifyReconcile   = "notify.reconcile"
+	notifyReconcileBatch  = 500
 	// emailKindStopped is the ledger reason when a kind no longer emails.
 	emailKindStopped = "this kind of notice no longer sends email"
 	// emailKindUnknown is the ledger reason when this version of Fold
 	// doesn't know the notice's kind.
 	emailKindUnknown = "this version of Fold doesn't know this kind of notice"
+	emailDismissed   = "an admin set this notice aside"
 	// notifyUnknownWait and notifyUnknownGrace mirror jobs.unknownKindWait
 	// and jobs.unknownKindGrace. A notice this build doesn't know waits an
 	// hour without spending an attempt, and is suppressed after a week.
@@ -55,6 +58,132 @@ func (a *App) notifyKinds() []jobs.Kind {
 			return a.deliverOneNotification(ctx, p.NotificationID)
 		},
 	}}
+}
+
+// reconcileNotifications repairs lost delivery jobs and backfills pre-outbox
+// notices from the last 24 hours. Older notices stay bell-only. Both passes
+// advance by the last candidate, even when every write collides with an
+// existing key or a kind has no delivery channels.
+func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
+	db := a.DB.WithContext(ctx)
+	var afterAt time.Time
+	var afterID uint
+	// A key in any status means the job path owns the row; a dead key goes
+	// to the admin alert, and dismissing it settles the ledger.
+	for {
+		var rows []models.NotificationDelivery
+		if err := db.Raw(`SELECT nd.notification_id, nd.created_at, nd.id
+			FROM notification_deliveries nd
+			WHERE nd.channel = ? AND nd.status = ? AND nd.created_at < ?
+			  AND (nd.created_at, nd.id) > (?, ?)
+			  AND NOT EXISTS (SELECT 1 FROM jobs j
+				WHERE j.unique_key = ? || nd.notification_id)
+			ORDER BY nd.created_at, nd.id LIMIT ?`,
+			models.DeliveryEmail, models.DeliveryQueued, now.Add(-10*time.Minute), afterAt, afterID,
+			notify.DeliverKind+":", notifyReconcileBatch).
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+		specs := make([]jobs.Spec, 0, len(rows))
+		for _, row := range rows {
+			specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.NotificationID},
+				RunAt: now, UniqueKey: notify.DeliverKey(row.NotificationID), MaxAttempts: notifyDeliverAttempts})
+		}
+		if _, err := jobs.EnqueueMany(db, specs); err != nil {
+			return err
+		}
+		if len(rows) < notifyReconcileBatch {
+			break
+		}
+		last := rows[len(rows)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
+	}
+	afterAt, afterID = time.Time{}, 0
+	// No notifications created_at index by choice: at church scale, <=180 days kept makes the hourly scan small; R11-0's EXPLAIN pack, statement 5 (reconcile scans), decides whether one is needed.
+	for {
+		var rows []models.Notification
+		if err := db.Raw(`SELECT n.id, n.user_id, n.kind, n.subject_id, n.created_at,
+			n.waiting, n.resolved_at, n.expires_at, n.archived_at
+			FROM notifications n
+			WHERE n.created_at > ? AND (n.created_at, n.id) > (?, ?)
+			  AND NOT EXISTS (SELECT 1 FROM notification_deliveries nd
+				WHERE nd.notification_id = n.id AND nd.channel = ?)
+			  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.unique_key = ? || n.id)
+			ORDER BY n.created_at, n.id LIMIT ?`,
+			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKind+":", notifyReconcileBatch).
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+		if err := db.Transaction(func(tx *gorm.DB) error { return queueReconciledNotifications(tx, rows, now) }); err != nil {
+			return err
+		}
+		if len(rows) < notifyReconcileBatch {
+			return nil
+		}
+		last := rows[len(rows)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
+	}
+}
+
+// queueReconciledNotifications uses the persisted request flags to preserve
+// pre-outbox duplicate and honeypot notices as bell-only. Account requests
+// deliver only with a found request and parsed, clean flags; missing subjects,
+// missing requests and invalid flags stay bell-only. Read requests together
+// and queue each group in the same transaction.
+func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now time.Time) error {
+	var eligible []models.Notification
+	var requestIDs []uint
+	for _, row := range rows {
+		k, ok := notify.Lookup(row.Kind)
+		if !ok || (!k.AllowEmail && !k.AllowPush) {
+			continue
+		}
+		eligible = append(eligible, row)
+		if row.Kind == notify.AccountRequested && row.SubjectID != nil {
+			requestIDs = append(requestIDs, *row.SubjectID)
+		}
+	}
+	flags := map[uint]models.RequestFlags{}
+	if len(requestIDs) > 0 {
+		var requests []models.AccountRequest
+		if err := tx.Select("id, flags").Where("id IN ?", requestIDs).Find(&requests).Error; err != nil {
+			return err
+		}
+		for _, request := range requests {
+			var f models.RequestFlags
+			if json.Unmarshal([]byte(request.Flags), &f) == nil {
+				flags[request.ID] = f
+			}
+		}
+	}
+	var deliver, bellOnly []models.Notification
+	for _, row := range eligible {
+		// A backfill is a late repair, not an ordinary send: a notice already resolved,
+		// expired or archived before the sweep found it stays bell-only, as push would
+		// drop it (pushStale). A notice the person read still mails; whether email skips
+		// read notices is R6 open question 3, left at its default (no). Ordinary sends
+		// and admin retries do not use this rule.
+		if pushStale(&row, now) == pushWhyStale {
+			bellOnly = append(bellOnly, row)
+			continue
+		}
+		if row.Kind == notify.AccountRequested {
+			var f models.RequestFlags
+			var found bool
+			if row.SubjectID != nil {
+				f, found = flags[*row.SubjectID]
+			}
+			if !found || f.Duplicate || f.Honeypot {
+				bellOnly = append(bellOnly, row)
+				continue
+			}
+		}
+		deliver = append(deliver, row)
+	}
+	if err := notify.QueueDelivery(tx, false, deliver...); err != nil {
+		return err
+	}
+	return notify.QueueDelivery(tx, true, bellOnly...)
 }
 
 // deliverOneNotification sends one stored notice. Push is queued first.

@@ -22,7 +22,7 @@ import { PushEnabledSetting } from "../components/admin/PushEnabledSetting";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AdminJob, AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
+import type { AdminDeliverySummary, AdminJob, AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -1509,6 +1509,9 @@ export function AdminPage() {
   const [deadJobs, setDeadJobs] = useState<AdminJob[] | null>(null);
   const [moreJobs, setMoreJobs] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
+  const [deliveries, setDeliveries] = useState<AdminDeliverySummary | null>(null);
+  // The jobs as the server sent them with `deliveries`, for the email line only.
+  const [snapshotJobs, setSnapshotJobs] = useState<AdminJob[] | null>(null);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1555,8 +1558,10 @@ export function AdminPage() {
   const loadJobs = useCallback(async () => {
     setJobsError(null);
     try {
-      const { jobs, more } = await AdminJobs.list();
+      const { jobs, more, deliveries } = await AdminJobs.list();
       setDeadJobs(jobs);
+      setSnapshotJobs(jobs);
+      setDeliveries(deliveries ?? null);
       setMoreJobs(more);
     } catch (e) {
       setJobsError(errorText(e, "We couldn't load the background tasks."));
@@ -1655,7 +1660,7 @@ export function AdminPage() {
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
-      {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} />}
+      {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} deliveries={deliveries} lineJobs={snapshotJobs} />}
       </Tabs>
     </div>
   );

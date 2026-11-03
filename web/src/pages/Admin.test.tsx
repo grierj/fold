@@ -44,7 +44,7 @@ const user = (id: number, name: string, extra: Partial<User> = {}): User => ({ i
 const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): GroupSummary => ({ id, name, description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null, ...extra });
 
 beforeEach(() => {
-  vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false });
+  vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
@@ -878,13 +878,48 @@ describe("room booking approval (M2.1d)", () => {
 });
 
 it("shows failed background tasks on the System tab, counted only when there are some", async () => {
-  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: [{ id: 4, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5, lastError: "boom", failedAt: "2026-10-30T13:00:00Z" }], more: false });
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: [{ id: 4, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5, lastError: "boom", failedAt: "2026-10-30T13:00:00Z" }], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   const tab = await screen.findByRole("tab", { name: "System, 1" });
   expect(tab).toHaveTextContent("System 1");
   await userEvent.click(tab);
   expect(await screen.findByRole("heading", { name: "Adding upcoming event dates" })).toBeInTheDocument();
   expect(AdminJobs.list).toHaveBeenCalledTimes(1);
+});
+
+it("refreshes the email counts after a task is retried", async () => {
+  const dead = { id: 4, kind: "notify.deliver", label: "Sending an email", runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" };
+  vi.mocked(AdminJobs.list)
+    .mockResolvedValueOnce({ jobs: [dead], more: false, deliveries: { queued: 0, deferred: 1, failed: 0, oldestQueuedAt: null } })
+    .mockResolvedValue({ jobs: [], more: false, deliveries: { queued: 1, deferred: 0, failed: 0, oldestQueuedAt: null } });
+  vi.mocked(AdminJobs.retry).mockResolvedValue({ status: "ok" });
+  render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("1 email stopped after too many tries. To send it, use Retry now on “Sending an email” below.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Retry now/ }));
+  expect(await screen.findByText("1 email is waiting to send. Fold sends it on its own.")).toBeInTheDocument();
+  expect(screen.queryByText(/stopped after too many tries/)).not.toBeInTheDocument();
+  expect(AdminJobs.list).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the email line steady between a dismiss and the reload", async () => {
+  const dead = { id: 4, kind: "notify.deliver", label: "Sending an email", runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" };
+  let finish!: (v: Awaited<ReturnType<typeof AdminJobs.list>>) => void;
+  const second = new Promise<Awaited<ReturnType<typeof AdminJobs.list>>>((r) => { finish = r; });
+  vi.mocked(AdminJobs.list)
+    .mockResolvedValueOnce({ jobs: [dead], more: false, deliveries: { queued: 0, deferred: 1, failed: 0, oldestQueuedAt: null } })
+    .mockReturnValueOnce(second);
+  vi.mocked(AdminJobs.dismiss).mockResolvedValue({ status: "dismissed" });
+  render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
+  const stopped = "1 email stopped after too many tries. To send it, use Retry now on “Sending an email” below.";
+  expect(await screen.findByText(stopped)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
+  await waitFor(() => expect(AdminJobs.list).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Sending an email" })).not.toBeInTheDocument());
+  expect(screen.queryByText(/being tried again/)).not.toBeInTheDocument();
+  expect(screen.getByText(stopped)).toBeInTheDocument();
+  finish({ jobs: [], more: false, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
+  expect(await screen.findByText("Nothing needs attention.")).toBeInTheDocument();
+  expect(screen.queryByText(/stopped after too many tries/)).not.toBeInTheDocument();
 });
 
 it("shows no count on the System tab when nothing failed", async () => {
@@ -895,7 +930,7 @@ it("shows no count on the System tab when nothing failed", async () => {
 
 it("says more than 100 on the System tab when more tasks failed than the list holds", async () => {
   const many = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, kind: "x", label: `Task ${i}`, runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" }));
-  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true });
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true, deliveries: { queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null } });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByRole("tab", { name: "System, more than 100" })).toHaveTextContent("System 100+");
 });

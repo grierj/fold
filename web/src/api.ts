@@ -106,6 +106,7 @@ export async function authenticatedCSV(path: string): Promise<Blob> {
 
 import type {
   AdminJob,
+  AdminDeliverySummary,
   AccountRequest,
   PeopleSearchResponse,
   AgeBand,
@@ -795,7 +796,7 @@ export interface RoomInput {
 
 // Background jobs that ran out of attempts, for the admin System page (M3.1b).
 export const AdminJobs = {
-  list: () => api<{ jobs: AdminJob[]; more: boolean }>("/admin/jobs"),
+  list: () => api<{ jobs: AdminJob[]; more: boolean; deliveries: AdminDeliverySummary }>("/admin/jobs"),
   retry: (id: number) => api<{ status: string }>(`/admin/jobs/${id}/retry`, { method: "POST" }),
   dismiss: (id: number) => api<{ status: string }>(`/admin/jobs/${id}/dismiss`, { method: "POST" }),
 };

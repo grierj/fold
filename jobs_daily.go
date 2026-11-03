@@ -9,6 +9,7 @@ import (
 	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
+	"fold/models"
 
 	"gorm.io/gorm"
 )
@@ -86,7 +87,7 @@ func (a *App) dailyKinds() []jobs.Kind {
 func (a *App) startJobs(ctx context.Context) func() {
 	kinds := a.dailyKinds()
 	hourly := a.hourlyKinds()
-	runner := jobs.NewRunner(a.DB, append(append(kinds, hourly...), a.backgroundKinds()...)...)
+	runner := a.newRunner(append(append(kinds, hourly...), a.backgroundKinds()...)...)
 	runner.Poll = a.Config.JobPoll
 	if a.Config.Workers <= 0 {
 		log.Println("WARNING: FOLD_WORKERS=0; background jobs will not run in this process")
@@ -150,4 +151,57 @@ func queueHourly(db *gorm.DB, kinds []jobs.Kind, now time.Time) error {
 		}
 	}
 	return first
+}
+
+// newRunner is the app's job runner: jobs.NewRunner with OnDead set, so a
+// job that runs out of attempts tells the admins (M7.5, R6-3). The error text
+// the runner passes is dropped here on purpose.
+func (a *App) newRunner(kinds ...jobs.Kind) *jobs.Runner {
+	r := jobs.NewRunner(a.DB, kinds...)
+	r.OnDead = func(id uint, kind string, attempts int, _ string) { a.alertDeadJob(id, kind, attempts) }
+	return r
+}
+
+// alertDeadJob writes the admins' system.job_dead alert for a job that just
+// died. The runner calls it after the dead UPDATE committed, so it runs in
+// its own transaction and locks the job row first: if an admin already
+// retried or dismissed the job, it is no longer dead and nothing is written,
+// and if the decision comes after, it waits on this lock and then resolves
+// the alert. One alert per dead job (R6 open question 2), not per kind. A
+// second call for the same death writes nothing while an alert is open.
+//
+// The alert is a notice, not the record: the job is dead on Admin, System
+// whether or not this ran. It is not atomic with the death, so a process
+// that dies between the two, or an error here, loses it (logged with the
+// job id only). Neither the job's payload nor its error text reaches it.
+func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var status string
+		if err := tx.Raw("SELECT status FROM jobs WHERE id = ? FOR UPDATE", jobID).Scan(&status).Error; err != nil {
+			return err
+		}
+		if status != models.JobDead {
+			return nil
+		}
+		var open int64
+		if err := tx.Model(&models.Notification{}).
+			Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", notify.SystemJobDead, jobID).
+			Count(&open).Error; err != nil || open > 0 {
+			return err
+		}
+		admins, err := activeAdminIDs(tx)
+		if err != nil {
+			return err
+		}
+		label := kind
+		if k, ok := a.jobKinds()[kind]; ok && k.Label != "" {
+			label = k.Label
+		}
+		_, err = notify.Send(tx, notify.Msg{Kind: notify.SystemJobDead, To: admins, SubjectType: "job", SubjectID: jobID,
+			Link: "/admin?tab=system", Vars: notify.Vars{Change: label, Count: attempts}})
+		return err
+	})
+	if err != nil {
+		log.Printf("jobs: could not alert the admins to dead job #%d: %v", jobID, err)
+	}
 }
