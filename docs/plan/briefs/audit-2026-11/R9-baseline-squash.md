@@ -5,7 +5,7 @@
 | Audit item | R9 [CHANGE], `docs/AUDIT-2026-11-01.md:151` |
 | Priority | P1 (audit sequence step 3, `docs/AUDIT-2026-11-01.md:263`) |
 | Effort | L |
-| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (this documentation revision) changes no migration; S2–S4 wait on the §9 squash preflight. |
+| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) is in progress; the squash preflight (§9) is met and recorded. S3 and S4 follow. The migration freeze covers S2 through S4. |
 | New decision | DEC-138 (draft text in §8; landed in PLAN Nov 2026 — PR #236 took DEC-137 for branding first, so the audit block runs DEC-138–DEC-145) |
 
 This brief is the one explicit exception to "never edit an old migration"
@@ -306,12 +306,21 @@ converter if that gate later fails.
    instance: "SaaS" here means many future single-tenant deployments, and none
    has been provisioned; the DigitalOcean script "never calls `doctl` and
    never creates droplets" (AGENTS, Deployment).
-4. **Row-count check on every database the owner knows of.** The only
-   identified durable Fold database is the owner's Compose database
-   (`fold-db-1`); `SELECT count(*) FROM users;` returned 2 rows. The owner
-   calls all rows disposable (item 5). The base checks ran on a separate,
-   freshly created PostgreSQL 16 container with no named volumes, removed
-   afterwards, never on `fold-db-1`.
+4. **Row-count check on every database the owner knows of.** *Corrected in S2:*
+   the S1 text said the only identified durable Fold database was the owner's
+   Compose database `fold-db-1` (2 users). That inventory was incomplete. The
+   S2 refresh found the development Compose container `deploy-db-1` (project
+   `deploy`, volume `deploy_devpgdata`), which holds 18 Fold-named databases:
+   `fold`, the `fold_e2e*` end-to-end databases, `fold_guestdev`, the
+   `fold_slice2_validation*`, `fold_validation_*` and `fold_verify_*`
+   validation databases and one `fold_tmpl_*` test template. Twelve carry a
+   `users` table with counts between 0 and 21; six have none. The counts are
+   in the retained refresh evidence (`inventory.txt`; the database and container
+   listings are `contrary-database-inventory.txt` and `contrary-container.txt`
+   beside it); they are counts only and no personal data is quoted here. The
+   S1 base checks ran on a separate, freshly created PostgreSQL 16 container
+   with no named volumes, removed afterwards, never on a database of the
+   owner's.
 5. **Owner attestation, in the owner's words.** The owner (Grier) said,
    recorded Nov 3, 2026:
    - "There are no other churches or other developers using fold at this
@@ -319,13 +328,23 @@ converter if that gate later fails.
    - "All rows are disposable development/test data"
    - "No Fold image has ever been published" (item 1)
 
+   When the refresh surfaced `deploy-db-1` and its databases, the owner
+   clarified, in their words: "Yes, all are disposable development/test
+   data", including `fold_guestdev`. That clarification covers every Fold
+   database found in `deploy-db-1` and is not asked again; no further
+   attestation, credential change or confirmation is wanted. The second S1
+   statement is thereby confirmed for the larger inventory; the first stands
+   as the owner's account of who uses Fold.
+
    The host confirmed the meaning of the first two statements. They are the
    attestation, as spoken. The Nov 1 version of this section demanded one
    exact sentence; that demand is dropped, and its wording was a drafting
    preference, never an owner quotation. **Disposable is a fact about the
-   data, not permission to act on the database.** Nothing in this brief drops,
-   resets, rewrites or otherwise touches the owner's database; every proof
-   runs on scratch databases (§5.1, §7.7).
+   data, not permission to act on the database.** The owner's clarification
+   gave no destructive authorization, and none is implied: nothing in this
+   brief or in S2 drops, resets, rewrites or otherwise touches any of those
+   databases; every proof runs on scratch databases (§5.1, §7.7), and
+   recreating an owner database is the owner's own step.
 
 **Other S1 base evidence.** The base is clean at
 `f782fac72901ca365c1b8737bc9236d5d0ebf505`. On the isolated PostgreSQL 16
@@ -367,8 +386,8 @@ still-unshipped baseline (S3, S4), so each step's diff stays reviewable.
 
 1. Start a scratch PostgreSQL 16 server with no durable volume and create two
    empty databases on it: `fold_squash_old`, `fold_squash_new`. These are
-   separate disposable proof databases. Never use the owner's `fold-db-1` or
-   its volume as a proof database, and never a database that holds anything
+   separate disposable proof databases. Never use any of the owner's development databases (the `deploy-db-1` container,
+   its volume) as a proof database, and never a database that holds anything
    the owner might want.
 2. **Generation mode: migrate and dump only `fold_squash_old`.** Run the
    frozen pre-squash tree against it:
@@ -406,6 +425,15 @@ still-unshipped baseline (S3, S4), so each step's diff stays reviewable.
    fresh `fold_squash_old` with the frozen tree, and a separate genuinely
    empty `fold_squash_new` with the committed tree; run the stored-version
    check of step 5 on `fold_squash_new`; then dump, normalize and diff.
+7. **Further proofs in the same script** (§10 items 1 and 7), each on its own
+   proof database of the same scratch server: `fold_squash_owner` (the baseline
+   applied by a non-superuser role while `citext` and `btree_gist` are owned
+   by another role), `fold_squash_boot` (fresh `migrate up`, server boot,
+   `/healthz`, stored rows) and `fold_squash_chain` (a database migrated by
+   the frozen chain, then `migrate up` by the new binary, which succeeds and
+   leaves versions through 64). The script creates the two roles only for the
+   owner proof and drops them afterwards; it refuses a server that holds any
+   other database with objects in it.
 
 ### 5.2 Cleanup rules (the complete list; anything else stays byte-identical)
 
@@ -893,8 +921,8 @@ must escalate as a product decision, not smuggle it into S4 (§14 Q1).
   once. Boot path unchanged (`db.go:51` under the advisory lock,
   `migrations/migrations.go:25`); `go:embed *.sql`
   (`migrations/migrations.go:15`) unchanged.
-- Existing dev database (the owner's `fold-db-1` sits at version 64 in its
-  version table): **the unchanged runner does not notice it.** The new
+- Existing dev databases (the owner's Fold databases in `deploy-db-1`, migrated by the old chain, carry versions up to 64 in their
+  version tables): **the unchanged runner does not notice them.** The new
   binary ships only version 1, and the old chain already recorded version 1,
   so goose sees nothing to apply. Verified against the pinned module
   (`go.mod`: `github.com/pressly/goose/v3 v3.29.0`, source at
@@ -1134,21 +1162,45 @@ S1 opened. That is split here:
       `go build ./...`, `go vet ./...`, `make test` — so later reds are
       attributable to the squash.
 
-**Squash preflight (mandatory before S2 opens or any migration edit).**
+**Squash preflight (mandatory before S2 opens or any migration edit; met Nov 3,
+2026, record below).**
 
-- [ ] §4 refresh done at S2's opening: tags, releases, deployments, workflow
+- [x] §4 refresh done at S2's opening: tags, releases, deployments, workflow
       runs, first-church checklist and source ownership rechecked; nothing
       published or deployed since S1; owner statements cited, not re-asked.
-- [ ] Isolated proof databases: `fold_squash_old` and `fold_squash_new` on a
-      scratch server, never `fold-db-1` or any volume that matters (§5.1).
+- [x] Isolated proof databases: `fold_squash_old` and `fold_squash_new` on a
+      scratch server, never `deploy-db-1` or any volume that matters (§5.1).
       `fold_squash_new` is empty until the candidate baseline is applied.
-- [ ] The migration freeze is announced and enforced, not merely stated. From
+- [x] The migration freeze is announced and enforced, not merely stated. From
       S2 opening until S4 merges, no other PR adds, edits or renumbers a file
       in `migrations/` (§13). Record the frozen SHA, the complete migration
       manifest, its file count and the highest version; if the head moved
       since the S1 base, repeat the base checks on the frozen revision.
-- [ ] `pg_dump` major equals the scratch server's major (checked by the
+- [x] `pg_dump` major equals the scratch server's major (checked by the
       script, §5.1).
+
+**S2 refresh record (Nov 3, 2026).** Retained evidence, with no personal data:
+
+- Frozen revision: `be61e582c3011263307e4db4497056f7fd70bfd9`, the merge of S1
+  (PR #258) at the tip of `master` of `grierj/fold`. The migration chain is
+  unchanged since the S1 base `f782fac72901ca365c1b8737bc9236d5d0ebf505`: 63
+  files, versions 1–64, no `00021`. The complete SHA-256 manifest of the 63
+  files is embedded in `scripts/baseline-proof.sh` (`frozen_manifest`), which
+  rejects any mismatch with the archive of the frozen commit.
+- Released or deployed since S1: nothing. No tags, no GitHub releases, no
+  deployments, no `release` workflow runs, no open pull requests, and no
+  first-church check ticked in `docs/FIRST-CHURCH-CHECKS.md`. The registry limit
+  of §4 item 1 still applies; the owner's statement stays the evidence.
+- Base checks on the frozen revision, on an isolated PostgreSQL 16 scratch
+  container: `go build ./...`, `go vet ./...` and `make test` passed.
+  `pg_dump` 16.15 matches the server major.
+- Inventory: the refresh found `deploy-db-1` and its 18 Fold databases (§4
+  item 4). The owner's clarification — "Yes, all are disposable
+  development/test data", including `fold_guestdev` — is recorded in §4 item 5.
+  It is a fact about the data and gives no authorization to modify any of them.
+- Migration freeze: S2 through S4 only. No unrelated migration change belongs
+  in these PRs; anything else that needs a schema change waits for the freeze to
+  lift (§13).
 
 **S1 — Decision, sequence and technical corrections (docs only).** Files:
 `STATUS.md` (the M7.7 claim), `docs/plan/PLAN.md` (the 14.10 M7.7 entry),
@@ -1195,6 +1247,164 @@ the exception by S2's evidence and the first release or church deployment),
 and records the verified scratch-Compose recreation commands in its PR
 (§7.7). Test files stay beside their source, per the repo rule — no
 milestone-named test file.
+
+**S2 operations (generator, proof and the one-time install).** Everything runs
+on a scratch PostgreSQL 16 server — one with no durable volume, a superuser role
+and no database of value; the script refuses any server that holds a database
+with objects in it besides its own `fold_squash_*` proof databases, and it never
+touches the owner's `deploy-db-1`. `scripts/baseline-proof.sh` is bound to the
+frozen commit and the embedded 63-file manifest, uses a frozen `git archive`
+(never a worktree), compares `pg_dump` and server majors for each database,
+runs `pg_dump`/`psql` wrappers by argument (`--pg-dump`/`--psql`, one word per
+use, never `eval`) and writes nothing to the repository unless `--install` is
+given.
+
+Two connection safeguards (review findings S2-R1 and S2-R2) run before the
+first database change. **Route identity.** `psql`, `pg_dump` and every
+administrative statement go through `--client-url`; the Fold binaries go
+through `--server-url`, so the script first proves the two reach one cluster,
+the database `postgres` and one superuser role. Both URLs must have the exact
+shape `postgres://user[:pass]@host:port` (percent-encoded user and password,
+explicit host and port, no path) and may carry only `sslmode` and
+`connect_timeout`; a `dbname`, `database`, `service`, `host`, `user`, `options`
+or any other key, however encoded, is refused. Every `PG*` variable in the
+environment is removed for each command the script runs and `PGPASSFILE` is
+pointed at `/dev/null`, so no environment or password-file fallback can route a
+connection. A small Go helper, built inside the extracted frozen tree with the
+pinned pgx driver (never in the repository), parses each URL with the driver
+and requires it to resolve to exactly the host, port, user, password and
+database the URL names, connects the way `fold migrate` and the server do,
+holds a random advisory lock, and runs the wrapped `psql` against `--client-url`
+to find that lock taken (advisory locks are per database and cluster). Both
+routes must also report the same `session_user`, `current_user`, superuser flag,
+cluster system identifier, postmaster start time and `server_version_num`. Any
+failure stops the script with nothing changed. The non-secret result is saved as
+`connection-identity.txt` and copied into `summary.txt`; errors are scrubbed of
+URLs and passwords. In proof mode the candidate tree must pin the same pgx and
+GORM Postgres driver as the frozen tree. **Boot port.** The fresh-boot port
+(`--boot-port`) must have no listener before the run changes anything, and a
+health answer counts only while `ss` shows the script's own server process as
+the sole owner of the port, before and after the request, with the process
+still alive; an early exit or a foreign listener fails the proof and the foreign
+listener is left untouched.
+
+- `generate --install` migrates `fold_squash_old` with the frozen chain,
+  dumps it, applies the §5.2 cleanup mechanically, builds the frozen source
+  with the candidate in place of the chain, applies it to a truly empty
+  `fold_squash_new`, reads `goose_db_version` directly (exactly version 0 and
+  version 1 applied), dumps, normalizes both sides and requires a zero-byte
+  `diff -u`. It then proves the baseline for a non-superuser migration role
+  with `citext` and `btree_gist` pre-created by another role, a fresh boot with
+  `/healthz` and the stored rows (the server runs from a scratch directory that
+  holds a copy of the candidate tree's `templates/`, which it reads from its
+  working directory), and an old-chain database that the new
+  binary's `migrate up` leaves untouched (§7.7). Only after all of that does
+  `--install` swap the migration chain in this checkout for the proven file
+  (two renames of the directory; nothing is hand-written or hand-edited).
+- `proof --expect-generated` repeats the proof for the committed tree and also
+  requires the committed baseline to equal the generator's output byte for byte;
+  later slices run `proof --allow-diff` and check their hunks against §10.
+  `generate` refuses to run once `migrations/` no longer holds the frozen chain,
+  so it cannot overwrite S3 or S4.
+- Two generator details worth stating. `pg_dump` lists `btree_gist` before
+  `citext`; §5.2 asks for `citext` first, so the generator moves those two
+  `CREATE EXTENSION` lines (they depend on nothing; the dumps cancel the order
+  in the diff). Each `CREATE FUNCTION` statement is wrapped for goose from its
+  `CREATE` to the semicolon that closes its dollar quote. The generator stops,
+  with no output, on any `pg_dump` section type it does not recognize, on
+  `CONCURRENTLY` and on a foreign-key cycle, instead of guessing.
+- Old-chain databases are **not** automatically refused (§7.7) and no
+  converter exists. A development database migrated by the old chain must be
+  recreated by its owner before the new binary runs on it. The scratch Compose
+  recreation commands (a distinct project name, volume and port; the resolved
+  configuration inspected first) are in the S2 PR description only (Q7), never
+  a permanent reset target.
+
+**S2 evidence record (Nov 3, 2026).** The generator and the proof ran on the
+scratch PostgreSQL 16 server (`pg_dump` 16.15) and the generated file is
+installed. This records results only; it does not claim review, publication,
+merge or completion of M7.7.
+
+- `generate --install` and then `proof --expect-generated` both passed. The
+  normalized schema diff against the frozen chain is 0 bytes, the stored
+  `goose_db_version` rows are exactly `0|t` and `1|t`, and the installed file equals the generator's output byte
+  for byte. `migrations/00001_baseline.sql` has SHA-256
+  `e824c6fc7d497f200992cc313ee58fdf425687943d6cac8f38d8704959cea461`. The
+  extension-owner proof, the fresh boot with `/healthz` and the old-chain
+  untouched proof passed in both runs.
+- Two fixes came out of the first full run, neither touching the baseline.
+  The fresh-boot stage had no `templates/` in its scratch directory (the server
+  panics without them), so it now copies them from the candidate tree in both
+  modes. `TestMembershipTenureGuard` inserted its inactive membership without
+  `joined_at`, which the baseline permits to be NULL while the test scans it into
+  a `time.Time`; the row now carries the `joined_at` already used for the first
+  row, and the tenure assertions are unchanged.
+- Checks that passed on the installed tree: the migrations package including
+  `TestNoDrift`, the touched root tests and the notification guards;
+  `make test`; `go build ./...`; `go vet ./...`; `make lint-go`; `make lint-sh`;
+  `make deadcode`; the web suite (1,434 tests in 141 files), web build,
+  TypeScript, Knip, contrast and bundle size; and `make e2e` (118 passed, 7
+  skipped). Tracked and untracked files were identical before and after.
+- The scratch Compose recreation was run once on a distinct project, volume
+  and port: the frozen binary migrated the scratch database to version 64, only
+  that scratch database was dropped and recreated, `make dev` booted, `/healthz`
+  answered and the stored rows were `0|t` and `1|t`. The scratch resources were
+  removed. The commands belong in the S2 PR description, not in this brief.
+- Reviewer findings S2-R1 (route identity) and S2-R2 (boot-port ownership) are
+  fixed in `scripts/baseline-proof.sh` and verified on isolated PostgreSQL 16
+  servers. Cross-cluster routes in both directions, URL overrides, mismatched
+  roles, occupied ports, early server exits and listener ownership races were
+  rejected. Unrelated listeners survived. Inherited `PG*` overrides were cleared;
+  valid host/container routes, SCRAM authentication with percent-encoded
+  passwords, and an actual IPv6 connection through `[::1]` passed. Wrong passwords
+  and malformed encoding were rejected, and captured helper output passed a
+  credential scan.
+- With these fixes, the helper build and vet, shell syntax and lint, and full
+  `proof --expect-generated` passed. The regenerated baseline still matched the
+  installed hash above; the normalized schema diff was zero bytes and stored
+  versions were `0|t` and `1|t`. Extension ownership, fresh boot and old-chain
+  proofs passed. Build, vet, `make lint`, migrations including drift, the docs
+  guard and targeted root tests also passed. Source fingerprints were unchanged
+  during verification, and the new scratch resources were removed.
+- Still open: independent re-review of S2, the PR checks and the merge. The
+  owner's version-64 databases (`deploy-db-1`) were not touched; the runner does
+  not refuse them, so recreating them remains the owner's manual step.
+
+**S2 test disposition.** Every version-pinned call, by file. "Kept" means the
+final-schema assertion now runs on a baseline-migrated database; "removed" means
+version travel, a historical backfill or an assertion that belonged to a deleted
+Down. Each file keeps the behavior it protects.
+
+| File and test (old) | Calls | Disposition |
+|---|---|---|
+| `migrations/migrations_test.go` `TestContactRequestsConstraints` | `DownTo(29)` | Removed (down/up tail). Constraint matrix kept. |
+| `TestOccurrenceAccessDepartureOriginMigration` → `TestOccurrenceAccessDepartureOrigin` | `DownTo(33)` ×2, `UpTo(34)` | Removed. Insert/refusal matrix kept. |
+| `TestDepartureOccurrenceAccessExpiryMigration` → `…ExpiryEndState` | `UpTo(34)`, `UpTo(35)`, `DownTo(34)` ×2 | Removed. `occurrence_ended` accepted and malformed end states refused on the final table; ending stays irreversible. |
+| `TestDepartureAccessSupersessionMigration` → `…SupersessionEndState` | `UpTo(36)`, `UpTo(37)`, `DownTo(36)` ×2 | Removed. `departure_superseded` end state and kept manager provenance asserted directly. |
+| `seedMembershipTenureMigration`, `TestMembershipTenureMigration`, `…CleanRollback`, `…WaitsForReactivation` → `TestMembershipTenureGuard` | `UpTo(35)`, `UpTo(36)`, `DownTo(35)` ×3 | Backfill and the Down's lock-and-refuse were history, removed. Trigger rules (reactivation advances tenure, role changes do not, direct writes and tenure 0 refused, function and trigger present) kept on the final table. |
+| `TestSeriesUndoReceiptMigrationAndRollback` → `…Constraints` | `DownTo(32)` | Removed. Receipt CHECKs kept. |
+| `TestOccurrenceCancelSourceMigration` → `TestOccurrenceCancelSource` | `DownTo(42)` | Removed. Default and the three values kept (DEC-91). |
+| `TestMigrateEmptyDatabase` | none (`Up`) | Kept and strengthened: version 1, stored rows exactly `0:true,1:true`, every model table present. |
+| `TestSimplicityMigrations` → `TestMembershipStatusAndLeaderOpenedConstraints` | `UpTo(7)`, `UpTo(9)`, `DownTo(8)` | Backfills and Down mapping removed. Membership status values (including `left`, no `pending_return`) and the church-wide event CHECK kept. |
+| `TestNotificationsBackfill` | `UpTo(9)`, `UpTo(10)`, `DownTo(9)` | Removed: backfill-only scenario with no final-schema assertion. |
+| `TestMigration15DownMapsStatuses` → `TestRegistrationStatusVocabulary` | `UpTo(15)`, `DownTo(14)`, `UpTo(15)` | Down mapping removed. The six registration statuses accepted, unknown status and source refused. |
+| `TestHouseholdMigration22` → `TestHouseholdTablesConstraints` | `UpTo(22)`, `DownTo(19)`, `UpTo(22)` | Removed. Constraints kept; the live guardian-link index (00027) added. |
+| `TestManageTokenIndex` | none | Kept unchanged. |
+| `TestChildcareMigration23` → `TestChildcareColumnDefaultsAndChecks` | `UpTo(23)`, `DownTo(22)`, `UpTo(23)` | Removed. Defaults and CHECKs kept. |
+| `TestHouseholdRegistrationMigration24` → `…IdentityConstraints` | `UpTo(23)`, `UpTo(24)`, `DownTo(23)` ×3, `UpTo(24)` ×2 | Removed. Account-row defaults and the 13-case identity matrix kept. |
+| `TestHouseholdConversionMigration25` → `…InvitationConstraints` | `UpTo(25)`, `DownTo(24)` ×3, `UpTo(25)` ×2 | Removed. Invitation constraints kept. |
+| `TestTeenConsentMigrationAppendOnlyAndRollback` → `TestTeenConsentAppendOnly` | `UpTo(25)`, `UpTo(26)`, `DownTo(25)` ×2, `UpTo(26)` | Disabled-user backfill and Down guard removed. Append-only and CHECK matrix kept; TRUNCATE still permitted. |
+| `TestContactAddRequestsMigration` → `TestContactRequestPurposeDefaultsToContact` | `UpTo(30)`, `DownTo(30)` ×2 | Data preservation across a version removed; the contact default kept. |
+| `TestContactAddRequestsConstraints` | `DownTo(30)` | Tail (Down refusal) removed. The whole constraint and provenance matrix kept (S4 rewrites it onto `registrations`). |
+| `TestMembershipAndRegistrationLookupPlans` | `DownTo(40)` | Removed. Both plans kept, and index existence asserted. |
+| `TestPushSubscriptionsMigration` → `TestPushSubscriptionsConstraints` | `UpTo(58)`, `DownTo(57)` ×4, `UpTo(58)` | Down refusals removed. Device constraints, push consent and delivery channel, user-delete cascade kept; the 00059 trigger (devices end with sessions, one notice job) added. |
+| `TestNoDrift`, `TestDriftCheckCatchesUnmigratedField`, `TestMigrationsTakeAdvisoryLock` | none | Unchanged. |
+| New | | `TestBaselineDownRefusesWhileAUserExists` (`DownTo(0)` and `Down`, data, version and schema preserved), `TestBaselineDownAndUpOnAnEmptyDatabase` (drops everything, `Up` restores, no drift), `TestBaselineFileShape`. |
+| `account_security_test.go` `TestCredentialTokenMigrationRevokesUnsafePendingLinks` → `TestAccountTokenKindConstraint` | `DownTo(39)`, `UpTo(40)`, `DownTo(39)` | Migration-40 revocation and Down history removed. All five token kinds accepted, an unknown kind refused. Pending-link revocation by credential changes stays covered by `TestCredentialChangesRevokeEveryPendingAccountToken`. |
+| `api_departure_test.go` `TestDepartureLeftMigrationRepairsOnlyAuditedSelfLeaves` | `DownTo(38)`, `UpTo(39)`, `DownTo(38)` | Removed (00039 audit-backfill repair and its Down guard). The `left` status itself is asserted by `TestMembershipStatusAndLeaderOpenedConstraints`. |
+| `api_departure_test.go` `TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain` | `DownTo(35)` | The refused-downgrade block replaced by a direct tenure write that must be refused and a reload that must still show the advanced tenure. The rest of the test is unchanged. |
+| `cli_test.go` `TestMigrateDownOneRefusesAdvancedMembershipTenure` → `TestMigrateDownOneRefusesBaselineWithData` | `UpTo(36)` | `down-one` still exits 1 with the `fold: migrate down-one:` prefix, now naming the baseline guard; user row, tables and version 1 are unchanged and `status --json` still works. |
+| `guards_test.go` `TestNotificationCategoriesMatch` | none | One reference moved from `00010_notifications.sql` to the baseline's `notifications_category_check` (a file outside the brief's list, changed because the file it read is gone). |
 
 **S3 — Date types (§6).** Files: `migrations/00001_baseline.sql` (two
 column types, two CHECKs), `models/models.go` (`RRuleUntil`,
@@ -1338,7 +1548,7 @@ command outputs bound to the tested revision.
    on a scratch database migrated with the frozen old chain, that the new
    binary's `migrate up` succeeds without applying anything (stored versions
    still reach 64), so the PR documents recreation as a precondition and
-   makes no claim of automatic refusal. The owner's `fold-db-1` is never
+   makes no claim of automatic refusal. The owner's `deploy-db-1` databases are never
    used for any proof.
 
 ## 11. Acceptance checklist
@@ -1386,7 +1596,7 @@ command outputs bound to the tested revision.
       owner database or general-purpose volume was dropped, reset or
       modified. The PR states that the runner does not reject an old-chain
       database (a scratch version-64 database was shown to pass `migrate up`
-      untouched), so recreating the owner's version-64 `fold-db-1` is a
+      untouched), so recreating the owner's version-64 databases (`deploy-db-1`) is a
       mandatory step for the owner before running the new binary on it, not
       an enforced refusal (§7.7).
 - [ ] The §8 replacement texts are active in `AGENTS.md`, PLAN 14.1, C1 and
@@ -1486,7 +1696,7 @@ deployment (the window is still open): reverse the slice merges in reverse
 order and recreate authorized scratch databases; no other database holds
 anything that matters (§4). **Destroying the owner's database stays
 unauthorized** even though its rows are disposable: if the owner's
-`fold-db-1` needs recreating, that is the owner's step. After the window
+`deploy-db-1` databases need recreating, that is the owner's step. After the window
 closes, revert is forbidden — a live church database sits at baseline
 version 1, and going back would strand it. From then on, remaining fixes are
 ordinary new migrations under the additive-first rule; never revert to the

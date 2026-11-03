@@ -1,5 +1,42 @@
 package migrations_test
 
+// Final-schema tests (R9 S2, DEC-138).
+//
+// The chain of 63 files is one generated baseline, so a test can no longer
+// walk to an intermediate version. Every test here runs against the baseline
+// and keeps what describes the final schema: its CHECKs, indexes, triggers and
+// refusals. What went away, by old test:
+//
+//	TestContactRequestsConstraints             DownTo(29) tail removed; matrix kept.
+//	TestOccurrenceAccessDepartureOriginMigration DownTo(33) x2, UpTo(34) removed; matrix kept.
+//	TestDepartureOccurrenceAccessExpiryMigration UpTo(34/35), DownTo(34) x2 removed; the occurrence_ended end state is asserted directly.
+//	TestDepartureAccessSupersessionMigration   UpTo(36/37), DownTo(36) x2 removed; departure_superseded asserted directly.
+//	TestMembershipTenure* (3 tests, shared seed) UpTo(35/36), DownTo(35) x3 removed; the tenure backfill and the Down guard
+//	                                           were history; the trigger's rules are asserted on the final table.
+//	TestSeriesUndoReceiptMigrationAndRollback  DownTo(32) removed; receipt CHECKs kept.
+//	TestOccurrenceCancelSourceMigration        DownTo(42) removed; default and values kept (DEC-91).
+//	TestSimplicityMigrations                   UpTo(7/9), DownTo(8) removed; the pending_return backfill and the Down
+//	                                           mapping were history; the status and church-wide CHECKs are asserted.
+//	TestNotificationsBackfill                  UpTo(9/10), DownTo(9): a backfill-only scenario, removed.
+//	TestMigration15DownMapsStatuses            UpTo(15), DownTo(14): a Down mapping, removed; the status vocabulary kept.
+//	TestHouseholdMigration22                   UpTo(22), DownTo(19) removed; constraints kept.
+//	TestChildcareMigration23                   UpTo(23), DownTo(22) removed; defaults and CHECKs kept.
+//	TestHouseholdRegistrationMigration24       UpTo(23/24), DownTo(23) x3 removed; the identity matrix kept.
+//	TestHouseholdConversionMigration25         UpTo(25), DownTo(24) x3 removed; invitation constraints kept.
+//	TestTeenConsentMigrationAppendOnlyAndRollback UpTo(25/26), DownTo(25) x2 removed; the disabled-user backfill was
+//	                                           history; the append-only matrix kept.
+//	TestContactAddRequestsMigration            UpTo(30), DownTo(30) x2: data preservation across a version, removed;
+//	                                           the contact default is asserted instead.
+//	TestContactAddRequestsConstraints          DownTo(30) tail removed; matrix kept.
+//	TestMembershipAndRegistrationLookupPlans   DownTo(40) removed; plans kept, index existence asserted.
+//	TestPushSubscriptionsMigration             UpTo(58), DownTo(57) x4 removed; constraints, consent and the
+//	                                           session trigger (00059) kept.
+//
+// The baseline Down is new and tested below: it refuses while a user exists,
+// destroys nothing then, and on an empty database drops everything and Up
+// restores it. The same disposition for the other test files is recorded in
+// docs/plan/briefs/audit-2026-11/R9-baseline-squash.md (section 9, S2).
+
 import (
 	"context"
 	"database/sql"
@@ -12,7 +49,6 @@ import (
 	"fold/migrations"
 	"fold/models"
 
-	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
 
@@ -26,7 +62,31 @@ func openSQL(t *testing.T, name string) *sql.DB {
 	return db
 }
 
-// TestContactRequestsConstraints checks 00030 on real Postgres, including the
+// appliedRows reads goose's own bookkeeping, not `migrate status`: a database
+// migrated with the old chain also reports version 1 applied there.
+func appliedRows(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.Query(`SELECT version_id, is_applied FROM goose_db_version ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var version int64
+		var applied bool
+		if err := rows.Scan(&version, &applied); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d:%t", version, applied))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(got, ",")
+}
+
+// TestContactRequestsConstraints checks the contact request tables on real Postgres, including the
 // retained safeguarding identity and exact successful-grant provenance.
 func TestContactRequestsConstraints(t *testing.T) {
 	t.Parallel()
@@ -161,20 +221,9 @@ func TestContactRequestsConstraints(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM contact_grants g JOIN contact_requests r ON r.id = g.request_id WHERE r.id = $1 AND r.status = 'granted'`, id).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("retained history = %d, %v", count, err)
 	}
-	// Down/up removes only this component and leaves the preceding schema valid.
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 29); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestOccurrenceAccessDepartureOriginMigration(t *testing.T) {
+func TestOccurrenceAccessDepartureOrigin(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
@@ -275,40 +324,13 @@ func TestOccurrenceAccessDepartureOriginMigration(t *testing.T) {
 		}
 	}
 	refuse("second active access", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(2,30,20,'group',10,'departure_self',40,50,2)`)
-
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 33); err == nil || !strings.Contains(err.Error(), "departure occurrence access history exists") {
-		t.Fatalf("downgrade discarded departure provenance: %v", err)
-	}
-	// TRUNCATE is test cleanup; ordinary deletes remain forbidden. With no
-	// departure history, down/up is lossless for the preceding schema.
-	exec(`TRUNCATE occurrence_accesses`)
-	if _, err := p.DownTo(context.Background(), 33); err != nil {
-		t.Fatal(err)
-	}
-	var column *string
-	if err := db.QueryRow(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='occurrence_accesses' AND column_name='origin'`).Scan(&column); err != sql.ErrNoRows {
-		t.Fatalf("origin column remains after down: %v %v", column, err)
-	}
-	if _, err := p.UpTo(context.Background(), 34); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestDepartureOccurrenceAccessExpiryMigration(t *testing.T) {
+// The end-state CHECK accepts occurrence_ended for a kept departure date and
+// refuses the malformed shapes around it. Ending is final.
+func TestDepartureOccurrenceAccessExpiryEndState(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 34); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string) {
 		t.Helper()
 		if _, err := db.Exec(q); err != nil {
@@ -326,33 +348,30 @@ func TestDepartureOccurrenceAccessExpiryMigration(t *testing.T) {
 	} {
 		exec(q)
 	}
-	if _, err := p.UpTo(ctx, 35); err != nil {
-		t.Fatal(err)
+	for _, tt := range []struct{ name, mutation string }{
+		{"expiry with an actor", `status='ended',ended_at='2026-12-01 19:00Z',end_reason='occurrence_ended',ended_by=2`},
+		{"expiry before the grant", `status='ended',ended_at='2026-10-25 12:00Z',end_reason='occurrence_ended'`},
+		{"ended without a time", `status='ended',end_reason='occurrence_ended'`},
+		{"reason on a live row", `end_reason='occurrence_ended'`},
+		{"unknown reason", `status='ended',ended_at='2026-12-01 19:00Z',end_reason='expired'`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + tt.mutation + ` WHERE occurrence_id=30`); err == nil {
+				t.Fatal("malformed end state accepted")
+			}
+		})
 	}
 	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-12-01 19:00Z',end_reason='occurrence_ended' WHERE occurrence_id=30`)
-	if _, err := p.DownTo(ctx, 34); err == nil {
-		t.Fatal("downgrade accepted an occurrence_ended row the old constraint cannot represent")
-	}
-	exec(`TRUNCATE occurrence_accesses`)
-	if _, err := p.DownTo(ctx, 34); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 35); err != nil {
-		t.Fatal(err)
+	if _, err := db.Exec(`UPDATE occurrence_accesses SET status='active',ended_at=NULL,end_reason='' WHERE occurrence_id=30`); err == nil {
+		t.Fatal("an ended departure date came back to life")
 	}
 }
 
-func TestDepartureAccessSupersessionMigration(t *testing.T) {
+// A manager grant superseded by a departure keeps its manager provenance and
+// ends with the dedicated reason and an actor.
+func TestDepartureAccessSupersessionEndState(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 36); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string) {
 		t.Helper()
 		if _, err := db.Exec(q); err != nil {
@@ -370,65 +389,81 @@ func TestDepartureAccessSupersessionMigration(t *testing.T) {
 	} {
 		exec(q)
 	}
-	if _, err := p.UpTo(ctx, 37); err != nil {
-		t.Fatal(err)
+	for _, tt := range []struct{ name, mutation string }{
+		{"superseded without an actor", `status='ended',ended_at='2026-11-02 12:00Z',end_reason='departure_superseded'`},
+		{"superseded before the grant", `status='ended',ended_at='2026-10-31 12:00Z',end_reason='departure_superseded',ended_by=2`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + tt.mutation + ` WHERE id=60`); err == nil {
+				t.Fatal("malformed supersession accepted")
+			}
+		})
 	}
 	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-11-02 12:00Z',end_reason='departure_superseded',ended_by=2 WHERE id=60`)
 	var origin string
-	var issuer int64
-	var registration int64
+	var issuer, registration int64
 	if err := db.QueryRow(`SELECT origin,issuer_id,registration_id FROM occurrence_accesses WHERE id=60`).Scan(&origin, &issuer, &registration); err != nil || origin != "manager_add" || issuer != 1 || registration != 40 {
 		t.Fatalf("manager provenance changed: origin=%q issuer=%d registration=%d err=%v", origin, issuer, registration, err)
 	}
-	if _, err := p.DownTo(ctx, 36); err == nil || !strings.Contains(err.Error(), "departure supersession history exists") {
-		t.Fatalf("downgrade discarded supersession history: %v", err)
-	}
-	exec(`TRUNCATE occurrence_accesses`)
-	if _, err := p.DownTo(ctx, 36); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 37); err != nil {
-		t.Fatal(err)
-	}
 }
 
-const membershipTenureRollbackError = "advanced membership tenure exists; cannot downgrade safely"
-
-func seedMembershipTenureMigration(t *testing.T, status string) (*sql.DB, *goose.Provider, time.Time) {
-	t.Helper()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 35); err != nil {
-		t.Fatal(err)
-	}
-	joined := time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC)
-	for _, q := range []string{
-		`INSERT INTO users(id,email,status,role) VALUES(1,'tenure@example.com','active','member')`,
-		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Tenure group',1,'active','public')`,
-	} {
-		if _, err := db.Exec(q); err != nil {
+// membership tenure: each active stretch is a distinct authorization
+// lifecycle. The trigger advances it when a row becomes active again and
+// refuses any direct write; role changes never advance it.
+func TestMembershipTenureGuard(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO memberships(id,user_id,group_id,role,status,joined_at) VALUES(50,1,10,'member',$1,$2)`, status, joined); err != nil {
-		t.Fatal(err)
+	tenure := func(id int) (int64, time.Time) {
+		t.Helper()
+		var n int64
+		var joined time.Time
+		if err := db.QueryRow(`SELECT tenure, joined_at FROM memberships WHERE id=$1`, id).Scan(&n, &joined); err != nil {
+			t.Fatal(err)
+		}
+		return n, joined
 	}
-	if _, err := p.UpTo(ctx, 36); err != nil {
-		t.Fatal(err)
+	joined := time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC)
+	exec(`INSERT INTO users(id,email,status,role) VALUES(1,'tenure@example.com','active','member'),(2,'tenure-two@example.com','active','member')`)
+	exec(`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Tenure group',1,'active','public'),(11,'Second tenure group',1,'active','public')`)
+	exec(`INSERT INTO memberships(id,user_id,group_id,role,status,joined_at) VALUES(50,1,10,'member','active',$1)`, joined)
+	if n, j := tenure(50); n != 1 || !j.Equal(joined) {
+		t.Fatalf("new membership tenure=%d joined=%s, want 1 and %s", n, j, joined)
 	}
-	return db, p, joined
-}
-
-func assertMembershipTenurePreserved(t *testing.T, db *sql.DB, p *goose.Provider, wantTenure int64, wantJoined time.Time) {
-	t.Helper()
-	var tenure int64
-	var joined time.Time
-	if err := db.QueryRow(`SELECT tenure, joined_at FROM memberships WHERE id=50`).Scan(&tenure, &joined); err != nil || tenure != wantTenure || !joined.Equal(wantJoined) {
-		t.Fatalf("membership tenure=%d joined=%s want tenure=%d joined=%s err=%v", tenure, joined, wantTenure, wantJoined, err)
+	exec(`UPDATE memberships SET role='leader' WHERE id=50`)
+	exec(`UPDATE memberships SET status='active' WHERE id=50`)
+	if n, _ := tenure(50); n != 1 {
+		t.Fatalf("a role change or a no-op status write advanced tenure to %d", n)
+	}
+	exec(`UPDATE memberships SET status='removed' WHERE id=50`)
+	exec(`UPDATE memberships SET status='active' WHERE id=50`)
+	if n, j := tenure(50); n != 2 || !j.Equal(joined) {
+		t.Fatalf("after removal and return tenure=%d joined=%s, want 2 and the first-ever join %s", n, j, joined)
+	}
+	exec(`UPDATE memberships SET status='left' WHERE id=50`)
+	exec(`UPDATE memberships SET status='active' WHERE id=50`)
+	if n, _ := tenure(50); n != 3 {
+		t.Fatalf("after leaving and returning tenure=%d, want 3", n)
+	}
+	// A row created inactive starts a lifecycle when it first becomes active.
+	exec(`INSERT INTO memberships(id,user_id,group_id,role,status,joined_at) VALUES(51,2,10,'member','removed',$1)`, joined)
+	exec(`UPDATE memberships SET status='active' WHERE id=51`)
+	if n, _ := tenure(51); n != 2 {
+		t.Fatalf("reactivating a removed row gave tenure=%d, want 2", n)
+	}
+	for _, q := range []string{
+		`UPDATE memberships SET tenure=9 WHERE id=50`,
+		`UPDATE memberships SET tenure=1, status='removed' WHERE id=50`,
+		`INSERT INTO memberships(id,user_id,group_id,role,status,tenure) VALUES(52,1,11,'member','active',0)`,
+	} {
+		if _, err := db.Exec(q); err == nil {
+			t.Fatalf("direct tenure write accepted: %s", q)
+		}
 	}
 	var trigger, function bool
 	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='memberships'::regclass AND tgname='memberships_tenure_guard' AND NOT tgisinternal)`).Scan(&trigger); err != nil {
@@ -438,127 +473,11 @@ func assertMembershipTenurePreserved(t *testing.T, db *sql.DB, p *goose.Provider
 		t.Fatal(err)
 	}
 	if !trigger || !function {
-		t.Fatalf("tenure guard preserved trigger=%v function=%v", trigger, function)
-	}
-	version, err := p.GetDBVersion(context.Background())
-	if err != nil || version != 36 {
-		t.Fatalf("migration version=%d err=%v, want 36", version, err)
-	}
-	if _, err := db.Exec(`UPDATE memberships SET tenure=9 WHERE id=50`); err == nil {
-		t.Fatal("preserved trigger accepted a direct tenure update")
+		t.Fatalf("tenure guard trigger=%v function=%v", trigger, function)
 	}
 }
 
-func TestMembershipTenureMigration(t *testing.T) {
-	t.Parallel()
-	db, p, joined := seedMembershipTenureMigration(t, "active")
-	ctx := context.Background()
-
-	var tenure int64
-	var backfilledJoined time.Time
-	if err := db.QueryRow(`SELECT tenure, joined_at FROM memberships WHERE id=50`).Scan(&tenure, &backfilledJoined); err != nil || tenure != 1 || !backfilledJoined.Equal(joined) {
-		t.Fatalf("backfilled tenure=%d joined=%s want tenure=1 joined=%s err=%v", tenure, backfilledJoined, joined, err)
-	}
-	for _, q := range []string{
-		`UPDATE memberships SET role='leader' WHERE id=50`,
-		`UPDATE memberships SET status='removed' WHERE id=50`,
-		`UPDATE memberships SET status='active' WHERE id=50`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	if _, err := p.DownTo(ctx, 35); err == nil || !strings.Contains(err.Error(), membershipTenureRollbackError) {
-		t.Fatalf("downgrade did not preserve advanced tenure: %v", err)
-	}
-	assertMembershipTenurePreserved(t, db, p, 2, joined)
-}
-
-func TestMembershipTenureMigrationCleanRollback(t *testing.T) {
-	t.Parallel()
-	db, p, joined := seedMembershipTenureMigration(t, "active")
-	ctx := context.Background()
-	if _, err := p.DownTo(ctx, 35); err != nil {
-		t.Fatal(err)
-	}
-	var column *string
-	if err := db.QueryRow(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='memberships' AND column_name='tenure'`).Scan(&column); err != sql.ErrNoRows {
-		t.Fatalf("tenure column remains after clean down: %v %v", column, err)
-	}
-	var trigger, function bool
-	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='memberships_tenure_guard' AND NOT tgisinternal)`).Scan(&trigger); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT to_regprocedure('guard_membership_tenure()') IS NOT NULL`).Scan(&function); err != nil {
-		t.Fatal(err)
-	}
-	version, err := p.GetDBVersion(ctx)
-	if err != nil || version != 35 || trigger || function {
-		t.Fatalf("clean down version=%d trigger=%v function=%v err=%v", version, trigger, function, err)
-	}
-	if _, err := p.UpTo(ctx, 36); err != nil {
-		t.Fatal(err)
-	}
-	assertMembershipTenurePreserved(t, db, p, 1, joined)
-}
-
-func TestMembershipTenureMigrationWaitsForReactivation(t *testing.T) {
-	t.Parallel()
-	db, p, joined := seedMembershipTenureMigration(t, "removed")
-	ctx := context.Background()
-	writer, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = writer.Rollback() })
-	if _, err := writer.ExecContext(ctx, `UPDATE memberships SET status='active' WHERE id=50`); err != nil {
-		t.Fatal(err)
-	}
-
-	down := make(chan error, 1)
-	go func() {
-		_, err := p.DownTo(ctx, 35)
-		down <- err
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var waiting bool
-		err := db.QueryRow(`SELECT EXISTS(
-			SELECT 1 FROM pg_stat_activity
-			WHERE datname=current_database() AND wait_event_type='Lock'
-			AND query ILIKE 'LOCK TABLE memberships IN ACCESS EXCLUSIVE MODE%'
-		)`).Scan(&waiting)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("migration downgrade never waited for the membership writer")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	select {
-	case err := <-down:
-		t.Fatalf("downgrade completed before the writer committed: %v", err)
-	default:
-	}
-	if err := writer.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-down:
-		if err == nil || !strings.Contains(err.Error(), membershipTenureRollbackError) {
-			t.Fatalf("downgrade did not reject committed reactivation: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("downgrade did not finish after the writer committed")
-	}
-	assertMembershipTenurePreserved(t, db, p, 2, joined)
-}
-
-func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {
+func TestSeriesUndoReceiptConstraints(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
@@ -578,26 +497,12 @@ func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {
 			t.Fatalf("invalid receipt accepted: %s", q)
 		}
 	}
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 32); err != nil {
-		t.Fatal(err)
-	}
-	var table *string
-	if err := db.QueryRow(`SELECT to_regclass('public.series_undo_receipts')`).Scan(&table); err != nil || table != nil {
-		t.Fatalf("table remains after down: %v %v", table, err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 }
 
-// TestOccurrenceCancelSourceMigration checks 00043: the column defaults to
-// empty (existing cancelled dates stay manual-like), only the three values are
-// accepted, and the rollback removes it.
-func TestOccurrenceCancelSourceMigration(t *testing.T) {
+// TestOccurrenceCancelSource checks the cancel_source column (DEC-91): it defaults to
+// empty (a cancelled date with no recorded source), only the three values are
+// accepted.
+func TestOccurrenceCancelSource(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
@@ -619,41 +524,47 @@ func TestOccurrenceCancelSourceMigration(t *testing.T) {
 	if _, err := db.Exec(`UPDATE event_occurrences SET cancel_source = 'bogus' WHERE id = 92003`); err == nil {
 		t.Fatal("unknown cancel_source accepted")
 	}
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 42); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'event_occurrences' AND column_name = 'cancel_source'`).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("cancel_source remains after down: %d %v", n, err)
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT cancel_source FROM event_occurrences WHERE id = 92003`).Scan(&source); err != nil || source != "" {
-		t.Fatalf("cancel_source after re-up = %q, %v", source, err)
-	}
 }
 
+// TestMigrateEmptyDatabase applies the baseline to a database with nothing in
+// it. The stored bookkeeping must be goose's version 0 row and version 1
+// applied: `migrate status` alone cannot tell this from an old-chain database.
 func TestMigrateEmptyDatabase(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
+	gdb, err := testdb.Open(testdb.Fresh(t, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Up(context.Background()); err != nil {
+	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
-	if pending, err := p.HasPending(context.Background()); err != nil || pending {
+	if pending, err := p.HasPending(ctx); err != nil || pending {
 		t.Fatalf("pending after up: %v %v", pending, err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("version after up = %d, %v, want 1", version, err)
+	}
+	if got := appliedRows(t, db); got != "0:true,1:true" {
+		t.Fatalf("goose_db_version = %s, want exactly version 0 and version 1 applied", got)
 	}
 	var n int
 	if err := db.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('users','groups','events','event_hosts','event_occurrences','registrations','memberships','settings')").Scan(&n); err != nil || n != 8 {
 		t.Fatalf("baseline tables = %d (%v), want 8", n, err)
+	}
+	for _, m := range models.All() {
+		if !gdb.Migrator().HasTable(m) {
+			t.Fatalf("the baseline lacks the table for %T", m)
+		}
 	}
 }
 
@@ -750,213 +661,87 @@ func TestMigrationsTakeAdvisoryLock(t *testing.T) {
 	}
 }
 
-// TestSimplicityMigrations checks 00008 (DEC-47) and 00009 (DEC-48) on
-// existing rows, and that 00009 goes back down cleanly.
-func TestSimplicityMigrations(t *testing.T) {
+// Membership status has three values (DEC-35 removed, DEC-86 left); a church-wide
+// event is never leader-opened and is only public or private (DEC-48).
+func TestMembershipStatusAndLeaderOpenedConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 7); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
 		if _, err := db.Exec(q, args...); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	exec(`INSERT INTO users (id, email) VALUES (1, 'a@example.com'), (2, 'b@example.com')`)
-	exec(`INSERT INTO groups (id, name, leader_id, visibility) VALUES (1, 'Open', 1, 'public'), (2, 'Closed', 1, 'invite_only')`)
-	exec(`INSERT INTO memberships (user_id, group_id, role, status) VALUES (1, 1, 'leader', 'active'), (2, 1, 'member', 'pending_return')`)
-	ins := `INSERT INTO events (id, group_id, title, description, starts_local, duration_minutes, tzid, rrule, location, created_by, visibility, visibility_source)
-		VALUES ($1, $2, '', '', '2026-12-01T19:00', 60, 'UTC', '', '', 1, $3, $4)`
-	exec(ins, 1, 1, "private", "group")   // stale: the group is public now
-	exec(ins, 2, 2, "public", "custom")   // opened wider by a leader
-	exec(ins, 3, 1, "private", "custom")  // stricter than the group
-	exec(ins, 4, nil, "public", "custom") // church-wide
+	exec(`INSERT INTO users (id, email) VALUES (1, 'a@example.com'), (2, 'b@example.com'), (3, 'c@example.com')`)
+	exec(`INSERT INTO groups (id, name, leader_id, visibility) VALUES (1, 'Open', 1, 'public')`)
+	exec(`INSERT INTO memberships (user_id, group_id, role, status) VALUES (1, 1, 'leader', 'active')`)
+	exec(`INSERT INTO memberships (user_id, group_id, role, status) VALUES (2, 1, 'member', 'removed'), (3, 1, 'member', 'left')`)
+	for _, status := range []string{"pending_return", "pending", "banned", ""} {
+		if _, err := db.Exec(`UPDATE memberships SET status = $1 WHERE user_id = 1`, status); err == nil {
+			t.Fatalf("membership status %q accepted", status)
+		}
+	}
 
-	if _, err := p.UpTo(ctx, 9); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM memberships WHERE status = 'pending_return'`).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("pending_return rows left: %d %v", n, err)
-	}
-	if err := db.QueryRow(`SELECT count(*) FROM audit_logs WHERE action = 'membership.not_restored' AND target_id = 1 AND meta_json->>'userId' = '2'`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("not_restored audit: %d %v", n, err)
-	}
-	if _, err := db.Exec(`INSERT INTO memberships (user_id, group_id, role, status) VALUES (2, 2, 'member', 'pending_return')`); err == nil {
-		t.Fatal("pending_return is still allowed")
-	}
-	want := map[int]struct {
-		vis    string
-		opened bool
-	}{1: {"public", false}, 2: {"public", true}, 3: {"private", false}, 4: {"public", false}}
-	for id, w := range want {
-		var vis string
-		var opened bool
-		if err := db.QueryRow(`SELECT visibility, leader_opened FROM events WHERE id = $1`, id).Scan(&vis, &opened); err != nil {
-			t.Fatal(err)
-		}
-		if vis != w.vis || opened != w.opened {
-			t.Fatalf("event %d: %s %v, want %+v", id, vis, opened, w)
+	ins := `INSERT INTO events (id, group_id, title, description, starts_local, duration_minutes, tzid, rrule, location, created_by, visibility, leader_opened)
+		VALUES ($1, $2, 'E', '', '2026-12-01T19:00', 60, 'UTC', '', '', 1, $3, $4)`
+	exec(ins, 1, 1, "public", false)
+	exec(ins, 2, 1, "public", true) // a leader may open a group event wider
+	exec(ins, 3, nil, "public", false)
+	exec(ins, 4, nil, "private", false)
+	for name, args := range map[string][]any{
+		"church-wide event opened by a leader": {5, nil, "public", true},
+		"church-wide invite-only event":        {6, nil, "invite_only", false},
+	} {
+		if _, err := db.Exec(ins, args...); err == nil {
+			t.Fatalf("%s accepted", name)
 		}
 	}
-	if _, err := db.Exec(`UPDATE events SET leader_opened = true WHERE id = 4`); err == nil {
+	if _, err := db.Exec(`UPDATE events SET leader_opened = true WHERE id = 3`); err == nil {
 		t.Fatal("a church-wide event can't be leader-opened")
 	}
-
-	if _, err := p.DownTo(ctx, 8); err != nil {
-		t.Fatalf("down: %v", err)
-	}
-	src := map[int]string{1: "group", 2: "custom", 3: "custom", 4: "custom"}
-	for id, w := range src {
-		var got string
-		if err := db.QueryRow(`SELECT visibility_source FROM events WHERE id = $1`, id).Scan(&got); err != nil || got != w {
-			t.Fatalf("down event %d: %s %v, want %s", id, got, err, w)
-		}
-	}
-	if _, err := p.Up(ctx); err != nil {
-		t.Fatalf("up again: %v", err)
+	var opened bool
+	if err := db.QueryRow(`SELECT leader_opened FROM events WHERE id = 1`).Scan(&opened); err != nil || opened {
+		t.Fatalf("leader_opened default = %v (%v), want false", opened, err)
 	}
 }
 
-// 00010 carries open admin tasks (pending groups, deletion requests) over
-// as stored notifications for active admins only.
-func TestNotificationsBackfill(t *testing.T) {
+// The registration status vocabulary of the final schema (M1.5): waitlisted and
+// removed are real states, and nothing else is.
+func TestRegistrationStatusVocabulary(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 9); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{
-		`INSERT INTO users (id, email, name, role, status) VALUES (1, 'a@example.com', 'Ann', 'admin', 'active'),
-			(2, 'b@example.com', 'Bob', 'admin', 'disabled'), (3, 'c@example.com', 'Cy', 'member', 'active')`,
-		`INSERT INTO groups (id, name, leader_id, status, deletion_requested) VALUES (1, 'New', 3, 'pending', false),
-			(2, 'Old', 3, 'active', true), (3, 'Fine', 3, 'active', false)`,
-	} {
-		if _, err := db.Exec(q); err != nil {
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	if _, err := p.UpTo(ctx, 10); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.Query(`SELECT user_id, kind, title, waiting FROM notifications ORDER BY kind`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var got []string
-	for rows.Next() {
-		var uid int
-		var kind, title string
-		var waiting bool
-		if err := rows.Scan(&uid, &kind, &title, &waiting); err != nil {
-			t.Fatal(err)
+	exec(`INSERT INTO users (id, email) SELECT n, 'reg-' || n || '@example.com' FROM generate_series(1, 8) n`)
+	exec(`INSERT INTO events (id, title, starts_local, duration_minutes, tzid, rrule, location, description, visibility, created_by)
+		VALUES (1, 'E', '2026-10-20T10:00', 60, 'America/Denver', '', 'Hall', '', 'public', 1)`)
+	exec(`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at, status)
+		VALUES (1, 1, '2026-10-20', '2026-10-20 16:00+00', '2026-10-20 17:00+00', 'scheduled')`)
+	for i, status := range []string{"going", "maybe", "declined", "cancelled", "waitlisted", "removed"} {
+		var waitlistedAt any
+		if status == "waitlisted" {
+			waitlistedAt = time.Now()
 		}
-		got = append(got, fmt.Sprintf("%d %s %s %v", uid, kind, title, waiting))
+		exec(`INSERT INTO registrations (occurrence_id, user_id, status, waitlisted_at) VALUES (1, $1, $2, $3)`, i+1, status, waitlistedAt)
 	}
-	want := []string{"1 group.deletion Cy asked to delete Old true", "1 group.pending Cy started a group: New true"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("backfill:\n%v\nwant\n%v", got, want)
+	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status) VALUES (1, 7, 'bogus')`); err == nil {
+		t.Fatal("an unknown registration status was accepted")
 	}
-	if _, err := p.DownTo(ctx, 9); err != nil {
-		t.Fatal(err)
+	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status, source) VALUES (1, 8, 'going', 'carrier_pigeon')`); err == nil {
+		t.Fatal("an unknown registration source was accepted")
 	}
 }
 
-// TestMigration15DownMapsStatuses seeds the M1.5 registration statuses,
-// then runs down to 14 and back up to 15. Before the status-mapping fix,
-// the down migration failed: it re-added the old status CHECK while
-// waitlisted/removed rows still existed.
-func TestMigration15DownMapsStatuses(t *testing.T) {
+// Households: one household per account, people of a known kind, and guardian
+// links naming exactly one of a teen account or a household person, with at
+// most one live link per guardian and teen.
+func TestHouseholdTablesConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 15); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{
-		`INSERT INTO users (id, email, name, role, status) VALUES (1, 'w@example.com', 'Wait', 'member', 'active'),
-			(2, 'r@example.com', 'Removed', 'member', 'active'), (3, 'g@example.com', 'Going', 'member', 'active'),
-			(4, 'n@example.com', 'New', 'member', 'active')`,
-		`INSERT INTO groups (id, name, leader_id, status, deletion_requested) VALUES (1, 'G', 1, 'active', false)`,
-		`INSERT INTO events (id, group_id, title, starts_local, duration_minutes, tzid, rrule, location, description, visibility, created_by)
-			VALUES (1, 1, 'E', '2026-10-20 10:00', 60, 'America/Denver', '', 'Hall', '', 'public', 1)`,
-		`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at, status)
-			VALUES (1, 1, '2026-10-20', '2026-10-20 16:00+00', '2026-10-20 17:00+00', 'scheduled')`,
-		`INSERT INTO registrations (occurrence_id, user_id, status, waitlisted_at)
-			VALUES (1, 1, 'waitlisted', now()), (1, 2, 'removed', NULL), (1, 3, 'going', NULL)`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	if _, err := p.DownTo(ctx, 14); err != nil {
-		t.Fatalf("down to 14 with waitlisted/removed rows: %v", err)
-	}
-	rows, err := db.Query(`SELECT user_id, status FROM registrations ORDER BY user_id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for rows.Next() {
-		var uid int
-		var status string
-		if err := rows.Scan(&uid, &status); err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, fmt.Sprintf("%d %s", uid, status))
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"1 cancelled", "2 cancelled", "3 going"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("statuses after down:\n%v\nwant\n%v", got, want)
-	}
-	// The old CHECK is back: new statuses are rejected again.
-	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status) VALUES (1, 4, 'waitlisted')`); err == nil {
-		t.Fatal("old CHECK accepted a waitlisted row")
-	}
-	// And back up to 15 restores the new vocabulary.
-	if _, err := p.UpTo(ctx, 15); err != nil {
-		t.Fatalf("up to 15 again: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status) VALUES (1, 4, 'waitlisted')`); err != nil {
-		t.Fatalf("new CHECK rejected a waitlisted row after re-up: %v", err)
-	}
-}
-
-// 00022 (M1.9 slice 1): households, household accounts (one household
-// per account), household people, and guardian links naming exactly one
-// of a teen account or a household person. Down drops all four tables.
-func TestHouseholdMigration22(t *testing.T) {
-	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 22); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
 		if _, err := db.Exec(q, args...); err != nil {
@@ -984,19 +769,12 @@ func TestHouseholdMigration22(t *testing.T) {
 	if err := db.QueryRow(`SELECT photo_consent FROM household_people WHERE id = 1`).Scan(&photo); err != nil || photo {
 		t.Fatalf("photo consent default = %v (%v), want false", photo, err)
 	}
-	if _, err := p.DownTo(ctx, 19); err != nil {
-		t.Fatalf("down to 19: %v", err)
+	exec(`INSERT INTO guardian_links (guardian_user_id, teen_user_id) VALUES (1, 2)`)
+	if _, err := db.Exec(`INSERT INTO guardian_links (guardian_user_id, teen_user_id) VALUES (1, 2)`); err == nil {
+		t.Fatal("a second live guardian link for the same teen was accepted")
 	}
-	var exists bool
-	if err := db.QueryRow(`SELECT to_regclass('public.households') IS NOT NULL`).Scan(&exists); err != nil || exists {
-		t.Fatalf("households exists after down = %v (%v)", exists, err)
-	}
-	if _, err := p.UpTo(ctx, 22); err != nil {
-		t.Fatalf("up to 22 again: %v", err)
-	}
-	if err := db.QueryRow(`SELECT to_regclass('public.guardian_links') IS NOT NULL`).Scan(&exists); err != nil || !exists {
-		t.Fatalf("guardian_links missing after re-up = %v (%v)", exists, err)
-	}
+	exec(`UPDATE guardian_links SET status = 'revoked' WHERE teen_user_id = 2`)
+	exec(`INSERT INTO guardian_links (guardian_user_id, teen_user_id) VALUES (1, 2)`)
 }
 
 // #78: the guest manage-link lookup uses a partial unique index, not a scan.
@@ -1019,17 +797,10 @@ func TestManageTokenIndex(t *testing.T) {
 	}
 }
 
-func TestChildcareMigration23(t *testing.T) {
+func TestChildcareColumnDefaultsAndChecks(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err = p.UpTo(ctx, 23); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
+	var err error
 	for _, q := range []string{
 		`INSERT INTO users (id,email,name) VALUES (1,'parent@example.com','Parent')`,
 		`INSERT INTO events (id,title,starts_local,duration_minutes,tzid,rrule,location,description,visibility,created_by) VALUES (1,'Family Night','2026-12-01T19:00',60,'UTC','','','','public',1)`,
@@ -1058,25 +829,11 @@ func TestChildcareMigration23(t *testing.T) {
 			t.Fatalf("accepted negative: %s", q)
 		}
 	}
-	if _, err = p.DownTo(ctx, 22); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = p.UpTo(ctx, 23); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestHouseholdRegistrationMigration24(t *testing.T) {
+func TestHouseholdRegistrationIdentityConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 23); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string) {
 		t.Helper()
 		if _, err := db.Exec(q); err != nil {
@@ -1089,19 +846,9 @@ func TestHouseholdRegistrationMigration24(t *testing.T) {
 	exec(`INSERT INTO events(id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(1,'Event','','2026-12-01T18:00',60,'UTC','','','public',1)`)
 	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at) VALUES(1,1,'2026-12-01','2026-12-01 18:00+00','2026-12-01 19:00+00')`)
 	exec(`INSERT INTO registrations(occurrence_id,user_id,status) VALUES(1,1,'going')`)
-	if _, err := p.UpTo(ctx, 24); err != nil {
-		t.Fatal(err)
-	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM registrations WHERE user_id=1 AND registered_by IS NULL AND household_person_id IS NULL AND NOT childcare_requested`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("preserved user row: %d %v", n, err)
-	}
-	// With no household answers, rollback and upgrading again are lossless.
-	if _, err := p.DownTo(ctx, 23); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 24); err != nil {
-		t.Fatal(err)
+		t.Fatalf("account row defaults: %d %v", n, err)
 	}
 	exec(`INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,childcare_requested) VALUES(1,1,1,'going',true)`)
 	for name, q := range map[string]string{
@@ -1128,38 +875,11 @@ func TestHouseholdRegistrationMigration24(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM registrations WHERE occurrence_id=1`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("user/person namespaces %d %v", n, err)
 	}
-	if _, err := p.DownTo(ctx, 23); err == nil || !strings.Contains(err.Error(), "household registrations exist") {
-		t.Fatalf("unguarded rollback: %v", err)
-	}
-	exec(`DELETE FROM registrations WHERE household_person_id IS NOT NULL`)
-	if _, err := p.DownTo(ctx, 23); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO registrations(occurrence_id,status) VALUES(1,'going')`); err == nil {
-		t.Fatal("user_id not restored to required")
-	}
-	if _, err := p.UpTo(ctx, 24); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestHouseholdConversionMigration25(t *testing.T) {
+func TestHouseholdConversionInvitationConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 25); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(ctx, 24); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 25); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string) {
 		t.Helper()
 		if _, err := db.Exec(q); err != nil {
@@ -1182,29 +902,11 @@ func TestHouseholdConversionMigration25(t *testing.T) {
 	}
 	exec(`UPDATE invitations SET revoked_at=now() WHERE id=1`)
 	exec(`INSERT INTO invitations(email,invited_by,household_person_id,token_hash,expires_at) VALUES('other@example.com',1,1,'second',now())`)
-	if _, err := p.DownTo(ctx, 24); err == nil || !strings.Contains(err.Error(), "conversion invitations exist") {
-		t.Fatalf("rollback with conversions: %v", err)
-	}
-	exec(`DELETE FROM invitations`)
-	if _, err := p.DownTo(ctx, 24); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 25); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
+func TestTeenConsentAppendOnly(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err := p.UpTo(ctx, 25); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(query string) {
 		t.Helper()
 		if _, err := db.Exec(query); err != nil {
@@ -1212,13 +914,6 @@ func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO users(id,email,status) VALUES(1,'admin@example.com','active'),(2,'teen@example.com','disabled')`)
-	if _, err := p.UpTo(ctx, 26); err != nil {
-		t.Fatal(err)
-	}
-	var suspended bool
-	if err := db.QueryRow(`SELECT administratively_disabled FROM users WHERE id=2`).Scan(&suspended); err != nil || !suspended {
-		t.Fatalf("disabled backfill: %t %v", suspended, err)
-	}
 	exec(`INSERT INTO teen_consents(teen_user_id,scope,status,granted_by,granter_role,evidence_text) VALUES(2,'account','granted',1,'admin','Paper consent')`)
 	for name, query := range map[string]string{
 		"update":         `UPDATE teen_consents SET status='revoked'`,
@@ -1231,74 +926,26 @@ func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
 			t.Errorf("%s allowed", name)
 		}
 	}
-	if _, err := p.DownTo(ctx, 25); err == nil || !strings.Contains(err.Error(), "teen consent history exists") {
-		t.Fatalf("down discarded history: %v", err)
-	}
-	// The test helper truncates tables between tests. The row trigger permits
-	// that operation, and empty-database rollback removes the trigger itself.
+	// The test helper clears tables between tests. A row trigger does not fire
+	// for TRUNCATE, so history can be cleared for cleanup but never edited.
 	exec(`TRUNCATE teen_consents`)
-	if _, err := p.DownTo(ctx, 25); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 26); err != nil {
-		t.Fatal(err)
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM teen_consents`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("teen_consents after truncate: %d %v", n, err)
 	}
 }
 
-// TestContactAddRequestsMigration preserves the exact s2 data through up/down/up.
-func TestContactAddRequestsMigration(t *testing.T) {
+// A request that names no purpose is a contact request (the column's default),
+// so the original contact flow keeps working beside add requests.
+func TestContactRequestPurposeDefaultsToContact(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err := p.UpTo(ctx, 30); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{
-		`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,admin_decision,created_at,expires_at)
-		 VALUES(1,101,102,'group',103,'both',true,'pending','2026-10-24 12:00Z','2026-11-07 12:00Z')`,
-		`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,subject_decision,subject_decided_by,subject_decided_at,
-		 admin_decision,status,created_at,expires_at,completed_at)
-		 VALUES(2,101,102,'event',104,'phone',false,'approved',102,'2026-10-25 12:00Z','not_needed','granted','2026-10-24 12:00Z','2026-11-07 12:00Z','2026-10-25 12:00Z')`,
-		`INSERT INTO contact_grants(request_id,leader_id,subject_user_id,context_type,context_id,fields,granted_at)
-		 VALUES(2,101,102,'event',104,'phone','2026-10-25 12:00Z')`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var before, after string
-	query := `SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM contact_requests r`
-	if err := db.QueryRow(query).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := p.Up(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if err := db.QueryRow(`SELECT jsonb_agg(to_jsonb(r) - ARRAY['purpose','occurrence_id','add_over_limit','add_over_capacity',
-		 'add_attendance_mode','add_guest_count','add_childcare_count','add_childcare_ages_note','completed_target_id'] ORDER BY id)::text FROM contact_requests r`).Scan(&after); err != nil {
-			t.Fatal(err)
-		}
-		if before != after {
-			t.Fatalf("old contact data changed:\n%s\n%s", before, after)
-		}
-		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM contact_requests WHERE purpose='contact'`).Scan(&count); err != nil || count != 2 {
-			t.Fatalf("contact defaults %d %v", count, err)
-		}
-		if _, err := p.DownTo(ctx, 30); err != nil {
-			t.Fatal(err)
-		}
-		if err := db.QueryRow(query).Scan(&after); err != nil || after != before {
-			t.Fatalf("down changed contact data: %s %v", after, err)
-		}
-	}
-	if _, err := p.Up(ctx); err != nil {
-		t.Fatal(err)
+	db := openSQL(t, testdb.Fresh(t, true))
+	var purpose string
+	var occurrence sql.NullInt64
+	err := db.QueryRow(`INSERT INTO contact_requests (requester_id, subject_user_id, context_type, context_id, fields, needs_admin, admin_decision, created_at, expires_at)
+		VALUES (101, 102, 'group', 103, 'both', true, 'pending', '2026-10-24 12:00Z', '2026-11-07 12:00Z') RETURNING purpose, occurrence_id`).Scan(&purpose, &occurrence)
+	if err != nil || purpose != "contact" || occurrence.Valid {
+		t.Fatalf("purpose=%q occurrence=%v err=%v, want contact and no occurrence", purpose, occurrence, err)
 	}
 }
 
@@ -1511,13 +1158,6 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM manager_add_blocks`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("block history lost: %d %v", count, err)
 	}
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 30); err == nil || !strings.Contains(err.Error(), "add safeguarding history exists") {
-		t.Fatalf("downgrade discarded history: %v", err)
-	}
 }
 
 // TestMembershipAndRegistrationLookupPlans keeps the group/user-leading
@@ -1571,46 +1211,27 @@ func TestMembershipAndRegistrationLookupPlans(t *testing.T) {
 			}
 		})
 	}
-	// Both additive indexes have reversible migrations.
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.DownTo(context.Background(), 40); err != nil {
-		t.Fatal(err)
-	}
+	// Both lookup indexes are part of the baseline.
 	for _, index := range []string{"idx_memberships_group_id", "idx_registrations_user_id"} {
-		var absent bool
-		if err := db.QueryRow("SELECT to_regclass($1) IS NULL", index).Scan(&absent); err != nil || !absent {
-			t.Fatalf("index %s remains after rollback: absent=%v err=%v", index, absent, err)
+		var present bool
+		if err := db.QueryRow("SELECT to_regclass($1) IS NOT NULL", index).Scan(&present); err != nil || !present {
+			t.Fatalf("index %s missing: present=%v err=%v", index, present, err)
 		}
-	}
-	if _, err := p.Up(context.Background()); err != nil {
-		t.Fatal(err)
 	}
 }
 
-// TestPushSubscriptionsMigration checks 00058: the device table and its
-// bounds, push as a consent and delivery channel, and a Down that refuses
-// once push rows exist (as 00044's does).
-func TestPushSubscriptionsMigration(t *testing.T) {
+// The push device table (00058), push as a consent and delivery channel, and
+// the trigger of 00059 that ends a person's devices with their sessions.
+func TestPushSubscriptionsConstraints(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err := p.UpTo(ctx, 58); err != nil {
-		t.Fatal(err)
-	}
+	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(query string, args ...any) {
 		t.Helper()
 		if _, err := db.Exec(query, args...); err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", query, err)
 		}
 	}
-	exec(`INSERT INTO users(id,email,status) VALUES(1,'pat@example.com','active')`)
+	exec(`INSERT INTO users(id,email,status) VALUES(1,'pat@example.com','active'),(2,'sam@example.com','active')`)
 	exec(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,label) VALUES(1,'https://fcm.googleapis.com/a','k','a','Chrome on Linux')`)
 	for name, query := range map[string]string{
 		"duplicate endpoint": `INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(1,'https://fcm.googleapis.com/a','k','a')`,
@@ -1623,36 +1244,202 @@ func TestPushSubscriptionsMigration(t *testing.T) {
 			t.Errorf("%s allowed", name)
 		}
 	}
-	if _, err := p.DownTo(ctx, 57); err == nil || !strings.Contains(err.Error(), "push devices, consent or deliveries exist") {
-		t.Fatalf("down discarded devices: %v", err)
-	}
-	exec(`DELETE FROM push_subscriptions`)
+	// Push is a consent channel and a delivery channel.
 	exec(`INSERT INTO consents(user_id,channel,scope,status,source) VALUES(1,'push','all','opted_in','web_form')`)
-	if _, err := p.DownTo(ctx, 57); err == nil || !strings.Contains(err.Error(), "push devices, consent or deliveries exist") {
-		t.Fatalf("down discarded push consent: %v", err)
-	}
-	exec(`TRUNCATE consents`)
 	exec(`INSERT INTO notifications(user_id,kind,category,title,link) VALUES(1,'group.approved','groups','t','/')`)
 	exec(`INSERT INTO notification_deliveries(notification_id,user_id,channel,status) SELECT id,1,'push','sent' FROM notifications`)
-	if _, err := p.DownTo(ctx, 57); err == nil {
-		t.Fatal("down discarded push deliveries")
+
+	// Disabling an account, or bumping its session version, ends its devices
+	// and queues exactly one notice job; an ordinary update leaves them alone.
+	exec(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(2,'https://fcm.googleapis.com/d','k','a'),(2,'https://fcm.googleapis.com/e','k','a')`)
+	exec(`UPDATE users SET name = 'Sam' WHERE id = 2`)
+	var devices, jobs int
+	if err := db.QueryRow(`SELECT count(*) FROM push_subscriptions WHERE user_id = 2`).Scan(&devices); err != nil || devices != 2 {
+		t.Fatalf("devices after an ordinary update = %d (%v), want 2", devices, err)
 	}
-	exec(`DELETE FROM notification_deliveries`)
-	if _, err := p.DownTo(ctx, 57); err != nil {
-		t.Fatal(err)
+	exec(`UPDATE users SET session_version = session_version + 1 WHERE id = 2`)
+	if err := db.QueryRow(`SELECT count(*) FROM push_subscriptions WHERE user_id = 2`).Scan(&devices); err != nil || devices != 0 {
+		t.Fatalf("devices after the sessions ended = %d (%v), want 0", devices, err)
 	}
-	if _, err := db.Exec(`INSERT INTO consents(user_id,channel,scope,status,source) VALUES(1,'push','all','opted_in','web_form')`); err == nil {
-		t.Fatal("push consent allowed after down")
+	if err := db.QueryRow(`SELECT count(*) FROM jobs WHERE kind = 'push.devices_off' AND payload->>'userId' = '2'`).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("push.devices_off jobs = %d (%v), want 1", jobs, err)
 	}
+	exec(`UPDATE users SET session_version = session_version + 1 WHERE id = 2`)
+	if err := db.QueryRow(`SELECT count(*) FROM jobs WHERE kind = 'push.devices_off' AND payload->>'userId' = '2'`).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("no devices were left, yet jobs = %d (%v), want still 1", jobs, err)
+	}
+
 	// Deleting a user removes their devices.
-	if _, err := p.UpTo(ctx, 58); err != nil {
-		t.Fatal(err)
-	}
-	exec(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(1,'https://fcm.googleapis.com/a','k','a')`)
+	exec(`TRUNCATE consents`)
 	exec(`DELETE FROM notifications`)
 	exec(`DELETE FROM users WHERE id=1`)
 	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM push_subscriptions`).Scan(&n); err != nil || n != 0 {
+	if err := db.QueryRow(`SELECT count(*) FROM push_subscriptions WHERE user_id = 1`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("devices after the user went: %d %v", n, err)
+	}
+}
+
+// The baseline Down destroys the schema (R9 section 5.4). It exists for scratch
+// databases and these tests, and it refuses while any user exists, so an
+// absent-minded `fold migrate down-one` on a real install is an error.
+const baselineDownRefusal = "baseline down would destroy data; refusing"
+
+func publicTableCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestBaselineDownRefusesWhileAUserExists(t *testing.T) {
+	t.Parallel()
+	gdb, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, email) VALUES (1, 'down-guard@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	tables := publicTableCount(t, db)
+	for name, down := range map[string]func() error{
+		"DownTo(0)": func() error { _, err := p.DownTo(ctx, 0); return err },
+		"Down":      func() error { _, err := p.Down(ctx); return err },
+	} {
+		if err := down(); err == nil || !strings.Contains(err.Error(), baselineDownRefusal) {
+			t.Fatalf("%s with a user row: %v, want %q", name, err, baselineDownRefusal)
+		}
+	}
+	var email string
+	if err := db.QueryRow(`SELECT email FROM users WHERE id = 1`).Scan(&email); err != nil || email != "down-guard@example.com" {
+		t.Fatalf("the refused Down changed the user row: %q %v", email, err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("version after the refusal = %d, %v, want 1", version, err)
+	}
+	if got := publicTableCount(t, db); got != tables {
+		t.Fatalf("tables after the refusal = %d, want %d", got, tables)
+	}
+	if changes, err := Drift(gdb, models.All()...); err != nil || len(changes) > 0 {
+		t.Fatalf("the refused Down left the schema changed: %v %v", changes, err)
+	}
+}
+
+func TestBaselineDownAndUpOnAnEmptyDatabase(t *testing.T) {
+	t.Parallel()
+	gdb, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables := publicTableCount(t, db)
+	if _, err := p.DownTo(ctx, 0); err != nil {
+		t.Fatalf("down on an empty database: %v", err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != 0 {
+		t.Fatalf("version after down = %d, %v, want 0", version, err)
+	}
+	var left int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'goose_db_version'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("tables left after down: %d %v", left, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("functions left after down: %d %v", left, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pg_extension WHERE extname IN ('citext', 'btree_gist')`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("extensions left after down: %d %v", left, err)
+	}
+	if _, err := p.Up(ctx); err != nil {
+		t.Fatalf("up after down: %v", err)
+	}
+	if pending, err := p.HasPending(ctx); err != nil || pending {
+		t.Fatalf("pending after up: %v %v", pending, err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("version after up = %d, %v, want 1", version, err)
+	}
+	if got := publicTableCount(t, db); got != tables {
+		t.Fatalf("tables after up = %d, want %d", got, tables)
+	}
+	if changes, err := Drift(gdb, models.All()...); err != nil || len(changes) > 0 {
+		t.Fatalf("the restored schema drifts from the models: %v %v", changes, err)
+	}
+}
+
+// TestBaselineFileShape pins what the generator guarantees about the file
+// (R9 section 5.2 and 5.4). During the DEC-138 window the baseline is the only
+// migration; the first change after the window closes is 00002, and this test
+// gets a clause for it then.
+func TestBaselineFileShape(t *testing.T) {
+	t.Parallel()
+	entries, err := migrations.Files.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sqlFiles []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			sqlFiles = append(sqlFiles, e.Name())
+		}
+	}
+	if len(sqlFiles) != 1 || sqlFiles[0] != "00001_baseline.sql" {
+		t.Fatalf("migrations = %v, want exactly 00001_baseline.sql until the DEC-138 window closes", sqlFiles)
+	}
+	b, err := migrations.Files.ReadFile("00001_baseline.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	up, down := strings.Index(src, "-- +goose Up"), strings.Index(src, "-- +goose Down")
+	if up != 0 || down < 0 || down < up {
+		t.Fatalf("goose Up must open the file and Down must follow it: up=%d down=%d", up, down)
+	}
+	upPart, downPart := src[:down], src[down:]
+	for _, want := range []string{"DEC-138", "CREATE EXTENSION IF NOT EXISTS citext", "CREATE EXTENSION IF NOT EXISTS btree_gist"} {
+		if !strings.Contains(upPart, want) {
+			t.Errorf("the Up section lacks %q", want)
+		}
+	}
+	if strings.Index(upPart, "citext") > strings.Index(upPart, "btree_gist") {
+		t.Error("the extensions must be created citext first, then btree_gist")
+	}
+	for _, forbidden := range []string{"goose_db_version", "COMMENT ON EXTENSION", "CONCURRENTLY", "-- +goose NO TRANSACTION", "DROP SCHEMA"} {
+		if strings.Contains(src, forbidden) {
+			t.Errorf("the baseline contains %q", forbidden)
+		}
+	}
+	// Every function body is wrapped for goose, plus the Down guard.
+	functions := strings.Count(upPart, "CREATE FUNCTION")
+	if begins, ends := strings.Count(upPart, "-- +goose StatementBegin"), strings.Count(upPart, "-- +goose StatementEnd"); functions == 0 || begins != functions || ends != functions {
+		t.Errorf("functions=%d StatementBegin=%d StatementEnd=%d in Up", functions, begins, ends)
+	}
+	if !strings.Contains(downPart, baselineDownRefusal) || !strings.Contains(downPart, "DROP TABLE public.users;") {
+		t.Error("the Down section lacks its guard or its explicit drops")
+	}
+	if strings.Index(downPart, baselineDownRefusal) > strings.Index(downPart, "DROP TABLE") {
+		t.Error("the guard must come before the first drop")
+	}
+	if strings.Contains(downPart, "CASCADE") {
+		t.Error("the Down section must list drops explicitly, never CASCADE")
 	}
 }

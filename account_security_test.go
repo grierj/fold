@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"fold/migrations"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -288,68 +286,24 @@ func TestCurrentCredentialProofRejectsStaleEpochOrHash(t *testing.T) {
 	}
 }
 
-func TestCredentialTokenMigrationRevokesUnsafePendingLinks(t *testing.T) {
+// account_tokens.kind accepts exactly the five capability kinds, including the
+// separately authenticated email-change cancellation link, and nothing else.
+// (The old test walked migration 40, which revoked legacy pending links and
+// restored token history on Down; both were version history. The pending-link
+// revocation behavior itself is TestCredentialChangesRevokeEveryPendingAccountToken.)
+func TestAccountTokenKindConstraint(t *testing.T) {
 	app := testApp(t)
-	sqlDB, err := app.DB.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := migrations.NewProvider(sqlDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if _, err := provider.Up(context.Background()); err != nil {
-			t.Errorf("restore latest migrations: %v", err)
+	user := newTestUser(t, app, "token-kinds", "password1234", models.RoleMember)
+	expires := time.Now().UTC().Add(time.Hour)
+	for _, kind := range []string{models.TokenPasswordReset, models.TokenEmailVerify, models.TokenAccountSetup, models.TokenTeenConsent, models.TokenEmailChangeCancel} {
+		token := models.AccountToken{Kind: kind, UserID: user.ID, TokenHash: hashToken("kind-" + kind), Payload: `{}`, ExpiresAt: expires}
+		if err := app.DB.Create(&token).Error; err != nil {
+			t.Fatalf("token kind %q refused: %v", kind, err)
 		}
-	})
-	// Create the user with the current model before migrating down: later
-	// migrations add users columns (logout_version, 00063) that 39 lacks.
-	user := newTestUser(t, app, "token-migration", "password1234", models.RoleMember)
-	if _, err := provider.DownTo(context.Background(), 39); err != nil {
-		t.Fatal(err)
 	}
-
-	usedAt := time.Now().UTC()
-	expiresAt := usedAt.Add(time.Hour)
-	create := func(kind, raw, payload string, used *time.Time) string {
-		t.Helper()
-		hash := hashToken(raw)
-		if err := app.DB.Create(&models.AccountToken{Kind: kind, UserID: user.ID, TokenHash: hash,
-			Payload: payload, ExpiresAt: expiresAt, UsedAt: used}).Error; err != nil {
-			t.Fatal(err)
-		}
-		return hash
-	}
-	exists := func(hash string) bool {
-		t.Helper()
-		var count int64
-		if err := app.DB.Model(&models.AccountToken{}).Where("token_hash = ?", hash).Count(&count).Error; err != nil {
-			t.Fatal(err)
-		}
-		return count == 1
-	}
-
-	pendingVerify := create(models.TokenEmailVerify, "migration-pending-verify", `{"new_email":"unsafe@example.com"}`, nil)
-	usedVerify := create(models.TokenEmailVerify, "migration-used-verify", `{"new_email":"history@example.com"}`, &usedAt)
-	pendingReset := create(models.TokenPasswordReset, "migration-pending-reset", `{}`, nil)
-	if _, err := provider.UpTo(context.Background(), 40); err != nil {
-		t.Fatal(err)
-	}
-	if exists(pendingVerify) || !exists(usedVerify) || !exists(pendingReset) {
-		t.Fatal("migration 40 did not revoke only the unsafe legacy verification link")
-	}
-
-	pendingCancel := create(models.TokenEmailChangeCancel, "migration-pending-cancel", `{}`, nil)
-	usedCancel := create(models.TokenEmailChangeCancel, "migration-used-cancel", `{}`, &usedAt)
-	rollbackVerify := create(models.TokenEmailVerify, "migration-rollback-verify", `{"new_email":"rollback@example.com"}`, nil)
-	if _, err := provider.DownTo(context.Background(), 39); err != nil {
-		t.Fatal(err)
-	}
-	if exists(pendingCancel) || exists(usedCancel) || exists(rollbackVerify) || !exists(usedVerify) || !exists(pendingReset) {
-		t.Fatal("migration 40 rollback did not preserve only safe token history")
-	}
-	if version, err := provider.GetDBVersion(context.Background()); err != nil || version != 39 {
-		t.Fatalf("version after migration rollback=%d err=%v, want 39", version, err)
+	err := app.DB.Exec(`INSERT INTO account_tokens (kind, user_id, token_hash, payload, expires_at) VALUES ('sms_login', ?, ?, '{}', ?)`,
+		user.ID, hashToken("kind-sms_login"), expires).Error
+	if err == nil {
+		t.Fatal("an unknown token kind was accepted")
 	}
 }
