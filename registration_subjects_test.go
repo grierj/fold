@@ -33,15 +33,17 @@ func TestAttendeeProvenanceReadIsBoundedToPageDates(t *testing.T) {
 	}
 	defer app.DB.Callback().Query().Remove(callback)
 	app.attendeeNames([]models.EventOccurrence{occ}, map[uint]bool{eid: true}, nil, map[uint]bool{eid: true}, nil, app.requestFacts())
-	if !strings.Contains(sql, "oa.occurrence_id IN (") || !strings.Contains(sql, "registrations.occurrence_id IN (") {
-		t.Fatalf("both outer read and provenance subquery must use the page's dates: %s", sql)
+	// The flag is the row's own provenance, so there is no second table to bound:
+	// the one read is limited to the page's dates and joins no access table.
+	if !strings.Contains(sql, "registrations.occurrence_id IN (") || strings.Contains(sql, "occurrence_accesses") || !strings.Contains(sql, "registrations.access_ended_at IS NULL") {
+		t.Fatalf("the read must use the page's dates and the row's own provenance: %s", sql)
 	}
 	var index string
-	if err := app.DB.Raw("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'occurrence_accesses_active_occurrence'").Scan(&index).Error; err != nil {
+	if err := app.DB.Raw("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_registrations_live_access'").Scan(&index).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(index, "(occurrence_id)") || !strings.Contains(index, "status = 'active'") {
-		t.Fatalf("missing partial index for active page dates: %s", index)
+	if !strings.Contains(index, "(occurrence_id)") || !strings.Contains(index, "access_ended_at IS NULL") || !strings.Contains(index, "access_origin <> ''") {
+		t.Fatalf("missing partial index for live grants on page dates: %s", index)
 	}
 }
 

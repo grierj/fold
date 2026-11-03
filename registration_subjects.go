@@ -135,10 +135,10 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 		allowed = a.canRegisterDateIn(tx, holder, ev, r.OccurrenceID)
 		access[holder.ID] = allowed
 	}
-	if !allowed && r.UserID != nil {
-		var invitation models.OccurrenceAccess
-		if tx.Where("registration_id = ? AND status = ?", r.ID, policy.OccurrenceAccessActive).Limit(1).Find(&invitation).Error == nil && invitation.ID != 0 {
-			live, err := liveOccurrenceInvitationIn(tx, invitation, time.Now().UTC())
+	if !allowed && r.UserID != nil && r.ID != 0 {
+		var grant models.Registration
+		if tx.Where("registrations.id = ? AND "+registrationAccessLiveSQL, r.ID).Limit(1).Find(&grant).Error == nil && grant.ID != 0 {
+			live, err := liveOccurrenceInvitationIn(tx, grant, time.Now().UTC())
 			allowed = err == nil && live
 		}
 	}
@@ -208,7 +208,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 		if r.Status == old.Status && r.ChildcareRequested == old.ChildcareRequested {
 			continue
 		}
-		if err := tx.Omit("User", "Occurrence").Save(&r).Error; err != nil {
+		if err := tx.Omit(registrationSaveOmits()...).Save(&r).Error; err != nil {
 			return nil, err
 		}
 		if err := auditRegistration(tx, actor, audit.RegistrationChanged, ev.ID, old, r, ip); err != nil {
@@ -460,7 +460,9 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 		models.Registration
 		LeaderAdded bool
 	}
-	a.DB.Model(&models.Registration{}).Select("registrations.*, EXISTS (SELECT 1 FROM occurrence_accesses oa WHERE oa.registration_id = registrations.id AND oa.status = 'active' AND oa.origin = ? AND oa.occurrence_id IN ?) AS leader_added", policy.OccurrenceOriginManagerAdd, ids).Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
+	// The leader-added flag is the row's own live manager-add provenance: no
+	// second table, so the page's dates in the outer filter are the only bound.
+	a.DB.Model(&models.Registration{}).Select("registrations.*, (registrations.access_origin = ? AND registrations.access_granted_at IS NOT NULL AND registrations.access_ended_at IS NULL) AS leader_added", policy.OccurrenceOriginManagerAdd).Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
 	registrations := make([]models.Registration, 0, len(rows))
 	for _, row := range rows {
 		registrations = append(registrations, row.Registration)

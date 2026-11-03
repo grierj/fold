@@ -376,7 +376,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	if err != nil {
 		return nil, err
 	}
-	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.RegistrationID == reg.ID {
+	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.ID == reg.ID {
 		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
@@ -704,7 +704,7 @@ func saveRegistration(tx *gorm.DB, r *models.Registration) error {
 			r.ManageTokenHash = ""
 		}
 	}
-	return tx.Omit("User", "Occurrence").Save(r).Error
+	return tx.Omit(registrationSaveOmits()...).Save(r).Error
 }
 
 // registerLocked allocates one final transition. Batch departures and
@@ -1093,23 +1093,17 @@ func (a *App) apiRegister(c *gin.Context) {
 		for _, answer := range body.People {
 			personIDs = append(personIDs, answer.PersonID)
 		}
-		var existingRows []struct {
-			models.Registration
-			Invitation bool
-		}
-		if err := tx.Model(&models.Registration{}).Select("registrations.*, EXISTS (SELECT 1 FROM occurrence_accesses oa WHERE oa.registration_id = registrations.id AND oa.status = 'active') AS invitation").Where("occurrence_id = ? AND (user_id = ? OR household_person_id IN ?)", o.ID, holder.ID, personIDs).Find(&existingRows).Error; err != nil {
+		var existingRows []models.Registration
+		if err := tx.Where("occurrence_id = ? AND (user_id = ? OR household_person_id IN ?)", o.ID, holder.ID, personIDs).Find(&existingRows).Error; err != nil {
 			return err
 		}
 		var ownRow models.Registration
 		personRows := map[uint]models.Registration{}
 		hasInvitation := false
-		for _, row := range existingRows {
-			r := row.Registration
-			if row.Invitation && r.UserID != nil && *r.UserID == holder.ID {
-				hasInvitation = true
-			}
+		for _, r := range existingRows {
 			if r.UserID != nil && *r.UserID == holder.ID {
 				ownRow = r
+				hasInvitation = r.AccessLive()
 			} else if r.HouseholdPersonID != nil {
 				personRows[*r.HouseholdPersonID] = r
 			}
@@ -1117,12 +1111,8 @@ func (a *App) apiRegister(c *gin.Context) {
 		if hasInvitation && !gated {
 			return errOccurrenceGateRetry
 		}
-		var invitation models.OccurrenceAccess
 		if hasInvitation {
-			if err := tx.Where("registration_id = ? AND status = ?", ownRow.ID, policy.OccurrenceAccessActive).First(&invitation).Error; err != nil {
-				return err
-			}
-			live, err := liveOccurrenceInvitationIn(tx, invitation, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, ownRow, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -1195,7 +1185,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			return err
 		}
 		if hasInvitation && body.Status == models.RegDeclined {
-			_, err := endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP())
+			_, err := endOccurrenceAccessIn(tx, &ownRow, accessScopeOf(ev), policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -1332,20 +1322,17 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 			body.RegistrationID, locked.ID, []string{models.RegRemoved, models.RegCancelled}).First(&r).Error; err != nil {
 			return errRegNotFound
 		}
-		var invitation models.OccurrenceAccess
-		if err := tx.Where("registration_id = ? AND status = ?", r.ID, policy.OccurrenceAccessActive).Limit(1).Find(&invitation).Error; err != nil {
-			return err
-		}
-		if invitation.ID != 0 {
+		hadGrant, priorStatus := r.AccessLive(), r.Status
+		if hadGrant {
 			account, err := occurrenceAccountIn(tx, me.ID, time.Now().UTC(), time.UTC)
 			if err != nil {
 				return err
 			}
-			live, err := liveOccurrenceInvitationIn(tx, invitation, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, r, time.Now().UTC())
 			if err != nil {
 				return err
 			}
-			if !live || !policy.CanEndOccurrenceAccess(account, true, occurrenceAccessPolicy(invitation)) {
+			if !live || !policy.CanEndOccurrenceAccess(account, true, occurrenceAccessPolicy(r, accessScopeOf(ev))) {
 				return errPeopleAddForbidden
 			}
 		}
@@ -1356,7 +1343,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 			return err
 		}
 		meta := registrationMeta(r)
-		if invitation.ID == 0 {
+		if !hadGrant {
 			meta["note"] = note
 		}
 		meta["oldStatus"] = r.Status
@@ -1380,8 +1367,8 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 				}
 			}
 		}
-		if invitation.ID != 0 {
-			_, err = endOccurrenceAccessIn(tx, &invitation, policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP())
+		if hadGrant {
+			_, err = endOccurrenceAccessIn(tx, &r, accessScopeOf(ev), policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP())
 		} else {
 			_, err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
 		}
@@ -1391,7 +1378,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		// Removing a going party retries promotion under the occurrence lock.
 		// promoteLocked checks remaining attendance/childcare room and cutoff;
 		// being at or over capacity after removal never seats another party.
-		if r.Status == models.RegGoing {
+		if priorStatus == models.RegGoing {
 			_, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err
@@ -1852,6 +1839,16 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 				return nil, err
 			}
 			continue
+		}
+		// A dropped row can carry a live exact-date grant. End it first, with an
+		// explicit reason and the normal notice, so the delete trigger finds an
+		// ended grant and the snapshots that outlive the row.
+		if r.AccessOrigin != "" {
+			ids, err := endRegistrationAccess(tx, &r, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, now, ip, true)
+			if err != nil {
+				return nil, err
+			}
+			mailed = append(mailed, ids...)
 		}
 		if err := tx.Delete(&r).Error; err != nil {
 			return nil, err

@@ -5,7 +5,7 @@
 | Audit item | R9 [CHANGE], `docs/AUDIT-2026-11-01.md:151` |
 | Priority | P1 (audit sequence step 3, `docs/AUDIT-2026-11-01.md:263`) |
 | Effort | L |
-| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) merged as PR #264. S3 (date types) is implemented on `autoflow/m77-s3-20261103`; its date-output assertions and full Go suite passed; independent review found four bounded issues, with fixes verified and awaiting independent re-review before publication (notes at the end of §9, S3). S4 follows. The migration freeze covers S2 through S4. |
+| Status | Approved 2026-11-01. R7 and R8 were rejected; they give this brief nothing. M7.7 claimed in `STATUS.md` Nov 3, 2026. S1 (documentation) merged as PR #258. S2 (generator and proof script, the baseline it generates, rewritten migration tests and the activated replacement rules) merged as PR #264. S3 (date types) merged as PR #265. S4 (the provenance fold, with the S5 close-out in the same PR) is implemented on `autoflow/m77-s4-20261103` with passing checks and schema allowlist review; additional lifecycle regressions and the full Go suite passed; final independent re-review and publication remain pending (notes at the end of §9, S4). The migration freeze covers S2 through S4. |
 | New decision | DEC-138 (draft text in §8; landed in PLAN Nov 2026 — PR #236 took DEC-137 for branding first, so the audit block runs DEC-138–DEC-145) |
 
 This brief is the one explicit exception to "never edit an old migration"
@@ -1553,6 +1553,124 @@ fields), plus the DELETE and replacement cases in §10. Handler/occurrence/
 departure test suites keep their scenarios; only their storage assertions
 move to the registration row (for example `savedOccurrenceAccess` in
 `api_occurrence_mutations_test.go:86` becomes a registration reload).
+
+*S4 implementation notes (implemented on `autoflow/m77-s4-20261103`; checks, schema review and additional regressions passed).*
+The verification record below describes the completed checks and remaining
+limitations. Final review, publication and merge remain pending; M7.7 is
+incomplete and the migration freeze remains active through S4 merge.
+
+- Schema (`00001_baseline.sql`, edited, not regenerated; no new migration):
+  `registrations` gains the nine `access_*` columns of §7.2, the CHECKs
+  `registrations_access_provenance` (origin/provenance shape, account rows only,
+  empty origin means every other column empty), `registrations_access_end_state`
+  and five positive-ID checks, the foreign key `registrations_access_request_id_fkey`,
+  and the indexes `idx_registrations_access_request` (unique, partial) and
+  `idx_registrations_live_access` (partial). `occurrence_accesses`, its sequence,
+  indexes, key, foreign key and `occurrence_access_provenance()` are gone;
+  `registration_access_provenance()` is added (`BEFORE INSERT OR DELETE OR UPDATE`)
+  and the occurrence branch of `add_request_completed()` now reads `registrations`
+  (still a deferred constraint trigger; the group branch is untouched). The
+  baseline Down drops the new function and no longer names the old table.
+  `models.All()` lists 37 tables; `ManagerAddBlock` stays.
+- One deliberate tightening over the old CHECK text: a `departure_self` grant
+  requires a non-null departure actor equal to the subject (the old CHECK let a
+  null actor through, because `NULL = id` is not false).
+- Trigger rules as built: a row without provenance deletes and updates freely
+  (identity moves are refused only while provenance exists); a live grant is
+  immutable apart from a one-way end; an ended grant can be replaced only by a
+  new live grant whose stamp is later than the old stamp and no earlier than the
+  old end, and only when the matching `occurrence_access.added` and `.ended`
+  snapshots exist (subject, date, registration, origin, issuer, request,
+  departure pair, grant stamp, and for the end the end stamp, reason and actor,
+  compared exactly); a delete needs the same snapshots and an ended grant. Every
+  new grant first checks the whole access-snapshot scope for a corrupt row with the
+  shared guarded integer predicate (SQLSTATE `XX001`), then re-proves live facts,
+  the manager-add block, teen and repeat rules (a repeat is a row that ever held a
+  grant or a validated added snapshot for the subject and date), the exact granted
+  request (requester, subject, event, date, completed target, completion no later
+  than the grant, creation no earlier than the latest end across the row and the
+  snapshots, equality allowed) and departure authority against the active
+  membership. A request can ground one grant only: an added snapshot already
+  naming it refuses a second use. Corruption is checked for grants, not for
+  deletes, so one malformed unrelated audit row cannot freeze hard deletes.
+- Go: `registration_access.go` is the only writer of the `access_*` columns and
+  of the snapshots. `grantRegistrationAccess` and `endRegistrationAccess` normalize
+  time to UTC microseconds, write the snapshot in the caller's transaction and
+  reload the persisted row first; a replacement that does not move forward fails
+  with `errAccessClockOrder` (nothing advances the clock). `loadAccessHistory`
+  evaluates `historyMetaID`, the same guarded predicate the baseline holds
+  (`TestRegistrationAccessCorruptionPredicateMatchesSQL` compares the text), and a
+  corrupt row fails the load before any filtering. Ordinary registration saves
+  omit the `access_*` columns, so a stale struct can never revert a grant or an end.
+  `policy.OccurrenceAccess` is built from the registration row with its status
+  synthesized from the end stamp; policy functions and
+  `internal/policy/occurrence_access_test.go` are untouched.
+- Dedupe keys: `occurrence-added:<registrationID>:<grantedAtMicro>` and
+  `occurrence-ended:<registrationID>:<grantedAtMicro>:<endedAtMicro>`; notices and
+  audit rows use `registration` as their subject and target type; the promotion
+  key keeps its RFC3339Nano component on the registration ID.
+- Departure supersession is two updates under the existing locks with one
+  normalized instant (end the manager grant as `departure_superseded` without a
+  notice, then replace it with the departure grant); a live departure grant is
+  left untouched; audit or notice failure rolls the whole confirmation back.
+- Hard deletes: `deleteEventRows` ends live grants as `event_deleted` without
+  notices; `restoreRegistrations` and series undo end them as `context_changed`
+  through the normal notice path; already-ended grants keep their reason.
+- Contact history reads the three registration-targeted snapshots; `accessId`
+  carries the registration ID; the JSON keys and CSV header are unchanged.
+- Reasoned deviations and judgement calls: (1) the organizer is no longer stored,
+  so the old organizer-mismatch end reason has no source; `context_changed` stays
+  reachable through an inactive group or a registration that stopped being a
+  current answer, and the "organizer changed" scenario in
+  `api_occurrence_access_test.go` now moves the event to an archived group.
+  (2) The corruption scope check guards grants only. (3) `audit_logs` keeps no
+  immutability trigger (that would be a diff hunk outside §10's S4 allow-list);
+  snapshot immutability is the application's write-once rule plus the exact
+  matching the trigger demands before anything is overwritten or deleted.
+  (4) `departureAccessFact` keeps its fields for the preview digest, with the
+  registration ID in both ID slots.
+- Tests: `migrations/migrations_test.go` ports the departure-origin, expiry,
+  supersession and contact-add matrices onto `registrations` and adds delete,
+  replacement, ordering, repeat/stale survival, single-use request, household,
+  sole-leader and trigger-shape cases; `registration_access_test.go` holds the
+  fixture helpers and the snapshot, ordering, dedupe, hard-delete and departure
+  rollback tests; `api_occurrence_access_test.go` holds the table that runs the
+  corruption predicate through the Go loader and the trigger;
+  `api_contact_history_test.go` covers retention after re-grant and deletion,
+  large IDs, malformed metadata, misclassification and the unchanged JSON keys.
+- Verification record: at base `695cf7d9f9e30afc684f2beb7653d8467deb0598`,
+  candidate baseline SHA-256
+  `09edf918eabf3ca43cd29997caf6884a01f590909d6ae17d1253bdaa59181376`,
+  the full Go suite (988 root tests), migrations including strict drift,
+  unedited policy tests, focused regressions, Node 24 frontend and end-to-end
+  suites, builds, vet, lint, deadcode, TypeScript, Knip, contrast and bundle
+  checks passed. The batch-read budget measured 9 reads for one request and
+  11 for 100, within the unchanged ceiling.
+  The scratch proof recorded versions 0 and 1, extension-owner application,
+  fresh-boot health and unchanged old-chain behavior. Independent review
+  examined every normalized schema hunk against S3 and the frozen chain:
+  only the §10 changes remain, with 37 tables, unrelated functions and
+  triggers unchanged, and the group completion branch byte-identical.
+  The reviewed content manifest was
+  `05a3a7bdfaf2f367ea6c2eb693c7f2df669613f4804998ffc9d8987554003c69`.
+- That review covered all four concerns and found three missing combined
+  lifecycle proofs. Additional tests now exercise kept-date reminder delivery
+  and suppression, production deletion/recreation followed by repeat/stale
+  refusal and fresh approval, and contact-history attribution across two grants
+  on one registration before and after deletion. All four test functions
+  passed together with caching disabled, including both departure reminder
+  cases. The full Go suite, docs guard and static checks also passed.
+  The reminder fixture uses invite-only dates inside the two-hour departure
+  cutoff and runs the permitted 120-minute reminder as a delayed job after
+  the grant exists. It asserts ordinary visibility loss, one delivery through
+  retained access and suppression after the grant ends.
+  The stale-request fixture deliberately inserts an otherwise unreachable
+  pending request; the series-undo fixture uses the production grant writer
+  because the real manager-add endpoint changes the undo revision. Those
+  fixture limits require explicit review. Final independent re-review,
+  publication and merge remain pending; M7.7 is incomplete and the
+  migration freeze remains active. The earlier S3 jobs timeout has not recurred
+  in later runs; its cause remains unknown.
 
 **S5 — Close-out (rides in S4's PR unless it grows).** Update `docs/API.md`
 storage and migration references (JSON itself is unchanged). Close the

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fold/internal/events"
+	"fold/internal/policy"
 	"fold/models"
 
 	ics "github.com/arran4/golang-ical"
@@ -945,9 +946,7 @@ func TestPersonalFeedScopedInvitationAlwaysStandalone(t *testing.T) {
 			}
 		}
 	}
-	if err := f.app.DB.Model(&f.access).Updates(map[string]any{"status": "ended", "ended_at": time.Now().UTC(), "end_reason": "removed", "ended_by": f.issuer.ID}).Error; err != nil {
-		t.Fatal(err)
-	}
+	endSeededAccess(t, f.app.DB, f.access.RegistrationID, policy.OccurrenceRemoved, &f.issuer.ID, time.Now().UTC())
 	gone := feedBody(t, f.client, createFeedLink(t, f.client, models.CalendarFeedAll))
 	if strings.Contains(gone, "BEGIN:VEVENT") {
 		t.Fatal("revoked invitation still exported", gone)
@@ -1246,7 +1245,7 @@ func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 			}
 			if path == personal {
 				failures = append(failures, failedRead{"calendar_tokens", 1}, failedRead{"users", 1},
-					failedRead{"memberships", 1}, failedRead{"event_hosts", 1}, failedRead{"occurrence_accesses", 1},
+					failedRead{"memberships", 1}, failedRead{"event_hosts", 1},
 					failedRead{"registrations", 1}, failedRead{"registrations", 2}, failedRead{"registrations", 3})
 			} else if strings.HasPrefix(path, "/cal/groups/") {
 				failures = append(failures, failedRead{"groups", 2})

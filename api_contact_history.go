@@ -95,7 +95,7 @@ func contactHistoryDTO(e contactHistoryEntry) contactHistoryEntryJSON {
 var contactHistoryTargets = map[string]string{
 	audit.ContactRequested: "contact_request", audit.ContactDecision: "contact_request", audit.ContactWithdrawn: "contact_request", audit.ContactExpired: "contact_request", audit.ContactGranted: "contact_request", audit.ContactReveal: "contact_request", audit.ContactRefused: "contact_request", audit.ContactRevoked: "contact_request", audit.ContactEnded: "contact_request",
 	audit.AddRequested: "add_request", audit.AddDecision: "add_request", audit.AddWithdrawn: "add_request", audit.AddExpired: "add_request", audit.AddCompleted: "add_request", audit.AddRefused: "add_request", audit.AddEnded: "add_request",
-	audit.OccurrenceAccessAdded: "occurrence_access", audit.OccurrenceAccessEnded: "occurrence_access", audit.OccurrenceBlocked: "occurrence_access",
+	audit.OccurrenceAccessAdded: accessTargetType, audit.OccurrenceAccessEnded: accessTargetType, audit.OccurrenceBlocked: accessTargetType,
 	audit.MemberAdded: "group", audit.MemberRemoved: "group", audit.AddedOverLimit: "group",
 	audit.RegistrationAdded: "event", audit.RegistrationAddedOverCapacity: "event", audit.RegistrationRemoved: "event",
 }
@@ -218,18 +218,22 @@ func contactHistoryQuery(tx *gorm.DB, f contactHistoryFilter) *gorm.DB {
 		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, contactHistoryTargets[action])
 	}
 	pairs = pairs.Or("l.action = ? AND l.target_type = ?", audit.ContactRefused, "contact_endpoint").Or("l.action = ? AND l.target_type = ?", audit.AddRefused, "add_endpoint").Or("l.action = ? AND l.target_type = ?", audit.OccurrenceRefused, "occurrence_endpoint")
+	// Exact-date access rows are the three action-scoped registration snapshots
+	// (R9 S4): their own validated metadata supplies issuer, subject, request,
+	// event, date and the registration ID shown as accessId. A malformed field
+	// is omitted, never cast, and never read as authority.
 	inner := tx.Table("audit_logs l").Select(`l.id, l.at, l.action, l.actor_id,
  CASE WHEN l.meta_json->>'reason' IN ('subject:approved','subject:denied','admin:approved','admin:denied') THEN l.meta_json->>'reason' END AS decision_reason,
- COALESCE(r.requester_id, oa.issuer_id) AS requester_id,
- COALESCE(r.subject_user_id, oa.subject_user_id, CASE WHEN l.target_type IN ('group','event') THEN ` + historyMetaID("userId") + ` END) AS subject_user_id,
- CASE WHEN r.id IS NOT NULL THEN r.purpose WHEN oa.id IS NOT NULL OR l.target_type = 'event' THEN 'occurrence_add' WHEN l.target_type = 'group' THEN 'group_add' END AS purpose,
- COALESCE(r.id, oa.request_id) AS request_id, oa.id AS access_id,
- COALESCE(r.context_type, CASE WHEN oa.id IS NOT NULL THEN 'event' WHEN l.target_type IN ('group','event') THEN l.target_type END) AS context_type,
- COALESCE(r.context_id, oa.event_id, CASE WHEN l.target_type IN ('group','event') AND l.target_id > 0 THEN l.target_id END) AS context_id,
- COALESCE(r.occurrence_id, oa.occurrence_id, CASE WHEN l.target_type = 'event' THEN ` + historyMetaID("occurrenceId") + ` END) AS occurrence_id,
+ COALESCE(r.requester_id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("issuerId") + ` END) AS requester_id,
+ COALESCE(r.subject_user_id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("subjectUserId") + ` END, CASE WHEN l.target_type IN ('group','event') THEN ` + historyMetaID("userId") + ` END) AS subject_user_id,
+ CASE WHEN r.id IS NOT NULL THEN r.purpose WHEN l.target_type IN ('` + accessTargetType + `','event') THEN 'occurrence_add' WHEN l.target_type = 'group' THEN 'group_add' END AS purpose,
+ COALESCE(r.id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("requestId") + ` END) AS request_id,
+ CASE WHEN l.target_type = '` + accessTargetType + `' AND l.target_id > 0 THEN l.target_id END AS access_id,
+ COALESCE(r.context_type, CASE WHEN l.target_type = '` + accessTargetType + `' THEN 'event' WHEN l.target_type IN ('group','event') THEN l.target_type END) AS context_type,
+ COALESCE(r.context_id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("eventId") + ` WHEN l.target_type IN ('group','event') AND l.target_id > 0 THEN l.target_id END) AS context_id,
+ COALESCE(r.occurrence_id, CASE WHEN l.target_type IN ('` + accessTargetType + `','event') THEN ` + historyMetaID("occurrenceId") + ` END) AS occurrence_id,
  CASE WHEN r.purpose = 'contact' THEN r.fields END AS fields`).
-		Joins(`LEFT JOIN contact_requests r ON r.id = l.target_id AND ((l.target_type = 'contact_request' AND r.purpose = 'contact') OR (l.target_type = 'add_request' AND r.purpose IN ('group_add','occurrence_add')))`).
-		Joins(`LEFT JOIN occurrence_accesses oa ON oa.id = l.target_id AND l.target_type = 'occurrence_access'`).Where(pairs)
+		Joins(`LEFT JOIN contact_requests r ON r.id = l.target_id AND ((l.target_type = 'contact_request' AND r.purpose = 'contact') OR (l.target_type = 'add_request' AND r.purpose IN ('group_add','occurrence_add')))`).Where(pairs)
 	q := tx.Table("(?) AS history", inner).Where("actor_id = ? OR requester_id = ? OR subject_user_id = ?", f.PersonID, f.PersonID, f.PersonID)
 	if f.Before > 0 {
 		q = q.Where("id < ?", f.Before)

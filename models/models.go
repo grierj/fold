@@ -468,6 +468,32 @@ type Registration struct {
 	RemovalNote string `gorm:"not null;default:''"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Exact-date access provenance (R9 S4, DEC-138). AccessOrigin "" is an
+	// ordinary answer with no grant; otherwise the access_* columns are one
+	// grant: manager_add, departure_self or departure_removal. A grant is live
+	// while AccessEndedAt is nil, and ending is final until a newer grant
+	// replaces an ended one on the same row. Subject, occurrence, event and
+	// organizer are not stored again: they are this row's user, occurrence and
+	// that occurrence's event. History of ended grants lives in the audit log
+	// (occurrence_access.added / occurrence_access.ended snapshots keyed by
+	// this row's ID and the grant stamp). The CHECKs, the request foreign key,
+	// the partial indexes and registration_access_provenance() are SQL-only.
+	AccessOrigin                string `gorm:"type:text;not null;default:''"`
+	AccessIssuerID              *uint
+	AccessRequestID             *uint
+	AccessDepartureMembershipID *uint
+	AccessDepartureActorID      *uint
+	AccessGrantedAt             *time.Time
+	AccessEndedAt               *time.Time
+	AccessEndReason             string `gorm:"type:text;not null;default:''"`
+	AccessEndedBy               *uint
+}
+
+// AccessLive reports a live exact-date grant: provenance is set, it carries its
+// grant stamp and it has not ended. Every reader and writer of access state uses
+// this one definition (the SQL form is the same three conditions).
+func (r Registration) AccessLive() bool {
+	return r.AccessOrigin != "" && r.AccessGrantedAt != nil && r.AccessEndedAt == nil
 }
 
 // GuestSignup is one unverified guest registration intent (M1.4): a
@@ -991,34 +1017,6 @@ type ContactGrant struct {
 	EndedBy       *uint
 }
 
-// OccurrenceAccess is the exact-date access/provenance family. Manager-add
-// rows retain their issuer/request safeguards; departure rows instead retain
-// the membership and actor that authorized a self-leave or removal. Source on
-// Registration remains web/admin/guest_form; it is not authority. No live-domain
-// FK may cascade this history away. Ending is irreversible; partial uniqueness
-// permits only one active subject/date. Current read authorization reloads the
-// subject, occurrence and organizer, but membership departure alone never ends
-// an accepted row.
-type OccurrenceAccess struct {
-	ID                    uint   `gorm:"primaryKey"`
-	SubjectUserID         uint   `gorm:"not null"`
-	OccurrenceID          uint   `gorm:"not null"`
-	EventID               uint   `gorm:"not null"`
-	OrganizerType         string `gorm:"not null"`
-	OrganizerID           uint   `gorm:"not null"`
-	Origin                string `gorm:"not null;default:manager_add"`
-	IssuerID              *uint
-	RequestID             *uint `gorm:"unique"`
-	RegistrationID        uint  `gorm:"not null"`
-	DepartureMembershipID *uint
-	DepartureActorID      *uint
-	Status                string    `gorm:"not null;default:active"`
-	GrantedAt             time.Time `gorm:"not null;default:now()"`
-	EndedAt               *time.Time
-	EndReason             string `gorm:"not null;default:''"`
-	EndedBy               *uint
-}
-
 // ManagerAddBlock prevents NEW manager date adds/completions in one organizer
 // scope, never self-RSVP, membership, or other already accepted invitations.
 // Recipient APIs must not disclose a hidden organizing group's ID or name.
@@ -1039,7 +1037,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
+		&ContactRequest{}, &ContactGrant{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
 		&PushSubscription{},
 	}
 }

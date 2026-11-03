@@ -213,15 +213,17 @@ func departureRegistrationSnapshot(r *models.Registration) departureRegistration
 	}
 }
 
-func departureAccessSnapshot(a *models.OccurrenceAccess) *departureAccessFact {
-	if a == nil || a.ID == 0 {
+// departureAccessSnapshot is the live exact-date grant on a registration, as
+// the preview digest sees it. A registration without a live grant has none.
+func departureAccessSnapshot(r *models.Registration, scope accessScope) *departureAccessFact {
+	if r == nil || !r.AccessLive() {
 		return nil
 	}
 	return &departureAccessFact{
-		ID: a.ID, Origin: a.Origin, OrganizerType: a.OrganizerType, OrganizerID: a.OrganizerID,
-		RegistrationID: a.RegistrationID, IssuerID: ptrUint(a.IssuerID), RequestID: ptrUint(a.RequestID),
-		DepartureMembershipID: ptrUint(a.DepartureMembershipID), DepartureActorID: ptrUint(a.DepartureActorID),
-		Status: a.Status, GrantedAt: a.GrantedAt.UTC().UnixNano(),
+		ID: r.ID, Origin: r.AccessOrigin, OrganizerType: scope.Organizer.Type, OrganizerID: scope.Organizer.ID,
+		RegistrationID: r.ID, IssuerID: ptrUint(r.AccessIssuerID), RequestID: ptrUint(r.AccessRequestID),
+		DepartureMembershipID: ptrUint(r.AccessDepartureMembershipID), DepartureActorID: ptrUint(r.AccessDepartureActorID),
+		Status: policy.OccurrenceAccessActive, GrantedAt: r.AccessGrantedAt.UTC().UnixNano(),
 	}
 }
 
@@ -319,20 +321,6 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 		Order("event_occurrences.starts_at, event_occurrences.id").Find(&registrations).Error; err != nil {
 		return facts, err
 	}
-	occurrenceIDs := make([]uint, 0, len(registrations))
-	for i := range registrations {
-		occurrenceIDs = append(occurrenceIDs, registrations[i].OccurrenceID)
-	}
-	accesses := map[uint]models.OccurrenceAccess{}
-	if len(occurrenceIDs) > 0 {
-		var rows []models.OccurrenceAccess
-		if err := tx.Where("subject_user_id = ? AND occurrence_id IN ? AND status = ? AND ended_at IS NULL", subject.ID, occurrenceIDs, policy.OccurrenceAccessActive).Find(&rows).Error; err != nil {
-			return facts, err
-		}
-		for i := range rows {
-			accesses[rows[i].OccurrenceID] = rows[i]
-		}
-	}
 	for i := range registrations {
 		r := &registrations[i]
 		o, ev := &r.Occurrence, &r.Occurrence.Event
@@ -350,16 +338,11 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 		if o.TitleOverride != nil {
 			title = *o.TitleOverride
 		}
-		var access *models.OccurrenceAccess
-		if row, ok := accesses[o.ID]; ok {
-			copy := row
-			access = &copy
-		}
 		facts.Dates = append(facts.Dates, departureDateFact{
 			OccurrenceID: o.ID, EventID: ev.ID, OriginalDate: models.FormatCalendarDate(o.OriginalDate), Title: title,
 			StartsAt: o.StartsAt.UTC().UnixNano(), EndsAt: o.EndsAt.UTC().UnixNano(), OccurrenceStatus: o.Status,
 			EffectiveVisibility: visibility, Keepable: decision.Keepable, DefaultKeep: decision.DefaultKeep, KeepReason: decision.KeepReason,
-			Registration: departureRegistrationSnapshot(r), Access: departureAccessSnapshot(access),
+			Registration: departureRegistrationSnapshot(r), Access: departureAccessSnapshot(r, accessScopeOf(ev)),
 		})
 	}
 	sort.Slice(facts.Dates, func(i, j int) bool {
@@ -599,20 +582,16 @@ func departureKeepSet(ids []uint, facts departureFacts) (map[uint]bool, error) {
 	return selected, nil
 }
 
-func recordDepartureOccurrenceAccess(tx *gorm.DB, facts departureFacts, d departureDateFact, now time.Time, ip string) error {
+// recordDepartureOccurrenceAccess keeps one exact date for a departing member:
+// the grant is a write to that member's own registration row, and the added
+// snapshot carries the membership and actor that authorized it. A live grant is
+// left alone.
+func recordDepartureOccurrenceAccess(tx *gorm.DB, facts departureFacts, d departureDateFact, scope accessScope, now time.Time, ip string) error {
 	membershipID, actorID := facts.SubjectMembership.ID, facts.Actor.ID
-	row := models.OccurrenceAccess{
-		SubjectUserID: facts.Subject.ID, OccurrenceID: d.OccurrenceID, EventID: d.EventID,
-		OrganizerType: policy.ContactGroup, OrganizerID: facts.GroupID, Origin: facts.Origin,
-		RegistrationID: d.Registration.ID, DepartureMembershipID: &membershipID, DepartureActorID: &actorID,
-		Status: policy.OccurrenceAccessActive, GrantedAt: now,
-	}
-	if err := tx.Create(&row).Error; err != nil {
-		return err
-	}
-	return audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.OccurrenceAccessAdded,
-		TargetType: "occurrence_access", TargetID: row.ID, IP: ip,
-		Meta: map[string]any{"subjectUserId": facts.Subject.ID, "eventId": d.EventID, "occurrenceId": d.OccurrenceID, "origin": facts.Origin}})
+	_, _, err := grantRegistrationAccess(tx, d.Registration.ID, scope, accessGrant{
+		Origin: facts.Origin, DepartureMembershipID: &membershipID, DepartureActorID: &actorID,
+	}, &actorID, now, ip)
+	return err
 }
 
 func departureLeaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
@@ -670,19 +649,20 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		if err := tx.Where("id = ? AND occurrence_id = ? AND user_id = ?", d.Registration.ID, d.OccurrenceID, facts.Subject.ID).First(&reg).Error; err != nil {
 			return departureConfirmationJSON{}, errDepartureStale
 		}
-		var access models.OccurrenceAccess
-		if err := tx.Where("subject_user_id = ? AND occurrence_id = ? AND status = ? AND ended_at IS NULL", facts.Subject.ID, d.OccurrenceID, policy.OccurrenceAccessActive).Limit(1).Find(&access).Error; err != nil {
-			return departureConfirmationJSON{}, err
-		}
+		scope := accessScope{EventID: d.EventID, Organizer: policy.OrganizerScope{Type: policy.ContactGroup, ID: facts.GroupID}}
 		if keep[d.OccurrenceID] {
-			if access.ID != 0 && access.Origin == policy.OccurrenceOriginManagerAdd {
-				if err := endOccurrenceAccessWithoutNoticeIn(tx, &access, policy.OccurrenceDepartureSuperseded, &facts.Actor.ID, now, ip); err != nil {
+			// A manager grant on a kept date is superseded in two updates under
+			// the locks already held: end it as departure_superseded (no
+			// per-date notice) and write its terminal snapshot, then replace
+			// the now-ended grant with the departure grant at the same
+			// normalized instant. A live departure grant is left untouched.
+			if reg.AccessLive() && reg.AccessOrigin == policy.OccurrenceOriginManagerAdd {
+				if err := endOccurrenceAccessWithoutNoticeIn(tx, &reg, scope, policy.OccurrenceDepartureSuperseded, &facts.Actor.ID, now, ip); err != nil {
 					return departureConfirmationJSON{}, err
 				}
-				access = models.OccurrenceAccess{}
 			}
-			if access.ID == 0 {
-				if err := recordDepartureOccurrenceAccess(tx, facts, d, now, ip); err != nil {
+			if !reg.AccessLive() {
+				if err := recordDepartureOccurrenceAccess(tx, facts, d, scope, now, ip); err != nil {
 					return departureConfirmationJSON{}, err
 				}
 			}
@@ -717,12 +697,12 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		if err != nil {
 			return departureConfirmationJSON{}, err
 		}
-		if access.ID != 0 {
+		if reg.AccessLive() {
 			reason, endedBy := policy.OccurrenceDeclined, facts.Subject.ID
 			if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
 				reason, endedBy = policy.OccurrenceRemoved, facts.Actor.ID
 			}
-			if err := endOccurrenceAccessWithoutNoticeIn(tx, &access, reason, &endedBy, now, ip); err != nil {
+			if err := endOccurrenceAccessWithoutNoticeIn(tx, &reg, scope, reason, &endedBy, now, ip); err != nil {
 				return departureConfirmationJSON{}, err
 			}
 		}

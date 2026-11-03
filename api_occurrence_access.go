@@ -25,25 +25,6 @@ type occurrenceRead struct {
 	Registration models.Registration
 }
 
-func occurrenceAccessPolicy(row models.OccurrenceAccess) policy.OccurrenceAccess {
-	out := policy.OccurrenceAccess{SubjectUserID: row.SubjectUserID, OccurrenceID: row.OccurrenceID,
-		EventID: row.EventID, Organizer: policy.OrganizerScope{Type: row.OrganizerType, ID: row.OrganizerID}, Origin: row.Origin,
-		RegistrationID: row.RegistrationID, Status: row.Status, GrantedAt: row.GrantedAt, EndedAt: row.EndedAt}
-	if row.IssuerID != nil {
-		out.IssuerID = *row.IssuerID
-	}
-	if row.RequestID != nil {
-		out.RequestID = *row.RequestID
-	}
-	if row.DepartureMembershipID != nil {
-		out.DepartureMembershipID = *row.DepartureMembershipID
-	}
-	if row.DepartureActorID != nil {
-		out.DepartureActorID = *row.DepartureActorID
-	}
-	return out
-}
-
 // scopedOccurrenceReads loads exact candidates independently of series-filtered eventCandidates.
 // q selects occurrence IDs (window/date and event filters). Parent IDs NEVER
 // enter the ordinary visible set. All related facts are batched, including live
@@ -53,17 +34,17 @@ func (a *App) scopedOccurrenceReads(viewer *models.User, q *gorm.DB, now time.Ti
 	if viewer == nil {
 		return out, nil
 	}
-	var accesses []models.OccurrenceAccess
-	err := a.DB.Where("subject_user_id = ? AND status = ? AND ended_at IS NULL AND occurrence_id IN (?)", viewer.ID,
-		policy.OccurrenceAccessActive, q.Session(&gorm.Session{}).Model(&models.EventOccurrence{}).Select("id")).Find(&accesses).Error
-	if err != nil || len(accesses) == 0 {
+	var grants []models.Registration
+	err := a.DB.Where("registrations.user_id = ? AND "+registrationAccessLiveSQL+" AND registrations.occurrence_id IN (?)", viewer.ID,
+		q.Session(&gorm.Session{}).Model(&models.EventOccurrence{}).Select("id")).Find(&grants).Error
+	if err != nil || len(grants) == 0 {
 		return out, err
 	}
-	reads, err := occurrenceInvitationReadsIn(a.DB, accesses, now)
+	reads, err := occurrenceInvitationReadsIn(a.DB, grants, now)
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range accesses {
+	for _, row := range grants {
 		if read := reads[row.ID]; read != nil {
 			out[row.OccurrenceID] = read
 		}
@@ -72,74 +53,78 @@ func (a *App) scopedOccurrenceReads(viewer *models.User, q *gorm.DB, now time.Ti
 }
 
 // occurrenceInvitationReadsIn batches current exact-date authority. Its keys are
-// access IDs, so a collection of different recipients never shares authority.
-// Mutation callers still own the contact gate and relevant domain locks.
-func occurrenceInvitationReadsIn(tx *gorm.DB, accesses []models.OccurrenceAccess, now time.Time) (map[uint]*occurrenceRead, error) {
+// registration IDs, so a collection of different recipients never shares
+// authority. The rows are registrations carrying live provenance; event and
+// organizer are derived from each row's date, never stored twice. Mutation
+// callers still own the contact gate and relevant domain locks.
+func occurrenceInvitationReadsIn(tx *gorm.DB, grants []models.Registration, now time.Time) (map[uint]*occurrenceRead, error) {
 	out := map[uint]*occurrenceRead{}
-	if len(accesses) == 0 {
+	if len(grants) == 0 {
 		return out, nil
 	}
-	facts, err := loadOccurrenceInvitationFacts(tx, accesses, now)
+	facts, err := loadOccurrenceInvitationFacts(tx, grants, now)
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range accesses {
-		occ, ev, reg := facts.occurrences[row.OccurrenceID], facts.events[row.EventID], facts.registrations[row.RegistrationID]
-		actor := facts.accounts[row.SubjectUserID]
-		if reg.UserID == nil || *reg.UserID != row.SubjectUserID || occ.ID == 0 || ev.ID == 0 || reg.ID == 0 || reg.OccurrenceID != occ.ID || occ.EventID != ev.ID {
+	for _, row := range grants {
+		if row.UserID == nil || !currentDepartureRegistration(row.Status) {
 			continue
 		}
-		organizer := policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
+		occ := facts.occurrences[row.OccurrenceID]
+		ev := facts.events[occ.EventID]
+		actor := facts.accounts[*row.UserID]
+		if occ.ID == 0 || ev.ID == 0 || occ.EventID != ev.ID {
+			continue
+		}
+		scope := accessScopeOf(&ev)
 		live := true
 		if ev.GroupID != nil {
-			organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
 			g := facts.groups[*ev.GroupID]
 			live = g.ID != 0 && g.Status == models.GroupActive
 		}
-		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt}
-		access := occurrenceAccessPolicy(row)
+		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: scope.Organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt}
+		access := occurrenceAccessPolicy(row, scope)
 		if policy.CanSeeOccurrence(actor, false, access, f, now) {
-			out[row.ID] = &occurrenceRead{Event: ev, Occurrence: occ, Registration: reg, Account: actor, Access: access, Facts: f}
+			out[row.ID] = &occurrenceRead{Event: ev, Occurrence: occ, Registration: row, Account: actor, Access: access, Facts: f}
 		}
 	}
 	return out, nil
 }
 
 type occurrenceInvitationFacts struct {
-	users         map[uint]*models.User
-	accounts      map[uint]policy.ContactAccount
-	occurrences   map[uint]models.EventOccurrence
-	events        map[uint]models.Event
-	groups        map[uint]models.Group
-	registrations map[uint]models.Registration
+	users       map[uint]*models.User
+	accounts    map[uint]policy.ContactAccount
+	occurrences map[uint]models.EventOccurrence
+	events      map[uint]models.Event
+	groups      map[uint]models.Group
 }
 
-func loadOccurrenceInvitationFacts(tx *gorm.DB, accesses []models.OccurrenceAccess, now time.Time) (*occurrenceInvitationFacts, error) {
-	subjectIDs := []uint{}
-	for _, row := range accesses {
-		subjectIDs = append(subjectIDs, row.SubjectUserID)
+func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, now time.Time) (*occurrenceInvitationFacts, error) {
+	subjectIDs, ids := []uint{}, []uint{}
+	for _, row := range grants {
+		if row.UserID != nil {
+			subjectIDs = append(subjectIDs, *row.UserID)
+		}
+		ids = append(ids, row.OccurrenceID)
 	}
 	users, accounts, err := occurrenceAccountsIn(tx, subjectIDs, now, time.UTC)
 	if err != nil {
 		return nil, err
 	}
-	ids, eventIDs, regIDs := []uint{}, []uint{}, []uint{}
-	for _, row := range accesses {
-		ids = append(ids, row.OccurrenceID)
-		eventIDs = append(eventIDs, row.EventID)
-		regIDs = append(regIDs, row.RegistrationID)
-	}
 	var occs []models.EventOccurrence
 	if err := tx.Where("id IN ?", ids).Find(&occs).Error; err != nil {
 		return nil, err
 	}
-	occByID := map[uint]models.EventOccurrence{}
+	occByID, eventIDs := map[uint]models.EventOccurrence{}, []uint{}
 	for _, row := range occs {
 		occByID[row.ID] = row
+		eventIDs = append(eventIDs, row.EventID)
 	}
 	var evs []models.Event
-	if err := tx.Where("id IN ?", eventIDs).Find(&evs).Error; err != nil {
-		return nil, err
+	if len(eventIDs) > 0 {
+		if err := tx.Where("id IN ?", eventIDs).Find(&evs).Error; err != nil {
+			return nil, err
+		}
 	}
 	evByID, groupIDs := map[uint]models.Event{}, []uint{}
 	for _, row := range evs {
@@ -158,35 +143,34 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, accesses []models.OccurrenceAcce
 	for _, row := range groups {
 		groupByID[row.ID] = row
 	}
-	var regs []models.Registration
-	if err := tx.Where("id IN ? AND status IN ?", regIDs,
-		[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Find(&regs).Error; err != nil {
-		return nil, err
-	}
-	regByID := map[uint]models.Registration{}
-	for _, row := range regs {
-		regByID[row.ID] = row
-	}
-	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID, regByID}, nil
+	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID}, nil
 }
 
 // endReason preserves the scalar lifecycle precedence, including retained past
 // dates. It does not reconsider issuer authority or a recipient's add block.
-func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess, now time.Time) string {
-	u := f.users[row.SubjectUserID]
+// The organizer cannot disagree with the event any more (it is derived from the
+// event), so the deleted and context-changed reasons come from the event, group
+// and registration liveness checks alone.
+func (f *occurrenceInvitationFacts) endReason(row models.Registration, now time.Time) string {
+	if row.UserID == nil {
+		return policy.OccurrenceContextChanged
+	}
+	u := f.users[*row.UserID]
 	if u == nil || !u.CanSignIn() {
 		return policy.ContactAccountDisabled
 	}
 	if u.AccountType == models.AccountTeen && !f.accounts[u.ID].Active {
 		return policy.OccurrenceConsentLost
 	}
-	ev := f.events[row.EventID]
+	occ := f.occurrences[row.OccurrenceID]
+	if occ.ID == 0 {
+		return policy.OccurrenceDeleted
+	}
+	ev := f.events[occ.EventID]
 	if ev.ID == 0 {
 		return policy.OccurrenceEventDeleted
 	}
-	organizer := policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
 	if ev.GroupID != nil {
-		organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
 		g := f.groups[*ev.GroupID]
 		if g.ID == 0 {
 			return policy.OccurrenceGroupDeleted
@@ -195,21 +179,13 @@ func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess, now t
 			return policy.OccurrenceContextChanged
 		}
 	}
-	if organizer != (policy.OrganizerScope{Type: row.OrganizerType, ID: row.OrganizerID}) {
-		return policy.OccurrenceContextChanged
-	}
-	occ := f.occurrences[row.OccurrenceID]
-	if occ.ID == 0 || occ.EventID != row.EventID {
-		return policy.OccurrenceDeleted
-	}
 	if occ.Status != models.OccurrenceScheduled {
 		return policy.OccurrenceCancelled
 	}
-	if row.Origin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
+	if row.AccessOrigin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
 		return policy.OccurrenceEnded
 	}
-	reg := f.registrations[row.RegistrationID]
-	if reg.ID == 0 || reg.UserID == nil || *reg.UserID != row.SubjectUserID || reg.OccurrenceID != row.OccurrenceID {
+	if !currentDepartureRegistration(row.Status) {
 		return policy.OccurrenceContextChanged
 	}
 	return ""

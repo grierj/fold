@@ -32,9 +32,10 @@ BEGIN
             AND u.status = 'active' AND u.deleted_at IS NULL AND (NEW.needs_admin OR u.account_type <> 'teen');
         IF NOT FOUND THEN RAISE EXCEPTION 'group add requires completed membership' USING ERRCODE = '23514'; END IF;
     ELSIF NEW.purpose = 'occurrence_add' AND NEW.status = 'granted' THEN
-        PERFORM 1 FROM occurrence_accesses WHERE request_id = NEW.id AND registration_id = NEW.completed_target_id
-            AND subject_user_id = NEW.subject_user_id AND issuer_id = NEW.requester_id
-            AND event_id = NEW.context_id AND occurrence_id = NEW.occurrence_id;
+        PERFORM 1 FROM registrations r JOIN event_occurrences o ON o.id = r.occurrence_id JOIN events e ON e.id = o.event_id
+            WHERE r.id = NEW.completed_target_id AND r.access_request_id = NEW.id
+            AND r.user_id = NEW.subject_user_id AND r.access_issuer_id = NEW.requester_id
+            AND r.occurrence_id = NEW.occurrence_id AND e.id = NEW.context_id;
         IF NOT FOUND THEN RAISE EXCEPTION 'date add requires completed occurrence access' USING ERRCODE = '23514'; END IF;
     END IF;
     RETURN NULL;
@@ -110,106 +111,6 @@ $$;
 
 
 --
--- Name: occurrence_access_provenance(); Type: FUNCTION; Schema: public; Owner: -
---
-
--- +goose StatementBegin
-CREATE FUNCTION public.occurrence_access_provenance() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    IF TG_OP = 'DELETE' THEN
-        RAISE EXCEPTION 'occurrence access history cannot be deleted' USING ERRCODE = '23514';
-    END IF;
-    IF TG_OP = 'UPDATE' THEN
-        IF ROW(NEW.subject_user_id, NEW.occurrence_id, NEW.event_id, NEW.organizer_type, NEW.organizer_id,
-            NEW.origin, NEW.issuer_id, NEW.request_id, NEW.registration_id, NEW.departure_membership_id,
-            NEW.departure_actor_id, NEW.granted_at)
-            IS DISTINCT FROM ROW(OLD.subject_user_id, OLD.occurrence_id, OLD.event_id, OLD.organizer_type, OLD.organizer_id,
-            OLD.origin, OLD.issuer_id, OLD.request_id, OLD.registration_id, OLD.departure_membership_id,
-            OLD.departure_actor_id, OLD.granted_at)
-            OR (OLD.status = 'ended' AND NEW IS DISTINCT FROM OLD) THEN
-            RAISE EXCEPTION 'occurrence access provenance and terminal state are immutable' USING ERRCODE = '23514';
-        END IF;
-        RETURN NEW;
-    END IF;
-
-    PERFORM 1 FROM registrations r JOIN event_occurrences o ON o.id = r.occurrence_id
-        JOIN events e ON e.id = o.event_id JOIN users u ON u.id = r.user_id
-        LEFT JOIN groups g ON g.id = e.group_id
-        WHERE r.id = NEW.registration_id AND r.user_id = NEW.subject_user_id
-        AND ((NEW.origin = 'manager_add' AND r.status = 'going')
-            OR (NEW.origin IN ('departure_self', 'departure_removal') AND r.status IN ('going', 'maybe', 'waitlisted')))
-        AND o.id = NEW.occurrence_id AND o.status = 'scheduled' AND e.id = NEW.event_id AND e.deleted_at IS NULL
-        AND u.status = 'active' AND u.deleted_at IS NULL
-        AND ((e.group_id IS NULL AND NEW.organizer_type = 'event' AND NEW.organizer_id = e.id)
-            OR (g.id = NEW.organizer_id AND NEW.organizer_type = 'group' AND g.status = 'active' AND g.deleted_at IS NULL));
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'occurrence access requires completed live account attendance' USING ERRCODE = '23514';
-    END IF;
-    IF NEW.status <> 'active' THEN
-        RAISE EXCEPTION 'occurrence access must start active' USING ERRCODE = '23514';
-    END IF;
-
-    IF NEW.origin = 'manager_add' THEN
-        IF EXISTS (SELECT 1 FROM manager_add_blocks WHERE subject_user_id = NEW.subject_user_id
-            AND organizer_type = NEW.organizer_type AND organizer_id = NEW.organizer_id) THEN
-            RAISE EXCEPTION 'occurrence access blocked' USING ERRCODE = '23514';
-        END IF;
-        IF NEW.request_id IS NULL AND (EXISTS (SELECT 1 FROM users WHERE id = NEW.subject_user_id AND account_type = 'teen')
-            OR EXISTS (SELECT 1 FROM occurrence_accesses WHERE subject_user_id = NEW.subject_user_id AND occurrence_id = NEW.occurrence_id)) THEN
-            RAISE EXCEPTION 'teen or repeat manager add requires a new approved request' USING ERRCODE = '23514';
-        END IF;
-        IF NEW.request_id IS NOT NULL THEN
-            PERFORM 1 FROM contact_requests WHERE id = NEW.request_id AND purpose = 'occurrence_add' AND status = 'granted'
-                AND requester_id = NEW.issuer_id AND subject_user_id = NEW.subject_user_id AND context_type = 'event'
-                AND context_id = NEW.event_id AND occurrence_id = NEW.occurrence_id AND completed_target_id = NEW.registration_id
-                AND completed_at <= NEW.granted_at
-                AND NOT EXISTS (SELECT 1 FROM occurrence_accesses old_access WHERE old_access.subject_user_id = NEW.subject_user_id
-                    AND old_access.occurrence_id = NEW.occurrence_id AND old_access.status = 'ended'
-                    AND old_access.ended_at > contact_requests.created_at)
-                AND (needs_admin OR NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.subject_user_id AND account_type = 'teen')) FOR SHARE;
-            IF NOT FOUND THEN
-                RAISE EXCEPTION 'occurrence access requires exact successful add request' USING ERRCODE = '23514';
-            END IF;
-        END IF;
-    ELSIF NEW.origin = 'departure_self' THEN
-        PERFORM 1 FROM memberships m
-            WHERE m.id = NEW.departure_membership_id AND m.user_id = NEW.subject_user_id
-            AND m.group_id = NEW.organizer_id AND m.status = 'active'
-            AND (m.role <> 'leader' OR (SELECT count(*) FROM memberships leaders
-                WHERE leaders.group_id = m.group_id AND leaders.status = 'active' AND leaders.role = 'leader') > 1)
-            FOR SHARE;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'departure access requires authorized self-leave' USING ERRCODE = '23514';
-        END IF;
-    ELSIF NEW.origin = 'departure_removal' THEN
-        PERFORM 1 FROM memberships target
-            JOIN users subject ON subject.id = target.user_id
-            JOIN users actor ON actor.id = NEW.departure_actor_id
-            WHERE target.id = NEW.departure_membership_id AND target.user_id = NEW.subject_user_id
-            AND target.group_id = NEW.organizer_id AND target.status = 'active'
-            AND actor.status = 'active' AND actor.deleted_at IS NULL
-            AND (actor.role = 'admin' OR EXISTS (SELECT 1 FROM memberships manager
-                WHERE manager.user_id = actor.id AND manager.group_id = target.group_id
-                AND manager.status = 'active' AND manager.role = 'leader'))
-            AND (subject.role <> 'admin' OR actor.role = 'admin')
-            AND (target.role <> 'leader' OR (SELECT count(*) FROM memberships leaders
-                WHERE leaders.group_id = target.group_id AND leaders.status = 'active' AND leaders.role = 'leader') > 1)
-            FOR SHARE;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'departure access requires authorized member removal' USING ERRCODE = '23514';
-        END IF;
-    ELSE
-        RAISE EXCEPTION 'unknown occurrence access origin' USING ERRCODE = '23514';
-    END IF;
-    RETURN NEW;
-END;
-$$;
--- +goose StatementEnd
-
-
---
 -- Name: push_devices_end_with_sessions(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -230,6 +131,214 @@ BEGIN
         ON CONFLICT (unique_key) DO NOTHING;
     END IF;
     RETURN NULL;
+END;
+$$;
+-- +goose StatementEnd
+
+
+--
+-- Name: registration_access_provenance(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+-- +goose StatementBegin
+CREATE FUNCTION public.registration_access_provenance() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_retire boolean := false;
+    v_replacing boolean := false;
+    v_prior boolean := false;
+    v_old_end bigint;
+    v_matched integer;
+    v_event bigint;
+    v_group bigint;
+    v_scope_type text;
+    v_scope_id bigint;
+    v_latest bigint;
+    v_repeat boolean;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.access_origin = '' THEN
+            RETURN OLD;
+        END IF;
+        IF OLD.access_ended_at IS NULL THEN
+            RAISE EXCEPTION 'a live occurrence access cannot be deleted' USING ERRCODE = '23514';
+        END IF;
+        v_retire := true;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF ROW(NEW.access_origin, NEW.access_issuer_id, NEW.access_request_id, NEW.access_departure_membership_id,
+            NEW.access_departure_actor_id, NEW.access_granted_at, NEW.access_ended_at, NEW.access_end_reason, NEW.access_ended_by)
+            IS NOT DISTINCT FROM ROW(OLD.access_origin, OLD.access_issuer_id, OLD.access_request_id, OLD.access_departure_membership_id,
+            OLD.access_departure_actor_id, OLD.access_granted_at, OLD.access_ended_at, OLD.access_end_reason, OLD.access_ended_by) THEN
+            IF OLD.access_origin <> '' AND ROW(NEW.user_id, NEW.household_person_id, NEW.occurrence_id)
+                IS DISTINCT FROM ROW(OLD.user_id, OLD.household_person_id, OLD.occurrence_id) THEN
+                RAISE EXCEPTION 'occurrence access identity is immutable' USING ERRCODE = '23514';
+            END IF;
+            RETURN NEW;
+        END IF;
+        v_prior := OLD.access_origin <> '';
+        IF v_prior THEN
+            IF ROW(NEW.user_id, NEW.household_person_id, NEW.occurrence_id)
+                IS DISTINCT FROM ROW(OLD.user_id, OLD.household_person_id, OLD.occurrence_id) THEN
+                RAISE EXCEPTION 'occurrence access identity is immutable' USING ERRCODE = '23514';
+            END IF;
+            IF OLD.access_ended_at IS NULL THEN
+                IF ROW(NEW.access_origin, NEW.access_issuer_id, NEW.access_request_id, NEW.access_departure_membership_id,
+                    NEW.access_departure_actor_id, NEW.access_granted_at)
+                    IS DISTINCT FROM ROW(OLD.access_origin, OLD.access_issuer_id, OLD.access_request_id, OLD.access_departure_membership_id,
+                    OLD.access_departure_actor_id, OLD.access_granted_at)
+                    OR NEW.access_ended_at IS NULL THEN
+                    RAISE EXCEPTION 'occurrence access provenance is immutable; end the grant first' USING ERRCODE = '23514';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF NEW.access_origin = '' OR NEW.access_granted_at IS NULL OR NEW.access_ended_at IS NOT NULL
+                OR NEW.access_end_reason <> '' OR NEW.access_ended_by IS NOT NULL THEN
+                RAISE EXCEPTION 'occurrence access provenance and terminal state are immutable' USING ERRCODE = '23514';
+            END IF;
+            v_replacing := true;
+            v_retire := true;
+            v_old_end := (extract(epoch FROM OLD.access_ended_at) * 1000000)::bigint;
+        END IF;
+    END IF;
+
+    -- Replacing or deleting a grant requires its complete added and ended
+    -- snapshots first: the audit log is the only record that survives.
+    IF v_retire THEN
+        SELECT count(DISTINCT l.action) INTO v_matched FROM audit_logs l
+            WHERE l.target_type = 'registration' AND l.target_id = OLD.id
+            AND l.action IN ('occurrence_access.added', 'occurrence_access.ended')
+            AND jsonb_typeof(l.meta_json->'subjectUserId') = 'number' AND l.meta_json->>'subjectUserId' = OLD.user_id::text
+            AND jsonb_typeof(l.meta_json->'occurrenceId') = 'number' AND l.meta_json->>'occurrenceId' = OLD.occurrence_id::text
+            AND jsonb_typeof(l.meta_json->'grantedAtMicro') = 'number'
+            AND l.meta_json->>'grantedAtMicro' = (extract(epoch FROM OLD.access_granted_at) * 1000000)::bigint::text
+            AND jsonb_typeof(l.meta_json->'origin') = 'string' AND l.meta_json->>'origin' = OLD.access_origin
+            AND (CASE WHEN OLD.access_issuer_id IS NULL THEN l.meta_json->'issuerId' IS NULL
+                ELSE jsonb_typeof(l.meta_json->'issuerId') = 'number' AND l.meta_json->>'issuerId' = OLD.access_issuer_id::text END)
+            AND (CASE WHEN OLD.access_request_id IS NULL THEN l.meta_json->'requestId' IS NULL
+                ELSE jsonb_typeof(l.meta_json->'requestId') = 'number' AND l.meta_json->>'requestId' = OLD.access_request_id::text END)
+            AND (CASE WHEN OLD.access_departure_membership_id IS NULL THEN l.meta_json->'departureMembershipId' IS NULL
+                ELSE jsonb_typeof(l.meta_json->'departureMembershipId') = 'number' AND l.meta_json->>'departureMembershipId' = OLD.access_departure_membership_id::text END)
+            AND (CASE WHEN OLD.access_departure_actor_id IS NULL THEN l.meta_json->'departureActorId' IS NULL
+                ELSE jsonb_typeof(l.meta_json->'departureActorId') = 'number' AND l.meta_json->>'departureActorId' = OLD.access_departure_actor_id::text END)
+            AND (l.action = 'occurrence_access.added' OR (
+                jsonb_typeof(l.meta_json->'endedAtMicro') = 'number'
+                AND l.meta_json->>'endedAtMicro' = (extract(epoch FROM OLD.access_ended_at) * 1000000)::bigint::text
+                AND jsonb_typeof(l.meta_json->'endReason') = 'string' AND l.meta_json->>'endReason' = OLD.access_end_reason
+                AND (CASE WHEN OLD.access_ended_by IS NULL THEN l.meta_json->'endedBy' IS NULL
+                    ELSE jsonb_typeof(l.meta_json->'endedBy') = 'number' AND l.meta_json->>'endedBy' = OLD.access_ended_by::text END)));
+        IF v_matched <> 2 THEN
+            RAISE EXCEPTION 'occurrence access history must be recorded before it is replaced or deleted' USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    IF NEW.access_origin = '' THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.access_ended_at IS NOT NULL OR NEW.access_end_reason <> '' OR NEW.access_ended_by IS NOT NULL THEN
+        RAISE EXCEPTION 'occurrence access must start active' USING ERRCODE = '23514';
+    END IF;
+    IF v_replacing THEN
+        IF NOT (NEW.access_granted_at > OLD.access_granted_at AND NEW.access_granted_at >= OLD.access_ended_at) THEN
+            RAISE EXCEPTION 'occurrence access time must move forward on the same registration' USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    -- One corrupt access snapshot anywhere fails every grant closed, even
+    -- when its subject and date cannot be read or would not match.
+    IF EXISTS (SELECT 1 FROM audit_logs l
+        WHERE l.action IN ('occurrence_access.added', 'occurrence_access.ended') AND l.target_type = 'registration'
+        AND NOT ((CASE WHEN jsonb_typeof(l.meta_json->'subjectUserId') = 'number' AND l.meta_json->>'subjectUserId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'subjectUserId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'subjectUserId')::bigint END END) IS NOT NULL AND (CASE WHEN jsonb_typeof(l.meta_json->'occurrenceId') = 'number' AND l.meta_json->>'occurrenceId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'occurrenceId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'occurrenceId')::bigint END END) IS NOT NULL AND (CASE WHEN jsonb_typeof(l.meta_json->'grantedAtMicro') = 'number' AND l.meta_json->>'grantedAtMicro' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'grantedAtMicro')::numeric <= 9223372036854775807 THEN (l.meta_json->>'grantedAtMicro')::bigint END END) IS NOT NULL
+            AND (l.action <> 'occurrence_access.ended' OR (CASE WHEN jsonb_typeof(l.meta_json->'endedAtMicro') = 'number' AND l.meta_json->>'endedAtMicro' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'endedAtMicro')::numeric <= 9223372036854775807 THEN (l.meta_json->>'endedAtMicro')::bigint END END) IS NOT NULL))) THEN
+        RAISE EXCEPTION 'occurrence access history is corrupt' USING ERRCODE = 'XX001';
+    END IF;
+
+    SELECT e.id, e.group_id INTO v_event, v_group
+        FROM event_occurrences o JOIN events e ON e.id = o.event_id JOIN users u ON u.id = NEW.user_id
+        LEFT JOIN groups g ON g.id = e.group_id
+        WHERE o.id = NEW.occurrence_id AND o.status = 'scheduled' AND e.deleted_at IS NULL
+        AND u.status = 'active' AND u.deleted_at IS NULL
+        AND ((NEW.access_origin = 'manager_add' AND NEW.status = 'going')
+            OR (NEW.access_origin IN ('departure_self', 'departure_removal') AND NEW.status IN ('going', 'maybe', 'waitlisted')))
+        AND (e.group_id IS NULL OR (g.status = 'active' AND g.deleted_at IS NULL));
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'occurrence access requires completed live account attendance' USING ERRCODE = '23514';
+    END IF;
+    IF v_group IS NULL THEN
+        v_scope_type := 'event';
+        v_scope_id := v_event;
+    ELSE
+        v_scope_type := 'group';
+        v_scope_id := v_group;
+    END IF;
+
+    IF NEW.access_origin = 'manager_add' THEN
+        IF EXISTS (SELECT 1 FROM manager_add_blocks b WHERE b.subject_user_id = NEW.user_id
+            AND b.organizer_type = v_scope_type AND b.organizer_id = v_scope_id) THEN
+            RAISE EXCEPTION 'occurrence access blocked' USING ERRCODE = '23514';
+        END IF;
+        -- Repeat and stale-request checks read the audit snapshots, so they
+        -- survive the deletion or replacement of the registration row.
+        v_repeat := v_prior OR EXISTS (SELECT 1 FROM audit_logs l
+            WHERE l.action = 'occurrence_access.added' AND l.target_type = 'registration'
+            AND (CASE WHEN jsonb_typeof(l.meta_json->'subjectUserId') = 'number' AND l.meta_json->>'subjectUserId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'subjectUserId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'subjectUserId')::bigint END END) = NEW.user_id AND (CASE WHEN jsonb_typeof(l.meta_json->'occurrenceId') = 'number' AND l.meta_json->>'occurrenceId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'occurrenceId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'occurrenceId')::bigint END END) = NEW.occurrence_id);
+        SELECT max(CASE WHEN jsonb_typeof(l.meta_json->'endedAtMicro') = 'number' AND l.meta_json->>'endedAtMicro' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'endedAtMicro')::numeric <= 9223372036854775807 THEN (l.meta_json->>'endedAtMicro')::bigint END END) INTO v_latest FROM audit_logs l
+            WHERE l.action = 'occurrence_access.ended' AND l.target_type = 'registration'
+            AND (CASE WHEN jsonb_typeof(l.meta_json->'subjectUserId') = 'number' AND l.meta_json->>'subjectUserId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'subjectUserId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'subjectUserId')::bigint END END) = NEW.user_id AND (CASE WHEN jsonb_typeof(l.meta_json->'occurrenceId') = 'number' AND l.meta_json->>'occurrenceId' ~ '^[1-9][0-9]{0,18}$' THEN CASE WHEN (l.meta_json->>'occurrenceId')::numeric <= 9223372036854775807 THEN (l.meta_json->>'occurrenceId')::bigint END END) = NEW.occurrence_id;
+        IF v_old_end IS NOT NULL THEN
+            v_latest := greatest(v_latest, v_old_end);
+        END IF;
+        IF NEW.access_request_id IS NULL THEN
+            IF v_repeat OR EXISTS (SELECT 1 FROM users t WHERE t.id = NEW.user_id AND t.account_type = 'teen') THEN
+                RAISE EXCEPTION 'teen or repeat manager add requires a new approved request' USING ERRCODE = '23514';
+            END IF;
+        ELSE
+            PERFORM 1 FROM contact_requests c WHERE c.id = NEW.access_request_id AND c.purpose = 'occurrence_add' AND c.status = 'granted'
+                AND c.requester_id = NEW.access_issuer_id AND c.subject_user_id = NEW.user_id AND c.context_type = 'event'
+                AND c.context_id = v_event AND c.occurrence_id = NEW.occurrence_id AND c.completed_target_id = NEW.id
+                AND c.completed_at <= NEW.access_granted_at
+                AND (v_latest IS NULL OR (extract(epoch FROM c.created_at) * 1000000)::bigint >= v_latest)
+                AND (c.needs_admin OR NOT EXISTS (SELECT 1 FROM users t WHERE t.id = NEW.user_id AND t.account_type = 'teen'))
+                AND NOT EXISTS (SELECT 1 FROM audit_logs l WHERE l.action = 'occurrence_access.added' AND l.target_type = 'registration'
+                    AND l.meta_json->>'requestId' = NEW.access_request_id::text)
+                FOR SHARE OF c;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'occurrence access requires exact successful add request' USING ERRCODE = '23514';
+            END IF;
+        END IF;
+    ELSIF NEW.access_origin = 'departure_self' THEN
+        PERFORM 1 FROM memberships m
+            WHERE m.id = NEW.access_departure_membership_id AND m.user_id = NEW.user_id
+            AND m.group_id = v_group AND m.status = 'active'
+            AND (m.role <> 'leader' OR (SELECT count(*) FROM memberships leaders
+                WHERE leaders.group_id = m.group_id AND leaders.status = 'active' AND leaders.role = 'leader') > 1)
+            FOR SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'departure access requires authorized self-leave' USING ERRCODE = '23514';
+        END IF;
+    ELSIF NEW.access_origin = 'departure_removal' THEN
+        PERFORM 1 FROM memberships target
+            JOIN users subject ON subject.id = target.user_id
+            JOIN users actor ON actor.id = NEW.access_departure_actor_id
+            WHERE target.id = NEW.access_departure_membership_id AND target.user_id = NEW.user_id
+            AND target.group_id = v_group AND target.status = 'active'
+            AND actor.status = 'active' AND actor.deleted_at IS NULL
+            AND (actor.role = 'admin' OR EXISTS (SELECT 1 FROM memberships manager
+                WHERE manager.user_id = actor.id AND manager.group_id = target.group_id
+                AND manager.status = 'active' AND manager.role = 'leader'))
+            AND (subject.role <> 'admin' OR actor.role = 'admin')
+            AND (target.role <> 'leader' OR (SELECT count(*) FROM memberships leaders
+                WHERE leaders.group_id = target.group_id AND leaders.status = 'active' AND leaders.role = 'leader') > 1)
+            FOR SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'departure access requires authorized member removal' USING ERRCODE = '23514';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'unknown occurrence access origin' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
 END;
 $$;
 -- +goose StatementEnd
@@ -1382,64 +1491,6 @@ ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
 
 
 --
--- Name: occurrence_accesses; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.occurrence_accesses (
-    id bigint NOT NULL,
-    subject_user_id bigint NOT NULL,
-    occurrence_id bigint NOT NULL,
-    event_id bigint NOT NULL,
-    organizer_type text NOT NULL,
-    organizer_id bigint NOT NULL,
-    issuer_id bigint,
-    request_id bigint,
-    registration_id bigint NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    granted_at timestamp with time zone DEFAULT now() NOT NULL,
-    ended_at timestamp with time zone,
-    end_reason text DEFAULT ''::text NOT NULL,
-    ended_by bigint,
-    origin text DEFAULT 'manager_add'::text NOT NULL,
-    departure_membership_id bigint,
-    departure_actor_id bigint,
-    CONSTRAINT occurrence_accesses_check CHECK (((issuer_id > 0) AND (issuer_id <> subject_user_id))),
-    CONSTRAINT occurrence_accesses_check1 CHECK (((organizer_type <> 'event'::text) OR (organizer_id = event_id))),
-    CONSTRAINT occurrence_accesses_departure_actor_id_check CHECK ((departure_actor_id > 0)),
-    CONSTRAINT occurrence_accesses_departure_membership_id_check CHECK ((departure_membership_id > 0)),
-    CONSTRAINT occurrence_accesses_end_state CHECK ((((status = 'active'::text) AND (ended_at IS NULL) AND (end_reason = ''::text) AND (ended_by IS NULL)) OR ((status = 'ended'::text) AND (ended_at IS NOT NULL) AND (ended_at >= granted_at) AND (((end_reason = ANY (ARRAY['declined'::text, 'blocked'::text])) AND (ended_by IS NOT NULL) AND (ended_by = subject_user_id)) OR ((end_reason = ANY (ARRAY['removed'::text, 'departure_superseded'::text])) AND (ended_by IS NOT NULL)) OR ((end_reason = ANY (ARRAY['occurrence_cancelled'::text, 'occurrence_ended'::text, 'occurrence_deleted'::text, 'event_deleted'::text, 'group_deleted'::text, 'account_disabled'::text, 'consent_lost'::text, 'context_changed'::text])) AND (ended_by IS NULL)))))),
-    CONSTRAINT occurrence_accesses_ended_by_check CHECK ((ended_by > 0)),
-    CONSTRAINT occurrence_accesses_event_id_check CHECK ((event_id > 0)),
-    CONSTRAINT occurrence_accesses_occurrence_id_check CHECK ((occurrence_id > 0)),
-    CONSTRAINT occurrence_accesses_organizer_id_check CHECK ((organizer_id > 0)),
-    CONSTRAINT occurrence_accesses_organizer_type_check CHECK ((organizer_type = ANY (ARRAY['group'::text, 'event'::text]))),
-    CONSTRAINT occurrence_accesses_origin_provenance CHECK ((((origin = 'manager_add'::text) AND (issuer_id IS NOT NULL) AND (issuer_id > 0) AND (issuer_id <> subject_user_id) AND (departure_membership_id IS NULL) AND (departure_actor_id IS NULL)) OR ((origin = 'departure_self'::text) AND (issuer_id IS NULL) AND (request_id IS NULL) AND (organizer_type = 'group'::text) AND (departure_membership_id IS NOT NULL) AND (departure_actor_id = subject_user_id)) OR ((origin = 'departure_removal'::text) AND (issuer_id IS NULL) AND (request_id IS NULL) AND (organizer_type = 'group'::text) AND (departure_membership_id IS NOT NULL) AND (departure_actor_id IS NOT NULL) AND (departure_actor_id <> subject_user_id)))),
-    CONSTRAINT occurrence_accesses_registration_id_check CHECK ((registration_id > 0)),
-    CONSTRAINT occurrence_accesses_status_check CHECK ((status = ANY (ARRAY['active'::text, 'ended'::text]))),
-    CONSTRAINT occurrence_accesses_subject_user_id_check CHECK ((subject_user_id > 0))
-);
-
-
---
--- Name: occurrence_accesses_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.occurrence_accesses_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: occurrence_accesses_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.occurrence_accesses_id_seq OWNED BY public.occurrence_accesses.id;
-
-
---
 -- Name: push_subscriptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1504,6 +1555,22 @@ CREATE TABLE public.registrations (
     household_person_id bigint,
     registered_by bigint,
     childcare_requested boolean DEFAULT false NOT NULL,
+    access_origin text DEFAULT ''::text NOT NULL,
+    access_issuer_id bigint,
+    access_request_id bigint,
+    access_departure_membership_id bigint,
+    access_departure_actor_id bigint,
+    access_granted_at timestamp with time zone,
+    access_ended_at timestamp with time zone,
+    access_end_reason text DEFAULT ''::text NOT NULL,
+    access_ended_by bigint,
+    CONSTRAINT registrations_access_departure_actor_id_check CHECK (((access_departure_actor_id IS NULL) OR (access_departure_actor_id > 0))),
+    CONSTRAINT registrations_access_departure_membership_id_check CHECK (((access_departure_membership_id IS NULL) OR (access_departure_membership_id > 0))),
+    CONSTRAINT registrations_access_end_state CHECK (((access_origin = ''::text) OR ((access_ended_at IS NULL) AND (access_end_reason = ''::text) AND (access_ended_by IS NULL)) OR ((access_ended_at IS NOT NULL) AND (access_ended_at >= access_granted_at) AND (((access_end_reason = ANY (ARRAY['declined'::text, 'blocked'::text])) AND (access_ended_by IS NOT NULL) AND (access_ended_by = user_id)) OR ((access_end_reason = ANY (ARRAY['removed'::text, 'departure_superseded'::text])) AND (access_ended_by IS NOT NULL)) OR ((access_end_reason = ANY (ARRAY['occurrence_cancelled'::text, 'occurrence_ended'::text, 'occurrence_deleted'::text, 'event_deleted'::text, 'group_deleted'::text, 'account_disabled'::text, 'consent_lost'::text, 'context_changed'::text])) AND (access_ended_by IS NULL)))))),
+    CONSTRAINT registrations_access_ended_by_check CHECK (((access_ended_by IS NULL) OR (access_ended_by > 0))),
+    CONSTRAINT registrations_access_issuer_id_check CHECK (((access_issuer_id IS NULL) OR (access_issuer_id > 0))),
+    CONSTRAINT registrations_access_provenance CHECK ((((access_origin = ''::text) AND (access_issuer_id IS NULL) AND (access_request_id IS NULL) AND (access_departure_membership_id IS NULL) AND (access_departure_actor_id IS NULL) AND (access_granted_at IS NULL) AND (access_ended_at IS NULL) AND (access_end_reason = ''::text) AND (access_ended_by IS NULL)) OR ((user_id IS NOT NULL) AND (household_person_id IS NULL) AND (access_granted_at IS NOT NULL) AND (((access_origin = 'manager_add'::text) AND (access_issuer_id IS NOT NULL) AND (access_issuer_id <> user_id) AND (access_departure_membership_id IS NULL) AND (access_departure_actor_id IS NULL)) OR ((access_origin = 'departure_self'::text) AND (access_issuer_id IS NULL) AND (access_request_id IS NULL) AND (access_departure_membership_id IS NOT NULL) AND (access_departure_actor_id IS NOT NULL) AND (access_departure_actor_id = user_id)) OR ((access_origin = 'departure_removal'::text) AND (access_issuer_id IS NULL) AND (access_request_id IS NULL) AND (access_departure_membership_id IS NOT NULL) AND (access_departure_actor_id IS NOT NULL) AND (access_departure_actor_id <> user_id)))))),
+    CONSTRAINT registrations_access_request_id_check CHECK (((access_request_id IS NULL) OR (access_request_id > 0))),
     CONSTRAINT registrations_attendance_mode_check CHECK ((attendance_mode = ANY (ARRAY['in_person'::text, 'remote'::text]))),
     CONSTRAINT registrations_childcare_count_check CHECK ((childcare_count >= 0)),
     CONSTRAINT registrations_guest_count_check CHECK ((guest_count >= 0)),
@@ -2058,13 +2125,6 @@ ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
--- Name: occurrence_accesses id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.occurrence_accesses ALTER COLUMN id SET DEFAULT nextval('public.occurrence_accesses_id_seq'::regclass);
-
-
---
 -- Name: push_subscriptions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2372,22 +2432,6 @@ ALTER TABLE ONLY public.notification_deliveries
 
 ALTER TABLE ONLY public.notifications
     ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
-
-
---
--- Name: occurrence_accesses occurrence_accesses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.occurrence_accesses
-    ADD CONSTRAINT occurrence_accesses_pkey PRIMARY KEY (id);
-
-
---
--- Name: occurrence_accesses occurrence_accesses_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.occurrence_accesses
-    ADD CONSTRAINT occurrence_accesses_request_id_key UNIQUE (request_id);
 
 
 --
@@ -3000,10 +3044,24 @@ CREATE UNIQUE INDEX idx_registration ON public.registrations USING btree (occurr
 
 
 --
+-- Name: idx_registrations_access_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_registrations_access_request ON public.registrations USING btree (access_request_id) WHERE (access_request_id IS NOT NULL);
+
+
+--
 -- Name: idx_registrations_household_person_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_registrations_household_person_id ON public.registrations USING btree (household_person_id) WHERE (household_person_id IS NOT NULL);
+
+
+--
+-- Name: idx_registrations_live_access; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_registrations_live_access ON public.registrations USING btree (occurrence_id) WHERE ((access_origin <> ''::text) AND (access_ended_at IS NULL));
 
 
 --
@@ -3154,27 +3212,6 @@ CREATE INDEX idx_users_deleted_at ON public.users USING btree (deleted_at);
 
 
 --
--- Name: occurrence_accesses_active_occurrence; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX occurrence_accesses_active_occurrence ON public.occurrence_accesses USING btree (occurrence_id) WHERE (status = 'active'::text);
-
-
---
--- Name: occurrence_accesses_event; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX occurrence_accesses_event ON public.occurrence_accesses USING btree (event_id);
-
-
---
--- Name: occurrence_accesses_one_active; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX occurrence_accesses_one_active ON public.occurrence_accesses USING btree (subject_user_id, occurrence_id) WHERE (status = 'active'::text);
-
-
---
 -- Name: contact_requests add_request_completed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3210,17 +3247,17 @@ CREATE TRIGGER memberships_tenure_guard BEFORE UPDATE ON public.memberships FOR 
 
 
 --
--- Name: occurrence_accesses occurrence_access_provenance; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER occurrence_access_provenance BEFORE INSERT OR DELETE OR UPDATE ON public.occurrence_accesses FOR EACH ROW EXECUTE FUNCTION public.occurrence_access_provenance();
-
-
---
 -- Name: users push_devices_end_with_sessions; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER push_devices_end_with_sessions AFTER UPDATE OF session_version, status ON public.users FOR EACH ROW WHEN (((new.session_version IS DISTINCT FROM old.session_version) OR ((new.status IS DISTINCT FROM old.status) AND (new.status <> 'active'::text)))) EXECUTE FUNCTION public.push_devices_end_with_sessions();
+
+
+--
+-- Name: registrations registration_access_provenance; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER registration_access_provenance BEFORE INSERT OR DELETE OR UPDATE ON public.registrations FOR EACH ROW EXECUTE FUNCTION public.registration_access_provenance();
 
 
 --
@@ -3567,19 +3604,19 @@ ALTER TABLE ONLY public.notifications
 
 
 --
--- Name: occurrence_accesses occurrence_accesses_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.occurrence_accesses
-    ADD CONSTRAINT occurrence_accesses_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.contact_requests(id);
-
-
---
 -- Name: push_subscriptions push_subscriptions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.push_subscriptions
     ADD CONSTRAINT push_subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: registrations registrations_access_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.registrations
+    ADD CONSTRAINT registrations_access_request_id_fkey FOREIGN KEY (access_request_id) REFERENCES public.contact_requests(id);
 
 
 --
@@ -3755,7 +3792,6 @@ DROP TABLE public.message_recipients;
 DROP TABLE public.messages;
 DROP TABLE public.notification_deliveries;
 DROP TABLE public.notifications;
-DROP TABLE public.occurrence_accesses;
 DROP TABLE public.push_subscriptions;
 DROP TABLE public.registrations;
 DROP TABLE public.room_bookings;
@@ -3775,8 +3811,8 @@ DROP TABLE public.rooms;
 DROP TABLE public.users;
 DROP FUNCTION public.reject_teen_consent_change();
 DROP FUNCTION public.reject_consent_change();
+DROP FUNCTION public.registration_access_provenance();
 DROP FUNCTION public.push_devices_end_with_sessions();
-DROP FUNCTION public.occurrence_access_provenance();
 DROP FUNCTION public.guard_membership_tenure();
 DROP FUNCTION public.contact_grant_successful_request();
 DROP FUNCTION public.add_request_identity();

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -24,12 +25,12 @@ type occurrenceReadFixture struct {
 	group                    uint
 	event                    eventJSON
 	dates                    []models.EventOccurrence
-	access                   models.OccurrenceAccess
+	access                   accessRow
 }
 
 // Seed successful invitation provenance using the real schema, not a route
 // which would prematurely enable the deferred occurrence-add mutation.
-func seedReadInvitation(t *testing.T, app *App, issuer, subject *models.User, ev eventJSON, occ models.EventOccurrence) models.OccurrenceAccess {
+func seedReadInvitation(t *testing.T, app *App, issuer, subject *models.User, ev eventJSON, occ models.EventOccurrence) accessRow {
 	t.Helper()
 	now := time.Now().UTC().Add(-time.Minute)
 	request := models.ContactRequest{RequesterID: issuer.ID, SubjectUserID: subject.ID,
@@ -39,7 +40,7 @@ func seedReadInvitation(t *testing.T, app *App, issuer, subject *models.User, ev
 	if request.NeedsAdmin {
 		request.AdminDecision = "pending"
 	}
-	access := models.OccurrenceAccess{}
+	var access accessRow
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&request).Error; err != nil {
 			return err
@@ -58,15 +59,10 @@ func seedReadInvitation(t *testing.T, app *App, issuer, subject *models.User, ev
 		if err := tx.Model(&request).Updates(update).Error; err != nil {
 			return err
 		}
-		organizer, organizerID := "event", ev.ID
-		if ev.GroupID != nil {
-			organizer, organizerID = "group", *ev.GroupID
-		}
 		issuerID := issuer.ID
-		access = models.OccurrenceAccess{SubjectUserID: subject.ID, OccurrenceID: occ.ID, EventID: ev.ID,
-			OrganizerType: organizer, OrganizerID: organizerID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RequestID: &request.ID,
-			RegistrationID: reg.ID, Status: "active", GrantedAt: now}
-		return tx.Create(&access).Error
+		var err error
+		access, err = seedAccessGrantIn(tx, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RequestID: &request.ID}, &issuerID, now)
+		return err
 	})
 	if err != nil {
 		t.Fatal("seed valid invitation:", err)
@@ -97,6 +93,16 @@ func newOccurrenceReadFixture(t *testing.T) occurrenceReadFixture {
 	access := seedReadInvitation(t, app, issuer, recipient, ev, dates[1])
 	return occurrenceReadFixture{app: app, issuer: issuer, recipient: recipient, other: other, admin: admin,
 		client: loginAPI(t, app, recipient.Name, "password1234"), stranger: loginAPI(t, app, other.Name, "password1234"), group: group, event: ev, dates: dates, access: access}
+}
+
+// grants is the fixture's registration as a one-element grant batch.
+func (f occurrenceReadFixture) grants(t testing.TB) []models.Registration {
+	t.Helper()
+	var r models.Registration
+	if err := f.app.DB.First(&r, f.access.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return []models.Registration{r}
 }
 
 func dateReadPath(ev uint, date string) string { return "/api/v1" + occurrenceDatePath(ev, date) }
@@ -132,7 +138,7 @@ func newDepartureReadFixture(t *testing.T, visibility, status, origin string) oc
 		t.Fatal(err)
 	}
 	membership := models.Membership{UserID: recipient.ID, GroupID: group, Role: models.MembershipMember, Status: "active"}
-	var access models.OccurrenceAccess
+	var access accessRow
 	if err := app.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&membership).Error; err != nil {
 			return err
@@ -149,10 +155,9 @@ func newDepartureReadFixture(t *testing.T, visibility, status, origin string) oc
 		if origin == policy.OccurrenceOriginDepartureRemoval {
 			actorID = issuer.ID
 		}
-		access = models.OccurrenceAccess{SubjectUserID: recipient.ID, OccurrenceID: dates[1].ID, EventID: ev.ID,
-			OrganizerType: policy.ContactGroup, OrganizerID: group, Origin: origin, RegistrationID: reg.ID,
-			DepartureMembershipID: &membership.ID, DepartureActorID: &actorID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
-		return tx.Create(&access).Error
+		var err error
+		access, err = seedAccessGrantIn(tx, reg.ID, accessGrant{Origin: origin, DepartureMembershipID: &membership.ID, DepartureActorID: &actorID}, &actorID, time.Now().UTC())
+		return err
 	}); err != nil {
 		t.Fatal("seed validated departure access:", err)
 	}
@@ -236,13 +241,20 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 		}},
 		{"account deleted", func(f occurrenceReadFixture) error { return f.app.DB.Delete(f.recipient).Error }},
 		{"organizer changed", func(f occurrenceReadFixture) error {
+			// The organizer is derived from the event, so moving a date to a
+			// group that is not active is what closes the invitation.
 			group := createFeedGroup(t, f.admin, "Replacement organizer", models.VisibilityInviteOnly, "")
+			if err := f.app.DB.Model(&models.Group{}).Where("id = ?", group).Update("status", models.GroupArchived).Error; err != nil {
+				return err
+			}
 			return f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("group_id", group).Error
 		}},
 		{"cancelled", func(f occurrenceReadFixture) error {
 			return f.app.DB.Model(&f.dates[1]).Update("status", models.OccurrenceCancelled).Error
 		}},
 		{"occurrence deleted", func(f occurrenceReadFixture) error {
+			// A live grant cannot be deleted with its row: end it first.
+			endSeededAccess(t, f.app.DB, f.access.ID, policy.OccurrenceDeleted, nil, time.Now().UTC())
 			if err := f.app.DB.Where("occurrence_id = ?", f.dates[1].ID).Delete(&models.Registration{}).Error; err != nil {
 				return err
 			}
@@ -257,7 +269,8 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 			return f.app.DB.Model(&models.Registration{}).Where("id = ?", f.access.RegistrationID).Update("status", models.RegRemoved).Error
 		}},
 		{"revoked", func(f occurrenceReadFixture) error {
-			return f.app.DB.Model(&f.access).Updates(map[string]any{"status": "ended", "ended_at": time.Now().UTC(), "end_reason": "removed", "ended_by": f.issuer.ID}).Error
+			endSeededAccess(t, f.app.DB, f.access.ID, policy.OccurrenceRemoved, &f.issuer.ID, time.Now().UTC())
+			return nil
 		}},
 	}
 	for _, tc := range cases {
@@ -316,6 +329,8 @@ func TestOccurrenceDateReadStableRescheduleAndIssuerIndependence(t *testing.T) {
 	apiDo(t, f.client, "GET", path, nil, http.StatusOK)
 	// Regenerating the same date key creates a different occurrence, not a copy
 	// of the old invitation; retained access still names the deleted stable ID.
+	// The grant ends with its date before the row can go: a live grant is never deleted.
+	endSeededAccess(t, f.app.DB, f.access.ID, policy.OccurrenceDeleted, nil, time.Now().UTC())
 	if err := f.app.DB.Where("occurrence_id = ?", f.dates[1].ID).Delete(&models.Registration{}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -397,25 +412,24 @@ func TestOccurrenceDateReadPendingAskAndRegistrationAreNotAuthority(t *testing.T
 func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
 	now := time.Now().UTC()
-	rows := []models.OccurrenceAccess{f.access}
-	for _, field := range []string{"subject", "event", "group", "date", "registration"} {
-		r := f.access
-		switch field {
-		case "subject":
-			r.SubjectUserID = 999999
-		case "event":
-			r.EventID = 999999
-		case "group":
-			r.OrganizerID = 999999
-		case "date":
-			r.OccurrenceID = 999999
-		case "registration":
-			r.RegistrationID = 999999
+	// The grant is a property of the registration, so a synthetic variant is a
+	// registration whose subject or date no longer matches the live schema.
+	variants := func() []models.Registration {
+		var base models.Registration
+		if err := f.app.DB.First(&base, f.access.ID).Error; err != nil {
+			t.Fatal(err)
 		}
-		rows = append(rows, r)
+		rows := []models.Registration{base}
+		subject, missing := uint(999999), uint(999999)
+		bySubject, byDate := base, base
+		bySubject.UserID = &subject
+		byDate.OccurrenceID = missing
+		return append(rows, bySubject, byDate)
 	}
+	rows := variants()
 	compare := func() {
 		t.Helper()
+		rows = variants()
 		facts, err := loadOccurrenceInvitationFacts(f.app.DB, rows, now)
 		if err != nil {
 			t.Fatal(err)
@@ -432,7 +446,7 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			} // duplicate IDs in synthetic variants are checked individually.
-			single, err := occurrenceInvitationReadsIn(f.app.DB, []models.OccurrenceAccess{row}, now)
+			single, err := occurrenceInvitationReadsIn(f.app.DB, []models.Registration{row}, now)
 			if err != nil || (single[row.ID] != nil) != live {
 				t.Fatalf("invitation parity %v %v", live, err)
 			}
@@ -450,13 +464,13 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 	compare()
 	n := collectionReadCounter(t, f.app.DB)
 	*n = 0
-	if _, err := loadOccurrenceInvitationFacts(f.app.DB, []models.OccurrenceAccess{f.access}, now); err != nil {
+	if _, err := loadOccurrenceInvitationFacts(f.app.DB, rows[:1], now); err != nil {
 		t.Fatal(err)
 	}
 	small := *n
-	many := make([]models.OccurrenceAccess, 100)
+	many := make([]models.Registration, 100)
 	for i := range many {
-		many[i] = f.access
+		many[i] = rows[0]
 	}
 	*n = 0
 	if _, err := loadOccurrenceInvitationFacts(f.app.DB, many, now); err != nil {
@@ -474,17 +488,29 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	compare()
-	_ = f.app.DB.Callback().Query().Before("gorm:query").Register("invitation:fail", func(db *gorm.DB) {
-		if db.Statement.Table == "registrations" {
-			db.AddError(fmt.Errorf("injected provenance read failure"))
+	// The batch reads the dates, events and groups; the lifecycle sweep also
+	// reads the live grants. Either failing is an error, never an empty answer.
+	for _, tc := range []struct {
+		table string
+		run   func() error
+	}{
+		{"event_occurrences", func() error { _, err := occurrenceInvitationReadsIn(f.app.DB, rows, now); return err }},
+		{"registrations", func() error {
+			_, err := f.app.reconcileOccurrenceAccesses(f.app.DB, now, contactChange{EventID: f.event.ID})
+			return err
+		}},
+	} {
+		name := "invitation:fail:" + tc.table
+		_ = f.app.DB.Callback().Query().Before("gorm:query").Register(name, func(db *gorm.DB) {
+			if db.Statement.Table == tc.table {
+				db.AddError(fmt.Errorf("injected provenance read failure"))
+			}
+		})
+		err := tc.run()
+		f.app.DB.Callback().Query().Remove(name)
+		if err == nil {
+			t.Fatalf("%s read error ignored", tc.table)
 		}
-	})
-	defer f.app.DB.Callback().Query().Remove("invitation:fail")
-	if _, err := occurrenceInvitationReadsIn(f.app.DB, rows, now); err == nil {
-		t.Fatal("invitation fact error ignored")
-	}
-	if _, err := f.app.reconcileOccurrenceAccesses(f.app.DB, now, contactChange{EventID: f.event.ID}); err == nil {
-		t.Fatal("lifecycle fact error ignored")
 	}
 }
 
@@ -563,11 +589,11 @@ func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
 func TestDepartureOccurrenceAccessExactEndAndMoveCannotResurrect(t *testing.T) {
 	f := newDepartureReadFixture(t, models.VisibilityInviteOnly, models.RegGoing, policy.OccurrenceOriginDepartureSelf)
 	boundary := f.dates[1].EndsAt
-	before, err := occurrenceInvitationReadsIn(f.app.DB, []models.OccurrenceAccess{f.access}, boundary.Add(-time.Nanosecond))
+	before, err := occurrenceInvitationReadsIn(f.app.DB, f.grants(t), boundary.Add(-time.Nanosecond))
 	if err != nil || before[f.access.ID] == nil {
 		t.Fatal("departure access ended before boundary", err)
 	}
-	at, err := occurrenceInvitationReadsIn(f.app.DB, []models.OccurrenceAccess{f.access}, boundary)
+	at, err := occurrenceInvitationReadsIn(f.app.DB, f.grants(t), boundary)
 	if err != nil || at[f.access.ID] != nil {
 		t.Fatal("departure access survived exact end", err, at)
 	}
@@ -757,5 +783,120 @@ func TestOccurrenceCalendarPublicDateSignedOut(t *testing.T) {
 	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, models.FormatCalendarDate(date.OriginalDate))+"/calendar.ics", nil, false)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "SUMMARY:Church picnic") || strings.Contains(w.Body.String(), "STATUS:") {
 		t.Fatalf("public date: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// One table runs the shared corruption predicate through the Go loader and
+// through the direct-SQL trigger: a malformed access snapshot anywhere in the
+// two actions and the registration target fails the grant closed, even when its
+// subject and date cannot match; valid rows are filtered normally; rows outside
+// the scope do not take part.
+func TestAccessSnapshotCorruptionPredicateGoAndSQLAgree(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	reg := models.Registration{UserID: &f.other.ID, OccurrenceID: f.dates[0].ID, Status: models.RegGoing, Source: models.RegSourceAdmin, AttendanceMode: models.AttendanceInPerson}
+	if err := f.app.DB.Create(&reg).Error; err != nil {
+		t.Fatal(err)
+	}
+	const (
+		added, ended = "occurrence_access.added", "occurrence_access.ended"
+		big          = "9223372036854775807"
+		over         = "9223372036854775808"
+	)
+	valid := `"subjectUserId":5,"occurrenceId":6,"grantedAtMicro":1788000000000000`
+	other := fmt.Sprintf(`{%s,"endedAtMicro":1788000000000001}`, valid)
+	for _, tc := range []struct {
+		name, action, target, meta string
+		corrupt, repeat            bool
+	}{
+		{"missing subject", added, "registration", `{"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"missing occurrence", added, "registration", `{"subjectUserId":5,"grantedAtMicro":1}`, true, false},
+		{"missing grant stamp", added, "registration", `{"subjectUserId":5,"occurrenceId":6}`, true, false},
+		{"ended without an end stamp", ended, "registration", `{` + valid + `}`, true, false},
+		{"null subject", added, "registration", `{"subjectUserId":null,"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"string subject", added, "registration", `{"subjectUserId":"5","occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"boolean occurrence", added, "registration", `{"subjectUserId":5,"occurrenceId":true,"grantedAtMicro":1}`, true, false},
+		{"object stamp", added, "registration", `{"subjectUserId":5,"occurrenceId":6,"grantedAtMicro":{"n":1}}`, true, false},
+		{"array subject", added, "registration", `{"subjectUserId":[5],"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"fractional subject", added, "registration", `{"subjectUserId":1.5,"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"decimal-point integer", added, "registration", `{"subjectUserId":5.0,"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"zero occurrence", added, "registration", `{"subjectUserId":5,"occurrenceId":0,"grantedAtMicro":1}`, true, false},
+		{"negative stamp", added, "registration", `{"subjectUserId":5,"occurrenceId":6,"grantedAtMicro":-1}`, true, false},
+		{"overflowing subject", added, "registration", `{"subjectUserId":` + over + `,"occurrenceId":6,"grantedAtMicro":1}`, true, false},
+		{"huge end stamp", ended, "registration", `{` + valid + `,"endedAtMicro":99999999999999999999}`, true, false},
+		{"array metadata", added, "registration", `[]`, true, false},
+		{"scalar metadata", ended, "registration", `"text"`, true, false},
+		{"boundary integers are valid", ended, "registration", `{"subjectUserId":` + big + `,"occurrenceId":` + big + `,"grantedAtMicro":` + big + `,"endedAtMicro":` + big + `}`, false, false},
+		{"unrelated valid rows are filtered", added, "registration", `{` + valid + `}`, false, false},
+		{"unrelated valid ended row", ended, "registration", other, false, false},
+		{"another action is not access history", "registration.changed", "registration", `{"subjectUserId":"x"}`, false, false},
+		{"a block action is not authority", "occurrence.blocked", "registration", `{"subjectUserId":"x"}`, false, false},
+		{"another target type does not participate", added, "event", `{"subjectUserId":"x"}`, false, false},
+		{"the old target label does not participate", added, "occurrence_access", `{"subjectUserId":"x"}`, false, false},
+		{"a matching valid row makes the add a repeat", added, "registration", fmt.Sprintf(`{"subjectUserId":%d,"occurrenceId":%d,"grantedAtMicro":1788000000000000}`, f.other.ID, f.dates[0].ID), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := errors.New("roll back the probe")
+			var goErr, sqlErr error
+			var history map[accessKey]accessHistory
+			_ = f.app.DB.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec(`INSERT INTO audit_logs(action, target_type, target_id, meta_json) VALUES (?, ?, 1, ?::jsonb)`, tc.action, tc.target, tc.meta).Error; err != nil {
+					t.Fatal(err)
+				}
+				history, goErr = loadAccessHistory(tx, []uint{f.other.ID}, []uint{f.dates[0].ID})
+				sqlErr = tx.Exec(`UPDATE registrations SET access_origin = 'manager_add', access_issuer_id = ?, access_granted_at = now() WHERE id = ?`, f.issuer.ID, reg.ID).Error
+				return stop
+			})
+			switch {
+			case tc.corrupt:
+				if !errors.Is(goErr, errAccessHistoryCorrupt) {
+					t.Fatalf("Go loader accepted corrupt history: %v", goErr)
+				}
+				if sqlErr == nil || !strings.Contains(sqlErr.Error(), "history is corrupt") {
+					t.Fatalf("trigger accepted corrupt history: %v", sqlErr)
+				}
+			case tc.repeat:
+				if goErr != nil || !history[accessKey{f.other.ID, f.dates[0].ID}].Granted {
+					t.Fatalf("Go loader missed the matching row: %v %+v", goErr, history)
+				}
+				if sqlErr == nil || !strings.Contains(sqlErr.Error(), "repeat manager add") {
+					t.Fatalf("trigger did not treat the audited grant as a repeat: %v", sqlErr)
+				}
+			default:
+				if goErr != nil || sqlErr != nil {
+					t.Fatalf("valid or out-of-scope rows blocked the grant: go=%v sql=%v", goErr, sqlErr)
+				}
+			}
+		})
+	}
+}
+
+// The history loader is one scan: a corrupt snapshot fails closed even with no
+// subject or date to match, and a valid snapshot for someone else is neither
+// returned nor an error.
+func TestLoadAccessHistoryOneScanFailsClosedAndFilters(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	stop := errors.New("roll back the probe")
+	probe := func(meta string, subjects, occurrences []uint) (map[accessKey]accessHistory, error) {
+		var history map[accessKey]accessHistory
+		var err error
+		_ = f.app.DB.Transaction(func(tx *gorm.DB) error {
+			if meta != "" {
+				if e := tx.Exec(`INSERT INTO audit_logs(action, target_type, target_id, meta_json) VALUES ('occurrence_access.added', 'registration', 1, ?::jsonb)`, meta).Error; e != nil {
+					t.Fatal(e)
+				}
+			}
+			history, err = loadAccessHistory(tx, subjects, occurrences)
+			return stop
+		})
+		return history, err
+	}
+	if _, err := probe(`{"subjectUserId":"x","occurrenceId":6,"grantedAtMicro":1}`, nil, nil); !errors.Is(err, errAccessHistoryCorrupt) {
+		t.Fatalf("an unrelated corrupt row with nothing to match: %v", err)
+	}
+	if got, err := probe(`{"subjectUserId":5,"occurrenceId":6,"grantedAtMicro":1}`, []uint{f.other.ID}, []uint{f.dates[0].ID}); err != nil || len(got) != 0 {
+		t.Fatalf("a valid row for someone else: %v %+v", err, got)
+	}
+	if got, err := probe(`{"subjectUserId":5,"occurrenceId":6,"grantedAtMicro":1}`, nil, nil); err != nil || len(got) != 0 {
+		t.Fatalf("a valid row with nothing to match: %v %+v", err, got)
 	}
 }

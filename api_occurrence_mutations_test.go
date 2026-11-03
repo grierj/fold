@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -19,8 +20,11 @@ import (
 
 // Scalar reference for batch-parity tests only. Production uses the batched
 // loadOccurrenceInvitationFacts path, never this per-row implementation.
-func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess, now time.Time) (string, error) {
-	user, err := contactUser(tx, row.SubjectUserID)
+func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.Registration, now time.Time) (string, error) {
+	if row.UserID == nil {
+		return policy.OccurrenceContextChanged, nil
+	}
+	user, err := contactUser(tx, *row.UserID)
 	if err != nil {
 		return "", err
 	}
@@ -36,16 +40,21 @@ func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess
 			return policy.OccurrenceConsentLost, nil
 		}
 	}
+	var occ models.EventOccurrence
+	if err := tx.Where("id = ?", row.OccurrenceID).Limit(1).Find(&occ).Error; err != nil {
+		return "", err
+	}
+	if occ.ID == 0 {
+		return policy.OccurrenceDeleted, nil
+	}
 	var ev models.Event
-	if err := tx.Where("id = ?", row.EventID).Limit(1).Find(&ev).Error; err != nil {
+	if err := tx.Where("id = ?", occ.EventID).Limit(1).Find(&ev).Error; err != nil {
 		return "", err
 	}
 	if ev.ID == 0 {
 		return policy.OccurrenceEventDeleted, nil
 	}
-	organizer := policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
 	if ev.GroupID != nil {
-		organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
 		var group models.Group
 		if err := tx.Where("id = ?", *ev.GroupID).Limit(1).Find(&group).Error; err != nil {
 			return "", err
@@ -57,24 +66,14 @@ func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess
 			return policy.OccurrenceContextChanged, nil
 		}
 	}
-	if organizer != (policy.OrganizerScope{Type: row.OrganizerType, ID: row.OrganizerID}) {
-		return policy.OccurrenceContextChanged, nil
-	}
-	var occ models.EventOccurrence
-	if err := tx.Where("id = ? AND event_id = ?", row.OccurrenceID, row.EventID).Limit(1).Find(&occ).Error; err != nil {
-		return "", err
-	}
-	if occ.ID == 0 {
-		return policy.OccurrenceDeleted, nil
-	}
 	if occ.Status != models.OccurrenceScheduled {
 		return policy.OccurrenceCancelled, nil
 	}
-	if row.Origin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
+	if row.AccessOrigin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
 		return policy.OccurrenceEnded, nil
 	}
 	var reg models.Registration
-	if err := tx.Where("id = ? AND user_id = ? AND occurrence_id = ? AND status IN ?", row.RegistrationID, row.SubjectUserID, row.OccurrenceID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Limit(1).Find(&reg).Error; err != nil {
+	if err := tx.Where("id = ? AND user_id = ? AND occurrence_id = ? AND status IN ?", row.ID, *row.UserID, row.OccurrenceID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Limit(1).Find(&reg).Error; err != nil {
 		return "", err
 	}
 	if reg.ID == 0 {
@@ -83,13 +82,9 @@ func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess
 	return "", nil
 }
 
-func savedOccurrenceAccess(t *testing.T, f occurrenceReadFixture) models.OccurrenceAccess {
+func savedOccurrenceAccess(t *testing.T, f occurrenceReadFixture) accessRow {
 	t.Helper()
-	var row models.OccurrenceAccess
-	if err := f.app.DB.First(&row, f.access.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	return row
+	return loadAccessRow(t, f.app.DB, f.access.ID)
 }
 
 func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testing.T) {
@@ -127,6 +122,10 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 			case "occurrence_delete":
 				want = policy.OccurrenceDeleted
 				mutate = func(tx *gorm.DB) error {
+					// A date's rows can only go once its live grants have ended.
+					if _, err := endLiveAccessOnDates(tx, []uint{f.dates[1].ID}, policy.OccurrenceDeleted, time.Now().UTC(), false); err != nil {
+						return err
+					}
 					if err := tx.Where("occurrence_id = ?", f.dates[1].ID).Delete(&models.Registration{}).Error; err != nil {
 						return err
 					}
@@ -136,9 +135,25 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 			if err := f.app.contactMutation(change, mutate); err != nil {
 				t.Fatal(err)
 			}
-			row := savedOccurrenceAccess(t, f)
-			if row.Status != policy.OccurrenceAccessEnded || row.EndReason != want || row.EndedAt == nil {
-				t.Fatalf("not immediately ended: %+v", row)
+			// Hard-deleted registrations leave only their ended snapshot behind.
+			deleted := scenario == "event_delete" || scenario == "occurrence_delete"
+			row := f.access
+			if deleted {
+				var snap models.AuditLog
+				if err := f.app.DB.Where("action = ? AND target_type = ? AND target_id = ?", audit.OccurrenceAccessEnded, "registration", row.ID).First(&snap).Error; err != nil {
+					t.Fatal(err)
+				}
+				var meta struct {
+					EndReason string `json:"endReason"`
+				}
+				if err := json.Unmarshal([]byte(snap.MetaJSON), &meta); err != nil || meta.EndReason != want {
+					t.Fatalf("ended snapshot %s, want reason %s (%v)", snap.MetaJSON, want, err)
+				}
+			} else {
+				row = savedOccurrenceAccess(t, f)
+				if row.Status != policy.OccurrenceAccessEnded || row.EndReason != want || row.EndedAt == nil {
+					t.Fatalf("not immediately ended: %+v", row)
+				}
 			}
 			if scenario == "disable" {
 				if err := f.app.contactMutation(change, func(tx *gorm.DB) error { return tx.Model(f.recipient).Update("status", models.UserActive).Error }); err != nil {
@@ -155,7 +170,7 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 			if err := f.app.sweepContacts(t.Context(), time.Now().UTC()); err != nil {
 				t.Fatal(err)
 			}
-			if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessEnded {
+			if !deleted && savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessEnded {
 				t.Fatal("restoration revived invitation")
 			}
 			if n := contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.OccurrenceAccessEnded, row.ID); n != 1 {
@@ -438,10 +453,7 @@ func TestOccurrenceMutationConsentLossEndsBeforeRegrant(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var saved models.OccurrenceAccess
-	if err := f.app.DB.First(&saved, access.ID).Error; err != nil {
-		t.Fatal(err)
-	}
+	saved := loadAccessRow(t, f.app.DB, access.ID)
 	if saved.Status != policy.OccurrenceAccessEnded || saved.EndReason != policy.OccurrenceConsentLost {
 		t.Fatalf("consent loss not irreversible: %+v", saved)
 	}
@@ -450,9 +462,7 @@ func TestOccurrenceMutationConsentLossEndsBeforeRegrant(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.DB.First(&saved, access.ID).Error; err != nil {
-		t.Fatal(err)
-	}
+	saved = loadAccessRow(t, f.app.DB, access.ID)
 	if saved.Status != policy.OccurrenceAccessEnded {
 		t.Fatal("consent regrant revived invitation")
 	}
@@ -490,9 +500,7 @@ func TestOccurrenceRecipientControlsHiddenScopeAndNoRevival(t *testing.T) {
 			if reg.Status != models.RegDeclined {
 				t.Fatal("attendance not cancelled", reg)
 			}
-			if err := f.app.DB.First(&otherDate, otherDate.ID).Error; err != nil {
-				t.Fatal(err)
-			}
+			otherDate = loadAccessRow(t, f.app.DB, otherDate.ID)
 			if otherDate.Status != "active" {
 				t.Fatal("other accepted date cancelled")
 			}
@@ -850,7 +858,7 @@ func TestOccurrenceAskAdultExactPreviewAndAtomicCompletion(t *testing.T) {
 	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate)), nil, 200)
 	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[1].OriginalDate)), nil, 404)
 	apiDo(t, f.stranger, "GET", "/api/v1/events/"+itoa(f.event.ID), nil, 404)
-	if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ? AND status = ?", r.ID, "active") != 1 {
+	if contactCount(t, f.app, &models.Registration{}, "access_request_id = ? AND access_origin <> '' AND access_ended_at IS NULL", r.ID) != 1 {
 		t.Fatal("missing request access")
 	}
 	if contactCount(t, f.app, &models.ContactGrant{}, "request_id = ?", r.ID) != 0 {
@@ -936,7 +944,7 @@ func TestOccurrenceAskTeenBothOrdersAndSafeGuardianNotice(t *testing.T) {
 					t.Fatal(w.Code, w.Body.String())
 				}
 			}
-			if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 1 {
+			if contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 1 {
 				t.Fatal("teen not completed")
 			}
 			var notices []models.Notification
@@ -969,13 +977,16 @@ func TestOccurrenceAskParallelCompletionAndNewAskAfterEnd(t *testing.T) {
 	if codes[200] != 1 || codes[403] != 1 {
 		t.Fatal(codes)
 	}
-	if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 1 || contactCount(t, f.app, &models.Registration{}, "occurrence_id = ? AND user_id = ?", f.dates[0].ID, f.other.ID) != 1 {
+	if contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 1 || contactCount(t, f.app, &models.Registration{}, "occurrence_id = ? AND user_id = ?", f.dates[0].ID, f.other.ID) != 1 {
 		t.Fatal("duplicate effects")
 	}
 	apiDo(t, f.stranger, "POST", dateReadPath(f.event.ID, models.FormatCalendarDate(f.dates[0].OriginalDate))+"/decline", nil, 200)
 	next := createOccurrenceAsk(t, f, f.other, f.dates[0], nil)
 	apiDo(t, f.stranger, "POST", "/api/v1/add-requests/"+itoa(next.ID)+"/decision", map[string]string{"party": "subject", "decision": "approved"}, 200)
-	if contactCount(t, f.app, &models.OccurrenceAccess{}, "subject_user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 2 {
+	// Ending then asking again re-grants on the same registration: the earlier
+	// grant is retained as its two audit snapshots, not as a second table row.
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_type = ? AND meta_json->>'subjectUserId' = ? AND meta_json->>'occurrenceId' = ?", audit.OccurrenceAccessAdded, "registration", itoa(f.other.ID), itoa(f.dates[0].ID)) != 2 ||
+		contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_type = ? AND meta_json->>'subjectUserId' = ? AND meta_json->>'occurrenceId' = ?", audit.OccurrenceAccessEnded, "registration", itoa(f.other.ID), itoa(f.dates[0].ID)) != 1 {
 		t.Fatal("new ask did not append retained history")
 	}
 	apiDo(t, f.stranger, "POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, 403)
@@ -1013,12 +1024,12 @@ func TestOccurrenceDirectAdultsRaceCapacityProvenanceAndRateLimit(t *testing.T) 
 	if contactCount(t, f.app, &models.Registration{}, "occurrence_id = ? AND status = ?", f.dates[1].ID, models.RegGoing) != 2 {
 		t.Fatal("overfilled")
 	}
-	var added models.OccurrenceAccess
-	if err := f.app.DB.Where("occurrence_id = ? AND request_id IS NULL", f.dates[1].ID).First(&added).Error; err != nil {
+	var added models.Registration
+	if err := f.app.DB.Where("occurrence_id = ? AND access_origin <> '' AND access_request_id IS NULL", f.dates[1].ID).First(&added).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": added.SubjectUserID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
-	if contactCount(t, f.app, &models.OccurrenceAccess{}, "subject_user_id = ? AND occurrence_id = ?", added.SubjectUserID, added.OccurrenceID) != 1 {
+	apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": *added.UserID, "date": models.FormatCalendarDate(f.dates[1].OriginalDate)}, 200)
+	if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ? AND access_origin <> ''", *added.UserID, added.OccurrenceID) != 1 || contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_type = ? AND target_id = ?", audit.OccurrenceAccessAdded, "registration", added.ID) != 1 {
 		t.Fatal("duplicate provenance")
 	}
 	if err := f.app.DB.Model(&models.LoginThrottle{}).Where("key = ?", "manager-date-add:"+itoa(f.issuer.ID)).Update("failures", managerDateAddLimit).Error; err != nil {
@@ -1058,7 +1069,7 @@ func TestOccurrenceAskBlockBeforeFinalDecisionAndAuditFailure(t *testing.T) {
 	if w := awaitContactResponse(t, decision); w.Code != 403 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 {
+	if contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 {
 		t.Fatal("block lost to stale approval")
 	}
 	// A different subject's completion audit failure must roll back all effects.
@@ -1077,7 +1088,7 @@ func TestOccurrenceAskBlockBeforeFinalDecisionAndAuditFailure(t *testing.T) {
 	if err := f.app.DB.First(&saved, other.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if saved.SubjectDecision != "pending" || saved.Status != "pending" || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", other.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
+	if saved.SubjectDecision != "pending" || saved.Status != "pending" || contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", other.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
 		t.Fatal("partial completion survived audit failure")
 	}
 }
@@ -1120,7 +1131,7 @@ func TestOccurrenceAskTerminalChangesPreventCompletion(t *testing.T) {
 				client = f.admin
 			}
 			apiDo(t, client, "POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, 403)
-			if contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 {
+			if contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 {
 				t.Fatal("terminal request created access")
 			}
 		})
@@ -1178,7 +1189,7 @@ func TestOccurrenceNewInvitationInvalidatesPromotionToken(t *testing.T) {
 	if updated.ManageTokenHash != "" {
 		t.Fatal("fresh approved reinvitation retained old credential")
 	}
-	if regStatus(t, f.app, f.other.ID, f.dates[0].ID) != models.RegGoing || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ? AND status = ?", r.ID, policy.OccurrenceAccessActive) != 1 {
+	if regStatus(t, f.app, f.other.ID, f.dates[0].ID) != models.RegGoing || contactCount(t, f.app, &models.Registration{}, "access_request_id = ? AND access_origin <> '' AND access_ended_at IS NULL", r.ID) != 1 {
 		t.Fatal("old promotion token affected replacement invitation")
 	}
 }
@@ -1366,7 +1377,7 @@ func TestOccurrenceDirectAddEveryPreflightRefusalAuditedSafely(t *testing.T) {
 						t.Fatalf("unsafe refusal audit %+v", row)
 					}
 				}
-				if contactCount(t, f.app, &models.Registration{}, "occurrence_id = ?", f.dates[0].ID) != 0 || contactCount(t, f.app, &models.OccurrenceAccess{}, "occurrence_id = ?", f.dates[0].ID) != 0 {
+				if contactCount(t, f.app, &models.Registration{}, "occurrence_id = ?", f.dates[0].ID) != 0 || contactCount(t, f.app, &models.Registration{}, "occurrence_id = ? AND access_origin <> ''", f.dates[0].ID) != 0 {
 					t.Fatal("refused add mutated domain")
 				}
 			}
@@ -1424,7 +1435,7 @@ func TestOccurrenceAskFinalTeenDecisionQueuedAuthorityLoss(t *testing.T) {
 			if err := f.app.DB.First(&saved, r.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if saved.Status == policy.ContactGranted || saved.SubjectDecision != policy.ContactPending || saved.CompletedTargetID != nil || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
+			if saved.Status == policy.ContactGranted || saved.SubjectDecision != policy.ContactPending || saved.CompletedTargetID != nil || contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
 				t.Fatal("stale final teen decision completed", saved)
 			}
 		})
@@ -1474,7 +1485,7 @@ func TestOccurrenceAskExpiryWhileWaitingOnDomainLock(t *testing.T) {
 	if err := f.app.DB.First(&r, r.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if r.Status != policy.ContactExpired || r.CompletedTargetID != nil || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
+	if r.Status != policy.ContactExpired || r.CompletedTargetID != nil || contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
 		t.Fatal("expired completion minted attendance", r)
 	}
 }
@@ -1522,7 +1533,7 @@ func TestOccurrenceAskBirthdayRechecksClockAfterDomainLock(t *testing.T) {
 	if err := f.app.DB.First(&r, r.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if r.Status != policy.ContactEnded || r.EndReason != policy.ContactTurned18 || r.CompletedTargetID != nil || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
+	if r.Status != policy.ContactEnded || r.EndReason != policy.ContactTurned18 || r.CompletedTargetID != nil || contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
 		t.Fatal("birthday completion minted attendance", r)
 	}
 }
@@ -1544,7 +1555,9 @@ func TestOccurrenceAskCompletionAtomicOnProvenanceNoticeAndResolutionFailures(t 
 				inject := false
 				switch scenario {
 				case "provenance":
-					_, inject = db.Statement.Dest.(*models.OccurrenceAccess)
+					if updates, ok := db.Statement.Dest.(map[string]any); ok && db.Statement.Table == "registrations" {
+						_, inject = updates["access_origin"]
+					}
 				case "notice":
 					if row, ok := db.Statement.Dest.(*models.Notification); ok {
 						inject = row.Kind == notify.OccurrenceAdded
@@ -1558,7 +1571,7 @@ func TestOccurrenceAskCompletionAtomicOnProvenanceNoticeAndResolutionFailures(t 
 					db.AddError(errors.New("injected " + scenario + " failure"))
 				}
 			}
-			if scenario == "task_resolution" {
+			if scenario == "task_resolution" || scenario == "provenance" {
 				if err := f.app.DB.Callback().Update().Before("gorm:update").Register(name, fail); err != nil {
 					t.Fatal(err)
 				}
@@ -1574,7 +1587,7 @@ func TestOccurrenceAskCompletionAtomicOnProvenanceNoticeAndResolutionFailures(t 
 			if err := f.app.DB.First(&saved, r.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if saved.Status != policy.ContactPending || saved.CompletedTargetID != nil || contactCount(t, f.app, &models.OccurrenceAccess{}, "request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
+			if saved.Status != policy.ContactPending || saved.CompletedTargetID != nil || contactCount(t, f.app, &models.Registration{}, "access_request_id = ?", r.ID) != 0 || contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.other.ID, f.dates[0].ID) != 0 {
 				t.Fatal("partial completion survived failure", saved)
 			}
 			if contactCount(t, f.app, &models.Notification{}, "1=1") != beforeNotices || contactCount(t, f.app, &models.AuditLog{}, "1=1") != beforeAudits {
