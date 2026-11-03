@@ -24,6 +24,8 @@ import (
 const (
 	notifyDeliverAttempts = 8
 	deliverSendTimeout    = 60 * time.Second
+	kindNotifyReconcile   = "notify.reconcile"
+	notifyReconcileBatch  = 500
 	// emailKindStopped is the ledger reason when a kind no longer emails.
 	emailKindStopped = "this kind of notice no longer sends email"
 	// emailKindUnknown is the ledger reason when this version of Fold
@@ -55,6 +57,111 @@ func (a *App) notifyKinds() []jobs.Kind {
 			return a.deliverOneNotification(ctx, p.NotificationID)
 		},
 	}}
+}
+
+// reconcileNotifications repairs lost delivery jobs and backfills pre-outbox
+// notices from the last 24 hours. Older notices stay bell-only. Both passes
+// advance by the last candidate, even when every write collides with an
+// existing key or a kind has no delivery channels.
+func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
+	db := a.DB.WithContext(ctx)
+	var afterAt time.Time
+	var afterID uint
+	for {
+		var rows []models.NotificationDelivery
+		if err := db.Raw(`SELECT nd.notification_id, nd.created_at, nd.id
+			FROM notification_deliveries nd
+			WHERE nd.channel = ? AND nd.status = ? AND nd.created_at < ?
+			  AND (nd.created_at, nd.id) > (?, ?)
+			  AND NOT EXISTS (SELECT 1 FROM jobs j
+				WHERE j.unique_key = ? || nd.notification_id AND j.status IN ?)
+			ORDER BY nd.created_at, nd.id LIMIT ?`,
+			models.DeliveryEmail, models.DeliveryQueued, now.Add(-10*time.Minute), afterAt, afterID,
+			notify.DeliverKind+":", []string{models.JobQueued, models.JobRunning, models.JobFailed}, notifyReconcileBatch).
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+		specs := make([]jobs.Spec, 0, len(rows))
+		for _, row := range rows {
+			specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.NotificationID},
+				RunAt: now, UniqueKey: notify.DeliverKey(row.NotificationID), MaxAttempts: notifyDeliverAttempts})
+		}
+		if _, err := jobs.EnqueueMany(db, specs); err != nil {
+			return err
+		}
+		if len(rows) < notifyReconcileBatch {
+			break
+		}
+		last := rows[len(rows)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
+	}
+	afterAt, afterID = time.Time{}, 0
+	for {
+		var rows []models.Notification
+		if err := db.Raw(`SELECT n.id, n.user_id, n.kind, n.subject_id, n.created_at
+			FROM notifications n
+			WHERE n.created_at > ? AND (n.created_at, n.id) > (?, ?)
+			  AND NOT EXISTS (SELECT 1 FROM notification_deliveries nd
+				WHERE nd.notification_id = n.id AND nd.channel = ?)
+			  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.unique_key = ? || n.id)
+			ORDER BY n.created_at, n.id LIMIT ?`,
+			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKind+":", notifyReconcileBatch).
+			Scan(&rows).Error; err != nil {
+			return err
+		}
+		if err := db.Transaction(func(tx *gorm.DB) error { return queueReconciledNotifications(tx, rows) }); err != nil {
+			return err
+		}
+		if len(rows) < notifyReconcileBatch {
+			return nil
+		}
+		last := rows[len(rows)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
+	}
+}
+
+// queueReconciledNotifications uses the persisted request flags to preserve
+// pre-outbox duplicate and honeypot notices as bell-only. Read the page's
+// requests together and queue each group in the same transaction.
+func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification) error {
+	var eligible []models.Notification
+	var requestIDs []uint
+	for _, row := range rows {
+		k, ok := notify.Lookup(row.Kind)
+		if !ok || (!k.AllowEmail && !k.AllowPush) {
+			continue
+		}
+		eligible = append(eligible, row)
+		if row.Kind == notify.AccountRequested && row.SubjectID != nil {
+			requestIDs = append(requestIDs, *row.SubjectID)
+		}
+	}
+	flags := map[uint]models.RequestFlags{}
+	if len(requestIDs) > 0 {
+		var requests []models.AccountRequest
+		if err := tx.Select("id, flags").Where("id IN ?", requestIDs).Find(&requests).Error; err != nil {
+			return err
+		}
+		for _, request := range requests {
+			flags[request.ID] = parseRequestFlags(request.Flags)
+		}
+	}
+	var deliver, bellOnly []models.Notification
+	for _, row := range eligible {
+		var f models.RequestFlags
+		if row.Kind == notify.AccountRequested && row.SubjectID != nil {
+			f = flags[*row.SubjectID]
+		}
+		if f.Duplicate || f.Honeypot {
+			bellOnly = append(bellOnly, row)
+		} else {
+			deliver = append(deliver, row)
+		}
+	}
+	if err := notify.QueueDelivery(tx, false, deliver...); err != nil {
+		return err
+	}
+	return notify.QueueDelivery(tx, true, bellOnly...)
 }
 
 // deliverOneNotification sends one stored notice. Push is queued first.

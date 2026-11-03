@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -652,5 +653,408 @@ func TestDrainNoticesLeavesOtherKindsAndHonorsLater(t *testing.T) {
 	}
 	if n := mailCount(t, app, ""); n != 0 {
 		t.Fatalf("sent while held: %d", n)
+	}
+}
+
+// preOutboxNotice stores only the bell row, as the pre-outbox writer did.
+func preOutboxNotice(t *testing.T, app *App, u *models.User, kind string, at time.Time, subjectID *uint) models.Notification {
+	t.Helper()
+	n := models.Notification{UserID: u.ID, Kind: kind, Category: notify.CatAdmin, Link: "/",
+		Title: "Old notice", CreatedAt: at, SubjectID: subjectID}
+	if k, ok := notify.Lookup(kind); ok {
+		v := notify.Vars{Group: "Youth"}
+		n.Category = k.Category
+		n.Title, n.Body = k.Render(v)
+		n.EmailTitle, n.EmailBody = k.RenderForEmail(v)
+		n.PushTitle, n.PushBody, _ = k.RenderForPush(v)
+	}
+	if kind == notify.AccountRequested {
+		n.SubjectType = "account_request"
+	}
+	if err := app.DB.Create(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestNotifyReconcileRequeuesOrphans(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleAdmin)
+	phone := newPushDevice(t, app, u, "phone")
+	laptop := newPushDevice(t, app, u, "laptop")
+	now := time.Now().UTC()
+	recent := now.Add(-time.Hour)
+	old := now.Add(-25 * time.Hour)
+	orphan := preOutboxNotice(t, app, u, notify.GroupApproved, old, nil)
+	dead := preOutboxNotice(t, app, u, notify.GroupApproved, old, nil)
+	for _, row := range []models.NotificationDelivery{
+		{NotificationID: orphan.ID, UserID: u.ID, Channel: models.DeliveryEmail, Status: models.DeliveryQueued, CreatedAt: now.Add(-11 * time.Minute)},
+		{NotificationID: dead.ID, UserID: u.ID, Channel: models.DeliveryEmail, Status: models.DeliveryDeferred, CreatedAt: old},
+	} {
+		if err := app.DB.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadKey := notify.DeliverKey(dead.ID)
+	if err := app.DB.Create(&models.Job{Kind: notify.DeliverKind, UniqueKey: &deadKey, Status: models.JobDead}).Error; err != nil {
+		t.Fatal(err)
+	}
+	backfill := preOutboxNotice(t, app, u, notify.GroupApproved, recent, nil)
+	stale := preOutboxNotice(t, app, u, notify.GroupApproved, old, nil)
+	pushed := preOutboxNotice(t, app, u, notify.GroupApproved, recent, nil)
+	if err := app.DB.Create(&models.NotificationDelivery{NotificationID: pushed.ID, UserID: u.ID,
+		Channel: models.DeliveryPush, Status: models.DeliverySent}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Transaction(func(tx *gorm.DB) error { return queuePushFor(tx, &pushed) }); err != nil {
+		t.Fatal(err)
+	}
+	priorPush := pushJobsFor(t, app, pushed.ID)
+	for _, job := range priorPush {
+		if err := app.DB.Model(&job).Update("status", models.JobDone).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	bellIDs, err := notify.Send(app.DB, notify.Msg{Kind: notify.GroupApproved, To: []uint{u.ID}, Link: "/", BellOnly: true})
+	if err != nil || len(bellIDs) != 1 {
+		t.Fatalf("bell-only notice: %v %v", bellIDs, err)
+	}
+	bellKind := preOutboxNotice(t, app, u, notify.PushDevicesOff, recent, nil)
+	unknown := preOutboxNotice(t, app, u, "future.notice", recent, nil)
+	noEmail := []uint{stale.ID, bellKind.ID, unknown.ID}
+	// Even a terminal delivery key without an email row prevents backfill.
+	for _, status := range []string{models.JobDone, models.JobDead, models.JobDismissed} {
+		n := preOutboxNotice(t, app, u, notify.GroupApproved, recent, nil)
+		key := notify.DeliverKey(n.ID)
+		if err := app.DB.Create(&models.Job{Kind: notify.DeliverKind, UniqueKey: &key, Status: status}).Error; err != nil {
+			t.Fatal(err)
+		}
+		noEmail = append(noEmail, n.ID)
+	}
+	queued := []uint{orphan.ID, backfill.ID, pushed.ID}
+	suppressed := []uint{bellIDs[0]}
+	for _, flags := range []models.RequestFlags{{Duplicate: true}, {Honeypot: true}, {}, {RateLimited: true}} {
+		body, err := json.Marshal(flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := models.AccountRequest{Name: "New person", Email: "new@example.com", Source: "self_signup",
+			Flags: string(body), ExpiresAt: now.Add(24 * time.Hour)}
+		if err := app.DB.Create(&r).Error; err != nil {
+			t.Fatal(err)
+		}
+		n := preOutboxNotice(t, app, u, notify.AccountRequested, recent, &r.ID)
+		if flags.Duplicate || flags.Honeypot {
+			suppressed = append(suppressed, n.ID)
+		} else {
+			queued = append(queued, n.ID)
+		}
+	}
+	counts := func() [3]int64 {
+		t.Helper()
+		var out [3]int64
+		for i, model := range []any{&models.Job{}, &models.NotificationDelivery{}, &models.MailOutbox{}} {
+			if err := app.DB.Model(model).Count(&out[i]).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		return out
+	}
+	before := counts()
+	if err := app.reconcileNotifications(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	after := counts()
+	if after[0]-before[0] != int64(len(queued)) {
+		t.Fatalf("added jobs = %d, want %d", after[0]-before[0], len(queued))
+	}
+	for _, id := range queued {
+		if d := emailDeliveryOf(t, app, id); d.Status != models.DeliveryQueued {
+			t.Fatalf("expected queued email: %+v", d)
+		}
+		var job models.Job
+		if err := app.DB.Where("unique_key = ?", notify.DeliverKey(id)).First(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+		if job.Status != models.JobQueued || job.MaxAttempts != notifyDeliverAttempts {
+			t.Fatalf("reconciled job: %+v", job)
+		}
+	}
+	for _, id := range suppressed {
+		d := emailDeliveryOf(t, app, id)
+		if d.Status != models.DeliverySuppressed || d.Reason != "bell only" {
+			t.Fatalf("expected bell-only marker: %+v", d)
+		}
+		var n int64
+		if err := app.DB.Model(&models.Job{}).Where("unique_key = ?", notify.DeliverKey(id)).Count(&n).Error; err != nil || n != 0 {
+			t.Fatalf("bell-only job: %d %v", n, err)
+		}
+	}
+	var n int64
+	if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id IN ? AND channel = ?", noEmail, models.DeliveryEmail).
+		Count(&n).Error; err != nil || n != 0 {
+		t.Fatalf("backfilled an excluded notice: %d %v", n, err)
+	}
+	if d := emailDeliveryOf(t, app, dead.ID); d.Status != models.DeliveryDeferred {
+		t.Fatalf("dead job's delivery changed: %+v", d)
+	}
+	if err := app.reconcileNotifications(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(); got != after {
+		t.Fatalf("second reconcile wrote rows: %v -> %v", after, got)
+	}
+	drainNotices(t, app)
+	for _, id := range queued {
+		if d := emailDeliveryOf(t, app, id); d.Status != models.DeliverySent {
+			t.Fatalf("recovered notice not sent: %+v", d)
+		}
+	}
+	if got := mailCount(t, app, u.Email); got != int64(len(queued)) {
+		t.Fatalf("emails = %d, want %d", got, len(queued))
+	}
+	assertOnePushEach(t, app, pushed.ID, phone.ID, laptop.ID)
+	for _, job := range priorPush {
+		if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.Attempts != 0 {
+			t.Fatalf("requeued a completed push: %+v", got)
+		}
+	}
+	after = counts()
+	if err := app.reconcileNotifications(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	drainNotices(t, app)
+	if got := counts(); got != after {
+		t.Fatalf("reconcile after delivery wrote rows: %v -> %v", after, got)
+	}
+}
+
+func TestNotifyReconcilePaginatesPastCollisions(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	now := time.Now().UTC()
+	// Identical created_at values force the id tie-breaker to advance.
+	// All 501 keys collide, but none is live, so pass (a) must page past
+	// them without reviving done, dead or dismissed work.
+	if err := app.DB.Exec(`WITH notices AS (
+		INSERT INTO notifications (user_id, kind, category, title, link, created_at)
+		SELECT ?, ?, ?, 'Old notice', '/', ? FROM generate_series(1, 501)
+		RETURNING id, user_id, created_at
+	), deliveries AS (
+		INSERT INTO notification_deliveries (notification_id, user_id, channel, status, created_at)
+		SELECT id, user_id, 'email', 'queued', created_at FROM notices
+	)
+	INSERT INTO jobs (kind, unique_key, status)
+	SELECT ?, ? || id, CASE id % 3 WHEN 0 THEN 'done' WHEN 1 THEN 'dead' ELSE 'dismissed' END FROM notices`,
+		u.ID, notify.GroupApproved, notify.CatGroups, now.Add(-25*time.Hour), notify.DeliverKind, notify.DeliverKind+":").Error; err != nil {
+		t.Fatal(err)
+	}
+	orphan := preOutboxNotice(t, app, u, notify.GroupApproved, now.Add(-24*time.Hour), nil)
+	if err := app.DB.Create(&models.NotificationDelivery{NotificationID: orphan.ID, UserID: u.ID, Channel: models.DeliveryEmail,
+		Status: models.DeliveryQueued, CreatedAt: now.Add(-24 * time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	qc := countDBReads(t, app.DB)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := app.reconcileNotifications(ctx, now)
+	qc.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two orphan pages and one empty backfill page, independent of how
+	// many unique-key collisions EnqueueMany skipped.
+	if reads := qc.Reads(); reads != 3 {
+		t.Fatalf("reconcile page reads = %d, want 3", reads)
+	}
+	var rows []models.Job
+	if err := app.DB.Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 502 {
+		t.Fatalf("jobs = %d, want 501 collisions and one recovered job", len(rows))
+	}
+	for _, job := range rows {
+		if job.UniqueKey != nil && *job.UniqueKey == notify.DeliverKey(orphan.ID) {
+			if job.Status != models.JobQueued {
+				t.Fatalf("orphan job: %+v", job)
+			}
+			continue
+		}
+		if job.Status != models.JobDone && job.Status != models.JobDead && job.Status != models.JobDismissed {
+			t.Fatalf("revived a collided key: %+v", job)
+		}
+	}
+}
+
+func TestNotifyDeliverSurvivesLostJob(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	phone := newPushDevice(t, app, u, "phone")
+	laptop := newPushDevice(t, app, u, "laptop")
+	var id uint
+	if err := app.DB.Transaction(func(tx *gorm.DB) error {
+		ids, err := notify.Send(tx, notify.Msg{Kind: notify.GroupApproved, To: []uint{u.ID}, Link: "/", Vars: notify.Vars{Group: "Youth"}})
+		if err != nil {
+			return err
+		}
+		if len(ids) != 1 {
+			t.Fatalf("created notice ids: %v", ids)
+		}
+		id = ids[0]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("unique_key = ?", notify.DeliverKey(id)).Delete(&models.Job{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ? AND channel = ?", id, models.DeliveryEmail).
+		Update("created_at", now.Add(-11*time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := mailCount(t, app, ""); got != 0 || len(pushJobsFor(t, app, id)) != 0 {
+		t.Fatal("delivery ran before reconcile")
+	}
+	if err := app.reconcileNotifications(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	drainNotices(t, app)
+	assertSentOnce(t, app, id, u.Email, "Youth was approved", phone.ID, laptop.ID)
+}
+
+func TestNotifyReconcileBackfillPaginatesPastSkippedKinds(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	now := time.Now().UTC()
+	at := now.Add(-time.Hour)
+	// These rows never gain email intent or a delivery key, so advancing
+	// only after a successful write would keep selecting the first page.
+	if err := app.DB.Exec(`INSERT INTO notifications (user_id, kind, category, title, link, created_at)
+		SELECT ?, CASE i % 2 WHEN 0 THEN ? ELSE 'future.notice' END, ?, 'Bell notice', '/', ?
+		FROM generate_series(1, 501) AS s(i)`, u.ID, notify.PushDevicesOff, notify.CatAdmin, at).Error; err != nil {
+		t.Fatal(err)
+	}
+	backfill := preOutboxNotice(t, app, u, notify.GroupApproved, at, nil)
+	for range 2 {
+		qc := countDBReads(t, app.DB)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := app.reconcileNotifications(ctx, now)
+		cancel()
+		qc.Stop()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reads := qc.Reads(); reads != 3 {
+			t.Fatalf("page reads = %d, want one orphan and two backfill pages", reads)
+		}
+	}
+	var deliveries []models.NotificationDelivery
+	if err := app.DB.Find(&deliveries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 1 || deliveries[0].NotificationID != backfill.ID || deliveries[0].Status != models.DeliveryQueued {
+		t.Fatalf("backfilled deliveries: %+v", deliveries)
+	}
+	var jobs []models.Job
+	if err := app.DB.Find(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].UniqueKey == nil || *jobs[0].UniqueKey != notify.DeliverKey(backfill.ID) {
+		t.Fatalf("backfilled jobs: %+v", jobs)
+	}
+}
+
+func TestNotifyReconcileLeavesYoungOrLiveDeliveries(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		age    time.Duration
+		status string
+	}{
+		{age: 9 * time.Minute},
+		{age: 10 * time.Minute},
+		{age: time.Hour, status: models.JobQueued},
+		{age: time.Hour, status: models.JobRunning},
+		{age: time.Hour, status: models.JobFailed},
+	} {
+		n := preOutboxNotice(t, app, u, notify.GroupApproved, now.Add(-25*time.Hour), nil)
+		if err := app.DB.Create(&models.NotificationDelivery{NotificationID: n.ID, UserID: u.ID, Channel: models.DeliveryEmail,
+			Status: models.DeliveryQueued, CreatedAt: now.Add(-tc.age)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if tc.status != "" {
+			key := notify.DeliverKey(n.ID)
+			if err := app.DB.Create(&models.Job{Kind: notify.DeliverKind, UniqueKey: &key, Status: tc.status}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := app.reconcileNotifications(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	var rows []models.Job
+	if err := app.DB.Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 || rows[0].Status != models.JobQueued || rows[1].Status != models.JobRunning || rows[2].Status != models.JobFailed {
+		t.Fatalf("changed young or live jobs: %+v", rows)
+	}
+}
+
+func TestNotifyReconcileHourlyRetriesErrors(t *testing.T) {
+	app := testApp(t)
+	var kind jobs.Kind
+	for _, k := range app.hourlyKinds() {
+		if k.Name == kindNotifyReconcile {
+			kind = k
+		}
+	}
+	if kind.Run == nil || kind.Label != "Checking for notices that still need sending" || kind.MaxAttempts != jobs.DefaultMaxAttempts {
+		t.Fatalf("hourly kind: %+v", kind)
+	}
+	// This local hour belongs to the following UTC day.
+	at := time.Date(2026, 11, 1, 23, 10, 0, 0, time.FixedZone("test", -7*60*60))
+	for range 2 {
+		if err := queueHourly(app.DB, []jobs.Kind{kind}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var queued []models.Job
+	if err := app.DB.Where("kind = ?", kindNotifyReconcile).Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].UniqueKey == nil || *queued[0].UniqueKey != "notify.reconcile:2026-11-02T06" {
+		t.Fatalf("hourly keys: %+v", queued)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := kind.Run(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("handler lost its error: %v", err)
+	}
+	// A failed page read reaches the runner and becomes a retry, rather
+	// than quietly marking this hour done.
+	const name = "test:fail_reconcile_read"
+	readErr := errors.New("notification deliveries unavailable")
+	if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "SELECT nd.notification_id") {
+			_ = tx.AddError(readErr)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.DB.Callback().Row().Remove(name) })
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", queued[0].ID).Update("run_at", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	ran, err := jobs.NewRunner(app.DB, kind).RunOnce(context.Background(), "test:reconcile")
+	if err != nil || !ran {
+		t.Fatalf("run: %v %v", ran, err)
+	}
+	job := reloadJob(t, app, queued[0].ID)
+	if job.Status != models.JobFailed || job.LastError != readErr.Error() || !job.RunAt.After(time.Now()) {
+		t.Fatalf("hourly read failure did not retry: %+v", job)
 	}
 }
