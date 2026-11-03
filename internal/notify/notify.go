@@ -115,9 +115,10 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 				continue
 			}
 		}
-		title, body := k.Render(withCount(m.Vars, 1))
-		emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, 1))
-		pushTitle, pushBody, _ := k.RenderForPush(withCount(m.Vars, 1))
+		first := withCount(m.Vars, max(m.Vars.Count, 1))
+		title, body := k.Render(first)
+		emailTitle, emailBody := k.RenderForEmail(first)
+		pushTitle, pushBody, _ := k.RenderForPush(first)
 		row := models.Notification{
 			UserID: uid, Kind: k.Key, Category: k.Category, Waiting: k.Waiting,
 			ActorID: m.Actor, SubjectType: m.SubjectType, Title: title, Body: body,

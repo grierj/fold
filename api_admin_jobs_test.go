@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +232,257 @@ func TestSystemPageEdges(t *testing.T) {
 	decodeJSON(t, admin.do("GET", "/api/v1/admin/jobs", nil, false), &out)
 	if len(out.Jobs) != maxDeadJobsListed || !out.More {
 		t.Fatalf("listed %d, more %v", len(out.Jobs), out.More)
+	}
+}
+
+const (
+	deadAlertKind    = "test.dead_alert"
+	deadAlertSecret  = "payload-secret-7731"
+	deadAlertErrText = "backend refused sam@example.com with key eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
+)
+
+// deadAlertKinds is one generic job that always fails; the payload and the
+// error text carry things an alert must never repeat.
+func deadAlertKinds() []jobs.Kind {
+	return []jobs.Kind{{Name: deadAlertKind, MaxAttempts: 1,
+		Run: func(context.Context, json.RawMessage) error { return errors.New(deadAlertErrText) }}}
+}
+
+// killDeadAlertJob queues the failing job and runs it once through the
+// app's runner, so it dies and OnDead fires.
+func killDeadAlertJob(t *testing.T, app *App) uint {
+	t.Helper()
+	if _, err := jobs.Enqueue(app.DB, deadAlertKind, map[string]string{"note": deadAlertSecret}, time.Now(), "", 1); err != nil {
+		t.Fatal(err)
+	}
+	var job models.Job
+	if err := app.DB.Where("kind = ?", deadAlertKind).Order("id DESC").First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	runDeadAlertJob(t, app)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobDead {
+		t.Fatalf("job %+v", got)
+	}
+	return job.ID
+}
+
+func runDeadAlertJob(t *testing.T, app *App) {
+	t.Helper()
+	ran, err := app.newRunner(deadAlertKinds()...).RunOnce(context.Background(), "test:dead")
+	if err != nil || !ran {
+		t.Fatalf("run: ran %v err %v", ran, err)
+	}
+}
+
+func deadAlerts(t *testing.T, app *App, jobID uint) []models.Notification {
+	t.Helper()
+	var rows []models.Notification
+	if err := app.DB.Where("kind = ? AND subject_id = ?", notify.SystemJobDead, jobID).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// wantDeadAlerts checks that every admin has exactly n copies for the job,
+// open or resolved as asked, and that no copy repeats the payload or error.
+// resolution: "open" means every copy is unresolved, a word means every copy is
+// resolved (the caller checks which), "" means don't check.
+func wantDeadAlerts(t *testing.T, app *App, jobID uint, admins []uint, n int, resolution string) {
+	t.Helper()
+	rows := deadAlerts(t, app, jobID)
+	if len(rows) != n*len(admins) {
+		t.Fatalf("alerts for job %d: %d, want %d", jobID, len(rows), n*len(admins))
+	}
+	per := map[uint]int{}
+	for _, r := range rows {
+		per[r.UserID]++
+		text := r.Title + "|" + r.Body + "|" + r.EmailTitle + "|" + r.EmailBody + "|" + r.PushTitle + "|" + r.PushBody
+		for _, bad := range []string{deadAlertSecret, "sam@example.com", "eyJ", "refused"} {
+			if strings.Contains(text, bad) {
+				t.Fatalf("alert repeats %q: %q", bad, text)
+			}
+		}
+		if !r.Waiting || r.Link != "/admin?tab=system" || !strings.HasPrefix(r.Title, "A background task stopped: "+deadAlertKind) ||
+			!strings.Contains(r.Body, "after 1 tries") {
+			t.Fatalf("alert %+v", r)
+		}
+	}
+	for _, id := range admins {
+		if per[id] != n {
+			t.Fatalf("admin %d has %d alerts, want %d", id, per[id], n)
+		}
+	}
+	for _, r := range rows {
+		if resolution != "" && resolution != "open" && r.ResolvedAt == nil {
+			t.Fatalf("alert %d is still open", r.ID)
+		}
+	}
+}
+
+func TestDeadJobAlertFiresOnceAndResolves(t *testing.T) {
+	for _, decision := range []string{"retry", "dismiss"} {
+		t.Run(decision, func(t *testing.T) {
+			app := testApp(t)
+			a1 := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			a2 := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+			newTestUser(t, app, "pat", "password123456", models.RoleMember)
+			admins := []uint{a1.ID, a2.ID}
+			admin := loginAPI(t, app, "admin", "password1234")
+			admin.holdNotices = true
+
+			id := killDeadAlertJob(t, app)
+			wantDeadAlerts(t, app, id, admins, 1, "open")
+			for _, r := range deadAlerts(t, app, id) {
+				if r.ResolvedAt != nil || r.SubjectType != "job" {
+					t.Fatalf("alert %+v", r)
+				}
+			}
+			var n int64
+			if err := app.DB.Model(&models.Job{}).Where("kind = ?", notify.DeliverKind).Count(&n).Error; err != nil || n != 0 {
+				t.Fatalf("an alert queued delivery: %d %v", n, err)
+			}
+			var deliveries int64
+			app.DB.Model(&models.NotificationDelivery{}).Count(&deliveries)
+			if deliveries != 0 {
+				t.Fatalf("alert wrote %d delivery rows", deliveries)
+			}
+
+			if w := admin.do("POST", "/api/v1/admin/jobs/"+strconv.Itoa(int(id))+"/"+decision, nil, true); w.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", decision, w.Code, w.Body.String())
+			}
+			want, action := "retried", audit.JobRetried
+			if decision == "dismiss" {
+				want, action = "dismissed", audit.JobDismissed
+			}
+			wantDeadAlerts(t, app, id, admins, 1, want)
+			for _, r := range deadAlerts(t, app, id) {
+				if r.Resolution != want || r.ResolvedByID == nil || *r.ResolvedByID != a1.ID {
+					t.Fatalf("resolution %+v", r)
+				}
+			}
+			if auditCount(t, app, action) != 1 {
+				t.Fatal("decision should be audited")
+			}
+
+			if decision == "retry" {
+				// It dies again: a new death earns a new alert.
+				runDeadAlertJob(t, app)
+				wantDeadAlerts(t, app, id, admins, 2, "")
+				var open int64
+				app.DB.Model(&models.Notification{}).Where("kind = ? AND subject_id = ? AND resolved_at IS NULL", notify.SystemJobDead, id).Count(&open)
+				if open != int64(len(admins)) {
+					t.Fatalf("open alerts %d", open)
+				}
+			}
+		})
+	}
+}
+
+// alertDeadJob is called after the dead UPDATE committed, so a decision can
+// get in first; it must follow the committed status, never its own memory.
+func TestDeadJobAlertRaces(t *testing.T) {
+	setup := func(t *testing.T) (*App, uint, []uint) {
+		app := testApp(t)
+		a1 := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		a2 := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		app.DB.Model(&models.Job{}).Where("true").Delete(&models.Job{})
+		if _, err := jobs.Enqueue(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
+			t.Fatal(err)
+		}
+		var job models.Job
+		if err := app.DB.Where("kind = ?", deadAlertKind).First(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Model(&job).Updates(map[string]any{"status": models.JobDead, "attempts": 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+		return app, job.ID, []uint{a1.ID, a2.ID}
+	}
+
+	for _, decision := range []string{"retry", "dismiss"} {
+		t.Run("after "+decision+" writes nothing", func(t *testing.T) {
+			app, id, _ := setup(t)
+			admin := loginAPI(t, app, "admin", "password1234")
+			admin.holdNotices = true
+			if w := admin.do("POST", "/api/v1/admin/jobs/"+strconv.Itoa(int(id))+"/"+decision, nil, true); w.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", decision, w.Code, w.Body.String())
+			}
+			app.alertDeadJob(id, deadAlertKind, 1)
+			if rows := deadAlerts(t, app, id); len(rows) != 0 {
+				t.Fatalf("alerts for a handled job: %+v", rows)
+			}
+		})
+	}
+
+	t.Run("twice on one death leaves one alert per admin", func(t *testing.T) {
+		app, id, admins := setup(t)
+		app.alertDeadJob(id, deadAlertKind, 1)
+		app.alertDeadJob(id, deadAlertKind, 1)
+		if rows := deadAlerts(t, app, id); len(rows) != len(admins) {
+			t.Fatalf("alerts %d, want %d", len(rows), len(admins))
+		}
+	})
+
+	// A decision that holds the job row decides what the callback does; the
+	// callback waits for it rather than reading the stale dead status.
+	for _, tc := range []struct {
+		name   string
+		status string
+		alerts int
+	}{{"waits then sees the dismissal", models.JobDismissed, 0}, {"waits then alerts when still dead", models.JobDead, 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, id, _ := setup(t)
+			tx := app.DB.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			defer tx.Rollback()
+			if err := tx.Exec("SELECT 1 FROM jobs WHERE id = ? FOR UPDATE", id).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Model(&models.Job{}).Where("id = ?", id).Update("status", tc.status).Error; err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() { app.alertDeadJob(id, deadAlertKind, 1); close(done) }()
+			// It is blocked on the job row: another session shows as waiting
+			// on a lock, and a session with a short lock_timeout cannot take it.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				var waiting int64
+				app.DB.Raw(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM jobs WHERE id%FOR UPDATE%'`).Scan(&waiting)
+				if waiting == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("alertDeadJob never waited on the job row")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			select {
+			case <-done:
+				t.Fatal("alertDeadJob finished while the job row was locked")
+			default:
+			}
+			probe := app.DB.Begin()
+			if err := probe.Exec("SET LOCAL lock_timeout = '50ms'").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := probe.Exec("SELECT 1 FROM jobs WHERE id = ? FOR UPDATE", id).Error; err == nil {
+				t.Fatal("the job row was not locked")
+			}
+			probe.Rollback()
+			if err := tx.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("alertDeadJob did not finish after the lock was released")
+			}
+			if rows := deadAlerts(t, app, id); len(rows) != tc.alerts {
+				t.Fatalf("alerts %d, want %d", len(rows), tc.alerts)
+			}
+		})
 	}
 }

@@ -118,6 +118,17 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 				}
 			}
 		}
+		// The alert for this death is done: close every admin's copy. The status
+		// UPDATE above holds the job row, so alertDeadJob (which locks it and
+		// rechecks) either ran first and is resolved here, or runs after and
+		// sees a job that is no longer dead.
+		resolution := "retried"
+		if action == audit.JobDismissed {
+			resolution = "dismissed"
+		}
+		if _, err := notify.Resolve(tx, notify.SystemJobDead, job.ID, &me.ID, resolution); err != nil {
+			return err
+		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action, TargetType: "job", TargetID: job.ID,
 			Meta: map[string]any{"kind": job.Kind}, IP: c.ClientIP()})
 	})

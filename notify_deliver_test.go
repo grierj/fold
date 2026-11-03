@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,6 +345,64 @@ func TestNotifyDeliverFailureModes(t *testing.T) {
 			}
 		})
 	}
+	// The whole chain: every attempt fails transiently, the deliver job
+	// dies with the email left deferred, each admin gets one alert, and an
+	// admin's retry with a healed mailer sends it and closes the alerts.
+	t.Run("dead job alerts the admins and a retry heals it", func(t *testing.T) {
+		app := testApp(t)
+		a1 := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		a2 := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+		admin := loginAPI(t, app, "admin", "password1234")
+		admin.holdNotices = true
+		sender := &notifyFailSender{err: dirty}
+		app.Mailer = sender
+		id, seeded := seedNotifyDeliver(t, app, u, 1)
+		run := func() {
+			ran, err := app.newRunner(app.notifyKinds()...).RunOnce(context.Background(), "test")
+			if err != nil || !ran {
+				t.Fatalf("run: ran %v err %v", ran, err)
+			}
+		}
+		run()
+		if d := emailDeliveryOf(t, app, id); d.Status != models.DeliveryDeferred {
+			t.Fatalf("delivery %+v", d)
+		}
+		if job := reloadJob(t, app, seeded.ID); job.Status != models.JobDead {
+			t.Fatalf("job %+v", job)
+		}
+		alerts := deadAlerts(t, app, seeded.ID)
+		if len(alerts) != 2 || alerts[0].UserID != a1.ID || alerts[1].UserID != a2.ID {
+			t.Fatalf("alerts %+v", alerts)
+		}
+		for _, n := range alerts {
+			if n.ResolvedAt != nil || !strings.HasPrefix(n.Title, "A background task stopped: ") ||
+				strings.Contains(n.Body+n.Title, "@") || strings.Contains(n.Body+n.Title, "eyJ") {
+				t.Fatalf("alert %+v", n)
+			}
+		}
+		sender.mu.Lock()
+		sender.err = nil // the provider recovers
+		sender.mu.Unlock()
+		if w := admin.do("POST", "/api/v1/admin/jobs/"+strconv.Itoa(int(seeded.ID))+"/retry", nil, true); w.Code != http.StatusOK {
+			t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+		}
+		run()
+		if d := emailDeliveryOf(t, app, id); d.Status != models.DeliverySent {
+			t.Fatalf("delivery after retry %+v", d)
+		}
+		if job := reloadJob(t, app, seeded.ID); job.Status != models.JobDone {
+			t.Fatalf("job after retry %+v", job)
+		}
+		if sender.n() != 2 {
+			t.Fatalf("sends %d", sender.n())
+		}
+		for _, n := range deadAlerts(t, app, seeded.ID) {
+			if n.ResolvedAt == nil || n.Resolution != "retried" {
+				t.Fatalf("alert not resolved: %+v", n)
+			}
+		}
+	})
 }
 
 func suppressDeliverAddress(t *testing.T, app *App, u *models.User) {
