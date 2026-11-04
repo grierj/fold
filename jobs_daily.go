@@ -73,6 +73,8 @@ func (a *App) dailyKinds() []jobs.Kind {
 			}
 			return err
 		}),
+		// Photo folders a crash or a bad upload left behind (R4-5).
+		daily(kindAvatarSweep, "Finding leftover profile photos", a.sweepAvatars),
 		daily("jobs.cleanup", "Clearing finished background tasks", func(_ context.Context, now time.Time) error {
 			_, err := jobs.PruneDone(a.DB, now.Add(-doneJobsKept))
 			return err

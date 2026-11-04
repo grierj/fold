@@ -63,8 +63,8 @@ successful sign-in clears the email's counter but not the IP's.
 ```
 PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial update)
 POST   /api/v1/me/password  → 200 {}  (auth)
-POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
-DELETE /api/v1/me/avatar    → 200 {}  (auth)
+POST   /api/v1/me/avatar    → 200 {avatarUrl} | 401 | 403 teen_avatar  (auth; multipart, field "avatar")
+DELETE /api/v1/me/avatar    → 200 {} | 401  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public capability; CSRF required)
 POST   /api/v1/me/email/cancel  {token} → 200 {cancelled: true} | 400 link_expired  (public capability; CSRF required)
 GET    /api/v1/me/calendar-feed → 200 {calendarFeed: {hasToken, scope}}  (auth)
@@ -183,8 +183,10 @@ is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is
 Teen accounts cannot upload public avatars (`403 teen_avatar`), and group roster responses never expose a teen avatar URL.
 
 Avatar uploads must be JPEG, PNG, or GIF (content-sniffed, not by
-extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
-deleted. Pictures are upload-only; the server never fetches a URL (Oct 14
+extension), ≤ 5MB. Uploading or removing replaces the stored key at once,
+and a background task removes the old files shortly afterwards. Upload and
+removal answer `401` when the session or account changed while the request
+waited. Upload still answers `403 teen_avatar`. Pictures are upload-only; the server never fetches a URL (Oct 14
 decision). The CSRF token goes in the
 `X-CSRF-Token` header for multipart posts, same as JSON.
 

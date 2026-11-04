@@ -897,7 +897,14 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := tx.Model(u).Updates(map[string]any{
 			"email":           fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
 			"session_version": gorm.Expr("session_version + 1"),
+			"avatar_key":      "",
 		}).Error; err != nil {
+			return err
+		}
+		// The photo files go with the person: the cleanup job keeps nothing
+		// for a deleted account. Queued here, under the row lock already held
+		// (R4-5); the rest of the identity scrub is R4-1.
+		if err := queueAvatarCleanup(tx, u.ID); err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDeleted,
