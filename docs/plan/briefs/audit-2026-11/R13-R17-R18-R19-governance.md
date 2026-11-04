@@ -930,6 +930,22 @@ Target structure (apply as written; lengths are acceptance caps):
 - Status: Approved 2026-11-01. Freeze means **documented
   no-expansion**, not deletion: shipped suggestion behavior, the contact
   lifecycle, room conflicts/booking and the safeguarding audit all stay.
+- *Amended Nov 3, 2026 (owner decision during M7.4 R4-0; the audit-era text
+  below stays as written and is historical where it conflicts).* The
+  `contact_requests` schema freeze is relaxed in exactly one respect: account
+  erasure (DEC-144) may scrub only an erased person's identifying text from the
+  relevant `contact_requests` rows, through one erasure-only exception to the
+  `add_request_identity` trigger, preserving the original request decision,
+  purpose, subjects, actors, provenance, consent and every other protection.
+  Owner's answer, verbatim: "Allow a narrow exception to scrub only the erased
+  person’s identifying text while preserving request decisions and provenance
+  (Recommended)". `PLAN.md` DEC-141 carries the amendment (no new DEC). No new
+  purpose, field or lifecycle state, no broad `UPDATE`/`DELETE` allowance, and
+  the rest of the freeze is unchanged. The trigger and migration shape is
+  implemented later in M7.4 R4-2a after independent review; see
+  `docs/plan/M7.4-ERASURE-INVENTORY.md` T07 and O-7. R19.2's frozen-surface
+  proof ("no `migrations/` or `models/` changes") is about R19.2's own diff
+  and is not affected.
 
 ### Goal
 
@@ -1105,7 +1121,7 @@ Files: `docs/plan/PLAN.md` only.
 
    DRAFT (apply verbatim):
 
-   > **Frozen (DEC-K).** The request machinery above is complete as shipped: three purposes, the two-party decision rule, grants, the audited reveal and the admin history. Do not add a purpose, a contact field, or a lifecycle state, and do not change the `contact_requests`/`contact_grants` schema, until a first church is live and a new DEC lifts the freeze. Every attempt stays audited either way; refusal audit rows commit even when the request does not.
+   > **Frozen (DEC-K).** The request machinery above is complete as shipped: three purposes, the two-party decision rule, grants, the audited reveal and the admin history. Do not add a purpose, a contact field, or a lifecycle state, and do not change the `contact_requests`/`contact_grants` schema, until a first church is live and a new DEC lifts the freeze. *(Amended Nov 3, 2026, in DEC-141 itself: the one narrow erasure-only exception for scrubbing an erased person's identifying text, with request decisions and provenance preserved. Everything else here stands.)* Every attempt stays audited either way; refusal audit rows commit even when the request does not.
 
 **Slice R19.2 — Per-request locks replace the global gate (code, one PR;
 safeguarding-adjacent, review accordingly)**
@@ -1265,6 +1281,58 @@ ask):
    guarantee-by-guarantee argument in the PR body. No DEC-31 semantics
    change is being made; if review finds one is needed, stop — the
    freeze DEC forbids smuggling it in here.
+6. *Inputs from M7.4 (added Nov 3, 2026 with the erasure inventory, R4-0;
+   facts only, no change to this slice's scope).* Account erasure
+   (`docs/plan/M7.4-ERASURE-INVENTORY.md` section 9) leans on today's gate in
+   ways R19.2 must keep true or replace with tests:
+   - `apiAdminDeleteUser` runs inside `contactMutation` (gate first, then the
+     target row `FOR UPDATE`) and decides on a count read before the gate
+     (`api_admin.go:834,852-853`). M7.4's R4-1 (planned, not yet implemented) adds its own sorted user-row
+     acquisition and recount; when the gate goes, those row locks are what keep
+     two admin reductions from emptying the admin set.
+   - Notification writers and the recipient's `users` row (`internal/notify/notify.go`,
+     inventory 9.2.1; read from the source, PostgreSQL's foreign-key lock behavior
+     taken from its documentation and not measured). An **insert** (`notify.go:149`)
+     takes a key-share lock on the recipient through the `notifications.user_id`
+     foreign key (baseline 3603), which checks that the row exists and ignores
+     `deleted_at`. **`merge`** (`:214-246`) locks the open notification and its
+     email delivery row and updates it without changing `user_id`, so it performs
+     no new foreign-key check and takes **no** lock on the user. **`QueueDelivery`**
+     (`:170-206`) inserts `notification_deliveries` rows; each new row checks its
+     foreign keys to `notifications` and to `users` (baseline 3587, 3595), while a
+     conflict-skipped row checks neither, and the `jobs` insert has no foreign
+     key. **Delivery repair** (`notify_deliver.go:67-187`) selects notifications
+     in autocommit and calls `QueueDelivery` in a later transaction, so it holds
+     none of those locks between selection and insert. `noticeDevicesOff`
+     (`push_deliver.go:97-109`) calls `Send` with no transaction. None of these
+     tests `deleted_at` or fixes a recipient lock order, and nothing here protects
+     a soft-deleted recipient automatically. Of the 33 `notify.Send` callers, 16
+     are reached only through gated entries, 8 only through plain transactions
+     (or none), and 9 through both (inventory 9.2.2). M7.4's R4-N (planned, not yet implemented) adds explicit
+     recipient key-share locking before insert and merge and re-validation in
+     repair; it neither adds nor removes a gate. R19.2 must test notification
+     merge and delivery repair, and the real domain callers, under its
+     replacement order.
+   - Invitation acceptance takes the gate, then the group row, then the inviter
+     row (`api_invitations.go:318-360`). M7.4 does not reorder it. R19.2
+     owns redesigning and testing that order once the gate is gone.
+   - The recipient KEY SHARE lock vs `FOR UPDATE` (erasure) or unique-email
+     changes is a conflict R19.2's lock order must name.
+   - Consent writers (inventory 7.2, F-9). Every append to `consents` goes through
+     `setConsent` (`email_unsubscribe.go:133-151`), which locks the owner's `users`
+     row `FOR NO KEY UPDATE` by id without testing `deleted_at`; one-click
+     unsubscribe, the signed settings link, signed-in settings and the push toggles
+     load the user *before* their transaction. M7.4's R4-2d (planned, not yet
+     implemented) re-reads the lifecycle state under that lock inside `setConsent`
+     and tests it with a real preloaded request. R19.2 keeps that re-check when it
+     replaces the gate, since the gate does not protect these routes (they take none).
+   - Household self-service writers (inventory 9.6, F-10). Household update, person
+     add/update/delete and first-use creation take no gate and today only
+     `lockHousehold`. M7.4's R4-3 (planned, not yet implemented) adds a user-row lock
+     (`FOR NO KEY UPDATE`) with a lifecycle, session-version and seat re-check before
+     `lockHousehold`: the user-then-household order every conversion path already uses.
+     R19.2 keeps that order when it replaces the gate; it must not make any household
+     writer take a household before a user.
 
 ### Tests / checks
 
