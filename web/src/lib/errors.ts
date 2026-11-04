@@ -113,6 +113,7 @@ export const ERROR_COPY = {
   last_admin: "Fold needs at least one admin. Make someone else an admin first.",
   not_yourself: "You can't do that to your own account. Ask another admin.",
   needs_successor: "Some groups this person leads have no other leader. Pick a new leader for each one first.",
+  needs_host_successor: "Some church-wide events this person hosts alone still need a new host, or the list changed. Check the host for each event and try again.",
 
   // Groups and members
   group_full: "This group is full.",

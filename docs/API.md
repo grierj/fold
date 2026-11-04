@@ -702,6 +702,7 @@ GET  /api/v1/events
   → {events: [occurrence]}   (church-wide events, and group events the viewer
      can see but whose group they cannot; from yesterday through 90 days)
 POST /api/v1/events                         → 201 {event}   (admin; church-wide)
+     — listed hosts and the creator are checked again under row locks (below)
 GET  /api/v1/events/:id                     → 200 {event, occurrences, canManage, canSetVisibility}
 GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06&cursor=&limit=
   → {events: [occurrence], truncated, hasMore, nextCursor}   (default: next 90 days, max 366-day window; 25 dates per page)
@@ -715,7 +716,8 @@ PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or 
 DELETE /api/v1/events/:id                   → 200 {}        (leader, host, or admin)
 POST /api/v1/events/:id/hosts               → 200 {hosts}   (admin; church-wide only)
      body: {email}
-DELETE /api/v1/events/:id/hosts/:userId     → 200 {hosts}   (admin; refuses the last host)
+     — a person who already hosts it changes nothing and writes no audit row
+DELETE /api/v1/events/:id/hosts/:userId     → 200 {hosts}   (admin; refuses the last live host)
 POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or admin)
      body: {date: "YYYY-MM-DD"} — cancels that stored date
 PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
@@ -1074,6 +1076,7 @@ GET  /api/v1/admin/users/:id/teen-consents  → {consents: [teenConsent], admini
 POST /api/v1/admin/users/:id/teen-consents → 200 {} | 400 | 403 | 409  (admin)
      body: {scope: "account"|"sms"|"photos", status: "granted"|"revoked", evidenceText?}
 GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
+GET  /api/v1/admin/users/:id/sole-host-events → {events: [{id, title, nextStartsAt?}], candidates: [{id, name, admin}]}  (admin; M7.4 owner decision 3)
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {email, name, password? (≥10 chars), role, displayName?, phone?}
      — without a password the account is `invited` and can't sign in; 409 if the email is taken (any case)
@@ -1083,7 +1086,10 @@ PUT  /api/v1/admin/users/:id               → 200 {user}                (admin;
 POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)
      body: {password (≥10 chars)}
 DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete, frees the email)
-     body: {successors: {"<groupId>": <userId>}} — required for every group they lead alone
+     body: {successors: {"<groupId>": <userId>}, hostSuccessors: {"<eventId>": <userId>}}
+     — successors: required for every group they lead alone
+     — hostSuccessors: required for every church-wide event they host alone
+     — 400 {error, groups} | 400 {error, code: "needs_host_successor", events, candidates} | 400 invalid | 401 | 404
 ```
 
 `emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
@@ -1140,6 +1146,77 @@ and the primary contact, the account is deleted (memberships end) or disabled (m
 as plain member). Audit: `membership.role_changed` per group
 with `reason` `account_deleted` or `account_disabled` and
 `departingUserId`, plus `user.deleted` or `user.disabled`.
+
+Sole-host handoff (M7.4 owner decision 3, slice R4-H): deleting the only
+non-deleted host of a church-wide event needs `hostSuccessors`, a new host
+per event, chosen by the admin and never filled in by the server. Disabling
+an account does not need one and keeps its host rows (DEC-38). Deleted
+accounts never count as hosts. This is account deletion's host step only; it
+erases no identity data, which is later M7.4 work, and M7.4 is not complete.
+
+- `GET /admin/users/:id/sole-host-events` lists the live church-wide events
+  the person hosts alone, ordered by title, and who may host them next. It
+  takes no locks and is advisory: the delete checks the same facts again.
+  `nextStartsAt` is the instant of the event's next scheduled date and is
+  absent when it has none (the browser formats it). `candidates` is one list
+  for every event: active adult accounts other than the person (`admin` marks
+  admins; the SPA preselects nobody), with no email. An event the person
+  co-hosts with another live host is not listed. A deleted target is 404.
+- `DELETE /admin/users/:id` reads `hostSuccessors` as an object whose keys
+  are canonical decimal event ids (no leading zeros, no signs or spaces) and
+  whose values are positive user ids, at most 1000 entries. A body that does
+  not parse, or a malformed `hostSuccessors`, is 400 `invalid`. A missing,
+  extra, unknown, group-event, deleted-event, not-hosted, stale or ineligible
+  pick (a replacement must be active, adult, not the person, and acceptable
+  to `CanAssignHost`) is 400 `{error, code: "needs_host_successor", events,
+  candidates}`, with the list as it stands now, in the `sole-host-events`
+  shape. The same answer comes back when the person's hosted events changed
+  while the request waited. A key for an event they still co-host is honored.
+  When groups also lack a leader, the host answer comes first. After the
+  locked rechecks, a deleted target is 404 and an admin who lost their
+  authority meanwhile is 401.
+- On success, in the same transaction as the deletion: each pick becomes a
+  host (`event.host_added`, reason `account_deleted`, `departingUserId`; a
+  pick who already hosts it changes nothing and writes no audit row), host rows
+  that deleted accounts left on those events are removed, and every host row
+  of the person goes (`event.host_removed`, reason `account_deleted`, in event
+  order). The host changes commit or roll back together with the deletion.
+  The deleting admin becomes a host only when explicitly picked.
+- Removing a host (`DELETE /events/:id/hosts/:userId`) ignores deleted
+  accounts when it counts hosts: an event with one live host and a deleted
+  account's leftover row can't lose the live host (400, "a church-wide event
+  needs at least one host"), and a deleted account's row can go while a live
+  host remains. Disabled accounts still count (DEC-38).
+- Adding a host, including adding one who is already a host, removes the
+  deleted-account host rows of that event and audits each (`event.host_removed`
+  with reason `deleted_host_cleanup`, in user order). Two concurrent adds of
+  one person give one row and one `event.host_added`.
+- Creating a church-wide event, adding a host and the delete's replacements
+  recheck the creator or actor and each host under row locks, so an account
+  disabled, demoted or deleted a moment earlier gets no host row: 401 if the
+  acting admin lost their authority, 404 `no_account` if a host is gone, 400
+  `cannot_host` if not active, 400 `teen_host` for a teen. The event deleted
+  while an add waited is 404.
+- Lock order (why this cannot deadlock). The delete is gated. It locks the
+  person's hosted church-wide events `FOR KEY SHARE` in ascending id, then the
+  person `FOR UPDATE`, then reads the acting admin with a plain read; it never
+  takes a new event lock after the person row, and a changed set is answered
+  with the fresh list instead. `KEY SHARE` is what the host insert's foreign
+  key takes anyway. Room decisions, room booking and series extension take an
+  event `FOR UPDATE` while holding no user row, so they cannot wait on the
+  person while holding the event. Add and create stay ungated: they lock users
+  `FOR SHARE` in ascending id first and take an existing event only `FOR KEY
+  SHARE`. Removing a host is gated and keeps its `FOR UPDATE` on the event.
+  Deleting an event locks its events `FOR UPDATE` before deleting any child
+  row. Co-host safety under deletion depends on every path that removes a host
+  being gated.
+- Notices to an event's hosts (`hostIDs`) no longer name deleted accounts.
+- Safety limits. A pick who is disabled in the instant between the check and
+  the commit stays a (disabled) host, because disabling is gated and so
+  serializes with the delete. Rules that mention "adult" mean `CanAssignHost`
+  (a teen never hosts). The remaining `promoteOnDisable` date-row locking
+  order is not reworked here; it belongs to the later deletion work (R4-1,
+  R19.2). Nothing here erases a name, an address or any other identity data.
 ### Rooms (M2.1a)
 
 Rooms are optional (PLAN 9.1). While the `rooms_enabled` setting is off, every room route answers 404, for anyone, and `GET /api/v1/site` reports `roomsEnabled: false`.

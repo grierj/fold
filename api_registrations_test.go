@@ -2692,3 +2692,73 @@ func TestInvitedDeclineRetrySerializesWithErasure(t *testing.T) {
 		}
 	})
 }
+
+// hostIDs lists the hosts whose accounts still exist, so a deleted host's
+// leftover row is neither a recipient nor a reason to build the notice.
+func TestHostIDsOmitsDeletedHosts(t *testing.T) {
+	s := newHostScene(t)
+	ev := churchEvent(t, s.a, "Hosts", s.target.Email)
+	tomb := tombstoneHost(t, s.app, ev.ID, s.adminA.ID, "gone")
+	if got := hostIDs(s.app.DB, ev.ID); !sameIDs(got, s.adminA.ID, s.target.ID) {
+		t.Fatalf("hostIDs = %v, want the two live hosts and not %d", got, tomb.ID)
+	}
+	if err := s.app.DB.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", s.target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := hostIDs(s.app.DB, ev.ID); !sameIDs(got, s.adminA.ID) {
+		t.Fatalf("hostIDs after the target's deletion = %v", got)
+	}
+}
+
+// A seat that opens inside the cutoff on a church-wide event is told to its
+// live hosts only: the deleted host's leftover row gets no notice or delivery.
+func TestChurchWaitlistCutoffTellsOnlyLiveHosts(t *testing.T) {
+	app := testApp(t)
+	adminUser := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := time.Now().UTC().AddDate(0, 0, 30).Truncate(24 * time.Hour).Add(18 * time.Hour)
+	w := admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Capped church", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "capacity": 1, "waitlistEnabled": true,
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	ev := created.Event
+	tomb := tombstoneHost(t, app, ev.ID, adminUser.ID, "gone")
+	newTestUser(t, app, "p1", "password1234", models.RoleMember)
+	p2 := newTestUser(t, app, "p2", "password1234", models.RoleMember)
+	c1 := loginAPI(t, app, "p1", "password1234")
+	c2 := loginAPI(t, app, "p2", "password1234")
+	date := start.Format("2006-01-02")
+	for _, c := range []*apiClient{c1, c2} {
+		if code, body := registerAs(c, ev.ID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("register: %d %s", code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := regStatus(t, app, p2.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("p2 is %q, want waitlisted", got)
+	}
+	soon := time.Now().UTC().Add(90 * time.Minute)
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID).
+		Updates(map[string]any{"starts_at": soon, "ends_at": soon.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if code, body := registerAs(c1, ev.ID, date, "declined", nil); code != http.StatusOK {
+		t.Fatalf("decline: %d %s", code, body)
+	}
+	if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", adminUser.ID, notify.WaitlistCutoff); n != 1 {
+		t.Fatalf("the live host has %d cutoff notices, want 1", n)
+	}
+	if n, d := rowsFor(t, app.DB, "notifications", tomb.ID), rowsFor(t, app.DB, "notification_deliveries", tomb.ID); n != 0 || d != 0 {
+		t.Fatalf("the deleted host has %d notices and %d delivery rows", n, d)
+	}
+}

@@ -282,6 +282,27 @@ func CanAssignHost(p, target *Person) bool {
 	return p != nil && p.Admin && target != nil && !target.Teen
 }
 
+// HostSeat is one host row of a church-wide event, as the rule below needs it.
+type HostSeat struct {
+	UserID  uint
+	Deleted bool
+}
+
+// EventKeepsHost reports whether a church-wide event still has a host once
+// leaving is gone: some seat that is not leaving and whose account is not
+// deleted. A disabled account still counts, because disabling keeps its host
+// rows (DEC-38); a deleted account never does. Host removal and account
+// deletion both ask this (M7.4 owner decision 3: "Require the admin to choose
+// a replacement before deleting the account").
+func EventKeepsHost(hosts []HostSeat, leaving uint) bool {
+	for _, h := range hosts {
+		if h.UserID != leaving && !h.Deleted {
+			return true
+		}
+	}
+	return false
+}
+
 // CanSeeAttendeeNames: guests never see names (section 6). Leaders, admins,
 // and a church-wide event's hosts do. When the group is invite-only and the
 // event isn't, people outside the group see a count only; members of the

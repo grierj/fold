@@ -8,6 +8,10 @@ async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
   for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      window.scrollTo(0, 0);
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
     const result = await page.evaluate(measure);
     expect(result.overflow, `${name}@${width} overflow`).toBeLessThanOrEqual(1);
     expect(result.cutOff, `${name}@${width} cut off`).toEqual([]);
@@ -35,6 +39,10 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
     const panel = page.locator('[aria-label="Consent for Consent Casey"]');
     await (await soon(panel.getByRole("button", { name: "Grant consent" }))).click();
     await expect(panel.getByLabel("Consent evidence")).toBeFocused();
+    const fieldBox = await panel.getByLabel("Consent evidence").boundingBox();
+    const headerBox = await page.locator("body header").boundingBox();
+    if (!fieldBox || !headerBox) throw new Error("Focused evidence field or header is not visible");
+    expect(Math.round(fieldBox.y), "WCAG 2.4.11: focused evidence is below the sticky header").toBeGreaterThanOrEqual(Math.round(headerBox.y + headerBox.height));
     await shoot(page, "consent-evidence-required");
     await panel.getByRole("radio", { name: "SMS", exact: true }).click();
     await panel.getByLabel("Consent evidence").fill("Parent signed SMS form at church office");

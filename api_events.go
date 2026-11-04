@@ -1185,6 +1185,16 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
+	// Lock the events before any child row goes: a concurrent host add
+	// (FOR KEY SHARE on the event) either lands first and is deleted below, or
+	// waits and finds the event gone. Find, not First, and Unscoped, because
+	// deleteGroup passes ids that include already soft-deleted events whose
+	// leftovers it still cleans, and absent ids must not raise an error.
+	var locked []models.Event
+	if err := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+		Where("id IN ?", eventIDs).Order("id").Find(&locked).Error; err != nil {
+		return err
+	}
 	var occIDs []uint
 	if err := tx.Model(&models.EventOccurrence{}).Where("event_id IN ?", eventIDs).Pluck("id", &occIDs).Error; err != nil {
 		return err

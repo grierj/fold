@@ -358,3 +358,35 @@ func TestRoomBookingSeriesEdits(t *testing.T) {
 		t.Fatalf("%d bookings left on dropped dates", n)
 	}
 }
+
+// A church-wide event that loses its room tells its live hosts; the deleted
+// host's leftover row gets no notice or delivery.
+func TestRoomLostNoticeGoesToLiveChurchHosts(t *testing.T) {
+	f := newBookingFixture(t)
+	var adminUser models.User
+	if err := f.app.DB.Where("email = ?", testEmail("admin")).First(&adminUser).Error; err != nil {
+		t.Fatal(err)
+	}
+	x := churchEventAt(t, f.admin, "Church X", f.startOn)
+	y := churchEventAt(t, f.admin, "Church Y", f.startOn.Add(4*time.Hour))
+	tomb := tombstoneHost(t, f.app, x.ID, adminUser.ID, "gone")
+	for _, ev := range []eventJSON{x, y} {
+		path := "/api/v1/events/" + itoa(ev.ID) + "/dates/" + feedDate(f.startOn) + "/room"
+		if ev.ID == y.ID {
+			path = "/api/v1/events/" + itoa(ev.ID) + "/dates/" + feedDate(f.startOn.Add(4*time.Hour)) + "/room"
+		}
+		if w := f.admin.do("PUT", path, map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+			t.Fatalf("book %s: %d %s", ev.Title, w.Code, w.Body.String())
+		}
+	}
+	clash := f.startOn.Add(4 * time.Hour).Format("2006-01-02T15:04")
+	if w := f.admin.do("PUT", "/api/v1/events/"+itoa(x.ID)+"/occurrences/"+feedDate(f.startOn), map[string]any{"startsLocal": clash}, true); w.Code != http.StatusOK {
+		t.Fatalf("move X onto Y: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", adminUser.ID, notify.RoomLost); n != 1 {
+		t.Fatalf("the live host has %d room-lost notices, want 1", n)
+	}
+	if n, d := rowsFor(t, f.app.DB, "notifications", tomb.ID), rowsFor(t, f.app.DB, "notification_deliveries", tomb.ID); n != 0 || d != 0 {
+		t.Fatalf("the deleted host has %d notices and %d delivery rows", n, d)
+	}
+}

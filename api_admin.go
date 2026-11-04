@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -856,21 +857,41 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// Successors maps group id to the new leader, for every group this
 		// person leads alone (DEC-36; see GET /admin/users/:id/sole-leader-groups).
 		Successors map[string]uint `json:"successors"`
+		// HostSuccessors maps church-wide event id to the new host, for every
+		// event this person hosts alone (M7.4 owner decision 3; see GET
+		// /admin/users/:id/sole-host-events).
+		HostSuccessors map[string]uint `json:"hostSuccessors"`
 	}
-	_ = c.ShouldBindJSON(&body) // optional when they lead no group alone
+	// An empty body is fine (old clients, and people who lead and host
+	// nothing alone); a body that does not parse is not.
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		jsonError(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	hostPicks, ok := parseHostSuccessors(body.HostSuccessors)
+	if !ok {
+		jsonError(c, http.StatusBadRequest, "invalid host successors")
+		return
+	}
 	// Soft delete (DeletedAt), after handing off every group they lead alone
-	// and ending their memberships. The email is replaced so the address is
-	// free for a new account, and the session version is bumped so open
-	// sessions end.
+	// and every church-wide event they host alone, and ending their
+	// memberships. The email is replaced so the address is free for a new
+	// account, and the session version is bumped so open sessions end.
 	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
+		// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
+		// admin (plain read) and the facts again; see api_host_handoff.go.
+		picks, lockedHosted, err := deletionHostPlan(tx, u, me, hostPicks)
+		if err != nil {
 			return err
 		}
 		if err := revokeAccountTokens(tx, u.ID); err != nil {
 			return err
 		}
-		_, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
+		_, err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 		if err != nil {
+			return err
+		}
+		if err := handOffHosting(tx, me.ID, u.ID, picks, lockedHosted, c.ClientIP()); err != nil {
 			return err
 		}
 		if err := tx.Model(u).Updates(map[string]any{
@@ -895,7 +916,15 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		_, err = a.promoteOnDisable(tx, u.ID)
 		return err
 	})
-	if needSuccessors(c, err) {
+	if needSuccessors(c, err) || needHostSuccessors(c, err) {
+		return
+	}
+	if errors.Is(err, errAdminTargetGone) {
+		jsonError(c, http.StatusNotFound, "user not found")
+		return
+	}
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if err != nil {

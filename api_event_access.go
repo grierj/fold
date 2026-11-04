@@ -282,16 +282,16 @@ func (a *App) hostCandidate(actor *models.User, email string) (*models.User, int
 		return nil, http.StatusBadRequest, "email is required"
 	}
 	var u models.User
-	if err := a.DB.Where("email = ?", email).First(&u).Error; err != nil {
-		return nil, http.StatusNotFound, "no account with that email"
+	var found *models.User
+	if err := a.DB.Where("email = ?", email).First(&u).Error; err == nil {
+		found = &u
 	}
-	if u.Status != models.UserActive {
-		return nil, http.StatusBadRequest, "that account can't host an event"
+	// The unlocked preflight for a fast answer; the transaction rechecks the
+	// same rule under the user's row lock (lockHostUsers).
+	if r := hostEligibility(actor, found); r != nil {
+		return nil, r.status, r.msg
 	}
-	if !policy.CanAssignHost(asPerson(actor), asPerson(&u)) {
-		return nil, http.StatusBadRequest, "teens can't host an event"
-	}
-	return &u, 0, ""
+	return found, 0, ""
 }
 
 func (a *App) apiCreateChurchEvent(c *gin.Context) {
@@ -359,6 +359,22 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// The creator and every listed host are locked FOR SHARE, in ascending
+		// id, before anything is written, and the rules are checked again on
+		// the locked rows: a disabling, demotion or deletion that committed
+		// since the preflight cannot be followed by a host row for it.
+		locked, err := lockHostUsers(tx, hostIDs)
+		if err != nil {
+			return err
+		}
+		if err := lockedHostActor(locked, creator); err != nil {
+			return err
+		}
+		for _, id := range hostIDs[1:] {
+			if r := hostEligibility(locked[creator.ID], locked[id]); r != nil {
+				return r
+			}
+		}
 		if err := createEvent(tx, &ev); err != nil {
 			return err
 		}
@@ -375,10 +391,10 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 			return err
 		}
 		// Church-wide events are created by admins, whose bookings never wait.
-		_, err := a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
+		_, err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
 		return err
 	})
-	if createRoomFailed(c, err) {
+	if hostWriteFailed(c, err) || createRoomFailed(c, err) {
 		return
 	}
 	if err != nil {
@@ -555,21 +571,70 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 	}
 	me := apiUser(c)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		var have int64
-		if err := tx.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, target.ID).Count(&have).Error; err != nil || have > 0 {
-			return err // already a host: nothing changes, so nothing is audited
-		}
-		if err := tx.Create(&models.EventHost{EventID: ev.ID, UserID: target.ID, AddedBy: me.ID}).Error; err != nil {
+		locked, err := lockHostUsers(tx, []uint{me.ID, target.ID})
+		if err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostAdded, TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": target.ID}, IP: c.ClientIP()})
+		if err := lockedHostActor(locked, me); err != nil {
+			return err
+		}
+		if r := hostEligibility(locked[me.ID], locked[target.ID]); r != nil {
+			return r
+		}
+		// FOR KEY SHARE is what the foreign key insert takes anyway, taken
+		// here so a concurrent event deletion (FOR UPDATE) is found first.
+		var event models.Event
+		if err := tx.Clauses(clause.Locking{Strength: "KEY SHARE"}).Where("id = ? AND group_id IS NULL", ev.ID).First(&event).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errEventGone
+			}
+			return err
+		}
+		// Two concurrent adds of one person give one row and one audit.
+		res := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "event_id"}, {Name: "user_id"}}, DoNothing: true}).
+			Create(&models.EventHost{EventID: ev.ID, UserID: target.ID, AddedBy: me.ID})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 1 {
+			if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostAdded, TargetType: "event", TargetID: ev.ID,
+				Meta: map[string]any{"userId": target.ID}, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+		}
+		// The event now has a live host, so any tombstone row can go. Doing
+		// it here also repairs a legacy {live, tombstone} event when the live
+		// host is added again.
+		return removeDeletedHostRows(tx, me.ID, []uint{ev.ID}, c.ClientIP())
 	})
+	if hostWriteFailed(c, err) {
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not add host")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"hosts": a.eventHosts(ev.ID)})
+}
+
+// errEventGone: the church-wide event was deleted while the request waited.
+var errEventGone = errors.New("event not found")
+
+// hostWriteFailed answers the refusals a locked recheck of a host write can
+// return, after the transaction. It is false for any other error.
+func hostWriteFailed(c *gin.Context, err error) bool {
+	var refusal *hostRefusal
+	switch {
+	case errors.Is(err, errSecuritySession):
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	case errors.As(err, &refusal):
+		jsonError(c, refusal.status, refusal.msg)
+	case errors.Is(err, errEventGone):
+		jsonError(c, http.StatusNotFound, "event not found")
+	default:
+		return false
+	}
+	return true
 }
 
 func (a *App) apiRemoveEventHost(c *gin.Context) {
@@ -578,17 +643,36 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		return
 	}
 	uid, _ := strconv.Atoi(c.Param("userId"))
+	me := apiUser(c)
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errEventGone
+			}
 			return err
 		}
-		var rows []models.EventHost
-		if err := tx.Where("event_id = ?", ev.ID).Find(&rows).Error; err != nil {
+		// A plain read under the gate: the actor's own ungated registration
+		// change could hold their row while waiting on a row this transaction
+		// already locked, so a share lock here could cycle with it.
+		var actor models.User
+		if err := tx.First(&actor, me.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errSecuritySession
+			}
+			return err
+		}
+		if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion {
+			return errSecuritySession
+		}
+		var seats []policy.HostSeat
+		if err := tx.Raw(`SELECT eh.user_id, (u.deleted_at IS NOT NULL) AS deleted
+			FROM event_hosts eh JOIN users u ON u.id = eh.user_id
+			WHERE eh.event_id = ? ORDER BY eh.user_id`, ev.ID).Scan(&seats).Error; err != nil {
 			return err
 		}
 		found := false
-		for _, h := range rows {
+		for _, h := range seats {
 			if h.UserID == uint(uid) {
 				found = true
 			}
@@ -597,18 +681,20 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 			jsonError(c, http.StatusNotFound, "that person isn't a host")
 			return errHostGone
 		}
-		if len(rows) <= 1 {
+		if !policy.EventKeepsHost(seats, uint(uid)) {
 			jsonError(c, http.StatusBadRequest, "a church-wide event needs at least one host")
 			return errLastHost
 		}
 		if err := tx.Where("event_id = ? AND user_id = ?", ev.ID, uid).Delete(&models.EventHost{}).Error; err != nil {
 			return err
 		}
-		me := apiUser(c)
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostRemoved, TargetType: "event", TargetID: ev.ID,
 			Meta: map[string]any{"userId": uid}, IP: c.ClientIP()})
 	})
 	if err == errHostGone || err == errLastHost {
+		return
+	}
+	if hostWriteFailed(c, err) {
 		return
 	}
 	if err != nil {
