@@ -1291,33 +1291,55 @@ ask):
      acquisition and recount; when the gate goes, those row locks are what keep
      two admin reductions from emptying the admin set.
    - Notification writers and the recipient's `users` row (`internal/notify/notify.go`,
-     inventory 9.2.1; read from the source, PostgreSQL's foreign-key lock behavior
-     taken from its documentation and not measured). An **insert** (`notify.go:149`)
-     takes a key-share lock on the recipient through the `notifications.user_id`
-     foreign key (baseline 3603), which checks that the row exists and ignores
-     `deleted_at`. **`merge`** (`:214-246`) locks the open notification and its
-     email delivery row and updates it without changing `user_id`, so it performs
-     no new foreign-key check and takes **no** lock on the user. **`QueueDelivery`**
-     (`:170-206`) inserts `notification_deliveries` rows; each new row checks its
-     foreign keys to `notifications` and to `users` (baseline 3587, 3595), while a
-     conflict-skipped row checks neither, and the `jobs` insert has no foreign
-     key. **Delivery repair** (`notify_deliver.go:67-187`) selects notifications
-     in autocommit and calls `QueueDelivery` in a later transaction, so it holds
-     none of those locks between selection and insert. `noticeDevicesOff`
-     (`push_deliver.go:97-109`) calls `Send` with no transaction. None of these
-     tests `deleted_at` or fixes a recipient lock order, and nothing here protects
-     a soft-deleted recipient automatically. Of the 33 `notify.Send` callers, 16
-     are reached only through gated entries, 8 only through plain transactions
-     (or none), and 9 through both (inventory 9.2.2). M7.4's R4-N (planned, not yet implemented) adds explicit
-     recipient key-share locking before insert and merge and re-validation in
-     repair; it neither adds nor removes a gate. R19.2 must test notification
-     merge and delivery repair, and the real domain callers, under its
-     replacement order.
+     inventory 9.2.1). *As of M7.4 R4-N (implemented on `autoflow/m74-r4-n-20261103`,
+     not yet re-reviewed or merged; the lock behavior is from reading the source and
+     PostgreSQL's documentation, with tests written but not yet run at the time of
+     writing).* `Send` now de-duplicates its recipients, drops zero and actor IDs,
+     and locks the live ones with one bulk statement per 500
+     (`SELECT id FROM users WHERE id IN (...) AND deleted_at IS NULL ORDER BY id
+     FOR KEY SHARE`, ascending id across batches) before the **merge** or the
+     **insert**, in the caller's transaction, and keeps them to commit. A deleted or missing recipient is skipped; a disabled one is not.
+     The delivery-repair paths (`reconcileNotifications` pass 1 and pass 2) now
+     repair in a transaction that calls `notify.Protect` first: lock the live owners
+     in ascending user id, then lock and reload the notices that still exist
+     (ascending notice id) and keep only those whose owner is unchanged; the
+     delivery rows and jobs are written only for that set (`notify.QueueDelivery` for
+     pass 2, one acquisition for both groups). `noticeDevicesOff` now runs its check,
+     `Send` and intent in one transaction. A caller that sends one notice per person
+     in a loop takes the bulk lock once with `notify.WithRecipients` and passes the
+     opaque `Scope` it is handed as `Msg.Scope`; `Send` refuses (`ErrBadScope`) a scope
+     that is forged, closed, from another transaction or short of a recipient
+     (`notifyOccurrences`, `notifyEventChanged` and `notifyWaitlistCutoff` do so). **M7.4 adds and removes no gate, and adds no gate
+     acquisition**; `notify` takes only row locks.
+     **Handed to R19.2, not done and not proven by M7.4's helper tests:** when the
+     gate goes, `Send`'s recipient `FOR KEY SHARE`, `Protect`'s user-then-notice
+     order and the merge order (user, notification, delivery row) must be re-tested
+     with the real domain callers (inventory 9.2.2: 17 sites have a plain entry and 25 a
+     gated one) under R19.2's replacement order, because the key-share lock conflicts
+     with `FOR UPDATE` on a user and with an `email` change (`uni_users_email` is a
+     key). M7.4's tests (inventory 9.2.5) run one real plain entry for each of the 17
+     sites against a plain erasure in both orders, plus the gated leadership notices and
+     the invitee-decline retry against the real admin delete, plus test-owned
+     transactions for the repair passes and the event-change and cancellation fan-outs.
+     They are today's acceptance for those entries and are **not** the future gate-removal
+     proof: the other entries of each site, the later locks inside the ~45 entries and the
+     real erasure under R19.2's order were not tested. One hazard found on the way (a person
+     who is both an admin with an open room-request task and a leader of the event, in
+     `apiConfirmRoomRequest`/`apiRejectRoomRequest`, inventory 9.2.5) was fixed in R4-N by
+     sending to the leaders before resolving the admins' tasks (`settleRoomDecision`); the
+     other `Resolve`-then-`Send` handlers were not re-traced for it and the decision's
+     earlier domain locks versus an erasure's later ones remain R4-1 and R19.2 questions.
+     R19.2 must also keep every `gorm.DB` opened with `txguard.Plugin`: the recipient scope
+     relies on it to notice a savepoint rollback that releases its locks.
    - Invitation acceptance takes the gate, then the group row, then the inviter
-     row (`api_invitations.go:318-360`). M7.4 does not reorder it. R19.2
-     owns redesigning and testing that order once the gate is gone.
+     row (`api_invitations.go:318-360`). M7.4 does not reorder it and R4-N left it
+     untouched. R19.2 owns redesigning and testing that order once the gate is gone,
+     including the recipient locks `changeRole`'s notices then take (admins and
+     group leaders, key share) while the inviter row is held `FOR UPDATE`.
    - The recipient KEY SHARE lock vs `FOR UPDATE` (erasure) or unique-email
-     changes is a conflict R19.2's lock order must name.
+     changes is a conflict R19.2's lock order must name. R4-N's `notify` tests show
+     the two orders for the email change and the erasure wait for each other without
+     a deadlock in isolation.
    - Consent writers (inventory 7.2, F-9). Every append to `consents` goes through
      `setConsent` (`email_unsubscribe.go:133-151`), which locks the owner's `users`
      row `FOR NO KEY UPDATE` by id without testing `deleted_at`; one-click

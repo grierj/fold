@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"fold/internal/push"
+	"fold/internal/txguard"
 	"fold/migrations"
 
 	"gorm.io/driver/postgres"
@@ -186,6 +187,9 @@ func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
 	}
 	// No migrations here: `fold migrate` and `fold serve` do that.
 	db, err := gorm.Open(postgres.Open(url), &gorm.Config{Logger: logger.Discard})
+	if err == nil {
+		err = db.Use(txguard.Plugin{})
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "fold:", err)
 		return 1

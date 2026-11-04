@@ -1938,3 +1938,143 @@ func TestEventStoresLeapUntilAndPaddedHour(t *testing.T) {
 		t.Fatalf("a cleared end date is stored as %v, want NULL", cleared.RRuleUntil)
 	}
 }
+
+// N-18 (inventory 9.2.2, a plain entry): a leader creating an event wider than
+// its group tells the other leaders and the admins, from a transaction that
+// takes no lock before createEvent. An admin erased meanwhile is left out in
+// either order, and the other admin is still told.
+func TestVisibilityOverrideAtCreationSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402007, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		lead := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+		g := newTestGroup(t, app, lead, "Youth", models.GroupActive)
+		if err := app.DB.Model(g).Update("visibility", models.VisibilityPrivate).Error; err != nil {
+			t.Fatal(err)
+		}
+		leader := loginAPI(t, app, "lead", "password1234")
+		leader.holdNotices = true
+		start := feedStart(5)
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				return doExpect(leader, "POST", "/api/v1/groups/"+itoa(g.ID)+"/events", map[string]any{
+					"title": "Lock-in", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+					"visibility": models.VisibilityPublic, "visibilityReason": "invite the neighbors",
+				}, http.StatusCreated)
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.VisibilityOverride); n != 1 {
+					t.Fatalf("the other admin has %d visibility notices, want 1", n)
+				}
+			},
+		}
+	})
+}
+
+// registrantRace is the fixture for the gated event routes: a public group with
+// a single-date event thirty days out and three people signed up through the
+// real registration route: a victim (the person the erasure removes), a kept
+// registrant who is not a group member, and a group member. Two admin clients
+// (the one who edits and the one who deletes) leave notice jobs queued so they
+// may run on an operation's goroutine.
+type registrantRace struct {
+	app                  *App
+	admin, eraser        *apiClient
+	eventID              uint
+	date                 string
+	victim, kept, member *models.User
+}
+
+func newRegistrantRace(t *testing.T) registrantRace {
+	t.Helper()
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Registrant race")
+	newTestUser(t, app, "eraser", "password1234", models.RoleAdmin)
+	victim := newTestUser(t, app, "victim", "password1234", models.RoleMember)
+	kept := newTestUser(t, app, "kept", "password1234", models.RoleMember)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	var g models.Group
+	if err := app.DB.Where("id = ?", gid).First(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	addMember(t, app, member, &g, models.MembershipMember)
+	eventID, date := seedCappedEvent(t, app, admin, gid, nil, false)
+	for _, u := range []*models.User{victim, kept, member} {
+		if code, body := registerAs(loginAPI(t, app, u.Name, "password1234"), eventID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("%s going: %d %s", u.Name, code, body)
+		}
+	}
+	admin.holdNotices = true
+	return registrantRace{app: app, admin: admin, eraser: loginHeld(t, app, "eraser", "password1234"),
+		eventID: eventID, date: date, victim: victim, kept: kept, member: member}
+}
+
+// N-28 (inventory 9.2.2, a gated entry): a change to where or when a date is
+// held tells everyone going or waitlisted on it. The real operation is
+// PUT /events/:id/occurrences/:date {location} -> apiUpdateOccurrence ->
+// contactMutation (gate first, with the event id, so occurrence access is
+// reconciled first) -> the event row and occurrence row FOR UPDATE -> the date
+// is saved -> notifyEventChanged: the registrants of that date are read (listed
+// users only), then notify.WithRecipients locks them all once and each Send
+// reuses the scope. The edit answers 200 in both orders.
+//
+// Sender first: the edit stops after it wrote the victim's notice; the real
+// delete waits on the gate and removes it. Deletion first: the edit waits on the
+// gate, then reads its registrants after the erasure, so the victim is not in
+// the list. The kept registrant and the member are told in both. Not covered:
+// the series edit (apiUpdateEvent, which reaches notifyEventChanged for the
+// time and place variants at api_events.go:1063 and :1095), the "time" and
+// "time and place" variants, and invited holders (sendOccurrenceNotice, which
+// has its own plain-entry test under N-32).
+func TestEventChangedNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	runGatedErasureBarriers(t, 7402121, 7402122, func(t *testing.T) gatedErasureScene {
+		f := newRegistrantRace(t)
+		return gatedErasureScene{app: f.app, victim: f.victim, sends: []string{notify.EventChanged},
+			run: func() error {
+				return doExpect(f.admin, "PUT", "/api/v1/events/"+itoa(f.eventID)+"/occurrences/"+f.date, map[string]any{"location": "The new hall"}, http.StatusOK)
+			},
+			erase: eraseVia(f.eraser, f.victim),
+			told: func(t *testing.T) {
+				var o models.EventOccurrence
+				if err := f.app.DB.Where("event_id = ?", f.eventID).First(&o).Error; err != nil || o.LocationOverride == nil || *o.LocationOverride != "The new hall" {
+					t.Fatalf("the date was not moved to the new place: %+v %v", o, err)
+				}
+				wantNotices(t, f.app, notify.EventChanged, map[*models.User]int64{f.kept: 1, f.member: 1})
+			},
+		}
+	})
+}
+
+// N-16 (inventory 9.2.2, a gated entry): cancelling a date tells everyone going
+// or waitlisted on it. The real operation is POST /events/:id/cancel {date} ->
+// apiCancelOccurrence -> contactMutation (gate first, with the event id) -> one
+// UPDATE marks the date cancelled (its row lock; no earlier row lock) -> notifyOccurrencesCancelled -> notifyOccurrences: the
+// registrants are read (listed users only), one WithRecipients lock covers all
+// of them, and each Send reuses the scope; the room is freed after. 200 in
+// both orders.
+//
+// Sender first: the cancellation stops after it wrote the victim's notice; the
+// delete waits on the gate. Deletion first: the cancellation waits, then does
+// not see the victim among the registrants. The kept registrant and the member
+// are told in both. Not covered: the series-edit cancel in apiUpdateEvent
+// (api_events.go:1016), the restore variant (notifyOccurrencesRestored, same
+// fan-out with another kind), and a date with invited holders.
+func TestOccurrenceCancelledNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	runGatedErasureBarriers(t, 7402123, 7402124, func(t *testing.T) gatedErasureScene {
+		f := newRegistrantRace(t)
+		return gatedErasureScene{app: f.app, victim: f.victim, sends: []string{notify.OccurrenceCancelled},
+			run: func() error {
+				return doExpect(f.admin, "POST", "/api/v1/events/"+itoa(f.eventID)+"/cancel", map[string]any{"date": f.date}, http.StatusOK)
+			},
+			erase: eraseVia(f.eraser, f.victim),
+			told: func(t *testing.T) {
+				var o models.EventOccurrence
+				if err := f.app.DB.Where("event_id = ?", f.eventID).First(&o).Error; err != nil || o.Status != models.OccurrenceCancelled {
+					t.Fatalf("the date was not cancelled: %+v %v", o, err)
+				}
+				wantNotices(t, f.app, notify.OccurrenceCancelled, map[*models.User]int64{f.kept: 1, f.member: 1})
+			},
+		}
+	})
+}

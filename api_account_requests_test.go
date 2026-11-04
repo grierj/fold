@@ -857,3 +857,30 @@ func TestDuplicateAccountRequestSendsNothing(t *testing.T) {
 		})
 	}
 }
+
+// N-10 (inventory 9.2.2, a plain entry): a stored account request asks every
+// admin to decide it, from a transaction that holds no lock before the send. An
+// admin erased while the request is stored is left out in either order, and the
+// other admin is still asked.
+func TestAccountRequestNoticeSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402004, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "pw", models.RoleAdmin)
+		anon := anonClient(t, app, "10.1.9.1")
+		anon.holdNotices = true
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				return doExpect(anon, "POST", "/api/v1/account-requests", signupBody("Pat", "pat@example.com", "adult", ""), http.StatusOK)
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.AccountRequested); n != 1 {
+					t.Fatalf("the other admin has %d account-request tasks, want 1", n)
+				}
+				if requestCount(t, app, "pat@example.com") != 1 {
+					t.Fatal("the request was not stored")
+				}
+			},
+		}
+	})
+}

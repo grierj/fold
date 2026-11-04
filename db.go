@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"fold/internal/txguard"
 	"fold/migrations"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -24,6 +25,10 @@ func openDatabase(ctx context.Context, url string) (*gorm.DB, error) {
 		Logger: databaseLogger(log.New(os.Stdout, "\r\n", log.LstdFlags)),
 	})
 	if err != nil {
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	// notify.WithRecipients needs to see a savepoint rollback release its locks.
+	if err := db.Use(txguard.Plugin{}); err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	sqlDB, err := db.DB()

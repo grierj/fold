@@ -1,20 +1,27 @@
 package notify
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fold/internal/testdb"
 	"fold/models"
 
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
@@ -767,5 +774,1360 @@ func TestSendBatchesDeliveryIntent(t *testing.T) {
 		if count != 50 {
 			t.Fatalf("%T rows: %d", table, count)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Erasure barriers (M7.4, R4-N). Every wait is a backend observed blocking on a
+// named other backend in pg_blocking_pids, never a sleep. The "erasure" is the
+// test-owned statement sequence that matters to notices in apiAdminDeleteUser:
+// the user row FOR UPDATE, the notification delete, the soft delete. No contact
+// gate is taken anywhere in this package: these are the plain-transaction cases.
+// ---------------------------------------------------------------------------
+
+// txWithPID begins a transaction and reports its backend, so a test can show
+// which session waits on which. It rolls back at cleanup if the test did not.
+func txWithPID(t *testing.T, db *gorm.DB) (*gorm.DB, int) {
+	t.Helper()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var pid int
+	if err := tx.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+		t.Fatal(err)
+	}
+	return tx, pid
+}
+
+// waitBlocked returns once the waiter backend is blocked by the blocker backend.
+func waitBlocked(t *testing.T, db *gorm.DB, waiter, blocker int) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var blocked bool
+		if err := db.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, waiter).Scan(&blocked).Error; err != nil {
+			t.Fatal(err)
+		}
+		if blocked {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("session %d never waited on session %d", waiter, blocker)
+		}
+	}
+}
+
+// async runs fn on its own goroutine; await collects its error.
+func async(fn func() error) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	return done
+}
+
+func await(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("a database participant never finished")
+		return nil
+	}
+}
+
+func commit(t *testing.T, tx *gorm.DB) {
+	t.Helper()
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// eraseUser is what an erasure does to a person's notices: it takes the user
+// row FOR UPDATE first, deletes their notifications (which cascades their
+// deliveries), then soft-deletes the user.
+func eraseUser(tx *gorm.DB, uid uint) error {
+	if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", uid).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec("DELETE FROM notifications WHERE user_id = ?", uid).Error; err != nil {
+		return err
+	}
+	return tx.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", uid).Error
+}
+
+func countWhere(t *testing.T, db *gorm.DB, table, where string, args ...any) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Table(table).Where(where, args...).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func intentCounts(t *testing.T, db *gorm.DB) (deliveries, queuedJobs int64) {
+	t.Helper()
+	return countWhere(t, db, "notification_deliveries", "1 = 1"), countWhere(t, db, "jobs", "1 = 1")
+}
+
+// A recipient who is living or merely disabled gets the notice; a deleted,
+// missing, zero, duplicate or acting recipient does not, and the ids come back
+// in the order the recipients were named.
+func TestSendRecipientLiveness(t *testing.T) {
+	db := testdb.Shared(t)
+	living, disabled, deleted := user(t, db, "living"), user(t, db, "disabled"), user(t, db, "deleted")
+	actor, dup := user(t, db, "actor"), user(t, db, "dup")
+	if err := db.Model(&models.User{}).Where("id = ?", disabled).Update("status", models.UserDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&models.User{}, deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	missing := uint(987654)
+	var ids []uint
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = Send(tx, Msg{Kind: GroupPending, To: []uint{living, dup, dup, 0, deleted, disabled, actor, living, missing},
+			Actor: &actor, Link: "/admin", Vars: Vars{Actor: "Pat"}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got []models.Notification
+	if err := db.Where("id IN ?", ids).Find(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := map[uint]uint{}
+	for _, n := range got {
+		owner[n.ID] = n.UserID
+	}
+	var order []uint
+	for _, id := range ids {
+		order = append(order, owner[id])
+	}
+	if fmt.Sprint(order) != fmt.Sprint([]uint{living, dup, disabled}) {
+		t.Fatalf("notified %v, want living, dup, disabled in that order (%v)", order, []uint{living, dup, disabled})
+	}
+	if n := countWhere(t, db, "notifications", "user_id IN ?", []uint{deleted, actor, missing}); n != 0 {
+		t.Fatalf("%d notices for a deleted, acting or missing recipient", n)
+	}
+	if n := countWhere(t, db, "notifications", "1 = 1"); n != 3 {
+		t.Fatalf("%d notices, want 3", n)
+	}
+	if deliveries, queued := intentCounts(t, db); deliveries != 3 || queued != 3 {
+		t.Fatalf("delivery intent: %d deliveries, %d jobs, want 3 and 3", deliveries, queued)
+	}
+}
+
+// The lock is one bulk statement for the recipients, one more per 500, and
+// none per Send when a fan-out shares a Scope. Sorting happens before
+// batching, so the statements together still lock in ascending id order.
+func TestRecipientLocksAreBulk(t *testing.T) {
+	db := testdb.Shared(t)
+	users := make([]models.User, recipientLockBatch+1)
+	for i := range users {
+		users[i] = models.User{Email: fmt.Sprintf("bulk%d@example.com", i), Name: fmt.Sprintf("Bulk %d", i), Role: models.RoleMember, Status: models.UserActive}
+	}
+	if err := db.CreateInBatches(&users, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	var all []uint
+	for _, u := range users {
+		all = append(all, u.ID)
+	}
+	var locks atomic.Int64
+	const callback = "test:count_recipient_locks"
+	if err := db.Callback().Row().Before("gorm:row").Register(callback, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		if strings.Contains(sql, "FROM users WHERE id IN") && strings.Contains(sql, "FOR KEY SHARE") {
+			locks.Add(1)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Callback().Row().Remove(callback) })
+	for _, tc := range []struct {
+		name string
+		ids  []uint
+		want int64
+	}{{"nobody", nil, 0}, {"three people", all[:3], 1}, {"one more than a batch", all, 2}} {
+		locks.Store(0)
+		live := -1
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return WithRecipients(tx, append([]uint{0}, tc.ids...), func(sc *Scope) error {
+				live = len(sc.s.live)
+				return nil
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if locks.Load() != tc.want || live != len(tc.ids) {
+			t.Fatalf("%s: %d lock statements for %d locked, want %d for %d", tc.name, locks.Load(), live, tc.want, len(tc.ids))
+		}
+	}
+	// A fan-out of one Send per person shares one scope: the lock statement runs
+	// once, whatever the number of Sends.
+	locks.Store(0)
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return WithRecipients(tx, all[:3], func(sc *Scope) error {
+			if locks.Load() != 1 {
+				t.Fatalf("WithRecipients ran %d lock statements, want 1", locks.Load())
+			}
+			for _, id := range all[:3] {
+				ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{id}, Link: "/admin", Scope: sc})
+				if err != nil || len(ids) != 1 {
+					t.Fatalf("send with a shared scope: %v %v", ids, err)
+				}
+			}
+			if locks.Load() != 1 {
+				t.Fatalf("three Sends with a scope ran %d more lock statements", locks.Load()-1)
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Scope is proof that WithRecipients locked these people in this transaction.
+// One that was not made by it (zero, or built by hand even with every private
+// field filled in), one used after its WithRecipients call returned or after its
+// transaction ended, one from another transaction or used outside any, and one
+// that does not name a recipient of the Send are all refused with ErrBadScope
+// before anything is written. Handles derived from the same transaction (a
+// session, a nested savepoint) share its identity and are accepted.
+func TestRecipientScopeRefusesForgedStaleAndForeignUse(t *testing.T) {
+	db := testdb.Shared(t)
+	a, b := user(t, db, "a"), user(t, db, "b")
+	msg := func(sc *Scope, to ...uint) Msg { return Msg{Kind: GroupPending, To: to, Link: "/admin", Scope: sc} }
+	refused := func(t *testing.T, h *gorm.DB, m Msg) {
+		t.Helper()
+		if ids, err := Send(h, m); !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+			t.Fatalf("want ErrBadScope and no notices, got %v %v", ids, err)
+		}
+	}
+	none := func(t *testing.T) {
+		t.Helper()
+		if n := countWhere(t, db, "notifications", "1 = 1"); n != 0 {
+			t.Fatalf("%d notices were written by a refused Send", n)
+		}
+	}
+	t.Run("forged or zero", func(t *testing.T) {
+		tx, _ := txWithPID(t, db)
+		refused(t, tx, msg(&Scope{}, a))
+		// The shape of a real scope, filled in by hand: closed, then open but
+		// bound to no transaction. Neither is a scope WithRecipients made.
+		hand := &scopeState{asked: map[uint]bool{a: true}, live: map[uint]bool{a: true}}
+		refused(t, tx, msg(&Scope{s: hand}, a))
+		hand.open.Store(true)
+		refused(t, tx, msg(&Scope{s: hand}, a))
+		tx.Rollback()
+		none(t)
+	})
+	t.Run("used after its call returned, then after its transaction ended", func(t *testing.T) {
+		// This subtest commits one valid send to exercise the scope after its
+		// transaction ends. Keep that notice and its job out of later cases.
+		t.Cleanup(func() {
+			if err := db.Exec("DELETE FROM notifications WHERE user_id = ?", a).Error; err != nil {
+				t.Errorf("clear committed notice: %v", err)
+			}
+			if err := db.Exec("DELETE FROM jobs WHERE kind = ?", DeliverKind).Error; err != nil {
+				t.Errorf("clear committed delivery job: %v", err)
+			}
+		})
+		tx, _ := txWithPID(t, db)
+		var kept *Scope
+		if err := WithRecipients(tx, []uint{a}, func(sc *Scope) error {
+			kept = sc
+			ids, err := Send(tx, msg(sc, a))
+			if err != nil || len(ids) != 1 {
+				t.Fatalf("inside the call: %v %v", ids, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, tx, msg(kept, a)) // the transaction is still open; the scope is not
+		commit(t, tx)
+		refused(t, db, msg(kept, a))
+		later, _ := txWithPID(t, db)
+		refused(t, later, msg(kept, a))
+		later.Rollback()
+		if n := countWhere(t, db, "notifications", "user_id = ?", a); n != 1 {
+			t.Fatalf("%d notices, want only the one sent inside the call", n)
+		}
+	})
+	t.Run("another transaction, or none", func(t *testing.T) {
+		first, _ := txWithPID(t, db)
+		second, _ := txWithPID(t, db)
+		if err := WithRecipients(first, []uint{a}, func(sc *Scope) error {
+			refused(t, second, msg(sc, a))
+			refused(t, db, msg(sc, a))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		first.Rollback()
+		second.Rollback()
+		none(t)
+	})
+	t.Run("a recipient the scope did not lock", func(t *testing.T) {
+		tx, _ := txWithPID(t, db)
+		if err := WithRecipients(tx, []uint{a}, func(sc *Scope) error {
+			refused(t, tx, msg(sc, a, b))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tx.Rollback()
+		none(t)
+	})
+	t.Run("protection needs a transaction", func(t *testing.T) {
+		err := WithRecipients(db, []uint{a}, func(*Scope) error {
+			t.Fatal("the callback ran without a transaction")
+			return nil
+		})
+		if !errors.Is(err, ErrNoTransaction) {
+			t.Fatalf("want ErrNoTransaction, got %v", err)
+		}
+	})
+	t.Run("handles of the same transaction are accepted", func(t *testing.T) {
+		tx, _ := txWithPID(t, db)
+		if err := WithRecipients(tx, []uint{a, b}, func(sc *Scope) error {
+			if ids, err := Send(tx.Session(&gorm.Session{NewDB: true}), msg(sc, a)); err != nil || len(ids) != 1 {
+				t.Fatalf("session handle: %v %v", ids, err)
+			}
+			return tx.Transaction(func(inner *gorm.DB) error {
+				ids, err := Send(inner, msg(sc, b))
+				if err != nil || len(ids) != 1 {
+					t.Fatalf("savepoint handle: %v %v", ids, err)
+				}
+				return nil
+			})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, tx)
+		if n := countWhere(t, db, "notifications", "1 = 1"); n != 2 {
+			t.Fatalf("%d notices, want 2", n)
+		}
+	})
+}
+
+// Rolling back a savepoint that predates the recipient lock releases that lock
+// while the transaction and the scope go on. The scope watches the statements
+// GORM sends (txguard) and, once such a rollback happened, refuses every later
+// Send that carries it, without a query. A rollback inside the call, to a
+// savepoint the call made, keeps the locks and the scope.
+func TestRecipientScopeAfterSavepointRollback(t *testing.T) {
+	msg := func(sc *Scope, to ...uint) Msg { return Msg{Kind: GroupPending, To: to, Link: "/admin", Scope: sc} }
+
+	// The real hazard: the lock is gone, a separate erasure commits, and the
+	// scope must not let Send write a notice for the erased account.
+	t.Run("a rollback to an older savepoint, then an erasure, then a Send", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid, other := user(t, db, "savepoint"), user(t, db, "other")
+		tx, _ := txWithPID(t, db)
+		if err := tx.SavePoint("before_recipients").Error; err != nil {
+			t.Fatal(err)
+		}
+		refused := false
+		err := WithRecipients(tx, []uint{uid, other}, func(scope *Scope) error {
+			if err := tx.RollbackTo("before_recipients").Error; err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := db.WithContext(ctx).Transaction(func(eraser *gorm.DB) error {
+				return eraseUser(eraser, uid)
+			}); err != nil {
+				return err
+			}
+			ids, err := Send(tx, msg(scope, uid))
+			if !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+				return fmt.Errorf("want ErrBadScope and no notice after erasure, got %v %v", ids, err)
+			}
+			// The scope as a whole is spent, not just the erased recipient.
+			if ids, err := Send(tx, msg(scope, other)); !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+				return fmt.Errorf("want the whole scope refused, got %v %v", ids, err)
+			}
+			refused = true
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !refused {
+			t.Fatal("the callback did not reach the refusals")
+		}
+		// A Send with no scope locks for itself, and finds the erased account gone.
+		if ids, err := Send(tx, msg(nil, uid)); err != nil || len(ids) != 0 {
+			t.Fatalf("an unscoped send to an erased account: %v %v", ids, err)
+		}
+		commit(t, tx)
+		if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 0 {
+			t.Fatalf("%d notices remain for erased user", n)
+		}
+	})
+
+	// Every way GORM can send that rollback, and text it cannot read.
+	rollbacks := []struct {
+		name string
+		do   func(tx *gorm.DB) error
+	}{
+		{"RollbackTo", func(tx *gorm.DB) error { return tx.RollbackTo("older").Error }},
+		{"RollbackTo on a fresh session handle", func(tx *gorm.DB) error {
+			return tx.Session(&gorm.Session{NewDB: true}).RollbackTo("older").Error
+		}},
+		{"Exec with the SAVEPOINT word", func(tx *gorm.DB) error { return tx.Exec("ROLLBACK TO SAVEPOINT older").Error }},
+		{"Exec without it, lower case", func(tx *gorm.DB) error { return tx.Exec("rollback to older").Error }},
+		{"Exec with WORK", func(tx *gorm.DB) error { return tx.Exec("ROLLBACK WORK TO older;").Error }},
+		{"Exec after a comment", func(tx *gorm.DB) error { return tx.Exec("/* x */ ROLLBACK TO older").Error }},
+		{"Exec as the second statement", func(tx *gorm.DB) error { return tx.Exec("SELECT 1; ROLLBACK TO older").Error }},
+		{"Raw", func(tx *gorm.DB) error { return tx.Raw("ROLLBACK TO older").Row().Err() }},
+	}
+	for _, rb := range rollbacks {
+		t.Run("refused after "+rb.name, func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid := user(t, db, "variant")
+			tx, _ := txWithPID(t, db)
+			if err := tx.SavePoint("older").Error; err != nil {
+				t.Fatal(err)
+			}
+			err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+				// The statement may fail in Postgres after the watch saw it
+				// (a text the database refuses); the scope is spent either way.
+				_ = rb.do(tx)
+				if ids, err := Send(tx, msg(scope, uid)); !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+					return fmt.Errorf("want ErrBadScope and nothing written, got %v %v", ids, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx.Rollback()
+			if n := countWhere(t, db, "notifications", "1 = 1"); n != 0 {
+				t.Fatalf("%d notices written under a spent scope", n)
+			}
+		})
+	}
+
+	t.Run("savepoints made inside the call keep the locks and the scope", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "inside")
+		tx, _ := txWithPID(t, db)
+		if err := tx.SavePoint("older").Error; err != nil {
+			t.Fatal(err)
+		}
+		err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+			send := func() error {
+				ids, err := Send(tx, msg(scope, uid))
+				if err != nil || len(ids) != 1 {
+					return fmt.Errorf("send under the scope: %v %v", ids, err)
+				}
+				return nil
+			}
+			if err := tx.SavePoint("inside").Error; err != nil {
+				return err
+			}
+			if err := send(); err != nil { // undone by the next line
+				return err
+			}
+			if err := tx.RollbackTo("inside").Error; err != nil {
+				return err
+			}
+			if err := send(); err != nil { // undone by the next line
+				return err
+			}
+			if err := tx.RollbackTo("inside").Error; err != nil { // the name survives a rollback to it
+				return err
+			}
+			if err := send(); err != nil { // kept (1)
+				return err
+			}
+			if err := tx.Exec("RELEASE SAVEPOINT inside").Error; err != nil {
+				return err
+			}
+			// A nested transaction that fails rolls back to its own savepoint.
+			failed := tx.Transaction(func(inner *gorm.DB) error {
+				if ids, err := Send(inner, msg(scope, uid)); err != nil || len(ids) != 1 {
+					return fmt.Errorf("send in the nested transaction: %v %v", ids, err)
+				}
+				return errors.New("the nested work failed") // its notice is undone
+			})
+			if failed == nil || failed.Error() != "the nested work failed" {
+				return fmt.Errorf("want the nested failure back, got %v", failed)
+			}
+			return send() // kept (2)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe, _ := txWithPID(t, db)
+		if err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", uid).Error; err == nil ||
+			!strings.Contains(err.Error(), "could not obtain lock") {
+			t.Fatalf("the recipient is not locked by the open transaction: %v", err)
+		}
+		probe.Rollback()
+		commit(t, tx)
+		if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 2 {
+			t.Fatalf("%d notices, want the 2 sent outside the undone savepoints", n)
+		}
+	})
+
+	t.Run("a rollback after the call, or before a later call, does not spend a new scope", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "later")
+		tx, _ := txWithPID(t, db)
+		if err := tx.SavePoint("older").Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := WithRecipients(tx, []uint{uid}, func(*Scope) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.RollbackTo("older").Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+			ids, err := Send(tx, msg(scope, uid))
+			if err != nil || len(ids) != 1 {
+				return fmt.Errorf("a new scope after the rollback: %v %v", ids, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tx.Rollback()
+	})
+
+	// The watch is a GORM plugin; a handle opened without it cannot prove a lock.
+	t.Run("a database handle without the plugin gets no scope", func(t *testing.T) {
+		url, err := testdb.URL(testdb.Fresh(t, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bare, err := gorm.Open(postgres.Open(url), &gorm.Config{Logger: logger.Discard})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sqlDB, err := bare.DB(); err == nil {
+			t.Cleanup(func() { sqlDB.Close() })
+		}
+		tx := bare.Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		defer tx.Rollback()
+		err = WithRecipients(tx, []uint{1}, func(*Scope) error {
+			t.Fatal("the callback ran without the rollback guard")
+			return nil
+		})
+		if !errors.Is(err, ErrNoRollbackGuard) {
+			t.Fatalf("want ErrNoRollbackGuard, got %v", err)
+		}
+	})
+}
+
+// Releasing an older savepoint also releases any savepoints made after it.
+// Reusing their names cannot make an older rollback safe for a recipient scope.
+func TestRecipientScopeAfterAncestorRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		before  []string
+		release string
+	}{
+		{"release older ancestor", []string{"outer_point", "middle_point"}, "RELEASE SAVEPOINT middle_point"},
+		{"release with comment", []string{"outer_point"}, "RELEASE /* comment */ SAVEPOINT outer_point"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid := user(t, db, "ancestor")
+			tx, _ := txWithPID(t, db)
+			for _, name := range tc.before {
+				if err := tx.SavePoint(name).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+				if err := tx.SavePoint("outer_point").Error; err != nil {
+					return err
+				}
+				if err := tx.Exec(tc.release).Error; err != nil {
+					return err
+				}
+				if err := tx.RollbackTo("outer_point").Error; err != nil {
+					return err
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := db.WithContext(ctx).Transaction(func(eraser *gorm.DB) error {
+					return eraseUser(eraser, uid)
+				}); err != nil {
+					return err
+				}
+				ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", Scope: scope})
+				if !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+					return fmt.Errorf("want ErrBadScope and no notice after ancestor rollback and erasure, got %v %v", ids, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit(t, tx)
+			if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 0 {
+				t.Fatalf("%d notices remain for erased user", n)
+			}
+		})
+	}
+}
+
+// A raw COMMIT ends the database transaction even though database/sql's
+// transaction handle is still open. It must also invalidate recipient scopes.
+func TestRecipientScopeAfterSQLCommit(t *testing.T) {
+	for _, statement := range []string{"COMMIT", "SAVEPOINT inner_point;COMMIT", "SAVEPOINT inner_point;END"} {
+		t.Run(statement, func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid := user(t, db, "sqlcommit")
+			tx, _ := txWithPID(t, db)
+			err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+				if err := tx.Exec(statement).Error; err != nil {
+					return err
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := db.WithContext(ctx).Transaction(func(eraser *gorm.DB) error {
+					return eraseUser(eraser, uid)
+				}); err != nil {
+					return err
+				}
+				ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", Scope: scope})
+				if !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+					return fmt.Errorf("want ErrBadScope and no notice after SQL transaction end and erasure, got %v %v", ids, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 0 {
+				t.Fatalf("%d notices remain for erased user", n)
+			}
+		})
+	}
+}
+
+// A SAVEPOINT that PostgreSQL never made must not stand in for the older one of
+// the same name. Each case names a pre-scope savepoint, takes a SAVEPOINT of
+// the same name that does not run (a dry run, or a statement refused by an
+// aborted transaction or a syntax error), then rolls back to that name, which
+// reaches the older savepoint and releases the recipient lock. A separate
+// transaction then commits the erasure, and the scope must refuse the Send.
+func TestRecipientScopeIgnoresSavepointsThatNeverRan(t *testing.T) {
+	cases := []struct {
+		name string
+		do   func(tx *gorm.DB) error // the savepoint that does not run
+	}{
+		{"dry run Exec", func(tx *gorm.DB) error {
+			return tx.Session(&gorm.Session{DryRun: true}).Exec("SAVEPOINT older").Error
+		}},
+		{"dry run SavePoint", func(tx *gorm.DB) error {
+			return tx.Session(&gorm.Session{DryRun: true}).SavePoint("older").Error
+		}},
+		{"aborted transaction, Exec", func(tx *gorm.DB) error {
+			if err := tx.Exec("SELECT 1/0").Error; err == nil {
+				return errors.New("division by zero did not fail")
+			}
+			if err := tx.Exec("SAVEPOINT older").Error; err == nil {
+				return errors.New("a savepoint in an aborted transaction did not fail")
+			}
+			return nil
+		}},
+		// The PostgreSQL dialect's SavePoint drops the Exec error and returns
+		// nil, so GORM itself reports this failed savepoint as success.
+		{"aborted transaction, SavePoint", func(tx *gorm.DB) error {
+			if err := tx.Exec("SELECT 1/0").Error; err == nil {
+				return errors.New("division by zero did not fail")
+			}
+			_ = tx.SavePoint("older")
+			return nil
+		}},
+		{"syntax error", func(tx *gorm.DB) error {
+			if err := tx.Exec("SAVEPOINT older (").Error; err == nil {
+				return errors.New("a malformed savepoint did not fail")
+			}
+			return nil
+		}},
+		{"error already on the handle", func(tx *gorm.DB) error {
+			bad := tx.Session(&gorm.Session{}).Where("id = ?", 1)
+			bad.AddError(errors.New("earlier failure"))
+			_ = bad.Exec("SAVEPOINT older").Error
+			return nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid, other := user(t, db, "phantom"), user(t, db, "phantom-other")
+			tx, _ := txWithPID(t, db)
+			if err := tx.SavePoint("older").Error; err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			err := WithRecipients(tx, []uint{uid, other}, func(scope *Scope) error {
+				if err := tc.do(tx); err != nil {
+					return err
+				}
+				if err := tx.RollbackTo("older").Error; err != nil {
+					return err
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := db.WithContext(ctx).Transaction(func(eraser *gorm.DB) error {
+					return eraseUser(eraser, uid)
+				}); err != nil {
+					return fmt.Errorf("the recipient lock should be gone: %w", err)
+				}
+				for _, to := range []uint{uid, other} {
+					ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{to}, Link: "/admin", Scope: scope})
+					if !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+						return fmt.Errorf("want ErrBadScope and no notice for %d, got %v %v", to, ids, err)
+					}
+				}
+				refused = true
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !refused {
+				t.Fatal("the callback did not reach the refusals")
+			}
+			commit(t, tx)
+			if n := countWhere(t, db, "notifications", "1 = 1"); n != 0 {
+				t.Fatalf("%d notices written under a spent scope", n)
+			}
+			if n := countWhere(t, db, "users", "id = ? AND deleted_at IS NOT NULL", uid); n != 1 {
+				t.Fatalf("the erasure did not commit (%d erased rows)", n)
+			}
+		})
+	}
+
+	// A SAVEPOINT sent through Row or Rows may have its error deferred, so it is
+	// not trusted either, even though this one did run and a rollback to it
+	// would have been harmless.
+	t.Run("a savepoint sent through Row is not trusted", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "rowsave")
+		tx, _ := txWithPID(t, db)
+		err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+			if err := tx.Raw("SAVEPOINT inner_point").Row().Err(); err != nil {
+				return err
+			}
+			if err := tx.RollbackTo("inner_point").Error; err != nil {
+				return err
+			}
+			ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", Scope: scope})
+			if !errors.Is(err, ErrBadScope) || len(ids) != 0 {
+				return fmt.Errorf("want ErrBadScope, got %v %v", ids, err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx.Rollback()
+	})
+
+	// A name that did run keeps the scope, beside a dry run and a failed one.
+	t.Run("a savepoint that ran keeps the scope beside ones that did not", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "ranafter")
+		tx, _ := txWithPID(t, db)
+		err := WithRecipients(tx, []uint{uid}, func(scope *Scope) error {
+			if err := tx.SavePoint("real_point").Error; err != nil {
+				return err
+			}
+			_ = tx.Session(&gorm.Session{DryRun: true}).Exec("SAVEPOINT dry_point").Error
+			if err := tx.Exec("SELECT 1/0").Error; err == nil { // aborts the transaction
+				return errors.New("division by zero did not fail")
+			}
+			if err := tx.Exec("SAVEPOINT failed_point").Error; err == nil {
+				return errors.New("a savepoint in an aborted transaction did not fail")
+			}
+			if err := tx.RollbackTo("real_point").Error; err != nil { // recovers it
+				return err
+			}
+			if err := tx.Exec("SELECT 1").Error; err != nil {
+				return fmt.Errorf("the transaction did not recover: %w", err)
+			}
+			ids, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", Scope: scope})
+			if err != nil || len(ids) != 1 {
+				return fmt.Errorf("a confirmed savepoint lost the scope: %v %v", ids, err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx.Rollback()
+	})
+}
+
+// With a real scope the recipients behave as with no scope: living and disabled
+// people are told, a deleted one, the actor, a zero id and a repeat are not, and
+// the people it locked stay locked until the transaction ends.
+func TestRecipientScopeKeepsRecipientRules(t *testing.T) {
+	db := testdb.Shared(t)
+	living, disabled, deleted, actor := user(t, db, "living"), user(t, db, "disabled"), user(t, db, "deleted"), user(t, db, "actor")
+	if err := db.Model(&models.User{}).Where("id = ?", disabled).Update("status", models.UserDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&models.User{}, deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	to := []uint{living, disabled, deleted, actor, 0, living}
+	tx, _ := txWithPID(t, db)
+	var ids []uint
+	if err := WithRecipients(tx, to, func(sc *Scope) error {
+		var err error
+		ids, err = Send(tx, Msg{Kind: GroupPending, To: to, Actor: &actor, Link: "/admin", Scope: sc})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || countWhere(t, db, "notifications", "user_id IN ?", []uint{deleted, actor}) != 0 {
+		t.Fatalf("notified %v; the deleted and acting recipients must get nothing", ids)
+	}
+	probe, _ := txWithPID(t, db)
+	for _, uid := range []uint{living, disabled} {
+		err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", uid).Error
+		if err == nil || !strings.Contains(err.Error(), "could not obtain lock") {
+			t.Fatalf("user %d is not locked by the open transaction: %v", uid, err)
+		}
+		probe.Rollback()
+		probe, _ = txWithPID(t, db)
+	}
+	probe.Rollback()
+	tx.Rollback()
+}
+
+// The exported surface stays narrow: nothing outside this package can insert
+// delivery intent without protection, take a bare recipient lock whose result a
+// caller could carry to another transaction, or build the old public set.
+func TestRecipientProtectionExportsStayNarrow(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "notify.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	banned := map[string]bool{"QueueProtected": true, "LockRecipients": true, "Held": true}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Recv == nil && banned[d.Name.Name] {
+				t.Errorf("notify.%s is exported again", d.Name.Name)
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok && banned[ts.Name.Name] {
+					t.Errorf("notify.%s is exported again", ts.Name.Name)
+				}
+			}
+		}
+	}
+}
+
+// A fan-out names its recipients high to low; the lock is taken low to high.
+// A session holding the low user's row waits for nothing but that row, and
+// the high user is still free to lock while it does. Locks outlive Send until
+// the caller's transaction ends, and a rollback releases them.
+func TestSendLocksRecipientsInAscendingOrder(t *testing.T) {
+	db := testdb.Shared(t)
+	lo, hi := user(t, db, "lo"), user(t, db, "hi")
+	blocker, bPID := txWithPID(t, db)
+	if err := blocker.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", lo).Error; err != nil {
+		t.Fatal(err)
+	}
+	sender, sPID := txWithPID(t, db)
+	sent := async(func() error {
+		_, err := Send(sender, Msg{Kind: GroupPending, To: []uint{hi, lo}, Link: "/admin"})
+		return err
+	})
+	waitBlocked(t, db, sPID, bPID)
+	probe, _ := txWithPID(t, db)
+	if err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", hi).Error; err != nil {
+		t.Fatalf("the sender locked the higher user before the lower one: %v", err)
+	}
+	probe.Rollback()
+	blocker.Rollback()
+	if err := await(t, sent); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []uint{lo, hi} {
+		probe, _ := txWithPID(t, db)
+		err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", uid).Error
+		if err == nil || !strings.Contains(err.Error(), "could not obtain lock") {
+			t.Fatalf("user %d is not locked by the open sender: %v", uid, err)
+		}
+		probe.Rollback()
+	}
+	// A rollback after Send (a failure further on in the caller) frees them.
+	sender.Rollback()
+	probe, _ = txWithPID(t, db)
+	for _, uid := range []uint{lo, hi} {
+		if err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", uid).Error; err != nil {
+			t.Fatalf("user %d stayed locked after rollback: %v", uid, err)
+		}
+	}
+	probe.Rollback()
+	if n := countWhere(t, db, "notifications", "1 = 1"); n != 0 {
+		t.Fatalf("%d notices survived the rollback", n)
+	}
+}
+
+// A send can wait for a lower recipient while a later send reaches a higher
+// recipient. Its timestamp and batch cutoff must be sampled after that wait.
+func TestSendUsesTimeAfterRecipientLock(t *testing.T) {
+	register(Kind{Key: "test.lock-time", Category: CatGroups, AllowEmail: true, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return v.Actor, "" }})
+	defer delete(registry, "test.lock-time")
+
+	for _, tc := range []struct {
+		name     string
+		boundary bool
+	}{
+		{name: "newer merge stays monotonic"},
+		{name: "window is evaluated after waiting", boundary: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Shared(t)
+			lo, hi := user(t, db, "lo"), user(t, db, "hi")
+			msg := Msg{Kind: "test.lock-time", To: []uint{hi}, Link: "/groups/1", GroupKey: "joined", Vars: Vars{Actor: "first"}}
+			var firstID uint
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				ids, err := Send(tx, msg)
+				if err == nil && len(ids) == 1 {
+					firstID = ids[0]
+				}
+				return err
+			}); err != nil || firstID == 0 {
+				t.Fatalf("initial notice: id=%d err=%v", firstID, err)
+			}
+
+			blocker, blockerPID := txWithPID(t, db)
+			if err := blocker.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", lo).Error; err != nil {
+				t.Fatal(err)
+			}
+			sender, senderPID := txWithPID(t, db)
+			delayed := msg
+			delayed.To = []uint{hi, lo}
+			delayed.Vars.Actor = "delayed"
+			done := async(func() error {
+				_, err := Send(sender, delayed)
+				return err
+			})
+			waitBlocked(t, db, senderPID, blockerPID)
+
+			var newer time.Time
+			if tc.boundary {
+				// At this instant the old notice is exactly one window old.
+				// The delayed send will resume only after this update commits.
+				newer = time.Now().UTC().Truncate(time.Microsecond)
+				if err := db.Model(&models.Notification{}).Where("id = ?", firstID).
+					UpdateColumn("updated_at", newer.Add(-time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				later := msg
+				later.Vars.Actor = "later"
+				if err := db.Transaction(func(tx *gorm.DB) error {
+					_, err := Send(tx, later)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var row models.Notification
+				if err := db.First(&row, firstID).Error; err != nil {
+					t.Fatal(err)
+				}
+				newer = row.UpdatedAt
+			}
+
+			blocker.Rollback()
+			if err := await(t, done); err != nil {
+				t.Fatal(err)
+			}
+			commit(t, sender)
+			got := rows(t, db, hi)
+			if tc.boundary {
+				if len(got) != 2 {
+					t.Fatalf("got %d notices after the batch window elapsed, want 2", len(got))
+				}
+			} else {
+				if len(got) != 1 || got[0].UpdatedAt.Before(newer) {
+					t.Fatalf("delayed merge moved timestamp backwards: before=%s after=%v", newer, got)
+				}
+			}
+		})
+	}
+}
+
+// Sender-first and deletion-first, for an insert, a merge into an open notice
+// and a dedupe hit, with plain transactions and no contact gate. Sender first:
+// the erasure waits for the sender, then deletes what it wrote. Deletion first:
+// the sender waits for the erasure, rechecks deleted_at and writes nothing, so
+// nothing is resurrected for the tombstone.
+func TestSendAndErasureSerialize(t *testing.T) {
+	register(Kind{Key: "test.barrier", Category: CatGroups, AllowEmail: true, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return v.Actor + " " + itoa(v.Count), "" }})
+	defer delete(registry, "test.barrier")
+	for _, mode := range []string{"insert", "merge", "dedupe"} {
+		for _, senderFirst := range []bool{true, false} {
+			name := mode + "/deletion first"
+			if senderFirst {
+				name = mode + "/sender first"
+			}
+			t.Run(name, func(t *testing.T) {
+				db := testdb.Shared(t)
+				uid := user(t, db, "recipient")
+				m := Msg{Kind: "test.barrier", To: []uint{uid}, Link: "/groups/1", Vars: Vars{Actor: "Pat"}}
+				wantIDs := 1
+				switch mode {
+				case "merge":
+					m.GroupKey = "joined"
+				case "dedupe":
+					m.DedupeKey = "once"
+					wantIDs = 0
+				}
+				if mode != "insert" {
+					if ids, err := Send(db, m); err != nil || len(ids) != 1 {
+						t.Fatalf("first notice: %v %v", ids, err)
+					}
+				}
+				_, jobsBefore := intentCounts(t, db)
+				if senderFirst {
+					sender, sPID := txWithPID(t, db)
+					ids, err := Send(sender, m)
+					if err != nil || len(ids) != wantIDs {
+						t.Fatalf("send: %v %v", ids, err)
+					}
+					eraser, ePID := txWithPID(t, db)
+					erased := async(func() error { return eraseUser(eraser, uid) })
+					waitBlocked(t, db, ePID, sPID)
+					commit(t, sender)
+					if err := await(t, erased); err != nil {
+						t.Fatal(err)
+					}
+					commit(t, eraser)
+				} else {
+					eraser, ePID := txWithPID(t, db)
+					if err := eraseUser(eraser, uid); err != nil {
+						t.Fatal(err)
+					}
+					sender, sPID := txWithPID(t, db)
+					var ids []uint
+					sent := async(func() error {
+						var err error
+						ids, err = Send(sender, m)
+						return err
+					})
+					waitBlocked(t, db, sPID, ePID)
+					commit(t, eraser)
+					if err := await(t, sent); err != nil {
+						t.Fatal(err)
+					}
+					commit(t, sender)
+					if len(ids) != 0 {
+						t.Fatalf("a notice was written for the erased person: %v", ids)
+					}
+					if _, jobsAfter := intentCounts(t, db); jobsAfter != jobsBefore {
+						t.Fatalf("jobs went from %d to %d", jobsBefore, jobsAfter)
+					}
+				}
+				if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 0 {
+					t.Fatalf("%d notices left for the erased person", n)
+				}
+				if deliveries, _ := intentCounts(t, db); deliveries != 0 {
+					t.Fatalf("%d delivery rows left for the erased person", deliveries)
+				}
+			})
+		}
+	}
+}
+
+// lostIntent sends a notice and then removes its delivery intent, as if the
+// transaction that should have queued it never had, and returns the row a
+// repair pass would have selected.
+func lostIntent(t *testing.T, db *gorm.DB, uid uint) models.Notification {
+	t.Helper()
+	ids, err := Send(db, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", Vars: Vars{Actor: "Pat"}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("send: %v %v", ids, err)
+	}
+	if err := db.Exec("DELETE FROM notification_deliveries WHERE notification_id = ?", ids[0]).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("DELETE FROM jobs").Error; err != nil {
+		t.Fatal(err)
+	}
+	var n models.Notification
+	if err := db.First(&n, ids[0]).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// queueRepair queues one notice through the repair entry point, as a delivery
+// or as a bell-only notice.
+func queueRepair(tx *gorm.DB, bellOnly bool, n models.Notification) error {
+	if bellOnly {
+		return QueueDelivery(tx, nil, []models.Notification{n})
+	}
+	return QueueDelivery(tx, []models.Notification{n}, nil)
+}
+
+// QueueDelivery, the repair entry point, against an erasure: in either order,
+// and with the contact gate absent. The row it was given was selected earlier.
+func TestQueueDeliveryRepairAndErasureSerialize(t *testing.T) {
+	t.Run("repair first", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "recipient")
+		n := lostIntent(t, db, uid)
+		repair, rPID := txWithPID(t, db)
+		if err := QueueDelivery(repair, []models.Notification{n}, nil); err != nil {
+			t.Fatal(err)
+		}
+		eraser, ePID := txWithPID(t, db)
+		erased := async(func() error { return eraseUser(eraser, uid) })
+		waitBlocked(t, db, ePID, rPID)
+		commit(t, repair)
+		if err := await(t, erased); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, eraser)
+		if deliveries, _ := intentCounts(t, db); deliveries != 0 || countWhere(t, db, "notifications", "user_id = ?", uid) != 0 {
+			t.Fatalf("the repair's delivery row outlived the erasure: %d", deliveries)
+		}
+	})
+	t.Run("erasure first", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "recipient")
+		n := lostIntent(t, db, uid)
+		eraser, ePID := txWithPID(t, db)
+		if err := eraseUser(eraser, uid); err != nil {
+			t.Fatal(err)
+		}
+		repair, rPID := txWithPID(t, db)
+		repaired := async(func() error { return QueueDelivery(repair, []models.Notification{n}, nil) })
+		waitBlocked(t, db, rPID, ePID)
+		commit(t, eraser)
+		if err := await(t, repaired); err != nil {
+			t.Fatalf("a stale repair must skip, not fail: %v", err)
+		}
+		commit(t, repair)
+		if deliveries, queued := intentCounts(t, db); deliveries != 0 || queued != 0 {
+			t.Fatalf("repair recreated work for an erased person: %d deliveries, %d jobs", deliveries, queued)
+		}
+	})
+}
+
+// Rows selected earlier are checked again: a notice deleted since (retention
+// prune, or an erasure) and a recipient deleted since queue nothing and do not
+// raise the foreign-key error they used to; a row naming the wrong owner is
+// dropped; a live row still queues, bell-only or not.
+func TestQueueDeliveryRevalidatesStaleRows(t *testing.T) {
+	type setup func(t *testing.T, db *gorm.DB, n *models.Notification, other uint)
+	for _, tc := range []struct {
+		name         string
+		stale        setup
+		wantDelivery int64
+	}{
+		{"live", func(*testing.T, *gorm.DB, *models.Notification, uint) {}, 1},
+		{"notice deleted, recipient alive", func(t *testing.T, db *gorm.DB, n *models.Notification, _ uint) {
+			if err := db.Exec("DELETE FROM notifications WHERE id = ?", n.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, 0},
+		{"recipient deleted, notice kept", func(t *testing.T, db *gorm.DB, n *models.Notification, _ uint) {
+			if err := db.Delete(&models.User{}, n.UserID).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, 0},
+		{"row names the wrong owner", func(_ *testing.T, _ *gorm.DB, n *models.Notification, other uint) { n.UserID = other }, 0},
+	} {
+		for _, bellOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bellOnly=%v", tc.name, bellOnly), func(t *testing.T) {
+				db := testdb.Shared(t)
+				uid, other := user(t, db, "recipient"), user(t, db, "other")
+				n := lostIntent(t, db, uid)
+				tc.stale(t, db, &n, other)
+				if err := db.Transaction(func(tx *gorm.DB) error { return queueRepair(tx, bellOnly, n) }); err != nil {
+					t.Fatalf("a stale row must be skipped quietly: %v", err)
+				}
+				deliveries, queued := intentCounts(t, db)
+				wantJobs := tc.wantDelivery
+				if bellOnly {
+					wantJobs = 0
+				}
+				if deliveries != tc.wantDelivery || queued != wantJobs {
+					t.Fatalf("%d deliveries, %d jobs, want %d and %d", deliveries, queued, tc.wantDelivery, wantJobs)
+				}
+				if bellOnly && deliveries == 1 {
+					var d models.NotificationDelivery
+					if err := db.First(&d).Error; err != nil || d.Status != models.DeliverySuppressed || d.Reason != "bell only" {
+						t.Fatalf("bell-only delivery: %+v %v", d, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Repair locks the recipient before the notice, as merge and the erasure do,
+// and takes a fan-out's recipients in ascending order whatever order the rows
+// arrived in. A merge already holding the notice FOR UPDATE makes the repair
+// wait with the user's row already held.
+func TestProtectLocksUsersBeforeNoticesInAscendingOrder(t *testing.T) {
+	t.Run("an open notice lock", func(t *testing.T) {
+		db := testdb.Shared(t)
+		uid := user(t, db, "recipient")
+		n := lostIntent(t, db, uid)
+		merging, mPID := txWithPID(t, db)
+		if err := merging.Exec("SELECT id FROM notifications WHERE id = ? FOR UPDATE", n.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		repair, rPID := txWithPID(t, db)
+		repaired := async(func() error { return QueueDelivery(repair, []models.Notification{n}, nil) })
+		waitBlocked(t, db, rPID, mPID)
+		probe, _ := txWithPID(t, db)
+		err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", uid).Error
+		probe.Rollback()
+		if err == nil || !strings.Contains(err.Error(), "could not obtain lock") {
+			t.Fatalf("the repair waited on the notice without holding the user: %v", err)
+		}
+		merging.Rollback()
+		if err := await(t, repaired); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, repair)
+		if deliveries, queued := intentCounts(t, db); deliveries != 1 || queued != 1 {
+			t.Fatalf("%d deliveries, %d jobs, want 1 and 1", deliveries, queued)
+		}
+	})
+	t.Run("rows in descending order", func(t *testing.T) {
+		db := testdb.Shared(t)
+		lo, hi := user(t, db, "lo"), user(t, db, "hi")
+		nLo, nHi := lostIntent(t, db, lo), lostIntent(t, db, hi)
+		blocker, bPID := txWithPID(t, db)
+		if err := blocker.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", lo).Error; err != nil {
+			t.Fatal(err)
+		}
+		repair, rPID := txWithPID(t, db)
+		repaired := async(func() error { return QueueDelivery(repair, []models.Notification{nHi, nLo}, nil) })
+		waitBlocked(t, db, rPID, bPID)
+		probe, _ := txWithPID(t, db)
+		err := probe.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", hi).Error
+		probe.Rollback()
+		if err != nil {
+			t.Fatalf("the repair locked the higher user first: %v", err)
+		}
+		blocker.Rollback()
+		if err := await(t, repaired); err != nil {
+			t.Fatal(err)
+		}
+		commit(t, repair)
+		if deliveries, queued := intentCounts(t, db); deliveries != 2 || queued != 2 {
+			t.Fatalf("%d deliveries, %d jobs, want 2 and 2", deliveries, queued)
+		}
+	})
+}
+
+// users.email is a unique key, so changing it conflicts with the key-share
+// lock a sender holds. Either order waits and finishes: no deadlock, the notice
+// is kept, and the new address stands.
+func TestSendAndEmailChangeWaitForEachOther(t *testing.T) {
+	change := func(tx *gorm.DB, uid uint) error {
+		return tx.Exec("UPDATE users SET email = ? WHERE id = ?", "changed@example.com", uid).Error
+	}
+	for _, senderFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("senderFirst=%v", senderFirst), func(t *testing.T) {
+			db := testdb.Shared(t)
+			uid := user(t, db, "recipient")
+			sender, sPID := txWithPID(t, db)
+			changer, cPID := txWithPID(t, db)
+			var done <-chan error
+			if senderFirst {
+				if ids, err := Send(sender, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin"}); err != nil || len(ids) != 1 {
+					t.Fatalf("send: %v %v", ids, err)
+				}
+				done = async(func() error { return change(changer, uid) })
+				waitBlocked(t, db, cPID, sPID)
+				commit(t, sender)
+				if err := await(t, done); err != nil {
+					t.Fatal(err)
+				}
+				commit(t, changer)
+			} else {
+				if err := change(changer, uid); err != nil {
+					t.Fatal(err)
+				}
+				done = async(func() error {
+					ids, err := Send(sender, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin"})
+					if err == nil && len(ids) != 1 {
+						err = fmt.Errorf("send wrote %v", ids)
+					}
+					return err
+				})
+				waitBlocked(t, db, sPID, cPID)
+				commit(t, changer)
+				if err := await(t, done); err != nil {
+					t.Fatal(err)
+				}
+				commit(t, sender)
+			}
+			var u models.User
+			if err := db.First(&u, uid).Error; err != nil || u.Email != "changed@example.com" {
+				t.Fatalf("email: %+v %v", u, err)
+			}
+			if n := countWhere(t, db, "notifications", "user_id = ?", uid); n != 1 {
+				t.Fatalf("%d notices, want 1", n)
+			}
+		})
+	}
+}
+
+// Send, WithRecipients, Protect and QueueDelivery take row locks only: no advisory lock, so no
+// contact gate, is acquired by the helper layer (the gate stays with the
+// callers that already take it).
+func TestNoticeHelpersTakeNoAdvisoryLock(t *testing.T) {
+	db := testdb.Shared(t)
+	uid := user(t, db, "recipient")
+	n := lostIntent(t, db, uid)
+	tx, _ := txWithPID(t, db)
+	if _, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", DedupeKey: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WithRecipients(tx, []uint{uid}, func(sc *Scope) error {
+		_, err := Send(tx, Msg{Kind: GroupPending, To: []uint{uid}, Link: "/admin", DedupeKey: "b", Scope: sc})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := QueueDelivery(tx, []models.Notification{n}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var advisory int64
+	if err := tx.Raw("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()").Scan(&advisory).Error; err != nil {
+		t.Fatal(err)
+	}
+	if advisory != 0 {
+		t.Fatalf("the helpers hold %d advisory locks", advisory)
 	}
 }

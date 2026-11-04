@@ -41,6 +41,9 @@ var (
 	errRemovedBlocked = errors.New("a leader or host removed your registration for this date; ask them to add you back")
 	// errRegNotFound: no matching registration row.
 	errRegNotFound = errors.New("registration not found")
+	// errAddTargetGone: the person a manager is adding was erased while the add
+	// waited for the contact gate.
+	errAddTargetGone = errors.New("person not found")
 	// errOccurrenceNotFound: no occurrence for the event and date.
 	errOccurrenceNotFound  = errors.New("occurrence not found")
 	errOccurrenceGateRetry = errors.New("retry invitation mutation under contact gate")
@@ -377,7 +380,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 		return nil, err
 	}
 	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.ID == reg.ID {
-		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano))
+		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano), nil)
 	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
@@ -424,18 +427,26 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	facts := loadNoticeFacts(tx, groupIDs, to)
 	end := noticeEnd(o)
 	var ids []uint
-	for _, uid := range to {
-		vars, link := eventNoticeVars(ev, o, uid, facts)
-		sent, err := notify.Send(tx, notify.Msg{
-			Kind: notify.WaitlistCutoff, To: []uint{uid}, Actor: actor,
-			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
-			ExpiresAt: &end,
-		})
-		if err != nil {
-			return nil, err
+	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), not one lock
+	// query per leader or host.
+	err := notify.WithRecipients(tx, to, func(scope *notify.Scope) error {
+		for _, uid := range to {
+			vars, link := eventNoticeVars(ev, o, uid, facts)
+			sent, err := notify.Send(tx, notify.Msg{
+				Kind: notify.WaitlistCutoff, To: []uint{uid}, Actor: actor,
+				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
+				Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
+				ExpiresAt: &end, Scope: scope,
+			})
+			if err != nil {
+				return err
+			}
+			ids = append(ids, sent...)
 		}
-		ids = append(ids, sent...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return ids, nil
 }
@@ -467,28 +478,36 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		return nil, err
 	}
 	var ids []uint
-	for _, uid := range userIDs {
-		if invitation, ok := accesses[o.ID][uid]; ok {
-			sent, err := sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "")
+	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), shared by the
+	// invited and the ordinary notices below, not one lock query per person.
+	err = notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
+		for _, uid := range userIDs {
+			if invitation, ok := accesses[o.ID][uid]; ok {
+				sent, err := sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "", scope)
+				if err != nil {
+					return err
+				}
+				ids = append(ids, sent...)
+				continue
+			}
+			vars, link := eventNoticeVars(ev, o, uid, facts)
+			vars.Change = variant
+			end := noticeEnd(o)
+			sent, err := notify.Send(tx, notify.Msg{
+				Kind: notify.EventChanged, To: []uint{uid}, Actor: &actor,
+				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
+				Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate), "change": variant},
+				ExpiresAt: &end, Scope: scope,
+			})
 			if err != nil {
-				return nil, err
+				return err
 			}
 			ids = append(ids, sent...)
-			continue
 		}
-		vars, link := eventNoticeVars(ev, o, uid, facts)
-		vars.Change = variant
-		end := noticeEnd(o)
-		sent, err := notify.Send(tx, notify.Msg{
-			Kind: notify.EventChanged, To: []uint{uid}, Actor: &actor,
-			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate), "change": variant},
-			ExpiresAt: &end,
-		})
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, sent...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return ids, nil
 }
@@ -1044,6 +1063,18 @@ func (a *App) apiRegister(c *gin.Context) {
 			}
 			var lockedHolder models.User
 			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&lockedHolder, id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// The row is gone once its lock is granted: an erasure committed
+					// while this request waited (on the row, or on the gate in the
+					// gated repeat). Nothing has been written yet. The signed-in
+					// account no longer exists, which is a signed-out session (401,
+					// as apiAuth answers a deleted account's next request). Another
+					// holder's account being gone is the unavailable-holder answer.
+					if id == u.ID {
+						return errSecuritySession
+					}
+					return householdRegistrationError{code: "household_registration_holder_unavailable"}
+				}
 				return err
 			}
 			if id == u.ID {
@@ -1215,6 +1246,10 @@ func (a *App) apiRegister(c *gin.Context) {
 	if errors.Is(err, errOccurrenceGateRetry) {
 		gated = true
 		err = a.DB.Transaction(mutate)
+	}
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
 	}
 	if err != nil {
 		registrationError(c, err)
@@ -1640,6 +1675,11 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		}
 		var holder models.User
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, target.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// Erased while this request waited for the contact gate; the lookup
+				// above found them, the locked read does not.
+				return errAddTargetGone
+			}
 			return err
 		}
 		if holder.Status != models.UserActive && holder.Status != models.UserGuest {
@@ -1714,6 +1754,9 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		return
 	case errors.Is(err, errTeenAddApproval):
 		jsonError(c, 409, errTeenAddApproval.Error())
+		return
+	case errors.Is(err, errAddTargetGone):
+		jsonError(c, http.StatusNotFound, "person not found")
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not add registration")

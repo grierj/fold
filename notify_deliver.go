@@ -72,7 +72,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 	// to the admin alert, and dismissing it settles the ledger.
 	for {
 		var rows []models.NotificationDelivery
-		if err := db.Raw(`SELECT nd.notification_id, nd.created_at, nd.id
+		if err := db.Raw(`SELECT nd.notification_id, nd.user_id, nd.created_at, nd.id
 			FROM notification_deliveries nd
 			WHERE nd.channel = ? AND nd.status = ? AND nd.created_at < ?
 			  AND (nd.created_at, nd.id) > (?, ?)
@@ -84,13 +84,10 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 			Scan(&rows).Error; err != nil {
 			return err
 		}
-		specs := make([]jobs.Spec, 0, len(rows))
-		for _, row := range rows {
-			specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.NotificationID},
-				RunAt: now, UniqueKey: notify.DeliverKey(row.NotificationID), MaxAttempts: notifyDeliverAttempts})
-		}
-		if _, err := jobs.EnqueueMany(db, specs); err != nil {
-			return err
+		if len(rows) > 0 {
+			if err := db.Transaction(func(tx *gorm.DB) error { return requeueLostDeliveries(tx, rows, now) }); err != nil {
+				return err
+			}
 		}
 		if len(rows) < notifyReconcileBatch {
 			break
@@ -125,11 +122,39 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 	}
 }
 
+// requeueLostDeliveries queues the job for delivery rows that have none. The
+// page was read earlier, so the work is checked again in this transaction
+// first (notify.Protect: recipients locked in ascending ID order, then the
+// notices that still exist): a notice erased since, or one whose recipient is
+// deleted, gets no job.
+func requeueLostDeliveries(tx *gorm.DB, rows []models.NotificationDelivery, now time.Time) error {
+	stubs := make([]models.Notification, 0, len(rows))
+	for _, row := range rows {
+		stubs = append(stubs, models.Notification{ID: row.NotificationID, UserID: row.UserID})
+	}
+	kept, err := notify.Protect(tx, stubs)
+	if err != nil {
+		return err
+	}
+	specs := make([]jobs.Spec, 0, len(kept))
+	for _, row := range kept {
+		specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.ID},
+			RunAt: now, UniqueKey: notify.DeliverKey(row.ID), MaxAttempts: notifyDeliverAttempts})
+	}
+	_, err = jobs.EnqueueMany(tx, specs)
+	return err
+}
+
 // queueReconciledNotifications uses the persisted request flags to preserve
 // pre-outbox duplicate and honeypot notices as bell-only. Account requests
 // deliver only with a found request and parsed, clean flags; missing subjects,
 // missing requests and invalid flags stay bell-only. Read requests together
 // and queue each group in the same transaction.
+//
+// The rows were selected before this transaction. notify.QueueDelivery
+// protects both groups with one call (recipients locked in ascending user ID,
+// deleted users left out, then the notices reloaded), so a notice erased since
+// the selection, or owned by a deleted user, gets no delivery row or job.
 func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now time.Time) error {
 	var eligible []models.Notification
 	var requestIDs []uint
@@ -180,10 +205,7 @@ func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now t
 		}
 		deliver = append(deliver, row)
 	}
-	if err := notify.QueueDelivery(tx, false, deliver...); err != nil {
-		return err
-	}
-	return notify.QueueDelivery(tx, true, bellOnly...)
+	return notify.QueueDelivery(tx, deliver, bellOnly)
 }
 
 // deliverOneNotification sends one stored notice. Push is queued first.

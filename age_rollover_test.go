@@ -505,3 +505,90 @@ func TestAgeRolloverClosesOnlyPendingGuardianTasks(t *testing.T) {
 		t.Fatalf("missing system age reason: %+v", row)
 	}
 }
+
+// N-05 (inventory 9.2.2, a plain entry): the second loop of rolloverAges holds
+// only lockHousehold when flagHouseholdChild13 tells a child's confirmed
+// guardians. A guardian erased while the notice is written is left out in
+// either order.
+func TestChild13NoticeSerializesWithGuardianErasure(t *testing.T) {
+	runErasureBarriers(t, 7402002, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+		admin := loginAPI(t, app, "admin", "pw")
+		victim := newTestUser(t, app, "birthday-parent", "pw", models.RoleMember)
+		parent := loginAPI(t, app, "birthday-parent", "pw")
+		person := addMyPerson(t, parent, map[string]any{"firstName": "Birthday Child", "kind": "child", "birthDate": "2013-10-22"})
+		apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
+		now := rolloverInstant(t, "2026-10-22T12:00:00Z")
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				_, err := app.rolloverAges(now)
+				return err
+			},
+			told: func(t *testing.T) {
+				// The milestone itself was recorded: the loop reached the send.
+				if n := contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.HouseholdChildTurned13, person.ID); n != 1 {
+					t.Fatalf("%d child-turned-13 audit rows, want 1", n)
+				}
+			},
+		}
+	})
+}
+
+// N-04 (inventory 9.2.2, a gated entry): the rollover that makes a teen an
+// adult tells that teen their account is now an adult one, in the teen's own
+// transaction. The real operation is rolloverAges (the daily job's function):
+// sweepContacts (a try-lock on the gate, skipped when busy), the list of teens
+// who are 18, then per teen lockTeenLifecycleUsers (the gate, then the teen's
+// row NO KEY UPDATE) -> rolloverTeen (type, household relation, tasks, audit,
+// notify.Send to the teen) -> reconcileContacts. The recipient is the person
+// the rollover is about, so the erased person is its subject.
+//
+// Sender first: the rollover stops after it wrote the teen's notice, holding the
+// gate; the real delete waits on the gate, then removes the notice, and the
+// rollover reports one change. Deletion first: the delete holds the gate and the
+// row; the rollover's list still names the teen (the delete has not committed),
+// its transaction waits on the gate, then locks no user, and moves on: zero
+// changes, no error, no notice, no audit row. The try-locked sweep is skipped in
+// that order because the delete holds the gate. Not covered: a teen with a
+// staged household conversion (completeTeenConversionIfReady), a disabled teen
+// (the restore branch), and the second loop (N-05, a plain entry, has its own
+// test).
+func TestAccountTurned18NoticeSerializesWithRealAdminDelete(t *testing.T) {
+	var changed int
+	var order string
+	runGatedErasureBarriers(t, 7402119, 7402120, func(t *testing.T) gatedErasureScene {
+		app := testApp(t)
+		newTestUser(t, app, "eraser", "pw", models.RoleAdmin)
+		victim := rolloverTeenUser(t, app, "birthday-teen", "2008-10-22", models.UserActive, false, true)
+		eraser := loginHeld(t, app, "eraser", "pw")
+		now := rolloverInstant(t, "2026-10-22T12:00:00Z")
+		changed, order = -1, "sender first"
+		return gatedErasureScene{app: app, victim: victim, sends: []string{notify.AccountTurned18},
+			run: func() error {
+				n, err := app.rolloverAges(now)
+				changed = n
+				return err
+			},
+			runDeletionFirst: func() error {
+				order = "deletion first"
+				n, err := app.rolloverAges(now)
+				changed = n
+				return err
+			},
+			erase: eraseVia(eraser, victim),
+			told: func(t *testing.T) {
+				want, rows := 1, int64(1)
+				if order == "deletion first" {
+					want, rows = 0, 0
+				}
+				if changed != want {
+					t.Fatalf("the rollover changed %d accounts, want %d", changed, want)
+				}
+				if n := auditCount(t, app, audit.UserTurned18); n != rows {
+					t.Fatalf("%d turned-18 audit rows, want %d", n, rows)
+				}
+			},
+		}
+	})
+}

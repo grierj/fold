@@ -424,3 +424,83 @@ func approvalEmailTo(t *testing.T, app *App, address string) mail.OutboxMessage 
 	t.Fatalf("no approval email to %s among %d emails", address, len(msgs))
 	return mail.OutboxMessage{}
 }
+
+// N-19 and N-20 (inventory 9.2.2, gated entries): a teen-consent change tells
+// every admin (N-19) and then the family-only recipients, the teen's confirmed
+// guardians who are not admins plus the teen when the account is active (N-20),
+// inside one transaction. The real operation is
+// POST /admin/users/:id/teen-consents -> apiChangeTeenConsent ->
+// contactMutation (gate first) -> lockConsentUsers (users NO KEY UPDATE by id,
+// then the household row if the teen has one) -> changeTeenConsent: consent row,
+// audit, notify.Send to admins (the actor is removed), notify.Send to the
+// family. The same four callers of changeTeenConsent share both sites; this one
+// is run, the guardian, email-link and account-approval callers are not.
+//
+// The two sites send the same kind, so the person who is erased names the
+// site: a second admin can only be reached by N-19 (the family list drops
+// admins), and a confirmed guardian who is not an admin only by N-20. The teen
+// is the subject as well as an N-20 recipient: erased first, the request finds
+// no teen and answers 404 "user not found" with nothing written; erased after,
+// the consent stands and the teen's notice goes with the account. In the other
+// two cases the request answers 200 in both orders, the consent is recorded
+// once, and everyone else is still told. The photos scope is used so the
+// request changes no account status. Synthetic setup: the teen's account type
+// and status and the confirmed guardian link are written directly.
+func TestTeenConsentNoticesSerializeWithRealAdminDelete(t *testing.T) {
+	for i, who := range []string{"second admin", "guardian", "teen"} {
+		t.Run(who, func(t *testing.T) {
+			var order string
+			keyA := int64(7402111 + 2*i)
+			runGatedErasureBarriers(t, keyA, keyA+1, func(t *testing.T) gatedErasureScene {
+				app := testApp(t)
+				newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+				admin2 := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+				eraserUser := newTestUser(t, app, "eraser", "password1234", models.RoleAdmin)
+				guardian := newTestUser(t, app, "guardian", "password1234", models.RoleMember)
+				teen := newTestUser(t, app, "teen", "password1234", models.RoleMember)
+				if err := app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "status": models.UserActive,
+					"birth_date": time.Now().UTC().AddDate(-15, 0, 0)}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Create(&models.GuardianLink{TeenUserID: &teen.ID, GuardianUserID: guardian.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+					t.Fatal(err)
+				}
+				victim := map[string]*models.User{"second admin": admin2, "guardian": guardian, "teen": teen}[who]
+				actor, eraser := loginHeld(t, app, "admin", "password1234"), loginHeld(t, app, "eraser", "password1234")
+				grant := func(name string, want int) func() error {
+					return func() error {
+						order = name
+						return doExpect(actor, "POST", consentPath(teen), map[string]string{"scope": "photos", "status": "granted", "evidenceText": "Paper form"}, want)
+					}
+				}
+				lostWant := 200
+				if who == "teen" {
+					lostWant = 404
+				}
+				return gatedErasureScene{app: app, victim: victim, sends: []string{notify.TeenConsentChanged},
+					run:              grant("sender first", 200),
+					runDeletionFirst: grant("deletion first", lostWant),
+					erase:            eraseVia(eraser, victim),
+					told: func(t *testing.T) {
+						won := order == "sender first" || who != "teen"
+						want, rows := int64(0), int64(0)
+						if won {
+							want, rows = 1, 1
+						}
+						if n := auditCount(t, app, audit.TeenConsentGranted); n != rows {
+							t.Fatalf("%d consent audit rows after %s, want %d", n, order, rows)
+						}
+						for _, u := range []*models.User{admin2, eraserUser, guardian, teen} {
+							if u == victim {
+								continue
+							}
+							if got := countOf(t, app, u.ID, notify.TeenConsentChanged); got != want {
+								t.Fatalf("%s has %d consent notices after %s, want %d", u.Name, got, order, want)
+							}
+						}
+					},
+				}
+			})
+		})
+	}
+}

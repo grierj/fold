@@ -20,6 +20,7 @@ import (
 	"sync"
 	"testing"
 
+	"fold/internal/txguard"
 	"fold/migrations"
 	"fold/models"
 
@@ -113,7 +114,15 @@ func Open(name string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		return nil, err
+	}
+	// The same plugin the server installs, so notify.WithRecipients works here.
+	if err := db.Use(txguard.Plugin{}); err != nil {
+		return nil, err
+	}
+	return db, nil
 }
 
 // OpenSQL opens a database/sql handle to database name.

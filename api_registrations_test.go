@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/models"
 )
 
@@ -2313,4 +2315,380 @@ func TestWaitlistPositionCountsLineOrder(t *testing.T) {
 	if got, _ := waitlistPosition(app.DB, occ.ID, 0); got != 0 {
 		t.Fatalf("unknown registration position = %d", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Erasure barriers for the registration notices (M7.4 R4-N, inventory 9.2.5):
+// N-26, N-27, N-29, N-32 and N-33, through their plain entries, and the two
+// per-person fan-outs whose recipient lock is taken once for the whole fan-out.
+// ---------------------------------------------------------------------------
+
+// promotionScene: p1 holds the only seat and declines through apiRegister (its
+// first attempt is ungated unless p1 holds an invitation); p2 waits in line.
+// variant "plain" promotes p2 (N-26); "invited" gives p2 a live exact-date grant
+// first, so the notice goes through sendOccurrenceNotice (N-32); "cutoff" moves
+// the date inside the 2-hour cutoff, so nobody is promoted and the leaders hear
+// a seat opened (N-27), the victim being a second leader.
+func promotionScene(t *testing.T, variant string) erasureScene {
+	t.Helper()
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Promote")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	var g models.Group
+	if err := app.DB.Where("id = ?", gid).First(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name string, role string) (*models.User, *apiClient) {
+		u := newTestUser(t, app, name, "password1234", models.RoleMember)
+		addMember(t, app, u, &g, role)
+		return u, loginAPI(t, app, name, "password1234")
+	}
+	_, c1 := mk("p1", models.MembershipMember)
+	p2, c2 := mk("p2", models.MembershipMember)
+	for _, c := range []*apiClient{c1, c2} {
+		if code, body := registerAs(c, eventID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("register: %d %s", code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", eventID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := regStatus(t, app, p2.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("p2 is %q, want waitlisted", got)
+	}
+	victim := p2
+	told := func(t *testing.T) {
+		if got := regStatus(t, app, p2.ID, occ.ID); got != models.RegGoing {
+			t.Fatalf("p2 is %q after p1 declined, want going", got)
+		}
+	}
+	switch variant {
+	case "invited":
+		var ev models.Event
+		var reg models.Registration
+		var membership models.Membership
+		if err := app.DB.First(&ev, eventID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Where("user_id = ? AND occurrence_id = ?", p2.ID, occ.ID).First(&reg).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Where("user_id = ? AND group_id = ?", p2.ID, gid).First(&membership).Error; err != nil {
+			t.Fatal(err)
+		}
+		// A synthetic retained-departure grant may cover a waitlisted person;
+		// a manager-add grant requires a going registration.
+		if err := app.DB.Transaction(func(tx *gorm.DB) error {
+			_, _, err := grantRegistrationAccess(tx, reg.ID, accessScopeOf(&ev),
+				accessGrant{Origin: policy.OccurrenceOriginDepartureSelf, DepartureMembershipID: &membership.ID, DepartureActorID: &p2.ID}, &p2.ID, time.Now().UTC(), "")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	case "cutoff":
+		lead, _ := mk("lead1", models.MembershipLeader)
+		victim, _ = mk("lead2", models.MembershipLeader)
+		soon := time.Now().UTC().Add(90 * time.Minute)
+		if err := app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", eventID).
+			Updates(map[string]any{"starts_at": soon, "ends_at": soon.Add(time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		told = func(t *testing.T) {
+			if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", lead.ID, notify.WaitlistCutoff); n != 1 {
+				t.Fatalf("the other leader has %d cutoff notices, want 1", n)
+			}
+		}
+	}
+	c1.holdNotices = true
+	return erasureScene{app: app, victim: victim,
+		run: func() error {
+			return doExpect(c1, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", eventID), map[string]any{"date": date, "status": "declined"}, http.StatusOK)
+		},
+		told: told,
+	}
+}
+
+// N-26, N-32 and N-27 through apiRegister, the entry whose first attempt takes
+// no contact gate: a declined seat promotes the next person, or tells the
+// leaders inside the cutoff. The person erased meanwhile is left out in either
+// order.
+func TestRegisterPromotionNoticesSerializeWithErasure(t *testing.T) {
+	for i, variant := range []string{"plain", "invited", "cutoff"} {
+		t.Run(variant, func(t *testing.T) {
+			runErasureBarriers(t, 7402020+int64(i), func(t *testing.T) erasureScene { return promotionScene(t, variant) })
+		})
+	}
+}
+
+// householdRemovalScene: a second adult in a household removes a child whom the
+// household's first adult (the holder) registered for the only seat; the seat
+// goes to the person waiting. The holder is told the registration was removed
+// (N-29, victimIsHolder) or the waiting person is promoted (N-26 through the
+// household entry apiDeleteHouseholdPerson, which holds the household lock).
+func householdRemovalScene(t *testing.T, victimIsHolder bool) erasureScene {
+	t.Helper()
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Family")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	holder, hc, _, child := householdFamily(t, app, admin, "family")
+	second := newTestUser(t, app, "familysecond", "password1234", models.RoleMember)
+	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: child.HouseholdID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	sc := loginAPI(t, app, "familysecond", "password1234")
+	batchAnswer(t, hc, eventID, date, map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	var g models.Group
+	if err := app.DB.Where("id = ?", gid).First(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	waiter := newTestUser(t, app, "waiter", "password1234", models.RoleMember)
+	addMember(t, app, waiter, &g, models.MembershipMember)
+	if code, body := registerAs(loginAPI(t, app, "waiter", "password1234"), eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatalf("waiter: %d %s", code, body)
+	}
+	var occ models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", eventID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("the waiting person is %q, want waitlisted", got)
+	}
+	victim, told := holder, func(t *testing.T) {
+		if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegGoing {
+			t.Fatalf("the waiting person is %q after the child was removed, want going", got)
+		}
+	}
+	if !victimIsHolder {
+		victim, told = waiter, func(t *testing.T) {
+			if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", holder.ID, notify.RegistrationRemoved); n != 1 {
+				t.Fatalf("the holder has %d removal notices, want 1", n)
+			}
+		}
+	}
+	sc.holdNotices = true
+	return erasureScene{app: app, victim: victim, told: told,
+		run: func() error {
+			return doExpect(sc, "DELETE", "/api/v1/me/household/people/"+itoa(child.ID), nil, http.StatusOK)
+		},
+	}
+}
+
+func TestHouseholdRemovalNoticesSerializeWithErasure(t *testing.T) {
+	t.Run("N-29 the holder is told", func(t *testing.T) {
+		runErasureBarriers(t, 7402023, func(t *testing.T) erasureScene { return householdRemovalScene(t, true) })
+	})
+	t.Run("N-26 the waiting person is promoted", func(t *testing.T) {
+		runErasureBarriers(t, 7402024, func(t *testing.T) erasureScene { return householdRemovalScene(t, false) })
+	})
+}
+
+// N-28 and N-16 are called by gated routes, but their fan-out is the one place a
+// bulk lock meets many recipients, so it is also run here in a transaction the
+// test owns against a plain erasure: the recipient between two others is
+// erased; the bulk lock waits on that one row and, released, leaves them out.
+func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
+	for i, fan := range []string{"event changed", "date cancelled"} {
+		t.Run(fan, func(t *testing.T) {
+			runErasureBarriers(t, 7402025+int64(i), func(t *testing.T) erasureScene {
+				app := testApp(t)
+				leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Fan out", models.GroupActive)
+				ev, occ := seedEvent(t, app, g, leader.ID, time.Now().UTC().AddDate(0, 0, 30))
+				register := func(name string) *models.User {
+					u := newTestUser(t, app, name, "password1234", models.RoleMember)
+					if err := app.DB.Create(&models.Registration{UserID: &u.ID, OccurrenceID: occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb}).Error; err != nil {
+						t.Fatal(err)
+					}
+					return u
+				}
+				low, victim, high := register("low"), register("victim"), register("high")
+				kind := notify.EventChanged
+				if fan == "date cancelled" {
+					kind = notify.OccurrenceCancelled
+				}
+				return erasureScene{app: app, victim: victim,
+					run: func() error {
+						return app.DB.Transaction(func(tx *gorm.DB) error {
+							var err error
+							if fan == "event changed" {
+								_, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+							} else {
+								_, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+							}
+							return err
+						})
+					},
+					told: func(t *testing.T) {
+						for _, u := range []*models.User{low, high} {
+							if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", u.ID, kind); n != 1 {
+								t.Fatalf("%s has %d notices, want 1", u.Name, n)
+							}
+						}
+					},
+				}
+			})
+		})
+	}
+}
+
+// countRecipientLocks counts the recipient lock statements run on db.
+func countRecipientLocks(t *testing.T, db *gorm.DB) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	name := fmt.Sprintf("test:count_recipient_locks:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		if strings.Contains(sql, "FROM users WHERE id IN") && strings.Contains(sql, "FOR KEY SHARE") {
+			n.Add(1)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Row().Remove(name) })
+	return &n
+}
+
+// The event-change and waitlist-cutoff fan-outs lock their recipients once, in
+// one statement per 500, however many people they tell: one, thirty and
+// more-than-a-batch recipients cost 1, 1 and 2 lock statements, and everyone is
+// still told. (The cancellation fan-out's own read cap stays in
+// TestCancelDateNoticeReadsStayBounded, unchanged.)
+func TestSiblingFanOutsLockRecipientsOncePerBatch(t *testing.T) {
+	for _, fan := range []string{"event changed", "waitlist cutoff"} {
+		for _, tc := range []struct {
+			people int
+			locks  int64
+		}{{1, 1}, {30, 1}, {600, 2}} {
+			t.Run(fmt.Sprintf("%s/%d people", fan, tc.people), func(t *testing.T) {
+				app := testApp(t)
+				leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Budget", models.GroupActive)
+				ev, occ := seedEvent(t, app, g, leader.ID, time.Now().UTC().AddDate(0, 0, 30))
+				users := make([]models.User, tc.people)
+				for i := range users {
+					users[i] = models.User{Email: fmt.Sprintf("fan%d@example.com", i), Name: fmt.Sprintf("Fan %d", i), Role: models.RoleMember, Status: models.UserActive}
+				}
+				if err := app.DB.CreateInBatches(&users, 100).Error; err != nil {
+					t.Fatal(err)
+				}
+				for _, u := range users {
+					var row any = &models.Registration{UserID: &u.ID, OccurrenceID: occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb}
+					if fan == "waitlist cutoff" {
+						row = &models.Membership{UserID: u.ID, GroupID: g.ID, Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC()}
+					}
+					if err := app.DB.Create(row).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				locks := countRecipientLocks(t, app.DB)
+				var ids []uint
+				err := app.DB.Transaction(func(tx *gorm.DB) error {
+					var err error
+					if fan == "event changed" {
+						ids, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+					} else {
+						ids, err = notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(ids) != tc.people {
+					t.Fatalf("%d notices, want %d", len(ids), tc.people)
+				}
+				if locks.Load() != tc.locks {
+					t.Fatalf("%d recipient lock statements for %d people, want %d", locks.Load(), tc.people, tc.locks)
+				}
+			})
+		}
+	}
+}
+
+// A conditional entry: apiRegister runs an invitee's decline ungated first and,
+// finding a live invitation, repeats it under the contact gate (N-33). Its
+// notice is the invitation-ended one, to the invitee. Three orders against the
+// erasure of that invitee: the real gated delete either side of the repeat, and
+// an erasure that commits between the two attempts.
+func TestInvitedDeclineRetrySerializesWithErasure(t *testing.T) {
+	setup := func(t *testing.T) (occurrenceReadFixture, string, string) {
+		t.Helper()
+		f := newOccurrenceReadFixture(t)
+		if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
+			t.Fatal(err)
+		}
+		f.client.holdNotices, f.admin.holdNotices = true, true
+		return f, "/api/v1/events/" + itoa(f.event.ID) + "/registrations", models.FormatCalendarDate(f.dates[1].OriginalDate)
+	}
+	// The invitee's own request answers by what happened to their account:
+	// 200 when the request won (the erasure queued behind it on the gate), and
+	// 401, the answer any authenticated route gives a deleted account, when the
+	// erasure committed first. Never 404 or 500, and in the 401 orders the
+	// request wrote nothing as the erased person.
+	actedAs := func(t *testing.T, db *gorm.DB, uid uint) int64 {
+		t.Helper()
+		var n int64
+		if err := db.Model(&models.AuditLog{}).Where("actor_id = ?", uid).Count(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	t.Run("real delete", func(t *testing.T) {
+		runGatedErasureBarriers(t, 7402027, 7402028, func(t *testing.T) gatedErasureScene {
+			f, path, date := setup(t)
+			order := ""
+			decline := func(name string, want int) func() error {
+				return func() error {
+					order = name
+					return doExpect(f.client, "PUT", path, map[string]any{"date": date, "status": "declined"}, want)
+				}
+			}
+			return gatedErasureScene{app: f.app, victim: f.recipient, sends: []string{notify.OccurrenceUpdated},
+				// The first attempt locks the invitee's own row before any gate, so the
+				// deletion-first wait is on that row; the repeat that waits on the gate
+				// is the "erased between the attempts" subtest below.
+				gateSkip:         "the first attempt of apiRegister locks the holder row before the gate",
+				run:              decline("sender first", 200),
+				runDeletionFirst: decline("deletion first", 401),
+				erase: func() error {
+					return doExpect(f.admin, "DELETE", "/api/v1/admin/users/"+itoa(f.recipient.ID), nil, 200)
+				},
+				told: func(t *testing.T) {
+					// Sender first the decline was recorded under the invitee's
+					// name before the erasure; deletion first it wrote nothing.
+					got := actedAs(t, f.app.DB, f.recipient.ID)
+					if order == "deletion first" && got != 0 {
+						t.Fatalf("%d audit rows by the erased invitee after a request that lost the race", got)
+					}
+					if order == "sender first" && got == 0 {
+						t.Fatal("the request that won the race recorded nothing")
+					}
+				},
+			}
+		})
+	})
+	t.Run("erased between the attempts", func(t *testing.T) {
+		f, path, date := setup(t)
+		db := f.app.DB
+		release, gPID := holdAdvisory(t, db, contactLockID)
+		done := startOperation(func() error {
+			return doExpect(f.client, "PUT", path, map[string]any{"date": date, "status": "declined"}, 401)
+		})
+		// The first attempt found the invitation and gave up without writing;
+		// the repeat waits for the gate, holding nothing.
+		opPID := waiterOn(t, db, gPID)
+		if q := statementOf(t, db, opPID); !strings.Contains(q, "pg_advisory_xact_lock") {
+			t.Fatalf("the repeat waits in %q, want the contact gate", q)
+		}
+		eraseNoticesNow(t, db, f.recipient.ID)
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		settleErasure(t, erasureScene{app: f.app, victim: f.recipient})
+		if n := actedAs(t, db, f.recipient.ID); n != 0 {
+			t.Fatalf("%d audit rows by the erased invitee after a repeat that found the account gone", n)
+		}
+	})
 }

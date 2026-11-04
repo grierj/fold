@@ -1267,3 +1267,98 @@ func pushPayload(t *testing.T, f *fakePush, dev testDevice) push.Notification {
 	}
 	return p.Notification
 }
+
+// N-06 (inventory 9.2.2, F-3): push.devices_off used to check the user and
+// write the notice as separate autocommitted statements. The check, the
+// notify.Send (which locks the recipient and rechecks deleted_at) and the
+// delivery intent now share one transaction. A person who is living or merely
+// disabled is told once; one erased before, or while the job is between its
+// check and its write, is not; and an erasure that starts while the notice is
+// being written waits for it and then removes it.
+func TestNoticeDevicesOffRunsInOneTransaction(t *testing.T) {
+	run := func(job devicesOffJob) func(*gorm.DB) error {
+		return func(db *gorm.DB) error { return (&App{DB: db}).noticeDevicesOff(db.Statement.Context, job) }
+	}
+	noticesFor := func(app *App, u *models.User) int64 {
+		return rowsFor(t, app.DB, "notifications", u.ID)
+	}
+	t.Run("living and disabled people are told once", func(t *testing.T) {
+		app := testApp(t)
+		living := newTestUser(t, app, "living", "password123456", models.RoleMember)
+		disabled := newTestUser(t, app, "disabled", "password123456", models.RoleMember)
+		if err := app.DB.Model(disabled).Update("status", models.UserDisabled).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range []*models.User{living, disabled} {
+			for range 2 {
+				if err := app.noticeDevicesOff(context.Background(), devicesOffJob{UserID: u.ID, Devices: 2, Key: "k-" + u.Name}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := noticesFor(app, u); n != 1 {
+				t.Fatalf("%s has %d notices, want 1", u.Name, n)
+			}
+		}
+		if deliveries := totalRows(t, app.DB, "notification_deliveries"); deliveries != 0 {
+			t.Fatalf("the notice is bell only: %d delivery rows", deliveries)
+		}
+	})
+	t.Run("erased before the job", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "gone", "password123456", models.RoleMember)
+		eraseNoticesNow(t, app.DB, u.ID)
+		if err := app.noticeDevicesOff(context.Background(), devicesOffJob{UserID: u.ID, Devices: 1, Key: "k"}); err != nil {
+			t.Fatal(err)
+		}
+		if n := noticesFor(app, u); n != 0 {
+			t.Fatalf("%d notices for an erased person", n)
+		}
+	})
+	t.Run("erasure commits between the check and the write", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "racer", "password123456", models.RoleMember)
+		eraser, ePID := beginOwnedTx(t, app.DB)
+		if err := eraseNoticesTx(eraser, u.ID); err != nil {
+			t.Fatal(err)
+		}
+		// The job's read of the user sees the committed, living row; only the
+		// lock inside Send meets the pending erasure.
+		pid, done := startDBSession(t, app.DB, "devices-off", run(devicesOffJob{UserID: u.ID, Devices: 1, Key: "k"}))
+		waitDBBlocked(t, app.DB, pid, ePID)
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if n := noticesFor(app, u); n != 0 {
+			t.Fatalf("a notice was written for the person erased mid-job: %d", n)
+		}
+	})
+	t.Run("erasure starts while the notice is written", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "racer", "password123456", models.RoleMember)
+		const key = 7401002
+		pauseOnStatement(t, app.DB, "AFTER INSERT", "notifications", key)
+		release, hPID := holdAdvisory(t, app.DB, key)
+		pid, done := startDBSession(t, app.DB, "devices-off", run(devicesOffJob{UserID: u.ID, Devices: 1, Key: "k"}))
+		waitDBBlocked(t, app.DB, pid, hPID) // the notice is inserted; the job's transaction is open
+		eraser, ePID := beginOwnedTx(t, app.DB)
+		erased := make(chan error, 1)
+		go func() { erased <- eraseNoticesTx(eraser, u.ID) }()
+		waitDBBlocked(t, app.DB, ePID, pid)
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, erased); err != nil {
+			t.Fatal(err)
+		}
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if n := noticesFor(app, u); n != 0 {
+			t.Fatalf("the erasure left %d notices", n)
+		}
+	})
+}

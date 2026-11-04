@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"image/color"
 	"image/gif"
@@ -1262,4 +1263,34 @@ func TestImageUploadRefusalsAreActionable(t *testing.T) {
 	if u.AvatarKey != "" {
 		t.Error("a refused upload must not set an avatar")
 	}
+}
+
+// N-11 (inventory 9.2.2, a plain entry): adding a child to the household starts
+// a guardian link and asks every admin to confirm it, while holding only the
+// household lock. An admin erased while the link is created is left out in
+// either order, and the other admin is still asked.
+func TestGuardianLinkNoticeSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402005, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		newTestUser(t, app, "parent", "password1234", models.RoleMember)
+		parent := loginAPI(t, app, "parent", "password1234")
+		// First use creates the household before the race; the race is the add.
+		if w := parent.do("PUT", "/api/v1/me/household", map[string]string{}, true); w.Code != http.StatusOK {
+			t.Fatalf("household: %d %s", w.Code, w.Body.String())
+		}
+		parent.holdNotices = true
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				return doExpect(parent, "POST", "/api/v1/me/household/people",
+					map[string]any{"firstName": "Kit", "kind": "child", "birthDate": "2020-05-01"}, http.StatusCreated)
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.HouseholdLinkPending); n != 1 {
+					t.Fatalf("the other admin has %d link tasks, want 1", n)
+				}
+			},
+		}
+	})
 }

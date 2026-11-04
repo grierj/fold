@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
@@ -1374,4 +1375,226 @@ func TestGuardianLinkRejectionDoesNotQueueConsentMail(t *testing.T) {
 	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 0 || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 0 || auditCount(t, app, audit.GuardianLinkRejected) != 1 {
 		t.Fatal("rejection queued consent mail or did not record its decision")
 	}
+}
+
+// deleteUserAsync sends the real admin DELETE on its own goroutine.
+func deleteUserAsync(client *apiClient, id uint) <-chan int {
+	code := make(chan int, 1)
+	go func() { code <- client.do("DELETE", "/api/v1/admin/users/"+itoa(id), nil, true).Code }()
+	return code
+}
+
+func awaitCode(t *testing.T, code <-chan int) int {
+	t.Helper()
+	select {
+	case c := <-code:
+		return c
+	case <-time.After(10 * time.Second):
+		t.Fatal("request never finished")
+		return 0
+	}
+}
+
+// Deleting an account (the real handler, behind the contact gate, unchanged)
+// against a notice being written, in both orders. Sender first: an open
+// transaction that has sent the person a notice holds their row, so the delete
+// waits for it and then removes the notice with the account. Deletion first:
+// a Send already naming the person (and someone else) waits on the delete,
+// rechecks, and leaves the deleted person out; the other recipient still gets
+// theirs.
+func TestAdminDeleteSerializesWithNotices(t *testing.T) {
+	msg := func(to ...uint) notify.Msg {
+		return notify.Msg{Kind: notify.GroupApproved, To: to, Link: "/", Vars: notify.Vars{Group: "Youth"}}
+	}
+	t.Run("sender first", func(t *testing.T) {
+		app := testApp(t)
+		newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+		target := newTestUser(t, app, "target", "pw", models.RoleMember)
+		client := loginAPI(t, app, "admin", "pw")
+		sender, sPID := beginOwnedTx(t, app.DB)
+		if ids, err := notify.Send(sender, msg(target.ID)); err != nil || len(ids) != 1 {
+			t.Fatalf("send: %v %v", ids, err)
+		}
+		code := deleteUserAsync(client, target.ID)
+		waiterOn(t, app.DB, sPID)
+		if err := sender.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if got := awaitCode(t, code); got != http.StatusOK {
+			t.Fatalf("delete: %d", got)
+		}
+		if n, d := rowsFor(t, app.DB, "notifications", target.ID), rowsFor(t, app.DB, "notification_deliveries", target.ID); n != 0 || d != 0 {
+			t.Fatalf("the deleted account kept %d notices and %d delivery rows", n, d)
+		}
+	})
+	t.Run("deletion first", func(t *testing.T) {
+		app := testApp(t)
+		newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+		target := newTestUser(t, app, "target", "pw", models.RoleMember)
+		other := newTestUser(t, app, "other", "pw", models.RoleMember)
+		client := loginAPI(t, app, "admin", "pw")
+		// The delete stops inside its transaction, after it has the user row
+		// FOR UPDATE and before it removes the account's notices.
+		const key = 7401003
+		pauseOnStatement(t, app.DB, "BEFORE DELETE", "notifications", key)
+		release, hPID := holdAdvisory(t, app.DB, key)
+		code := deleteUserAsync(client, target.ID)
+		handler := waiterOn(t, app.DB, hPID)
+		sender, sPID := beginOwnedTx(t, app.DB)
+		var ids []uint
+		sent := make(chan error, 1)
+		go func() {
+			var err error
+			ids, err = notify.Send(sender, msg(target.ID, other.ID))
+			sent <- err
+		}()
+		waitDBBlocked(t, app.DB, sPID, handler)
+		release()
+		if got := awaitCode(t, code); got != http.StatusOK {
+			t.Fatalf("delete: %d", got)
+		}
+		if err := awaitDBResult(t, sent); err != nil {
+			t.Fatal(err)
+		}
+		if err := sender.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 1 || rowsFor(t, app.DB, "notifications", target.ID) != 0 || rowsFor(t, app.DB, "notifications", other.ID) != 1 {
+			t.Fatalf("send returned %v; target has %d notices, other has %d",
+				ids, rowsFor(t, app.DB, "notifications", target.ID), rowsFor(t, app.DB, "notifications", other.ID))
+		}
+	})
+}
+
+// N-09 (inventory 9.2.2, a gated entry): an admin's decision on a pending group
+// tells the group's leaders in the decision's own transaction, which holds the
+// contact gate. The real admin delete takes the same gate, so the two cannot
+// interleave. Entry traced: POST /admin/groups/:id/approve|reject ->
+// decideGroup -> contactMutation (gate first) -> the status UPDATE, task
+// resolve, notifyGroupDecided (leaderIDs read from memberships, then Send with
+// its own recipient lock), audit. No user row is locked before the send.
+//
+// Sender first: the decision stops right after it wrote the erased co-leader's
+// notice; the delete waits on the gate, then removes the notice. Deletion first:
+// the delete holds the gate and the user row; the decision waits on the gate,
+// then reads the leaders after the erasure (their membership went with the
+// account), so only the other leader is told. The decision answers 200 in both
+// orders: the erased person is only a recipient. The sibling entry
+// apiUpdateGroup (a leader's own edit) reaches the same notifyGroupDecided and
+// is not run here.
+func TestGroupDecisionNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	for i, decision := range []string{"approve", "reject"} {
+		t.Run(decision, func(t *testing.T) {
+			kind, status, action := notify.GroupApproved, models.GroupActive, audit.GroupApproved
+			if decision == "reject" {
+				kind, status, action = notify.GroupRejected, models.GroupArchived, audit.GroupRejected
+			}
+			keyA := int64(7402101 + 2*i)
+			runGatedErasureBarriers(t, keyA, keyA+1, func(t *testing.T) gatedErasureScene {
+				app := testApp(t)
+				newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+				newTestUser(t, app, "eraser", "password1234", models.RoleAdmin)
+				kept := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				victim := newTestUser(t, app, "coleader", "password1234", models.RoleMember)
+				g := newTestGroup(t, app, kept, "Awaiting approval", models.GroupPending)
+				addMember(t, app, victim, g, models.MembershipLeader)
+				decider, eraser := loginHeld(t, app, "admin", "password1234"), loginHeld(t, app, "eraser", "password1234")
+				return gatedErasureScene{app: app, victim: victim, sends: []string{kind},
+					run: func() error {
+						return doExpect(decider, "POST", "/api/v1/admin/groups/"+itoa(g.ID)+"/"+decision, map[string]any{}, http.StatusOK)
+					},
+					erase: eraseVia(eraser, victim),
+					told: func(t *testing.T) {
+						var got models.Group
+						if err := app.DB.First(&got, g.ID).Error; err != nil || got.Status != status {
+							t.Fatalf("group after the decision: %+v %v, want status %s", got, err, status)
+						}
+						if n := auditCount(t, app, action); n != 1 {
+							t.Fatalf("%d %s audit rows, want 1", n, action)
+						}
+						wantNotices(t, app, kind, map[*models.User]int64{kept: 1})
+					},
+				}
+			})
+		})
+	}
+}
+
+// N-15 and N-30 (inventory 9.2.2, gated entries): an admin re-enabling a
+// disabled account puts back their memberships and sign-ups that still fit and
+// tells them about each one that does not (DEC-47). The real operation is
+// PUT /admin/users/:id {status: active} -> apiAdminUpdateUser ->
+// contactMutation (gate first) -> lockConsentUsers (users NO KEY UPDATE, by id)
+// -> restoreMemberships (group row FOR UPDATE; membership removed, audit,
+// notifyNotRestored: N-15) -> restoreRegistrations (occurrence row FOR UPDATE;
+// registration removed, audit, notifyRegistrationNotRestored: N-30). The
+// recipient of both notices is the re-enabled person, so the person the
+// erasure removes IS the subject of the request.
+//
+// The fixture is real routes except two direct inserts: the filler's and
+// newbie's memberships (addMember) and the group's member limit, set to the
+// current count so the group is full. Sender first: the re-enable stops after
+// the first of its two notices to the victim; the delete waits on the gate;
+// both notices are recorded (the audit rows precede each send). Deletion first:
+// the request waits on the gate, then its locked read no longer finds the
+// person and answers 404 "user not found" (it was a 500 before; see the
+// errAdminTargetGone edit in api_admin.go), with no restore, no not-restored
+// audit, no notice. Not covered: the same restore from a teen-consent grant, a
+// household person's registration, and the other callers (decideAccountRequest,
+// rolloverAges), which reach the same two notifiers.
+func TestReenableNoticesSerializeWithRealAdminDelete(t *testing.T) {
+	var order string
+	runGatedErasureBarriers(t, 7402105, 7402106, func(t *testing.T) gatedErasureScene {
+		app := testApp(t)
+		admin, gid := openGroup(t, app, "Reenable race")
+		newTestUser(t, app, "eraser", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "returning", "password1234", models.RoleMember)
+		filler := newTestUser(t, app, "filler", "password1234", models.RoleMember)
+		newbie := newTestUser(t, app, "newbie", "password1234", models.RoleMember)
+		var g models.Group
+		if err := app.DB.Where("id = ?", gid).First(&g).Error; err != nil {
+			t.Fatal(err)
+		}
+		addMember(t, app, victim, &g, models.MembershipMember)
+		addMember(t, app, filler, &g, models.MembershipMember)
+		eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), false)
+		if code, body := registerAs(loginAPI(t, app, "returning", "password1234"), eventID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("victim going: %d %s", code, body)
+		}
+		apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(victim.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+		// While they are away someone takes the seat and someone takes the place.
+		if code, body := registerAs(loginAPI(t, app, "filler", "password1234"), eventID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("filler going: %d %s", code, body)
+		}
+		addMember(t, app, newbie, &g, models.MembershipMember)
+		limit := int(memberCount(app.DB, g.ID))
+		if err := app.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("member_limit", limit).Error; err != nil {
+			t.Fatal(err)
+		}
+		admin.holdNotices = true
+		eraser := loginHeld(t, app, "eraser", "password1234")
+		enable := func(name string, want int) func() error {
+			return func() error {
+				order = name
+				return doExpect(admin, "PUT", "/api/v1/admin/users/"+itoa(victim.ID), map[string]any{"status": "active"}, want)
+			}
+		}
+		return gatedErasureScene{app: app, victim: victim,
+			sends:            []string{notify.MemberNotRestored, notify.RegistrationNotRestored},
+			run:              enable("sender first", http.StatusOK),
+			runDeletionFirst: enable("deletion first", http.StatusNotFound),
+			erase:            eraseVia(eraser, victim),
+			told: func(t *testing.T) {
+				want := int64(1)
+				if order == "deletion first" {
+					want = 0 // the request found nobody to re-enable
+				}
+				for _, action := range []string{audit.MemberNotRestored, audit.RegistrationNotRestored, audit.UserEnabled} {
+					if n := auditCount(t, app, action); n != want {
+						t.Fatalf("%d %s audit rows after %s, want %d", n, action, order, want)
+					}
+				}
+			},
+		}
+	})
 }

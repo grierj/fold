@@ -318,9 +318,6 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 			Meta: meta, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		if _, err := notify.Resolve(tx, notify.RoomRequested, req.ID, &me.ID, "confirmed"); err != nil {
-			return err
-		}
 		var room models.Room
 		if err := tx.First(&room, req.RoomID).Error; err != nil {
 			return err
@@ -329,8 +326,9 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 		if len(lost) > 0 {
 			note += fmt.Sprintf(" %s busy now: pick another room for %s on the event page.", isAre(len(lost)), themIt(len(lost)))
 		}
-		_, err = notifyRoomDecided(tx, ev, me.ID, "approved", note)
-		return err
+		// Tell the leaders (which locks their user rows) BEFORE closing the admins'
+		// tasks: see settleRoomDecision.
+		return settleRoomDecision(tx, ev, req.ID, me.ID, "approved", note, "confirmed")
 	})
 	if a.requestFailed(c, id, err) {
 		return
@@ -390,9 +388,6 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 			Meta: map[string]any{"eventId": ev.ID, "roomId": req.RoomID, "dates": res.RowsAffected, "reason": reason}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		if _, err := notify.Resolve(tx, notify.RoomRequested, req.ID, &me.ID, "rejected"); err != nil {
-			return err
-		}
 		var room models.Room
 		if err := tx.First(&room, req.RoomID).Error; err != nil {
 			return err
@@ -401,8 +396,7 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 		if reason != "" {
 			note = room.Name + " wasn't approved: " + reason + " Pick another room on the event page."
 		}
-		_, err = notifyRoomDecided(tx, ev, me.ID, "not approved", note)
-		return err
+		return settleRoomDecision(tx, ev, req.ID, me.ID, "not approved", note, "rejected")
 	})
 	if a.requestFailed(c, id, err) {
 		return
@@ -423,6 +417,25 @@ func (a *App) requestFailed(c *gin.Context, id uint, err error) bool {
 		jsonError(c, http.StatusInternalServerError, "could not save the room request")
 	}
 	return true
+}
+
+// settleRoomDecision ends a decided request's notices in the one order that
+// cannot deadlock against an erasure (M7.4 R4-N, N-23): first it tells the
+// event's leaders (or hosts), which takes their user rows FOR KEY SHARE; only
+// then does it close the admins' open "room requested" tasks, which row-locks
+// each admin's task. An admin can also be a leader or host of the event, and an
+// erasure takes that person's user row FOR UPDATE and then deletes their
+// notices, task included. Closing the task first would have the decision hold
+// the task row while it waits for the user row, and the erasure hold the user
+// row while it waits for the task row. This way round both want the user row
+// first, and whoever gets it finishes before the other needs anything else.
+// Keep the send before the resolve.
+func settleRoomDecision(tx *gorm.DB, ev *models.Event, requestID, actor uint, change, note, resolution string) error {
+	if _, err := notifyRoomDecided(tx, ev, actor, change, note); err != nil {
+		return err
+	}
+	_, err := notify.Resolve(tx, notify.RoomRequested, requestID, &actor, resolution)
+	return err
 }
 
 // notifyRoomDecided tells the event's leaders (or hosts) what an admin

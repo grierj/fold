@@ -1469,3 +1469,146 @@ func TestDepartureLeaderMayRemoveDisabledAdminMember(t *testing.T) {
 		t.Fatalf("membership status=%q, want removed", got)
 	}
 }
+
+// N-24 (inventory 9.2.2, a gated entry): a member leaving a group tells the
+// group's current leaders. The real operation is POST /groups/:id/leave with a
+// preview snapshot -> departureConfirm -> contactMutation (gate first) -> the
+// group row FOR UPDATE -> lockDepartureUsers (actor and subject NO KEY UPDATE by
+// id) -> loadDepartureFacts twice (the second must match the signed snapshot)
+// -> applyDeparture: registrations, membership marked left, audit,
+// notifyDeparture -> departureLeaderIDs (listed leaders) -> notify.Send.
+//
+// The person who is erased is the group's second leader, the only kind of
+// recipient N-24 has. The preview is taken during setup, so the snapshot holds
+// the leader count of two. Sender first: the departure stops after it wrote the
+// second leader's notice; the real delete waits on the gate and removes it;
+// the other leader is told. Deletion first: the departure waits on the gate,
+// reloads its facts after the erasure (the leader count is now one) and its
+// signed snapshot no longer matches, so it answers 409 "stale" with no change:
+// the member is still in the group, nobody is told, and no audit row is written.
+// That is the only reachable deletion-first outcome for a leader recipient (the
+// facts digest covers the leader count), so Send's skip of an erased leader is
+// not reached through this entry; the plain tests cover it. Not covered: a
+// leaver with registrations (kept and ended dates), and a leaver who is a
+// leader themselves.
+func TestSelfDepartureNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	var order string
+	runGatedErasureBarriers(t, 7402127, 7402128, func(t *testing.T) gatedErasureScene {
+		f := newDepartureTestFixture(t)
+		newTestUser(t, f.app, "departure eraser", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, f.app, "departure second leader", "password1234", models.RoleMember)
+		addMember(t, f.app, victim, f.group, models.MembershipLeader)
+		preview := getDeparturePreview(t, f.subjectC, "/api/v1/groups/"+itoa(f.group.ID)+"/departure-preview", http.StatusOK)
+		f.subjectC.holdNotices = true
+		eraser := loginHeld(t, f.app, "departure eraser", "password1234")
+		body := map[string]any{"snapshot": preview.Snapshot, "keepOccurrenceIds": []uint{}}
+		leave := func(name string, want int) func() error {
+			return func() error {
+				order = name
+				return doExpect(f.subjectC, "POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", body, want)
+			}
+		}
+		return gatedErasureScene{app: f.app, victim: victim, sends: []string{notify.MembershipLeft},
+			run:              leave("sender first", http.StatusOK),
+			runDeletionFirst: leave("deletion first", http.StatusConflict),
+			erase:            eraseVia(eraser, victim),
+			told: func(t *testing.T) {
+				want, status, rows := int64(1), models.MembershipLeft, int64(1)
+				if order == "deletion first" {
+					want, status, rows = 0, "active", 0
+				}
+				if got := membershipStatus(f.app, f.subject, f.group); got != status {
+					t.Fatalf("the leaver's membership is %q after %s, want %q", got, order, status)
+				}
+				if n := contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.RoleChanged, f.group.ID); n != rows {
+					t.Fatalf("%d role audit rows for the group after %s, want %d", n, order, rows)
+				}
+				wantNotices(t, f.app, notify.MembershipLeft, map[*models.User]int64{f.leader: want})
+			},
+		}
+	})
+}
+
+// N-25 (inventory 9.2.2, a gated entry): a leader removing a member tells the
+// removed person and, when that person is a teen, their confirmed guardians. The
+// real operation is POST /groups/:id/members/:userId/departure with a preview
+// snapshot -> departureConfirm (same entry and locks as N-24) -> applyDeparture
+// -> auditAndNotifyLeadership (the removal audit) -> notifyDeparture -> the
+// subject plus contactGuardians (active adult guardians with a password) ->
+// notify.Send. Two people can be erased:
+//
+//   - the removed member (an adult). Sender first: the removal stops after it
+//     wrote their notice; the real delete waits on the gate and removes it.
+//     Deletion first: the removal waits on the gate and finds the subject gone
+//     (loadDepartureFacts answers errDepartureNotFound) and answers 404 "group
+//     not found", leaving no removal audit and no notice. The person is the
+//     subject, so Send's skip is not reached in that order.
+//   - a confirmed guardian of a removed teen. The snapshot does not cover
+//     guardians, so the removal succeeds (200) in both orders and the teen and
+//     the other guardian are told. Deletion first, contactGuardians joins users
+//     with deleted_at IS NULL, so the erased guardian is not even in the list
+//     handed to Send; this order proves the outcome and that no notice was
+//     recorded for them, not the recipient lock inside Send.
+//
+// Not covered: the legacy DELETE route (same handler), a removed member with
+// registrations (kept and ended dates), an admin remover, and the self-leave
+// variant (N-24 above). Synthetic setup: the teen's account type and the
+// confirmed guardian links are written directly.
+func TestRemovalDepartureNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	for i, who := range []string{"removed member", "guardian of a removed teen"} {
+		t.Run(who, func(t *testing.T) {
+			var order string
+			keyA := int64(7402129 + 2*i)
+			runGatedErasureBarriers(t, keyA, keyA+1, func(t *testing.T) gatedErasureScene {
+				f := newDepartureTestFixture(t)
+				newTestUser(t, f.app, "departure eraser", "password1234", models.RoleAdmin)
+				victim := f.subject
+				var kept *models.User
+				if who != "removed member" {
+					if err := f.app.DB.Model(f.subject).Update("account_type", models.AccountTeen).Error; err != nil {
+						t.Fatal(err)
+					}
+					kept = newTestUser(t, f.app, "departure guardian", "password1234", models.RoleMember)
+					victim = newTestUser(t, f.app, "departure second guardian", "password1234", models.RoleMember)
+					for _, g := range []*models.User{kept, victim} {
+						if err := f.app.DB.Create(&models.GuardianLink{GuardianUserID: g.ID, TeenUserID: &f.subject.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				preview := getDeparturePreview(t, f.leaderC, "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.subject.ID)+"/departure-preview", http.StatusOK)
+				f.leaderC.holdNotices = true
+				eraser := loginHeld(t, f.app, "departure eraser", "password1234")
+				body := map[string]any{"snapshot": preview.Snapshot, "keepOccurrenceIds": []uint{}}
+				remove := func(name string, want int) func() error {
+					return func() error {
+						order = name
+						return doExpect(f.leaderC, "POST", "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.subject.ID)+"/departure", body, want)
+					}
+				}
+				lostWant := http.StatusOK
+				if who == "removed member" {
+					lostWant = http.StatusNotFound
+				}
+				return gatedErasureScene{app: f.app, victim: victim, sends: []string{notify.MembershipDeparture},
+					run:              remove("sender first", http.StatusOK),
+					runDeletionFirst: remove("deletion first", lostWant),
+					erase:            eraseVia(eraser, victim),
+					told: func(t *testing.T) {
+						won := order == "sender first" || who != "removed member"
+						rows := int64(0)
+						if won {
+							rows = 1
+						}
+						if n := auditCount(t, f.app, audit.MemberRemoved); n != rows {
+							t.Fatalf("%d removal audit rows after %s, want %d", n, order, rows)
+						}
+						if who != "removed member" {
+							wantNotices(t, f.app, notify.MembershipDeparture, map[*models.User]int64{f.subject: 1, kept: 1})
+						}
+					},
+				}
+			})
+		})
+	}
+}
