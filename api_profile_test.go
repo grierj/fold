@@ -2,19 +2,27 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/models"
+	"fold/storage"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -388,6 +396,8 @@ func TestAvatarUploadAndDelete(t *testing.T) {
 	if u.AvatarKey != "" {
 		t.Fatalf("avatar key not cleared")
 	}
+	// The request path deletes no file; the cleanup job does.
+	drainAvatarJobs(t, app)
 	// The file is gone.
 	getW = httptest.NewRecorder()
 	app.setupRouter().ServeHTTP(getW, httptest.NewRequest("GET", resp.AvatarURL, nil))
@@ -457,6 +467,106 @@ func TestServeUploadRejectsTraversal(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("GET %s: got %d, want 404", p, w.Code)
 		}
+	}
+}
+
+// embeddingUploads wraps *storage.LocalStore the way test barriers do: Open
+// is promoted, so serving keeps working while a wrapper is installed.
+type embeddingUploads struct{ *storage.LocalStore }
+
+// noOpenUploads hides Open, like a store with no local files (S3).
+type noOpenUploads struct{ storage.Store }
+
+func writeUploadFile(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir for %s: %v", rel, err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", rel, err)
+	}
+}
+
+func getUpload(t *testing.T, app *App, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	app.setupRouter().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+	return w
+}
+
+// serveUpload hands out only the exact regular file a key names: a symlink
+// entry, a symlinked owner folder or a FIFO answers 404, and a FIFO does not
+// hang the request.
+func TestServeUploadServesOnlyRegularFiles(t *testing.T) {
+	app := testApp(t)
+	dir := app.Uploads.(*storage.LocalStore).Dir
+	writeUploadFile(t, dir, "avatars/1/real.png", "real bytes")
+	writeUploadFile(t, dir, "avatars/2/secret.png", "owner two")
+	writeUploadFile(t, dir, "covers/3/z.png", "a cover")
+	for link, target := range map[string]string{
+		"avatars/1/to-secret": "../2/secret.png",
+		"avatars/1/to-cover":  "../../covers/3/z.png",
+		"avatars/4":           "2",
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, filepath.FromSlash(link))); err != nil {
+			t.Fatalf("symlink %s: %v", link, err)
+		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "avatars/1/pipe.png"), 0o644); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	w := getUpload(t, app, "/uploads/avatars/1/real.png")
+	if w.Code != http.StatusOK || w.Body.String() != "real bytes" {
+		t.Fatalf("real file: %d %q", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("missing nosniff")
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=86400" {
+		t.Fatalf("Cache-Control %q", cc)
+	}
+	if w := getUpload(t, app, "/uploads/covers/3/z.png"); w.Code != http.StatusOK {
+		t.Fatalf("cover: %d", w.Code)
+	}
+
+	for _, p := range []string{
+		"/uploads/avatars/1/to-secret",
+		"/uploads/avatars/1/to-cover",
+		"/uploads/avatars/4/secret.png",
+		"/uploads/avatars/1/pipe.png",
+		"/uploads/avatars/1/missing.png",
+		"/uploads/avatars/1",
+		"/uploads/avatars/01/real.png",
+	} {
+		done := make(chan int, 1)
+		go func() { done <- getUpload(t, app, p).Code }()
+		select {
+		case code := <-done:
+			if code != http.StatusNotFound {
+				t.Fatalf("GET %s: %d, want 404", p, code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("GET %s blocked", p)
+		}
+	}
+}
+
+func TestServeUploadWorksThroughWrappersAndRedirectsWithoutOpen(t *testing.T) {
+	app := testApp(t)
+	local := app.Uploads.(*storage.LocalStore)
+	writeUploadFile(t, local.Dir, "avatars/1/real.png", "real bytes")
+
+	app.Uploads = &embeddingUploads{local}
+	if w := getUpload(t, app, "/uploads/avatars/1/real.png"); w.Code != http.StatusOK || w.Body.String() != "real bytes" {
+		t.Fatalf("wrapped store: %d %q", w.Code, w.Body.String())
+	}
+
+	app.Uploads = noOpenUploads{local}
+	w := getUpload(t, app, "/uploads/avatars/1/real.png")
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/uploads/avatars/1/real.png" {
+		t.Fatalf("store without Open: %d %q", w.Code, w.Header().Get("Location"))
 	}
 }
 
@@ -1293,4 +1403,544 @@ func TestGuardianLinkNoticeSerializesWithAdminErasure(t *testing.T) {
 			},
 		}
 	})
+}
+
+// Replacing a photo three times deletes nothing on the request path; any
+// number of cleanup runs afterwards leave only the latest.
+func TestAvatarReplacementLeavesOnlyTheLatest(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+	var keys []string
+	auditBefore := auditTotal(t, app)
+	for i := 0; i < 3; i++ {
+		if w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusOK {
+			t.Fatalf("upload %d: %d %s", i, w.Code, w.Body.String())
+		}
+		keys = append(keys, avatarKeyOf(t, app, u.ID))
+	}
+	if n := auditTotal(t, app); n != auditBefore {
+		t.Fatalf("uploads wrote %d audit rows", n-auditBefore)
+	}
+	assertAvatarPayloads(t, app)
+	if got := avatarFiles(t, app, u.ID); len(got) != 3 {
+		t.Fatalf("the request path removed files: %v", got)
+	}
+	if js := avatarJobsFor(t, app, u.ID); len(js) != 1 || js[0].Status != models.JobQueued {
+		t.Fatalf("three uploads with no runner should leave one queued job: %+v", js)
+	}
+	for i := 0; i < 2; i++ {
+		if err := app.runAvatarCleanup(context.Background(), u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != keys[2] {
+		t.Fatalf("files %v, want only %s", got, keys[2])
+	}
+	// A fourth upload after a run adds a fresh job, and both runs keep it.
+	if w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusOK {
+		t.Fatalf("upload D: %d", w.Code)
+	}
+	d := avatarKeyOf(t, app, u.ID)
+	drainAvatarJobs(t, app)
+	if err := app.runAvatarCleanup(context.Background(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != d {
+		t.Fatalf("files %v, want only %s", got, d)
+	}
+}
+
+// Removing again after the earlier job is dead or dismissed queues fresh work
+// even though the key is already empty, so orphans do not wait for the sweep.
+func TestAvatarRemovalQueuesFreshWorkEvenWithEmptyKey(t *testing.T) {
+	for _, status := range []string{models.JobDead, models.JobDismissed} {
+		t.Run(status, func(t *testing.T) {
+			app := testApp(t)
+			u := newTestUser(t, app, "grier", "password1234", "member")
+			c := loginAPI(t, app, "grier", "password1234")
+			writeUploadFile(t, avatarRootDir(app), fmt.Sprintf("avatars/%d/orphan.png", u.ID), "x")
+			if err := app.DB.Create(&models.Job{Kind: kindAvatarCleanup, Payload: fmt.Sprintf(`{"userId":%d}`, u.ID),
+				Status: status, MaxAttempts: 5}).Error; err != nil {
+				t.Fatal(err)
+			}
+			auditBefore := auditTotal(t, app)
+			if w := c.do("DELETE", "/api/v1/me/avatar", nil, true); w.Code != http.StatusOK {
+				t.Fatalf("remove: %d %s", w.Code, w.Body.String())
+			}
+			if c.do("DELETE", "/api/v1/me/avatar", nil, true).Code != http.StatusOK {
+				t.Fatal("second remove failed")
+			}
+			if n := auditTotal(t, app); n != auditBefore {
+				t.Fatalf("removals wrote %d audit rows", n-auditBefore)
+			}
+			if js := avatarJobsFor(t, app, u.ID); len(js) != 2 || js[1].Status != models.JobQueued {
+				t.Fatalf("jobs %+v, want the %s one plus one queued", js, status)
+			}
+			assertAvatarPayloads(t, app)
+			drainAvatarJobs(t, app)
+			if got := avatarFiles(t, app, u.ID); got != nil {
+				t.Fatalf("orphans remain: %v", got)
+			}
+		})
+	}
+}
+
+// Upload and removal recheck the session and account under the row lock. A
+// request that waited while the account changed answers 401 (or 403 for a
+// teen upload) and writes nothing.
+func TestAvatarRequestsRecheckTheAccountUnderTheLock(t *testing.T) {
+	for name, tc := range map[string]struct {
+		set    string
+		upload int
+		remove int
+	}{
+		"session bumped": {"session_version = session_version + 1", http.StatusUnauthorized, http.StatusUnauthorized},
+		"logout bumped":  {"logout_version = logout_version + 1", http.StatusUnauthorized, http.StatusUnauthorized},
+		"disabled":       {"status = 'disabled'", http.StatusUnauthorized, http.StatusUnauthorized},
+		"became a teen":  {"account_type = 'teen', birth_date = '2012-01-02'", http.StatusForbidden, http.StatusOK},
+	} {
+		for _, verb := range []string{"POST", "DELETE"} {
+			t.Run(name+" "+verb, func(t *testing.T) {
+				app := testApp(t)
+				store := installAvatarBarrier(app)
+				u, cur := avatarUser(t, app, "grier")
+				c := loginAPI(t, app, "grier", "pw")
+				holder, pid := beginOwnedTx(t, app.DB)
+				if err := holder.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", u.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				data := tinyPNG(t)
+				auditBefore := auditTotal(t, app)
+				resp := make(chan *httptest.ResponseRecorder, 1)
+				go func() {
+					if verb == "POST" {
+						resp <- c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", data)
+					} else {
+						resp <- c.do("DELETE", "/api/v1/me/avatar", nil, true)
+					}
+				}()
+				waiterOn(t, app.DB, pid)
+				if err := holder.Exec("UPDATE users SET "+tc.set+" WHERE id = ?", u.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := holder.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				var w *httptest.ResponseRecorder
+				select {
+				case w = <-resp:
+				case <-time.After(10 * time.Second):
+					t.Fatal("the request never finished")
+				}
+				want := tc.upload
+				if verb == "DELETE" {
+					want = tc.remove
+				}
+				if w.Code != want {
+					t.Fatalf("%s answered %d %s, want %d", verb, w.Code, w.Body.String(), want)
+				}
+				if want == http.StatusForbidden && !strings.Contains(w.Body.String(), "teen_avatar") {
+					t.Fatalf("teen upload: %s", w.Body.String())
+				}
+				assertNoAvatarLeak(t, app, "response", w.Body.String(), cur, strings.TrimSuffix(strings.TrimPrefix(cur, "avatars/"+itoa(u.ID)+"/"), ".png"))
+				if n := auditTotal(t, app); n != auditBefore {
+					t.Fatalf("an avatar request wrote %d audit rows", n-auditBefore)
+				}
+				if store.putCount() != 0 {
+					t.Fatal("a file was put")
+				}
+				jobsMade := len(avatarJobsFor(t, app, u.ID))
+				switch {
+				case verb == "DELETE" && want == http.StatusOK:
+					if avatarKeyOf(t, app, u.ID) != "" || jobsMade != 1 {
+						t.Fatalf("teen removal: key %q, %d jobs", avatarKeyOf(t, app, u.ID), jobsMade)
+					}
+				default:
+					if avatarKeyOf(t, app, u.ID) != cur || jobsMade != 0 {
+						t.Fatalf("key %q, %d jobs after a refused request", avatarKeyOf(t, app, u.ID), jobsMade)
+					}
+					if got := avatarFiles(t, app, u.ID); len(got) != 1 {
+						t.Fatalf("files %v", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A row held past the 5 second lock_timeout makes upload and removal answer
+// 500 without a Put, a file or a job.
+func TestAvatarRequestsGiveUpWaitingForTheRow(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	u, cur := avatarUser(t, app, "grier")
+	c := loginAPI(t, app, "grier", "pw")
+	holder, _ := beginOwnedTx(t, app.DB)
+	if err := holder.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", u.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	if d := time.Since(start); d > 8*time.Second {
+		t.Fatalf("upload took %s", d)
+	}
+	start = time.Now()
+	w = c.do("DELETE", "/api/v1/me/avatar", nil, true)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("removal: %d %s", w.Code, w.Body.String())
+	}
+	if d := time.Since(start); d > 8*time.Second {
+		t.Fatalf("removal took %s", d)
+	}
+	if store.putCount() != 0 || avatarKeyOf(t, app, u.ID) != cur || len(avatarJobsFor(t, app, u.ID)) != 0 || len(avatarFiles(t, app, u.ID)) != 1 {
+		t.Fatal("a refused request left something behind")
+	}
+}
+
+// Put under the row lock is bounded at 10 seconds: a store that never
+// answers ends the upload with a 500 at about that time, with the key, the
+// folder and the queue as they were, and the row is free again.
+func TestAvatarPutUnderTheLockIsBoundedAtTenSeconds(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	store.putGate = make(chan struct{}) // never opened; Put honors its context
+	u, cur := avatarUser(t, app, "grier")
+	c := loginAPI(t, app, "grier", "pw")
+	start := time.Now()
+	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
+	d := time.Since(start)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	if d < avatarPutTimeout-time.Second || d > avatarPutTimeout+4*time.Second {
+		t.Fatalf("upload ended after %s, want about %s", d, avatarPutTimeout)
+	}
+	if avatarKeyOf(t, app, u.ID) != cur || len(avatarJobsFor(t, app, u.ID)) != 0 || len(avatarFiles(t, app, u.ID)) != 1 {
+		t.Fatal("a store that never answered left something behind")
+	}
+	if w := c.do("DELETE", "/api/v1/me/avatar", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("removal after the timed-out upload: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A body that takes longer than the handler's budget leaves a deadline
+// already past: the upload answers 500 with no Put, no file and no job. The
+// body is a real slow read, so this takes about 52 seconds.
+func TestSlowUploadBodyLeavesNoTimeForTheTransaction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reads a request body for 52 seconds")
+	}
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	u := newTestUser(t, app, "grier", "pw", "member")
+	c := loginAPI(t, app, "grier", "pw")
+	data := tinyPNG(t)
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		fw, err := mw.CreateFormFile("avatar", "me.png")
+		if err == nil {
+			_, err = fw.Write(data)
+		}
+		// The closing boundary arrives after the handler's whole budget.
+		time.Sleep(avatarHandlerBudget + 2*time.Second)
+		if err == nil {
+			err = mw.Close()
+		}
+		pw.CloseWithError(err)
+	}()
+	req := httptest.NewRequest("POST", "/api/v1/me/avatar", pr)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	for _, ck := range c.jar {
+		req.AddCookie(ck)
+	}
+	req.Header.Set("X-CSRF-Token", c.token)
+	w := httptest.NewRecorder()
+	c.router.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("slow upload: %d %s", w.Code, w.Body.String())
+	}
+	if store.putCount() != 0 || avatarFiles(t, app, u.ID) != nil || len(avatarJobsFor(t, app, u.ID)) != 0 {
+		t.Fatal("a late upload left something behind")
+	}
+}
+
+// storeAvatar with a snapshot from before an erasure, or a deadline already
+// past, makes no Put, no folder and no job.
+func TestStoreAvatarRefusesStaleSnapshotAndPastDeadline(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	u := newTestUser(t, app, "grier", "pw", "member")
+	data := tinyPNG(t)
+	store1 := func(deadline time.Time) error {
+		_, err := app.storeAvatar(context.Background(), u, bytes.NewReader(data), int64(len(data)), "image/png", deadline)
+		return err
+	}
+	if err := store1(time.Now().Add(-time.Second)); !errors.Is(err, errAvatarOutOfDate) {
+		t.Fatalf("a past deadline: %v", err)
+	}
+	if store.putCount() != 0 || avatarFiles(t, app, u.ID) != nil || len(avatarJobsFor(t, app, u.ID)) != 0 {
+		t.Fatal("a past deadline left something behind")
+	}
+	if err := app.DB.Exec("UPDATE users SET deleted_at = now(), session_version = session_version + 1 WHERE id = ?", u.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store1(time.Now().Add(time.Minute)); !errors.Is(err, errSecuritySession) {
+		t.Fatalf("stale snapshot: %v", err)
+	}
+	if store.putCount() != 0 || avatarFiles(t, app, u.ID) != nil || len(avatarJobsFor(t, app, u.ID)) != 0 {
+		t.Fatal("a refused store left something behind")
+	}
+}
+
+// installFailAvatarCommit makes any change to users.avatar_key fail at COMMIT.
+func installFailAvatarCommit(t *testing.T, app *App) {
+	t.Helper()
+	for _, q := range []string{
+		`CREATE FUNCTION fold_test_fail_avatar_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'commit refused'; END $$`,
+		`CREATE CONSTRAINT TRIGGER fold_test_fail_avatar_commit AFTER UPDATE ON users DEFERRABLE INITIALLY DEFERRED
+			FOR EACH ROW WHEN (OLD.avatar_key IS DISTINCT FROM NEW.avatar_key) EXECUTE FUNCTION fold_test_fail_avatar_commit()`,
+	} {
+		if err := app.DB.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_fail_avatar_commit ON users")
+		app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_fail_avatar_commit()")
+	})
+}
+
+func TestAvatarUploadWithFailedCommitKeepsOldPhotoAndQueuesFallback(t *testing.T) {
+	for _, rejectJobs := range []bool{false, true} {
+		t.Run(fmt.Sprintf("jobs rejected %v", rejectJobs), func(t *testing.T) {
+			app := testApp(t)
+			store := installAvatarBarrier(app)
+			u := newTestUser(t, app, "grier", "password1234", "member")
+			c := loginAPI(t, app, "grier", "password1234")
+			if w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusOK {
+				t.Fatalf("first upload: %d", w.Code)
+			}
+			drainAvatarJobs(t, app)
+			oldKey := avatarKeyOf(t, app, u.ID)
+			// The first upload's cleanup job stays as a done row; only rows newer
+			// than this mark came from the failed upload.
+			var mark uint
+			for _, j := range avatarJobsFor(t, app, u.ID) {
+				mark = max(mark, j.ID)
+			}
+			installFailAvatarCommit(t, app)
+			if rejectJobs {
+				installRejectAvatarJobs(t, app)
+			}
+			w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("upload with a failing commit: %d %s", w.Code, w.Body.String())
+			}
+			if store.putCount() != 2 {
+				t.Fatalf("%d puts, want the first upload and the failed one", store.putCount())
+			}
+			if avatarKeyOf(t, app, u.ID) != oldKey {
+				t.Fatal("the key changed")
+			}
+			if got := avatarFiles(t, app, u.ID); len(got) != 2 {
+				t.Fatalf("files %v, want the old photo and the new orphan", got)
+			}
+			if w := getUpload(t, app, "/uploads/"+oldKey); w.Code != http.StatusOK {
+				t.Fatalf("old photo: %d", w.Code)
+			}
+			queued := []models.Job{}
+			for _, j := range avatarJobsFor(t, app, u.ID) {
+				if j.ID > mark {
+					queued = append(queued, j)
+				}
+			}
+			if rejectJobs {
+				if len(queued) != 0 {
+					t.Fatalf("a job was written despite the failing insert: %+v", queued)
+				}
+				app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_reject_avatar_jobs ON jobs")
+				if err := app.sweepAvatars(context.Background(), time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			} else if len(queued) != 1 {
+				t.Fatalf("fallback jobs: %+v", queued)
+			}
+			assertAvatarPayloads(t, app)
+			drainAvatarJobs(t, app)
+			if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != oldKey {
+				t.Fatalf("files %v, want only the old photo", got)
+			}
+			if w := getUpload(t, app, "/uploads/"+oldKey); w.Code != http.StatusOK {
+				t.Fatalf("old photo after cleanup: %d", w.Code)
+			}
+		})
+	}
+}
+
+// Successive replacements, with cleanup runs interleaved (one starting before
+// the last upload commits and waiting on its lock), leave only the latest.
+// A job that failed once is not coalesced into a later upload's work: both
+// runs keep the newer photo.
+func TestAvatarReplacementsInterleavedWithCleanupKeepOnlyTheLatest(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	u := newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+	upload := func() int {
+		return c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)).Code
+	}
+	only := func(step string) string {
+		t.Helper()
+		key := avatarKeyOf(t, app, u.ID)
+		if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != key {
+			t.Fatalf("after %s: files %v, want only %s", step, got, key)
+		}
+		return key
+	}
+	if upload() != http.StatusOK {
+		t.Fatal("upload A")
+	}
+	if err := app.runAvatarCleanup(context.Background(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	a := only("A")
+	if upload() != http.StatusOK {
+		t.Fatal("upload B")
+	}
+	if err := app.runAvatarCleanup(context.Background(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := only("B"); b == a {
+		t.Fatal("B replaced nothing")
+	}
+
+	// C is held inside Put while a cleanup run waits on the row.
+	store.forgetSignals()
+	store.putGate = make(chan struct{})
+	resp := make(chan int, 1)
+	go func() { resp <- upload() }()
+	awaitSignal(t, store.putEntered)
+	cleanup := make(chan error, 1)
+	go func() { cleanup <- app.runAvatarCleanup(context.Background(), u.ID) }()
+	waitForLockedUsersQuery(t, app, "%users%FOR NO KEY UPDATE%")
+	close(store.putGate)
+	if code := <-resp; code != http.StatusOK {
+		t.Fatalf("upload C: %d", code)
+	}
+	if err := <-cleanup; err != nil {
+		t.Fatal(err)
+	}
+	cKey := only("C")
+	// Runs in any order, any number of times, change nothing more.
+	drainAvatarJobs(t, app)
+	for i := 0; i < 2; i++ {
+		if err := app.runAvatarCleanup(context.Background(), u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := only("repeated runs"); got != cKey {
+		t.Fatalf("the key moved to %s", got)
+	}
+
+	// A job that failed once: the first CleanOwner returns an error.
+	store.mu.Lock()
+	store.cleanErr = errors.New("storage unavailable")
+	store.mu.Unlock()
+	if upload() != http.StatusOK {
+		t.Fatal("upload for the failing job")
+	}
+	drainAvatarJobs(t, app)
+	failed := avatarJobsFor(t, app, u.ID)
+	last := failed[len(failed)-1]
+	if last.Status != models.JobFailed || last.LastError != errAvatarCleanupFailed.Error() {
+		t.Fatalf("the failing job: %+v", last)
+	}
+	store.mu.Lock()
+	store.cleanErr = nil
+	store.mu.Unlock()
+	if upload() != http.StatusOK {
+		t.Fatal("upload D")
+	}
+	d := avatarKeyOf(t, app, u.ID)
+	after := avatarJobsFor(t, app, u.ID)
+	if len(after) != len(failed)+1 || after[len(after)-1].Status != models.JobQueued || after[len(after)-1].UniqueKey != nil {
+		t.Fatalf("upload D after a failed job should add a fresh queued row: %+v", after)
+	}
+	if err := app.DB.Model(&models.Job{}).Where("id = ?", last.ID).Update("run_at", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	drainAvatarJobs(t, app)
+	if got := only("both runs"); got != d {
+		t.Fatalf("files kept %s, want %s", got, d)
+	}
+	for _, j := range avatarJobsFor(t, app, u.ID) {
+		if j.Status != models.JobDone {
+			t.Fatalf("job %d is %s", j.ID, j.Status)
+		}
+	}
+	assertAvatarPayloads(t, app)
+}
+
+// A cleanup that starts while an upload is held inside Put waits for the row,
+// then keeps the new photo and removes the old one; the upload's own job
+// keeps it too.
+func TestAvatarCleanupWaitsForBlockedUploadAndKeepsTheNewPhoto(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	u := newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+	if w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusOK {
+		t.Fatalf("first upload: %d", w.Code)
+	}
+	drainAvatarJobs(t, app)
+	oldKey := avatarKeyOf(t, app, u.ID)
+
+	store.forgetSignals()
+	store.putGate = make(chan struct{})
+	resp := make(chan int, 1)
+	go func() {
+		resp <- c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)).Code
+	}()
+	awaitSignal(t, store.putEntered)
+	cleanup := make(chan error, 1)
+	go func() { cleanup <- app.runAvatarCleanup(context.Background(), u.ID) }()
+	waitForLockedUsersQuery(t, app, "%users%FOR NO KEY UPDATE%")
+	select {
+	case err := <-cleanup:
+		t.Fatalf("the cleanup ran while the upload held the row: %v", err)
+	default:
+	}
+	close(store.putGate)
+	if code := <-resp; code != http.StatusOK {
+		t.Fatalf("upload: %d", code)
+	}
+	select {
+	case err := <-cleanup:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cleanup never finished")
+	}
+	newKey := avatarKeyOf(t, app, u.ID)
+	if newKey == oldKey {
+		t.Fatal("the upload kept the old key")
+	}
+	if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != newKey {
+		t.Fatalf("files %v, want only the new photo", got)
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, u.ID); len(got) != 1 || "avatars/"+itoa(u.ID)+"/"+got[0] != newKey {
+		t.Fatalf("after the upload's own job: files %v", got)
+	}
+	if w := getUpload(t, app, "/uploads/"+newKey); w.Code != http.StatusOK {
+		t.Fatalf("new photo: %d", w.Code)
+	}
 }

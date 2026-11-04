@@ -455,8 +455,11 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// apiUploadAvatar replaces the current user's avatar.
+// apiUploadAvatar replaces the current user's avatar. The file is stored and
+// the key switched under the user's row lock; old files are removed later by
+// the avatar.cleanup job (avatar_cleanup.go), never on this path.
 func (a *App) apiUploadAvatar(c *gin.Context) {
+	start := requestStart(c)
 	u := apiUser(c)
 	if !policy.CanUploadAvatar(asPerson(u)) {
 		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
@@ -475,8 +478,15 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "server error")
 		return
 	}
-	avatarURL, err := a.saveAvatar(c.Request.Context(), u, tmp, st.Size(), mime)
-	if err != nil {
+	avatarURL, err := a.storeAvatar(c.Request.Context(), u, tmp, st.Size(), mime, avatarTxDeadline(start, time.Now()))
+	switch {
+	case errors.Is(err, errSecuritySession):
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	case errors.Is(err, errTeenAvatar):
+		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
+		return
+	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not store avatar")
 		return
 	}
@@ -484,46 +494,19 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"avatarUrl": avatarURL})
 }
 
-// saveAvatar stores r as the user's avatar and deletes the previous blob.
-func (a *App) saveAvatar(ctx context.Context, u *models.User, r io.Reader, size int64, mime string) (string, error) {
-	ext, ok := allowedImageTypes[mime]
-	if !ok {
-		return "", fmt.Errorf("only JPEG, PNG, and GIF images are allowed")
-	}
-	id, err := randomHex(16)
-	if err != nil {
-		return "", err
-	}
-	key := storage.NewKey("avatars", strconv.FormatUint(uint64(u.ID), 10), id, strings.TrimPrefix(ext, "."))
-	if err := a.Uploads.Put(ctx, key, r, size, mime); err != nil {
-		return "", err
-	}
-	old := u.AvatarKey
-	if err := a.DB.Model(u).Update("avatar_key", key).Error; err != nil {
-		_ = a.Uploads.Delete(ctx, key)
-		return "", err
-	}
-	if old != "" {
-		_ = a.Uploads.Delete(ctx, old)
-	}
-	u.AvatarKey = key
-	return a.Uploads.URL(key), nil
-}
-
 // apiDeleteAvatar removes the current user's avatar.
 func (a *App) apiDeleteAvatar(c *gin.Context) {
+	start := requestStart(c)
 	u := apiUser(c)
-	if u.AvatarKey == "" {
-		c.JSON(http.StatusOK, gin.H{})
+	err := a.removeAvatar(c.Request.Context(), u, avatarTxDeadline(start, start))
+	switch {
+	case errors.Is(err, errSecuritySession):
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
 		return
-	}
-	old := u.AvatarKey
-	if err := a.DB.Model(u).Update("avatar_key", "").Error; err != nil {
+	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not remove avatar")
 		return
 	}
-	_ = a.Uploads.Delete(c.Request.Context(), old)
-	u.AvatarKey = ""
 	c.Set("apiUser", u)
 	c.JSON(http.StatusOK, gin.H{})
 }
@@ -562,7 +545,7 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "server error")
 		return
 	}
-	key := storage.NewKey("covers", strconv.Itoa(int(g.ID)), rid, strings.TrimPrefix(ext, "."))
+	key := storage.NewKey(storage.KindCovers, strconv.Itoa(int(g.ID)), rid, strings.TrimPrefix(ext, "."))
 	st, err := tmp.Stat()
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "server error")
@@ -612,24 +595,24 @@ func (a *App) serveUpload(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	local, ok := a.Uploads.(*storage.LocalStore)
+	// Open returns only a regular file that is the exact entry named, never
+	// a symlink's target. A wrapper that embeds *storage.LocalStore promotes
+	// it; a store without Open (S3) redirects.
+	opener, ok := a.Uploads.(interface {
+		Open(key string) (*os.File, error)
+	})
 	if !ok {
 		c.Redirect(http.StatusFound, a.Uploads.URL(key))
 		return
 	}
-	path, err := local.LocalPath(key)
-	if err != nil {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	f, err := os.Open(path)
+	f, err := opener.Open(key)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || st.IsDir() {
+	if err != nil || !st.Mode().IsRegular() {
 		c.Status(http.StatusNotFound)
 		return
 	}

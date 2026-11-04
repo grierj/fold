@@ -156,3 +156,30 @@ func TestDeadJobAlertSerializesWithAdminErasure(t *testing.T) {
 		}
 	})
 }
+
+// The avatar cleanup and its recovery sweep are registered where the runner,
+// the System page and the dead-job alert find them.
+func TestAvatarJobKindsAreRegistered(t *testing.T) {
+	app := testApp(t)
+	find := func(kinds []jobs.Kind, name string) (jobs.Kind, bool) {
+		for _, k := range kinds {
+			if k.Name == name {
+				return k, true
+			}
+		}
+		return jobs.Kind{}, false
+	}
+	sweep, ok := find(app.dailyKinds(), "avatar.sweep")
+	if !ok || !sweep.Daily || sweep.Label != "Finding leftover profile photos" || sweep.MaxAttempts != jobs.DefaultMaxAttempts {
+		t.Fatalf("avatar.sweep: %+v %v", sweep, ok)
+	}
+	cleanup, ok := find(app.backgroundKinds(), "avatar.cleanup")
+	if !ok || cleanup.Daily || cleanup.Label != "Removing old profile photos" || cleanup.MaxAttempts != jobs.DefaultMaxAttempts {
+		t.Fatalf("avatar.cleanup: %+v %v", cleanup, ok)
+	}
+	for _, name := range []string{"avatar.sweep", "avatar.cleanup"} {
+		if _, ok := app.jobKinds()[name]; !ok {
+			t.Errorf("%s is missing from jobKinds", name)
+		}
+	}
+}

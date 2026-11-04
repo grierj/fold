@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/models"
 	"net/http"
@@ -1597,4 +1601,328 @@ func TestReenableNoticesSerializeWithRealAdminDelete(t *testing.T) {
 			},
 		}
 	})
+}
+
+// Erasure clears the account's avatar key and queues photo cleanup in its own
+// transaction. The request deletes no file; the job removes the folder, even
+// the orphans an earlier job did not know about.
+func TestAdminDeleteClearsAvatarKeyAndQueuesCleanup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target := newTestUser(t, app, "target", "pw", models.RoleMember)
+	adminC := loginAPI(t, app, "admin", "pw")
+	targetC := loginAPI(t, app, "target", "pw")
+	if w := targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusOK {
+		t.Fatalf("upload: %d", w.Code)
+	}
+	drainAvatarJobs(t, app) // the upload's job is done, so erasure must queue a fresh one
+	writeUploadFile(t, avatarRootDir(app), fmt.Sprintf("avatars/%d/.tmp-orphan", target.ID), "x")
+
+	if w := adminC.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true); w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	var gone models.User
+	if err := app.DB.Unscoped().First(&gone, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gone.AvatarKey != "" || gone.DeletedAt.Time.IsZero() {
+		t.Fatalf("after erasure: key %q deleted_at %v", gone.AvatarKey, gone.DeletedAt)
+	}
+	js := avatarJobsFor(t, app, target.ID)
+	if len(js) != 2 || js[0].Status != models.JobDone || js[1].Status != models.JobQueued || js[1].UniqueKey != nil {
+		t.Fatalf("jobs after erasure: %+v", js)
+	}
+	if got := avatarFiles(t, app, target.ID); len(got) != 2 {
+		t.Fatalf("the request removed files: %v", got)
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, target.ID); got != nil {
+		t.Fatalf("folder remains: %v", got)
+	}
+	var audits []models.AuditLog
+	app.DB.Where("action = ? AND target_id = ?", audit.UserDeleted, target.ID).Find(&audits)
+	if len(audits) != 1 || strings.Contains(audits[0].MetaJSON, "avatar") {
+		t.Fatalf("audit rows: %+v", audits)
+	}
+	row, err := json.Marshal(audits[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoAvatarLeak(t, app, "erasure audit row", string(row), gone.Email)
+	assertAvatarPayloads(t, app)
+	// The erased person's open session is over: an upload now is a 401.
+	w := targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("upload after erasure: %d %s", w.Code, w.Body.String())
+	}
+	assertNoAvatarLeak(t, app, "response", w.Body.String())
+	if got := avatarFiles(t, app, target.ID); got != nil {
+		t.Fatalf("an upload after erasure left %v", got)
+	}
+}
+
+// A rolled-back erasure leaves the key, the file and the queue as they were.
+func TestAdminDeleteRolledBackLeavesPhotoAlone(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target, cur := avatarUser(t, app, "target", "old.png")
+	adminC := loginAPI(t, app, "admin", "pw")
+	for _, q := range []string{
+		`CREATE FUNCTION fold_test_refuse_erasure() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN RAISE EXCEPTION 'erasure refused'; END $$`,
+		fmt.Sprintf(`CREATE TRIGGER fold_test_refuse_erasure BEFORE UPDATE ON users FOR EACH ROW
+			WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL AND OLD.id = %d) EXECUTE FUNCTION fold_test_refuse_erasure()`, target.ID),
+	} {
+		if err := app.DB.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_refuse_erasure ON users")
+		app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_refuse_erasure()")
+	})
+	w := adminC.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	assertNoAvatarLeak(t, app, "response", w.Body.String(), cur)
+	if avatarKeyOf(t, app, target.ID) != cur || len(avatarJobsFor(t, app, target.ID)) != 0 {
+		t.Fatal("a rolled-back erasure changed the key or queued work")
+	}
+	if got := avatarFiles(t, app, target.ID); len(got) != 2 {
+		t.Fatalf("a rolled-back erasure removed files: %v", got)
+	}
+	if err := app.runAvatarCleanup(context.Background(), target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := avatarFiles(t, app, target.ID); len(got) != 1 || got[0] != "current.png" {
+		t.Fatalf("files %v", got)
+	}
+	// The sweep treats the person as live and keeps the photo.
+	writeUploadFile(t, avatarRootDir(app), fmt.Sprintf("avatars/%d/.tmp-left", target.ID), "x")
+	if err := app.sweepAvatarsLimit(context.Background(), time.Now(), avatarSweepLimit); err != nil {
+		t.Fatal(err)
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, target.ID); len(got) != 1 || got[0] != "current.png" || avatarKeyOf(t, app, target.ID) != cur {
+		t.Fatalf("after the sweep: files %v key %q", got, avatarKeyOf(t, app, target.ID))
+	}
+	if w := getUpload(t, app, "/uploads/"+cur); w.Code != http.StatusOK {
+		t.Fatalf("GET photo: %d", w.Code)
+	}
+}
+
+// Upload first: the blocked Put holds the user row, erasure (behind the
+// contact gate) waits on it, and after the upload commits erasure clears the
+// new key and queues cleanup, which removes the new file too.
+func TestAdminDeleteWaitsForBlockedUploadThenClearsTheNewPhoto(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	store.putGate = make(chan struct{})
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target := newTestUser(t, app, "target", "pw", models.RoleMember)
+	adminC := loginAPI(t, app, "admin", "pw")
+	targetC := loginAPI(t, app, "target", "pw")
+	data := tinyPNG(t)
+	upload := make(chan int, 1)
+	go func() { upload <- targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", data).Code }()
+	awaitSignal(t, store.putEntered)
+	code := deleteUserAsync(adminC, target.ID)
+	waitForRowLockWaiter(t, app)
+	close(store.putGate)
+	select {
+	case c := <-upload:
+		if c != http.StatusOK {
+			t.Fatalf("upload answered %d", c)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("upload never finished")
+	}
+	if c := awaitCode(t, code); c != http.StatusOK {
+		t.Fatalf("erasure answered %d", c)
+	}
+	var gone models.User
+	if err := app.DB.Unscoped().First(&gone, target.ID).Error; err != nil || gone.AvatarKey != "" {
+		t.Fatalf("after erasure: key %q err %v", gone.AvatarKey, err)
+	}
+	// The upload's job was still queued when erasure ran, so erasure added no
+	// second row; the one job reads the cleared key.
+	if js := avatarJobsFor(t, app, target.ID); len(js) != 1 || js[0].Status != models.JobQueued {
+		t.Fatalf("jobs after erasure: %+v", js)
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, target.ID); got != nil {
+		t.Fatalf("folder remains: %v", got)
+	}
+	if js := avatarJobsFor(t, app, target.ID); len(js) != 1 || js[0].Status != models.JobDone {
+		t.Fatalf("jobs after the drain: %+v", js)
+	}
+	if n := auditCount(t, app, audit.UserDeleted); n != 1 {
+		t.Fatalf("%d erasure audit rows", n)
+	}
+	assertAvatarPayloads(t, app)
+}
+
+// Cleanup first: a cleanup run holds the user row inside the store. Erasure,
+// already holding the contact gate, waits on the row while that run holds
+// no gate itself. On release the cleanup finishes and keeps the key it read;
+// erasure then commits, adds a fresh job (the earlier one was running) and
+// the second run empties the folder.
+func TestAdminDeleteWaitsForRunningCleanup(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	store.cleanGate = make(chan struct{})
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target, cur := avatarUser(t, app, "target", "old.png")
+	adminC := loginAPI(t, app, "admin", "pw")
+	queueCleanup(t, app, target.ID)
+
+	ran := make(chan error, 1)
+	go func() {
+		_, err := jobs.NewRunner(app.DB, app.avatarKinds()...).RunOnce(context.Background(), "test:cleanup")
+		ran <- err
+	}()
+	awaitSignal(t, store.cleanEntered)
+	code := deleteUserAsync(adminC, target.ID)
+	erasurePID := waitForRowLockWaiter(t, app)
+	if n := advisoryLocksHeldBy(t, app, erasurePID); n < 1 {
+		t.Fatal("the waiting erasure does not hold the contact gate")
+	}
+	select {
+	case c := <-code:
+		t.Fatalf("erasure answered %d while the cleanup held the row", c)
+	default:
+	}
+	close(store.cleanGate)
+	if err := <-ran; err != nil {
+		t.Fatal(err)
+	}
+	if c := awaitCode(t, code); c != http.StatusOK {
+		t.Fatalf("erasure answered %d", c)
+	}
+	// The run kept the photo it read under the lock; erasure had not yet
+	// cleared it.
+	js := avatarJobsFor(t, app, target.ID)
+	if len(js) != 2 || js[0].Status != models.JobDone || js[1].Status != models.JobQueued || js[1].UniqueKey != nil {
+		t.Fatalf("jobs %+v", js)
+	}
+	if got := avatarFiles(t, app, target.ID); len(got) != 1 || got[0] != "current.png" {
+		t.Fatalf("files after the first run %v (key was %s)", got, cur)
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, target.ID); got != nil {
+		t.Fatalf("folder remains: %v", got)
+	}
+	var gone models.User
+	if err := app.DB.Unscoped().First(&gone, target.ID).Error; err != nil || gone.AvatarKey != "" || gone.DeletedAt.Time.IsZero() {
+		t.Fatalf("after erasure: key %q deleted %v err %v", gone.AvatarKey, gone.DeletedAt, err)
+	}
+	if n := auditCount(t, app, audit.UserDeleted); n != 1 {
+		t.Fatalf("%d erasure audit rows, want 1", n)
+	}
+	assertAvatarPayloads(t, app)
+}
+
+// Erasure first, behind a long hold: a trigger sleeps 10 seconds inside the
+// erasure's own transaction, which holds the user row. An upload with a
+// still-valid session gives up on the row after its 5 second lock timeout:
+// 500, no Put, no file, no job. Erasure then commits, and the next upload is
+// a 401. The test asserts nothing about the order Postgres serves waiters.
+func TestAvatarUploadBehindALongErasureHoldGivesUpThenIsRefused(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target, cur := avatarUser(t, app, "target", "old.png")
+	adminC := loginAPI(t, app, "admin", "pw")
+	targetC := loginAPI(t, app, "target", "pw")
+	for _, q := range []string{
+		`CREATE FUNCTION fold_test_slow_erasure() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$`,
+		fmt.Sprintf(`CREATE TRIGGER fold_test_slow_erasure BEFORE UPDATE ON users FOR EACH ROW
+			WHEN (OLD.id = %d AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL) EXECUTE FUNCTION fold_test_slow_erasure()`, target.ID),
+	} {
+		if err := app.DB.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_slow_erasure ON users")
+		app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_slow_erasure()")
+	})
+
+	code := deleteUserAsync(adminC, target.ID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var sleeping int
+		if err := app.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'PgSleep'").Scan(&sleeping).Error; err != nil {
+			t.Fatal(err)
+		}
+		if sleeping > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the erasure never started sleeping")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	start := time.Now()
+	w := targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
+	d := time.Since(start)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("upload behind the hold: %d %s", w.Code, w.Body.String())
+	}
+	if d < 4*time.Second || d > 8*time.Second {
+		t.Fatalf("upload gave up after %s, want about 5s", d)
+	}
+	assertNoAvatarLeak(t, app, "response", w.Body.String(), cur)
+	if store.putCount() != 0 || len(avatarJobsFor(t, app, target.ID)) != 0 || len(avatarFiles(t, app, target.ID)) != 2 {
+		t.Fatal("the refused upload left a Put, a job or a file")
+	}
+	if c := awaitCode(t, code); c != http.StatusOK {
+		t.Fatalf("erasure answered %d", c)
+	}
+	if w := targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t)); w.Code != http.StatusUnauthorized {
+		t.Fatalf("upload after the erasure: %d %s", w.Code, w.Body.String())
+	}
+	if store.putCount() != 0 {
+		t.Fatal("a Put ran for an erased account")
+	}
+	drainAvatarJobs(t, app)
+	if got := avatarFiles(t, app, target.ID); got != nil {
+		t.Fatalf("folder remains: %v", got)
+	}
+}
+
+// Erasure first with a stale snapshot: storeAvatar called with a session read
+// before a committed erasure refuses, makes no Put, creates no folder and
+// queues no job.
+func TestStoreAvatarWithSnapshotFromBeforeErasureRefuses(t *testing.T) {
+	app := testApp(t)
+	store := installAvatarBarrier(app)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target := newTestUser(t, app, "target", "pw", models.RoleMember)
+	adminC := loginAPI(t, app, "admin", "pw")
+	var snapshot models.User
+	if err := app.DB.First(&snapshot, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := adminC.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true); w.Code != http.StatusOK {
+		t.Fatalf("delete: %d", w.Code)
+	}
+	data := tinyPNG(t)
+	_, err := app.storeAvatar(context.Background(), &snapshot, bytes.NewReader(data), int64(len(data)), "image/png", time.Now().Add(time.Minute))
+	if !errors.Is(err, errSecuritySession) {
+		t.Fatalf("got %v, want the session error", err)
+	}
+	if store.putCount() != 0 || avatarFiles(t, app, target.ID) != nil {
+		t.Fatal("a stale snapshot stored something")
+	}
+	for _, j := range avatarJobsFor(t, app, target.ID) {
+		if j.Status != models.JobQueued {
+			t.Fatalf("job %+v", j)
+		}
+	}
+	if n := len(avatarJobsFor(t, app, target.ID)); n != 1 {
+		t.Fatalf("%d jobs, want only the erasure's", n)
+	}
 }

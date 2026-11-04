@@ -187,6 +187,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - Docker: the image pins `WORKDIR /` and pre-creates `/data/uploads` with `--chown=65532:65532` so
   the nonroot app can write to a fresh volume. Compose mounts the named volume `uploads` at
   `/data`; do not drop it (an anonymous volume is discarded on `up --build`).
+- Avatar blobs are removed only by the `avatar.cleanup` job (payload `{userId}`, queued with `queueAvatarCleanup` in the same transaction as the key change, under the user row lock, every user-row hold bounded by a context deadline; `avatar_cleanup.go`). A row keeps its current key unless `deleted_at` is set. `LocalStore` works through `os.Root` with Lstat, open and `SameFile` binding at every directory and entry, and loops `ReadDir` to its cap. A new `Store` must meet the `CleanOwner` and `ScanOwners` contract with exact `<kind>/<id>/` prefixes and `CleanBatch`-sized calls. A store that serves local files must also meet the optional `Open` contract.
 
 ## Web push
 
