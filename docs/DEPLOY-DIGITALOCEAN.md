@@ -411,6 +411,42 @@ again. Take a Droplet snapshot before a risky upgrade (the paid command
 in section 5). Migrations run when the app starts. A failed migration
 exits non-zero and `smoke.sh` fails; roll back with the command above.
 
+### Upgrade notes: suppression address hashes (M7.4 R4-S)
+
+The release that adds migration `00002` adds a nullable `address_hash` column
+to `suppressions` and fills it for every existing row. Read this before you
+upgrade.
+
+- **A lock for the length of the migration.** The migration takes an exclusive
+  lock on the `suppressions` table and keeps it until the migration commits.
+  The time grows with the number of rows; Fold keeps cleared suppressions
+  forever, so a long-running church has more of them. The release PR records
+  times measured on one host. Those are measurements, not limits.
+- **On this guide's path nothing waits.** `upgrade.sh` and `provision.sh` run
+  `docker compose up -d`, which stops the old app before the new one starts.
+  The new app migrates before it listens, so `/healthz` does not answer
+  until the migration finishes. The Compose health check may show the app as
+  unhealthy for a while on a large table and recovers once it serves.
+  `smoke.sh` waits 180 seconds by default; on a big table pass `--timeout`
+  (up to 600) so it does not give up early.
+- **Do not run `fold migrate up` by hand against a running server for this
+  release.** Every mail send, message preview and notification email reads
+  `suppressions`, so each one waits until the migration commits.
+- **If the lock is not free within 5 seconds** the migration fails, applies
+  nothing and the app does not start. That is the failed-migration case above:
+  `smoke.sh` fails and you roll back with `upgrade.sh --rollback`.
+- **Rolling back.** `upgrade.sh --rollback` restores the dump taken before the
+  upgrade (`pg_restore --clean --if-exists`) and starts the previous image or
+  commit, as above. The test
+  `TestSuppressionExpandKeepsThePreviousBinaryWorking` also records that the
+  previous release's migration runner treats the upgraded database (version 2)
+  as current: it runs nothing and does not refuse it, so starting the previous
+  image on that database needs no `fold migrate down-one`. Rows the previous
+  release writes have no hash; the new release finds them by address.
+- **The plaintext address stays.** This release stores the hash beside the
+  plaintext address. The plaintext column is removed only by a later release, so
+  suppressions are not hash-only yet.
+
 ## 7. Monitoring
 
 - The metrics agent (`--enable-monitoring`) graphs CPU, memory, and disk in the control panel. Add alert policies there for sustained CPU, memory above about 85%, and disk above about 80%. Alerts are free; the script does not create them.

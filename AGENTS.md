@@ -268,10 +268,16 @@ unless `APP_ENV=dev`. CLI (C11, PLAN 11.4): `fold` (same as `fold serve`), `fold
 `fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), `fold version` (needs nothing);
 `--json` gives machine-readable output.
 
-The migration chain is one generated baseline (M7.7, DEC-138). `scripts/baseline-proof.sh generate`
-made it from the frozen pre-squash chain (commit `be61e582c3011263307e4db4497056f7fd70bfd9`, 63
+The migration chain is the generated baseline (M7.7, DEC-138) plus additive numbered files after it
+(`00002_suppression_address_hash.sql` is the M7.4 R4-S expand). `TestBaselineFileShape` checks both
+through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
+and Down). `scripts/baseline-proof.sh generate`
+made the baseline from the frozen pre-squash chain (commit `be61e582c3011263307e4db4497056f7fd70bfd9`, 63
 files through `00064`) and `scripts/baseline-proof.sh proof` re-proves a tree against that chain
-with a normalized `pg_dump` diff, on a scratch server only (`--help` lists the arguments). Before
+with a normalized `pg_dump` diff, on a scratch server only (`--help` lists the arguments). It refuses
+a tree with more than the baseline (`scripts/baseline-proof.sh:1255-1258`), so `--candidate-tree` must
+point at an export holding only `migrations/00001_baseline.sql`, such as `git archive 2aea60a`; the
+script is not edited for numbered files. Before
 it changes anything it proves that `--server-url` (the Go driver) and `--client-url` (psql and
 `pg_dump`) reach the same cluster, database and role, clears every `PG*` variable, and requires a
 free `--boot-port`. The
@@ -377,6 +383,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | Notices use `notify.deliver`; reconstructible direct mail uses ID-based jobs; synchronous mail is limited to the documented methods and composer test | `TestNoticesAreDeliveredBySendNotByCallers`, `TestMailGoesThroughJobs`, `TestNoticeGuardCatchesPostCommitDelivery`, `TestMailGuardCatchesBypasses`, `TestMailGuardScopesSynchronousExceptions`, `TestMailGuardAllowsDeliveryAndReadOnlyOutbox` |
+| Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook writer, and matches by Go-computed hash | `TestSuppressionSQLStaysInItsHelpers`, `TestSuppressionSQLGuardCatchesBypasses` (parse-only; it does not see table names built from non-literal pieces, reflection, SQL sent around GORM, dot-imports of `fold/models` or cross-package helpers) |
+| Suppression matching assumes a UTF8 database with a deterministic default collation | `TestSuppressionMatchingBasis` (`migrations/migrations_test.go`) |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
