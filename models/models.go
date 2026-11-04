@@ -1117,15 +1117,20 @@ const (
 // Suppression is an address Fold stops mailing (M3.2b, DEC-112). Write it
 // through the email webhook processing or an admin; sending reads it.
 type Suppression struct {
-	ID        uint      `gorm:"primaryKey"`
-	Channel   string    `gorm:"not null;default:email"`
-	Address   string    `gorm:"not null"`
-	Reason    string    `gorm:"not null"`
-	Provider  string    `gorm:"not null;default:''"`
-	Detail    string    `gorm:"not null;default:''"`
-	CreatedAt time.Time `gorm:"not null;default:now()"`
-	ClearedAt *time.Time
-	ClearedBy *uint
+	ID      uint   `gorm:"primaryKey"`
+	Channel string `gorm:"not null;default:email"`
+	Address string `gorm:"not null"`
+	// AddressHash is the lowercase hex SHA-256 of the stored address
+	// (mail.StoredAddressHash); NULL only on rows the previous release or
+	// out-of-band SQL wrote after migration 00002; plaintext Address stays
+	// until the contract step (R4-SC).
+	AddressHash *string
+	Reason      string    `gorm:"not null"`
+	Provider    string    `gorm:"not null;default:''"`
+	Detail      string    `gorm:"not null;default:''"`
+	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	ClearedAt   *time.Time
+	ClearedBy   *uint
 }
 
 // Suppression reasons (DEC-112): a hard bounce or manual suppression stops

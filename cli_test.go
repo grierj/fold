@@ -8,7 +8,9 @@ import (
 	"fold/internal/push"
 	"fold/internal/testdb"
 	"fold/migrations"
+	"io/fs"
 	"net"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -72,7 +74,9 @@ func TestMigrateStatusNeedsOnlyDatabaseURL(t *testing.T) {
 }
 
 // The baseline Down destroys the schema, so `fold migrate down-one` on a
-// database that holds a user must fail, exit nonzero and change nothing.
+// database that holds a user must roll back every later migration, then fail
+// at the baseline, exit nonzero and change nothing more. The file list comes
+// from migrations.Files, so a later migration needs no edit here.
 func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 	name := testdb.Fresh(t, true)
 	db, err := testdb.OpenSQL(name)
@@ -100,7 +104,26 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "")
 	t.Setenv("DATABASE_URL", url)
 
+	files, err := fs.Glob(migrations.Files, "*.sql")
+	sort.Strings(files)
+	if err != nil || len(files) == 0 || files[0] != "00001_baseline.sql" {
+		t.Fatalf("migration files = %v (%v)", files, err)
+	}
+
 	var out, errOut bytes.Buffer
+	// Every file after the baseline rolls back, newest first.
+	for i := len(files) - 1; i >= 1; i-- {
+		out.Reset()
+		errOut.Reset()
+		if code := run([]string{"migrate", "down-one"}, &out, &errOut); code != 0 {
+			t.Fatalf("down-one of %s: code %d, stdout %q, stderr %q", files[i], code, out.String(), errOut.String())
+		}
+		if !strings.Contains(out.String(), "rolled back") || !strings.Contains(out.String(), files[i]) {
+			t.Fatalf("down-one of %s: stdout %q, want it named as rolled back", files[i], out.String())
+		}
+	}
+	out.Reset()
+	errOut.Reset()
 	if code := run([]string{"migrate", "down-one"}, &out, &errOut); code != 1 {
 		t.Fatalf("down-one: code %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
@@ -118,15 +141,41 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
 		t.Fatalf("version after the refusal = %d, %v, want 1", version, err)
 	}
-	// The database still works: status reports the baseline applied.
+	// The database still works: status reports the baseline applied and every
+	// later migration pending.
 	out.Reset()
 	errOut.Reset()
 	if code := run([]string{"migrate", "status", "--json"}, &out, &errOut); code != 0 {
 		t.Fatalf("status after the refusal: code %d, stderr %q", code, errOut.String())
 	}
 	var rows []struct{ State string }
-	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0].State != "applied" {
-		t.Fatalf("status --json = %q (%v)", out.String(), err)
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != len(files) || rows[0].State != "applied" {
+		t.Fatalf("status --json = %q (%v), want %d rows with the first applied", out.String(), err, len(files))
+	}
+	for i, r := range rows[1:] {
+		if r.State != "pending" {
+			t.Fatalf("status row %d (%s) = %q, want pending", i+1, files[i+1], r.State)
+		}
+	}
+	// Up brings every migration back, and status shows them all applied.
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"migrate", "up"}, &out, &errOut); code != 0 {
+		t.Fatalf("up after the refusal: code %d, stdout %q, stderr %q", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"migrate", "status", "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("status after up: code %d, stderr %q", code, errOut.String())
+	}
+	rows = nil
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != len(files) {
+		t.Fatalf("status --json after up = %q (%v), want %d rows", out.String(), err, len(files))
+	}
+	for i, r := range rows {
+		if r.State != "applied" {
+			t.Fatalf("status row %d (%s) after up = %q, want applied", i, files[i], r.State)
+		}
 	}
 }
 

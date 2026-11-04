@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/internal/providers"
 	"fold/models"
 )
@@ -193,5 +194,90 @@ func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {
 	app.DB.Model(&models.Suppression{}).Count(&n)
 	if n != 1 {
 		t.Fatal("an old hard bounce still suppresses the address")
+	}
+}
+
+// A hard bounce and a complaint each store the address with its hash; a
+// redelivery adds nothing; a legacy NULL-hash open row gets only its hash
+// filled; a cleared row is left alone and a new open row sits beside it; a
+// soft bounce or a delivery stores nothing (R4-S3).
+func TestEmailReportsStoreTheAddressHash(t *testing.T) {
+	app := testApp(t)
+	ctx := context.Background()
+	old := time.Now().Add(-5 * time.Minute) // past reportGrace: no delivery row is waited for
+	report := func(kind providers.EventKind, permanent bool, address string) error {
+		return app.applyEmailEvent(ctx, providers.Event{Provider: "postmark", Kind: kind, Address: address, MessageID: "m-hash",
+			Permanent: permanent, Detail: "from the report", At: old})
+	}
+	count := func() int64 {
+		var n int64
+		app.DB.Model(&models.Suppression{}).Count(&n)
+		return n
+	}
+
+	if err := report(providers.EventBounced, false, "soft@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := report(providers.EventDelivered, true, "delivered@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if count() != 0 {
+		t.Fatal("a soft bounce or a delivery stored a suppression")
+	}
+
+	for i := 0; i < 2; i++ { // the second is a redelivery
+		if err := report(providers.EventBounced, true, "bounce@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if err := report(providers.EventComplained, true, "complaint@example.com"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows []models.Suppression
+	app.DB.Order("id").Find(&rows)
+	if len(rows) != 2 {
+		t.Fatalf("rows after redelivery: %+v", rows)
+	}
+	for _, r := range rows {
+		if r.AddressHash == nil || *r.AddressHash != mail.StoredAddressHash(r.Address) {
+			t.Errorf("%s: hash %v", r.Address, r.AddressHash)
+		}
+	}
+
+	// A legacy open row (no hash) is filled and changed nowhere else.
+	created := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
+	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "legacy@example.com", Reason: models.SuppressHardBounce,
+		Provider: "manual-import", Detail: "kept", CreatedAt: created}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := report(providers.EventBounced, true, "Legacy@Example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var legacy models.Suppression
+	app.DB.Where("address = ?", "legacy@example.com").First(&legacy)
+	if legacy.AddressHash == nil || *legacy.AddressHash != mail.StoredAddressHash("legacy@example.com") {
+		t.Fatalf("legacy hash not filled: %+v", legacy)
+	}
+	if legacy.Provider != "manual-import" || legacy.Detail != "kept" || !legacy.CreatedAt.Equal(created) || legacy.ClearedAt != nil || legacy.Reason != models.SuppressHardBounce {
+		t.Fatalf("a hash fill changed another column: %+v", legacy)
+	}
+	if count() != 3 {
+		t.Fatalf("rows = %d, want 3", count())
+	}
+
+	// A cleared row stays as it is and a report opens a new row beside it.
+	cleared := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "again@example.com", Reason: models.SuppressHardBounce,
+		Provider: "postmark", CreatedAt: created, ClearedAt: &cleared}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := report(providers.EventBounced, true, "again@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var again []models.Suppression
+	app.DB.Where("address = ?", "again@example.com").Order("id").Find(&again)
+	if len(again) != 2 || again[0].AddressHash != nil || again[0].ClearedAt == nil || !again[0].ClearedAt.Equal(cleared) ||
+		again[1].ClearedAt != nil || again[1].AddressHash == nil || *again[1].AddressHash != mail.StoredAddressHash("again@example.com") {
+		t.Fatalf("cleared row handling: %+v", again)
 	}
 }

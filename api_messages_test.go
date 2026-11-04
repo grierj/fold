@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +271,41 @@ func TestAudiencePreview(t *testing.T) {
 	decodeJSON(t, w, &out)
 	if out.Summary.People != 1 {
 		t.Fatalf("leaders only: %+v", out.Summary)
+	}
+}
+
+// The preview skips someone whose address has an open row, hashed or legacy,
+// in either order, with the same words; a cleared row skips nobody. Any
+// complaint says "marked our email as spam", whichever row is older.
+func TestAudiencePreviewHashedAndLegacySuppressions(t *testing.T) {
+	f := newComposeFixture(t)
+	cases := suppressionCases()
+	users := f.addSuppressionMembers(t, cases)
+	wantEligible, wantSkipped := 2, map[string]int{skipOptedOut: 1, skipNotWorking: 1}
+	for _, tc := range cases {
+		suppressSpecs(t, f.app, strings.ToLower(users[tc.name].Email), tc.specs...)
+		if skip := tc.snapshotSkip(); skip == "" {
+			wantEligible++
+		} else {
+			wantSkipped[skip]++
+		}
+	}
+	var out struct {
+		Summary audienceSummaryJSON `json:"summary"`
+	}
+	decodeJSON(t, f.admin.do("POST", "/api/v1/messages/audience-preview", map[string]any{"audience": map[string]any{"type": "group", "groupId": f.group.ID}}, true), &out)
+	s := out.Summary
+	if s.People != 4+len(cases) || s.Eligible != wantEligible || !reflect.DeepEqual(s.Skipped, wantSkipped) {
+		t.Fatalf("summary: %+v, want %d people, %d eligible, skipped %v", s, 4+len(cases), wantEligible, wantSkipped)
+	}
+	byName := map[string]string{}
+	for _, r := range s.Recipients {
+		byName[r.Name] = r.Skipped
+	}
+	for _, tc := range cases {
+		if got, ok := byName[users[tc.name].Name]; !ok || got != tc.snapshotSkip() {
+			t.Errorf("%s: preview skipped %q (listed %v), want %q", tc.name, got, ok, tc.snapshotSkip())
+		}
 	}
 }
 

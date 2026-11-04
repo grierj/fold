@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -428,5 +429,191 @@ func TestStillDue(t *testing.T) {
 	}
 	if stillDue(f.app.DB, moved.ID) != nil || stillDue(f.app.DB, sent.ID) != nil {
 		t.Fatal("a moved or sent message isn't retried")
+	}
+}
+
+// The send snapshot and the mail that goes out treat a hashed row and a
+// legacy NULL-hash row alike, in either order: skipped people are recorded
+// with the preview's words and get nothing, a cleared row skips nobody.
+func TestMessagePipelineSnapshotSkipsHashedAndLegacySuppressions(t *testing.T) {
+	f := newComposeFixture(t)
+	cases := suppressionCases()
+	users := f.addSuppressionMembers(t, cases)
+	for _, tc := range cases {
+		suppressSpecs(t, f.app, strings.ToLower(users[tc.name].Email), tc.specs...)
+	}
+	id := f.scheduleNow(t, f.leader, "Book night", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	runMessageJobs(t, f.app)
+	rows := recipientsOf(t, f.app, id)
+	for _, tc := range cases {
+		u := users[tc.name]
+		row, mails := rows[u.Email], mailCount(t, f.app, u.Email)
+		if skip := tc.snapshotSkip(); skip != "" {
+			if row.Status != models.RecipientSuppressed || row.Reason != skip || mails != 0 {
+				t.Errorf("%s: row %+v, %d emails, want suppressed %q and none sent", tc.name, row, mails, skip)
+			}
+		} else if row.Status != models.RecipientSent || row.ProviderMessageID == "" || mails != 1 {
+			t.Errorf("%s: row %+v, %d emails, want sent once", tc.name, row, mails)
+		}
+	}
+}
+
+// failSetSender refuses mail to its listed addresses with a permanent 550 and
+// passes the rest to the real sender.
+type failSetSender struct {
+	next mail.Sender
+	bad  map[string]bool
+}
+
+func (s failSetSender) Send(ctx context.Context, m mail.Message) error {
+	_, err := s.SendEmail(ctx, m)
+	return err
+}
+
+func (s failSetSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
+	if s.bad[m.To] {
+		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 550, Msg: "no"})
+	}
+	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+}
+
+func (failSetSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "fail-set"}
+}
+
+// A suppression that appears after the snapshot is read again at send time,
+// including on Try again: hashed and legacy rows alike stop the mail, with
+// the label of the older row, and cleared rows do not.
+func TestMessageRetryReadsHashedAndLegacySuppressionsAtSendTime(t *testing.T) {
+	f := newComposeFixture(t)
+	cases := suppressionCases()
+	users := f.addSuppressionMembers(t, cases)
+	bad := map[string]bool{}
+	for _, u := range users {
+		bad[u.Email] = true
+	}
+	next := f.app.Mailer
+	f.app.Mailer = failSetSender{next: next, bad: bad}
+	id := f.scheduleNow(t, f.leader, "Book night", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	runMessageJobs(t, f.app)
+	f.app.Mailer = next
+	rows := recipientsOf(t, f.app, id)
+	for _, tc := range cases {
+		if r := rows[users[tc.name].Email]; r.Status != models.RecipientFailed {
+			t.Fatalf("%s: first send left %+v, want failed", tc.name, r)
+		}
+	}
+	// The rows arrive after the snapshot; the retry goes straight to the send
+	// batch, which reads them once for everyone.
+	for _, tc := range cases {
+		suppressSpecs(t, f.app, strings.ToLower(users[tc.name].Email), tc.specs...)
+	}
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	rows = recipientsOf(t, f.app, id)
+	for _, tc := range cases {
+		u := users[tc.name]
+		row, mails := rows[u.Email], mailCount(t, f.app, u.Email)
+		if skip := tc.sendTimeSkip(); skip != "" {
+			if row.Status != models.RecipientSuppressed || row.Reason != skip || mails != 0 {
+				t.Errorf("%s: row %+v, %d emails, want suppressed %q and none sent", tc.name, row, mails, skip)
+			}
+		} else if row.Status != models.RecipientSent || row.ProviderMessageID == "" || mails != 1 {
+			t.Errorf("%s: row %+v, %d emails, want sent once", tc.name, row, mails)
+		}
+	}
+}
+
+// Announcement send reads the open reasons once per batch: 1,201 distinct
+// addresses take three reads and nothing is lost or duplicated. Optional
+// mail follows the older row, which was unspecified before R4-S: complaint
+// first gives the complaint label, hard bounce first the bounce one.
+func TestBatchSuppressionsReadsInChunks(t *testing.T) {
+	app := testApp(t)
+	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "legacy@example.com", models.SuppressComplaint)
+	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
+	// Matches in every chunk (500, 500 and 201 distinct inputs), on both sides
+	// of the 500/501 and 1000/1001 boundaries, hashed and legacy: a lookup
+	// that discarded or repeated the results of any read fails the complete
+	// map below.
+	suppress(t, app, "first-legacy@example.com", models.SuppressManual)            // input 0, chunk 1
+	suppressHashed(t, app, "last1-hashed@example.com", models.SuppressManual)      // input 499, chunk 1
+	suppressHashed(t, app, "first2-hashed@example.com", models.SuppressHardBounce) // input 500, chunk 2
+	suppress(t, app, "last2-legacy@example.com", models.SuppressComplaint)         // input 999, chunk 2
+	suppress(t, app, "first3-legacy@example.com", models.SuppressHardBounce)       // input 1000, chunk 3
+
+	placed := map[int]string{
+		0:    "First-Legacy@example.com",
+		499:  "last1-hashed@example.com ",
+		500:  "first2-hashed@example.com",
+		999:  " LAST2-legacy@example.com",
+		1000: "first3-legacy@example.com",
+		// The older four sit in the last chunk too.
+		1197: " Hashed@Example.com",
+		1198: "legacy@example.com",
+		1199: "complaintfirst@example.com",
+		1200: "BounceFirst@example.com ",
+	}
+	var rows []models.MessageRecipient
+	for i := range 1201 {
+		a, ok := placed[i]
+		if !ok {
+			a = fmt.Sprintf("u%d@example.com", i)
+		}
+		rows = append(rows, models.MessageRecipient{Address: a})
+	}
+	rows = append(rows, models.MessageRecipient{Address: "hashed@example.com"}) // a repeat is read once
+	counter := countDBReads(t, app.DB)
+	got, err := batchSuppressions(app.DB, rows)
+	reads := counter.Reads()
+	counter.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 3 {
+		t.Fatalf("1,201 distinct addresses made %d reads, want 3", reads)
+	}
+	wantReasons := map[string][]string{
+		"first-legacy@example.com":   {models.SuppressManual},
+		"last1-hashed@example.com":   {models.SuppressManual},
+		"first2-hashed@example.com":  {models.SuppressHardBounce},
+		"last2-legacy@example.com":   {models.SuppressComplaint},
+		"first3-legacy@example.com":  {models.SuppressHardBounce},
+		"hashed@example.com":         {models.SuppressHardBounce},
+		"legacy@example.com":         {models.SuppressComplaint},
+		"complaintfirst@example.com": {models.SuppressComplaint, models.SuppressHardBounce},
+		"bouncefirst@example.com":    {models.SuppressHardBounce, models.SuppressComplaint},
+	}
+	if !reflect.DeepEqual(got, wantReasons) {
+		t.Fatalf("lost or duplicated rows: got %v, want %v", got, wantReasons)
+	}
+	for addr, wantReason := range map[string]string{
+		"complaintfirst@example.com": models.SuppressComplaint,
+		"bouncefirst@example.com":    models.SuppressHardBounce,
+		"hashed@example.com":         models.SuppressHardBounce,
+	} {
+		err := mail.Blocked(got[addr], providers.EmailMessage{Optional: true})
+		var s *mail.ErrSuppressed
+		if !mail.IsSuppressed(err) || !errors.As(err, &s) || s.Reason != wantReason {
+			t.Errorf("%s: optional mail refused with %v, want reason %s", addr, err, wantReason)
+		}
+	}
+	// Required mail: a complaint alone lets it through; with a hard bounce
+	// beside it the bounce refuses it, in either order.
+	for _, addr := range []string{"complaintfirst@example.com", "bouncefirst@example.com"} {
+		err := mail.Blocked(got[addr], providers.EmailMessage{})
+		var s *mail.ErrSuppressed
+		if !errors.As(err, &s) || s.Reason != models.SuppressHardBounce {
+			t.Errorf("%s: required mail refused with %v, want hard_bounce", addr, err)
+		}
+	}
+	if err := mail.Blocked(got["legacy@example.com"], providers.EmailMessage{}); err != nil {
+		t.Errorf("complaint alone blocked required mail: %v", err)
 	}
 }
