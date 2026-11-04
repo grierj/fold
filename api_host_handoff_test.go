@@ -375,6 +375,9 @@ func TestHostWritesSerializeWithAccountChanges(t *testing.T) {
 					if err := s.app.DB.First(&u, s.target.ID).Error; err != nil || u.Status != models.UserDisabled {
 						t.Fatalf("target after the disable: %+v %v", u, err)
 					}
+					if n := countRows(t, s.app.DB, "event_hosts", "user_id = ?", s.target.ID); n != 1 {
+						t.Fatalf("disabled target has %d host rows, want 1", n)
+					}
 				}},
 				{"demote the acting admin", func(s hostScene) (string, string, any) {
 					return "PUT", "/api/v1/admin/users/" + itoa(s.adminA.ID), map[string]any{"role": models.RoleMember}

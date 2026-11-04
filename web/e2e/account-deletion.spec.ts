@@ -109,6 +109,7 @@ async function chooseHost(page: Page, row: Locator, title: string, name: string)
 async function evidence(page: Page, state: string) {
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => window.scrollTo(0, 0));
     await nextFrames(page);
     if (width >= 768 && (state === "panel" || state === "stale")) {
       for (const label of [page.getByRole("columnheader", { name: "Actions" }), page.getByText("Member", { exact: true })]) {
