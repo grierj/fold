@@ -592,6 +592,10 @@ func (a *App) adminCount() int {
 	return int(n)
 }
 
+// errAdminTargetGone: the person an admin edit names was erased while the edit
+// waited for the contact gate.
+var errAdminTargetGone = errors.New("user not found")
+
 func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	u, ok := a.adminTargetUser(c)
 	if !ok {
@@ -691,6 +695,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
 			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// Erased while this request waited for the contact gate: the lookup
+					// above found them, the locked read no longer does.
+					return errAdminTargetGone
+				}
 				return err
 			}
 			if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
@@ -810,6 +819,10 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			}
 			if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) {
 				consentError(c, err)
+				return
+			}
+			if errors.Is(err, errAdminTargetGone) {
+				jsonError(c, http.StatusNotFound, "user not found")
 				return
 			}
 			if emailTaken(err) {

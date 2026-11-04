@@ -352,3 +352,39 @@ func TestRoomSeriesChurchWideAndRoomsOff(t *testing.T) {
 		t.Fatalf("%d bookings made while rooms are off", n)
 	}
 }
+
+// N-21 (inventory 9.2.2, a plain entry reached only by the daily extender): a
+// date the extender adds loses its room and the event's leaders hear of it,
+// inside a savepoint, holding only the extender's advisory lock. A second
+// leader erased meanwhile is left out in either order, and the first leader is
+// still told.
+func TestRoomLostNoticeFromExtenderSerializesWithLeaderErasure(t *testing.T) {
+	runErasureBarriers(t, 7402008, func(t *testing.T) erasureScene {
+		f := newBookingFixture(t)
+		victim := newTestUser(t, f.app, "leader2", "password1234", models.RoleMember)
+		addMember(t, f.app, victim, &models.Group{ID: f.group}, models.MembershipLeader)
+		series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=4")
+		if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 4 {
+			t.Fatalf("book the series: %d %+v", code, out)
+		}
+		// As in TestRoomSeriesExtenderBooksNewDates: the last two dates are
+		// missing, and another event holds the hall on the last one, so the
+		// extender books one date and reports one lost.
+		third, fourth := feedDate(f.startOn.AddDate(0, 0, 15)), feedDate(f.startOn.AddDate(0, 0, 22))
+		if err := f.app.DB.Where("event_id = ? AND original_date IN ?", series.ID, []string{third, fourth}).Delete(&models.EventOccurrence{}).Error; err != nil {
+			t.Fatal(err)
+		}
+		other := createFeedEvent(t, f.leader, f.group, "Other", f.startOn.AddDate(0, 0, 22), "")
+		if w := f.leader.do("PUT", "/api/v1/events/"+itoa(other.ID)+"/dates/"+fourth+"/room", map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+			t.Fatalf("book the other event: %d %s", w.Code, w.Body.String())
+		}
+		return erasureScene{app: f.app, victim: victim,
+			run: func() error { return events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()) },
+			told: func(t *testing.T) {
+				if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.leaderUser.ID, notify.RoomLost); n != 1 {
+					t.Fatalf("the first leader has %d lost-room notices, want 1", n)
+				}
+			},
+		}
+	})
+}

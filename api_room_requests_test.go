@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"fold/internal/events"
 	"fold/internal/notify"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 func approvalOn(t *testing.T, f bookingFixture) {
@@ -312,5 +315,249 @@ func TestRoomApprovalConfirmWithReason(t *testing.T) {
 	}
 	if n := contactCount(t, f.app, &models.RoomBooking{}, "status = ? AND allow_overlap AND overlap_reason = ?", models.BookingConfirmed, "Both fit"); n != 1 {
 		t.Fatalf("%d double-bookings with the reason", n)
+	}
+}
+
+// roomRequestsFixture returns a booking fixture with approval on and a second
+// admin to erase. The leader's booking of the hall waits for approval.
+func roomRequestsFixture(t *testing.T) (bookingFixture, *models.User) {
+	t.Helper()
+	f := newBookingFixture(t)
+	approvalOn(t, f)
+	victim := newTestUser(t, f.app, "admin2", "password1234", models.RoleAdmin)
+	f.leader.holdNotices = true
+	f.admin.holdNotices = true
+	return f, victim
+}
+
+func adminOpenTasks(t *testing.T, f bookingFixture) int64 {
+	t.Helper()
+	return contactCount(t, f.app, &models.Notification{},
+		"kind = ? AND user_id IN (SELECT id FROM users WHERE email = ?)", notify.RoomRequested, testEmail("admin"))
+}
+
+// N-22 (inventory 9.2.2, plain entries apiSetDateRoom and apiSetSeriesRoom): a
+// leader's room booking that needs approval gives every admin a task, while the
+// request holds the event row FOR UPDATE and no gate. An admin erased meanwhile
+// is left out in either order, and the other admin still gets the task.
+func TestRoomRequestNoticeSerializesWithAdminErasure(t *testing.T) {
+	t.Run("one date", func(t *testing.T) {
+		runErasureBarriers(t, 7402009, func(t *testing.T) erasureScene {
+			f, victim := roomRequestsFixture(t)
+			return erasureScene{app: f.app, victim: victim,
+				run: func() error {
+					return doExpect(f.leader, "PUT", f.path(f.eventA, "/room"), map[string]any{"roomId": f.hall.ID}, http.StatusOK)
+				},
+				told: func(t *testing.T) {
+					if n := adminOpenTasks(t, f); n != 1 {
+						t.Fatalf("the other admin has %d room tasks, want 1", n)
+					}
+				},
+			}
+		})
+	})
+	t.Run("series", func(t *testing.T) {
+		runErasureBarriers(t, 7402010, func(t *testing.T) erasureScene {
+			f, victim := roomRequestsFixture(t)
+			series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=4")
+			return erasureScene{app: f.app, victim: victim,
+				run: func() error {
+					return doExpect(f.leader, "PUT", "/api/v1/events/"+itoa(series.ID)+"/room", map[string]any{"roomId": f.hall.ID}, http.StatusOK)
+				},
+				told: func(t *testing.T) {
+					if n := adminOpenTasks(t, f); n != 1 {
+						t.Fatalf("the other admin has %d room tasks, want 1", n)
+					}
+				},
+			}
+		})
+	})
+}
+
+// N-23 (inventory 9.2.2, plain entries apiConfirmRoomRequest and
+// apiRejectRoomRequest): an admin's decision tells the event's leaders and then
+// closes the admins' tasks, holding the event row and the request row. A
+// second leader erased meanwhile is left out in either order, and the first
+// leader is still told. The erased leader here is not an admin, so they own none
+// of the tasks the decision closes; the admin-and-leader case is
+// TestRoomDecisionNoticeSerializesWithAdminLeaderErasure.
+func TestRoomDecisionNoticeSerializesWithLeaderErasure(t *testing.T) {
+	for i, decision := range []string{"confirm", "reject"} {
+		t.Run(decision, func(t *testing.T) {
+			runErasureBarriers(t, 7402011+int64(i), func(t *testing.T) erasureScene {
+				f, _ := roomRequestsFixture(t)
+				victim := newTestUser(t, f.app, "leader2", "password1234", models.RoleMember)
+				addMember(t, f.app, victim, &models.Group{ID: f.group}, models.MembershipLeader)
+				if code, body := f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+					t.Fatalf("request the room: %d %s", code, body)
+				}
+				reqs := listRequests(t, f.admin)
+				if len(reqs) != 1 {
+					t.Fatalf("requests: %+v", reqs)
+				}
+				return erasureScene{app: f.app, victim: victim,
+					run: func() error {
+						return doExpect(f.admin, "POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/"+decision, map[string]any{}, http.StatusOK)
+					},
+					told: func(t *testing.T) {
+						if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.leaderUser.ID, notify.RoomRequestDecided); n != 1 {
+							t.Fatalf("the first leader has %d decision notices, want 1", n)
+						}
+					},
+				}
+			})
+		})
+	}
+}
+
+// pauseWhenTaskResolvedFor makes any transaction that closes uid's open room
+// request task wait on a transaction-level advisory lock right after that
+// update, still holding the task row and everything it took before. It drops
+// itself at cleanup.
+func pauseWhenTaskResolvedFor(t *testing.T, db *gorm.DB, uid uint, key int64) {
+	t.Helper()
+	name := fmt.Sprintf("fold_test_pause_task_%d", key)
+	if err := db.Exec(fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NULL; END $$`, name, key)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(fmt.Sprintf(`CREATE TRIGGER %s AFTER UPDATE ON notifications FOR EACH ROW
+		WHEN (NEW.user_id = %d AND NEW.kind = '%s' AND OLD.resolved_at IS NULL AND NEW.resolved_at IS NOT NULL)
+		EXECUTE FUNCTION %s()`, name, uid, notify.RoomRequested, name)).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS " + name + " ON notifications")
+		db.Exec("DROP FUNCTION IF EXISTS " + name + "()")
+	})
+}
+
+// N-23, the case the plain test above leaves out: the erased person is both an
+// admin, who holds an open "room requested" task, and a leader of the event's
+// group, who is told of the decision. A decision that closed the task first
+// held the task row while it waited for the leader's user row, and an erasure
+// (user row FOR UPDATE, then the notices, task included) held the user row
+// while it waited for the task row: a lock cycle PostgreSQL breaks by aborting
+// one of them. The decision now tells the leaders first (settleRoomDecision), so
+// the user row is the first thing both sides want.
+//
+// The real decision and the real DELETE /api/v1/admin/users/:id, confirm and
+// reject, in both orders, with no sleeps:
+//   - sender first: the decision is stopped right after it closed the victim's
+//     task (holding the task row and the victim's user row); the delete must
+//     queue on the user row, not on the task row, and both finish.
+//   - deletion first: the delete is stopped holding the gate and the victim's
+//     user row, before it removes their notices; the decision must queue on the
+//     recipient lock, and both finish once released.
+//
+// By source trace, with the old order (resolve, then send) the barriers put
+// both sides in the cycle in both orders, so one side would fail with SQLSTATE
+// 40P01 after the deadlock timeout; that was not executed against the old code.
+// Covers N-23 for a group event (leaders); a church-wide event's
+// hosts take the same path through notifyRoomDecided and are not run.
+func TestRoomDecisionNoticeSerializesWithAdminLeaderErasure(t *testing.T) {
+	for i, decision := range []string{"confirm", "reject"} {
+		keyA, keyB := int64(7402041+2*i), int64(7402042+2*i)
+		wantStatus := map[string]string{"confirm": models.RoomRequestConfirmed, "reject": models.RoomRequestRejected}[decision]
+		t.Run(decision, func(t *testing.T) {
+			type scene struct {
+				f      bookingFixture
+				victim *models.User
+				reqID  uint
+				decide func() error
+				erase  func() error
+			}
+			setup := func(t *testing.T) scene {
+				f, victim := roomRequestsFixture(t) // the victim is an admin
+				addMember(t, f.app, victim, &models.Group{ID: f.group}, models.MembershipLeader)
+				// Log in before creating the task: loginAPI drains queued notices.
+				deleter := loginAPI(t, f.app, "admin", "password1234")
+				deleter.holdNotices = true
+				if code, body := f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+					t.Fatalf("request the room: %d %s", code, body)
+				}
+				reqs := listRequests(t, f.admin)
+				if len(reqs) != 1 {
+					t.Fatalf("requests: %+v", reqs)
+				}
+				if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ? AND waiting AND resolved_at IS NULL", victim.ID, notify.RoomRequested); n != 1 {
+					t.Fatalf("the victim has %d open room tasks, want 1", n)
+				}
+				if n := mailCount(t, f.app, victim.Email); n != 0 {
+					t.Fatalf("fixture sent %d emails to the victim before the race", n)
+				}
+				return scene{f: f, victim: victim, reqID: reqs[0].ID,
+					decide: func() error {
+						return doExpect(f.admin, "POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/"+decision, map[string]any{}, http.StatusOK)
+					},
+					erase: func() error {
+						return doExpect(deleter, "DELETE", "/api/v1/admin/users/"+itoa(victim.ID), nil, http.StatusOK)
+					},
+				}
+			}
+			settle := func(t *testing.T, s scene) {
+				settleErasure(t, erasureScene{app: s.f.app, victim: s.victim, told: func(t *testing.T) {
+					if n := contactCount(t, s.f.app, &models.Notification{}, "user_id = ? AND kind = ?", s.f.leaderUser.ID, notify.RoomRequestDecided); n != 1 {
+						t.Fatalf("the first leader has %d decision notices, want 1", n)
+					}
+					taskOwner := "user_id IN (SELECT id FROM users WHERE email = ?) AND kind = ? AND subject_id = ?"
+					if n := contactCount(t, s.f.app, &models.Notification{}, taskOwner+" AND waiting AND resolved_at IS NULL", testEmail("admin"), notify.RoomRequested, s.reqID); n != 0 {
+						t.Fatalf("the deciding admin still has %d open room tasks", n)
+					}
+					resolution := map[string]string{"confirm": "confirmed", "reject": "rejected"}[decision]
+					if n := contactCount(t, s.f.app, &models.Notification{}, taskOwner+" AND resolved_at IS NOT NULL AND resolution = ?", testEmail("admin"), notify.RoomRequested, s.reqID, resolution); n != 1 {
+						t.Fatalf("the deciding admin has %d tasks resolved as %s, want 1", n, resolution)
+					}
+					if n := contactCount(t, s.f.app, &models.RoomRequest{}, "id = ? AND status = ?", s.reqID, wantStatus); n != 1 {
+						t.Fatalf("the request is not %s", wantStatus)
+					}
+				}})
+			}
+			t.Run("sender first", func(t *testing.T) {
+				s := setup(t)
+				db := s.f.app.DB
+				pauseWhenTaskResolvedFor(t, db, s.victim.ID, keyA)
+				release, hPID := holdAdvisory(t, db, keyA)
+				done := startOperation(s.decide)
+				opPID := waiterOn(t, db, hPID) // it told the leaders and closed the victim's task; its transaction is open
+				erased := startOperation(s.erase)
+				delPID := waiterOn(t, db, opPID)
+				if q := statementOf(t, db, delPID); !strings.Contains(q, "users") || strings.Contains(q, "notifications") {
+					t.Fatalf("the delete waits in %q, want the victim's user row, not their notices", q)
+				}
+				release()
+				if err := awaitDBResult(t, done); err != nil {
+					t.Fatalf("the decision: %v", err)
+				}
+				if err := awaitDBResult(t, erased); err != nil {
+					t.Fatalf("the delete: %v", err)
+				}
+				settle(t, s)
+			})
+			t.Run("deletion first", func(t *testing.T) {
+				s := setup(t)
+				db := s.f.app.DB
+				pauseOnStatement(t, db, "BEFORE DELETE", "notifications", keyB)
+				release, hPID := holdAdvisory(t, db, keyB)
+				erased := startOperation(s.erase)
+				deleter := waiterOn(t, db, hPID) // it holds the gate and the victim's user row
+				done := startOperation(s.decide)
+				opPID := waiterOn(t, db, deleter)
+				q := statementOf(t, db, opPID)
+				for _, part := range recipientLockText {
+					if !strings.Contains(q, part) {
+						t.Fatalf("the decision waits in %q, want the recipient lock (%q)", q, part)
+					}
+				}
+				release()
+				if err := awaitDBResult(t, erased); err != nil {
+					t.Fatalf("the delete: %v", err)
+				}
+				if err := awaitDBResult(t, done); err != nil {
+					t.Fatalf("a decision that lost the race must finish: %v", err)
+				}
+				settle(t, s)
+			})
+		})
 	}
 }

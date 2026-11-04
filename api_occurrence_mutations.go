@@ -591,8 +591,11 @@ func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[u
 	}
 	return out, nil
 }
-func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.EventOccurrence, kind, key string) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{*row.UserID}, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(occ.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key})
+
+// sendOccurrenceNotice tells one access holder. A fan-out passes the scope it
+// locked its recipients with (notify.WithRecipients); a single send passes nil.
+func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.EventOccurrence, kind, key string, scope *notify.Scope) ([]uint, error) {
+	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{*row.UserID}, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(occ.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key, Scope: scope})
 }
 
 // Unlike the general manager loader, this entry point must audit every

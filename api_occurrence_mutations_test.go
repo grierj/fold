@@ -1599,3 +1599,63 @@ func TestOccurrenceAskCompletionAtomicOnProvenanceNoticeAndResolutionFailures(t 
 		})
 	}
 }
+
+// N-31 (inventory 9.2.2, a gated entry): a manager adding a person to one date
+// tells that person. The real operation is POST /events/:id/registrations/add
+// {userId, date} -> apiAddRegistration: the target and the date are read before
+// the gate; the transaction takes the gate first (lockContacts), then the actor
+// (peopleAddActor), the event row, the target's user row NO KEY UPDATE, the
+// occurrence row FOR UPDATE -> addAccountRegistrationLocked ->
+// recordManagerOccurrenceAdd (the exact-date grant, its audit snapshot, and
+// notify.Send to the added person). The recipient is the subject of the request.
+//
+// Sender first: the add stops after it wrote the person's notice; the real
+// delete waits on the gate and removes it. Deletion first: the add found the
+// person before the gate, waits for it, and its locked read of the person no
+// longer finds them. That used to fall to the generic branch and answer 500
+// "could not add registration"; it now answers 404 "person not found" (the
+// errAddTargetGone edit in api_registrations.go). Like every refused add it
+// writes one occurrence.refused audit row naming only the manager and the
+// operation, and nothing is granted or sent. Not covered: the approval path
+// (mutateAddRequest, whose recipient list also holds a teen's guardians) and a
+// guest target (who gets no notice). The fixture is the invite-only series of
+// newOccurrenceReadFixture; the third date has no sign-ups.
+func TestManagerAddNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	var order string
+	runGatedErasureBarriers(t, 7402133, 7402134, func(t *testing.T) gatedErasureScene {
+		f := newOccurrenceReadFixture(t)
+		victim := newTestUser(t, f.app, "added person", "password1234", models.RoleMember)
+		// Direct manager adds require ordinary date eligibility; an outsider
+		// to this invite-only group would need a separate approval request.
+		addMember(t, f.app, victim, &models.Group{ID: f.group}, models.MembershipMember)
+		newTestUser(t, f.app, "add eraser", "password1234", models.RoleAdmin)
+		f.admin.holdNotices = true
+		eraser := loginHeld(t, f.app, "add eraser", "password1234")
+		date := models.FormatCalendarDate(f.dates[2].OriginalDate)
+		// The seeded invitation may have written its own audit rows; count only what the add does.
+		baseAdded, baseRefused := auditCount(t, f.app, audit.OccurrenceAccessAdded), auditCount(t, f.app, audit.OccurrenceRefused)
+		add := func(name string, want int) func() error {
+			return func() error {
+				order = name
+				return doExpect(f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/add", map[string]any{"userId": victim.ID, "date": date}, want)
+			}
+		}
+		return gatedErasureScene{app: f.app, victim: victim, sends: []string{notify.OccurrenceAdded},
+			run:              add("sender first", http.StatusOK),
+			runDeletionFirst: add("deletion first", http.StatusNotFound),
+			erase:            eraseVia(eraser, victim),
+			told: func(t *testing.T) {
+				added, refused := int64(1), int64(0)
+				if order == "deletion first" {
+					added, refused = 0, 1
+				}
+				if n := auditCount(t, f.app, audit.OccurrenceAccessAdded) - baseAdded; n != added {
+					t.Fatalf("%d access-added audit rows after %s, want %d", n, order, added)
+				}
+				if n := auditCount(t, f.app, audit.OccurrenceRefused) - baseRefused; n != refused {
+					t.Fatalf("%d refusal audit rows after %s, want %d", n, order, refused)
+				}
+			},
+		}
+	})
+}

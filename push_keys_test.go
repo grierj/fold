@@ -210,3 +210,29 @@ func TestVAPIDSubject(t *testing.T) {
 		}
 	}
 }
+
+// N-07 (inventory 9.2.2, a plain entry): the boot-time key reset tells the
+// active admins from a transaction that holds only the VAPID advisory lock. An
+// admin erased while the notice is written is left out in either order.
+func TestPushKeysResetNoticeSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402003, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		if _, err := ensureVAPIDKeys(app.DB, []byte("the old secret, long enough for prod")); err != nil {
+			t.Fatal(err)
+		}
+		kept := newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password123456", models.RoleAdmin)
+		newSecret := []byte("the new secret, long enough for prod")
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				_, err := ensureVAPIDKeys(app.DB, newSecret)
+				return err
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.PushKeysReset); n != 1 {
+					t.Fatalf("the other admin has %d key-reset notices, want 1", n)
+				}
+			},
+		}
+	})
+}

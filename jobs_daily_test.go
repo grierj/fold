@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -124,4 +125,34 @@ func TestExtendedDatesNoticesSurviveCrash(t *testing.T) {
 			t.Fatalf("notice %d is still queued after the drain", n.ID)
 		}
 	}
+}
+
+// N-02 (inventory 9.2.2, a plain entry): the worker's OnDead hook tells the
+// active admins from its own transaction, which starts with the job row FOR
+// UPDATE and takes no contact gate. The job really dies through the app's
+// runner. An admin erased while the alert is written is left out in either
+// order, and the other admin is still told.
+func TestDeadJobAlertSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402001, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		if _, err := jobs.Enqueue(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
+			t.Fatal(err)
+		}
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				ran, err := app.newRunner(deadAlertKinds()...).RunOnce(context.Background(), "test:barrier")
+				if err == nil && !ran {
+					err = errors.New("the dead job never ran")
+				}
+				return err
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.SystemJobDead); n != 1 {
+					t.Fatalf("the other admin has %d dead-job alerts, want 1", n)
+				}
+			},
+		}
+	})
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -923,8 +925,11 @@ func TestNotifyReconcileExcludesTerminalKeys(t *testing.T) {
 	}
 	// One orphan page and one empty backfill page: terminal keys aren't
 	// selected as candidates, even while their email rows remain queued.
-	if reads := qc.Reads(); reads != 2 {
-		t.Fatalf("reconcile page reads = %d, want 2", reads)
+	// The orphan page's one row is protected before it is queued (R4-N): two
+	// bulk reads for the whole page (recipients, then notices), never one per
+	// row. The empty backfill page protects nothing.
+	if reads := qc.Reads(); reads != 2+reconcileProtectReads {
+		t.Fatalf("reconcile page reads = %d, want 2 page reads and %d protection reads", reads, reconcileProtectReads)
 	}
 	var rows []models.Job
 	if err := app.DB.Order("id").Find(&rows).Error; err != nil {
@@ -1044,7 +1049,7 @@ func TestNotifyReconcileBackfillPaginatesPastSkippedKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	backfill := preOutboxNotice(t, app, u, notify.GroupApproved, at, nil)
-	for range 2 {
+	for run := range 2 {
 		qc := countDBReads(t, app.DB)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := app.reconcileNotifications(ctx, now)
@@ -1053,8 +1058,16 @@ func TestNotifyReconcileBackfillPaginatesPastSkippedKinds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reads := qc.Reads(); reads != 3 {
-			t.Fatalf("page reads = %d, want one orphan and two backfill pages", reads)
+		// The first run finds the one deliverable row on its second backfill
+		// page and protects it (two bulk reads, R4-N); the second run finds it
+		// already has a delivery row and protects nothing. The skipped kinds
+		// never reach the protection step.
+		want := int64(3)
+		if run == 0 {
+			want += reconcileProtectReads
+		}
+		if reads := qc.Reads(); reads != want {
+			t.Fatalf("run %d: page reads = %d, want %d (one orphan and two backfill pages, plus protection)", run, reads, want)
 		}
 	}
 	var deliveries []models.NotificationDelivery
@@ -1212,4 +1225,670 @@ func TestNotifyReconcileBackfillSkipsClosedNotices(t *testing.T) {
 			t.Errorf("%s: want queued with one job, got %q and %d jobs", name, d.Status, njobs)
 		}
 	}
+}
+
+// reconcileProtectReads is what protecting one non-empty repair page costs: one
+// read to lock the recipients and one to lock the notices (notify.Protect).
+const reconcileProtectReads = 2
+
+// ---------------------------------------------------------------------------
+// Erasure barriers (M7.4, R4-N). Waits observe a backend blocked on a named
+// other backend (pg_blocking_pids); pauses are test-owned advisory locks taken
+// by test-created statement triggers. Nothing sleeps and no production hook
+// exists.
+// ---------------------------------------------------------------------------
+
+// beginOwnedTx begins a transaction the test owns and reports its backend pid.
+func beginOwnedTx(t *testing.T, db *gorm.DB) (*gorm.DB, int) {
+	t.Helper()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var pid int
+	if err := tx.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+		t.Fatal(err)
+	}
+	return tx, pid
+}
+
+// eraseNoticesTx is what an erasure does to a person's notices, in the order
+// apiAdminDeleteUser does it: the user row FOR UPDATE, their notifications
+// deleted (their deliveries cascade), then the soft delete.
+func eraseNoticesTx(tx *gorm.DB, uid uint) error {
+	if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", uid).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec("DELETE FROM notifications WHERE user_id = ?", uid).Error; err != nil {
+		return err
+	}
+	return tx.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", uid).Error
+}
+
+func eraseNoticesNow(t *testing.T, db *gorm.DB, uid uint) {
+	t.Helper()
+	if err := db.Transaction(func(tx *gorm.DB) error { return eraseNoticesTx(tx, uid) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waiterOn returns the pid of a backend blocked by blocker, once there is one.
+func waiterOn(t *testing.T, db *gorm.DB, blocker int) int {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var pid int
+		if err := db.Raw(`SELECT coalesce(min(pid), 0) FROM pg_stat_activity
+			WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid))`, blocker).Scan(&pid).Error; err != nil {
+			t.Fatal(err)
+		}
+		if pid != 0 {
+			return pid
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("no session ever waited on session %d", blocker)
+		}
+	}
+}
+
+// pauseOnStatement installs a statement-level trigger (when is "AFTER INSERT"
+// or "BEFORE DELETE") that takes a transaction-level advisory lock, then drops
+// it at cleanup. While a test holds that lock (holdAdvisory), the statement's
+// transaction stops right there, still holding everything it took before.
+// Call it after all the test's own writes to table and before holdAdvisory.
+func pauseOnStatement(t *testing.T, db *gorm.DB, when, table string, key int64) {
+	t.Helper()
+	name := fmt.Sprintf("fold_test_pause_%d", key)
+	if err := db.Exec(fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NULL; END $$`, name, key)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(fmt.Sprintf(`CREATE TRIGGER %s %s ON %s FOR EACH STATEMENT EXECUTE FUNCTION %s()`, name, when, table, name)).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS " + name + " ON " + table)
+		db.Exec("DROP FUNCTION IF EXISTS " + name + "()")
+	})
+}
+
+// holdAdvisory takes the lock a paused statement waits for. release lets it go.
+func holdAdvisory(t *testing.T, db *gorm.DB, key int64) (release func(), pid int) {
+	t.Helper()
+	h, pid := beginOwnedTx(t, db)
+	if err := h.Exec("SELECT pg_advisory_xact_lock(?)", key).Error; err != nil {
+		t.Fatal(err)
+	}
+	return func() { h.Rollback() }, pid
+}
+
+func rowsFor(t *testing.T, db *gorm.DB, table string, uid uint) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Table(table).Where("user_id = ?", uid).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func totalRows(t *testing.T, db *gorm.DB, table string) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Table(table).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func jobExistsFor(t *testing.T, app *App, notificationID uint) bool {
+	t.Helper()
+	var n int64
+	if err := app.DB.Model(&models.Job{}).Where("unique_key = ?", notify.DeliverKey(notificationID)).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
+}
+
+// A repair page is selected before its transaction. When a person is erased
+// (or a notice is pruned) in between, the stale rows are dropped inside the
+// transaction: no delivery row or job is recreated, nothing errors on a
+// missing notice, and a recipient who was already deleted before the pass
+// (a legacy tombstone whose notice survived) gets nothing either.
+func TestNotifyReconcileRepairSkipsStaleRows(t *testing.T) {
+	app := testApp(t)
+	live := newTestUser(t, app, "live", "password1234", models.RoleMember)
+	erased := newTestUser(t, app, "erased", "password1234", models.RoleMember)
+	tomb := newTestUser(t, app, "tomb", "password1234", models.RoleMember)
+	now := time.Now().UTC()
+	t.Run("backfill page", func(t *testing.T) {
+		at := now.Add(-time.Hour)
+		liveN := preOutboxNotice(t, app, live, notify.GroupApproved, at, nil)
+		erasedN := preOutboxNotice(t, app, erased, notify.GroupApproved, at, nil)
+		tombN := preOutboxNotice(t, app, tomb, notify.GroupApproved, at, nil)
+		page := []models.Notification{liveN, erasedN, tombN}
+		eraseNoticesNow(t, app.DB, erased.ID)
+		if err := app.DB.Delete(tomb).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Transaction(func(tx *gorm.DB) error { return queueReconciledNotifications(tx, page, now) }); err != nil {
+			t.Fatalf("a stale page must be skipped, not fail: %v", err)
+		}
+		var deliveries []models.NotificationDelivery
+		if err := app.DB.Find(&deliveries).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(deliveries) != 1 || deliveries[0].NotificationID != liveN.ID || deliveries[0].UserID != live.ID {
+			t.Fatalf("deliveries: %+v, want only the living recipient's", deliveries)
+		}
+		if !jobExistsFor(t, app, liveN.ID) || jobExistsFor(t, app, erasedN.ID) || jobExistsFor(t, app, tombN.ID) {
+			t.Fatal("jobs were not limited to the living recipient")
+		}
+	})
+	t.Run("lost job page", func(t *testing.T) {
+		live2 := newTestUser(t, app, "live2", "password1234", models.RoleMember)
+		erased2 := newTestUser(t, app, "erased2", "password1234", models.RoleMember)
+		old := now.Add(-25 * time.Hour)
+		var page []models.NotificationDelivery
+		var kept, dropped models.Notification
+		for _, u := range []*models.User{live2, erased2} {
+			n := preOutboxNotice(t, app, u, notify.GroupApproved, old, nil)
+			d := models.NotificationDelivery{NotificationID: n.ID, UserID: u.ID, Channel: models.DeliveryEmail,
+				Status: models.DeliveryQueued, CreatedAt: now.Add(-11 * time.Minute)}
+			if err := app.DB.Create(&d).Error; err != nil {
+				t.Fatal(err)
+			}
+			page = append(page, d)
+			if u == live2 {
+				kept = n
+			} else {
+				dropped = n
+			}
+		}
+		eraseNoticesNow(t, app.DB, erased2.ID)
+		if err := app.DB.Transaction(func(tx *gorm.DB) error { return requeueLostDeliveries(tx, page, now) }); err != nil {
+			t.Fatalf("a stale page must be skipped, not fail: %v", err)
+		}
+		if !jobExistsFor(t, app, kept.ID) || jobExistsFor(t, app, dropped.ID) {
+			t.Fatal("jobs were not limited to the living recipient")
+		}
+	})
+}
+
+// The real repair, end to end, against an erasure in either order and with no
+// contact gate: if the erasure got there first, the repair waits, rechecks and
+// queues nothing; if the repair got there first, the erasure waits for it and
+// then removes what it wrote.
+func TestNotifyReconcileSerializesWithErasure(t *testing.T) {
+	now := time.Now().UTC()
+	for _, pass := range []string{"backfill", "lost job"} {
+		for _, erasureFirst := range []bool{true, false} {
+			name := pass + "/repair first"
+			if erasureFirst {
+				name = pass + "/erasure first"
+			}
+			t.Run(name, func(t *testing.T) {
+				app := testApp(t)
+				u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
+				var n models.Notification
+				table := "notification_deliveries" // what the repair inserts first
+				if pass == "backfill" {
+					n = preOutboxNotice(t, app, u, notify.GroupApproved, now.Add(-time.Hour), nil)
+				} else {
+					table = "jobs"
+					n = preOutboxNotice(t, app, u, notify.GroupApproved, now.Add(-25*time.Hour), nil)
+					if err := app.DB.Create(&models.NotificationDelivery{NotificationID: n.ID, UserID: u.ID, Channel: models.DeliveryEmail,
+						Status: models.DeliveryQueued, CreatedAt: now.Add(-11 * time.Minute)}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				repair := func(db *gorm.DB) error {
+					return (&App{DB: db}).reconcileNotifications(db.Statement.Context, now)
+				}
+				if erasureFirst {
+					eraser, ePID := beginOwnedTx(t, app.DB)
+					if err := eraseNoticesTx(eraser, u.ID); err != nil {
+						t.Fatal(err)
+					}
+					pid, done := startDBSession(t, app.DB, "reconcile", repair)
+					waitDBBlocked(t, app.DB, pid, ePID)
+					if err := eraser.Commit().Error; err != nil {
+						t.Fatal(err)
+					}
+					if err := awaitDBResult(t, done); err != nil {
+						t.Fatalf("a repair that lost the race must skip: %v", err)
+					}
+					if deliveries, queued := totalRows(t, app.DB, "notification_deliveries"), totalRows(t, app.DB, "jobs"); deliveries != 0 || queued != 0 {
+						t.Fatalf("repair recreated work for an erased person: %d deliveries, %d jobs", deliveries, queued)
+					}
+				} else {
+					const key = 7401001
+					pauseOnStatement(t, app.DB, "AFTER INSERT", table, key)
+					release, hPID := holdAdvisory(t, app.DB, key)
+					pid, done := startDBSession(t, app.DB, "reconcile", repair)
+					waitDBBlocked(t, app.DB, pid, hPID)
+					eraser, ePID := beginOwnedTx(t, app.DB)
+					erased := make(chan error, 1)
+					go func() { erased <- eraseNoticesTx(eraser, u.ID) }()
+					waitDBBlocked(t, app.DB, ePID, pid)
+					release()
+					if err := awaitDBResult(t, done); err != nil {
+						t.Fatal(err)
+					}
+					if err := awaitDBResult(t, erased); err != nil {
+						t.Fatal(err)
+					}
+					if err := eraser.Commit().Error; err != nil {
+						t.Fatal(err)
+					}
+					if deliveries := totalRows(t, app.DB, "notification_deliveries"); deliveries != 0 {
+						t.Fatalf("%d delivery rows outlived the erasure", deliveries)
+					}
+					// A job the repair committed before the erasure waits for no
+					// notice: delivering it finds nothing and sends nothing.
+					if err := app.deliverOneNotification(context.Background(), n.ID); err != nil {
+						t.Fatal(err)
+					}
+					if mails := mailCount(t, app, ""); mails != 0 {
+						t.Fatalf("%d emails for an erased person", mails)
+					}
+				}
+				if rowsFor(t, app.DB, "notifications", u.ID) != 0 {
+					t.Fatal("a notice survived the erasure")
+				}
+			})
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Real-operation erasure barriers (M7.4, R4-N; inventory 9.2.5). Each site's
+// test names its real entry, builds its own rows, and calls one driver, which
+// runs the operation against an erasure of one recipient in both orders:
+//
+//   - deletion first: a test-owned transaction takes the victim's row FOR
+//     UPDATE and deletes their notices (the statements apiAdminDeleteUser runs),
+//     the operation is started, and the driver waits until pg_blocking_pids
+//     shows the operation's backend waiting on that transaction, in the
+//     statement the scene names (by default the recipient lock). Then the
+//     erasure commits and the operation must finish without a notice for the
+//     tombstone.
+//   - sender first: a row trigger the test created pauses the operation right
+//     after it inserted the victim's notice, its transaction still open; the
+//     erasure is started and must wait on the operation; then the pause is
+//     released, and the erasure removes what the operation wrote.
+//
+// No sleeps and no production hook: every wait is an observed lock wait or an
+// operation result with a timeout. The eraser here takes no contact gate, so a
+// scene is the plain-entry case; runGatedErasureBarriers is the gated one.
+// ---------------------------------------------------------------------------
+
+// erasureScene is one real operation and the person erased while it runs.
+type erasureScene struct {
+	app    *App
+	victim *models.User // the recipient the erasure removes
+	// run is the real operation. It runs on its own goroutine: it returns its
+	// error and never calls t.Fatal.
+	run func() error
+	// blockedIn is the statement run waits in when the erasure committed first;
+	// "" is the recipient lock (users ... FOR KEY SHARE).
+	blockedIn string
+	// told is checked after both orders: who the operation still had to tell.
+	told func(t *testing.T)
+	// mailBase is the mail the victim already had before the operation ran
+	// (setup mail), which is not mail sent after the erasure.
+	mailBase int64
+}
+
+// recipientLockText is what the recipient lock statement contains.
+var recipientLockText = []string{"FROM users WHERE id IN", "FOR KEY SHARE"}
+
+func startOperation(fn func() error) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	return done
+}
+
+// doExpect sends one request and returns an error unless it answers a wanted
+// status, so it is safe on an operation's goroutine.
+func doExpect(c *apiClient, method, path string, body any, want ...int) error {
+	w := c.do(method, path, body, true)
+	for _, code := range want {
+		if w.Code == code {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %s answered %d: %s", method, path, w.Code, w.Body.String())
+}
+
+// statementOf is the statement a backend is running now.
+func statementOf(t *testing.T, db *gorm.DB, pid int) string {
+	t.Helper()
+	var q string
+	if err := db.Raw("SELECT query FROM pg_stat_activity WHERE pid = ?", pid).Scan(&q).Error; err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
+// pauseAfterNoticeFor makes any transaction that inserts a notice for uid wait
+// on a transaction-level advisory lock right after the insert, still holding
+// everything it took before. Like pauseOnStatement it drops itself at cleanup.
+func pauseAfterNoticeFor(t *testing.T, db *gorm.DB, uid uint, key int64) {
+	t.Helper()
+	name := fmt.Sprintf("fold_test_pause_row_%d", key)
+	if err := db.Exec(fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NULL; END $$`, name, key)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(fmt.Sprintf(`CREATE TRIGGER %s AFTER INSERT ON notifications FOR EACH ROW
+		WHEN (NEW.user_id = %d) EXECUTE FUNCTION %s()`, name, uid, name)).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS " + name + " ON notifications")
+		db.Exec("DROP FUNCTION IF EXISTS " + name + "()")
+	})
+}
+
+// settleErasure checks what is true after the operation and the erasure both
+// finished: the victim is deleted and holds no notice or delivery row, no email
+// is sent to them once the queued deliveries run, and the scene's own checks.
+func settleErasure(t *testing.T, sc erasureScene) {
+	t.Helper()
+	db := sc.app.DB
+	if n := rowsFor(t, db, "notifications", sc.victim.ID); n != 0 {
+		t.Fatalf("%d notices left for the erased person", n)
+	}
+	if n := rowsFor(t, db, "notification_deliveries", sc.victim.ID); n != 0 {
+		t.Fatalf("%d delivery rows left for the erased person", n)
+	}
+	var gone int64
+	if err := db.Unscoped().Model(&models.User{}).Where("id = ? AND deleted_at IS NOT NULL", sc.victim.ID).Count(&gone).Error; err != nil || gone != 1 {
+		t.Fatalf("the erasure did not commit: %d %v", gone, err)
+	}
+	drainNotices(t, sc.app)
+	if n := mailCount(t, sc.app, sc.victim.Email); n != sc.mailBase {
+		t.Fatalf("%d emails to the erased person, want the %d sent before the operation", n, sc.mailBase)
+	}
+	if sc.told != nil {
+		sc.told(t)
+	}
+}
+
+// runErasureBarriers runs the scene built by setup in both orders. key is the
+// advisory lock key the sender-first pause uses; give each call its own.
+func runErasureBarriers(t *testing.T, key int64, setup func(t *testing.T) erasureScene) {
+	t.Helper()
+	t.Run("deletion first", func(t *testing.T) {
+		sc := setup(t)
+		db := sc.app.DB
+		eraser, ePID := beginOwnedTx(t, db)
+		if err := eraseNoticesTx(eraser, sc.victim.ID); err != nil {
+			t.Fatal(err)
+		}
+		done := startOperation(sc.run)
+		opPID := waiterOn(t, db, ePID)
+		want := recipientLockText
+		if sc.blockedIn != "" {
+			want = []string{sc.blockedIn}
+		}
+		q := statementOf(t, db, opPID)
+		for _, part := range want {
+			if !strings.Contains(q, part) {
+				t.Fatalf("the operation waits in %q, want a statement containing %q", q, part)
+			}
+		}
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatalf("an operation that lost the race must finish: %v", err)
+		}
+		settleErasure(t, sc)
+	})
+	t.Run("sender first", func(t *testing.T) {
+		sc := setup(t)
+		db := sc.app.DB
+		pauseAfterNoticeFor(t, db, sc.victim.ID, key)
+		release, hPID := holdAdvisory(t, db, key)
+		done := startOperation(sc.run)
+		opPID := waiterOn(t, db, hPID) // it wrote the victim's notice and its transaction is open
+		eraser, ePID := beginOwnedTx(t, db)
+		erased := startOperation(func() error { return eraseNoticesTx(eraser, sc.victim.ID) })
+		waitDBBlocked(t, db, ePID, opPID) // the erasure waits for the operation
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, erased); err != nil {
+			t.Fatal(err)
+		}
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		settleErasure(t, sc)
+	})
+}
+
+// gatedErasureScene is erasureScene with the real admin delete as the erasure,
+// for operations that take the contact gate today: both sides queue on it.
+type gatedErasureScene struct {
+	app    *App
+	victim *models.User
+	run    func() error // the real gated operation
+	erase  func() error // the real DELETE /api/v1/admin/users/:id for the victim
+	told   func(t *testing.T)
+	// runDeletionFirst replaces run in the deletion-first order when the
+	// operation's answer differs there (an erased caller is signed out, or the
+	// person it acts on is gone).
+	runDeletionFirst func() error
+	// sends is the set of notice kinds the victim must have been sent when the
+	// operation won (sender first), and the victim must have been sent none when
+	// the erasure won. A non-nil value turns the check on; use an empty, non-nil
+	// slice for "none", though the driver already requires none in the second
+	// order. It is read from a recorder the driver installs (recordNoticesFor),
+	// which keeps the kind of every notice inserted for the victim even after the
+	// erasure deletes the rows, so it names the Send site that really ran.
+	sends []string
+	// gateSkip, when set, says why the operation in the deletion-first order
+	// does not wait on the contact gate first (its first lock is the victim's
+	// own row, taken before the gate). The driver then checks only that the
+	// operation waits on the delete.
+	gateSkip string
+	// mailBase is set by the driver: the victim's mail before the operation,
+	// so setup mail is not mistaken for mail sent after the erasure.
+	mailBase int64
+}
+
+// requireContactGate fails unless backend pid holds (granted) or waits for
+// (not granted) the contact gate itself: the advisory lock whose key is
+// contactLockID, read from pg_locks. Any other lock, such as a row or the
+// test's own pause, does not satisfy it.
+func requireContactGate(t *testing.T, db *gorm.DB, pid int, granted bool, who string) {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT count(*) FROM pg_locks WHERE pid = ? AND locktype = 'advisory' AND granted = ?
+		AND classid::bigint = ? AND objid::bigint = ? AND objsubid = 1`,
+		pid, granted, contactLockID>>32, contactLockID&0xffffffff).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		verb := "waits for"
+		if granted {
+			verb = "holds"
+		}
+		t.Fatalf("%s (backend %d) does not %s the contact gate (%d matching locks); its statement is %q",
+			who, pid, verb, n, statementOf(t, db, pid))
+	}
+}
+
+// noticeRecorder keeps the kind of every notice inserted for one person, in a
+// table the test created and an AFTER INSERT trigger fills inside the inserting
+// transaction. The erasure deletes the notice rows; this record survives, so it
+// shows which sends actually reached that person.
+type noticeRecorder struct {
+	db    *gorm.DB
+	table string
+}
+
+func recordNoticesFor(t *testing.T, db *gorm.DB, uid uint, key int64) *noticeRecorder {
+	t.Helper()
+	table := fmt.Sprintf("fold_test_seen_%d", key)
+	fn := table + "_fn"
+	for _, stmt := range []string{
+		fmt.Sprintf("CREATE TABLE %s (user_id bigint NOT NULL, kind text NOT NULL)", table),
+		fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+			BEGIN INSERT INTO %s (user_id, kind) VALUES (NEW.user_id, NEW.kind); RETURN NULL; END $$`, fn, table),
+		fmt.Sprintf(`CREATE TRIGGER %s AFTER INSERT ON notifications FOR EACH ROW
+			WHEN (NEW.user_id = %d) EXECUTE FUNCTION %s()`, fn, uid, fn),
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS " + fn + " ON notifications")
+		db.Exec("DROP FUNCTION IF EXISTS " + fn + "()")
+		db.Exec("DROP TABLE IF EXISTS " + table)
+	})
+	return &noticeRecorder{db: db, table: table}
+}
+
+// kinds is the distinct kinds recorded so far, sorted.
+func (r *noticeRecorder) kinds(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	if err := r.db.Raw("SELECT DISTINCT kind FROM " + r.table + " ORDER BY kind").Scan(&out).Error; err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// eraseVia is the real DELETE /api/v1/admin/users/:id, as an operation.
+func eraseVia(admin *apiClient, victim *models.User) func() error {
+	return func() error {
+		return doExpect(admin, "DELETE", "/api/v1/admin/users/"+itoa(victim.ID), nil, http.StatusOK)
+	}
+}
+
+// loginHeld signs in a client whose requests leave notice jobs queued, so it
+// may be used on an operation's goroutine (it never calls t.Fatal there).
+func loginHeld(t *testing.T, app *App, name, password string) *apiClient {
+	t.Helper()
+	c := loginAPI(t, app, name, password)
+	c.holdNotices = true
+	return c
+}
+
+// countOf is the number of notices of one kind a person holds.
+func countOf(t *testing.T, app *App, uid uint, kind string) int64 {
+	t.Helper()
+	return contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", uid, kind)
+}
+
+// wantNotices fails unless each person holds the given number of notices of the
+// kind (the surviving recipients of an operation).
+func wantNotices(t *testing.T, app *App, kind string, want map[*models.User]int64) {
+	t.Helper()
+	for u, n := range want {
+		if got := countOf(t, app, u.ID, kind); got != n {
+			t.Fatalf("%s has %d %s notices, want %d", u.Name, got, kind, n)
+		}
+	}
+}
+
+// runGatedErasureBarriers runs a gated operation against the real delete in both
+// orders, and in each proves which side holds and which waits for the contact
+// gate itself (pg_locks, not just "blocked").
+//
+// Sender first: the operation stops right after it wrote the victim's notice,
+// holding the gate; the delete queues on the gate (it must wait for the gate
+// key, not something else); released, the delete then removes the notice.
+// Deletion first: the delete stops after it holds the gate and the user row,
+// before it removes the notices; the operation queues on the gate and, released,
+// reads its facts after the delete committed. keyA and keyB are distinct
+// advisory keys for the two pauses; keyA+1000000 and keyB+1000000 name the
+// recorder tables, so use keys below that.
+//
+// In both orders the victim must end up deleted with no notification or
+// delivery row, no mail beyond what setup already sent, and (when the scene
+// sets sends) the recorded kinds the scene names: exactly those when the
+// operation won, none when the erasure won.
+func runGatedErasureBarriers(t *testing.T, keyA, keyB int64, setup func(t *testing.T) gatedErasureScene) {
+	t.Helper()
+	prepare := func(t *testing.T) gatedErasureScene {
+		t.Helper()
+		sc := setup(t)
+		// Mail that setup queued is sent now, so only mail sent after the
+		// operation can count against the erased person.
+		drainNotices(t, sc.app)
+		sc.mailBase = mailCount(t, sc.app, sc.victim.Email)
+		return sc
+	}
+	settle := func(t *testing.T, sc gatedErasureScene, rec *noticeRecorder, wantKinds []string) {
+		t.Helper()
+		settleErasure(t, erasureScene{app: sc.app, victim: sc.victim, told: sc.told, mailBase: sc.mailBase})
+		if sc.sends == nil {
+			return
+		}
+		want := append([]string{}, wantKinds...)
+		sort.Strings(want)
+		if got := rec.kinds(t); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("notice kinds sent to the erased person: %v, want %v", got, want)
+		}
+	}
+	t.Run("sender first", func(t *testing.T) {
+		sc := prepare(t)
+		db := sc.app.DB
+		rec := recordNoticesFor(t, db, sc.victim.ID, keyA+1000000)
+		pauseAfterNoticeFor(t, db, sc.victim.ID, keyA)
+		release, hPID := holdAdvisory(t, db, keyA)
+		done := startOperation(sc.run)
+		opPID := waiterOn(t, db, hPID)
+		requireContactGate(t, db, opPID, true, "the operation, stopped after it wrote the victim's notice,")
+		erased := startOperation(sc.erase)
+		deleter := waiterOn(t, db, opPID) // the delete queues behind the operation
+		requireContactGate(t, db, deleter, false, "the delete")
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, erased); err != nil {
+			t.Fatal(err)
+		}
+		settle(t, sc, rec, sc.sends)
+	})
+	t.Run("deletion first", func(t *testing.T) {
+		sc := prepare(t)
+		db := sc.app.DB
+		rec := recordNoticesFor(t, db, sc.victim.ID, keyB+1000000)
+		pauseOnStatement(t, db, "BEFORE DELETE", "notifications", keyB)
+		release, hPID := holdAdvisory(t, db, keyB)
+		erased := startOperation(sc.erase)
+		deleter := waiterOn(t, db, hPID) // the delete holds the gate and the user row
+		requireContactGate(t, db, deleter, true, "the delete, stopped before it removes the notices,")
+		run := sc.run
+		if sc.runDeletionFirst != nil {
+			run = sc.runDeletionFirst
+		}
+		done := startOperation(run)
+		opPID := waiterOn(t, db, deleter) // the operation queues behind the delete
+		if sc.gateSkip == "" {
+			requireContactGate(t, db, opPID, false, "the operation")
+		}
+		release()
+		if err := awaitDBResult(t, erased); err != nil {
+			t.Fatal(err)
+		}
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatalf("an operation that lost the race must finish as the scene expects: %v", err)
+		}
+		settle(t, sc, rec, nil)
+	})
 }

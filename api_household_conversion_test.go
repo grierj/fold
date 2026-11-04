@@ -903,3 +903,69 @@ func TestConversionRetryErrorIsConflict(t *testing.T) {
 		t.Fatalf("unexpected retry response: %+v", response)
 	}
 }
+
+// N-03 (inventory 9.2.2, a gated entry): when an admin approves a household
+// person's account, everyone who can manage that household is told, inside the
+// approval's transaction. The real operation is
+// POST /admin/account-requests/:id/approve -> apiApproveAccountRequest ->
+// decideAccountRequest -> contactMutation (gate first) ->
+// lockConversionParticipants (every conversion participant locked NO KEY UPDATE,
+// unscoped, in id order, then the household row) -> approveHouseholdConversion ->
+// moveHouseholdConversion -> transferHouseholdConversion: registrations moved,
+// audit, then notify.Send to the participants who may manage the household.
+// The recipients come from the locked set, not from a live-user read, so a
+// participant erased first is still in the list the code builds; the recipient
+// lock in Send is what leaves them out.
+//
+// The person who is erased is a second adult of the household. Sender first: the
+// approval stops after it wrote that adult's notice; the delete waits on the
+// gate and removes it. Deletion first: the approval waits on the gate, then
+// finds the adult already deleted and tells only the household's other adult
+// (the inviter). It answers 200 in both orders: the erased person is a
+// recipient, not the subject. Synthetic fixture: the second adult's
+// household_accounts row is inserted directly (after the invitation was
+// accepted through the real routes), since the product has no route that adds
+// an adult account to an existing household without a conversion of its own.
+// Not covered: the teen branch of the same send (changeTeenConsent and
+// apiAdminUpdateUser reach it through completeTeenConversionIfReady),
+// rolloverAges, and an erased inviter (which the approval refuses with a 409).
+func TestHouseholdConversionNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	runGatedErasureBarriers(t, 7402117, 7402118, func(t *testing.T) gatedErasureScene {
+		app := testApp(t)
+		admin, _ := openGroup(t, app, "Conversion race")
+		newTestUser(t, app, "eraser", "password1234", models.RoleAdmin)
+		holder, c, person, _ := householdFamily(t, app, admin, "convertparent")
+		token := inviteHouseholdPerson(t, app, c, person.ID, "independent@example.com")
+		acceptConversion(t, app, token, http.StatusOK)
+		var request models.AccountRequest
+		if err := app.DB.Where("email = ? AND source = ? AND status = ?", "independent@example.com", models.RequestHouseholdConversion, models.RequestPending).First(&request).Error; err != nil {
+			t.Fatal(err)
+		}
+		var holderAccount models.HouseholdAccount
+		if err := app.DB.Where("user_id = ?", holder.ID).First(&holderAccount).Error; err != nil {
+			t.Fatal(err)
+		}
+		victim := newTestUser(t, app, "coparent", "password1234", models.RoleMember)
+		if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: holderAccount.HouseholdID, UserID: victim.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+			t.Fatal(err)
+		}
+		admin.holdNotices = true
+		eraser := loginHeld(t, app, "eraser", "password1234")
+		return gatedErasureScene{app: app, victim: victim, sends: []string{notify.HouseholdConverted},
+			run: func() error {
+				return doExpect(admin, "POST", "/api/v1/admin/account-requests/"+itoa(request.ID)+"/approve", map[string]any{}, http.StatusOK)
+			},
+			erase: eraseVia(eraser, victim),
+			told: func(t *testing.T) {
+				var converted models.HouseholdPerson
+				if err := app.DB.First(&converted, person.ID).Error; err != nil || converted.ConvertedUserID == nil {
+					t.Fatalf("the person was not converted: %+v %v", converted, err)
+				}
+				if n := auditCount(t, app, audit.HouseholdPersonConverted); n != 1 {
+					t.Fatalf("%d conversion audit rows, want 1", n)
+				}
+				wantNotices(t, app, notify.HouseholdConverted, map[*models.User]int64{holder: 1})
+			},
+		}
+	})
+}

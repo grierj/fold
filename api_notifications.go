@@ -658,37 +658,46 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 		return nil, err
 	}
 	var ids []uint
-	for _, r := range rows {
-		o := occByID[r.OccID]
-		if o == nil {
-			continue
+	// One bulk lock for the whole fan-out (ascending user ID), rather than a
+	// lock query inside each per-person Send below.
+	err = notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
+		for _, r := range rows {
+			o := occByID[r.OccID]
+			if o == nil {
+				continue
+			}
+			ev := evByID[o.EventID]
+			if ev == nil {
+				continue
+			}
+			if _, ok := accesses[o.ID][r.UserID]; ok {
+				// Lifecycle reconciliation owns the single invitation-ended notice.
+				// Ordinary registrants still receive the cancellation notice below.
+				continue
+			}
+			vars, link := eventNoticeVars(ev, o, r.UserID, facts)
+			end := o.EndsAt
+			if end.IsZero() {
+				end = o.StartsAt
+			}
+			sent, err := notify.Send(tx, notify.Msg{
+				Kind: kind, To: []uint{r.UserID}, Actor: &actor,
+				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
+				Data: map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
+				// A date can be cancelled, restored and cancelled again, so the key
+				// carries the moment of this change (the row was just updated).
+				DedupeKey: fmt.Sprintf("%s:%d:%d", kind, o.ID, o.UpdatedAt.UnixNano()), ExpiresAt: &end,
+				Scope: scope,
+			})
+			if err != nil {
+				return err
+			}
+			ids = append(ids, sent...)
 		}
-		ev := evByID[o.EventID]
-		if ev == nil {
-			continue
-		}
-		if _, ok := accesses[o.ID][r.UserID]; ok {
-			// Lifecycle reconciliation owns the single invitation-ended notice.
-			// Ordinary registrants still receive the cancellation notice below.
-			continue
-		}
-		vars, link := eventNoticeVars(ev, o, r.UserID, facts)
-		end := o.EndsAt
-		if end.IsZero() {
-			end = o.StartsAt
-		}
-		sent, err := notify.Send(tx, notify.Msg{
-			Kind: kind, To: []uint{r.UserID}, Actor: &actor,
-			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data: map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
-			// A date can be cancelled, restored and cancelled again, so the key
-			// carries the moment of this change (the row was just updated).
-			DedupeKey: fmt.Sprintf("%s:%d:%d", kind, o.ID, o.UpdatedAt.UnixNano()), ExpiresAt: &end,
-		})
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, sent...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return ids, nil
 }

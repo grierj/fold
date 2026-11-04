@@ -374,3 +374,47 @@ func TestEventCandidatesSkipsDeletedGroups(t *testing.T) {
 		t.Fatalf("public church-wide event missing for a visitor: %v", anon.IDs)
 	}
 }
+
+// N-17 (inventory 9.2.2, a gated entry): making an event more private cancels
+// the sign-ups of people who could not see it any more and tells each of them.
+// The real operation is PUT /events/:id/visibility {visibility: invite_only,
+// confirm} -> apiSetEventVisibility -> contactMutation (gate first, with the
+// event id) -> the event row FOR UPDATE -> cancelLosers: the losing registrants
+// are found (a non-member of a group whose event is now invite-only), their
+// registrations cancelled with an audit row, and notifyRegistrationCancelled
+// tells each one, preceded by a read of the person that skips someone who no
+// longer exists or is disabled. Tightening with a confirm answers 200.
+//
+// The two outsiders (the victim and the kept one) lose; the group member does
+// not. Sender first: the tightening stops after it wrote the victim's notice;
+// the real delete waits on the gate and removes it. Deletion first: losersForDate
+// joins users with a raw JOIN (no deleted_at filter), so the erased holder's
+// sign-up can still be listed, cancelled and audited; notifyRegistrationCancelled
+// then reads the holder with userIn, which returns nil for a soft-deleted user,
+// and returns before Send. This order therefore proves the outcome (200, the
+// event tightened, the kept outsider told, no notice recorded for the victim)
+// but not the recipient lock inside Send, which the sender-first order and the
+// plain-entry tests exercise. Not covered: the group-level tightening
+// (apiUpdateGroup) and the per-date override (apiUpdateOccurrence), which reach
+// the same cancelLosers.
+func TestRegistrationCancelledNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	runGatedErasureBarriers(t, 7402125, 7402126, func(t *testing.T) gatedErasureScene {
+		f := newRegistrantRace(t)
+		return gatedErasureScene{app: f.app, victim: f.victim, sends: []string{notify.RegistrationCancelled},
+			run: func() error {
+				return doExpect(f.admin, "PUT", "/api/v1/events/"+itoa(f.eventID)+"/visibility",
+					map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+			},
+			erase: eraseVia(f.eraser, f.victim),
+			told: func(t *testing.T) {
+				if e := eventRow(t, f.app, f.eventID); e.Visibility != models.VisibilityInviteOnly {
+					t.Fatalf("event visibility %q, want invite_only", e.Visibility)
+				}
+				wantNotices(t, f.app, notify.RegistrationCancelled, map[*models.User]int64{f.kept: 1, f.member: 0})
+				if regCount(f.app, f.member, f.eventID) != 1 {
+					t.Fatal("the group member's sign-up should have stayed")
+				}
+			},
+		}
+	})
+}

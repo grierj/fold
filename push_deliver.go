@@ -94,18 +94,26 @@ type devicesOffJob struct {
 // notifications were turned off. Safe to run twice (the dedupe key); a
 // deleted account gets nothing. Turning devices off yourself never queues
 // this.
+//
+// The liveness read, notify.Send (which locks the recipient FOR KEY SHARE and
+// rechecks deleted_at) and the delivery intent run in one transaction, so an
+// erasure that commits first leaves no notice, and one that starts later waits
+// and removes it (M7.4 R4-N, inventory N-06, F-3). A disabled account is still
+// told: devices go off exactly when an account leaves active.
 func (a *App) noticeDevicesOff(ctx context.Context, p devicesOffJob) error {
-	var u models.User
-	if err := a.DB.WithContext(ctx).Select("id").First(&u, p.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	} else if err != nil {
+	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.Select("id").First(&u, p.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		_, err := notify.Send(tx, notify.Msg{
+			Kind: notify.PushDevicesOff, To: []uint{u.ID}, SubjectType: "user", SubjectID: u.ID,
+			Link: "/profile/notifications", DedupeKey: "push.devices_off:" + p.Key,
+		})
 		return err
-	}
-	_, err := notify.Send(a.DB.WithContext(ctx), notify.Msg{
-		Kind: notify.PushDevicesOff, To: []uint{u.ID}, SubjectType: "user", SubjectID: u.ID,
-		Link: "/profile/notifications", DedupeKey: "push.devices_off:" + p.Key,
 	})
-	return err
 }
 
 // lockScreen is what the device shows for n: its stored push text, with

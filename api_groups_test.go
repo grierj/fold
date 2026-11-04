@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 	"gorm.io/gorm"
@@ -1853,4 +1854,141 @@ func TestGroupListsRunByNextMeetingWithViewerRole(t *testing.T) {
 	if strings.Contains(w.Body.String(), `"myRole"`) || len(signedOut.Groups) != 6 {
 		t.Fatalf("signed out: %s", w.Body.String())
 	}
+}
+
+// Creating a group (a plain entry: no contact gate, no lock before its Send)
+// tells every active admin. An admin being erased at the same moment is left
+// out, in both orders, and the other admin is still told. The recipients are
+// read before they are locked, so the erased admin is still on the list.
+func TestGroupPendingNoticeSerializesWithAdminErasure(t *testing.T) {
+	create := func(leader *apiClient) <-chan int {
+		code := make(chan int, 1)
+		go func() {
+			code <- leader.do("POST", "/api/v1/groups", map[string]any{"name": "Hiking", "description": "trails"}, true).Code
+		}()
+		return code
+	}
+	setup := func(t *testing.T) (*App, *models.User, *models.User, *apiClient) {
+		app := testApp(t)
+		erased := newTestUser(t, app, "admin-a", "pw", models.RoleAdmin)
+		kept := newTestUser(t, app, "admin-b", "pw", models.RoleAdmin)
+		newTestUser(t, app, "leader", "pw", models.RoleMember)
+		return app, erased, kept, loginAPI(t, app, "leader", "pw")
+	}
+	check := func(t *testing.T, app *App, erased, kept *models.User) {
+		t.Helper()
+		var gone, told int64
+		app.DB.Model(&models.Notification{}).Where("user_id = ? AND kind = ?", erased.ID, notify.GroupPending).Count(&gone)
+		app.DB.Model(&models.Notification{}).Where("user_id = ? AND kind = ?", kept.ID, notify.GroupPending).Count(&told)
+		if gone != 0 || told != 1 {
+			t.Fatalf("the erased admin has %d group notices, the other admin %d, want 0 and 1", gone, told)
+		}
+	}
+	t.Run("deletion first", func(t *testing.T) {
+		app, erased, kept, leader := setup(t)
+		eraser, ePID := beginOwnedTx(t, app.DB)
+		if err := eraseNoticesTx(eraser, erased.ID); err != nil {
+			t.Fatal(err)
+		}
+		code := create(leader)
+		waiterOn(t, app.DB, ePID)
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if got := awaitCode(t, code); got != http.StatusCreated {
+			t.Fatalf("create group: %d", got)
+		}
+		check(t, app, erased, kept)
+	})
+	t.Run("sender first", func(t *testing.T) {
+		app, erased, kept, leader := setup(t)
+		// The request stops right after its notices are inserted, holding the
+		// recipients, with its transaction still open.
+		const key = 7401004
+		pauseOnStatement(t, app.DB, "AFTER INSERT", "notifications", key)
+		release, hPID := holdAdvisory(t, app.DB, key)
+		code := create(leader)
+		handler := waiterOn(t, app.DB, hPID)
+		eraser, ePID := beginOwnedTx(t, app.DB)
+		erased2 := make(chan error, 1)
+		go func() { erased2 <- eraseNoticesTx(eraser, erased.ID) }()
+		waitDBBlocked(t, app.DB, ePID, handler)
+		release()
+		if got := awaitCode(t, code); got != http.StatusCreated {
+			t.Fatalf("create group: %d", got)
+		}
+		if err := awaitDBResult(t, erased2); err != nil {
+			t.Fatal(err)
+		}
+		if err := eraser.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		check(t, app, erased, kept)
+	})
+}
+
+// N-12 (inventory 9.2.2, a plain entry): a sole leader's deletion request asks
+// every admin to decide it, from a transaction that is a single UPDATE and then
+// the send. An admin erased meanwhile is left out in either order, and the other
+// admin is still asked.
+func TestDeletionRequestNoticeSerializesWithAdminErasure(t *testing.T) {
+	runErasureBarriers(t, 7402006, func(t *testing.T) erasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		leaderUser := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+		g := newTestGroup(t, app, leaderUser, "Solo", models.GroupActive)
+		leader := loginAPI(t, app, "leader", "password1234")
+		leader.holdNotices = true
+		return erasureScene{app: app, victim: victim,
+			run: func() error {
+				return doExpect(leader, "POST", "/api/v1/groups/"+itoa(g.ID)+"/deletion-request", map[string]any{}, http.StatusOK)
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.GroupDeletion); n != 1 {
+					t.Fatalf("the other admin has %d deletion tasks, want 1", n)
+				}
+			},
+		}
+	})
+}
+
+// N-13 and N-14, a gated entry (inventory 9.2.2): a leader promoting a member
+// writes the leadership notice to every admin and the person's own role notice
+// inside the contact gate. The real admin delete takes the same gate, so
+// neither order can interleave: sender first the delete queues behind the role
+// change and then removes the admin's notice; deletion first the role change
+// queues behind the delete and reads the admins after it, so it never names the
+// erased one. The other admin and the promoted member are still told. This is
+// the gated counterpart of the plain-entry barriers; the gate itself is
+// unchanged by R4-N.
+func TestLeadershipNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	runGatedErasureBarriers(t, 7402029, 7402030, func(t *testing.T) gatedErasureScene {
+		app := testApp(t)
+		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+		leaderUser := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+		sam := newTestUser(t, app, "sam", "password1234", models.RoleMember)
+		g := newTestGroup(t, app, leaderUser, "Hikers", models.GroupActive)
+		addMember(t, app, sam, g, models.MembershipMember)
+		leader := loginAPI(t, app, "leader", "password1234")
+		admin := loginAPI(t, app, "admin", "password1234")
+		leader.holdNotices, admin.holdNotices = true, true
+		return gatedErasureScene{app: app, victim: victim, sends: []string{notify.LeadershipChanged},
+			run: func() error {
+				return doExpect(leader, "PUT", "/api/v1/groups/"+itoa(g.ID)+"/members/"+itoa(sam.ID)+"/role", map[string]any{"role": "leader"}, http.StatusOK)
+			},
+			erase: func() error {
+				return doExpect(admin, "DELETE", "/api/v1/admin/users/"+itoa(victim.ID), nil, http.StatusOK)
+			},
+			told: func(t *testing.T) {
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", kept.ID, notify.LeadershipChanged); n != 1 {
+					t.Fatalf("the other admin has %d leadership notices, want 1", n)
+				}
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ?", sam.ID, notify.YourRole); n != 1 {
+					t.Fatalf("the promoted member has %d role notices, want 1", n)
+				}
+			},
+		}
+	})
 }

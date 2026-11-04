@@ -1039,3 +1039,85 @@ func TestGroupAskCompletionClearsObsoleteDeletionRequest(t *testing.T) {
 		t.Fatal("deletion task unresolved")
 	}
 }
+
+// N-01 (inventory 9.2.2, gated entries): a direct-contact request tells the
+// person asked (contact.subject_review) and, for a teen, the admins who must
+// also review it (contact.admin_review), through contactNotice, which first
+// keeps only active users with a password and then calls notify.Send. The real
+// operation is POST /contact-requests -> apiCreateContactRequest ->
+// contactOperation -> runContactOperation (gate first, then the church zone,
+// then the actor read) -> reconcileContacts, loadContactFacts, the request row,
+// its audit row, contactNotice for the subject and, for a teen, for each admin.
+// No user row is locked before the sends. Two erased people, one per kind:
+//
+//   - the person asked (an adult). Sender first: the request stops after it wrote
+//     their review notice; the real delete waits on the gate and removes it.
+//     Deletion first: the request waits on the gate, then reads the subject as
+//     missing, and the policy refuses it: 403 "direct-contact access is
+//     unavailable; refresh the request" with a contact.refused audit row naming
+//     the leader, no request row and no notice.
+//   - a second admin, when the person asked is a teen. The request is 201 in
+//     both orders and the teen and the other admin are told; in the deletion
+//     first order the admin list is read after the erasure, so Send's skip of
+//     an erased admin is not what leaves them out.
+//
+// The other contactNotice callers (decisions, withdrawals, completions of a
+// contact or add request, and the contact.updated kind) are not run; they share
+// the function and its first lock but not these tests.
+func TestContactRequestNoticeSerializesWithRealAdminDelete(t *testing.T) {
+	for i, who := range []string{"person asked", "second admin of a teen"} {
+		t.Run(who, func(t *testing.T) {
+			var order string
+			keyA := int64(7402135 + 2*i)
+			kind := notify.ContactSubjectReview
+			if who != "person asked" {
+				kind = notify.ContactAdminReview
+			}
+			runGatedErasureBarriers(t, keyA, keyA+1, func(t *testing.T) gatedErasureScene {
+				f := newContactAPIFixture(t, who != "person asked")
+				victim := f.subject
+				fields := "email"
+				if who != "person asked" {
+					victim = newTestUser(t, f.app, "contact-admin-two", "password1234", models.RoleAdmin)
+					fields = "both"
+				}
+				f.lc.holdNotices, f.ac.holdNotices = true, true
+				ask := func(name string, want int) func() error {
+					return func() error {
+						order = name
+						return doExpect(f.lc, "POST", "/api/v1/contact-requests", map[string]any{"subjectUserId": f.subject.ID, "contextType": "group", "contextId": f.group.ID, "fields": fields, "reason": ""}, want)
+					}
+				}
+				lostWant := http.StatusCreated
+				if who == "person asked" {
+					lostWant = http.StatusForbidden
+				}
+				return gatedErasureScene{app: f.app, victim: victim, sends: []string{kind},
+					run:              ask("sender first", http.StatusCreated),
+					runDeletionFirst: ask("deletion first", lostWant),
+					erase:            eraseVia(f.ac, victim),
+					told: func(t *testing.T) {
+						won := order == "sender first" || who != "person asked"
+						rows, refused := int64(0), int64(1)
+						if won {
+							rows, refused = 1, 0
+						}
+						if n := contactCount(t, f.app, &models.ContactRequest{}, "requester_id = ?", f.leader.ID); n != rows {
+							t.Fatalf("%d contact requests after %s, want %d", n, order, rows)
+						}
+						if n := auditCount(t, f.app, audit.ContactRequested); n != rows {
+							t.Fatalf("%d contact.requested audit rows after %s, want %d", n, order, rows)
+						}
+						if n := auditCount(t, f.app, audit.ContactRefused); n != refused {
+							t.Fatalf("%d contact.refused audit rows after %s, want %d", n, order, refused)
+						}
+						if who != "person asked" {
+							wantNotices(t, f.app, notify.ContactSubjectReview, map[*models.User]int64{f.subject: 1})
+							wantNotices(t, f.app, notify.ContactAdminReview, map[*models.User]int64{f.admin: 1})
+						}
+					},
+				}
+			})
+		})
+	}
+}
