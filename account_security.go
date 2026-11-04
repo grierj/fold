@@ -34,6 +34,24 @@ func lockCurrentCredentials(tx *gorm.DB, expected *models.User) (*models.User, e
 	return &fresh, nil
 }
 
+// lockSessionCredentials is lockCurrentCredentials for a credential writer
+// that holds no fresh password proof, only a session. After the same gate,
+// user lock and checks, it also requires the locked row's logout_version to
+// match the session's, so the row agrees with every value
+// authenticatedSessionUser checks (api.go:371), as checkAvatarSession does.
+// A session loaded before an erasure, a disable, a credential change or a
+// logout therefore answers errSecuritySession and the caller saves nothing.
+func lockSessionCredentials(tx *gorm.DB, me *models.User) (*models.User, error) {
+	fresh, err := lockCurrentCredentials(tx, me)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.LogoutVersion != me.LogoutVersion {
+		return nil, errSecuritySession
+	}
+	return fresh, nil
+}
+
 // lockAccountTokenUser always obtains the contact gate, then the user, before
 // any token is claimed/deleted. Credential writers and token issuers use the
 // same order; token -> user locking would deadlock against bulk revocation.

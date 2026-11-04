@@ -87,12 +87,12 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 		return
 	}
 	email := normalizeEmail(body.Email)
-	hits, err := a.throttleHit(c.Request.Context(), "guardian:ip:"+rateLimitIP(c.ClientIP()), time.Hour)
+	hits, err := a.throttleHit(c.Request.Context(), guardianClaimIPKey(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return
 	}
-	allowed, err := a.targetAllow(c.Request.Context(), "guardian:addr:"+email)
+	allowed, err := a.targetAllow(c.Request.Context(), guardianClaimAddrKey(email))
 	if err != nil || !allowed || hits > accountRequestIPLimit {
 		log.Printf("guardian claim limited: actor=%d err=%v", me.ID, err)
 		c.JSON(http.StatusOK, gin.H{"message": guardianClaimThanks})

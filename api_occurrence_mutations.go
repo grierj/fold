@@ -450,7 +450,7 @@ func managerDateAddAllowedIn(tx *gorm.DB, actor uint) (bool, error) {
 ON CONFLICT (key) DO UPDATE SET
  failures = CASE WHEN login_throttles.window_start < now() - interval '1 minute' THEN 1 ELSE login_throttles.failures + 1 END,
  window_start = CASE WHEN login_throttles.window_start < now() - interval '1 minute' THEN now() ELSE login_throttles.window_start END
-RETURNING failures`, "manager-date-add:"+strconv.FormatUint(uint64(actor), 10)).Scan(&count).Error
+RETURNING failures`, string(managerDateAddKey(actor))).Scan(&count).Error
 	return count <= managerDateAddLimit, err
 }
 

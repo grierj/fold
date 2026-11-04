@@ -372,6 +372,9 @@ type calendarFeedJSON struct {
 	URL      string `json:"url,omitempty"`
 }
 
+// errCalendarFeedGone means the person's link was not there under the lock.
+var errCalendarFeedGone = errors.New("calendar feed not found")
+
 func (a *App) calendarTokenFor(userID uint) *models.CalendarToken {
 	var tok models.CalendarToken
 	if err := a.DB.Where("user_id = ?", userID).First(&tok).Error; err != nil {
@@ -424,6 +427,12 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 		return
 	}
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// The contact gate and the person's lock come first, so a session
+		// loaded before an erasure, a disable, a credential change or a
+		// logout creates nothing.
+		if _, err := lockSessionCredentials(tx, me); err != nil {
+			return err
+		}
 		if err := tx.Where("user_id = ?", me.ID).Delete(&models.CalendarToken{}).Error; err != nil {
 			return err
 		}
@@ -438,6 +447,10 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 			Meta: map[string]any{"scope": scope}, IP: c.ClientIP(),
 		})
 	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create the calendar link")
 		return
@@ -466,23 +479,47 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "calendar feed not found")
 		return
 	}
+	var current models.CalendarToken
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.CalendarToken{}).Where("user_id = ?", me.ID).
-			Update("scope", scope).Error; err != nil {
+		// Gate and person's lock first, as in create. The link is then read
+		// again under the lock for its old scope: it may be gone, since
+		// revoking a link takes no gate.
+		if _, err := lockSessionCredentials(tx, me); err != nil {
 			return err
+		}
+		if err := tx.Where("user_id = ?", me.ID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errCalendarFeedGone
+			}
+			return err
+		}
+		res := tx.Model(&models.CalendarToken{}).Where("user_id = ?", me.ID).Update("scope", scope)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errCalendarFeedGone
 		}
 		return audit.Write(tx, audit.Entry{
 			Actor: &me.ID, Action: audit.CalendarTokenScopeChanged,
 			TargetType: "user", TargetID: me.ID,
-			Meta: map[string]any{"oldScope": tok.Scope, "newScope": scope}, IP: c.ClientIP(),
+			Meta: map[string]any{"oldScope": current.Scope, "newScope": scope}, IP: c.ClientIP(),
 		})
 	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if errors.Is(err, errCalendarFeedGone) {
+		jsonError(c, http.StatusNotFound, "calendar feed not found")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save the feed choice")
 		return
 	}
-	tok.Scope = scope
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(tok)})
+	current.Scope = scope
+	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(&current)})
 }
 
 func (a *App) apiDeleteMyCalendarFeed(c *gin.Context) {

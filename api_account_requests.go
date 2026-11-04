@@ -118,14 +118,14 @@ func toAccountRequestJSON(r *models.AccountRequest, names publicNames) accountRe
 // accountRequestHit counts one public-form submission from ip and
 // reports the running count in the last hour (login_throttles, own key).
 func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
-	return a.throttleHit(ctx, "acctreq:ip:"+rateLimitIP(ip), time.Hour)
+	return a.throttleHit(ctx, accountRequestIPKey(ip), time.Hour)
 }
 
 // throttleHit counts one hit against key and reports the running count
 // inside the window. It lives in login_throttles, so it survives
 // restarts and is shared by every replica. Public forms each use their
 // own key prefix, so one form's traffic never throttles another's.
-func (a *App) throttleHit(ctx context.Context, key string, window time.Duration) (int, error) {
+func (a *App) throttleHit(ctx context.Context, key throttleKey, window time.Duration) (int, error) {
 	failures, _, err := countThrottleHit(a.DB.WithContext(ctx), key, window)
 	return failures, err
 }
@@ -213,7 +213,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		a.answerAccountRequest(c, source)
 		return false
 	}
-	if ok, err := a.throttleAllow(ctx, "acctreq:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
+	if ok, err := a.throttleAllow(ctx, accountRequestSiteKey(), publicSignupSiteLimit, time.Hour); err != nil || !ok {
 		log.Printf("account request site limit: source=%s err=%v", source, err)
 		a.answerAccountRequest(c, source)
 		return false
@@ -221,7 +221,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// Per-address limit (#91): rotating IPs can't flood one inbox, or the
 	// admins, with requests for that address. Same answer, nothing stored
 	// or sent.
-	if ok, err := a.targetAllow(ctx, "acctreq:addr:"+v.email); err != nil || !ok {
+	if ok, err := a.targetAllow(ctx, accountRequestAddrKey(v.email)); err != nil || !ok {
 		log.Printf("account request address limited: source=%s err=%v", source, err)
 		a.answerAccountRequest(c, source)
 		return false

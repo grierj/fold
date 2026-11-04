@@ -1,19 +1,24 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"fold/internal/audit"
 	"fold/internal/events"
 	"fold/internal/policy"
 	"fold/models"
 
 	ics "github.com/arran4/golang-ical"
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -22,6 +27,31 @@ import (
 func feedStart(days int) time.Time {
 	now := time.Now().UTC()
 	return time.Date(now.Year(), now.Month(), now.Day(), 19, 0, 0, 0, time.UTC).AddDate(0, 0, days)
+}
+
+// Pause after the transactional re-read, leaving the preceding fast read alone.
+func pauseCalendarTransactionalRead(t *testing.T, db *gorm.DB) (<-chan struct{}, func()) {
+	t.Helper()
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var reads atomic.Int32
+	name := fmt.Sprintf("test:calendar_transactional_read:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table != "calendar_tokens" || tx.Statement.Context.Value(testDBOperationKey{}) != "calendar-update" || reads.Add(1) != 2 {
+			return
+		}
+		close(reached)
+		select {
+		case <-resume:
+		case <-tx.Statement.Context.Done():
+			tx.AddError(tx.Statement.Context.Err())
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(resume) }) }
+	t.Cleanup(func() { release(); _ = db.Callback().Query().Remove(name) })
+	return reached, release
 }
 
 func feedDate(t time.Time) string { return t.Format("2006-01-02") }
@@ -1402,4 +1432,226 @@ func TestPersonalFeedHouseholdScopeKeepsOwnRSVPPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runPausedCalendarRequest invokes one calendar-link handler directly, with
+// stale as the signed-in person, and holds it just after its first read of
+// calendar_tokens (calendarTokenFor, the handler's first database read) while
+// interrupt runs. The handler then continues against the database as the
+// interruption left it.
+//
+// The request is not sent through the router, because calendarTokenFor reads
+// through a.DB with a background context and the barrier would never trip. So
+// this proves the in-handler recheck against a stale snapshot, not the session
+// middleware: stale stands for a session that was valid when loaded.
+func runPausedCalendarRequest(t *testing.T, app *App, method string, handle func(*App, *gin.Context),
+	stale *models.User, scope string, interrupt func()) *httptest.ResponseRecorder {
+	t.Helper()
+	reached, release := pauseDBRead(t, app.DB, "calendar", "calendar_tokens")
+	var w *httptest.ResponseRecorder
+	_, done := startDBSession(t, app.DB, "calendar", func(db *gorm.DB) error {
+		a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config, Push: app.Push}
+		w = httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(method, "/api/v1/me/calendar-feed",
+			strings.NewReader(jsonString(map[string]string{"scope": scope}))).WithContext(db.Statement.Context)
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("apiUser", stale)
+		handle(a, c)
+		return nil
+	})
+	awaitDBSignal(t, reached)
+	interrupt()
+	release()
+	if err := awaitDBResult(t, done); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// A calendar link request whose session was loaded before the person was
+// erased or signed out creates nothing, changes nothing and writes no audit row
+// in their name. The erasure and logout cases come before the lock; the
+// controls show the same request saving when nothing intervenes.
+func TestCalendarLinkChangesFromAStaleSessionSaveNothing(t *testing.T) {
+	type op struct {
+		name   string
+		method string
+		handle func(*App, *gin.Context)
+		seed   bool // the person holds a link ("mine") before the request
+	}
+	ops := []op{
+		{"create", "POST", (*App).apiCreateMyCalendarFeed, false},
+		{"scope change", "PUT", (*App).apiUpdateMyCalendarFeed, true},
+	}
+	for _, o := range ops {
+		for _, how := range []string{"none", "erased", "logged out"} {
+			t.Run(o.name+"/"+how, func(t *testing.T) {
+				app := testApp(t)
+				newTestUser(t, app, "feed-admin", "password1234", models.RoleAdmin)
+				ac := loginAPI(t, app, "feed-admin", "password1234")
+				u := newTestUser(t, app, "feed-person", "password1234", models.RoleMember)
+				uc := loginAPI(t, app, "feed-person", "password1234")
+				if o.seed {
+					createFeedLink(t, uc, models.CalendarFeedMine)
+				}
+				var stale models.User
+				if err := app.DB.First(&stale, u.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				regenerated, changed := auditCount(t, app, audit.CalendarTokenRegenerated), auditCount(t, app, audit.CalendarTokenScopeChanged)
+				linksBefore := countRows(t, app.DB, "calendar_tokens", "user_id = ?", u.ID)
+
+				w := runPausedCalendarRequest(t, app, o.method, o.handle, &stale, models.CalendarFeedAll, func() {
+					switch how {
+					case "erased":
+						if r := deleteAccount(ac, u.ID, nil); r.code != http.StatusOK {
+							t.Fatalf("erase: %d %s", r.code, r.body)
+						}
+					case "logged out":
+						if lw := uc.do("POST", "/api/v1/auth/logout", nil, true); lw.Code != http.StatusOK {
+							t.Fatalf("logout: %d %s", lw.Code, lw.Body.String())
+						}
+					}
+				})
+
+				regeneratedAfter, changedAfter := auditCount(t, app, audit.CalendarTokenRegenerated), auditCount(t, app, audit.CalendarTokenScopeChanged)
+				var tok models.CalendarToken
+				hasLink := app.DB.Where("user_id = ?", u.ID).First(&tok).Error == nil
+				if how == "none" {
+					if w.Code != http.StatusOK {
+						t.Fatalf("control: %d %s", w.Code, w.Body.String())
+					}
+					if !hasLink || tok.Scope != models.CalendarFeedAll {
+						t.Fatalf("control did not save the new scope: link %v scope %q", hasLink, tok.Scope)
+					}
+					if (o.method == "POST" && regeneratedAfter != regenerated+1) || (o.method == "PUT" && changedAfter != changed+1) {
+						t.Fatalf("control audit rows: regenerated %d->%d, scope changed %d->%d", regenerated, regeneratedAfter, changed, changedAfter)
+					}
+					return
+				}
+				if w.Code != http.StatusUnauthorized || errorCodeOf(w) != "signed_out" {
+					t.Fatalf("stale session: %d %s, want 401 signed_out", w.Code, w.Body.String())
+				}
+				if regeneratedAfter != regenerated || changedAfter != changed {
+					t.Fatalf("a calendar audit row was written for a stale session: regenerated %d->%d, scope changed %d->%d",
+						regenerated, regeneratedAfter, changed, changedAfter)
+				}
+				switch {
+				case how == "erased":
+					if hasLink {
+						t.Fatal("the erased person has a calendar link")
+					}
+				case !o.seed:
+					if hasLink {
+						t.Fatal("a stale create made a link")
+					}
+				default:
+					if linksBefore != 1 || !hasLink || tok.Scope != models.CalendarFeedMine {
+						t.Fatalf("a stale scope change touched the link: before %d, now %v scope %q", linksBefore, hasLink, tok.Scope)
+					}
+				}
+			})
+		}
+	}
+
+	// A link deleted by SQL while the scope change is paused is not an
+	// interruption of the session: the locked re-read finds nothing, so the
+	// answer is the usual 404 and no audit row is written.
+	t.Run("scope change when the link is gone", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "feed-person", "password1234", models.RoleMember)
+		uc := loginAPI(t, app, "feed-person", "password1234")
+		createFeedLink(t, uc, models.CalendarFeedMine)
+		var stale models.User
+		if err := app.DB.First(&stale, u.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		changed := auditCount(t, app, audit.CalendarTokenScopeChanged)
+		w := runPausedCalendarRequest(t, app, "PUT", (*App).apiUpdateMyCalendarFeed, &stale, models.CalendarFeedAll, func() {
+			if err := app.DB.Where("user_id = ?", u.ID).Delete(&models.CalendarToken{}).Error; err != nil {
+				t.Fatal(err)
+			}
+		})
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "calendar feed not found") {
+			t.Fatalf("link gone: %d %s, want 404", w.Code, w.Body.String())
+		}
+		if got := auditCount(t, app, audit.CalendarTokenScopeChanged); got != changed {
+			t.Fatalf("a scope-change audit row was written for a missing link: %d -> %d", changed, got)
+		}
+		if countRows(t, app.DB, "calendar_tokens", "user_id = ?", u.ID) != 0 {
+			t.Fatal("the scope change brought the link back")
+		}
+	})
+}
+
+func TestCalendarScopeChangeRaces(t *testing.T) {
+	t.Run("revoked after transactional read", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "feed-person", "password1234", models.RoleMember)
+		client := loginAPI(t, app, "feed-person", "password1234")
+		createFeedLink(t, client, models.CalendarFeedMine)
+		var user models.User
+		if err := app.DB.First(&user, u.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		before := auditCount(t, app, audit.CalendarTokenScopeChanged)
+		reached, release := pauseCalendarTransactionalRead(t, app.DB)
+		var w *httptest.ResponseRecorder
+		_, done := startDBSession(t, app.DB, "calendar-update", func(db *gorm.DB) error {
+			a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config, Push: app.Push}
+			w = httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("PUT", "/api/v1/me/calendar-feed", strings.NewReader(jsonString(map[string]string{"scope": models.CalendarFeedAll}))).WithContext(db.Statement.Context)
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Set("apiUser", &user)
+			a.apiUpdateMyCalendarFeed(c)
+			return nil
+		})
+		awaitDBSignal(t, reached)
+		if res := client.do("DELETE", "/api/v1/me/calendar-feed", nil, true); res.Code != http.StatusOK {
+			t.Fatalf("revoke: %d %s", res.Code, res.Body.String())
+		}
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "calendar feed not found") {
+			t.Fatalf("scope change after revoke: %d %s", w.Code, w.Body.String())
+		}
+		if countRows(t, app.DB, "calendar_tokens", "user_id = ?", u.ID) != 0 || auditCount(t, app, audit.CalendarTokenScopeChanged) != before {
+			t.Fatal("scope change restored the link or wrote a scope audit after revocation")
+		}
+	})
+
+	t.Run("audit uses latest scope", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "feed-person", "password1234", models.RoleMember)
+		client := loginAPI(t, app, "feed-person", "password1234")
+		createFeedLink(t, client, models.CalendarFeedMine)
+		var user models.User
+		if err := app.DB.First(&user, u.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		w := runPausedCalendarRequest(t, app, "PUT", (*App).apiUpdateMyCalendarFeed, &user, models.CalendarFeedMine, func() {
+			res := client.do("PUT", "/api/v1/me/calendar-feed", map[string]string{"scope": models.CalendarFeedAll}, true)
+			if res.Code != http.StatusOK {
+				t.Fatalf("intervening scope change: %d %s", res.Code, res.Body.String())
+			}
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("resumed scope change: %d %s", w.Code, w.Body.String())
+		}
+		var entry models.AuditLog
+		if err := app.DB.Where("action = ? AND target_id = ?", audit.CalendarTokenScopeChanged, u.ID).Order("id DESC").First(&entry).Error; err != nil {
+			t.Fatal(err)
+		}
+		var meta map[string]string
+		if err := json.Unmarshal([]byte(entry.MetaJSON), &meta); err != nil {
+			t.Fatal(err)
+		}
+		if meta["oldScope"] != models.CalendarFeedAll || meta["newScope"] != models.CalendarFeedMine {
+			t.Fatalf("scope audit metadata: %v", meta)
+		}
+	})
 }

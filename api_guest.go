@@ -170,7 +170,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 			"Ask a parent or guardian to register you. Guests registering on their own must be 18 or older.")
 		return
 	}
-	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+rateLimitIP(c.ClientIP()), time.Hour)
+	hits, err := a.throttleHit(c.Request.Context(), guestIPKey(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -182,7 +182,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
-	if ok, err := a.throttleAllow(c.Request.Context(), "guestreg:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
+	if ok, err := a.throttleAllow(c.Request.Context(), guestSiteKey(), publicSignupSiteLimit, time.Hour); err != nil || !ok {
 		log.Printf("guest registration site limit: err=%v", err)
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
@@ -200,7 +200,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		existing.Status != models.UserGuest {
 		// The hint is an email to that address too, so it shares the
 		// per-address limit (3 an hour, 10 a day) whatever the IP (10.1).
-		if ok, err := a.targetAllow(c.Request.Context(), "guestreg:hint:"+email); err == nil && ok {
+		if ok, err := a.targetAllow(c.Request.Context(), guestHintKey(email)); err == nil && ok {
 			// The hint is queued by account id; delivery mails the address
 			// the account has then. A failed write is the same failure as a
 			// failed stored registration. No request context: a disconnect

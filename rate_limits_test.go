@@ -56,7 +56,7 @@ func TestPublicSignupSiteCaps(t *testing.T) {
 			gid := createGroupAs(t, admin, "Site caps", models.VisibilityPublic)
 			event := scheduleGroupEvent(t, admin, gid, "Picnic")
 			for range publicSignupSiteLimit - 1 {
-				if _, err := app.throttleHit(context.Background(), door+":site", time.Hour); err != nil {
+				if _, err := app.throttleHit(context.Background(), throttleKey(door+":site"), time.Hour); err != nil {
 					t.Fatal(err)
 				}
 			}

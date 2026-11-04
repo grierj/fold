@@ -210,12 +210,14 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 	var dev models.PushSubscription
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Under the person's lock, the account must still be the one the
-		// session signed in as: revoked or disabled meanwhile saves nothing.
+		// session signed in as: revoked, disabled or signed out meanwhile
+		// saves nothing (logout bumps only logout_version).
 		var fresh models.User
-		if err := tx.Raw("SELECT id, status, session_version FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
+		if err := tx.Raw("SELECT id, status, session_version, logout_version FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
 			return err
 		}
-		if fresh.ID != me.ID || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion {
+		if fresh.ID != me.ID || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion ||
+			fresh.LogoutVersion != me.LogoutVersion {
 			return errSecuritySession
 		}
 		var saves int64

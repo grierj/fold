@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -1924,5 +1925,243 @@ func TestStoreAvatarWithSnapshotFromBeforeErasureRefuses(t *testing.T) {
 	}
 	if n := len(avatarJobsFor(t, app, target.ID)); n != 1 {
 		t.Fatalf("%d jobs, want only the erasure's", n)
+	}
+}
+
+// The last-admin rule decided on locked facts (M7.4 R4-1-3). Under the contact
+// gate with the actor re-read as an active admin distinct from the target, the
+// in-gate count is at least 2, so the check refuses nothing today's API can
+// build; the tests pin the answers that must not move and the check itself.
+
+// Two admins delete each other at once (F-1, closed by R4-H's actor re-read).
+// Both requests queue on the real contact gate, so the order is the gate's:
+// the first deletes the other admin, and the second finds its own admin
+// deleted and answers signed_out. Exactly one admin remains.
+func TestMutualAdminDeletesLeaveOneAdmin(t *testing.T) {
+	s := newHostScene(t)
+	db := s.app.DB
+	gate := holdContactGate(t, s.app)
+	aDeletesB := bgDo(s.a, "DELETE", "/api/v1/admin/users/"+itoa(s.adminB.ID), nil)
+	bDeletesA := bgDo(s.b, "DELETE", "/api/v1/admin/users/"+itoa(s.adminA.ID), nil)
+	waitContactWaiters(t, s.app, 2)
+	if err := gate.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	ra, rb := awaitResult(t, aDeletesB), awaitResult(t, bDeletesA)
+	var winner, loser *models.User
+	var lost httpResult
+	switch {
+	case ra.code == http.StatusOK && rb.code != http.StatusOK:
+		winner, loser, lost = s.adminA, s.adminB, rb
+	case rb.code == http.StatusOK && ra.code != http.StatusOK:
+		winner, loser, lost = s.adminB, s.adminA, ra
+	default:
+		t.Fatalf("exactly one delete must succeed: A->B %d %s, B->A %d %s", ra.code, ra.body, rb.code, rb.body)
+	}
+	if lost.code != http.StatusUnauthorized || !strings.Contains(lost.body, `"code":"signed_out"`) {
+		t.Fatalf("the loser answers %d %s, want 401 signed_out", lost.code, lost.body)
+	}
+	if got := s.app.adminCount(); got != 1 {
+		t.Fatalf("%d active admins remain, want 1", got)
+	}
+	// The loser was erased; the winner, the loser's target, is untouched.
+	var w, l models.User
+	if err := db.Unscoped().First(&w, winner.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Unscoped().First(&l, loser.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w.DeletedAt.Valid || w.Email != winner.Email || w.PasswordHash == nil || w.Status != models.UserActive {
+		t.Fatalf("the surviving admin was changed: %+v", w)
+	}
+	if !l.DeletedAt.Valid || l.Email != fmt.Sprintf("deleted-%d@deleted.invalid", l.ID) {
+		t.Fatalf("the deleted admin was not erased: %+v", l)
+	}
+}
+
+// An admin who is disabled while the delete waits is no longer an active admin,
+// so deleting them is allowed at any count (policy.CanDemoteOrDelete).
+func TestDeleteOfAdminDisabledWhileWaiting(t *testing.T) {
+	s := newHostScene(t)
+	db := s.app.DB
+	gate := holdContactGate(t, s.app)
+	del := bgDo(s.a, "DELETE", "/api/v1/admin/users/"+itoa(s.adminB.ID), nil)
+	waitContactWaiters(t, s.app, 1)
+	if err := db.Exec("UPDATE users SET status = 'disabled' WHERE id = ?", s.adminB.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, del); r.code != http.StatusOK {
+		t.Fatalf("delete: %d %s", r.code, r.body)
+	}
+	var b models.User
+	if err := db.Unscoped().First(&b, s.adminB.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !b.DeletedAt.Valid || b.Email != fmt.Sprintf("deleted-%d@deleted.invalid", b.ID) || b.PasswordHash != nil {
+		t.Fatalf("the disabled admin was not erased: %+v", b)
+	}
+	if got := s.app.adminCount(); got != 1 {
+		t.Fatalf("%d active admins, want 1 (the actor)", got)
+	}
+}
+
+// PUT judges the effective change on the locked target. A target that is no
+// longer an active admin when the gate opens is edited as before, and the
+// effective status (invited, from a missing password) is seen by the check
+// without changing today's answer.
+func TestUpdateOfAdminDisabledWhileWaiting(t *testing.T) {
+	cases := []struct {
+		name     string
+		prepare  string // SQL run on the target while the request waits
+		body     map[string]any
+		wantRole string
+		check    func(t *testing.T, s hostScene, b models.User)
+	}{
+		{
+			name: "demote", prepare: "UPDATE users SET status = 'disabled' WHERE id = ?",
+			body: map[string]any{"role": models.RoleMember}, wantRole: models.RoleMember,
+			check: func(t *testing.T, s hostScene, b models.User) {
+				if b.Status != models.UserDisabled {
+					t.Errorf("status = %q, want disabled", b.Status)
+				}
+			},
+		},
+		{
+			name: "disable", prepare: "UPDATE users SET status = 'disabled' WHERE id = ?",
+			body: map[string]any{"status": models.UserDisabled}, wantRole: models.RoleAdmin,
+			check: func(t *testing.T, s hostScene, b models.User) {
+				if b.Status != models.UserDisabled || !b.AdministrativelyDisabled {
+					t.Errorf("status %q administratively_disabled %v, want disabled and true", b.Status, b.AdministrativelyDisabled)
+				}
+				if n := countRows(t, s.app.DB, "audit_logs", "action = ? AND target_id = ?", audit.UserDisabled, b.ID); n != 1 {
+					t.Errorf("%d user.disabled audit rows, want 1", n)
+				}
+			},
+		},
+		{
+			name: "effective status invited", prepare: "UPDATE users SET password_hash = NULL WHERE id = ?",
+			body: map[string]any{"status": models.UserActive}, wantRole: models.RoleAdmin,
+			check: func(t *testing.T, s hostScene, b models.User) {
+				if b.Status != models.UserInvited {
+					t.Errorf("status = %q, want invited", b.Status)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newHostScene(t)
+			db := s.app.DB
+			gate := holdContactGate(t, s.app)
+			put := bgDo(s.a, "PUT", "/api/v1/admin/users/"+itoa(s.adminB.ID), tc.body)
+			waitContactWaiters(t, s.app, 1)
+			if err := db.Exec(tc.prepare, s.adminB.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			if r := awaitResult(t, put); r.code != http.StatusOK {
+				t.Fatalf("update: %d %s", r.code, r.body)
+			}
+			var b models.User
+			if err := db.First(&b, s.adminB.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if b.Role != tc.wantRole {
+				t.Errorf("role = %q, want %q", b.Role, tc.wantRole)
+			}
+			tc.check(t, s, b)
+			// A is the one active admin in every case.
+			if got := s.app.adminCount(); got != 1 {
+				t.Errorf("%d active admins, want 1", got)
+			}
+		})
+	}
+}
+
+// keepsAnAdminIn is the defense-in-depth branch: it counts in the caller's
+// transaction, passes for a target that is not an active admin, and its three
+// messages answer 400 last_admin.
+func TestKeepsAnAdminDecidesOnTheInGateCount(t *testing.T) {
+	app := testApp(t)
+	a := newTestUser(t, app, "keeps-a", hostPW, models.RoleAdmin)
+	b := newTestUser(t, app, "keeps-b", hostPW, models.RoleAdmin)
+	// The in-memory actor is an active admin, the database says otherwise, so
+	// the in-gate count is 1 (only the target).
+	if err := app.DB.Exec("UPDATE users SET status = 'disabled' WHERE id = ?", a.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	msgs := []string{"cannot delete the last admin", "cannot demote the last admin", "cannot disable the last admin"}
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		if n, err := adminCountIn(tx); err != nil || n != 1 {
+			t.Fatalf("adminCountIn = %d, %v, want 1", n, err)
+		}
+		for _, msg := range msgs {
+			err := keepsAnAdminIn(tx, a, b, msg)
+			var rule errAdminRule
+			if !errors.As(err, &rule) || rule.msg != msg || err.Error() != msg {
+				t.Fatalf("n = 1: err = %v, want errAdminRule %q", err, msg)
+			}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			jsonError(c, http.StatusBadRequest, rule.msg)
+			if w.Code != http.StatusBadRequest || errorCodeOf(w) != "last_admin" {
+				t.Errorf("%q answers %d %q, want 400 last_admin", msg, w.Code, errorCodeOf(w))
+			}
+		}
+		// A target that is not an active admin is allowed at any count.
+		disabled := *b
+		disabled.Status = models.UserDisabled
+		if err := keepsAnAdminIn(tx, a, &disabled, msgs[0]); err != nil {
+			t.Fatalf("a disabled target: %v", err)
+		}
+		member := *b
+		member.Role = models.RoleMember
+		if err := keepsAnAdminIn(tx, a, &member, msgs[0]); err != nil {
+			t.Fatalf("a member target: %v", err)
+		}
+		// With the actor active in the database too, n = 2 and it passes.
+		if err := tx.Exec("UPDATE users SET status = 'active' WHERE id = ?", a.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if n, err := adminCountIn(tx); err != nil || n != 2 {
+			t.Fatalf("adminCountIn = %d, %v, want 2", n, err)
+		}
+		if err := keepsAnAdminIn(tx, a, b, msgs[0]); err != nil {
+			t.Fatalf("n = 2: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// O-11: an erased admin keeps role admin, but a tombstone is disabled and
+// soft-deleted, so neither count includes it and it cannot sign in.
+func TestEraseAdminKeepsRole(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.erase(t, s.second.ID)
+	var got models.User
+	if err := s.app.DB.Unscoped().First(&got, s.second.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Role != models.RoleAdmin {
+		t.Errorf("role = %q, want admin kept", got.Role)
+	}
+	if got.CanSignIn() {
+		t.Error("the tombstone can sign in")
+	}
+	if loginAPIExpectFail(t, s.app, "erase-second", erasurePW) {
+		t.Error("the erased admin signed in")
+	}
+	n, err := adminCountIn(s.app.DB)
+	if err != nil || n != 1 || s.app.adminCount() != 1 {
+		t.Errorf("adminCountIn = %d, %v, adminCount = %d, want 1 and 1", n, err, s.app.adminCount())
 	}
 }
