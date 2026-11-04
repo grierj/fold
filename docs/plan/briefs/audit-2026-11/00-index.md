@@ -24,8 +24,19 @@ implementer notes the drift in the PR.
 5. Briefs cite `file:line` at audit time (HEAD `3ec934e`, plus the SEC1 fix
    `28268b3`). Re-check each cited body before editing; line numbers drift.
 6. Migrations: new goose file, next free number at implementation time —
-   except M7.7, which is the one licensed baseline rewrite (DEC-138). Even
-   there, no migration is edited until R9's squash preflight (§9) is met.
+   except M7.7, which was the one licensed baseline rewrite (DEC-138); it is
+   complete and its squash preflight was met (R9 §9). *Corrected Nov 3, 2026:*
+   the older wording "M7.7 only" is superseded by PLAN 14.1, DEC-138 and
+   `AGENTS.md`, which allow editing the single baseline directly until the first
+   tagged release or first church deployment closes the DEC-138 window (PLAN
+   14.10 only orders M7.7 before schema-adding briefs, "parts of M7.4/M7.5"
+   included, "unless its table folds into the baseline"; that wave is done).
+   A baseline edit still needs freshly refreshed, independently reviewed
+   evidence that the window is open, a disposable database, and no owner
+   database reset; otherwise add a numbered migration (the first one updates
+   `TestBaselineFileShape`, never deletes it). See
+   `docs/plan/M7.4-ERASURE-INVENTORY.md` section 10 (a draft awaiting review;
+   it grants no authority until signed).
 
 ## Brief files
 
@@ -76,7 +87,7 @@ shipped stack. Full evidence: `R1-deployment.md` Part 1.
 | DEC-138 | R9 | One generated baseline pre-live; additive-first after |
 | DEC-139 | R13 | Big bets stand; fleet tooling at ~5 hosted churches |
 | DEC-140 | R17 | One adapter per kind until demanded; speculative cuts |
-| DEC-141 | R19 | Room suggestions + contact machinery frozen |
+| DEC-141 | R19 | Room suggestions + contact machinery frozen; *amended Nov 3, 2026:* one narrow erasure-only exception lets account erasure (R4) scrub an erased person's identifying text in `contact_requests` while decisions and provenance stay (owner decision; design unreviewed, M7.4 R4-2a) |
 | DEC-142 | R1 | VPS + Compose recommended; Cloudflare supports only |
 | DEC-143 | R2 | Generic CSV import first (reverses DEC-15's gate) |
 | DEC-144 | R4 | Deleting an account erases the person |

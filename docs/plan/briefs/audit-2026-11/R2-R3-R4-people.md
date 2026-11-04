@@ -1044,10 +1044,184 @@ New, next to their source:
 - Priority: first-church readiness (audit build order step 4,
   `docs/AUDIT-2026-11-01.md:265`)
 - Effort: M (audit estimate; the inventory is a full slice of it)
-- Status: Approved 2026-11-01 (audit)
+- Status: Approved 2026-11-01 (audit). M7.4 claimed Nov 3, 2026; slice
+  R4-0 (the inventory) requires independent privacy and safeguarding review
+  and a reviewed R4-0 PR merge before implementation; the milestone is incomplete.
 - GitHub issue: none known at brief time. PLAN section 10.1 states the
   promise being repaired (`docs/plan/PLAN.md:1054`). The audit records
   no decision reversed.
+
+> **R4-0 update (Nov 3, 2026).** The R4-0 inventory is
+> [`docs/plan/M7.4-ERASURE-INVENTORY.md`](../../M7.4-ERASURE-INVENTORY.md). It is a
+> **inventory requiring independent privacy and safeguarding sign-off in the
+> R4-0 pull request and a reviewed PR merge before implementation**; no erasure
+> code or later slice starts before those conditions are met. Priority: PLAN, `AGENTS.md`
+> and the owner decisions recorded below come first. Where this brief's audit-time
+> counts or citations disagree with the source tree at this commit, the source fact
+> is used and the inventory records the correction; code never overrides a PLAN rule
+> or an owner decision. This note changes no decision and leaves the text below as
+> written at audit time. What drifted, and what the inventory proposes (the
+> conditional review record and remaining gates are in its section 15):
+>
+> - **37 tables, not 38.** R9 S4 folded `occurrence_accesses` into `registrations`
+>   (`access_*` columns, DEC-138). `models.All()` and the baseline both list 37.
+>   Wherever this brief says 38 (sections 2, 4, 7, 8) read 37; the DEC-144 wording
+>   stays historical.
+> - **Line numbers are stale.** `apiAdminDeleteUser` is `api_admin.go:828`, the
+>   baseline replaced the 63-file chain, and the `migrations/0000N_*.sql` citations
+>   in section 2 now live in `migrations/00001_baseline.sql` (the inventory cites
+>   them). `occurrence_accesses` rows no longer exist; exact-date access
+>   provenance is on `registrations` and its audit snapshots.
+> - **Authorization snapshots keep their metadata.** The audit rows
+>   `occurrence_access.added` and `occurrence_access.ended` are read by the
+>   `registration_access_provenance()` trigger and by the Go access readers;
+>   `occurrence.blocked` is written the same way and shown in the admin contact
+>   history, but no trigger or authority check reads it. Section 4's R4-4 must
+>   leave all three rows' `meta_json` byte-identical. The `ip` column is read by
+>   nothing, so the draft proposes blanking only the erased person's own address
+>   there (inventory 6.5 to 6.7, O-5), pending review.
+> - **Memberships are hard-deleted today** (`api_handoff.go:179`); section 5's "A /
+>   none left active" is not what the code does. `AGENTS.md` says to preserve it.
+> - **Contact requests cannot be scrubbed by UPDATE** for terminal add-purpose rows
+>   (trigger `add_request_identity`), and DEC-141 froze that table (amended Nov 3, 2026, below). Section 4's
+>   "`ContactRequest.Reason` and add-request childcare notes are cleared where this
+>   person is requester or subject" splits into separate cells by field, purpose,
+>   status and party (inventory T07): `reason` can be blanked on `contact` rows and
+>   on a *pending* add row before the reconciliation ends it; a terminal add row's
+>   `reason` and every add row's `add_childcare_ages_note` cannot be updated at all.
+>   Those cells were an **owner-only gate** (inventory O-7). *The owner answered on
+>   Nov 3, 2026* (verbatim): "Allow a narrow exception to scrub only the erased person’s
+>   identifying text while preserving request decisions and provenance (Recommended)".
+>   `PLAN.md` DEC-141 carries the dated amendment (no new DEC number). That settles
+>   authority for one erasure-only exception to the `add_request_identity` trigger and
+>   nothing else: it is not a redesign of the contact system, does not lift the rest of
+>   the freeze, and does not authorize clearing non-identifying data, another person's
+>   evidence, or text only because its author was erased. Which fields and rows count
+>   as the erased person's identifying text (the terminal add-request `reason`, and the
+>   add-request ages note about the subject's children, each decided on field-specific
+>   evidence), and the trigger and migration shape, are proposals in inventory T07
+>   (G-7a to G-7d) that need privacy/security and schema (DEC-138) review and exact tests
+>   first. Until that review and the R4-0 sign-off are recorded, the `contact_requests`
+>   statements of R4-2a do not start and nothing is implemented under O-7. The older
+>   wording that no answer is recorded and a reviewer alone cannot waive the freeze is
+>   historical.
+> - **Conversions that have not completed.** Section 4's R4-3 (and the "never deletes
+>   the HouseholdPerson it was converted from" bullet) assumed `converted_user_id`
+>   marks the duplicate. An approved teen conversion that has not completed has
+>   `converted_user_id` NULL but the same individual as `account_requests.approved_user_id`
+>   + `household_person_id`; admin delete reaches it. The inventory (3.1 `PERS`, T15,
+>   T12, O-18) treats it as the same person under owner decision 2 without a new question.
+> - **Households.** Section 4's "the household and its people are not deleted" stays true
+>   for people. The household's own `name` and `address` are anonymized only when the
+>   erased individual is all it describes (no other seat of any status and no other
+>   person row, soft-deleted included); a shared or ambiguous household keeps them
+>   (inventory T16, O-9). A household request already past authorization when the erasure
+>   commits (household update, person add/update/delete, first-use creation) could restore
+>   a name, address, person or seat; R4-3 revalidates the acting account, session and seat
+>   under the user lock in those writers, with real preloaded-request barrier tests in both
+>   orders (inventory 9.6, F-10).
+> - **Address-keyed selectors need id links first.** Section 4's address-owned rows
+>   (invitations, requests) are reached by the address held at erasure *and* by retained
+>   id links (`invitation.accepted` `meta.userId`, `approved_user_id`,
+>   `household_person_id`), so an address change before erasure does not hide them, and
+>   a row accepted by another account is never matched by address (inventory 3 rule 6,
+>   3.1, T17). `guardian:addr:<address>` throttle keys name the address a guardian
+>   *searched for*, not the guardian's (T19).
+> - **Stored IP addresses belong to whoever made the request** (inventory 3.2, 6.5, T01),
+>   not to `actor_id` or `requested_by`. The approving admin of a household conversion is
+>   retained as `account_requests.decided_by`, so the addresses written in that approval
+>   are that admin's. Two of them need no audit history: `account.approved` and a teen's
+>   `guardian_link.requested` with `source = household_conversion`. The adult person's
+>   transfer rows are **two different shapes**: `household.person_converted` stores
+>   `accountType` and `transferCount`; each `registration.changed` stores only `personId`,
+>   `userId`, `formerRegisteredBy`, `clearedChildcareRequested` and `invitationId`. They
+>   are reached by the exact tuple `(personId, invitationId, userId)` read from the erased
+>   admin's own request. The `household.person_converted` row must be unique, `accountType =
+>   adult` and have no age-rollover marker (`household.person_updated`, `target_type =
+>   household_person`), the `registration.changed` rows must number its `transferCount`, and
+>   the audit history must be established (gate G-8) to have been written by binaries that
+>   have the staged teen conversion and the marker, since no row records the writing binary.
+>   Uniqueness is a property of the writers, not of `audit_logs`, so R4-4 verifies it at
+>   erasure time, and it does so in two steps: first **discovery** by text-equal identity
+>   keys and a same-household fallback for missing or non-number identity keys, then
+>   **shape validation** of every discovered row. A
+>   malformed duplicate (for example a second `household.person_converted` whose
+>   `householdId` disagrees with its target, or a `registration.changed` missing a shape key)
+>   therefore retains the entire discovered group instead of being skipped while the valid
+>   rows are scrubbed. The report gives the actual discovered, retained and blanked counts,
+>   never an assumed `1 + transferCount`, and claims only what those bounded rules find.
+>   Rows without a matching key or household fallback, and rows excluded by the action or
+>   target filters, can remain unreachable. Ordinary event-registration audit rows stay
+>   outside the conversion candidates even when their ids match; a malformed transfer row
+>   with that target type is likewise unreachable residue. Anything not proven is
+>   retained and reported with a reason code; by default (G-8 undispositioned; neither
+>   proposed route is verified or approved) the whole discovered group is retained, which
+>   leaves an erased approving admin's address on it and is not complete erasure. The selectors never read
+>   `household_people.kind`, which the age job changes before completion. A source-guard test
+>   keeps the writers and key sets true. The rows written when a staged teen conversion
+>   completes *later* (before the birthday by a link-deciding or enabling admin, or a
+>   consenting admin or guardian; after it by the job with an empty address, or by the admin
+>   who enables a suspended account) have no stored caller. They are retained and reported
+>   (O-19); the draft does not claim that every address of an erased
+>   administrator is scrubbed. **That residue is a completion gate, not an accepted
+>   limitation (inventory 6.5.2, gate G-9, O-20).** Slices may merge as staged progress, but
+>   M7.4 is not complete while those personal IP addresses can remain unless the owner
+>   authorizes an exact, named PLAN disposition (DEC-144 allows only an anonymous tombstone;
+>   a reviewer's acceptance cannot waive it); **G-9 is open**. A forward-only caller key is not shown to be
+>   the only remedy: the inventory lists other routes (a named retention disposition,
+>   erasure-triggered or population-wide minimization of the unread `ip` field, coarsening,
+>   a forward key), with whose data each would change and what each lacks. *Owner scope
+>   (Nov 3, 2026, evening, inventory section 1 decision 5):* the owner answered "Yes, clear
+>   those IPs (Recommended)" to clearing the IP on identified household-conversion audit
+>   entries when the erased person may have caused the conversion, even if it might belong
+>   to another living participant, provided it is not essential safeguarding evidence, with
+>   decisions, actors, dates and provenance preserved. That authorizes only the concept of
+>   option P2 in exactly that scope: only the `ip` field, nothing wider. It is not an
+>   approved design; it needs the safeguarding reviewer's per-action judgment and an
+>   independent review of the R4-4 design and tests; it does not authorize blanket deletion
+>   of audit IPs or any change to the separate step rows of living people; it does not claim
+>   the candidate set, history or action-filter approach is complete or reaches malformed or
+>   unreachable historical rows; and it does not establish G-8. The other routes stay
+>   unapproved, and R4-4's default (retain and report the whole discovered group) is unchanged
+>   until a reviewed design exists.
+>   R4-4 builds its primary fixtures through the real handlers
+>   with distinct inviter, approving admin, enabling admin, subject and guardian, including
+>   birthday completion direct and suspended then enabled, plus labelled fallback fixtures
+>   for missing, duplicate, count-mismatched, malformed-duplicate (wrong-household C, T
+>   missing a shape key, missing or mistyped identity metadata including all three
+>   wrong-typed keys at the household, unrelated rows and the action/target limits) and
+>   older-binary history, with exact before and after comparisons of selector metadata and
+>   the R9 authorization snapshots.
+> - **A consent write can arrive after the tombstone** from a request that loaded the
+>   user first (old unsubscribe link, signed settings, push toggles); closing it is part
+>   of R4-2d, in `setConsent` (inventory 7.2, F-9). Section 4's R4-2 "Consent rows with IP,
+>   user agent, and evidence text cleared" is not complete without it.
+> - **Slice list as planned (accepted by the autoflow plan review, nothing
+>   implemented):** R4-0, R4-N (notice locks), R4-H
+>   (sole-host replacement before deletion, owner decision), R4-5 (durable
+>   `avatar.cleanup` job, replacing this brief's `erasure.blob_cleanup`), R4-S then
+>   conditional R4-SC (suppression hashing), R4-1, R4-2a, R4-2d (ordinary consent
+>   scrub and opt-out), R4-3, R4-4, R4-6. One PR per slice; the inventory's section
+>   12 maps rows to slices.
+> - **Owner decisions recorded Nov 3, 2026, verbatim:** (1) "Scrub personal details where
+>   technically safe, while retaining the decision and essential safeguarding evidence
+>   (Recommended)"; (2) "Anonymize the duplicate person’s details (Recommended)", under
+>   which the accepted plan keeps `converted_user_id` (superseding section 4's R4-3 "clear
+>   `converted_user_id`") and applies the answer to the staged case too; (3) "Require the
+>   admin to choose a replacement before deleting the account" (the only host of a
+>   church-wide event). These three answers are not re-asked.
+> - **PLAN 10.1 outranks this brief.** Section 4's R4-2 default of keeping plaintext
+>   suppression meanwhile is a disclosed temporary stage, not approval; opt-out
+>   records also keep a hashed address under PLAN 10.1, and section 6's "must not
+>   reserve, suppress, or throttle a returning address" does not replace that. The
+>   conflict and its OPEN dispositions are inventory sections 7 and 13.
+> - **Audit keys and notification locks are traced in the inventory.** Section 6
+>   there lists every audit writer (113 call sites, 119 action strings) with its
+>   personal keys, and section 9.2 classifies all 33 `notify.Send` callers; they
+>   replace this brief's sketches, and both are drafts until signed.
+> - **Migrations:** new numbered files follow PLAN 14.1 while the baseline guard
+>   `TestBaselineFileShape` is updated by the first slice that adds one; see
+>   inventory section 10.
 
 ### 1. Goal / user outcome
 
