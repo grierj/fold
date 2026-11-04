@@ -808,6 +808,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/admin/users/:id/email-suppression/clear", a.apiAuth(), a.apiAdmin(), a.apiAdminClearSuppression)
 	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)
 	v1.GET("/admin/users/:id/sole-leader-groups", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleLedGroups)
+	v1.GET("/admin/users/:id/sole-host-events", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleHostEvents)
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 

@@ -1066,7 +1066,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
               <th className="px-4 py-3 font-medium">User</th>
               <th className="px-4 py-3 font-medium hidden lg:table-cell">Contact</th>
               <th className="px-4 py-3 font-medium">Role</th>
-              <th className="px-4 py-3 font-medium text-right">Actions</th>
+              <th className="px-4 py-3 font-medium text-right whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody className="block md:table-row-group divide-y divide-border">
@@ -1114,7 +1114,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                 </td>
                 <td className="block md:table-cell px-4 pt-2 md:py-3">
                   <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${
                       u.role === "admin" ? "bg-primary-subtle text-primary-on-subtle" : "bg-sunken text-text-muted"
                     }`}
                   >

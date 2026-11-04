@@ -508,6 +508,34 @@ func TestCanAssignHost(t *testing.T) {
 	}
 }
 
+func TestEventKeepsHost(t *testing.T) {
+	live := func(id uint) HostSeat { return HostSeat{UserID: id} }
+	gone := func(id uint) HostSeat { return HostSeat{UserID: id, Deleted: true} }
+	cases := []struct {
+		name    string
+		hosts   []HostSeat
+		leaving uint
+		want    bool
+	}{
+		{"sole live host leaving", []HostSeat{live(1)}, 1, false},
+		{"live co-host stays", []HostSeat{live(1), live(2)}, 1, true},
+		// A disabled account is an ordinary seat here: DEC-38 keeps its rows.
+		{"disabled co-host keeps the event hosted", []HostSeat{live(1), live(2)}, 2, true},
+		{"tombstone-only co-host does not", []HostSeat{live(1), gone(2)}, 1, false},
+		{"leaving is not a host", []HostSeat{live(2)}, 1, true},
+		{"leaving is not a host and nobody else is", []HostSeat{gone(2)}, 1, false},
+		{"empty", nil, 1, false},
+		{"duplicate seats of the leaving host", []HostSeat{live(1), live(1)}, 1, false},
+		{"duplicate seats of a stayer", []HostSeat{live(1), live(2), live(2)}, 1, true},
+		{"deleted seat of the leaving host and a live stayer", []HostSeat{gone(1), live(2)}, 1, true},
+	}
+	for _, c := range cases {
+		if got := EventKeepsHost(c.hosts, c.leaving); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCanSeeAttendeeNames(t *testing.T) {
 	hidden := active(InviteOnly)
 	opened := groupEvent(Public)

@@ -1735,6 +1735,72 @@ func TestDeleteGroupAndEventWithGuestSignups(t *testing.T) {
 	}
 }
 
+// deleteEventRows locks events unscoped, because a group's event ids include
+// ones that were soft-deleted earlier and whose children still need cleaning.
+// The earlier deleted_at is kept; the live event is soft-deleted.
+func TestDeleteGroupCleansSoftDeletedEventLeftovers(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	adminC := loginAPI(t, app, "admin", "password1234")
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	g := activeGroup(t, app, admin, "Leftovers", models.VisibilityPublic, "")
+	addMember(t, app, member, &g, models.MembershipMember)
+	start := time.Now().UTC().Add(48 * time.Hour)
+	live, liveOcc := seedEvent(t, app, &g, admin.ID, start)
+	gone, goneOcc := seedEvent(t, app, &g, admin.ID, start.Add(24*time.Hour))
+	if err := app.DB.Exec("INSERT INTO event_hosts (event_id, user_id, added_by, created_at) VALUES (?, ?, ?, now())",
+		gone.ID, member.ID, admin.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Registration{UserID: &member.ID, OccurrenceID: goneOcc.ID,
+		Status: models.RegGoing, Source: models.RegSourceWeb}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.GuestSignup{Name: "Guest", Email: "leftover-guest@example.com", OccurrenceID: goneOcc.ID,
+		TokenHash: "leftover-guest", ExpiresAt: time.Now().UTC().Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Exec("UPDATE events SET deleted_at = now() - interval '1 day' WHERE id = ?", gone.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before models.Event
+	if err := app.DB.Unscoped().First(&before, gone.ID).Error; err != nil || !before.DeletedAt.Valid {
+		t.Fatalf("soft-deleted event: %+v %v", before, err)
+	}
+	apiDo(t, adminC, "DELETE", "/api/v1/admin/groups/"+itoa(g.ID), nil, http.StatusOK)
+	for _, ev := range []models.Event{live, gone} {
+		if n := contactCount(t, app, &models.EventOccurrence{}, "event_id = ?", ev.ID); n != 0 {
+			t.Fatalf("event %d kept %d occurrences", ev.ID, n)
+		}
+		var hosts int64
+		if err := app.DB.Table("event_hosts").Where("event_id = ?", ev.ID).Count(&hosts).Error; err != nil || hosts != 0 {
+			t.Fatalf("event %d kept %d host rows (%v)", ev.ID, hosts, err)
+		}
+	}
+	for _, occ := range []models.EventOccurrence{liveOcc, goneOcc} {
+		if n := contactCount(t, app, &models.Registration{}, "occurrence_id = ?", occ.ID); n != 0 {
+			t.Fatalf("occurrence %d kept %d registrations", occ.ID, n)
+		}
+		if n := contactCount(t, app, &models.GuestSignup{}, "occurrence_id = ?", occ.ID); n != 0 {
+			t.Fatalf("occurrence %d kept %d guest signups", occ.ID, n)
+		}
+	}
+	var after, liveAfter models.Event
+	if err := app.DB.Unscoped().First(&after, gone.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !after.DeletedAt.Time.Equal(before.DeletedAt.Time) {
+		t.Fatalf("the earlier deleted_at was re-stamped: %v, was %v", after.DeletedAt.Time, before.DeletedAt.Time)
+	}
+	if err := app.DB.Unscoped().First(&liveAfter, live.ID).Error; err != nil || !liveAfter.DeletedAt.Valid {
+		t.Fatalf("the live event was not soft-deleted: %+v %v", liveAfter, err)
+	}
+	rows, _ := auditRows(t, app, audit.GroupDeleted)
+	if len(rows) != 1 || rows[0].TargetID != g.ID {
+		t.Fatalf("group delete audit: %+v", rows)
+	}
+}
+
 // Approving without tags leaves the group's tags alone; sent tags replace them
 // under the same length rule a leader's edit follows.
 func TestApproveGroupTagsOnlyWhenSent(t *testing.T) {

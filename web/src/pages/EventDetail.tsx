@@ -468,6 +468,7 @@ function HostEditor({
     <div className="fold-section mt-4">
       <div className="font-semibold mb-2">Hosts</div>
       {error && <FormError layout="mb-2">{error}</FormError>}
+      {hosts.length === 0 && <p className="text-sm text-text-muted mb-3">No one hosts this event right now. Add a host below.</p>}
       <ul className="text-sm space-y-1 mb-3">
         {hosts.map((h) => (
           <li key={h.userId} className="flex items-center justify-between gap-3">

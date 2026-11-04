@@ -4,6 +4,7 @@
   "a11y:2": 15.3,
   "a11y:3": 14.1,
   "a11y:rest": 2.3,
+  "account-deletion.spec.ts": 12,
   "account-requests.spec.ts": 6.1,
   "add-requests.spec.ts": 5.1,
   "calendar-feeds.spec.ts": 0.9,

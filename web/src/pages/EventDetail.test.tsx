@@ -1,14 +1,14 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, DateRooms, Events, Households, SeriesRooms, Site } from "../api";
 import type { EventDetailResponse, NeedsRoom } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
-const composer = vi.hoisted(() => ({ on: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false, canCompose: composer.on }) }));
+const composer = vi.hoisted(() => ({ on: false, admin: false }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: composer.admin, canCompose: composer.on }) }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
@@ -779,5 +779,42 @@ describe("Email people going (M3.4c)", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "More event actions" }));
     expect(screen.queryByRole("menuitem", { name: "Email people going" })).not.toBeInTheDocument();
+  });
+});
+
+describe("EventDetail hosts (M7.4, R4-H)", () => {
+  const host = (userId: number, name: string) => ({ userId, name, email: `${name.toLowerCase()}@example.com` });
+  const churchWide = (hosts: ReturnType<typeof host>[]): EventDetailResponse => ({ ...page, event: { ...page.event, churchWide: true, hosts } });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
+    composer.admin = true;
+  });
+  afterEach(() => { composer.admin = false; });
+
+  it("says nobody hosts the event, calmly, and keeps the Add host form", async () => {
+    vi.mocked(Events.get).mockResolvedValue(churchWide([]));
+    renderPage();
+    const line = await screen.findByText("No one hosts this event right now. Add a host below.");
+    expect(line).not.toHaveAttribute("role", "alert");
+    expect(line.className).toContain("text-text-muted");
+    expect(line.className).not.toMatch(/danger/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Host email", { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add host" })).toBeInTheDocument();
+  });
+
+  it("shows no host-needed line while someone hosts it, and offers Remove only beside a second host", async () => {
+    vi.mocked(Events.get).mockResolvedValue(churchWide([host(3, "Ana")]));
+    renderPage();
+    expect(await screen.findByText("Ana")).toBeInTheDocument();
+    expect(screen.queryByText("No one hosts this event right now. Add a host below.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    cleanup();
+    vi.mocked(Events.get).mockResolvedValue(churchWide([host(3, "Ana"), host(4, "Ben")]));
+    renderPage();
+    expect(await screen.findByText("Ben")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
   });
 });

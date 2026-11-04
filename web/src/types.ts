@@ -417,12 +417,36 @@ export interface SeriesRegistrationResponse {
   capacityLoss?: string[];
 }
 
+// Someone who may take over a group or church-wide event from the person being deleted.
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
+export interface HandoffCandidate {
+  id: number;
+  name: string;
+  admin: boolean;
+}
+
 // A group the person being deleted leads alone, and who may take over (DEC-36).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface SoleLedGroup {
   id: number;
   name: string;
   status: string;
-  candidates: { id: number; name: string; admin: boolean }[];
+  candidates: HandoffCandidate[];
+}
+
+// A church-wide event the person being deleted hosts alone (M7.4, R4-H).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
+export interface SoleHostedEvent {
+  id: number;
+  title: string;
+  // The next scheduled date as an instant; absent when none is coming up.
+  nextStartsAt?: string;
+}
+
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
+export interface SoleHostedEventsResponse {
+  events: SoleHostedEvent[];
+  candidates: HandoffCandidate[];
 }
 
 // What making a group more private does to its events (DEC-48).

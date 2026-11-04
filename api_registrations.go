@@ -305,10 +305,14 @@ func lockOccurrence(tx *gorm.DB, occurrenceID uint) (*models.EventOccurrence, er
 	return &o, nil
 }
 
-// hostIDs lists the hosts of a church-wide event.
+// hostIDs lists the hosts of a church-wide event whose accounts still exist,
+// in ascending id. A deleted account's leftover host row is not a host.
 func hostIDs(tx *gorm.DB, eventID uint) []uint {
 	var ids []uint
-	tx.Model(&models.EventHost{}).Where("event_id = ?", eventID).Pluck("user_id", &ids)
+	tx.Model(&models.EventHost{}).
+		Joins("JOIN users u ON u.id = event_hosts.user_id AND u.deleted_at IS NULL").
+		Where("event_hosts.event_id = ?", eventID).Order("event_hosts.user_id").
+		Pluck("event_hosts.user_id", &ids)
 	return ids
 }
 
