@@ -13,6 +13,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -468,7 +469,7 @@ func (a *App) apiAdminListUsers(c *gin.Context) {
 	for i := range users {
 		row := a.toUserJSON(&users[i])
 		row.HasTeenConsentHistory = history[users[i].ID]
-		row.EmailSuppression = suppressed[normalizeEmail(users[i].Email)]
+		row.EmailSuppression = suppressed[mail.AddressHash(users[i].Email)]
 		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"users": out})

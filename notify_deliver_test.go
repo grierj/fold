@@ -407,6 +407,61 @@ func TestNotifyDeliverFailureModes(t *testing.T) {
 	})
 }
 
+// notify.deliver reads the address's open rows with the recipient, hashed or
+// legacy NULL-hash, in either order. A hard bounce or manual row stops every
+// notice; a complaint stops an optional kind but not a required one (DEC-112);
+// cleared rows stop nothing. A stopped notice records the reason in words
+// without the address, and the sender is not called.
+func TestNotifyDeliverHashedAndLegacySuppressions(t *testing.T) {
+	for _, kind := range []struct {
+		name, key string
+		required  bool
+	}{
+		{"optional kind", notify.GroupApproved, false},
+		{"required kind", notify.OccurrenceChanged, true},
+	} {
+		if k, ok := notify.Lookup(kind.key); !ok || k.Required != kind.required {
+			t.Fatalf("%s: registry says %+v", kind.name, k)
+		}
+		for _, tc := range suppressionCases() {
+			t.Run(kind.name+"/"+tc.name, func(t *testing.T) {
+				app := testApp(t)
+				u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+				sender := &notifyFailSender{}
+				app.Mailer = sender
+				suppressSpecs(t, app, strings.ToLower(u.Email), tc.specs...)
+				id := sendNotice(t, app, kind.key, u)
+				var job models.Job
+				if err := app.DB.Where("unique_key = ?", notify.DeliverKey(id)).First(&job).Error; err != nil {
+					t.Fatal(err)
+				}
+				runNotifyOnce(t, app)
+				stop := tc.optional
+				if kind.required {
+					stop = tc.required
+				}
+				d := emailDeliveryOf(t, app, id)
+				wantReason := map[string]string{
+					"":                        "",
+					models.SuppressComplaint:  "this address marked our email as spam",
+					models.SuppressHardBounce: "email to this address bounces",
+					models.SuppressManual:     "email to this address bounces",
+				}[stop]
+				if stop != "" {
+					if d.Status != models.DeliverySuppressed || d.Reason != wantReason || sender.n() != 0 {
+						t.Fatalf("delivery %q %q, %d sends; want suppressed %q and none", d.Status, d.Reason, sender.n(), wantReason)
+					}
+				} else if d.Status != models.DeliverySent || sender.n() != 1 {
+					t.Fatalf("delivery %q %q, %d sends; want sent once", d.Status, d.Reason, sender.n())
+				}
+				if got := reloadJob(t, app, job.ID); got.Status != models.JobDone {
+					t.Fatalf("job %+v", got)
+				}
+			})
+		}
+	}
+}
+
 func suppressDeliverAddress(t *testing.T, app *App, u *models.User) {
 	t.Helper()
 	if err := app.DB.Create(&models.Suppression{

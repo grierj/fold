@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/models"
 	"net/http"
@@ -1082,5 +1083,55 @@ func TestYourRoleNoticeOnPromoteAndDemote(t *testing.T) {
 	apiDo(t, samClient, "PUT", path, map[string]any{"role": "member"}, http.StatusOK)
 	if n := len(mine()); n != 3 {
 		t.Fatalf("%d notices after stepping down yourself, want 3", n)
+	}
+}
+
+// The notification email read joins each account with its open reasons,
+// hashed or legacy, in ascending suppression id (R4-S3).
+func TestReadEmailRecipientsSuppressions(t *testing.T) {
+	app := testApp(t)
+	users := suppressionFixtureUsers(t, app, "hashed", "legacy", "cleared", "complaintfirst", "bouncefirst", "clean")
+	app.DB.Model(users["legacy"]).Update("email", "Legacy@Example.com ")
+	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "legacy@example.com", models.SuppressManual)
+	h := mail.StoredAddressHash("cleared@example.com")
+	now := time.Now()
+	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "cleared@example.com", AddressHash: &h,
+		Reason: models.SuppressHardBounce, ClearedAt: &now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
+
+	ids := []uint{}
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	rows, err := readEmailRecipients(app.DB, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range rows {
+		got[r.Name] = r.EmailSuppressions
+	}
+	want := map[string]string{
+		"hashed": "hard_bounce", "legacy": "manual", "cleared": "", "clean": "",
+		"complaintfirst": "complaint,hard_bounce", "bouncefirst": "hard_bounce,complaint",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v", got)
+	}
+	for name, reasons := range want {
+		if got[name] != reasons {
+			t.Errorf("%s: %q, want %q", name, got[name], reasons)
+		}
+	}
+	// The single-account read splits the same string.
+	_, _, reasons, _, err := readEmailRecipient(app.DB, users["bouncefirst"].ID)
+	if err != nil || strings.Join(reasons, ",") != "hard_bounce,complaint" {
+		t.Fatalf("readEmailRecipient: %v, %v", reasons, err)
 	}
 }

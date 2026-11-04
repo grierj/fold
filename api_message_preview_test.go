@@ -117,3 +117,30 @@ func TestMessageTestSend(t *testing.T) {
 		t.Fatalf("suppressed: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// The test send is optional broadcast mail to the viewer, so any open row
+// refuses it, hashed or legacy, in either order; a cleared row does not. The
+// refused viewer hears so (message_test_email), nothing reaches the outbox,
+// and the try still counts toward the hourly limit.
+func TestMessageTestSendHashedAndLegacySuppressions(t *testing.T) {
+	for _, tc := range suppressionCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			suppressSpecs(t, f.app, strings.ToLower(f.leaderUser.Email), tc.specs...)
+			path := f.draft(t, f.leader, "Next week", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+			before := mailCount(t, f.app, f.leaderUser.Email)
+			w := f.leader.do("POST", path+"/test", nil, true)
+			after := mailCount(t, f.app, f.leaderUser.Email)
+			if tc.optional != "" {
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "message_test_email") || after != before {
+					t.Fatalf("refused test send: %d %s, outbox %d to %d", w.Code, w.Body.String(), before, after)
+				}
+			} else if w.Code != http.StatusOK || after != before+1 {
+				t.Fatalf("test send: %d %s, outbox %d to %d", w.Code, w.Body.String(), before, after)
+			}
+			if auditCount(t, f.app, audit.MessageTestSent) != 1 {
+				t.Fatal("a test send is audited whether or not it is delivered")
+			}
+		})
+	}
+}

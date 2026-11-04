@@ -818,8 +818,9 @@ func (a *App) actorName(id *uint) string {
 
 // readEmailRecipients loads each account with the email consent scopes they
 // opted out of (DEC-97), the address's open suppressions (DEC-112), and the
-// church name and address for optional-mail footers. One query for the
-// whole set, so a batch stays at two reads.
+// church name and address for optional-mail footers. One read for the
+// accounts, opt-outs and footer, one for suppressions, so a batch stays at
+// two reads.
 func readEmailRecipients(db *gorm.DB, userIDs []uint) ([]emailRecipient, error) {
 	if len(userIDs) == 0 {
 		return nil, nil
@@ -830,13 +831,28 @@ func readEmailRecipients(db *gorm.DB, userIDs []uint) ([]emailRecipient, error) 
 			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
 			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
 		) latest WHERE latest.status = ?), '') AS email_opt_outs,
-		COALESCE((SELECT string_agg(s.reason, ',') FROM suppressions s
-			WHERE s.channel = 'email' AND s.address = lower(btrim(users.email)) AND s.cleared_at IS NULL), '') AS email_suppressions,
 		COALESCE((SELECT value FROM settings WHERE key = 'site_name'), '') AS site_name,
 		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`,
 		models.ConsentEmail, models.ConsentOptedOut, settingChurchAddress).
 		Where("users.id IN ?", userIDs).Find(&users).Error
-	return users, err
+	if err != nil {
+		return nil, err
+	}
+	// The one change from the old SQL join is that the account's address is
+	// normalized in Go (mail.NormalizeAddress) instead of lower(btrim()) in
+	// SQL: identical for ASCII addresses (inventory 7.4).
+	emails := make([]string, 0, len(users))
+	for i := range users {
+		emails = append(emails, users[i].Email)
+	}
+	reasons, err := mail.OpenSuppressionReasons(db, emails)
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		users[i].EmailSuppressions = strings.Join(reasons[mail.NormalizeAddress(users[i].Email)], ",")
+	}
+	return users, nil
 }
 
 // readEmailRecipient is that read for one person. A missing account returns
@@ -889,7 +905,8 @@ type emailRecipient struct {
 	models.User
 	EmailOptOuts string
 	// EmailSuppressions are the open suppression reasons on the address
-	// (DEC-112), read with the recipient so a batch stays at two reads.
+	// (DEC-112), comma-joined in ascending suppression id: one more read for
+	// the whole set, filled after the accounts load.
 	EmailSuppressions string
 	// SiteName and ChurchAddress ride along for optional email footers, so
 	// footers add no reads (the same on every row).

@@ -156,9 +156,13 @@ func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 		if e.Kind == providers.EventComplained {
 			why = models.SuppressComplaint
 		}
-		return tx.Exec(`INSERT INTO suppressions (channel, address, reason, provider, detail) VALUES ('email', ?, ?, ?, ?)
-			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL DO NOTHING`,
-			e.Address, why, e.Provider, e.Detail).Error
+		// The address is stored with its hash. A legacy open row whose hash is
+		// still NULL gets only the hash filled in; every other column stays.
+		addr := mail.NormalizeAddress(e.Address)
+		return tx.Exec(`INSERT INTO suppressions (channel, address, address_hash, reason, provider, detail) VALUES ('email', ?, ?, ?, ?, ?)
+			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL
+			DO UPDATE SET address_hash = EXCLUDED.address_hash WHERE suppressions.address_hash IS NULL`,
+			addr, mail.StoredAddressHash(addr), why, e.Provider, e.Detail).Error
 	})
 }
 

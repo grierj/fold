@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -357,13 +358,15 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 			}
 		}
 		if len(emails) > 0 {
-			var sups []models.Suppression
-			if err := db.Where("channel = 'email' AND cleared_at IS NULL AND address IN ?", emails).Find(&sups).Error; err != nil {
+			reasons, err := mail.OpenSuppressionReasons(db, emails)
+			if err != nil {
 				return err
 			}
-			for _, s := range sups {
-				if suppressed[s.Address] != models.SuppressComplaint {
-					suppressed[s.Address] = s.Reason
+			for a, rs := range reasons {
+				for _, r := range rs {
+					if suppressed[a] != models.SuppressComplaint {
+						suppressed[a] = r
+					}
 				}
 			}
 		}

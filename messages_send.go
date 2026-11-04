@@ -593,15 +593,7 @@ func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string]
 	for _, r := range rows {
 		addrs = append(addrs, normalizeEmail(r.Address))
 	}
-	var sups []models.Suppression
-	if err := db.Where("channel = 'email' AND cleared_at IS NULL AND address IN ?", addrs).Find(&sups).Error; err != nil {
-		return nil, err
-	}
-	out := map[string][]string{}
-	for _, s := range sups {
-		out[s.Address] = append(out[s.Address], s.Reason)
-	}
-	return out, nil
+	return mail.OpenSuppressionReasons(db, addrs)
 }
 
 // messageFromName is "Pat Lee via First Church" (PLAN 7.8): the author's

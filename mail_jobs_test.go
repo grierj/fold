@@ -433,6 +433,38 @@ func TestDirectMailOutcomes(t *testing.T) {
 	}
 }
 
+// Direct account mail is required mail: through the suppression wrapper a
+// hashed row and a legacy NULL-hash row each stop it only when a hard bounce
+// or manual row is open, whichever order the rows were written in; a complaint
+// alone and cleared rows let it through (DEC-112). The job finishes done
+// either way, and the sender is called only when the mail goes out.
+func TestDirectMailHashedAndLegacySuppressions(t *testing.T) {
+	for _, tc := range suppressionCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testApp(t)
+			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			job := queueResetMail(t, app, user)
+			suppressSpecs(t, app, strings.ToLower(user.Email), tc.specs...)
+			var sentTo []string
+			app.Mailer = mail.WithSuppressions(app.DB, directMailSenderFunc(func(_ context.Context, msg mail.Message) error {
+				if msg.Optional || msg.Stream != "" {
+					t.Error("direct account mail must remain required")
+				}
+				sentTo = append(sentTo, msg.To)
+				return nil
+			}))
+			runResetMail(t, app)
+			wantSends := 1
+			if tc.required != "" {
+				wantSends = 0
+			}
+			if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || len(sentTo) != wantSends {
+				t.Fatalf("job %+v, sends %v, want status done with %d sends", got, sentTo, wantSends)
+			}
+		})
+	}
+}
+
 func TestPasswordResetSendDeadlineCancellationAndCommittedPreparation(t *testing.T) {
 	for _, earlierCancel := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancel=%v", earlierCancel), func(t *testing.T) {

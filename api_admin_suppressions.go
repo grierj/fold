@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -18,7 +19,10 @@ import (
 
 // openSuppressions maps each suppressed email address to its strongest
 // open reason (a hard bounce or a manual one before a complaint) and when
-// the earliest one began. One read for the whole user list.
+// the earliest one began. One read for the whole user list. The key is the
+// address hash: the row's own, or the hash of its stored address while a
+// legacy row's hash is still NULL (R4-S3). Look an account up with
+// mail.AddressHash(email).
 func openSuppressions(db *gorm.DB) (map[string]*emailSuppressionJSON, error) {
 	var rows []models.Suppression
 	if err := db.Where("channel = ? AND cleared_at IS NULL", "email").Order("created_at").Find(&rows).Error; err != nil {
@@ -26,10 +30,14 @@ func openSuppressions(db *gorm.DB) (map[string]*emailSuppressionJSON, error) {
 	}
 	out := map[string]*emailSuppressionJSON{}
 	for _, r := range rows {
-		cur := out[r.Address]
+		key := mail.StoredAddressHash(r.Address)
+		if r.AddressHash != nil {
+			key = *r.AddressHash
+		}
+		cur := out[key]
 		switch {
 		case cur == nil:
-			out[r.Address] = &emailSuppressionJSON{Reason: r.Reason, Since: r.CreatedAt}
+			out[key] = &emailSuppressionJSON{Reason: r.Reason, Since: r.CreatedAt}
 		case cur.Reason == models.SuppressComplaint && r.Reason != models.SuppressComplaint:
 			cur.Reason = r.Reason
 		}
@@ -58,7 +66,9 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 		// exactly what was cleared.
 		var reasons []string
 		if err := tx.Raw(`UPDATE suppressions SET cleared_at = ?, cleared_by = ?
-			WHERE channel = 'email' AND address = ? AND cleared_at IS NULL RETURNING reason`, time.Now(), me.ID, address).
+			WHERE channel = 'email' AND cleared_at IS NULL
+			AND (address_hash = ? OR (address_hash IS NULL AND address = ?)) RETURNING reason`,
+			time.Now(), me.ID, mail.AddressHash(u.Email), address).
 			Scan(&reasons).Error; err != nil {
 			return err
 		}
