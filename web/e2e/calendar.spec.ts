@@ -33,6 +33,11 @@ async function proveView(page: Page, name: string) {
 }
 
 test("the calendar shows what sam may see, in all three views", async ({ page, request }) => {
+  // Six axe scans (three views at two widths) plus the keyboard walk run in
+  // one flow. durations.json records about 6s, but the CI traces show each
+  // scan taking over a second and the flow crossing the 15s default. Every
+  // assertion stays.
+  test.setTimeout(60_000);
   const admin = await apiAs(request, "grier");
   const { group: secret } = (await admin("POST", "/groups", {
     name: "Calendar secret", description: "", tags: [], imageUrl: "", location: "", visibility: "invite_only", memberLimit: null,
