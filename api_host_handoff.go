@@ -417,11 +417,12 @@ func needHostSuccessors(c *gin.Context, err error) bool {
 // deletionHostPlan is step (1)-(6) of the deletion's host handling, in the
 // order that keeps the lock graph acyclic: hosted events FOR KEY SHARE, then
 // the target FOR UPDATE, then a plain read of the actor, then the facts again.
-// It returns the validated picks and the events it holds.
-func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested map[uint]uint) (map[uint]uint, []uint, error) {
+// It returns the validated picks, the events it holds and the actor it re-read
+// (the last-admin rule decides on that row, R4-1-3).
+func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested map[uint]uint) (map[uint]uint, []uint, *models.User, error) {
 	seats0, err := hostSeatsByEvent(tx, u.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	ids := make([]uint, 0, len(seats0))
 	for id := range seats0 {
@@ -430,29 +431,29 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	lockedH, err := lockHostedEvents(tx, ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, errAdminTargetGone
+			return nil, nil, nil, errAdminTargetGone
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// A plain read: a share lock here could cycle with the admin's own ungated
 	// change (the gate serializes the rest).
 	var actor models.User
 	if err := tx.First(&actor, me.ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, errSecuritySession
+			return nil, nil, nil, errSecuritySession
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion {
-		return nil, nil, errSecuritySession
+		return nil, nil, nil, errSecuritySession
 	}
 	seats, err := hostSeatsByEvent(tx, u.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	need := func() error {
 		data, _, err := soleHostEventsFor(tx, &actor, u.ID, seats, time.Now().UTC())
@@ -466,20 +467,20 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 			// An ungated add or create of this account committed between the
 			// first read and the lock. Locking a new event now, after the user
 			// row, would rebuild the cycle, so answer with the current list.
-			return nil, nil, need()
+			return nil, nil, nil, need()
 		}
 	}
 	valid, err := hostSuccessorsValid(tx, &actor, u.ID, seats, soleHosted(seats, u.ID), requested)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if !valid {
-		return nil, nil, need()
+		return nil, nil, nil, need()
 	}
 	locked := make([]uint, 0, len(lockedH))
 	for id := range lockedH {
 		locked = append(locked, id)
 	}
 	sort.Slice(locked, func(i, j int) bool { return locked[i] < locked[j] })
-	return requested, locked, nil
+	return requested, locked, &actor, nil
 }

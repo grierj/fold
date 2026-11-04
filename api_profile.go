@@ -197,7 +197,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 	// form to spam an address, and the target gets at most a few links.
 	// Past the limit the answer is the same; nothing is sent.
 	ctx := c.Request.Context()
-	userOK, err := a.targetAllow(ctx, "emailchange:user:"+strconv.FormatUint(uint64(u.ID), 10))
+	userOK, err := a.targetAllow(ctx, emailChangeUserKey(u.ID))
 	addrOK := false
 	if err == nil && userOK {
 		// Account checks consume the actor budget too (#157). An exhausted
@@ -211,7 +211,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 			jsonError(c, http.StatusConflict, "an account with that email already exists")
 			return
 		}
-		addrOK, err = a.targetAllow(ctx, "emailchange:addr:"+normalizeEmail(newEmail))
+		addrOK, err = a.targetAllow(ctx, emailChangeAddrKey(newEmail))
 	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not start email change")

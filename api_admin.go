@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -594,6 +593,48 @@ func (a *App) adminCount() int {
 	return int(n)
 }
 
+// adminCountIn is adminCount on a transaction, so the in-gate decision counts
+// with the same connection that holds the locks.
+func adminCountIn(tx *gorm.DB) (int, error) {
+	var n int64
+	if err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// errAdminRule is the last-admin or self rule, decided under the contact gate
+// on locked facts. msg is the answer the pre-gate check gives for the same
+// case; the handler maps it to a 400.
+type errAdminRule struct{ msg string }
+
+func (e errAdminRule) Error() string { return e.msg }
+
+// keepsAnAdminIn decides the last-admin rule on the locked target, the actor
+// the callback re-read and an in-gate count. It returns nil when the locked
+// target is not an active admin, so acting on a non-active admin is allowed
+// at any count (policy.CanDemoteOrDelete), and errAdminRule{msg} when the rule
+// refuses.
+//
+// Under the gate, with the target locked and the actor re-read as an active
+// admin distinct from the target, the count is at least 2, so this refuses
+// nothing today's API can build (R4-H's actor re-read already closes two
+// admins deleting each other). It is defense in depth against a future writer
+// outside the gate, and it lets PUT judge its effective change.
+func keepsAnAdminIn(tx *gorm.DB, actor, target *models.User, msg string) error {
+	if !asPerson(target).Admin {
+		return nil
+	}
+	n, err := adminCountIn(tx)
+	if err != nil {
+		return err
+	}
+	if !policy.CanDemoteOrDelete(asPerson(actor), asPerson(target), n) {
+		return errAdminRule{msg: msg}
+	}
+	return nil
+}
+
 // errAdminTargetGone: the person an admin edit names was erased while the edit
 // waited for the contact gate.
 var errAdminTargetGone = errors.New("user not found")
@@ -734,6 +775,29 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					bump = true
 				}
 			}
+			// The locked target leaves the active-admin set when the effective
+			// update demotes it or makes it anything but active (disabled,
+			// invited, pending consent). Nothing has been written yet.
+			newRole, roleSet := updates["role"].(string)
+			newStatus, statusSet := updates["status"].(string)
+			demotes := roleSet && newRole != models.RoleAdmin
+			deactivates := statusSet && newStatus != models.UserActive
+			if demotes || deactivates {
+				var msg string
+				switch {
+				case demotes && u.ID == me.ID:
+					msg = "you cannot demote yourself"
+				case demotes:
+					msg = "cannot demote the last admin"
+				case u.ID == me.ID:
+					msg = "you cannot disable your own account"
+				default:
+					msg = "cannot disable the last admin"
+				}
+				if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+					return err
+				}
+			}
 			if newRole, ok := updates["role"].(string); ok && newRole != u.Role {
 				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserRoleChanged, TargetType: "user", TargetID: u.ID,
 					Meta: map[string]any{"oldRole": u.Role, "newRole": newRole}, IP: c.ClientIP()}); err != nil {
@@ -827,6 +891,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				jsonError(c, http.StatusNotFound, "user not found")
 				return
 			}
+			var rule errAdminRule
+			if errors.As(err, &rule) {
+				jsonError(c, http.StatusBadRequest, rule.msg)
+				return
+			}
 			if emailTaken(err) {
 				jsonError(c, http.StatusConflict, "an account with that email already exists")
 				return
@@ -881,11 +950,25 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 		// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
 		// admin (plain read) and the facts again; see api_host_handoff.go.
-		picks, lockedHosted, err := deletionHostPlan(tx, u, me, hostPicks)
+		picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
 		if err != nil {
 			return err
 		}
-		if err := revokeAccountTokens(tx, u.ID); err != nil {
+		// The last-admin rule again, on the locked target, the re-read actor
+		// and an in-gate count (defense in depth; the pre-gate check above
+		// decides the usual answers).
+		msg := "cannot delete the last admin"
+		if u.ID == me.ID {
+			msg = "you cannot delete your own account"
+		}
+		if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+			return err
+		}
+		// The address the account holds now, read from the row just locked
+		// (memory only), then every credential goes in the slot that revoked
+		// the unused tokens (R4-1-2).
+		s := captureErasureSubject(u)
+		if err := eraseAccountCredentialsIn(tx, s); err != nil {
 			return err
 		}
 		_, err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
@@ -895,16 +978,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := handOffHosting(tx, me.ID, u.ID, picks, lockedHosted, c.ClientIP()); err != nil {
 			return err
 		}
-		if err := tx.Model(u).Updates(map[string]any{
-			"email":           fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
-			"session_version": gorm.Expr("session_version + 1"),
-			"avatar_key":      "",
-		}).Error; err != nil {
+		if err := tombstoneUserIn(tx, u); err != nil {
 			return err
 		}
 		// The photo files go with the person: the cleanup job keeps nothing
 		// for a deleted account. Queued here, under the row lock already held
-		// (R4-5); the rest of the identity scrub is R4-1.
+		// (R4-5).
 		if err := queueAvatarCleanup(tx, u.ID); err != nil {
 			return err
 		}
@@ -921,8 +1000,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		// The deleted account no longer counts, so its seats and childcare
 		// spots are free: promote waiters now (Whittler, PR 109).
-		_, err = a.promoteOnDisable(tx, u.ID)
-		return err
+		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
+			return err
+		}
+		// Last statement of the callback, so the sign-in rows are held for the
+		// shortest time before commit (detected limit D2).
+		return eraseOwnedThrottleKeysIn(tx, s)
 	})
 	if needSuccessors(c, err) || needHostSuccessors(c, err) {
 		return
@@ -933,6 +1016,11 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	}
 	if errors.Is(err, errSecuritySession) {
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var rule errAdminRule
+	if errors.As(err, &rule) {
+		jsonError(c, http.StatusBadRequest, rule.msg)
 		return
 	}
 	if err != nil {

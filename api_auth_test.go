@@ -659,7 +659,7 @@ func TestLoginFailureLimitPolicy(t *testing.T) {
 		{"ip:192.0.2.1", 50},
 	} {
 		t.Run(tt.key, func(t *testing.T) {
-			if got := failureLimit(tt.key); got != tt.want {
+			if got := failureLimit(throttleKey(tt.key)); got != tt.want {
 				t.Fatalf("limit = %d, want %d", got, tt.want)
 			}
 		})

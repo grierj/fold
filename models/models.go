@@ -544,8 +544,10 @@ type AuditLog struct {
 }
 
 // LoginThrottle counts failed sign-ins for one key ("email:<address>" or
-// "ip:<address>") in the current 15-minute window (10.1). It lives in
-// Postgres so it survives restarts and is shared by every replica.
+// "ip:<address>") in the current 15-minute window (10.1). Other budgets
+// share the table under their own key prefixes. The root package builds every
+// key in throttle_keys.go. It lives in Postgres so it survives restarts and is
+// shared by every replica.
 type LoginThrottle struct {
 	Key         string    `gorm:"primaryKey"`
 	Failures    int       `gorm:"not null;default:0"`

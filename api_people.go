@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -168,7 +167,7 @@ func (a *App) apiSearchPeople(c *gin.Context) {
 		c.JSON(200, peopleSearchJSON{State: "no_results", People: out.People})
 		return
 	}
-	allowed, err = a.throttleAllow(ctx, fmt.Sprintf("people-search:user:%d", actor.ID), peopleSearchLimit, time.Minute)
+	allowed, err = a.throttleAllow(ctx, peopleSearchUserKey(actor.ID), peopleSearchLimit, time.Minute)
 	if err != nil {
 		jsonError(c, 500, "could not search people")
 		return

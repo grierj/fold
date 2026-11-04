@@ -16,6 +16,7 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const iPhoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1"
@@ -766,5 +767,86 @@ func TestLogoutKeepsThePersonsOtherPushDevices(t *testing.T) {
 	apiDo(t, pat, "POST", "/api/v1/me/password", map[string]string{"current": "password123456", "password": "a-new-password-1"}, http.StatusOK)
 	if deviceExists(app, phone.ID) {
 		t.Fatal("a password change kept the phone")
+	}
+}
+
+// A subscribe request loaded before the person was erased or signed out saves no
+// device. The request is held just after the settings read in refusePush, the
+// handler's first database read, while the interruption runs; the handler then
+// takes the person's lock and compares what it finds with the session.
+//
+// The request is invoked directly with the stale user, not sent through the
+// router, because the barrier needs the handler's own database context. So this
+// proves the in-handler recheck against a stale snapshot, not the session
+// middleware. The erasure case is a regression test (the guard predates it);
+// the logout case is new, since the lock read did not compare logout_version.
+func TestPushSubscribeFromAStaleSessionSavesNothing(t *testing.T) {
+	for _, how := range []string{"none", "erased", "logged out"} {
+		t.Run(how, func(t *testing.T) {
+			app, _ := pushTestApp(t)
+			newTestUser(t, app, "push-admin", "password123456", models.RoleAdmin)
+			ac := loginAPI(t, app, "push-admin", "password123456")
+			u := pushMember(t, app, "push-person")
+			uc := loginAPI(t, app, "push-person", "password123456")
+			var stale models.User
+			if err := app.DB.First(&stale, u.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			sub := newBrowserSub(t, "stale-phone")
+			consents := len(pushConsents(t, app, u, "all"))
+			saved := auditCount(t, app, audit.PushDeviceOn)
+
+			reached, release := pauseDBRead(t, app.DB, "push", "settings")
+			var w *httptest.ResponseRecorder
+			_, done := startDBSession(t, app.DB, "push", func(db *gorm.DB) error {
+				a := &App{DB: db, Store: app.Store, Mailer: app.Mailer, Config: app.Config, Push: app.Push}
+				w = httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("PUT", "/api/v1/push/subscriptions",
+					strings.NewReader(jsonString(sub))).WithContext(db.Statement.Context)
+				c.Request.Header.Set("Content-Type", "application/json")
+				c.Set("apiUser", &stale)
+				a.apiPushSubscribe(c)
+				return nil
+			})
+			awaitDBSignal(t, reached)
+			switch how {
+			case "erased":
+				if r := deleteAccount(ac, u.ID, nil); r.code != http.StatusOK {
+					t.Fatalf("erase: %d %s", r.code, r.body)
+				}
+			case "logged out":
+				if lw := uc.do("POST", "/api/v1/auth/logout", nil, true); lw.Code != http.StatusOK {
+					t.Fatalf("logout: %d %s", lw.Code, lw.Body.String())
+				}
+			}
+			release()
+			if err := awaitDBResult(t, done); err != nil {
+				t.Fatal(err)
+			}
+
+			onEndpoint := countRows(t, app.DB, "push_subscriptions", "endpoint = ?", sub.Endpoint)
+			if how == "none" {
+				if w.Code != http.StatusOK || onEndpoint != 1 || len(userDevices(app, u)) != 1 {
+					t.Fatalf("control: %d %s, devices on the endpoint %d", w.Code, w.Body.String(), onEndpoint)
+				}
+				return
+			}
+			if w.Code != http.StatusUnauthorized || errorCodeOf(w) != "signed_out" {
+				t.Fatalf("stale session: %d %s, want 401 signed_out", w.Code, w.Body.String())
+			}
+			if onEndpoint != 0 || len(userDevices(app, u)) != 0 {
+				t.Fatalf("a device was saved for a stale session: %d on the endpoint", onEndpoint)
+			}
+			if got := len(pushConsents(t, app, u, "all")); got != consents {
+				t.Fatalf("a consent row was written for a stale session: %d -> %d", consents, got)
+			}
+			if got := auditCount(t, app, audit.PushDeviceOn); got != saved {
+				t.Fatalf("a push.device_on audit row was written for a stale session: %d -> %d", saved, got)
+			}
+			if n := countRows(t, app.DB, "jobs", "kind IN ?", []string{kindPushDevicesOff, kindPushDeliver}); n != 0 {
+				t.Fatalf("%d push jobs exist for a person who never had a device", n)
+			}
+		})
 	}
 }

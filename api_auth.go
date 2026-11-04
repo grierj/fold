@@ -38,7 +38,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		return
 	}
 	email := normalizeEmail(body.Email)
-	keys := []string{"email:" + email, "ip:" + rateLimitIP(c.ClientIP())}
+	keys := []throttleKey{loginEmailKey(email), loginIPKey(c.ClientIP())}
 	ctx := c.Request.Context()
 	// The attempt is counted before the password check, atomically per key,
 	// so a burst of parallel requests can't all pass the check before any
@@ -73,10 +73,10 @@ func (a *App) apiLogin(c *gin.Context) {
 		return
 	}
 	// A success isn't a failure: give the IP back its attempt.
-	a.DB.Exec(`UPDATE login_throttles SET failures = GREATEST(failures - 1, 0) WHERE key = ?`, keys[1])
+	a.DB.Exec(`UPDATE login_throttles SET failures = GREATEST(failures - 1, 0) WHERE key = ?`, string(keys[1]))
 	// Success clears the email's counter. The IP counter stays, so one
 	// working account can't be used to reset it.
-	a.DB.Where("key = ?", keys[0]).Delete(&models.LoginThrottle{})
+	a.DB.Where("key = ?", string(keys[0])).Delete(&models.LoginThrottle{})
 	if err := a.signInSession(c, user); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
@@ -111,8 +111,8 @@ const (
 	loginWindow       = 15 * time.Minute
 )
 
-func failureLimit(key string) int {
-	if strings.HasPrefix(key, "ip:") {
+func failureLimit(key throttleKey) int {
+	if key.isIP() {
 		return ipFailureLimit
 	}
 	return emailFailureLimit
@@ -123,7 +123,7 @@ func failureLimit(key string) int {
 // row is incremented with one upsert, so parallel requests serialize on it
 // and at most the limit pass. A locked key, or one already past its limit,
 // is refused; a key that goes past its limit is locked for 15 minutes.
-func (a *App) reserveLoginAttempt(ctx context.Context, keys []string) (bool, error) {
+func (a *App) reserveLoginAttempt(ctx context.Context, keys []throttleKey) (bool, error) {
 	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
 	allowed := true
 	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -139,7 +139,7 @@ func (a *App) reserveLoginAttempt(ctx context.Context, keys []string) (bool, err
 				allowed = false
 				if err := tx.Exec(`UPDATE login_throttles
 SET locked_until = now() + ?::interval, failures = 0, window_start = now()
-WHERE key = ?`, window, key).Error; err != nil {
+WHERE key = ?`, window, string(key)).Error; err != nil {
 					return err
 				}
 			}
@@ -153,7 +153,7 @@ WHERE key = ?`, window, key).Error; err != nil {
 // hit for key, starting over when the key's window has passed, and reports
 // the running count and whether the key is locked. Callers that do not use
 // lockouts ignore locked.
-func countThrottleHit(tx *gorm.DB, key string, window time.Duration) (failures int, locked bool, err error) {
+func countThrottleHit(tx *gorm.DB, key throttleKey, window time.Duration) (failures int, locked bool, err error) {
 	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
 	var row struct {
 		Failures int
@@ -167,7 +167,7 @@ ON CONFLICT (key) DO UPDATE SET
   window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
                       THEN now() ELSE login_throttles.window_start END
 RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
-		key, windowArg, windowArg).Scan(&row).Error
+		string(key), windowArg, windowArg).Scan(&row).Error
 	return row.Failures, row.Locked, err
 }
 
@@ -181,12 +181,12 @@ WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locke
 // lockLoginKeysAtLimit runs after a failed attempt (already counted by
 // reserveLoginAttempt): a key that has reached its limit within the window
 // is locked for 15 minutes and starts over.
-func (a *App) lockLoginKeysAtLimit(ctx context.Context, keys []string) error {
+func (a *App) lockLoginKeysAtLimit(ctx context.Context, keys []throttleKey) error {
 	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
 	for _, key := range keys {
 		err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
 SET locked_until = now() + ?::interval, failures = 0, window_start = now()
-WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
+WHERE key = ? AND failures >= ?`, window, string(key), failureLimit(key)).Error
 		if err != nil {
 			return err
 		}
@@ -199,7 +199,7 @@ WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
 // attempts cannot bypass the limits. Only a correct proof refunds its attempt;
 // it must not clear failures from other requests.
 func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bool {
-	keys := []string{fmt.Sprintf("user:%d", u.ID), "ip:" + rateLimitIP(c.ClientIP())}
+	keys := []throttleKey{loginUserKey(u.ID), loginIPKey(c.ClientIP())}
 	ctx := c.Request.Context()
 	allowed, err := a.reserveLoginAttempt(ctx, keys)
 	if err != nil {
@@ -219,7 +219,7 @@ func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bo
 		return false
 	}
 	if err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
-SET failures = GREATEST(failures - 1, 0) WHERE key IN ?`, keys).Error; err != nil {
+SET failures = GREATEST(failures - 1, 0) WHERE key IN ?`, throttleKeyStrings(keys)).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not verify password")
 		return false
 	}
@@ -387,7 +387,7 @@ const (
 // throttleAllow counts one hit for key and reports whether it stays under
 // limit within window. It shares the login_throttles table under its own
 // key prefix; the login lockout never reads these keys.
-func (a *App) throttleAllow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
+func (a *App) throttleAllow(ctx context.Context, key throttleKey, limit int, window time.Duration) (bool, error) {
 	failures, err := a.throttleHit(ctx, key, window)
 	return failures <= limit, err
 }
@@ -400,15 +400,15 @@ const (
 	targetDayLimit  = 10
 )
 
-// targetAllow counts one send to key (a prefix plus an address or user id)
+// targetAllow counts one send to key (a builder's key for an address or user id)
 // in both the hourly and the daily window and reports whether both stay
 // under their limits.
-func (a *App) targetAllow(ctx context.Context, key string) (bool, error) {
-	hourOK, err := a.throttleAllow(ctx, key+":h", targetHourLimit, time.Hour)
+func (a *App) targetAllow(ctx context.Context, key throttleKey) (bool, error) {
+	hourOK, err := a.throttleAllow(ctx, key.targeted()[0], targetHourLimit, time.Hour)
 	if err != nil {
 		return false, err
 	}
-	dayOK, err := a.throttleAllow(ctx, key+":d", targetDayLimit, 24*time.Hour)
+	dayOK, err := a.throttleAllow(ctx, key.targeted()[1], targetDayLimit, 24*time.Hour)
 	return hourOK && dayOK, err
 }
 
@@ -427,10 +427,10 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	email := normalizeEmail(body.Email)
 	ctx := c.Request.Context()
-	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+rateLimitIP(c.ClientIP()), resetIPLimit, resetWindow)
+	ipOK, err := a.throttleAllow(ctx, pwresetIPKey(c.ClientIP()), resetIPLimit, resetWindow)
 	addrOK := true
 	if err == nil {
-		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)
+		addrOK, err = a.targetAllow(ctx, pwresetAddrKey(email))
 	}
 	if err != nil || !ipOK || !addrOK {
 		log.Printf("password reset rate limited: ip=%s err=%v", c.ClientIP(), err)

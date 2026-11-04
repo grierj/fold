@@ -170,7 +170,7 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	allowed, err := a.targetAllow(c.Request.Context(), "guardian-email:addr:"+normalizeEmail(me.Email))
+	allowed, err := a.targetAllow(c.Request.Context(), guardianEmailAddrKey(me.Email))
 	if err != nil {
 		log.Printf("guardian consent email limited: actor=%d err=%s", me.ID, jobs.CleanError(err))
 	} else if !allowed {
