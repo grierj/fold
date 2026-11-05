@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/models"
 )
 
@@ -174,6 +175,54 @@ func withStatementTimeout(tx *gorm.DB, d time.Duration, fn func() error) error {
 		return err
 	}
 	return tx.Exec("SELECT set_config('statement_timeout', ?, true)", prior).Error
+}
+
+// eraseAccountRequestsIn handles every account request of the erased person
+// (REQ, captured by captureErasureSetsIn) and runs after the audit row and
+// immediately before the target's notifications are deleted. Every
+// account_requests statement of the erasure sits before that DELETE, so this
+// path and expirePendingRequests, which updates the request and then resolves
+// its notifications, take request rows and then notification rows in the same
+// order (L2).
+//
+// In order: (1) a pending REQ row becomes withdrawn, its password hash is
+// dropped and its waiting admin task is closed for every admin as resolved by
+// the deleting admin ("withdrawn"); (2) the REQ rows lose name, address,
+// phone, birth date, message, guardian address, password hash and decision
+// note, and keep ip only for member_invite (the inviter's address, M39);
+// every id link, status, decision field, expiry and flag stays; (3) a
+// member_invite row the erased person requested loses its ip (M39, the
+// inviter's own address); (4) a guardian_email equal to the erased address is
+// cleared on any row, which is another person's request (M13).
+//
+// No audit action and no withdrawal mail are added: user.deleted is the
+// record (a documented Consistency exception). It returns the first error
+// unwrapped, issues no further statement after it, and logs nothing.
+func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
+	if len(s.Requests) > 0 {
+		var withdrawn []uint
+		if err := tx.Raw(`UPDATE account_requests SET status = 'withdrawn', password_hash = NULL, updated_at = now()
+			WHERE id IN ? AND status = 'pending' RETURNING id`, s.Requests).Scan(&withdrawn).Error; err != nil {
+			return err
+		}
+		sort.Slice(withdrawn, func(i, j int) bool { return withdrawn[i] < withdrawn[j] })
+		for _, id := range withdrawn {
+			if _, err := notify.Resolve(tx, notify.AccountRequested, id, &actorID, "withdrawn"); err != nil {
+				return err
+			}
+		}
+		if err := tx.Exec(`UPDATE account_requests SET name = '', email = `+erasedRowAddressSQL("account_requests")+`,
+			phone = '', birth_date = NULL, message = '', guardian_email = '', password_hash = NULL,
+			decision_note = '', ip = CASE WHEN source = 'member_invite' THEN ip ELSE '' END, updated_at = now()
+			WHERE id IN ?`, s.Requests).Error; err != nil {
+			return err
+		}
+	}
+	if err := tx.Exec(`UPDATE account_requests SET ip = ''
+		WHERE source = 'member_invite' AND requested_by = ? AND ip <> ''`, s.ID).Error; err != nil {
+		return err
+	}
+	return tx.Exec(`UPDATE account_requests SET guardian_email = '' WHERE guardian_email = ?`, s.Address).Error
 }
 
 // eraseAccountCredentialsIn deletes everything that lets someone act as the

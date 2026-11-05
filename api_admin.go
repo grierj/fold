@@ -994,7 +994,16 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		// Notifications go with the person (5.3); the audit log stays.
+		// Every account_requests statement runs before the person's
+		// notifications are deleted, the order expirePendingRequests also
+		// takes (request, then notifications; L2). Its waiting tasks close
+		// as withdrawn by this admin.
+		if err := eraseAccountRequestsIn(tx, s, me.ID); err != nil {
+			return err
+		}
+		// Notifications go with the person (5.3); the audit log stays. The
+		// exact form of this statement is what the erasure tests' barrier
+		// (erasureTestBeforeNotificationsDelete) matches.
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
 		}

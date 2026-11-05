@@ -6,17 +6,29 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/testdb"
+	"fold/internal/txguard"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 // Account erasure core (M7.4 R4-1-2): the capture step, the credential
@@ -1048,5 +1060,1022 @@ func TestErasureStatementTimeoutContract(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-2a-2 test helpers: erasureTestPause (a barrier matched on facts GORM has
+// set before the step, rule F6) and erasureTestSQLStates (SQLSTATE evidence,
+// rule F4).
+// ---------------------------------------------------------------------------
+
+// erasureTestWhere is a WHERE condition to match: a SQL fragment and the
+// values that must sit at the given positions of its variables.
+type erasureTestWhere struct {
+	SQL  string
+	Vars map[int]any
+}
+
+// erasureTestPoint names one GORM callback position and, optionally, the
+// statement to stop at. Every filter is optional and all given filters must
+// match. Table, Where, Assign, Locking and Operation read facts GORM has set
+// before the main step of the query, create, update and delete processors;
+// SQLContains and VarAt read Statement.SQL and Statement.Vars, which those
+// processors build inside the main step, so they are allowed only on row and
+// raw or at an After position.
+type erasureTestPoint struct {
+	Processor string // query, row, raw, create, update or delete
+	After     bool
+	Step      string // gorm:query, gorm:row, gorm:raw, gorm:create, gorm:update or gorm:delete
+
+	Table       string
+	Where       *erasureTestWhere
+	Assign      map[string]any // matched against Statement.Dest when it is a map[string]any
+	Locking     bool           // a FOR clause is present
+	Operation   string         // testDBOperationKey in the statement context
+	SQLContains string
+	VarAt       map[int]any
+
+	// PID, when set, receives pg_backend_pid() of the participant's own
+	// connection before reached closes.
+	PID *atomic.Int64
+}
+
+func (p erasureTestPoint) validate() error {
+	switch p.Processor {
+	case "query", "create", "update", "delete":
+		if (p.SQLContains != "" || len(p.VarAt) > 0) && !p.After {
+			return fmt.Errorf("SQLContains and VarAt cannot match before gorm:%s, which builds Statement.SQL and Statement.Vars itself", p.Processor)
+		}
+	case "row", "raw":
+	default:
+		return fmt.Errorf("unknown processor %q", p.Processor)
+	}
+	if p.Step == "" {
+		return errors.New("a point needs its gorm step")
+	}
+	return nil
+}
+
+// erasureTestNormalize turns every integer kind into int64, so a uint id
+// matches an int64 value.
+func erasureTestNormalize(v any) any {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return int64(rv.Uint())
+	}
+	return v
+}
+
+func erasureTestEqual(a, b any) bool {
+	return reflect.DeepEqual(erasureTestNormalize(a), erasureTestNormalize(b))
+}
+
+// erasureTestFlatten lists the leaf expressions of a WHERE, descending into
+// AndConditions.
+func erasureTestFlatten(exprs []clause.Expression) []clause.Expression {
+	var out []clause.Expression
+	for _, e := range exprs {
+		if and, ok := e.(clause.AndConditions); ok {
+			out = append(out, erasureTestFlatten(and.Exprs)...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func erasureTestColumnName(c any) string {
+	switch v := c.(type) {
+	case clause.Column:
+		return v.Name
+	case string:
+		return v
+	}
+	return ""
+}
+
+func (w erasureTestWhere) matches(stmt *gorm.Statement) bool {
+	c, ok := stmt.Clauses["WHERE"]
+	if !ok {
+		return false
+	}
+	where, ok := c.Expression.(clause.Where)
+	if !ok {
+		return false
+	}
+	for _, e := range erasureTestFlatten(where.Exprs) {
+		switch v := e.(type) {
+		case clause.Expr:
+			if !strings.Contains(v.SQL, w.SQL) {
+				continue
+			}
+			all := true
+			for i, want := range w.Vars {
+				if i >= len(v.Vars) || !erasureTestEqual(v.Vars[i], want) {
+					all = false
+				}
+			}
+			if all {
+				return true
+			}
+		case clause.Eq:
+			col := strings.TrimSuffix(strings.TrimSpace(w.SQL), " = ?")
+			if erasureTestColumnName(v.Column) == col && (len(w.Vars) == 0 || erasureTestEqual(v.Value, w.Vars[0])) {
+				return true
+			}
+		case clause.IN:
+			col := strings.TrimSuffix(strings.TrimSpace(w.SQL), " IN ?")
+			if erasureTestColumnName(v.Column) != col {
+				continue
+			}
+			all := true
+			for _, want := range w.Vars {
+				found := false
+				for _, got := range v.Values {
+					if erasureTestEqual(got, want) {
+						found = true
+					}
+				}
+				all = all && found
+			}
+			if all {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p erasureTestPoint) matches(stmt *gorm.Statement) bool {
+	if p.Table != "" && stmt.Table != p.Table {
+		return false
+	}
+	if p.Where != nil && !p.Where.matches(stmt) {
+		return false
+	}
+	if len(p.Assign) > 0 {
+		dest, ok := stmt.Dest.(map[string]any)
+		if !ok {
+			return false
+		}
+		for col, want := range p.Assign {
+			got, ok := dest[col]
+			if !ok || !erasureTestEqual(got, want) {
+				return false
+			}
+		}
+	}
+	if p.Locking {
+		if _, ok := stmt.Clauses["FOR"]; !ok {
+			return false
+		}
+	}
+	if p.Operation != "" && stmt.Context.Value(testDBOperationKey{}) != p.Operation {
+		return false
+	}
+	if p.SQLContains != "" && !strings.Contains(stmt.SQL.String(), p.SQLContains) {
+		return false
+	}
+	for i, want := range p.VarAt {
+		if i >= len(stmt.Vars) || !erasureTestEqual(stmt.Vars[i], want) {
+			return false
+		}
+	}
+	return true
+}
+
+// erasureTestPause stops the first statement that matches p, before or after
+// the named GORM step, on the handle db. reached closes when it has stopped
+// (after p.PID is stored), and the statement continues at release. Release
+// runs on cleanup before the callback is removed, so a failed assertion never
+// strands a participant (F3).
+func erasureTestPause(t *testing.T, db *gorm.DB, p erasureTestPoint) (reached <-chan struct{}, release func()) {
+	t.Helper()
+	if err := p.validate(); err != nil {
+		t.Fatalf("erasureTestPause: %v", err)
+	}
+	signal, resume := make(chan struct{}), make(chan struct{})
+	var fired atomic.Bool
+	name := fmt.Sprintf("test:erasure_pause:%d", queryCounterSeq.Add(1))
+	fn := func(tx *gorm.DB) {
+		if tx.Error != nil || !p.matches(tx.Statement) || fired.Swap(true) {
+			return
+		}
+		ctx := tx.Statement.Context
+		if p.PID != nil {
+			var pid int64
+			if err := tx.Statement.ConnPool.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+				tx.AddError(err)
+				return
+			}
+			p.PID.Store(pid)
+		}
+		close(signal)
+		select {
+		case <-resume:
+		case <-ctx.Done():
+			tx.AddError(ctx.Err())
+		}
+	}
+	var err error
+	switch p.Processor {
+	case "query":
+		err = erasureTestRegisterQuery(db, p, name, fn)
+	case "row":
+		err = erasureTestRegisterRow(db, p, name, fn)
+	case "raw":
+		err = erasureTestRegisterRaw(db, p, name, fn)
+	case "create":
+		err = erasureTestRegisterCreate(db, p, name, fn)
+	case "update":
+		err = erasureTestRegisterUpdate(db, p, name, fn)
+	case "delete":
+		err = erasureTestRegisterDelete(db, p, name, fn)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { close(resume) }) }
+	t.Cleanup(func() {
+		release()
+		switch p.Processor {
+		case "query":
+			_ = db.Callback().Query().Remove(name)
+		case "row":
+			_ = db.Callback().Row().Remove(name)
+		case "raw":
+			_ = db.Callback().Raw().Remove(name)
+		case "create":
+			_ = db.Callback().Create().Remove(name)
+		case "update":
+			_ = db.Callback().Update().Remove(name)
+		case "delete":
+			_ = db.Callback().Delete().Remove(name)
+		}
+	})
+	return signal, release
+}
+
+func erasureTestRegisterQuery(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Query().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Query().Before(p.Step).Register(name, fn)
+}
+
+func erasureTestRegisterRow(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Row().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Row().Before(p.Step).Register(name, fn)
+}
+
+func erasureTestRegisterRaw(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Raw().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Raw().Before(p.Step).Register(name, fn)
+}
+
+func erasureTestRegisterCreate(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Create().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Create().Before(p.Step).Register(name, fn)
+}
+
+func erasureTestRegisterUpdate(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Update().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Update().Before(p.Step).Register(name, fn)
+}
+
+func erasureTestRegisterDelete(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	if p.After {
+		return db.Callback().Delete().After(p.Step).Register(name, fn)
+	}
+	return db.Callback().Delete().Before(p.Step).Register(name, fn)
+}
+
+// erasureTestBeforeNotificationsDelete is the erasure's own
+// tx.Where("user_id = ?", id).Delete(&models.Notification{}), stopped before
+// it executes. Delete adds the condition as a clause.Expr carrying the id
+// before gorm:delete runs, and Notification has no DeletedAt, so the
+// statement stays a delete. Every account_requests statement of the erasure
+// has run by then.
+func erasureTestBeforeNotificationsDelete(uid uint) erasureTestPoint {
+	return erasureTestPoint{Processor: "delete", Step: "gorm:delete", Table: "notifications",
+		Where: &erasureTestWhere{SQL: "user_id = ?", Vars: map[int]any{0: uid}}}
+}
+
+// erasureTestBeforeResolve is notify.Resolve(tx, notify.AccountRequested,
+// subjectID, _, resolution), stopped before its UPDATE executes: Resolve
+// chains Model(...).Where(...) and passes its map to UpdateColumns, which
+// stores it in Statement.Dest before gorm:update.
+func erasureTestBeforeResolve(subjectID uint, resolution string) erasureTestPoint {
+	return erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "notifications",
+		Where:  &erasureTestWhere{SQL: "kind = ? AND subject_id = ?", Vars: map[int]any{0: notify.AccountRequested, 1: subjectID}},
+		Assign: map[string]any{"resolution": resolution}}
+}
+
+// erasureTestStateEntry is one failed statement: its SQLSTATE and the start
+// of its SQL.
+type erasureTestStateEntry struct {
+	Code string
+	SQL  string
+}
+
+// erasureTestStateLog records the SQLSTATE of every failed statement on the
+// handle erasureTestSQLStates installed (F4). A generic HTTP 500 proves
+// nothing about a deadlock; this does.
+type erasureTestStateLog struct {
+	t       *testing.T
+	mu      sync.Mutex
+	entries []erasureTestStateEntry
+}
+
+// Count is how many failed statements carried SQLSTATE code.
+func (l *erasureTestStateLog) Count(code string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, e := range l.entries {
+		if e.Code == code {
+			n++
+		}
+	}
+	return n
+}
+
+// Only returns the single failed statement with SQLSTATE code and fails the
+// test when there is not exactly one.
+func (l *erasureTestStateLog) Only(code string) erasureTestStateEntry {
+	l.t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var found []erasureTestStateEntry
+	for _, e := range l.entries {
+		if e.Code == code {
+			found = append(found, e)
+		}
+	}
+	if len(found) != 1 {
+		l.t.Fatalf("SQLSTATE %s recorded %d times, want exactly 1 (all: %v)", code, len(found), l.entries)
+	}
+	return found[0]
+}
+
+type erasureTestSQLKey struct{}
+
+type erasureTestTracer struct{ log *erasureTestStateLog }
+
+func (tr erasureTestTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, erasureTestSQLKey{}, d.SQL)
+}
+
+func (tr erasureTestTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+	if d.Err == nil {
+		return
+	}
+	code := ""
+	var pe *pgconn.PgError
+	if errors.As(d.Err, &pe) {
+		code = pe.Code
+	}
+	sqlText, _ := ctx.Value(erasureTestSQLKey{}).(string)
+	if len(sqlText) > 120 {
+		sqlText = sqlText[:120]
+	}
+	tr.log.mu.Lock()
+	tr.log.entries = append(tr.log.entries, erasureTestStateEntry{Code: code, SQL: sqlText})
+	tr.log.mu.Unlock()
+}
+
+// erasureTestSQLStates swaps app.DB for a handle on the same database whose
+// pgx connections record the SQLSTATE of every failed statement, and puts the
+// original back on cleanup. Register pauses and sessions after calling it, on
+// the swapped app.DB.
+func erasureTestSQLStates(t *testing.T, app *App) *erasureTestStateLog {
+	t.Helper()
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := testdb.URL(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &erasureTestStateLog{t: t}
+	cfg.Tracer = erasureTestTracer{log: log}
+	sqlDB := stdlib.OpenDB(*cfg)
+	traced, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := traced.Use(txguard.Plugin{}); err != nil {
+		t.Fatal(err)
+	}
+	original := app.DB
+	app.DB = traced
+	t.Cleanup(func() {
+		app.DB = original
+		_ = sqlDB.Close()
+	})
+	return log
+}
+
+// TestErasureTestPauseFiresBeforeExecution runs the helper against the exact
+// production statement shapes.
+func TestErasureTestPauseFiresBeforeExecution(t *testing.T) {
+	app := testApp(t)
+	db := app.DB
+	admin := newTestUser(t, app, "pause-admin", erasurePW, models.RoleAdmin)
+	u := newTestUser(t, app, "pause-u", erasurePW, models.RoleMember)
+	v := newTestUser(t, app, "pause-v", erasurePW, models.RoleMember)
+	for _, uid := range []uint{u.ID, v.ID} {
+		for i := 0; i < 2; i++ {
+			erasureMustCreate(t, db, &models.Notification{UserID: uid, Kind: "test.note", Category: "groups", Title: "note", Link: "/"})
+		}
+	}
+	expires := time.Now().Add(time.Hour)
+	r := erasureSeedRequest(t, db, models.AccountRequest{Name: "R", Email: "pause-r@x.test", Source: "self_signup", Status: models.RequestPending, ExpiresAt: expires})
+	r2 := erasureSeedRequest(t, db, models.AccountRequest{Name: "R2", Email: "pause-r2@x.test", Source: "self_signup", Status: models.RequestPending, ExpiresAt: expires})
+	erasureSeedTasks(t, db, &r)
+	erasureSeedTasks(t, db, &r2)
+	notRun := func(t *testing.T, reached <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-reached:
+			t.Fatalf("%s fired the barrier", what)
+		default:
+		}
+	}
+	count := func(q string, args ...any) int64 {
+		t.Helper()
+		var n int64
+		if err := db.Raw(q, args...).Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("notifications delete", func(t *testing.T) {
+		var pid atomic.Int64
+		p := erasureTestBeforeNotificationsDelete(u.ID)
+		p.PID = &pid
+		reached, release := erasureTestPause(t, db, p)
+		// V's delete has the same shape and another id: it neither fires nor waits.
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return tx.Where("user_id = ?", v.ID).Delete(&models.Notification{}).Error
+		}); err != nil {
+			t.Fatal(err)
+		}
+		notRun(t, reached, "V's delete")
+		if n := count("SELECT count(*) FROM notifications WHERE user_id = ?", v.ID); n != 0 {
+			t.Errorf("V has %d notifications left", n)
+		}
+		before := count("SELECT count(*) FROM notifications WHERE user_id = ?", u.ID)
+		sessionPID, done := startDBSession(t, db, "pause-delete", func(conn *gorm.DB) error {
+			return conn.Transaction(func(tx *gorm.DB) error {
+				return tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error
+			})
+		})
+		awaitDBSignal(t, reached)
+		if got := pid.Load(); got != int64(sessionPID) {
+			t.Errorf("recorded pid %d, the participant's session is %d", got, sessionPID)
+		}
+		var state string
+		if err := db.Raw("SELECT state FROM pg_stat_activity WHERE pid = ?", pid.Load()).Scan(&state).Error; err != nil || state != "idle in transaction" {
+			t.Errorf("recorded backend state = %q (%v), want idle in transaction", state, err)
+		}
+		if n := count("SELECT count(*) FROM notifications WHERE user_id = ?", u.ID); n != before {
+			t.Errorf("while paused U has %d notifications, want %d: the DELETE ran", n, before)
+		}
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT 1 FROM notifications WHERE user_id = ? FOR UPDATE NOWAIT", u.ID).Error
+		}); err != nil {
+			t.Errorf("U's rows were locked while paused: %v", err)
+		}
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if n := count("SELECT count(*) FROM notifications WHERE user_id = ?", u.ID); n != 0 {
+			t.Errorf("U has %d notifications after release", n)
+		}
+	})
+
+	t.Run("resolve expired", func(t *testing.T) {
+		var pid atomic.Int64
+		p := erasureTestBeforeResolve(r.ID, "expired")
+		p.PID = &pid
+		reached, release := erasureTestPause(t, db, p)
+		for _, c := range []struct {
+			subject    uint
+			resolution string
+		}{{r2.ID, "expired"}, {r.ID, "withdrawn"}} {
+			tx := db.Begin()
+			if _, err := notify.Resolve(tx, notify.AccountRequested, c.subject, nil, c.resolution); err != nil {
+				t.Fatal(err)
+			}
+			tx.Rollback()
+			notRun(t, reached, fmt.Sprintf("Resolve(%d, %s)", c.subject, c.resolution))
+		}
+		sessionPID, done := startDBSession(t, db, "pause-resolve", func(conn *gorm.DB) error {
+			return conn.Transaction(func(tx *gorm.DB) error {
+				_, err := notify.Resolve(tx, notify.AccountRequested, r.ID, nil, "expired")
+				return err
+			})
+		})
+		awaitDBSignal(t, reached)
+		if got := pid.Load(); got != int64(sessionPID) {
+			t.Errorf("recorded pid %d, the participant's session is %d", got, sessionPID)
+		}
+		open := "SELECT count(*) FROM notifications WHERE kind = ? AND subject_id = ? AND resolved_at IS NULL"
+		if n := count(open, notify.AccountRequested, r.ID); n == 0 {
+			t.Error("R's task was resolved while paused: the UPDATE ran")
+		}
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT 1 FROM notifications WHERE kind = ? AND subject_id = ? FOR UPDATE NOWAIT", notify.AccountRequested, r.ID).Error
+		}); err != nil {
+			t.Errorf("R's task was locked while paused: %v", err)
+		}
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(open, notify.AccountRequested, r.ID); n != 0 {
+			t.Errorf("%d of R's tasks still open after release", n)
+		}
+		if n := count("SELECT count(*) FROM notifications WHERE kind = ? AND subject_id = ? AND resolution = 'expired' AND user_id = ?", notify.AccountRequested, r.ID, admin.ID); n != 1 {
+			t.Errorf("admin's task for R: %d resolved expired, want 1", n)
+		}
+	})
+
+	t.Run("validate", func(t *testing.T) {
+		bad := []erasureTestPoint{
+			{Processor: "update", Step: "gorm:update", SQLContains: "UPDATE"},
+			{Processor: "delete", Step: "gorm:delete", VarAt: map[int]any{0: 1}},
+			{Processor: "query", Step: "gorm:query", SQLContains: "x"},
+			{Processor: "create", Step: "gorm:create", VarAt: map[int]any{0: 1}},
+		}
+		for _, p := range bad {
+			if p.validate() == nil {
+				t.Errorf("Before gorm:%s with SQL filters was accepted", p.Processor)
+			}
+		}
+		good := []erasureTestPoint{
+			{Processor: "row", Step: "gorm:row", SQLContains: "FOR UPDATE"},
+			{Processor: "raw", Step: "gorm:raw", VarAt: map[int]any{0: 1}},
+			{Processor: "update", Step: "gorm:update", After: true, SQLContains: "UPDATE"},
+			{Processor: "update", Step: "gorm:update", Table: "guest_signups"},
+			erasureTestBeforeNotificationsDelete(1),
+			erasureTestBeforeResolve(1, "expired"),
+		}
+		for _, p := range good {
+			if err := p.validate(); err != nil {
+				t.Errorf("%s %s was refused: %v", p.Processor, p.Step, err)
+			}
+		}
+	})
+}
+
+func erasureSeedRequest(t *testing.T, db *gorm.DB, r models.AccountRequest) models.AccountRequest {
+	t.Helper()
+	erasureMustCreate(t, db, &r)
+	return r
+}
+
+// erasureSeedTasks writes the waiting AccountRequested task for every active
+// admin, the way a real request does.
+func erasureSeedTasks(t *testing.T, db *gorm.DB, r *models.AccountRequest) {
+	t.Helper()
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, err := notifyAccountRequested(tx, r, models.RequestFlags{})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func erasureRequestRow(t *testing.T, db *gorm.DB, id uint) models.AccountRequest {
+	t.Helper()
+	var r models.AccountRequest
+	if err := db.First(&r, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func erasurePlaceholder(id uint) string {
+	return fmt.Sprintf("deleted-account_requests-%d@deleted.invalid", id)
+}
+
+// TestAccountErasureAnonymizesAccountRequests goes through the real DELETE.
+func TestAccountErasureAnonymizesAccountRequests(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	u := newTestUser(t, app, "erase-req-u", erasurePW, models.RoleMember)
+	other := newTestUser(t, app, "erase-req-other", erasurePW, models.RoleMember)
+	inviter := newTestUser(t, app, "erase-req-inviter", erasurePW, models.RoleMember)
+	addr := mail.NormalizeAddress(u.Email)
+	hash := "request-password-hash"
+	birth := time.Date(2012, 5, 5, 0, 0, 0, 0, time.UTC)
+	expires := time.Now().Add(48 * time.Hour).Truncate(time.Microsecond)
+
+	r1 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Pat Real", Email: addr, Phone: "555-0100", BirthDate: &birth,
+		Message: "please let me in", GuardianEmail: "guardian@x.test", PasswordHash: &hash, DecisionNote: "n", IP: "9.9.9.1",
+		Source: models.RequestSelfSignup, Status: models.RequestPending, ExpiresAt: expires})
+	r2 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Invited Pat", Email: addr, IP: "9.9.9.2", RequestedBy: &inviter.ID,
+		Source: models.RequestMemberInvite, Status: models.RequestPending, ExpiresAt: expires})
+	// The erased person invited someone: only the ip of that row goes (M39).
+	r3 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Invitee", Email: "invitee@x.test", IP: "9.9.9.3", RequestedBy: &u.ID,
+		Source: models.RequestMemberInvite, Status: models.RequestPending, ExpiresAt: expires})
+	// A conversion the erased person started for someone else keeps its ip.
+	r4 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Kid", Email: "kid@x.test", IP: "9.9.9.4", RequestedBy: &u.ID,
+		Source: models.RequestHouseholdConversion, Status: models.RequestPending, ExpiresAt: expires})
+	// Approved for another account that carries the same address.
+	r5 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Other Pat", Email: addr, IP: "9.9.9.5", ApprovedUserID: &other.ID,
+		Source: models.RequestSelfSignup, Status: models.RequestApproved, ExpiresAt: expires})
+	// Another person's request that named this address as the guardian's.
+	r6 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Teen", Email: "teen@x.test", GuardianEmail: addr, IP: "9.9.9.6",
+		Source: models.RequestSelfSignup, Status: models.RequestPending, AccountType: models.AccountTeen, ExpiresAt: expires})
+	// An approved staged conversion of the erased person keeps every id link.
+	hh := models.Household{Name: "Req family", CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &hh)
+	person := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Staged", Kind: models.HouseholdTeen, CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &person)
+	invID := erasureInvitation(t, db, inviter.ID, "conv@x.test", true, nil)
+	decided := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
+	r7 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Converted", Email: "conv@x.test", IP: "9.9.9.7", RequestedBy: &inviter.ID,
+		ApprovedUserID: &u.ID, HouseholdPersonID: &person.ID, InvitationID: &invID, DecidedBy: &inviter.ID, DecidedAt: &decided,
+		Source: models.RequestHouseholdConversion, Status: models.RequestApproved, ExpiresAt: expires})
+
+	untouched := func() string {
+		return dumpRows(t, db, "account_requests", "id", "id IN ?", []uint{r4.ID, r5.ID})
+	}
+	beforeUntouched := untouched()
+	s.erase(t, u.ID)
+	if got := untouched(); got != beforeUntouched {
+		t.Errorf("rows of other people changed:\nbefore %s\nafter  %s", beforeUntouched, got)
+	}
+
+	scrubbed := func(r models.AccountRequest) {
+		t.Helper()
+		if r.Name != "" || r.Phone != "" || r.BirthDate != nil || r.Message != "" || r.GuardianEmail != "" ||
+			r.PasswordHash != nil || r.DecisionNote != "" {
+			t.Errorf("request %d keeps personal data: %+v", r.ID, r)
+		}
+		if r.Email != erasurePlaceholder(r.ID) {
+			t.Errorf("request %d email = %q, want %q", r.ID, r.Email, erasurePlaceholder(r.ID))
+		}
+	}
+	g1 := erasureRequestRow(t, db, r1.ID)
+	scrubbed(g1)
+	if g1.Status != models.RequestWithdrawn || g1.IP != "" || g1.Source != models.RequestSelfSignup || !g1.ExpiresAt.Equal(r1.ExpiresAt) {
+		t.Errorf("pending self-signup: status %q ip %q source %q", g1.Status, g1.IP, g1.Source)
+	}
+	g2 := erasureRequestRow(t, db, r2.ID)
+	scrubbed(g2)
+	if g2.Status != models.RequestWithdrawn || g2.IP != "9.9.9.2" || g2.RequestedBy == nil || *g2.RequestedBy != inviter.ID {
+		t.Errorf("member invite: status %q ip %q", g2.Status, g2.IP)
+	}
+	if g1.Email == g2.Email {
+		t.Error("two scrubbed requests share one placeholder address")
+	}
+	g3 := erasureRequestRow(t, db, r3.ID)
+	if g3.IP != "" || g3.Name != "Invitee" || g3.Email != "invitee@x.test" || g3.Status != models.RequestPending {
+		t.Errorf("request the erased person made: %+v", g3)
+	}
+	g4 := erasureRequestRow(t, db, r4.ID)
+	if g4.IP != "9.9.9.4" || g4.Name != "Kid" {
+		t.Errorf("conversion the erased person started changed: %+v", g4)
+	}
+	g6 := erasureRequestRow(t, db, r6.ID)
+	if g6.GuardianEmail != "" || g6.Name != "Teen" || g6.Email != "teen@x.test" || g6.IP != "9.9.9.6" || g6.Status != models.RequestPending {
+		t.Errorf("another person's request: %+v", g6)
+	}
+	g7 := erasureRequestRow(t, db, r7.ID)
+	scrubbed(g7)
+	if g7.IP != "" || g7.Status != models.RequestApproved || g7.Source != models.RequestHouseholdConversion ||
+		g7.ApprovedUserID == nil || *g7.ApprovedUserID != u.ID || g7.HouseholdPersonID == nil || *g7.HouseholdPersonID != person.ID ||
+		g7.InvitationID == nil || *g7.InvitationID != invID || g7.DecidedBy == nil || *g7.DecidedBy != inviter.ID ||
+		g7.DecidedAt == nil || !g7.DecidedAt.Equal(decided) || g7.RequestedBy == nil || *g7.RequestedBy != inviter.ID {
+		t.Errorf("approved conversion lost a link or kept its ip: %+v", g7)
+	}
+	// The unique conversion index still holds the person and the user.
+	dup := models.AccountRequest{Name: "Dup", Email: "dup@x.test", ApprovedUserID: &u.ID, HouseholdPersonID: &person.ID,
+		Source: models.RequestHouseholdConversion, Status: models.RequestApproved, ExpiresAt: expires}
+	if err := db.Create(&dup).Error; err == nil {
+		t.Error("a second approved conversion for the same person was accepted")
+	}
+	_ = r5
+}
+
+// TestAccountErasureRequestAuditDisposition: only pending rows change status,
+// decided rows and their audit rows stay, and the waiting tasks close.
+func TestAccountErasureRequestAuditDisposition(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	u := newTestUser(t, app, "erase-aud-u", erasurePW, models.RoleMember)
+	third := newTestUser(t, app, "erase-aud-third", erasurePW, models.RoleMember)
+	addr := mail.NormalizeAddress(u.Email)
+	expires := time.Now().Add(48 * time.Hour)
+	decided := time.Now().Add(-time.Hour).UTC()
+
+	pend1 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Pending One", Email: addr, Source: models.RequestSelfSignup, Status: models.RequestPending, ExpiresAt: expires})
+	pend2 := erasureSeedRequest(t, db, models.AccountRequest{Name: "Pending Two", Email: addr, Source: models.RequestMemberInvite, RequestedBy: &s.second.ID, Status: models.RequestPending, ExpiresAt: expires})
+	approved := erasureSeedRequest(t, db, models.AccountRequest{Name: "Approved", Email: "elsewhere@x.test", ApprovedUserID: &u.ID, DecidedBy: &s.second.ID, DecidedAt: &decided, DecisionNote: "ok",
+		Source: models.RequestSelfSignup, Status: models.RequestApproved, ExpiresAt: expires})
+	rejected := erasureSeedRequest(t, db, models.AccountRequest{Name: "Rejected", Email: addr, DecidedBy: &s.second.ID, DecidedAt: &decided,
+		Source: models.RequestSelfSignup, Status: models.RequestRejected, ExpiresAt: expires})
+	expired := erasureSeedRequest(t, db, models.AccountRequest{Name: "Expired", Email: addr, Source: models.RequestSelfSignup, Status: models.RequestExpired, ExpiresAt: decided})
+	unrelated := erasureSeedRequest(t, db, models.AccountRequest{Name: "Someone Else", Email: "else@x.test", Source: models.RequestSelfSignup, Status: models.RequestPending, ExpiresAt: expires})
+	for _, r := range []*models.AccountRequest{&pend1, &pend2, &unrelated} {
+		erasureSeedTasks(t, db, r)
+	}
+	// A waiting task of another kind about the same subject must stay open.
+	erasureMustCreate(t, db, &models.Notification{UserID: s.second.ID, Kind: "test.other", Category: "admin", Waiting: true,
+		SubjectType: "account_request", SubjectID: &pend1.ID, Title: "other", Link: "/"})
+	for i, r := range []models.AccountRequest{approved, rejected, expired} {
+		action := []string{audit.AccountApproved, audit.AccountRejected, audit.AccountExpired}[i]
+		erasureMustCreate(t, db, &models.AuditLog{ActorID: &s.second.ID, Action: action, TargetType: "account_request", TargetID: r.ID,
+			MetaJSON: `{"note":"kept"}`, IP: "9.9.9.9"})
+	}
+	_ = third
+
+	decisions := func() string {
+		var out string
+		if err := db.Raw(`SELECT coalesce(jsonb_agg(jsonb_build_object('id', id, 'status', status, 'decidedBy', decided_by, 'decidedAt', decided_at) ORDER BY id)::text, '[]')
+			FROM account_requests WHERE id IN ?`, []uint{approved.ID, rejected.ID, expired.ID}).Scan(&out).Error; err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	decisionAudit := func() string {
+		return dumpRows(t, db, "audit_logs", "id", "action IN ?", []string{audit.AccountApproved, audit.AccountRejected, audit.AccountExpired})
+	}
+	otherTasks := func() string {
+		return dumpRows(t, db, "notifications", "id", "kind = 'test.other' OR (kind = ? AND subject_id = ?)", notify.AccountRequested, unrelated.ID)
+	}
+	mailJobs := func() int64 {
+		var n int64
+		if err := db.Raw("SELECT count(*) FROM jobs WHERE kind = ?", kindAccountRequestMail).Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	accountAudit := func() int64 {
+		var n int64
+		if err := db.Raw("SELECT count(*) FROM audit_logs WHERE action LIKE 'account.%'").Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	d0, a0, o0, j0, n0 := decisions(), decisionAudit(), otherTasks(), mailJobs(), accountAudit()
+	s.erase(t, u.ID)
+
+	for _, id := range []uint{pend1.ID, pend2.ID} {
+		if g := erasureRequestRow(t, db, id); g.Status != models.RequestWithdrawn {
+			t.Errorf("pending request %d is %q, want withdrawn", id, g.Status)
+		}
+	}
+	if got := decisions(); got != d0 {
+		t.Errorf("decided requests changed:\nbefore %s\nafter  %s", d0, got)
+	}
+	if got := decisionAudit(); got != a0 {
+		t.Errorf("decision audit rows changed:\nbefore %s\nafter  %s", a0, got)
+	}
+	if got := otherTasks(); got != o0 {
+		t.Errorf("unrelated tasks changed:\nbefore %s\nafter  %s", o0, got)
+	}
+	if got := mailJobs(); got != j0 {
+		t.Errorf("account request mail jobs: %d, was %d", got, j0)
+	}
+	if got := accountAudit(); got != n0 {
+		t.Errorf("account.* audit rows: %d, was %d", got, n0)
+	}
+	if n := auditCount(t, app, audit.UserDeleted); n != 1 {
+		t.Errorf("user.deleted rows = %d, want 1", n)
+	}
+	var total, closed int64
+	q := "SELECT count(*) FROM notifications WHERE kind = ? AND subject_id IN ? AND user_id <> ?"
+	if err := db.Raw(q, notify.AccountRequested, []uint{pend1.ID, pend2.ID}, u.ID).Scan(&total).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw(q+" AND resolved_at IS NOT NULL AND resolved_by_id = ? AND resolution = 'withdrawn'", notify.AccountRequested, []uint{pend1.ID, pend2.ID}, u.ID, s.admin.ID).Scan(&closed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if total == 0 || closed != total {
+		t.Errorf("%d of %d waiting tasks closed as withdrawn by the admin", closed, total)
+	}
+}
+
+// TestAccountRequestApprovalLosesToErasure: an approval that waits for the
+// contact gate while the erasure is paused finds the request withdrawn.
+func TestAccountRequestApprovalLosesToErasure(t *testing.T) {
+	s := newCoreErasureScene(t)
+	app := s.app
+	u := newTestUser(t, app, "erase-appr-u", erasurePW, models.RoleMember)
+	s.ac.holdNotices = true
+	zc := loginAPI(t, app, "erase-second", erasurePW)
+	zc.holdNotices = true
+	req := erasureSeedRequest(t, app.DB, models.AccountRequest{Name: "Pending Pat", Email: mail.NormalizeAddress(u.Email),
+		Source: models.RequestSelfSignup, Status: models.RequestPending, ExpiresAt: time.Now().Add(48 * time.Hour)})
+	erasureSeedTasks(t, app.DB, &req)
+	var users0 int64
+	app.DB.Model(&models.User{}).Unscoped().Count(&users0)
+
+	states := erasureTestSQLStates(t, app)
+	var erasurePID atomic.Int64
+	p := erasureTestBeforeNotificationsDelete(u.ID)
+	p.PID = &erasurePID
+	reached, release := erasureTestPause(t, app.DB, p)
+	del := bgDo(s.ac, "DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil)
+	awaitDBSignal(t, reached)
+	appr := bgDo(zc, "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{})
+	approvalPID := waitForLockedUsersQuery(t, app, "%pg_advisory_xact_lock%")
+	waitDBBlocked(t, app.DB, approvalPID, int(erasurePID.Load()))
+	release()
+	if r := awaitResult(t, del); r.code != http.StatusOK {
+		t.Fatalf("delete: %d %s", r.code, r.body)
+	}
+	r := awaitResult(t, appr)
+	if r.code != http.StatusConflict || !strings.Contains(r.body, `"resolution":"withdrawn"`) {
+		t.Fatalf("approval: %d %s, want 409 naming the withdrawn resolution", r.code, r.body)
+	}
+	if got := erasureRequestRow(t, app.DB, req.ID); got.Status != models.RequestWithdrawn {
+		t.Errorf("request is %q, want withdrawn", got.Status)
+	}
+	var users1 int64
+	app.DB.Model(&models.User{}).Unscoped().Count(&users1)
+	if users1 != users0 {
+		t.Errorf("users: %d, was %d; the approval created an account", users1, users0)
+	}
+	if n := auditCount(t, app, audit.AccountApproved); n != 0 {
+		t.Errorf("%d account.approved rows", n)
+	}
+	if n := states.Count("40P01"); n != 0 {
+		t.Errorf("%d deadlocks recorded", n)
+	}
+}
+
+// TestAccountRequestExpiryRacingErasure: expirePendingRequests and the
+// erasure take request rows before notification rows (L2), in both orders and
+// for both ways a request reaches the erasure (O: the person's own pending
+// request; G: another person's request that names the address as guardian).
+func TestAccountRequestExpiryRacingErasure(t *testing.T) {
+	for _, variant := range []string{"O", "G"} {
+		for _, order := range []string{"expiry-first", "erasure-first"} {
+			t.Run(variant+"/"+order, func(t *testing.T) { expiryRacesErasure(t, variant, order) })
+		}
+	}
+}
+
+func expiryRacesErasure(t *testing.T, variant, order string) {
+	s := newCoreErasureScene(t)
+	app := s.app
+	u := s.second // the erased admin
+	z := newTestUser(t, app, "erase-z", erasurePW, models.RoleAdmin)
+	s.ac.holdNotices = true
+	addr := mail.NormalizeAddress(u.Email)
+	r := models.AccountRequest{Name: "Req Person", Email: addr, Source: models.RequestSelfSignup, Status: models.RequestPending,
+		IP: "9.9.9.1", ExpiresAt: time.Now().Add(-time.Hour)}
+	if variant == "G" {
+		r.Email, r.GuardianEmail, r.AccountType = "child@x.test", addr, models.AccountTeen
+	}
+	r = erasureSeedRequest(t, app.DB, r)
+	erasureSeedTasks(t, app.DB, &r)
+
+	states := erasureTestSQLStates(t, app)
+	db := app.DB
+	type expiryResult struct {
+		n   int64
+		err error
+	}
+	expiry := make(chan expiryResult, 1)
+	runExpiry := func() {
+		go func() {
+			n, err := app.expirePendingRequests()
+			expiry <- expiryResult{n, err}
+		}()
+	}
+	delPath := "/api/v1/admin/users/" + itoa(u.ID)
+	var wantExpired int64
+	switch order {
+	case "expiry-first":
+		var expiryPID atomic.Int64
+		p := erasureTestBeforeResolve(r.ID, "expired")
+		p.PID = &expiryPID
+		reached, release := erasureTestPause(t, db, p)
+		runExpiry()
+		awaitDBSignal(t, reached) // expiry holds R and has not touched notifications
+		del := bgDo(s.ac, "DELETE", delPath, nil)
+		erasurePID := waitForLockedUsersQuery(t, app, "%account_requests%")
+		waitDBBlocked(t, db, erasurePID, int(expiryPID.Load()))
+		release()
+		if res := awaitResult(t, del); res.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+		wantExpired = 1
+	case "erasure-first":
+		var erasurePID atomic.Int64
+		p := erasureTestBeforeNotificationsDelete(u.ID)
+		p.PID = &erasurePID
+		reached, release := erasureTestPause(t, db, p)
+		del := bgDo(s.ac, "DELETE", delPath, nil)
+		awaitDBSignal(t, reached) // every account_requests statement has run; R is held
+		runExpiry()
+		expiryPID := waitForLockedUsersQuery(t, app, "%account_requests%")
+		waitDBBlocked(t, db, expiryPID, int(erasurePID.Load()))
+		release()
+		if res := awaitResult(t, del); res.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+		if variant == "G" {
+			wantExpired = 1
+		}
+	}
+	var res expiryResult
+	select {
+	case res = <-expiry:
+	case <-time.After(10 * time.Second):
+		t.Fatal("expiry never finished")
+	}
+	if res.err != nil || res.n != wantExpired {
+		t.Fatalf("expirePendingRequests = (%d, %v), want (%d, nil)", res.n, res.err, wantExpired)
+	}
+
+	got := erasureRequestRow(t, db, r.ID)
+	var wantStatus, wantResolution string
+	var wantBy *uint
+	switch {
+	case variant == "O" && order == "erasure-first":
+		wantStatus, wantResolution, wantBy = models.RequestWithdrawn, "withdrawn", &s.admin.ID
+	default:
+		wantStatus, wantResolution = models.RequestExpired, "expired"
+	}
+	if got.Status != wantStatus {
+		t.Errorf("request status = %q, want %q", got.Status, wantStatus)
+	}
+	if variant == "O" {
+		if got.Email != erasurePlaceholder(r.ID) || got.Name != "" || got.IP != "" {
+			t.Errorf("request of the erased person not scrubbed: %+v", got)
+		}
+	} else if got.GuardianEmail != "" || got.Name != "Req Person" || got.Email != "child@x.test" || got.IP != "9.9.9.1" {
+		t.Errorf("another person's request: want only guardian_email cleared: %+v", got)
+	}
+	var task models.Notification
+	if err := db.Where("kind = ? AND subject_id = ? AND user_id = ?", notify.AccountRequested, r.ID, z.ID).First(&task).Error; err != nil {
+		t.Fatalf("Z's task: %v", err)
+	}
+	if task.ResolvedAt == nil || task.Resolution != wantResolution || (wantBy == nil) != (task.ResolvedByID == nil) ||
+		(wantBy != nil && *task.ResolvedByID != *wantBy) {
+		t.Errorf("Z's task: resolved %v by %v as %q, want %q by %v", task.ResolvedAt != nil, task.ResolvedByID, task.Resolution, wantResolution, wantBy)
+	}
+	var left int64
+	db.Model(&models.Notification{}).Where("user_id = ?", u.ID).Count(&left)
+	if left != 0 {
+		t.Errorf("%d of the erased admin's notifications remain", left)
+	}
+	if n := auditCount(t, app, audit.AccountExpired); n != wantExpired {
+		t.Errorf("account.expired rows = %d, want %d", n, wantExpired)
+	}
+	if n := states.Count("40P01"); n != 0 {
+		t.Errorf("%d deadlocks recorded: %v", n, states.entries)
+	}
+}
+
+// TestErasureTestSQLStatesRecordsFailures: the recorder keeps the SQLSTATE and
+// the start of the SQL of a failed statement, and nothing for a good one.
+func TestErasureTestSQLStatesRecordsFailures(t *testing.T) {
+	app := testApp(t)
+	states := erasureTestSQLStates(t, app)
+	if err := app.DB.Exec("SELECT 1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := states.Count("22012"); n != 0 {
+		t.Fatalf("%d division errors before one happened", n)
+	}
+	if err := app.DB.Exec("SELECT 1/0").Error; err == nil {
+		t.Fatal("division by zero succeeded")
+	}
+	if e := states.Only("22012"); !strings.Contains(e.SQL, "1/0") {
+		t.Errorf("recorded SQL %q", e.SQL)
+	}
+	if n := states.Count("40P01"); n != 0 {
+		t.Errorf("%d deadlocks recorded", n)
 	}
 }
