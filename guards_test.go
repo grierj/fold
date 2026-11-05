@@ -1176,6 +1176,10 @@ func TestMergeRulesCheckScript(t *testing.T) {
 		{"no rules at all", "[]", 1, "required status checks are not strict"},
 		{"an error object", `{"message": "Not Found", "status": "404"}`, 1, "not a list of rules"},
 		{"not JSON", "<html>rate limited</html>", 1, "not JSON"},
+		{"an empty answer", "", 1, "not JSON"},
+		{"a blank answer", " \n", 1, "not JSON"},
+		// GitHub combines the rules of every active ruleset: strict in one
+		// rule makes every PR up to date before the checks of any rule count.
 		{"strict in a second ruleset", strings.Replace(mergeRulesFixture(false), "\n]", `,
   {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": true, "required_status_checks": []}, "ruleset_id": 2}
 ]`, 1), 0, "up-to-date branches"},

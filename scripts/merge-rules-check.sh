@@ -59,9 +59,11 @@ else
   }
 fi
 
-# One line per missing rule; nothing when every rule is in place.
-problems=$(jq -r '
+# One line per missing rule; nothing when every rule is in place. `-n` with
+# `input` makes an empty answer an error instead of a silent pass.
+problems=$(jq -rn '
   def required: ["test", "web", "provision"];
+  input |
   if type != "array" then
     "the answer is not a list of rules"
   else
