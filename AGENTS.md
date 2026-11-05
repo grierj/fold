@@ -398,6 +398,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Main pages (including event, scheduling, Join and My groups) have no moderate, serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`; setup page in `web/e2e/seed.setup.ts` |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (its error names the file to move to) |
 | Schema changes are new goose files; GORM models match them | `migrations/migrations_test.go` drift check |
+| A contract migration's expand shipped in an earlier tagged, published release (PLAN 14.1) | Tag and file half: `scripts/contract-gate.sh` in the test job (`-- contracts: NNNNN_name.sql` header; a `v*` tag merged into HEAD holds the expand and not the contract; the expand unchanged since; full-history checkout), kept in place by `TestCIRunsTheContractGate` and proved by `TestContractGateScript`. Publication half is review only: a `release.yml` run of shape N or F, the finalize step summary, GHCR digest, release section and attestation naming one digest; a tag alone does not satisfy it |
 | `go vet` and `gofmt` are clean | `make lint` in CI |
 | No Python: tooling is shell or Go | `TestNoPython` |
 | Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported`; a line that must quote the word ends with `wording-ok:` |
