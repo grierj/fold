@@ -529,7 +529,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// every table R4-2a touches identical. This is one transaction with no
 	// competing writer, so equality with the pre-state is the right comparison.
 	s.ac.holdNotices = true
-	_, occ, _ := erasureEventFixture(t, s)
+	eventID, occ, groupID := erasureEventFixture(t, s)
 	expires := time.Now().Add(48 * time.Hour)
 	req := erasureSeedRequest(t, db, models.AccountRequest{Name: "Rollback Requester", Email: addr, Source: models.RequestSelfSignup,
 		Status: models.RequestPending, ExpiresAt: expires})
@@ -550,8 +550,13 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// R4-2d1b-2: the consent scrub runs right after the soft delete, so a
 	// failure in the last statement must leave every consent row as it was.
 	erasureSeedConsentEvidence(t, db, u.ID, "rollback")
+	// R4-T07A: the ages-note scrub also runs right after the soft delete, so the
+	// same late failure must leave the subject's notes as they were, on a
+	// pending and on a terminal row.
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, l.ID, u.ID, groupID, eventID, occ.ID, 1, "rollback pending note")
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, l.ID, u.ID, groupID, eventID, occ.ID, 2, "rollback denied note")
 	tables := []string{"account_requests", "notifications", "invitations", "guest_signups", "mail_outboxes", "messages", "message_recipients",
-		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "users"}
+		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "contact_requests", "users"}
 	writeSet := func() string {
 		var out string
 		for _, table := range tables {
@@ -3888,65 +3893,1779 @@ func TestAccountErasureEndsContactGrantsOnce(t *testing.T) {
 	})
 }
 
-// TestAccountErasureLeavesContactRequestTextForT07 guards the G-7 boundary:
-// the erasure writes no contact_requests statement, so every row's reason and
-// add_childcare_ages_note stay as written, for pending and terminal rows of
-// the contact, group_add and occurrence_add purposes. (The lifecycle may end
-// a pending row; that never touches the text.)
-func TestAccountErasureLeavesContactRequestTextForT07(t *testing.T) {
+// ---------------------------------------------------------------------------
+// R4-T07A: the childcare ages note of the subject's occurrence_add rows.
+// ---------------------------------------------------------------------------
+
+// erasureAgesNoteRow is one contact_requests row as the ages-note tests compare
+// it: the few columns they branch on, the note, the whole row as JSON with and
+// without the note, and the row without the columns the request lifecycle moves.
+type erasureAgesNoteRow struct {
+	ID            uint
+	Purpose       string
+	Status        string
+	Reason        string
+	Note          string
+	SubjectUserID uint
+	RequesterID   uint
+	EndReason     string
+	CompletedAt   *time.Time
+	Rest          string
+	Whole         string
+	// Preserved is the whole row as JSON without status, end_reason and
+	// completed_at (the three columns finishContactRequest moves) and without
+	// the ages note (the scrub's). Every other column, decision timestamps and
+	// the people who decided or withdrew included, appears with its value, so a
+	// pending row that the lifecycle ends must keep it exactly.
+	Preserved string
+}
+
+func erasureRequestRows(t testing.TB, db *gorm.DB) map[uint]erasureAgesNoteRow {
+	t.Helper()
+	var rows []erasureAgesNoteRow
+	if err := db.Raw(`SELECT id, purpose, status, reason, subject_user_id, requester_id, add_childcare_ages_note AS note,
+		end_reason, completed_at,
+		(to_jsonb(r) - 'add_childcare_ages_note')::text AS rest, to_jsonb(r)::text AS whole,
+		(to_jsonb(r) - 'status' - 'end_reason' - 'completed_at' - 'add_childcare_ages_note')::text AS preserved
+		FROM contact_requests r ORDER BY id`).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[uint]erasureAgesNoteRow, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r
+	}
+	return out
+}
+
+// erasureMakeRequest inserts one valid contact_requests row of purpose and
+// status (pending, withdrawn, denied, expired or ended; granted rows come from
+// erasureGrantedAdd) for a live subject. The row honors every CHECK; an
+// occurrence_add row carries note as its childcare ages note.
+func erasureMakeRequest(t *testing.T, db *gorm.DB, purpose, status string, requester, subject, groupID, eventID, occurrenceID uint, n int, note string) models.ContactRequest {
+	t.Helper()
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	r := models.ContactRequest{Purpose: purpose, RequesterID: requester, SubjectUserID: subject, ContextType: policy.ContactGroup, ContextID: groupID,
+		Reason: fmt.Sprintf("identifying reason %d", n), SubjectDecision: policy.ContactPending, Status: status,
+		CreatedAt: created, ExpiresAt: created.Add(24 * 14 * time.Hour)}
+	switch purpose {
+	case policy.RequestContact:
+		r.Fields, r.NeedsAdmin, r.AdminDecision = policy.ContactBoth, true, policy.ContactPending
+	case policy.RequestGroupAdd:
+		r.AdminDecision = policy.ContactNotNeeded
+	case policy.RequestOccurrenceAdd:
+		r.ContextType, r.ContextID, r.OccurrenceID = policy.ContactEvent, eventID, &occurrenceID
+		r.AdminDecision, r.AddAttendanceMode = policy.ContactNotNeeded, models.AttendanceInPerson
+		r.AddChildcareAgesNote = note
+	}
+	done := created.Add(10 * time.Minute)
+	switch status {
+	case policy.ContactWithdrawn:
+		r.CompletedAt, r.WithdrawnByID = &done, &requester
+	case policy.ContactDenied:
+		decided := created.Add(5 * time.Minute)
+		r.SubjectDecision, r.SubjectDecidedBy, r.SubjectDecidedAt = policy.ContactDenied, &subject, &decided
+		r.CompletedAt = &done
+	case policy.ContactEnded:
+		r.CompletedAt, r.EndReason = &done, "event_ended"
+	case policy.ContactExpired:
+		r.CreatedAt = created.AddDate(0, 0, -30)
+		r.ExpiresAt = r.CreatedAt.Add(24 * 14 * time.Hour)
+		end := r.ExpiresAt.Add(time.Minute)
+		r.CompletedAt = &end
+	}
+	erasureMustCreate(t, db, &r)
+	return r
+}
+
+// erasureGrantedAdd makes a granted occurrence_add request for subject on occ
+// the way the completion writes it, in one transaction with the real triggers
+// enabled: the request, a registration (reg, when given, is reused for a
+// replacement), the grant decision and the access provenance with its added
+// snapshot. at is the instant of the grant. The request is created one minute
+// before at: the baseline provenance trigger refuses a replacement request
+// created before the access it replaces ended, so a one-hour lead put B ahead
+// of A's end and failed the seed with 23514.
+func erasureGrantedAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, note string, at time.Time, reg *models.Registration) (models.ContactRequest, models.Registration) {
+	t.Helper()
+	at = at.UTC().Truncate(time.Microsecond)
+	req := models.ContactRequest{RequesterID: issuer.ID, SubjectUserID: subject.ID, Purpose: policy.RequestOccurrenceAdd,
+		ContextType: policy.ContactEvent, ContextID: eventID, OccurrenceID: &occ.ID, AddAttendanceMode: models.AttendanceInPerson,
+		AddChildcareAgesNote: note, Reason: "identifying reason granted", SubjectDecision: policy.ContactPending,
+		AdminDecision: policy.ContactNotNeeded, Status: policy.ContactPending, CreatedAt: at.Add(-time.Minute), ExpiresAt: at.AddDate(0, 0, 14)}
+	var out models.Registration
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req).Error; err != nil {
+			return err
+		}
+		if reg == nil {
+			out = models.Registration{UserID: &subject.ID, OccurrenceID: occ.ID, Status: models.RegGoing, Source: "admin", AttendanceMode: models.AttendanceInPerson}
+			if err := tx.Create(&out).Error; err != nil {
+				return err
+			}
+		} else if err := tx.First(&out, reg.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&req).Updates(map[string]any{"subject_decision": policy.ContactApproved, "subject_decided_by": subject.ID,
+			"subject_decided_at": at, "status": policy.ContactGranted, "completed_at": at, "completed_target_id": out.ID}).Error; err != nil {
+			return err
+		}
+		issuerID := issuer.ID
+		_, err := seedAccessGrantIn(tx, out.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RequestID: &req.ID}, &issuerID, at)
+		return err
+	})
+	if err != nil {
+		t.Fatal("seed granted add request:", err)
+	}
+	if err := db.First(&out, out.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return req, out
+}
+
+// erasureNote is the ages note a granted-row builder writes: the text for the
+// erased person's rows, empty for the twin's, whose erasure the helper cannot
+// change and which therefore stands for the erasure before T07.
+func erasureNote(noted bool, text string) string {
+	if noted {
+		return text
+	}
+	return ""
+}
+
+// erasureGrantedGroupAdd is a granted group_add request for subject into g,
+// written the way the completion writes it: the request, the active membership
+// it names and the grant decision in one transaction under the real triggers.
+func erasureGrantedGroupAdd(t *testing.T, db *gorm.DB, requester, subject *models.User, g *models.Group) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Microsecond)
+	req := models.ContactRequest{RequesterID: requester.ID, SubjectUserID: subject.ID, Purpose: policy.RequestGroupAdd,
+		ContextType: policy.ContactGroup, ContextID: g.ID, Reason: "identifying reason granted group add",
+		SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded, Status: policy.ContactPending,
+		CreatedAt: at.Add(-time.Minute), ExpiresAt: at.AddDate(0, 0, 14)}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req).Error; err != nil {
+			return err
+		}
+		m := models.Membership{UserID: subject.ID, GroupID: g.ID, Role: models.MembershipMember, Status: "active", JoinedAt: at}
+		if err := tx.Create(&m).Error; err != nil {
+			return err
+		}
+		return tx.Model(&req).Updates(map[string]any{"subject_decision": policy.ContactApproved, "subject_decided_by": subject.ID,
+			"subject_decided_at": at, "status": policy.ContactGranted, "completed_at": at, "completed_target_id": m.ID}).Error
+	})
+	if err != nil {
+		t.Fatal("seed granted group_add request:", err)
+	}
+	if err := db.First(&req, req.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+// erasureForgedGrantedAdd inserts a granted occurrence_add request with no
+// completed registration behind it. Its deferred completion event fails with
+// 23514 whenever it is checked, so it shows whether a queued event survived.
+func erasureForgedGrantedAdd(tx *gorm.DB, requester, subject, eventID, occurrenceID uint) error {
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	decided, done, target := at.Add(time.Minute), at.Add(2*time.Minute), uint(2000000000)
+	r := models.ContactRequest{RequesterID: requester, SubjectUserID: subject, Purpose: policy.RequestOccurrenceAdd,
+		ContextType: policy.ContactEvent, ContextID: eventID, OccurrenceID: &occurrenceID, AddAttendanceMode: models.AttendanceInPerson,
+		CompletedTargetID: &target, Reason: "forged granted add", SubjectDecision: policy.ContactApproved,
+		SubjectDecidedBy: &subject, SubjectDecidedAt: &decided, AdminDecision: policy.ContactNotNeeded,
+		Status: policy.ContactGranted, CreatedAt: at, ExpiresAt: at.AddDate(0, 0, 14), CompletedAt: &done}
+	return tx.Create(&r).Error
+}
+
+// erasureReplacedAdd is historical case (a): request A was granted on a
+// registration, its access ended, and request B then took the same
+// registration over. Both notes are nonempty.
+func erasureReplacedAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) (a, b models.ContactRequest, reg models.Registration) {
+	t.Helper()
+	first := time.Now().UTC().Add(-3 * time.Hour)
+	a, reg = erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note A (replaced)"), first, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, first.Add(10*time.Minute))
+	b, reg = erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note B (current)"), first.Add(30*time.Minute), &reg)
+	return a, b, reg
+}
+
+// erasureRetiredAdd is historical case (b): a granted request whose
+// registration was retired (access ended, both snapshots written) and deleted.
+func erasureRetiredAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour)
+	req, reg := erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note (registration deleted)"), at, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, at.Add(10*time.Minute))
+	if err := db.Delete(&models.Registration{}, reg.ID).Error; err != nil {
+		t.Fatal("delete the retired registration:", err)
+	}
+	return req
+}
+
+// erasureEndedAccessAdd is historical case (c), the control: the access only
+// ended and the registration is still in place.
+func erasureEndedAccessAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour)
+	req, reg := erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note (access ended)"), at, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, at.Add(10*time.Minute))
+	return req
+}
+
+// The classes of fixture row in the ages-note erasure test: the erased person
+// is the subject, is the requester, or is neither.
+const (
+	erasureAsSubject   = "subject"
+	erasureAsRequester = "requester"
+	erasureNeither     = "neither"
+)
+
+// erasureSeedRequestTasks writes the waiting review tasks of a pending request the way
+// request creation does (contactNotice): the subject's, and the admin's when
+// the request needs one.
+func erasureSeedRequestTasks(t *testing.T, db *gorm.DB, r models.ContactRequest, admin uint) {
+	t.Helper()
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if _, err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
+			return err
+		}
+		if !r.NeedsAdmin {
+			return nil
+		}
+		_, err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed the review tasks of request %d: %v", r.ID, err)
+	}
+}
+
+// erasureTask is one review task a pending request leaves open: its kind and
+// the user who holds it.
+type erasureTask struct {
+	Kind  string
+	Owner uint
+}
+
+// erasureReviewTasks is who holds a task for a pending request: its subject,
+// and the reviewing admin when the request needs one.
+func erasureReviewTasks(r models.ContactRequest, admin uint) []erasureTask {
+	subjectKind, adminKind := notify.ContactSubjectReview, notify.ContactAdminReview
+	if r.Purpose != policy.RequestContact {
+		subjectKind, adminKind = notify.AddSubjectReview, notify.AddAdminReview
+	}
+	out := []erasureTask{{subjectKind, r.SubjectUserID}}
+	if r.NeedsAdmin {
+		out = append(out, erasureTask{adminKind, admin})
+	}
+	return out
+}
+
+// erasureSpan is the wall-clock window of one DELETE: from just before the
+// request to just after the response.
+type erasureSpan struct{ Start, End time.Time }
+
+func (s erasureSpan) has(at time.Time) bool {
+	return !at.Before(s.Start.Truncate(time.Microsecond)) && !at.After(s.End)
+}
+
+func (s erasureSpan) hasPtr(at *time.Time) bool { return at != nil && s.has(*at) }
+
+func (s erasureSpan) hasMicro(micro int64) bool {
+	return micro >= s.Start.Truncate(time.Microsecond).UnixMicro() && micro <= s.End.UnixMicro()
+}
+
+func erasureJSON(t testing.TB, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// erasureMetaOf decodes a JSON object the way an audit row's meta reads back:
+// numbers as float64.
+func erasureMetaOf(t testing.TB, raw string) map[string]any {
+	t.Helper()
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("not a JSON object: %q: %v", raw, err)
+	}
+	return m
+}
+
+// erasureWire is a wanted meta map as it reads back from the database.
+func erasureWire(t testing.TB, want map[string]any) map[string]any {
+	t.Helper()
+	return erasureMetaOf(t, erasureJSON(t, want))
+}
+
+func erasureSameID(a, b *uint) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// erasureLedger is every notice, delivery, job and audit row, by id. A run is
+// judged by the rows it added (ids absent before) and by what became of each
+// row that was there.
+type erasureLedger struct {
+	Notices    map[uint]models.Notification
+	Deliveries map[uint]models.NotificationDelivery
+	Jobs       map[uint]models.Job
+	Audit      map[uint]models.AuditLog
+}
+
+func erasureLedgerOf(t testing.TB, db *gorm.DB) erasureLedger {
+	t.Helper()
+	l := erasureLedger{Notices: map[uint]models.Notification{}, Deliveries: map[uint]models.NotificationDelivery{},
+		Jobs: map[uint]models.Job{}, Audit: map[uint]models.AuditLog{}}
+	var notices []models.Notification
+	var deliveries []models.NotificationDelivery
+	var queued []models.Job
+	var logs []models.AuditLog
+	for _, load := range []struct {
+		name string
+		dest any
+	}{{"notifications", &notices}, {"notification_deliveries", &deliveries}, {"jobs", &queued}, {"audit_logs", &logs}} {
+		if err := db.Order("id").Find(load.dest).Error; err != nil {
+			t.Fatalf("read %s: %v", load.name, err)
+		}
+	}
+	for _, n := range notices {
+		l.Notices[n.ID] = n
+	}
+	for _, d := range deliveries {
+		l.Deliveries[d.ID] = d
+	}
+	for _, j := range queued {
+		l.Jobs[j.ID] = j
+	}
+	for _, a := range logs {
+		l.Audit[a.ID] = a
+	}
+	return l
+}
+
+// erasureRun is what one DELETE of one person is judged against.
+type erasureRun struct {
+	Name    string
+	Subject uint // the person erased
+	Admin   uint // the admin who deletes them and reviews contact requests
+	// Pending is every request that was pending and names Subject, as seeded.
+	Pending   []models.ContactRequest
+	Span      erasureSpan
+	Reg       models.Registration // the replacement registration with live access, before the DELETE
+	RegAfter  models.Registration // and after it
+	GroupID   uint
+	EventID   uint // the event of Reg
+	IssuerID  uint // who granted the access
+	RequestID uint // the add request the access names
+}
+
+// erasureLedgerFacts is what checkErasureLedger saw, for the checks that span
+// both runs.
+type erasureLedgerFacts struct {
+	Name       string
+	EndedMeta  map[string]any // meta of the one new occurrence_access.ended snapshot
+	Living     int            // waiting tasks of other people the DELETE closed
+	Deleted    int            // waiting tasks of the erased person that are gone
+	NewNotices int
+}
+
+// erasureEndMeta is the meta of the audit row that ends a pending request
+// because its person is gone (finishContactRequest, contactAudit).
+func erasureEndMeta(r models.ContactRequest) map[string]any {
+	if r.Purpose == policy.RequestContact {
+		return map[string]any{"requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID, "contextType": r.ContextType,
+			"contextId": r.ContextID, "fields": r.Fields, "needsAdmin": r.NeedsAdmin, "outcome": policy.ContactEnded,
+			"reason": policy.ContactAccountDisabled}
+	}
+	m := map[string]any{"purpose": r.Purpose, "requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID,
+		"contextType": r.ContextType, "contextId": r.ContextID, "needsAdmin": r.NeedsAdmin, "outcome": policy.ContactEnded,
+		"reason": policy.ContactAccountDisabled}
+	if r.Purpose == policy.RequestOccurrenceAdd {
+		m["occurrenceId"] = *r.OccurrenceID
+	}
+	return m
+}
+
+// erasureWantNotice is the "updated" notice a pending request's end sends to
+// the party that is still there, as the registry renders it.
+func erasureWantNotice(t testing.TB, r models.ContactRequest, to uint) models.Notification {
+	t.Helper()
+	kind, subjectType, link, prefix := notify.ContactUpdated, "contact_request", "contact-requests", "contact"
+	if r.Purpose != policy.RequestContact {
+		kind, subjectType, link, prefix = notify.AddUpdated, "add_request", "add-requests", "add"
+	}
+	k, ok := notify.Lookup(kind)
+	if !ok {
+		t.Fatalf("kind %q is not registered", kind)
+	}
+	v := notify.Vars{Teen: r.NeedsAdmin, Count: 1}
+	title, body := k.Render(v)
+	emailTitle, emailBody := k.RenderForEmail(v)
+	pushTitle, pushBody, _ := k.RenderForPush(v)
+	id := r.ID
+	dedupe := fmt.Sprintf("%s:%d:%s", prefix, r.ID, policy.ContactEnded)
+	return models.Notification{UserID: to, Kind: kind, Category: notify.CatSafety, SubjectType: subjectType, SubjectID: &id,
+		DedupeKey: &dedupe, Title: title, Body: body, EmailTitle: emailTitle, EmailBody: emailBody, PushTitle: pushTitle, PushBody: pushBody,
+		Link: fmt.Sprintf("/%s/%d", link, r.ID), Actions: "[]", BatchCount: 1, Data: "{}"}
+}
+
+// erasureAccessColumns is the identity and access columns of a registration as
+// one JSON string. A DELETE may change only the ending three of them.
+func erasureAccessColumns(t testing.TB, r models.Registration) string {
+	t.Helper()
+	return erasureJSON(t, struct {
+		ID                  uint
+		UserID              *uint
+		OccurrenceID        uint
+		Status              string
+		Origin              string
+		Issuer              *uint
+		Request             *uint
+		DepartureMembership *uint
+		DepartureActor      *uint
+		GrantedAt           *time.Time
+		EndedAt             *time.Time
+		EndReason           string
+		EndedBy             *uint
+	}{r.ID, r.UserID, r.OccurrenceID, r.Status, r.AccessOrigin, r.AccessIssuerID, r.AccessRequestID,
+		r.AccessDepartureMembershipID, r.AccessDepartureActorID, r.AccessGrantedAt, r.AccessEndedAt, r.AccessEndReason, r.AccessEndedBy})
+}
+
+// checkErasureRequests judges the contact_requests rows of one DELETE. Every row
+// that does not name the erased person is byte-identical (the other run's rows
+// included). A row that was pending and names them ends as "ended" with
+// "account_disabled", completed inside the DELETE, and keeps every other column
+// it had: status, end_reason and completed_at are the lifecycle's, and the note
+// of the subject's occurrence_add row is the scrub's, and nothing else moves.
+// The rest of the person's rows keep their status, decision, reason and
+// timestamps; the subject's occurrence_add rows differ by the note alone.
+func checkErasureRequests(t *testing.T, run erasureRun, before, after map[uint]erasureAgesNoteRow) {
+	t.Helper()
+	if len(after) != len(before) {
+		t.Fatalf("%s: %d contact_requests rows after the DELETE, %d before", run.Name, len(after), len(before))
+	}
+	pending := map[uint]bool{}
+	for _, r := range run.Pending {
+		pending[r.ID] = true
+	}
+	endedPending := 0
+	for id, b := range before {
+		a, ok := after[id]
+		if !ok {
+			t.Errorf("%s: request %d is gone", run.Name, id)
+			continue
+		}
+		label := fmt.Sprintf("%s: request %d (%s %s)", run.Name, id, b.Purpose, b.Status)
+		subjectAdd := b.Purpose == policy.RequestOccurrenceAdd && b.SubjectUserID == run.Subject
+		involved := b.SubjectUserID == run.Subject || b.RequesterID == run.Subject
+		if a.Reason != b.Reason {
+			t.Errorf("%s: reason changed to %q, was %q", label, a.Reason, b.Reason)
+		}
+		if subjectAdd && a.Note != "" {
+			t.Errorf("%s: subject note is %q, want empty", label, a.Note)
+		}
+		if !subjectAdd && a.Note != b.Note {
+			t.Errorf("%s: note is %q, was %q", label, a.Note, b.Note)
+		}
+		switch {
+		case !involved:
+			if a.Whole != b.Whole {
+				t.Errorf("%s: a row naming %d in neither role changed:\n%s\n%s", label, run.Subject, b.Whole, a.Whole)
+			}
+		case b.Status == policy.ContactPending:
+			if !pending[id] {
+				t.Errorf("%s: pending row naming the person is not in the run's fixture list", label)
+			}
+			endedPending++
+			if a.Status != policy.ContactEnded || a.EndReason != policy.ContactAccountDisabled {
+				t.Errorf("%s: ended as status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactAccountDisabled)
+			}
+			if !run.Span.hasPtr(a.CompletedAt) {
+				t.Errorf("%s: completed_at %v is outside the DELETE (%v to %v)", label, a.CompletedAt, run.Span.Start, run.Span.End)
+			}
+			if a.Preserved != b.Preserved {
+				t.Errorf("%s: a column other than status, end_reason, completed_at and the subject's note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+			}
+		case subjectAdd:
+			if a.Rest != b.Rest {
+				t.Errorf("%s: more than the note changed:\n%s\n%s", label, b.Rest, a.Rest)
+			}
+		default:
+			if a.Whole != b.Whole {
+				t.Errorf("%s: a settled row of the person changed:\n%s\n%s", label, b.Whole, a.Whole)
+			}
+		}
+	}
+	if endedPending != len(run.Pending) {
+		t.Errorf("%s: %d pending rows naming the person ended, want %d", run.Name, endedPending, len(run.Pending))
+	}
+}
+
+// erasurePreservedShape is the Preserved projection of a row with the fixture
+// mapping applied: the ids of the erased person and their twin become "person",
+// the row's own id is dropped and every timestamp is reduced to whether it is
+// set (a row and its twin are seeded at different instants).
+func erasurePreservedShape(t testing.TB, preserved string, erased, twin uint) map[string]any {
+	t.Helper()
+	m := erasureMetaOf(t, preserved)
+	delete(m, "id")
+	for _, k := range []string{"requester_id", "subject_user_id", "subject_decided_by", "admin_decided_by", "withdrawn_by_id"} {
+		if id, ok := m[k].(float64); ok && (uint(id) == erased || uint(id) == twin) {
+			m[k] = "person"
+		}
+	}
+	for _, k := range []string{"created_at", "expires_at", "subject_decided_at", "admin_decided_at"} {
+		if m[k] != nil {
+			m[k] = "set"
+		}
+	}
+	return m
+}
+
+// checkErasurePairs sets each erased-side request beside its twin's, by the ids
+// the fixture recorded: one to one, the same purpose, status and reason, the
+// person in the same role, and after both DELETEs the same status and end
+// reason and the same preserved columns under erasurePreservedShape.
+func checkErasurePairs(t *testing.T, erased, twin uint, twinOf map[uint]uint, before, after map[uint]erasureAgesNoteRow) {
+	t.Helper()
+	seen := map[uint]uint{}
+	for id, tid := range twinOf {
+		if prev, dup := seen[tid]; dup {
+			t.Errorf("twin request %d is paired with both %d and %d", tid, prev, id)
+			continue
+		}
+		seen[tid] = id
+		be, bt, ae, at := before[id], before[tid], after[id], after[tid]
+		label := fmt.Sprintf("request %d (%s %s) and its twin %d", id, be.Purpose, be.Status, tid)
+		switch {
+		case be.SubjectUserID == erased:
+			if bt.SubjectUserID != twin || bt.RequesterID != be.RequesterID {
+				t.Errorf("%s: the twin row has requester %d and subject %d, want %d and %d", label, bt.RequesterID, bt.SubjectUserID, be.RequesterID, twin)
+			}
+		case be.RequesterID == erased:
+			if bt.RequesterID != twin || bt.SubjectUserID != be.SubjectUserID {
+				t.Errorf("%s: the twin row has requester %d and subject %d, want %d and %d", label, bt.RequesterID, bt.SubjectUserID, twin, be.SubjectUserID)
+			}
+		default:
+			t.Errorf("%s: the erased-side row does not name the erased person", label)
+			continue
+		}
+		if be.Purpose != bt.Purpose || be.Status != bt.Status || be.Reason != bt.Reason {
+			t.Errorf("%s: purpose/status/reason differ before the DELETE: %q/%q/%q and %q/%q/%q", label, be.Purpose, be.Status, be.Reason, bt.Purpose, bt.Status, bt.Reason)
+		}
+		if ae.Status != at.Status || ae.EndReason != at.EndReason || (ae.CompletedAt == nil) != (at.CompletedAt == nil) {
+			t.Errorf("%s: after the DELETE the rows have status %q/%q, end reason %q/%q, completed %t/%t",
+				label, ae.Status, at.Status, ae.EndReason, at.EndReason, ae.CompletedAt != nil, at.CompletedAt != nil)
+		}
+		for what, pair := range map[string][2]erasureAgesNoteRow{"before": {be, bt}, "after": {ae, at}} {
+			if !reflect.DeepEqual(erasurePreservedShape(t, pair[0].Preserved, erased, twin), erasurePreservedShape(t, pair[1].Preserved, erased, twin)) {
+				t.Errorf("%s: the preserved columns differ %s the DELETE:\n%s\n%s", label, what, pair[0].Preserved, pair[1].Preserved)
+			}
+		}
+	}
+}
+
+// checkErasureLedger judges the audit, notification, delivery and job rows of
+// one DELETE against the expected rows stated in full:
+//
+//   - audit: exactly user.deleted, one end row per pending request that named
+//     the person (contact.ended or add.ended, no actor) and one
+//     occurrence_access.ended snapshot of the replacement registration, each
+//     with its complete meta; every earlier row is byte-identical;
+//   - the replacement registration changes only its ending columns (reason
+//     "account_disabled", no ender, an end inside the DELETE);
+//   - notices: exactly one contact.updated or add.updated per pending request,
+//     to the party still there, rendered by the registry, with the link, the
+//     dedupe key and the subject of its request; none to the erased person,
+//     none "occurrence.updated" for the erased holder of the access; the person
+//     keeps no notice or delivery row; the review tasks of other people on
+//     these requests close as "ended" (no resolver) and are otherwise
+//     unchanged; every other notice is byte-identical;
+//   - deliveries: one queued email row per new notice, none for the person;
+//     others unchanged;
+//   - jobs: one notify.deliver job per new notice, one avatar.cleanup job for
+//     the person, nothing else; earlier jobs unchanged.
+func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedger) erasureLedgerFacts {
+	t.Helper()
+	name, span := run.Name, run.Span
+	facts := erasureLedgerFacts{Name: name}
+
+	// The replacement registration: only the ending moved.
+	reg, regAfter := run.Reg, run.RegAfter
+	if reg.AccessGrantedAt == nil || reg.AccessEndedAt != nil || reg.AccessOrigin != policy.OccurrenceOriginManagerAdd ||
+		!erasureSameID(reg.AccessIssuerID, &run.IssuerID) || !erasureSameID(reg.AccessRequestID, &run.RequestID) {
+		t.Fatalf("%s: the registration was not seeded with live access granted by %d for request %d: %+v", name, run.IssuerID, run.RequestID, reg)
+	}
+	if regAfter.AccessEndedAt == nil {
+		t.Fatalf("%s: registration %d still has live access after the DELETE", name, reg.ID)
+	}
+	wantReg := reg
+	wantReg.AccessEndedAt, wantReg.AccessEndReason, wantReg.AccessEndedBy = regAfter.AccessEndedAt, policy.ContactAccountDisabled, nil
+	if got, want := erasureAccessColumns(t, regAfter), erasureAccessColumns(t, wantReg); got != want {
+		t.Errorf("%s: the access columns of registration %d after the DELETE:\n%s\nwant (only the ending, reason %q, no ender):\n%s", name, reg.ID, got, policy.ContactAccountDisabled, want)
+	}
+	endedMicro := accessMicro(*regAfter.AccessEndedAt)
+	if !span.hasMicro(endedMicro) {
+		t.Errorf("%s: access ended at %v, outside the DELETE (%v to %v)", name, regAfter.AccessEndedAt, span.Start, span.End)
+	}
+
+	// Audit.
+	for id, b := range before.Audit {
+		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
+		}
+	}
+	type auditKey struct {
+		Type   string
+		ID     uint
+		Action string
+	}
+	type wantAudit struct {
+		Actor *uint
+		Meta  map[string]any
+		AnyIP bool
+	}
+	wantRows := map[auditKey]wantAudit{}
+	addAudit := func(k auditKey, w wantAudit) {
+		if _, dup := wantRows[k]; dup {
+			t.Fatalf("%s: the fixture expects two audit rows %+v", name, k)
+		}
+		wantRows[k] = w
+	}
+	admin := run.Admin
+	addAudit(auditKey{"user", run.Subject, audit.UserDeleted}, wantAudit{Actor: &admin, Meta: map[string]any{}, AnyIP: true})
+	for _, r := range run.Pending {
+		action, targetType := audit.ContactEnded, "contact_request"
+		if r.Purpose != policy.RequestContact {
+			action, targetType = audit.AddEnded, "add_request"
+		}
+		addAudit(auditKey{targetType, r.ID, action}, wantAudit{Meta: erasureEndMeta(r)})
+	}
+	addAudit(auditKey{accessTargetType, reg.ID, audit.OccurrenceAccessEnded}, wantAudit{Meta: map[string]any{
+		"subjectUserId": run.Subject, "occurrenceId": reg.OccurrenceID, "eventId": run.EventID,
+		"organizerType": policy.ContactGroup, "organizerId": run.GroupID, "registrationId": reg.ID,
+		"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
+		"issuerId": run.IssuerID, "requestId": run.RequestID,
+		"endedAtMicro": endedMicro, "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}})
+	seenAudit := map[auditKey]bool{}
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; old {
+			continue
+		}
+		k := auditKey{a.TargetType, a.TargetID, a.Action}
+		w, ok := wantRows[k]
+		switch {
+		case !ok:
+			t.Errorf("%s: unexpected new audit row %d: %s on %s %d, meta %s", name, id, a.Action, a.TargetType, a.TargetID, a.MetaJSON)
+			continue
+		case seenAudit[k]:
+			t.Errorf("%s: audit row %+v was written twice", name, k)
+			continue
+		}
+		seenAudit[k] = true
+		if !erasureSameID(a.ActorID, w.Actor) {
+			t.Errorf("%s: audit %+v has actor %v, want %v", name, k, a.ActorID, w.Actor)
+		}
+		if !w.AnyIP && a.IP != "" {
+			t.Errorf("%s: audit %+v has ip %q, want none", name, k, a.IP)
+		}
+		if !span.has(a.At) {
+			t.Errorf("%s: audit %+v written at %v, outside the DELETE (%v to %v)", name, k, a.At, span.Start, span.End)
+		}
+		got := erasureMetaOf(t, a.MetaJSON)
+		if want := erasureWire(t, w.Meta); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: audit %+v has meta %v, want %v", name, k, got, want)
+		}
+		if a.Action == audit.OccurrenceAccessEnded {
+			facts.EndedMeta = got
+		}
+	}
+	for k := range wantRows {
+		if !seenAudit[k] {
+			t.Errorf("%s: expected audit row %+v was not written", name, k)
+		}
+	}
+	endedSnapshots := 0
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; !old && a.Action == audit.OccurrenceAccessEnded && a.TargetType == accessTargetType && a.TargetID == reg.ID {
+			endedSnapshots++
+		}
+	}
+	if endedSnapshots != 1 {
+		t.Errorf("%s: %d new ended snapshots for registration %d, want exactly 1", name, endedSnapshots, reg.ID)
+	}
+
+	// Notices: the person's are gone; the tasks of others close; nothing else moves.
+	closed := map[uint]bool{}
+	for _, r := range run.Pending {
+		for _, task := range erasureReviewTasks(r, run.Admin) {
+			var open []models.Notification
+			for _, n := range before.Notices {
+				if n.UserID == task.Owner && n.Kind == task.Kind && n.SubjectID != nil && *n.SubjectID == r.ID && n.Waiting && n.ResolvedAt == nil {
+					open = append(open, n)
+				}
+			}
+			if len(open) != 1 {
+				t.Fatalf("%s: request %d: %d open %s tasks for user %d before the DELETE, want 1", name, r.ID, len(open), task.Kind, task.Owner)
+			}
+			b := open[0]
+			a, kept := after.Notices[b.ID]
+			if task.Owner == run.Subject {
+				if kept {
+					t.Errorf("%s: the erased person's task %d (%s) survives", name, b.ID, task.Kind)
+				}
+				facts.Deleted++
+				continue
+			}
+			if !kept {
+				t.Errorf("%s: the task %d (%s) of user %d is gone", name, b.ID, task.Kind, task.Owner)
+				continue
+			}
+			closed[b.ID] = true
+			facts.Living++
+			if !span.hasPtr(a.ResolvedAt) || a.ResolvedByID != nil || a.Resolution != policy.ContactEnded {
+				t.Errorf("%s: task %d (%s) resolved at %v by %v as %q, want inside the DELETE, nobody, %q", name, b.ID, task.Kind, a.ResolvedAt, a.ResolvedByID, a.Resolution, policy.ContactEnded)
+			}
+			want := b
+			want.ResolvedAt, want.ResolvedByID, want.Resolution = a.ResolvedAt, nil, policy.ContactEnded
+			if erasureJSON(t, a) != erasureJSON(t, want) {
+				t.Errorf("%s: task %d changed beyond its resolution:\n%s\n%s", name, b.ID, erasureJSON(t, b), erasureJSON(t, a))
+			}
+		}
+	}
+	for id, b := range before.Notices {
+		a, kept := after.Notices[id]
+		switch {
+		case b.UserID == run.Subject:
+			if kept {
+				t.Errorf("%s: notice %d of the erased person survives", name, id)
+			}
+		case closed[id]:
+		case !kept:
+			t.Errorf("%s: notice %d (%s) of user %d is gone", name, id, b.Kind, b.UserID)
+		case erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: notice %d (%s) of user %d changed:\n%s\n%s", name, id, b.Kind, b.UserID, erasureJSON(t, b), erasureJSON(t, a))
+		}
+	}
+	for id, n := range after.Notices {
+		if n.UserID == run.Subject {
+			t.Errorf("%s: the erased person holds notice %d (%s)", name, id, n.Kind)
+		}
+	}
+	for id, d := range after.Deliveries {
+		if d.UserID == run.Subject {
+			t.Errorf("%s: the erased person holds delivery %d", name, id)
+		}
+	}
+	wantNotices := map[string]models.Notification{}
+	for _, r := range run.Pending {
+		to := r.RequesterID
+		if r.RequesterID == run.Subject {
+			to = r.SubjectUserID
+		}
+		w := erasureWantNotice(t, r, to)
+		wantNotices[fmt.Sprintf("%d|%s", w.UserID, *w.DedupeKey)] = w
+	}
+	if len(wantNotices) != len(run.Pending) {
+		t.Fatalf("%s: the fixture expects %d distinct notices for %d pending requests", name, len(wantNotices), len(run.Pending))
+	}
+	shape := func(n models.Notification) string {
+		n.ID, n.CreatedAt, n.UpdatedAt = 0, time.Time{}, time.Time{}
+		return erasureJSON(t, n)
+	}
+	matched := map[uint]models.Notification{}
+	for id, n := range after.Notices {
+		if _, old := before.Notices[id]; old {
+			continue
+		}
+		if n.DedupeKey == nil {
+			t.Errorf("%s: unexpected new notice %d (%s) for user %d", name, id, n.Kind, n.UserID)
+			continue
+		}
+		key := fmt.Sprintf("%d|%s", n.UserID, *n.DedupeKey)
+		w, ok := wantNotices[key]
+		if !ok {
+			t.Errorf("%s: unexpected new notice %d: %s for user %d, key %s, subject %s %v", name, id, n.Kind, n.UserID, *n.DedupeKey, n.SubjectType, n.SubjectID)
+			continue
+		}
+		delete(wantNotices, key)
+		matched[id] = n
+		if !span.has(n.CreatedAt) || !n.CreatedAt.Equal(n.UpdatedAt) {
+			t.Errorf("%s: notice %d created %v updated %v, want equal and inside the DELETE", name, id, n.CreatedAt, n.UpdatedAt)
+		}
+		if got, want := shape(n), shape(w); got != want {
+			t.Errorf("%s: notice %d:\n%s\nwant:\n%s", name, id, got, want)
+		}
+	}
+	for key := range wantNotices {
+		t.Errorf("%s: expected notice %s was not written", name, key)
+	}
+	facts.NewNotices = len(matched)
+
+	// Deliveries.
+	for id, b := range before.Deliveries {
+		a, kept := after.Deliveries[id]
+		switch {
+		case b.UserID == run.Subject:
+			if kept {
+				t.Errorf("%s: delivery %d of the erased person survives", name, id)
+			}
+		case !kept || erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: delivery %d of user %d changed or is gone", name, id, b.UserID)
+		}
+	}
+	newDeliveries := map[uint]models.NotificationDelivery{}
+	for id, d := range after.Deliveries {
+		if _, old := before.Deliveries[id]; old {
+			continue
+		}
+		if _, dup := newDeliveries[d.NotificationID]; dup {
+			t.Errorf("%s: notice %d has two new deliveries", name, d.NotificationID)
+		}
+		newDeliveries[d.NotificationID] = d
+	}
+	for id, n := range matched {
+		d, ok := newDeliveries[id]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery row", name, id)
+			continue
+		}
+		delete(newDeliveries, id)
+		if !span.has(d.CreatedAt) || !span.has(d.UpdatedAt) {
+			t.Errorf("%s: delivery %d written at %v/%v, outside the DELETE", name, d.ID, d.CreatedAt, d.UpdatedAt)
+		}
+		d.ID, d.CreatedAt, d.UpdatedAt = 0, time.Time{}, time.Time{}
+		want := models.NotificationDelivery{NotificationID: id, Channel: models.DeliveryEmail, UserID: n.UserID, Status: models.DeliveryQueued}
+		if erasureJSON(t, d) != erasureJSON(t, want) {
+			t.Errorf("%s: delivery of notice %d:\n%s\nwant:\n%s", name, id, erasureJSON(t, d), erasureJSON(t, want))
+		}
+	}
+	for id, d := range newDeliveries {
+		t.Errorf("%s: unexpected new delivery for notice %d (user %d)", name, id, d.UserID)
+	}
+
+	// Jobs.
+	for id, b := range before.Jobs {
+		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)
+		}
+	}
+	queuedJob := func(j models.Job, maxAttempts int) {
+		t.Helper()
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.MaxAttempts != maxAttempts || j.LockedAt != nil || j.LockedBy != "" || j.LastError != "" ||
+			!span.has(j.RunAt) || !span.has(j.CreatedAt) {
+			t.Errorf("%s: job %d (%s) is %s with %d attempts of %d, run at %v, created %v; want queued, no attempts, max %d, inside the DELETE",
+				name, j.ID, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.RunAt, j.CreatedAt, maxAttempts)
+		}
+	}
+	deliverJobs := map[string]models.Job{}
+	var cleanups []models.Job
+	for id, j := range after.Jobs {
+		if _, old := before.Jobs[id]; old {
+			continue
+		}
+		switch {
+		case j.Kind == notify.DeliverKind && j.UniqueKey != nil:
+			deliverJobs[*j.UniqueKey] = j
+		case j.Kind == kindAvatarCleanup:
+			cleanups = append(cleanups, j)
+		default:
+			t.Errorf("%s: unexpected new job %d (%s) %s", name, id, j.Kind, j.Payload)
+		}
+	}
+	for id := range matched {
+		key := notify.DeliverKey(id)
+		j, ok := deliverJobs[key]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery job", name, id)
+			continue
+		}
+		delete(deliverJobs, key)
+		queuedJob(j, 8)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"notificationId": float64(id)}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: job %d payload %v, want %v", name, j.ID, got, want)
+		}
+	}
+	for key, j := range deliverJobs {
+		t.Errorf("%s: unexpected delivery job %s (%s)", name, key, j.Payload)
+	}
+	if len(cleanups) != 1 {
+		t.Errorf("%s: %d new avatar cleanup jobs, want 1", name, len(cleanups))
+	}
+	for _, j := range cleanups {
+		queuedJob(j, jobs.DefaultMaxAttempts)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"userId": float64(run.Subject)}; !reflect.DeepEqual(got, want) || j.UniqueKey != nil {
+			t.Errorf("%s: cleanup job %d payload %v key %v, want %v and none", name, j.ID, got, j.UniqueKey, want)
+		}
+	}
+	return facts
+}
+
+// agesNoteStatement is one UPDATE of the ages-note scrub as the recorder saw
+// it: the bind parameters it carried and the rows it changed.
+type agesNoteStatement struct {
+	Vars int
+	Rows int64
+}
+
+// agesNoteRecorder is a test-only pair of GORM callbacks. The After gorm:row
+// one keeps the SQL of the lock selection (Raw(...).Scan runs the row
+// processor), the After gorm:raw one the shape of each ages-note UPDATE.
+type agesNoteRecorder struct {
+	mu      sync.Mutex
+	selects []string
+	updates []agesNoteStatement
+}
+
+const (
+	agesNoteSelectPrefix = "SELECT id FROM contact_requests WHERE purpose = 'occurrence_add'"
+	agesNoteUpdatePrefix = "UPDATE contact_requests SET add_childcare_ages_note"
+)
+
+func recordAgesNoteStatements(t *testing.T, db *gorm.DB) *agesNoteRecorder {
+	t.Helper()
+	rec := &agesNoteRecorder{}
+	seq := queryCounterSeq.Add(1)
+	rowName := fmt.Sprintf("test:ages_note_select:%d", seq)
+	rawName := fmt.Sprintf("test:ages_note_update:%d", seq)
+	collapse := func(tx *gorm.DB) string { return strings.Join(strings.Fields(tx.Statement.SQL.String()), " ") }
+	if err := db.Callback().Row().After("gorm:row").Register(rowName, func(tx *gorm.DB) {
+		if sql := collapse(tx); strings.HasPrefix(sql, agesNoteSelectPrefix) {
+			rec.mu.Lock()
+			rec.selects = append(rec.selects, sql)
+			rec.mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Raw().After("gorm:raw").Register(rawName, func(tx *gorm.DB) {
+		if strings.HasPrefix(collapse(tx), agesNoteUpdatePrefix) {
+			rec.mu.Lock()
+			rec.updates = append(rec.updates, agesNoteStatement{Vars: len(tx.Statement.Vars), Rows: tx.RowsAffected})
+			rec.mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Row().Remove(rowName)
+		_ = db.Callback().Raw().Remove(rawName)
+	})
+	return rec
+}
+
+func (r *agesNoteRecorder) seen() ([]string, []agesNoteStatement) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.selects...), append([]agesNoteStatement(nil), r.updates...)
+}
+
+// erasureTestCountThrottleFailures fails the erasure's last statement, the
+// owned throttle delete, and counts how often it did, so a test can show the
+// late failure it meant to force really fired.
+func erasureTestCountThrottleFailures(t *testing.T, db *gorm.DB) *atomic.Int64 {
+	t.Helper()
+	var fired atomic.Int64
+	name := fmt.Sprintf("test:count_throttle_failures:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "DELETE FROM login_throttles") {
+			fired.Add(1)
+			tx.AddError(errors.New("injected throttle failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+	return &fired
+}
+
+// agesNoteState summarizes contact_requests for the erased person U with
+// aggregates only, so it stays cheap at 70,001 rows: how many of U's subject
+// rows still hold a note, and digests of U's subject rows minus the note, of
+// every id and reason, of the rows that name U in neither role, of the notes of
+// the rows where U only asked, and of the ones of those rows that were already
+// terminal when the scene was seeded (pinned by id: the existing lifecycle ends
+// U's pending rows during the erasure, and those rows become terminal then).
+type agesNoteState struct {
+	Total             int64
+	SubjectNotes      int64
+	SubjectRest       string
+	Reasons           string
+	Unrelated         string
+	RequesterNotes    string
+	RequesterTerminal string
+}
+
+func agesNoteStateOf(t testing.TB, db *gorm.DB, u uint, terminal []uint) agesNoteState {
+	t.Helper()
+	var st agesNoteState
+	if err := db.Raw(`SELECT
+		(SELECT count(*) FROM contact_requests) AS total,
+		(SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> '') AS subject_notes,
+		coalesce((SELECT md5(string_agg((to_jsonb(r) - 'add_childcare_ages_note')::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE purpose = 'occurrence_add' AND subject_user_id = ?), '') AS subject_rest,
+		coalesce((SELECT md5(string_agg(id || ':' || reason, '|' ORDER BY id)) FROM contact_requests), '') AS reasons,
+		coalesce((SELECT md5(string_agg(to_jsonb(r)::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE subject_user_id <> ? AND requester_id <> ?), '') AS unrelated,
+		coalesce((SELECT md5(string_agg(id || ':' || add_childcare_ages_note, '|' ORDER BY id)) FROM contact_requests
+			WHERE requester_id = ?), '') AS requester_notes,
+		coalesce((SELECT md5(string_agg(to_jsonb(r)::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE requester_id = ? AND id IN ?), '') AS requester_terminal`,
+		u, u, u, u, u, u, terminal).Scan(&st).Error; err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// agesNoteScene is an acting admin, an erased person U, the person U is only
+// the requester for, a leader, and three dates of one group event.
+type agesNoteScene struct {
+	app    *App
+	ac     *apiClient
+	erased *models.User
+	other  *models.User
+	leader *models.User
+	group  *models.Group
+	events [3]models.Event
+	occs   [3]models.EventOccurrence
+	// terminal holds the ids of the rows where U only asked that are terminal
+	// before the erasure.
+	terminal []uint
+}
+
+// state is agesNoteStateOf for the scene's erased person.
+func (sc *agesNoteScene) state(t testing.TB) agesNoteState {
+	t.Helper()
+	return agesNoteStateOf(t, sc.app.DB, sc.erased.ID, sc.terminal)
+}
+
+// newAgesNoteApp is testApp, or, when fresh, an App on its own migrated
+// database (the 70,001-row case starts from nothing, as the scale test does).
+func newAgesNoteApp(t *testing.T, fresh bool) *App {
+	t.Helper()
+	base := testApp(t)
+	if !fresh {
+		return base
+	}
+	db, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatalf("fresh database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	return &App{DB: db, Store: base.Store, Config: base.Config, Uploads: base.Uploads,
+		Mailer: mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>"))}
+}
+
+// agesNoteBulkSQL inserts $n terminal occurrence_add rows (denied, withdrawn,
+// expired and ended in turn, each honoring every CHECK, each with a nonempty
+// note) from requester to subject, spread over three dates, in one statement.
+const agesNoteBulkSQL = `WITH p AS (SELECT ?::bigint AS req, ?::bigint AS subj, ?::timestamptz AS created,
+		?::bigint AS e1, ?::bigint AS e2, ?::bigint AS e3, ?::bigint AS o1, ?::bigint AS o2, ?::bigint AS o3),
+	s AS (SELECT g, g % 4 AS k FROM generate_series(1, ?::int) g)
+INSERT INTO contact_requests (requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin,
+	subject_decision, subject_decided_by, subject_decided_at, admin_decision, status, created_at, expires_at, completed_at,
+	withdrawn_by_id, end_reason, purpose, occurrence_id, add_attendance_mode, add_childcare_ages_note)
+SELECT p.req, p.subj, 'event', (ARRAY[p.e1, p.e2, p.e3])[1 + s.g % 3], '', 'identifying reason ' || s.g, false,
+	CASE WHEN s.k = 0 THEN 'denied' ELSE 'pending' END,
+	CASE WHEN s.k = 0 THEN p.subj END,
+	CASE WHEN s.k = 0 THEN p.created + interval '5 minutes' END,
+	'not_needed',
+	CASE s.k WHEN 0 THEN 'denied' WHEN 1 THEN 'withdrawn' WHEN 2 THEN 'expired' ELSE 'ended' END,
+	p.created, p.created + interval '14 days',
+	CASE s.k WHEN 2 THEN p.created + interval '14 days 1 minute' ELSE p.created + interval '10 minutes' END,
+	CASE WHEN s.k = 1 THEN p.req END,
+	CASE WHEN s.k = 3 THEN 'event_ended' ELSE '' END,
+	'occurrence_add', (ARRAY[p.o1, p.o2, p.o3])[1 + s.g % 3], 'in_person', 'ages note ' || s.g
+FROM p CROSS JOIN s`
+
+func (sc *agesNoteScene) bulk(t *testing.T, requester, subject uint, n int) {
+	t.Helper()
+	created := time.Now().UTC().AddDate(0, 0, -30).Truncate(time.Microsecond)
+	if err := sc.app.DB.Exec(agesNoteBulkSQL, requester, subject, created,
+		sc.events[0].ID, sc.events[1].ID, sc.events[2].ID, sc.occs[0].ID, sc.occs[1].ID, sc.occs[2].ID, n).Error; err != nil {
+		t.Fatalf("seed %d rows: %v", n, err)
+	}
+}
+
+// newAgesNoteScene seeds n terminal occurrence_add rows of U as the subject,
+// and the controls: two rows where U only asked (one terminal, one pending),
+// and three rows naming U in neither role (two terminal, one pending).
+func newAgesNoteScene(t *testing.T, fresh bool, n int) *agesNoteScene {
+	t.Helper()
+	app := newAgesNoteApp(t, fresh)
+	newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
+	newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
+	sc := &agesNoteScene{app: app}
+	sc.leader = newTestUser(t, app, "ages-leader", erasurePW, models.RoleMember)
+	sc.erased = newTestUser(t, app, "ages-erased", erasurePW, models.RoleMember)
+	sc.other = newTestUser(t, app, "ages-other", erasurePW, models.RoleMember)
+	sc.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	sc.ac.holdNotices = true
+	sc.group = newTestGroup(t, app, sc.leader, "Ages note group", models.GroupActive)
+	for i := range sc.events {
+		sc.events[i], sc.occs[i] = seedEvent(t, app, sc.group, sc.leader.ID, time.Now().UTC().Add(time.Duration(48+i)*time.Hour))
+	}
+	sc.bulk(t, sc.leader.ID, sc.erased.ID, n)
+	sc.bulk(t, sc.erased.ID, sc.other.ID, 1)
+	sc.bulk(t, sc.leader.ID, sc.other.ID, 2)
+	db := app.DB
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, sc.erased.ID, sc.other.ID, sc.group.ID, sc.events[0].ID, sc.occs[0].ID, 1, "requester-only pending note")
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, sc.leader.ID, sc.other.ID, sc.group.ID, sc.events[0].ID, sc.occs[0].ID, 2, "unrelated pending note")
+	if err := db.Raw(`SELECT id FROM contact_requests WHERE requester_id = ? AND status <> 'pending' ORDER BY id`, sc.erased.ID).Scan(&sc.terminal).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.terminal) == 0 {
+		t.Fatal("the scene seeded no terminal row where the erased person only asked")
+	}
+	return sc
+}
+
+// checkAgesNoteErased asserts the erased state against the state before:
+// U's subject rows lost the note and nothing else, no reason anywhere moved, and
+// the controls are as the pre-T07 erasure leaves them.
+func checkAgesNoteErased(t *testing.T, before, after agesNoteState, wantNotes int64) {
+	t.Helper()
+	if before.SubjectNotes != wantNotes {
+		t.Fatalf("seeded %d subject rows with a note, want %d", before.SubjectNotes, wantNotes)
+	}
+	if after.SubjectNotes != 0 {
+		t.Errorf("%d of the erased person's occurrence_add rows still hold a note", after.SubjectNotes)
+	}
+	if after.Total != before.Total {
+		t.Errorf("contact_requests has %d rows, was %d", after.Total, before.Total)
+	}
+	if after.SubjectRest != before.SubjectRest {
+		t.Errorf("the scrub changed more than the note of the subject rows: md5 %s, was %s", after.SubjectRest, before.SubjectRest)
+	}
+	if after.Reasons != before.Reasons {
+		t.Errorf("a reason (or an id) changed: md5 %s, was %s", after.Reasons, before.Reasons)
+	}
+	if after.Unrelated != before.Unrelated {
+		t.Errorf("a row naming the erased person in neither role changed: md5 %s, was %s", after.Unrelated, before.Unrelated)
+	}
+	if after.RequesterNotes != before.RequesterNotes {
+		t.Errorf("a note on a row where the erased person only asked changed: md5 %s, was %s", after.RequesterNotes, before.RequesterNotes)
+	}
+	if after.RequesterTerminal != before.RequesterTerminal {
+		t.Errorf("a terminal row where the erased person only asked changed: md5 %s, was %s", after.RequesterTerminal, before.RequesterTerminal)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNote (R4-T07A) runs the real DELETE over
+// every class of contact_requests row. The erased person's occurrence_add rows
+// as the subject lose the childcare ages note in every status, including the
+// historical granted ones the baseline completion check would refuse to touch:
+// (a) request A replaced by B on the same registration, (b) a retired and
+// deleted registration, (c) access ended but the registration kept. Nothing
+// else changes: reason stays on every row of every purpose and status, the
+// erased person's contact and group_add rows (a granted group_add among them,
+// whose reason the database still protects) are not scrubbed, rows where they
+// only asked keep their note, and rows naming them in neither role are
+// byte-identical.
+//
+// The existing lifecycle ends the erased person's pending rows during the same
+// DELETE. A twin account holds the same rows with empty notes, which the scrub
+// does not select, and its erasure stands for the erasure before T07. The twin
+// is a cross-check only: what the lifecycle must leave behind is also stated
+// outright, per class of row, so a regression that hit both runs alike still
+// fails. Each run is judged by its own before and after (checkErasureRequests,
+// checkErasureLedger):
+//   - every initially pending row naming the person ends as "ended" with
+//     "account_disabled" and a completed_at inside the DELETE, and every other
+//     column of it is exactly as it was (the note aside, on the subject's
+//     occurrence_add rows);
+//   - the audit rows, notices, deliveries and jobs the DELETE adds are exactly
+//     the expected ones, by id mapping the fixture rows, with waiting tasks
+//     seeded for the living reviewers and for the person, and everything else
+//     (the other person's rows and tasks, unrelated tasks) untouched;
+//   - the replacement registration's live access ends once, with one new
+//     occurrence_access.ended snapshot, and no notice goes to the erased holder.
+//
+// Rows are paired erased-to-twin by the ids the fixture recorded, never by
+// reason text.
+func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	f := newContactAPIFixture(t, false)
 	f.ac.holdNotices = true
 	db := f.app.DB
-	ev, occ := seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
-	erased := f.outsider
-	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	erased, other, leader := f.outsider, f.subject, f.leader
+	// twin is built exactly like erased and gets the same rows with empty
+	// notes. The helper selects only a nonempty note, so erasing twin is the
+	// erasure before T07 (T07A "lifecycle columns equal to what the pre-T07
+	// erasure produces").
+	twin := newTestUser(t, f.app, "contact-twin", "password1234", models.RoleMember)
+	ev, occ := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(48*time.Hour))
+
+	// fixtureRow is one seeded request: the erased side's row and, when the
+	// request names the erased person, the twin's row beside it.
+	type fixtureRow struct {
+		Class   string
+		Req     models.ContactRequest
+		TwinReq models.ContactRequest // zero for a row naming neither person
+		Pending bool
+	}
+	var fixture []fixtureRow
+	// twinOf maps an erased-side request id to its twin's request id.
+	twinOf := map[uint]uint{}
+	seed := func(purpose, status string, requester, subject uint, n int, note string) {
+		row := fixtureRow{Class: erasureNeither}
+		switch {
+		case subject == erased.ID:
+			row.Class = erasureAsSubject
+		case requester == erased.ID:
+			row.Class = erasureAsRequester
+		}
+		row.Req = erasureMakeRequest(t, db, purpose, status, requester, subject, f.group.ID, ev.ID, occ.ID, n, note)
+		row.Pending = status == policy.ContactPending
+		if row.Class != erasureNeither {
+			twinRequester, twinSubject := requester, subject
+			if row.Class == erasureAsRequester {
+				twinRequester = twin.ID
+			} else {
+				twinSubject = twin.ID
+			}
+			row.TwinReq = erasureMakeRequest(t, db, purpose, status, twinRequester, twinSubject, f.group.ID, ev.ID, occ.ID, n, "") // same reason, no note
+			twinOf[row.Req.ID] = row.TwinReq.ID
+		}
+		fixture = append(fixture, row)
+	}
 	n := 0
-	row := func(purpose, status string, requester, subject uint) {
+	mk := func(purpose, status string, requester, subject uint) {
 		n++
-		r := models.ContactRequest{Purpose: purpose, RequesterID: requester, SubjectUserID: subject, ContextType: policy.ContactGroup, ContextID: f.group.ID,
-			Reason: fmt.Sprintf("identifying reason %d", n), SubjectDecision: policy.ContactPending, Status: status,
-			CreatedAt: created, ExpiresAt: created.Add(24 * 14 * time.Hour)}
-		switch purpose {
-		case policy.RequestContact:
-			r.Fields, r.NeedsAdmin, r.AdminDecision = policy.ContactBoth, true, policy.ContactPending
-		case policy.RequestGroupAdd:
-			r.AdminDecision = policy.ContactNotNeeded
-		case policy.RequestOccurrenceAdd:
-			r.ContextType, r.ContextID, r.OccurrenceID = policy.ContactEvent, ev.ID, &occ.ID
-			r.AdminDecision, r.AddAttendanceMode = policy.ContactNotNeeded, models.AttendanceInPerson
-			r.AddChildcareAgesNote = fmt.Sprintf("ages note %d", n)
-		}
-		if status == policy.ContactWithdrawn {
-			done := created.Add(10 * time.Minute)
-			r.CompletedAt, r.WithdrawnByID = &done, &requester
-		}
-		erasureMustCreate(t, db, &r)
+		seed(purpose, status, requester, subject, n, fmt.Sprintf("ages note %d", n))
 	}
-	for _, purpose := range []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd} {
-		for _, status := range []string{policy.ContactPending, policy.ContactWithdrawn} {
-			row(purpose, status, erased.ID, f.subject.ID) // the erased person asked
-			row(purpose, status, f.leader.ID, erased.ID)  // the erased person is asked about
+	purposes := []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd}
+	for _, purpose := range purposes {
+		for _, status := range []string{policy.ContactPending, policy.ContactWithdrawn, policy.ContactDenied, policy.ContactExpired, policy.ContactEnded} {
+			mk(purpose, status, leader.ID, erased.ID) // the erased person is asked about
+			mk(purpose, status, erased.ID, other.ID)  // the erased person asked
+			mk(purpose, status, leader.ID, other.ID)  // neither
 		}
 	}
-	text := func() string {
-		var out string
-		if err := db.Raw(`SELECT coalesce(jsonb_agg(jsonb_build_array(id, reason, add_childcare_ages_note) ORDER BY id)::text, '[]') FROM contact_requests`).Scan(&out).Error; err != nil {
+	// The same class with an empty note and a long note, so an unselected
+	// subject row is part of the fixture.
+	for i, c := range []struct{ status, note string }{{policy.ContactPending, ""}, {policy.ContactDenied, strings.Repeat("x", 200)}} {
+		seed(policy.RequestOccurrenceAdd, c.status, leader.ID, erased.ID, 100+i, c.note)
+	}
+
+	// Granted rows of the erased person, each on its own date, and the twin's
+	// without notes on dates of their own.
+	date := func(i int) (uint, models.EventOccurrence) {
+		e, o := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(time.Duration(72+i)*time.Hour))
+		return e.ID, o
+	}
+	eA, oA := date(0)
+	reqA, reqB, regB := erasureReplacedAdd(t, db, leader, erased, eA, oA, true)
+	eB, oB := date(1)
+	reqRetired := erasureRetiredAdd(t, db, leader, erased, eB, oB, true)
+	eC, oC := date(2)
+	reqEnded := erasureEndedAccessAdd(t, db, leader, erased, eC, oC, true)
+	eT, oT := date(3)
+	_, twinReqB, regTwinB := erasureReplacedAdd(t, db, leader, twin, eT, oT, false)
+	// A baseline recheck of the control passes today, in its own committed
+	// transaction, so the exception is not what makes (c) work.
+	if err := db.Exec(`UPDATE contact_requests SET reason = reason WHERE id = ?`, reqEnded.ID).Error; err != nil {
+		t.Fatalf("control (c): the unchanged completion lookup failed: %v", err)
+	}
+	// A granted group_add of the erased person: the scrub does not select it,
+	// and the baseline rule on its reason stays (checked after the erasure).
+	addGroup := newTestGroup(t, f.app, leader, "Granted group add", models.GroupActive)
+	reqGroupAdd := erasureGrantedGroupAdd(t, db, leader, erased, addGroup)
+	granted := []models.ContactRequest{reqA, reqB, reqRetired, reqEnded}
+
+	// Waiting tasks, written the way a request writes them: the subject's
+	// review task, and the admin's when the request needs one. Every pending
+	// request gets them, the erased person's, the twin's and the rows naming
+	// neither, so the erasure has living reviewers to close tasks for and
+	// unrelated tasks to leave alone.
+	var erasedPending, twinPending []models.ContactRequest
+	neitherPending := 0
+	for _, r := range fixture {
+		if !r.Pending {
+			continue
+		}
+		erasureSeedRequestTasks(t, db, r.Req, f.admin.ID)
+		if r.Class == erasureNeither {
+			neitherPending++
+			continue
+		}
+		erasureSeedRequestTasks(t, db, r.TwinReq, f.admin.ID)
+		erasedPending = append(erasedPending, r.Req)
+		twinPending = append(twinPending, r.TwinReq)
+	}
+	// Per purpose: the person is asked about, the person asks, and neither;
+	// plus the extra pending occurrence_add row of the person as the subject.
+	if len(erasedPending) != 3*2+1 || len(twinPending) != 3*2+1 || neitherPending != 3 {
+		t.Fatalf("seeded %d erased, %d twin and %d unrelated pending rows, want 7, 7 and 3", len(erasedPending), len(twinPending), neitherPending)
+	}
+	if len(twinOf) != 3*5*2+2 {
+		t.Fatalf("%d erased rows have a twin, want %d", len(twinOf), 3*5*2+2)
+	}
+
+	before := erasureRequestRows(t, db)
+	var maxAudit uint
+	if err := db.Raw(`SELECT coalesce(max(id), 0) FROM audit_logs`).Scan(&maxAudit).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
+	snapshotsBefore := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit)
+	state := agesNoteStateOf(t, db, erased.ID, nil)
+	if state.SubjectNotes < int64(len(granted)) {
+		t.Fatalf("only %d subject rows with a note were seeded", state.SubjectNotes)
+	}
+
+	// erase deletes person through the real DELETE and judges the run: the
+	// request rows, then the audit, notice, delivery and job rows, each against
+	// the state taken immediately before this one DELETE.
+	erase := func(name string, person *models.User, pending []models.ContactRequest, reg models.Registration, eventID, requestID uint) (erasureLedgerFacts, models.Registration) {
+		t.Helper()
+		var regBefore, regAfter models.Registration
+		if err := db.First(&regBefore, reg.ID).Error; err != nil {
 			t.Fatal(err)
 		}
+		rowsBefore, ledgerBefore := erasureRequestRows(t, db), erasureLedgerOf(t, db)
+		start := time.Now().UTC()
+		r := deleteAccount(f.ac, person.ID, nil)
+		end := time.Now().UTC()
+		if r.code != http.StatusOK {
+			t.Fatalf("delete %s: %d %s", name, r.code, r.body)
+		}
+		if err := db.First(&regAfter, reg.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		run := erasureRun{Name: name, Subject: person.ID, Admin: f.admin.ID, Pending: pending, Span: erasureSpan{Start: start, End: end},
+			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID}
+		checkErasureRequests(t, run, rowsBefore, erasureRequestRows(t, db))
+		return checkErasureLedger(t, run, ledgerBefore, erasureLedgerOf(t, db)), regAfter
+	}
+	erasedFacts, regAfter := erase("erased", erased, erasedPending, regB, eA, reqB.ID)
+	twinFacts, twinRegAfter := erase("twin", twin, twinPending, regTwinB, eT, twinReqB.ID)
+	// What each run was expected to do, stated once for both: the living
+	// reviewers' tasks it closes (the other party's review task on each pending
+	// contact, group_add and occurrence_add the person asked, and the admin's
+	// on the contact rows) and the person's own tasks it removes (the
+	// person's review task on each of the four pending rows asking about
+	// them). Neither run adds an access-ended notice for the erased holder.
+	for _, facts := range []erasureLedgerFacts{erasedFacts, twinFacts} {
+		if facts.Living != 5 || facts.Deleted != 4 || facts.NewNotices != 7 {
+			t.Errorf("%s: closed %d living tasks, removed %d of the person's, added %d notices; want 5, 4 and 7", facts.Name, facts.Living, facts.Deleted, facts.NewNotices)
+		}
+	}
+
+	after := erasureRequestRows(t, db)
+	if len(after) != len(before) {
+		t.Fatalf("%d rows after the erasure, %d before", len(after), len(before))
+	}
+	checkErasurePairs(t, erased.ID, twin.ID, twinOf, before, after)
+	for _, g := range granted {
+		if a := after[g.ID]; a.Status != policy.ContactGranted || a.Note != "" {
+			t.Errorf("granted request %d: status %q note %q, want granted with an empty note", g.ID, a.Status, a.Note)
+		}
+	}
+	// group_add: granted and unchanged, and the database still refuses a change
+	// of its reason (the scrub is no licence for anything but the note).
+	if a, b := after[reqGroupAdd.ID], before[reqGroupAdd.ID]; a.Whole != b.Whole || a.Status != policy.ContactGranted {
+		t.Errorf("granted group_add changed:\n%s\n%s", b.Whole, a.Whole)
+	}
+	if err := db.Exec(`UPDATE contact_requests SET reason = 'changed' WHERE id = ?`, reqGroupAdd.ID).Error; err == nil || !strings.Contains(err.Error(), "23514") {
+		t.Errorf("a direct change of the granted group_add reason: %v, want SQLSTATE 23514", err)
+	}
+	// (a) the registration keeps B, and B's live access ended in the usual way,
+	// the way the twin's does (the erasure before T07). The ending itself, its
+	// snapshot and the absence of a notice were judged per run above; here the
+	// two runs are set side by side with the ids mapped by the fixture.
+	if regAfter.AccessRequestID == nil || *regAfter.AccessRequestID != reqB.ID || regAfter.AccessEndedAt == nil {
+		t.Errorf("case (a): registration %d names request %v with access ended %v, want B (%d), ended", regAfter.ID, regAfter.AccessRequestID, regAfter.AccessEndedAt, reqB.ID)
+	}
+	if twinRegAfter.AccessRequestID == nil || *twinRegAfter.AccessRequestID != twinReqB.ID || twinRegAfter.AccessEndedAt == nil {
+		t.Errorf("case (a) twin: registration %d names request %v with access ended %v, want B (%d), ended", twinRegAfter.ID, twinRegAfter.AccessRequestID, twinRegAfter.AccessEndedAt, twinReqB.ID)
+	}
+	snapshotShape := func(label string, meta map[string]any, subject, occurrence, event, registration, request uint) map[string]any {
+		out := map[string]any{}
+		for k, v := range meta {
+			out[k] = v
+		}
+		for k, id := range map[string]uint{"subjectUserId": subject, "occurrenceId": occurrence, "eventId": event, "registrationId": registration, "requestId": request} {
+			if got, ok := out[k].(float64); !ok || uint(got) != id {
+				t.Errorf("case (a) %s: snapshot %s is %v, want %d", label, k, out[k], id)
+			}
+			out[k] = "mapped"
+		}
+		delete(out, "grantedAtMicro") // bounded against its registration in checkErasureLedger
+		delete(out, "endedAtMicro")
 		return out
 	}
-	before := text()
-	if n := countRows(t, db, "contact_requests", "true"); n != 12 {
-		t.Fatalf("seeded %d contact requests, want 12", n)
+	gotShape := snapshotShape("erased", erasedFacts.EndedMeta, erased.ID, oA.ID, eA, regB.ID, reqB.ID)
+	wantShape := snapshotShape("twin", twinFacts.EndedMeta, twin.ID, oT.ID, eT, regTwinB.ID, twinReqB.ID)
+	if len(gotShape) == 0 || !reflect.DeepEqual(gotShape, wantShape) {
+		t.Errorf("case (a): the ended snapshot of B is %v, the erasure before T07 writes %v for the twin", gotShape, wantShape)
+	}
+	if got := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit); got != snapshotsBefore {
+		t.Errorf("an access snapshot written before the erasure changed:\n%s\n%s", snapshotsBefore, got)
+	}
+	if st := agesNoteStateOf(t, db, erased.ID, nil); st.SubjectNotes != 0 {
+		t.Errorf("%d subject notes left", st.SubjectNotes)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteStatement calls the helper alone,
+// inside a test transaction after the tombstone and the soft delete, and
+// checks statement-level preservation (helper-only scope): every selected row
+// changes by its note alone, every other contact_requests row is byte
+// identical, and the grants, registrations, audit, notifications, deliveries
+// and jobs are untouched. It also pins the shape of the statements: the
+// selection takes its row locks in ascending id order, and when no row
+// qualifies no UPDATE is sent.
+func TestAccountErasureScrubsSubjectAgesNoteStatement(t *testing.T) {
+	sc := newAgesNoteScene(t, false, 6)
+	db := sc.app.DB
+	g, ev, occ := sc.group.ID, sc.events[0].ID, sc.occs[0].ID
+	n := 10
+	for _, purpose := range []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd} {
+		n++
+		erasureMakeRequest(t, db, purpose, policy.ContactPending, sc.leader.ID, sc.erased.ID, g, ev, occ, n, "subject pending note")
+		n++
+		erasureMakeRequest(t, db, purpose, policy.ContactWithdrawn, sc.leader.ID, sc.erased.ID, g, ev, occ, n, "subject withdrawn note")
+	}
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, sc.leader.ID, sc.erased.ID, g, ev, occ, 50, "")
+	rec := recordAgesNoteStatements(t, db)
+	errRollBack := errors.New("roll the statement test back")
+	snap := func(tx *gorm.DB) string {
+		return dumpRows(t, tx, "contact_grants", "id", "true") + dumpRows(t, tx, "registrations", "id", "true") +
+			dumpRows(t, tx, "audit_logs", "id", "true") + dumpRows(t, tx, "notifications", "id", "true") +
+			dumpRows(t, tx, "notification_deliveries", "id", "true") + dumpRows(t, tx, "jobs", "id", "true")
+	}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.First(&u, sc.erased.ID).Error; err != nil {
+			return err
+		}
+		if err := tombstoneUserIn(tx, &u); err != nil {
+			return err
+		}
+		if err := tx.Delete(&u).Error; err != nil {
+			return err
+		}
+		s := captureErasureSubject(&u)
+		rowsBefore, othersBefore := erasureRequestRows(t, tx), snap(tx)
+		selected := 0
+		for _, r := range rowsBefore {
+			if r.Purpose == policy.RequestOccurrenceAdd && r.SubjectUserID == sc.erased.ID && r.Note != "" {
+				selected++
+			}
+		}
+		if selected != 8 {
+			t.Errorf("fixture selects %d rows, want 8 (6 bulk rows plus the pending and withdrawn occurrence_add rows)", selected)
+		}
+
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		rowsAfter := erasureRequestRows(t, tx)
+		for id, b := range rowsBefore {
+			a := rowsAfter[id]
+			if b.Purpose == policy.RequestOccurrenceAdd && b.SubjectUserID == sc.erased.ID && b.Note != "" {
+				if a.Note != "" || a.Rest != b.Rest {
+					t.Errorf("selected request %d: note %q, rest changed %t", id, a.Note, a.Rest != b.Rest)
+				}
+			} else if a.Whole != b.Whole {
+				t.Errorf("request %d was not selected and changed:\n%s\n%s", id, b.Whole, a.Whole)
+			}
+			if a.Reason != b.Reason {
+				t.Errorf("request %d: reason changed", id)
+			}
+		}
+		if got := snap(tx); got != othersBefore {
+			t.Errorf("the helper changed a table other than contact_requests")
+		}
+		selects, updates := rec.seen()
+		if len(selects) != 1 || !strings.Contains(selects[0], "ORDER BY id FOR UPDATE") {
+			t.Errorf("lock selection statements %q, want one that orders by id and takes FOR UPDATE", selects)
+		}
+		var changed int64
+		for _, u := range updates {
+			changed += u.Rows
+		}
+		if len(updates) != 1 || changed != int64(selected) {
+			t.Errorf("%d UPDATEs changed %d rows, want one that changed %d", len(updates), changed, selected)
+		}
+
+		// Nothing qualifies now: the selection runs and no UPDATE follows.
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		selects2, updates2 := rec.seen()
+		if len(selects2) != 2 || len(updates2) != len(updates) {
+			t.Errorf("second run sent %d selections and %d UPDATEs in all, want 2 and %d", len(selects2), len(updates2), len(updates))
+		}
+		return errRollBack
+	})
+	if !errors.Is(err, errRollBack) {
+		t.Fatalf("statement transaction: %v", err)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds lookupChunk+1 rows of
+// the erased subject, one more than one batch, and erases through the real
+// DELETE: the helper sends exactly two UPDATEs, a full batch and a batch of
+// one, each carrying its ids and the subject as bind parameters. A late
+// failure after both batches rolls them back together.
+func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
+	const rows = lookupChunk + 1
+	want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}
+	t.Run("commit", func(t *testing.T) {
+		sc := newAgesNoteScene(t, false, rows)
+		rec := recordAgesNoteStatements(t, sc.app.DB)
+		before := sc.state(t)
+		if r := deleteAccount(sc.ac, sc.erased.ID, nil); r.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", r.code, r.body)
+		}
+		checkAgesNoteErased(t, before, sc.state(t), rows)
+		selects, updates := rec.seen()
+		if len(selects) != 1 {
+			t.Errorf("%d lock selections, want 1", len(selects))
+		}
+		if !reflect.DeepEqual(updates, want) {
+			t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v", updates, want)
+		}
+	})
+	t.Run("late failure", func(t *testing.T) {
+		sc := newAgesNoteScene(t, false, rows)
+		rec := recordAgesNoteStatements(t, sc.app.DB)
+		failed := erasureTestCountThrottleFailures(t, sc.app.DB)
+		before := sc.state(t)
+		if r := deleteAccount(sc.ac, sc.erased.ID, nil); r.code != http.StatusInternalServerError {
+			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
+		}
+		// Both batches ran and committed nothing: the failure came after them.
+		if _, updates := rec.seen(); !reflect.DeepEqual(updates, want) {
+			t.Errorf("UPDATEs before the failure = %+v, want %+v", updates, want)
+		}
+		if got := failed.Load(); got != 1 {
+			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
+		}
+		if after := sc.state(t); after != before {
+			t.Errorf("a failed erasure left a change in contact_requests:\n%+v\n%+v", before, after)
+		}
+		if n := countRows(t, sc.app.DB, "users", "id = ? AND deleted_at IS NOT NULL", sc.erased.ID); n != 0 {
+			t.Errorf("the failed erasure left the user soft-deleted")
+		}
+	})
+}
+
+// TestAccountErasureAgesNoteSavepointRollback rolls the scrub back to a
+// savepoint after the soft delete (inventory H7). The rows have their notes
+// again, and the outer transaction still commits with a historical granted
+// row in the scrub.
+//
+// The scrub's own queued completion events cannot show whether they survived:
+// the licensed blank's event is skipped by design, so a survivor would pass
+// too. So the savepoint also queues an event that must fail, a forged granted
+// request with no registration behind it, and the proof is that it is gone:
+// SET CONSTRAINTS add_request_completed IMMEDIATE, which checks every event
+// still queued, passes after the rollback, and so does the COMMIT. The control
+// subtest does the same without the rollback and gets 23514 from the forged
+// event, so the passing case is not a no-op. No trigger is disabled.
+func TestAccountErasureAgesNoteSavepointRollback(t *testing.T) {
+	setup := func(t *testing.T) (*contactAPIFixture, map[uint]erasureAgesNoteRow, models.Event, models.EventOccurrence) {
+		f := newContactAPIFixture(t, false)
+		db := f.app.DB
+		erased, leader := f.outsider, f.leader
+		ev, occ := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(48*time.Hour))
+		erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, leader.ID, erased.ID, f.group.ID, ev.ID, occ.ID, 1, "pending note")
+		erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, leader.ID, erased.ID, f.group.ID, ev.ID, occ.ID, 2, "denied note")
+		eA, oA := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(72*time.Hour))
+		erasureReplacedAdd(t, db, leader, erased, eA.ID, oA, true)
+		return f, erasureRequestRows(t, db), ev, occ
+	}
+	// softDeleted tombstones and soft-deletes the erased person in tx, the two
+	// statements the scrub's licence needs before it.
+	softDeleted := func(tx *gorm.DB, id uint) (erasureSubject, error) {
+		var u models.User
+		if err := tx.First(&u, id).Error; err != nil {
+			return erasureSubject{}, err
+		}
+		if err := tombstoneUserIn(tx, &u); err != nil {
+			return erasureSubject{}, err
+		}
+		if err := tx.Delete(&u).Error; err != nil {
+			return erasureSubject{}, err
+		}
+		return captureErasureSubject(&u), nil
 	}
 
-	if r := deleteAccount(f.ac, erased.ID, nil); r.code != http.StatusOK {
-		t.Fatalf("delete: %d %s", r.code, r.body)
-	}
+	t.Run("rollback to savepoint", func(t *testing.T) {
+		f, before, ev, occ := setup(t)
+		db := f.app.DB
+		errSavepoint := errors.New("roll back to the savepoint")
+		err := db.Transaction(func(tx *gorm.DB) error {
+			s, err := softDeleted(tx, f.outsider.ID)
+			if err != nil {
+				return err
+			}
+			inner := tx.Transaction(func(sp *gorm.DB) error {
+				if err := eraseContactRequestTextIn(sp, s); err != nil {
+					return err
+				}
+				if st := agesNoteStateOf(t, sp, f.outsider.ID, nil); st.SubjectNotes != 0 {
+					t.Errorf("%d notes left inside the savepoint after the scrub", st.SubjectNotes)
+				}
+				if err := erasureForgedGrantedAdd(sp, f.leader.ID, f.subject.ID, ev.ID, occ.ID); err != nil {
+					return fmt.Errorf("forged insert: %w", err)
+				}
+				return errSavepoint
+			})
+			if !errors.Is(inner, errSavepoint) {
+				return fmt.Errorf("savepoint: %v", inner)
+			}
+			for id, r := range erasureRequestRows(t, tx) {
+				if r.Whole != before[id].Whole {
+					t.Errorf("request %d after the rollback to the savepoint:\n%s\n%s", id, before[id].Whole, r.Whole)
+				}
+			}
+			// Every event still queued is checked now. The forged one was
+			// queued inside the savepoint, so this passes only if the rollback
+			// discarded it with the scrub.
+			if err := tx.Exec(`SET CONSTRAINTS add_request_completed IMMEDIATE`).Error; err != nil {
+				return fmt.Errorf("a completion event queued inside the rolled-back savepoint survived: %w", err)
+			}
+			return tx.Exec(`SET CONSTRAINTS add_request_completed DEFERRED`).Error
+		})
+		if err != nil {
+			t.Fatalf("the outer transaction did not commit after the savepoint rollback: %v", err)
+		}
+		for id, r := range erasureRequestRows(t, db) {
+			if r.Whole != before[id].Whole {
+				t.Errorf("request %d after the commit:\n%s\n%s", id, before[id].Whole, r.Whole)
+			}
+		}
+	})
 
-	if got := text(); got != before {
-		t.Errorf("contact request text changed:\nbefore %s\nafter  %s", before, got)
+	t.Run("control without the rollback", func(t *testing.T) {
+		f, before, ev, occ := setup(t)
+		db := f.app.DB
+		errDone := errors.New("control finished")
+		err := db.Transaction(func(tx *gorm.DB) error {
+			s, err := softDeleted(tx, f.outsider.ID)
+			if err != nil {
+				return err
+			}
+			if err := eraseContactRequestTextIn(tx, s); err != nil {
+				return err
+			}
+			if err := erasureForgedGrantedAdd(tx, f.leader.ID, f.subject.ID, ev.ID, occ.ID); err != nil {
+				return fmt.Errorf("forged insert: %w", err)
+			}
+			err = tx.Exec(`SET CONSTRAINTS add_request_completed IMMEDIATE`).Error
+			if err == nil || !strings.Contains(err.Error(), "23514") || !strings.Contains(err.Error(), "date add requires completed occurrence access") {
+				t.Errorf("SET CONSTRAINTS IMMEDIATE with the forged event queued = %v, want 23514 from the forged completion check", err)
+			}
+			return errDone
+		})
+		if !errors.Is(err, errDone) {
+			t.Fatalf("control transaction: %v", err)
+		}
+		// Nothing of the control persisted.
+		for id, r := range erasureRequestRows(t, db) {
+			if b, ok := before[id]; !ok || r.Whole != b.Whole {
+				t.Errorf("request %d after the control rolled back:\n%s", id, r.Whole)
+			}
+		}
+		if len(erasureRequestRows(t, db)) != len(before) {
+			t.Errorf("the control left the forged request behind")
+		}
+	})
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit (opt-in) erases a
+// subject with 70,001 qualifying rows, more than PostgreSQL's 65,535 bind
+// parameters in one statement, through the real DELETE on a fresh database.
+// Skipped unless FOLD_ERASURE_SCALE=1. Run:
+//
+//	FOLD_ERASURE_SCALE=1 DATABASE_URL=<scratch> go test -run TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit -count=1 -v .
+//
+// Commit: HTTP 200, 15 UPDATEs (14 of 5,000 rows and one of 1), none with more
+// than lookupChunk+1 parameters, 70,001 rows changed in all, every note blank,
+// reason and the controls unchanged. Rollback, on a second fresh database: the
+// same seed, the erasure's last statement is made to fail after the helper, the
+// batches have all run, and every note and the user are as they were.
+func TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit(t *testing.T) {
+	if os.Getenv("FOLD_ERASURE_SCALE") != "1" {
+		t.Skip("set FOLD_ERASURE_SCALE=1 to run the 70,001-row bind-limit erasure (opt-in, not run in CI)")
 	}
+	const rows = 70001
+	if rows <= math.MaxUint16 {
+		t.Fatalf("%d rows do not exceed the %d bind-parameter limit", rows, math.MaxUint16)
+	}
+	statements := (rows + lookupChunk - 1) / lookupChunk
+	seed := func(t *testing.T) (*agesNoteScene, *agesNoteRecorder, time.Duration) {
+		started := time.Now()
+		sc := newAgesNoteScene(t, true, rows)
+		return sc, recordAgesNoteStatements(t, sc.app.DB), time.Since(started)
+	}
+	check := func(t *testing.T, updates []agesNoteStatement) (largest int) {
+		t.Helper()
+		var changed int64
+		for _, u := range updates {
+			changed += u.Rows
+			largest = max(largest, u.Vars)
+			if u.Vars > lookupChunk+1 {
+				t.Errorf("an UPDATE carried %d bind parameters, more than %d", u.Vars, lookupChunk+1)
+			}
+		}
+		if len(updates) != statements || changed != rows {
+			t.Errorf("%d UPDATEs changed %d rows, want %d UPDATEs changing %d", len(updates), changed, statements, rows)
+		}
+		if last := updates[len(updates)-1]; last.Rows != int64(rows-(statements-1)*lookupChunk) {
+			t.Errorf("the last batch changed %d rows", last.Rows)
+		}
+		return largest
+	}
+	t.Run("commit", func(t *testing.T) {
+		sc, rec, seeded := seed(t)
+		before := sc.state(t)
+		started := time.Now()
+		r := deleteAccount(sc.ac, sc.erased.ID, nil)
+		erased := time.Since(started)
+		if r.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", r.code, r.body)
+		}
+		checkAgesNoteErased(t, before, sc.state(t), rows)
+		_, updates := rec.seen()
+		largest := check(t, updates)
+		t.Logf("70,001-row commit: seeded in %s, erased in %s, %d UPDATEs, largest bind-parameter count %d", seeded.Round(time.Millisecond), erased.Round(time.Millisecond), len(updates), largest)
+	})
+	t.Run("rollback", func(t *testing.T) {
+		sc, rec, seeded := seed(t)
+		failed := erasureTestCountThrottleFailures(t, sc.app.DB)
+		before := sc.state(t)
+		started := time.Now()
+		r := deleteAccount(sc.ac, sc.erased.ID, nil)
+		erased := time.Since(started)
+		if r.code != http.StatusInternalServerError {
+			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
+		}
+		_, updates := rec.seen()
+		largest := check(t, updates)
+		if got := failed.Load(); got != 1 {
+			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
+		}
+		if after := sc.state(t); after != before {
+			t.Errorf("a failed erasure left a change in contact_requests:\n%+v\n%+v", before, after)
+		}
+		if n := countRows(t, sc.app.DB, "users", "id = ? AND deleted_at IS NOT NULL", sc.erased.ID); n != 0 {
+			t.Errorf("the failed erasure left the user soft-deleted")
+		}
+		t.Logf("70,001-row rollback: seeded in %s, failed erasure took %s, %d UPDATEs ran before the failure, largest bind-parameter count %d", seeded.Round(time.Millisecond), erased.Round(time.Millisecond), len(updates), largest)
+	})
 }
 
 // ---------------------------------------------------------------------------

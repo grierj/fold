@@ -1015,6 +1015,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := eraseConsentEvidenceIn(tx, s); err != nil {
 			return err
 		}
+		// Also after the soft delete: the request trigger (migration 00004)
+		// lets the ages-note blank through only for a deleted subject. The
+		// reason text stays under R4-T07B.
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
 		// The deleted account no longer counts, so its seats and childcare
 		// spots are free: promote waiters now (Whittler, PR 109).
 		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
