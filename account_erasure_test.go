@@ -3828,3 +3828,463 @@ func TestAccountErasureLeavesContactRequestTextForT07(t *testing.T) {
 		t.Errorf("contact request text changed:\nbefore %s\nafter  %s", before, got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// R4-2a-6: races that need the full statement list.
+// ---------------------------------------------------------------------------
+
+// removalRaceFixture is a group event led by L with capacity 1 and a
+// waitlist. The erased member U holds the one seat (with a manage token hash
+// and a registration of its own), and a seeded waiter waits behind them.
+// Every client holds its notices (F1) and nothing runs a job.
+type removalRaceFixture struct {
+	s       coreErasureScene
+	u       *models.User
+	leader  *models.User
+	waiter  *models.User
+	lc      *apiClient
+	event   models.Event
+	occ     models.EventOccurrence
+	reg     models.Registration
+	waitReg models.Registration
+}
+
+func newRemovalRaceFixture(t *testing.T, start time.Time) *removalRaceFixture {
+	t.Helper()
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	f := &removalRaceFixture{s: s}
+	f.leader = newTestUser(t, app, "removal-lead", erasurePW, models.RoleMember)
+	f.u = newTestUser(t, app, "removal-u", erasurePW, models.RoleMember)
+	f.waiter = newTestUser(t, app, "removal-waiter", erasurePW, models.RoleMember)
+	f.lc = loginAPI(t, app, "removal-lead", erasurePW)
+	f.lc.holdNotices = true
+	g := newTestGroup(t, app, f.leader, "Removal Club", models.GroupActive)
+	addMember(t, app, f.u, g, models.MembershipMember)
+	addMember(t, app, f.waiter, g, models.MembershipMember)
+	f.event, f.occ = seedEvent(t, app, g, f.leader.ID, start)
+	if err := db.Model(&models.Event{}).Where("id = ?", f.event.ID).
+		Updates(map[string]any{"capacity": 1, "waitlist_enabled": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	f.reg = models.Registration{UserID: &f.u.ID, OccurrenceID: f.occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb,
+		AttendanceMode: models.AttendanceInPerson, ManageTokenHash: "removal-u-manage-hash"}
+	erasureMustCreate(t, db, &f.reg)
+	waitedSince := time.Now().UTC().Add(-time.Hour)
+	f.waitReg = models.Registration{UserID: &f.waiter.ID, OccurrenceID: f.occ.ID, Status: models.RegWaitlisted, Source: models.RegSourceWeb,
+		AttendanceMode: models.AttendanceInPerson, WaitlistedAt: &waitedSince}
+	erasureMustCreate(t, db, &f.waitReg)
+	return f
+}
+
+// remove is L's real POST /events/:id/registrations/remove for U's seat.
+func (f *removalRaceFixture) remove() <-chan httpResult {
+	return bgDo(f.lc, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", f.event.ID),
+		map[string]any{"registrationId": f.reg.ID, "date": models.FormatCalendarDate(f.occ.OriginalDate), "note": "Moved away"})
+}
+
+// erase is the acting admin's real DELETE of U.
+func (f *removalRaceFixture) erase() <-chan httpResult {
+	return bgDo(f.s.ac, "DELETE", "/api/v1/admin/users/"+itoa(f.u.ID), nil)
+}
+
+// assertWaiterPromotedOnce: the waiter is going, with exactly one
+// registration.changed audit row that moved their row to going and exactly
+// one promotion notice.
+func (f *removalRaceFixture) assertWaiterPromotedOnce(t *testing.T) {
+	t.Helper()
+	db := f.s.app.DB
+	if got := regStatus(t, f.s.app, f.waiter.ID, f.occ.ID); got != models.RegGoing {
+		t.Errorf("waiter is %q, want going", got)
+	}
+	if n := countRows(t, db, "audit_logs", "action = ? AND meta_json->>'registrationId' = ? AND meta_json->>'newStatus' = ?",
+		audit.RegistrationChanged, itoa(f.waitReg.ID), models.RegGoing); n != 1 {
+		t.Errorf("%d audit rows moved the waiter to going, want 1", n)
+	}
+	if n := countRows(t, db, "notifications", "user_id = ? AND kind = ?", f.waiter.ID, notify.RegistrationPromoted); n != 1 {
+		t.Errorf("%d promotion notices for the waiter, want 1", n)
+	}
+}
+
+// TestRegistrationRemovalSerializesWithErasure: a leader's removal of a
+// member's seat (apiRemoveRegistration) and the erasure of that member both
+// run inside contactMutation, so they serialize on the exclusive contact gate
+// in either order, and neither holds anything the other needs while it waits
+// (L4); this is not a cycle and the test claims no deadlock.
+func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
+	start := time.Now().UTC().AddDate(0, 0, 30).Truncate(24 * time.Hour).Add(18 * time.Hour)
+
+	t.Run("removal-first", func(t *testing.T) {
+		f := newRemovalRaceFixture(t, start)
+		app := f.s.app
+		states := erasureTestSQLStates(t, app)
+		db := app.DB
+
+		// The removal stops before notify.Send's recipient lock. By then it holds
+		// the contact gate, U FOR NO KEY UPDATE and O.
+		var removalPID atomic.Int64
+		removalReached, releaseRemoval := erasureTestPause(t, db, erasureTestPoint{Processor: "row", Step: "gorm:row",
+			SQLContains: "deleted_at IS NULL ORDER BY id FOR KEY SHARE", PID: &removalPID})
+		// The erasure stops before its notifications DELETE, so the audit row the
+		// removal committed can be read before the erasure's later statements.
+		erasureReached, releaseErasure := erasureTestPause(t, db, erasureTestBeforeNotificationsDelete(f.u.ID))
+
+		rem := f.remove()
+		awaitDBSignal(t, removalReached)
+		del := f.erase()
+		erasurePID := waitForLockedUsersQuery(t, app, "%pg_advisory_xact_lock%")
+		waitDBBlocked(t, db, erasurePID, int(removalPID.Load()))
+		// The erasure waits at the gate: U is still held by the removal, and no
+		// backend waits on an occurrence.
+		err := db.Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT 1 FROM users WHERE id = ? FOR UPDATE NOWAIT", f.u.ID).Error
+		})
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "55P03" {
+			t.Errorf("FOR UPDATE NOWAIT on U = %v, want SQLSTATE 55P03 while the removal holds it", err)
+		}
+		var onOccurrence int64
+		if err := db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+			AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE '%event_occurrences%'`).Scan(&onOccurrence).Error; err != nil {
+			t.Fatal(err)
+		}
+		if onOccurrence != 0 {
+			t.Errorf("%d backends wait on event_occurrences while the erasure waits at the gate", onOccurrence)
+		}
+
+		releaseRemoval()
+		if r := awaitResult(t, rem); r.code != http.StatusOK {
+			t.Fatalf("removal: %d %s", r.code, r.body)
+		}
+		awaitDBSignal(t, erasureReached) // the removal has committed; the erasure holds the gate and U
+		if n := countRows(t, db, "audit_logs", "action = ?", audit.RegistrationRemoved); n != 1 {
+			t.Fatalf("%d registration.removed rows before the erasure's notifications delete, want 1", n)
+		}
+		if n := countRows(t, db, "notifications", "user_id = ? AND kind = ?", f.u.ID, notify.RegistrationRemoved); n != 1 {
+			t.Fatalf("U has %d removal notices before the erasure's notifications delete, want 1", n)
+		}
+		auditBefore := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved)
+		releaseErasure()
+		if r := awaitResult(t, del); r.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", r.code, r.body)
+		}
+
+		var reg models.Registration
+		if err := db.First(&reg, f.reg.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if reg.Status != models.RegRemoved || reg.RemovalNote != "" || reg.ManageTokenHash != "" {
+			t.Errorf("U's registration: status %q note %q hash %q, want removed with both cleared", reg.Status, reg.RemovalNote, reg.ManageTokenHash)
+		}
+		if n := countRows(t, db, "notifications", "user_id = ?", f.u.ID); n != 0 {
+			t.Errorf("%d notifications of U remain", n)
+		}
+		if n := countRows(t, db, "notification_deliveries", "user_id = ?", f.u.ID); n != 0 {
+			t.Errorf("%d notification deliveries of U remain", n)
+		}
+		if got := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved); got != auditBefore {
+			t.Errorf("the registration.removed audit row changed:\n%s\n%s", auditBefore, got)
+		}
+		f.assertWaiterPromotedOnce(t)
+		if n := states.Count("40P01"); n != 0 {
+			t.Errorf("%d deadlocks recorded: %v", n, states.entries)
+		}
+	})
+
+	t.Run("erasure-first", func(t *testing.T) {
+		f := newRemovalRaceFixture(t, start)
+		app := f.s.app
+		states := erasureTestSQLStates(t, app)
+		db := app.DB
+
+		var erasurePID atomic.Int64
+		p := erasureTestBeforeNotificationsDelete(f.u.ID)
+		p.PID = &erasurePID
+		reached, release := erasureTestPause(t, db, p)
+		del := f.erase()
+		awaitDBSignal(t, reached) // the erasure holds the gate and U
+		rem := f.remove()
+		removalPID := waitForLockedUsersQuery(t, app, "%pg_advisory_xact_lock%")
+		waitDBBlocked(t, db, removalPID, int(erasurePID.Load()))
+		release()
+		if r := awaitResult(t, del); r.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", r.code, r.body)
+		}
+		// lockRegistrationHolder's default-scoped First finds no soft-deleted
+		// holder (api_registrations.go:1917-1923), and the handler answers every
+		// error that is not errRegNotFound with 500 (:1436-1438).
+		r := awaitResult(t, rem)
+		if r.code != http.StatusInternalServerError || strings.TrimSpace(r.body) != `{"code":"server_error","error":"server error"}` {
+			t.Errorf("removal after the erasure: %d %s, want generic 500", r.code, r.body)
+		}
+		if n := auditCount(t, app, audit.RegistrationRemoved); n != 0 {
+			t.Errorf("%d registration.removed rows, want none", n)
+		}
+		if n := countRows(t, db, "notifications", "kind = ?", notify.RegistrationRemoved); n != 0 {
+			t.Errorf("%d removal notices were written, want none", n)
+		}
+		var reg models.Registration
+		if err := db.First(&reg, f.reg.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if reg.Status == models.RegRemoved || reg.ManageTokenHash != "" {
+			t.Errorf("U's registration after the erasure: status %q hash %q", reg.Status, reg.ManageTokenHash)
+		}
+		if n := states.Count("40P01"); n != 0 {
+			t.Errorf("%d deadlocks recorded: %v", n, states.entries)
+		}
+	})
+}
+
+// erasureDeadlockFixture is the D-n world: an erased admin U with a future
+// going seat at O (so promoteOnDisable locks O), a second admin Z, the acting
+// admin, and a guest at address B with a pending signup S2 at O that asks for
+// an account. Nobody has an account at B.
+type erasureDeadlockFixture struct {
+	s       coreErasureScene
+	u, z    *models.User
+	event   models.Event
+	occ     models.EventOccurrence
+	signup  models.GuestSignup
+	raw     string
+	address string // B
+	anon    *apiClient
+	labels  map[string]map[uint]string
+}
+
+func newErasureDeadlockFixture(t *testing.T, start time.Time) *erasureDeadlockFixture {
+	t.Helper()
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	f := &erasureDeadlockFixture{s: s, z: s.second, raw: "guest-admin-notice-deadlock-token", address: "deadlock.guest@example.com"}
+	f.u = newTestUser(t, app, "erase-dn-u", erasurePW, models.RoleAdmin)
+	g := newTestGroup(t, app, s.admin, "Deadlock Club", models.GroupActive)
+	f.event, f.occ = seedEvent(t, app, g, s.admin.ID, start)
+	erasureMustCreate(t, db, &models.Registration{UserID: &f.u.ID, OccurrenceID: f.occ.ID, Status: models.RegGoing,
+		Source: models.RegSourceWeb, AttendanceMode: models.AttendanceInPerson})
+	f.signup = models.GuestSignup{Name: "Deadlock Guest", Email: f.address, OccurrenceID: f.occ.ID, CreateAccount: true,
+		TokenHash: hashToken(f.raw), ExpiresAt: time.Now().Add(time.Hour), IP: "203.0.113.10", Timezone: "UTC"}
+	erasureMustCreate(t, db, &f.signup)
+	f.anon = anonClient(t, app, "10.9.9.10")
+	f.anon.holdNotices = true
+	f.labels = map[string]map[uint]string{
+		"user": {s.admin.ID: "admin", f.z.ID: "Z", f.u.ID: "U"},
+	}
+	return f
+}
+
+func (f *erasureDeadlockFixture) confirm() <-chan httpResult {
+	return bgDo(f.anon, "POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": f.raw})
+}
+
+func (f *erasureDeadlockFixture) erase() <-chan httpResult {
+	return bgDo(f.s.ac, "DELETE", "/api/v1/admin/users/"+itoa(f.u.ID), nil)
+}
+
+// erasureTestProjection is the committed state the D-n race decides, read by
+// natural key and without sequence ids, timestamps or token hashes (the
+// shared projection helpers reduce them): U, Z and whoever is at B, the
+// registrations at O, S2, the account requests at B, the notifications of U
+// and Z, the audit rows that target U or the event, all account.requested audits, and the jobs counted by
+// kind and status. A rolled-back loser leaves no row in any of them, so the
+// race's projection equals the winner-only control's.
+func erasureTestProjection(t *testing.T, db *gorm.DB, f *erasureDeadlockFixture) string {
+	t.Helper()
+	rows := func(table, where string, args ...any) []string {
+		var raw []string
+		if err := db.Raw("SELECT to_jsonb(r)::text FROM "+table+" r WHERE "+where, args...).Scan(&raw).Error; err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, text := range raw {
+			var v map[string]any
+			if err := json.Unmarshal([]byte(text), &v); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := json.Marshal(erasureTestProjectRow(v, f.labels))
+			out = append(out, string(b))
+		}
+		sort.Strings(out)
+		return out
+	}
+	var jobs []string
+	if err := db.Raw(`SELECT kind || '/' || status || '=' || count(*)::text FROM jobs GROUP BY kind, status`).Scan(&jobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(jobs)
+	b, err := json.Marshal(map[string][]string{
+		"users":            rows("users", "r.id IN ? OR r.email IN ?", []uint{f.u.ID, f.z.ID}, []string{mail.NormalizeAddress(f.u.Email), f.address, f.z.Email}),
+		"registrations":    rows("registrations", "r.occurrence_id = ?", f.occ.ID),
+		"guest_signups":    rows("guest_signups", "r.id = ? OR r.email = ?", f.signup.ID, f.address),
+		"account_requests": rows("account_requests", "r.email = ?", f.address),
+		"notifications":    rows("notifications", "r.user_id IN ?", []uint{f.u.ID, f.z.ID}),
+		"audit_logs":       rows("audit_logs", "(r.target_type = 'user' AND r.target_id = ?) OR (r.target_type = 'event' AND r.target_id = ?) OR r.action = ?", f.u.ID, f.event.ID, audit.AccountRequested),
+		"jobs_by_kind":     jobs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// erasureTestWaitPastDeadlockCheck waits, on the database clock, until the
+// statement that started at queryStart has waited longer than
+// deadlock_timeout (the figure SHOW deadlock_timeout prints, read in
+// milliseconds) plus 500 ms. A waiter runs one deadlock check, after that
+// time, and a waiter that joins the cycle later runs its own.
+func erasureTestWaitPastDeadlockCheck(t *testing.T, app *App, queryStart time.Time) {
+	t.Helper()
+	var ms float64
+	if err := app.DB.Raw("SELECT setting::float8 FROM pg_settings WHERE name = 'deadlock_timeout'").Scan(&ms).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := time.Duration(ms*float64(time.Millisecond)) + 500*time.Millisecond
+	giveUp := time.Now().Add(want + 10*time.Second)
+	for erasureTestSinceQueryStart(t, app, queryStart) <= want {
+		if time.Now().After(giveUp) {
+			t.Fatalf("the statement started at %v never passed %v", queryStart, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser is the kept limit D-n,
+// recorded and not fixed: a guest redemption that asked for an account holds
+// the occurrence O and the signup S2, then notifyAccountRequested locks every
+// active admin FOR KEY SHARE, while the erasure of one of those admins holds
+// its row FOR UPDATE and waits for O (promoteOnDisable). Postgres aborts the
+// side that closes the cycle with 40P01. The schedule makes the erasure wait
+// first and pass its single deadlock check before redemption starts waiting,
+// so redemption is the later waiter, detects the cycle and loses. The control
+// runs only the erasure on an identical seed; the race must leave exactly the
+// control's committed state (F5), which proves the loser left no write. The
+// test does not claim the erasure is deadlock-free.
+func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
+	start := time.Now().UTC().AddDate(0, 0, 30).Truncate(24 * time.Hour).Add(18 * time.Hour)
+	var control string
+
+	t.Run("control", func(t *testing.T) {
+		f := newErasureDeadlockFixture(t, start)
+		states := erasureTestSQLStates(t, f.s.app)
+		if r := awaitResult(t, f.erase()); r.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", r.code, r.body)
+		}
+		if n := states.Count("40P01"); n != 0 {
+			t.Errorf("%d deadlocks recorded in the winner-only run", n)
+		}
+		control = erasureTestProjection(t, f.s.app.DB, f)
+		// The rollback comparison must detect even an orphaned audit.
+		orphan := models.AuditLog{Action: audit.AccountRequested, TargetType: "account_request", TargetID: 999999, MetaJSON: "{}"}
+		erasureMustCreate(t, f.s.app.DB, &orphan)
+		if erasureTestProjection(t, f.s.app.DB, f) == control {
+			t.Fatal("projection ignored an orphan account.requested audit")
+		}
+		if err := f.s.app.DB.Delete(&orphan).Error; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("race", func(t *testing.T) {
+		if control == "" {
+			t.Fatal("the winner-only control did not run; run the whole test, not this subtest alone")
+		}
+		f := newErasureDeadlockFixture(t, start)
+		app := f.s.app
+		states := erasureTestSQLStates(t, app)
+		db := app.DB
+
+		// Redemption stops before it creates the guest_upgrade request: it holds O
+		// and S2, has created the guest user at B, and has not yet notified anyone.
+		var redemptionPID atomic.Int64
+		reached, release := erasureTestPause(t, db, erasureTestPoint{Processor: "create", Step: "gorm:create",
+			Table: "account_requests", PID: &redemptionPID})
+		red := f.confirm()
+		awaitDBSignal(t, reached)
+		del := f.erase()
+		erasurePID := waitForLockedUsersQuery(t, app, "%event_occurrences%FOR UPDATE%")
+		waitDBBlocked(t, db, erasurePID, int(redemptionPID.Load()))
+		var queryStart time.Time
+		if err := db.Raw("SELECT query_start FROM pg_stat_activity WHERE pid = ?", erasurePID).Scan(&queryStart).Error; err != nil {
+			t.Fatal(err)
+		}
+		erasureTestWaitPastDeadlockCheck(t, app, queryStart)
+		// Still the same statement, still waiting on redemption: its one deadlock
+		// check found no cycle, because redemption was not waiting yet.
+		var again time.Time
+		if err := db.Raw("SELECT query_start FROM pg_stat_activity WHERE pid = ? AND state = 'active'", erasurePID).Scan(&again).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !again.Equal(queryStart) {
+			t.Fatalf("the erasure's statement changed while it waited: %v then %v", queryStart, again)
+		}
+		waitDBBlocked(t, db, erasurePID, int(redemptionPID.Load()))
+		release()
+		redemption, erasure := awaitResult(t, red), awaitResult(t, del)
+
+		if erasure.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s; the erasure was meant to win", erasure.code, erasure.body)
+		}
+		entry := states.Only("40P01")
+		if !strings.Contains(entry.SQL, "FOR KEY SHARE") {
+			t.Errorf("the deadlock victim ran %q, want redemption's recipient lock (FOR KEY SHARE)", entry.SQL)
+		}
+		if redemption.code != http.StatusInternalServerError || strings.TrimSpace(redemption.body) != `{"code":"server_error","error":"server error"}` {
+			t.Errorf("redemption: %d %s, want generic 500", redemption.code, redemption.body)
+		}
+		if got := erasureTestProjection(t, db, f); got != control {
+			t.Errorf("the race left more than the winner-only control:\nrace    %s\ncontrol %s", got, control)
+		}
+		if n := countRows(t, db, "users", "email = ?", f.address); n != 0 {
+			t.Errorf("%d users at B after the loser rolled back", n)
+		}
+		if n := countRows(t, db, "registrations", "occurrence_id = ? AND user_id IN (SELECT id FROM users WHERE email = ?)", f.occ.ID, f.address); n != 0 {
+			t.Errorf("%d registrations for B after the loser rolled back", n)
+		}
+		if n := countRows(t, db, "guest_signups", "id = ? AND confirmed_at IS NULL", f.signup.ID); n != 1 {
+			t.Errorf("S2 is no longer pending (%d pending rows)", n)
+		}
+		if n := countRows(t, db, "account_requests", "source = ?", models.RequestGuestUpgrade); n != 0 {
+			t.Errorf("%d guest_upgrade requests after the loser rolled back", n)
+		}
+		if n := countRows(t, db, "notifications", "kind = ?", notify.AccountRequested); n != 0 {
+			t.Errorf("%d AccountRequested tasks after the loser rolled back", n)
+		}
+
+		if n := countRows(t, db, "audit_logs", "action = ?", audit.AccountRequested); n != 0 {
+			t.Errorf("%d account.requested audits survived rollback", n)
+		}
+
+		// The loser's link still works: the retry wins, with U already gone.
+		if r := awaitResult(t, f.confirm()); r.code != http.StatusOK {
+			t.Fatalf("retry: %d %s", r.code, r.body)
+		}
+		if n := countRows(t, db, "registrations", "occurrence_id = ? AND user_id IN (SELECT id FROM users WHERE email = ?)", f.occ.ID, f.address); n != 1 {
+			t.Errorf("%d registrations for B after the retry, want 1", n)
+		}
+		var reqIDs []uint
+		if err := db.Table("account_requests").Where("email = ? AND source = ?", f.address, models.RequestGuestUpgrade).Pluck("id", &reqIDs).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(reqIDs) != 1 {
+			t.Fatalf("%d guest_upgrade requests at B after the retry, want 1", len(reqIDs))
+		}
+		if n := countRows(t, db, "audit_logs", "action = ? AND target_type = ? AND target_id = ?", audit.AccountRequested, "account_request", reqIDs[0]); n != 1 {
+			t.Errorf("retry has %d account.requested audits, want 1", n)
+		}
+		if n := countRows(t, db, "audit_logs", "action = ?", audit.AccountRequested); n != 1 {
+			t.Errorf("%d total account.requested audits after retry, want 1", n)
+		}
+		if n := countRows(t, db, "notifications", "user_id = ? AND kind = ? AND subject_id = ? AND resolved_at IS NULL",
+			f.z.ID, notify.AccountRequested, reqIDs[0]); n != 1 {
+			t.Errorf("Z has %d waiting AccountRequested tasks, want 1", n)
+		}
+		if n := countRows(t, db, "notifications", "user_id = ? AND kind = ?", f.u.ID, notify.AccountRequested); n != 0 {
+			t.Errorf("the erased admin got %d AccountRequested tasks; notify.Send skips a deleted recipient", n)
+		}
+		if n := states.Count("40P01"); n != 1 {
+			t.Errorf("%d deadlocks recorded after the retry, want the one", n)
+		}
+	})
+}

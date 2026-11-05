@@ -1608,7 +1608,9 @@ func (f *guestRaceFixture) erase() <-chan httpResult {
 // the occurrence and then notifies every active admin, which takes KEY SHARE
 // on each admin row, while an erasure of that admin holds the row and waits for
 // the occurrence (promoteOnDisable). Postgres aborts one side with 40P01. That
-// class is recorded in inventory 9.5 by R4-2a-4 and is not claimed away.
+// class is recorded in inventory 9.5 by R4-2a-4 and is not claimed away;
+// TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser (account_erasure_test.go)
+// proves its loser rolls back whole.
 func TestGuestRedemptionRacingErasure(t *testing.T) {
 	for _, variant := range []string{"P0", "P1"} {
 		for _, order := range []string{"erasure-first", "redemption-first"} {
@@ -1680,6 +1682,18 @@ func TestGuestRedemptionRacingErasure(t *testing.T) {
 					if got.Email != fmt.Sprintf("deleted-guest_signups-%d@deleted.invalid", got.ID) || got.TokenHash != fmt.Sprintf("erased-guest_signups-%d", got.ID) ||
 						got.Name != "" || got.IP != "" || got.Timezone != "" || got.ConfirmedAt == nil {
 						t.Errorf("the redeemed signup was not anonymized: %+v", got)
+					}
+					// Redemption issued a manage token and stored its hash on the
+					// registration it created (P0) or updated (P1); the erasure that
+					// committed after it cleared that hash (R4-2a-5 step 12).
+					if !strings.Contains(redemption.body, `"manageToken":"`) || strings.Contains(redemption.body, `"manageToken":""`) {
+						t.Errorf("redemption issued no manage token: %s", redemption.body)
+					}
+					if n := countRows(t, db, "registrations", "user_id = ? AND occurrence_id = ?", f.guest.ID, f.occ.ID); n != 1 {
+						t.Errorf("%d registrations of the guest at the occurrence, want 1", n)
+					}
+					if n := countRows(t, db, "registrations", "user_id = ? AND occurrence_id = ? AND manage_token_hash = ''", f.guest.ID, f.occ.ID); n != 1 {
+						t.Error("the registration redemption wrote still carries a manage token hash after the erasure")
 					}
 					if variant == "P1" {
 						if got := regStatus(t, app, f.waiter.ID, f.occ.ID); got != models.RegGoing {
