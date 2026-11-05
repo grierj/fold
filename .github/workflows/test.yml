@@ -39,6 +39,13 @@ jobs:
       - name: Contract migration gate
         run: bash scripts/contract-gate.sh
         shell: bash
+      # Master must require up-to-date branches, or two pull requests can
+      # merge the same migration number (DEC-146).
+      - name: Merge rules check
+        run: bash scripts/merge-rules-check.sh
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod

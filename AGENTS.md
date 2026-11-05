@@ -93,7 +93,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in the same transaction as
   the change. Admin notices are separate stored notification rows written in that transaction.
 - Migrations: every schema change is a **new** goose file `NNNNN_name.sql`; never edit an old one; the one exception is the pre-live baseline window in DEC-138.
-  The model change and `models.All()` go in the same PR.
+  The model change and `models.All()` go in the same PR. Two open PRs can pick the same next
+  number; git merges both without a conflict and goose then refuses to boot. Master's ruleset
+  requires a PR to be up to date with master before it merges (DEC-146), so the later PR merges
+  master, fails `TestBaselineFileShape` with "duplicate version" and renumbers its file. If a
+  duplicate reaches master anyway, renumber the file that merged later, in a new PR (never a file a
+  tagged release holds), and recreate every database that applied it under the old number: goose
+  tracks versions by number alone, so it would count the other file as applied and skip it.
 - Tests: `make test` (`go test ./...` against `DATABASE_URL`; `scripts/go-test.sh` shards the root
   package; starts the dev database if unset). Tests hash passwords at bcrypt's cheapest cost; a
   test that measures timing calls `realPasswordCost(t)` first. Handler tests use `httptest` and
@@ -318,7 +324,9 @@ alone starts no CI; open the PR to get the checks.
 
 Grier's rule (Oct 20, 2026; generalized Oct 30, 2026). An agent may merge a fold PR, as a normal merge commit, when all of these hold:
 
-1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
+1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them) on a head
+   that contains master's tip. GitHub refuses a PR that is behind master (DEC-146); merge master
+   into it (never rebase), wait for CI again, and then merge.
 2. All four primary concerns were reviewed by a separate agent from the one that implemented the change, preferably running a different model (for example, Sonnet reviewing Opus's work):
    - UI, UX and design;
    - database and performance: simplicity and efficiency, to keep out complexity that would only get cut later;
@@ -420,7 +428,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
 | React forms use the shared `Form`: no browser bubbles, persistent errors under fields, first invalid field focused; secret whitespace is never trimmed | `TestReactFormsUseCustomValidation`, `TestReactFormValidationGuard`, `components/ui/Form.test.tsx` |
 | A photo-less group's cover comes from `coverSrc` (its own image, else one of six patterns by id, DEC-66); empty states are the neutral `EmptyState`, never red | `web/src/lib/covers.test.ts`, `EmptyState.test.tsx`; the danger ratchet in `TestUIRatchets` |
-| Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master`: PR required, those checks required, admins included, no force-push or deletion |
+| Work reaches master only through a pull request with the `test`, `web` and `provision` checks green on a head that contains master's tip; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub ruleset on `master`: PR required, those checks required and strict (up to date before merging, DEC-146), no bypass actors (admins included), no force-push or deletion; `scripts/merge-rules-check.sh` in the test job fails when the live rules stop saying so (it cannot see bypass actors), kept in place by `TestCIRunsTheMergeRulesCheck` and proved by `TestMergeRulesCheckScript` |
+| Two PRs never land the same migration number | Prevention: the strict ruleset above. Detection: `TestBaselineFileShape` (duplicate or gap) on every PR and master push; `TestDuplicateVersionNeverBoots` proves a duplicated tree cannot boot, migrate or pass the release smoke. Recovery: the Migrations convention above |
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, in CI after the build) |
 | Secrets in URLs (calendar and room feed tokens, guest manage links, unsubscribe and email settings links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`); `TestAccessLogKeepsSecretsOut` |
 | Push payloads never carry contact details, signed links or a hidden group's name; endpoints are never logged | `TestEveryKindsPushTextIsLockScreenSafe` (`internal/notify`), `TestPushLogsKeepSecretsOut` |
