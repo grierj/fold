@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
 	"sort"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -7035,4 +7038,2332 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 		t.Fatalf("write %s: %v", path, err)
 	}
 	t.Logf("wrote %s", path)
+}
+
+// ---------------------------------------------------------------------------
+// R4-T07A-3: concurrency acceptance CA-1 to CA-5 and CA-9 against the real
+// erasure (DELETE /admin/users/:id) and the real competing operations.
+//
+// Every case holds one participant at a barrier that fires once (F3), on facts
+// that are legal for its position (F6): Table, Where, Assign and Locking
+// before a GORM chain; SQLContains and VarAt only on a row or raw statement or
+// after the step. The holder's own backend PID is stored by the barrier or by
+// startDBSession (F7). The waiter is then proved by an ungranted advisory row
+// in pg_locks for contactLockID whose pg_blocking_pids is exactly the holder.
+// SQLSTATEs come from the bounded traced handle (F4) and every case ends by
+// saying which statements failed. The cases claim only what they show: one
+// ordering per test.
+//
+// Bounds and joins (T07A3-R4, T07A3-FIX-R4-1). agesRaceRun swaps in, as the
+// handle the production code reads as App.DB, one whose pool is a test-owned
+// wrapper (agesRacePool). The wrapper puts the run's context on every begin,
+// statement, query and prepare, in a transaction as well as outside one, and
+// that context is what stop cancels. This is how cancellation reaches the one
+// call site that discards App.DB's context: rolloverAges runs its preliminary
+// sweep on context.Background, so WithContext alone would not bound it, but the
+// wrapper sees the begin and each statement of that sweep whatever context GORM
+// hands it. Connections also send the server a cancel request when a context is
+// canceled, and carry lock_timeout, statement_timeout and
+// idle_in_transaction_session_timeout. Those server settings are per lock wait,
+// per statement and per idle gap; they are a backstop for a backend whose
+// client is gone and bound no whole transaction. What bounds the work is the
+// run's context deadline (agesRaceBound), and only for calls that go through
+// the wrapper; a goroutine that does not touch the database is not bounded by
+// it at all.
+//
+// stop is the only teardown. It releases the barriers, cancels the context and
+// joins every tracked participant (HTTP requests, rollovers, sweeps) and then
+// checks from a separate control connection that no backend of this run's
+// application_name is still working. If either check fails inside grace, stop
+// reports it, terminates the run's backends with pg_terminate_backend on that
+// control connection, and joins and checks again within final. If a participant
+// is still alive then, stop calls abort, which exits the process, so no
+// later test can run against a live participant and no callback is unregistered,
+// no handle restored and no shared database reset under it. Exiting is the
+// only isolation available to a test-only helper, because the shared helpers
+// cannot be changed and a failed Cleanup does not stop later tests. Sessions
+// the shared startDBSession starts are not tracked by the wait group; they are
+// covered by the backend check and by their own cleanup join, which runs before
+// callbacks are removed (cleanups run last in, first out and hold registers
+// stop after every barrier).
+//
+// Oracles (T07A3-R1 to R3). Each case states, apart from any twin, the access,
+// lifecycle and time it expects, and judges the audit, notice, delivery and job
+// rows of the operation that finishes the request or the access with
+// agesRaceLedger: exact ids, actors, metas and times, and no row it did not
+// expect. A step marked Partial (the approval, whose own effects the contact
+// suites cover) requires its rows but allows others.
+// ---------------------------------------------------------------------------
+
+const agesRaceNote = "ages 2 and 5"
+
+// agesRaceBound is the deadline of the run's context: after it every begin,
+// statement and pool wait made through the traced handle fails. It does not
+// bound a goroutine that does not use the database, which stop's join reports.
+const agesRaceBound = 30 * time.Second
+
+// agesRaceSeq numbers runs so each one's connections carry their own
+// application_name, which is how the control connection finds them.
+var agesRaceSeq atomic.Int64
+
+// agesRaceRun owns every database participant of one race test.
+type agesRaceRun struct {
+	t       *testing.T
+	db      *gorm.DB // the traced handle: pauses and sessions register on its callbacks
+	ctx     context.Context
+	cancel  context.CancelFunc
+	appName string    // application_name of every pooled connection of db
+	control *sql.Conn // a connection of its own, never used by a participant
+	wg      sync.WaitGroup
+	allDone chan struct{} // closed once wg reaches zero
+	waitOne sync.Once
+
+	mu       sync.Mutex
+	releases []func()
+	sealed   bool // stop has begun: no participant may start
+
+	stopMu  sync.Mutex
+	stopped bool // every participant is verified gone; a failed stop leaves it false
+
+	// grace is how long stop waits after the barriers are released and the
+	// context is canceled; final is the wait after the backends are terminated.
+	grace, final time.Duration
+	// report records a problem and fails the test (t.Errorf). abort is the
+	// fail-closed step: it exits, ending the process. Tests of stop replace
+	// both; nothing else does.
+	report func(format string, args ...any)
+	abort  func(msg string)
+}
+
+// agesRaceMerge returns a context that ends when ctx or stop does. The caller
+// that reads rows (and so cannot cancel when the call returns) drops the cancel
+// func: the context is released when the run's context ends, which stop
+// guarantees.
+func agesRaceMerge(ctx, stop context.Context) (context.Context, func()) {
+	merged, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(stop, cancel)
+	return merged, func() { unhook(); cancel() }
+}
+
+// agesRacePool is the ConnPool of the traced handle: *sql.DB, with the run's
+// context added to every call.
+type agesRacePool struct {
+	db   *sql.DB
+	stop context.Context
+}
+
+func (p *agesRacePool) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.PrepareContext(c, query)
+}
+
+func (p *agesRacePool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	c, done := agesRaceMerge(ctx, p.stop)
+	defer done()
+	return p.db.ExecContext(c, query, args...)
+}
+
+func (p *agesRacePool) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.QueryContext(c, query, args...)
+}
+
+func (p *agesRacePool) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.QueryRowContext(c, query, args...)
+}
+
+// BeginTx gives GORM a transaction whose own statements carry the run's context
+// too: database/sql does not pass the transaction's context to a statement
+// made with another, so a begin alone would not reach a statement already
+// waiting on a lock.
+func (p *agesRacePool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	tx, err := p.db.BeginTx(c, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &agesRaceTx{tx: tx, db: p.db, stop: p.stop}, nil
+}
+
+// GetDBConn lets db.DB() and Connection reach the pool. Sessions made that way
+// carry their own contexts.
+func (p *agesRacePool) GetDBConn() (*sql.DB, error) { return p.db, nil }
+
+// agesRaceTx is agesRacePool inside a transaction. It is a gorm.TxCommitter, as
+// *sql.Tx is, so savepoints, txguard and notify see an ordinary transaction.
+type agesRaceTx struct {
+	tx   *sql.Tx
+	db   *sql.DB
+	stop context.Context
+}
+
+func (x *agesRaceTx) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.PrepareContext(c, query)
+}
+
+func (x *agesRaceTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	c, done := agesRaceMerge(ctx, x.stop)
+	defer done()
+	return x.tx.ExecContext(c, query, args...)
+}
+
+func (x *agesRaceTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.QueryContext(c, query, args...)
+}
+
+func (x *agesRaceTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.QueryRowContext(c, query, args...)
+}
+
+func (x *agesRaceTx) Commit() error   { return x.tx.Commit() }
+func (x *agesRaceTx) Rollback() error { return x.tx.Rollback() }
+
+func (x *agesRaceTx) GetDBConn() (*sql.DB, error) { return x.db, nil }
+
+// newAgesRaceRun swaps app.DB for a traced handle on the same database, like
+// erasureTestSQLStates, and adds the bounds described above, plus a control
+// connection opened now so that terminating works even when the pool is full.
+// The original is put back on cleanup, after stop has verified the participants
+// gone (cleanups run last in, first out). The returned log records every failed
+// statement by SQLSTATE.
+func newAgesRaceRun(t *testing.T, app *App) (*agesRaceRun, *erasureTestStateLog) {
+	t.Helper()
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := testdb.URL(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appName := fmt.Sprintf("fold-race-%d-%d", os.Getpid(), agesRaceSeq.Add(1))
+
+	ctrlCfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrlCfg.RuntimeParams["application_name"] = appName + "-ctl"
+	ctrlCfg.RuntimeParams["statement_timeout"] = "5s"
+	ctrlCfg.RuntimeParams["lock_timeout"] = "5s"
+	ctrlDB := stdlib.OpenDB(*ctrlCfg)
+	ctrlDB.SetMaxOpenConns(1)
+	connCtx, connCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	control, err := ctrlDB.Conn(connCtx)
+	connCancel()
+	if err != nil {
+		_ = ctrlDB.Close()
+		t.Fatalf("open the control connection: %v", err)
+	}
+
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		_ = control.Close()
+		_ = ctrlDB.Close()
+		t.Fatal(err)
+	}
+	log := &erasureTestStateLog{t: t}
+	cfg.Tracer = erasureTestTracer{log: log}
+	if cfg.RuntimeParams == nil {
+		cfg.RuntimeParams = map[string]string{}
+	}
+	cfg.RuntimeParams["application_name"] = appName
+	cfg.RuntimeParams["lock_timeout"] = "20s"
+	cfg.RuntimeParams["statement_timeout"] = "30s"
+	cfg.RuntimeParams["idle_in_transaction_session_timeout"] = "30s"
+	// A canceled context also cancels the statement on the server, not only
+	// the client's wait for it.
+	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: time.Second}
+	}
+	sqlDB := stdlib.OpenDB(*cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), agesRaceBound)
+	traced, err := gorm.Open(postgres.New(postgres.Config{Conn: &agesRacePool{db: sqlDB, stop: ctx}}), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		cancel()
+		_ = sqlDB.Close()
+		_ = control.Close()
+		_ = ctrlDB.Close()
+		t.Fatal(err)
+	}
+	if err := traced.Use(txguard.Plugin{}); err != nil {
+		t.Fatal(err)
+	}
+	original := app.DB
+	run := &agesRaceRun{t: t, db: traced, ctx: ctx, cancel: cancel, appName: appName, control: control,
+		allDone: make(chan struct{}), grace: 5 * time.Second, final: 10 * time.Second,
+		report: t.Errorf, abort: func(msg string) { fmt.Fprintln(os.Stderr, msg); os.Exit(1) }}
+	app.DB = traced.WithContext(ctx)
+	// Registered first so they run last, after stop.
+	t.Cleanup(func() {
+		app.DB = original
+		_ = sqlDB.Close()
+	})
+	t.Cleanup(func() {
+		cancel()
+		_ = control.Close()
+		_ = ctrlDB.Close()
+	})
+	t.Cleanup(run.stop)
+	return run, log
+}
+
+// hold keeps release to be called when the run stops, and registers stop again:
+// the last cleanup registered runs first, so stop always comes before the
+// cleanup of any pause or probe made so far.
+func (r *agesRaceRun) hold(release func()) {
+	r.mu.Lock()
+	r.releases = append(r.releases, release)
+	r.mu.Unlock()
+	r.t.Cleanup(r.stop)
+}
+
+// pause is erasureTestPause on the traced handle, released by stop.
+func (r *agesRaceRun) pause(p erasureTestPoint) (<-chan struct{}, func()) {
+	r.t.Helper()
+	reached, release := erasureTestPause(r.t, r.db, p)
+	r.hold(release)
+	return reached, release
+}
+
+// probe is erasureTestProbe on the traced handle; stop runs before it is
+// unregistered.
+func (r *agesRaceRun) probe(p erasureTestPoint) *atomic.Int64 {
+	r.t.Helper()
+	pid := erasureTestProbe(r.t, r.db, p)
+	r.t.Cleanup(r.stop)
+	return pid
+}
+
+// spawn runs work as a tracked participant.
+func (r *agesRaceRun) spawn(work func()) {
+	r.mu.Lock()
+	if r.sealed {
+		r.mu.Unlock()
+		r.t.Fatal("a participant was started after the run began to stop")
+	}
+	r.wg.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		work()
+	}()
+}
+
+// do is bgDo with the run's context on the request and the participant tracked.
+func (r *agesRaceRun) do(c *apiClient, method, path string, body any) <-chan httpResult {
+	c.ctx = r.ctx
+	ch := make(chan httpResult, 1)
+	r.spawn(func() {
+		w := c.do(method, path, body, true)
+		ch <- httpResult{w.Code, w.Body.String()}
+	})
+	return ch
+}
+
+// rollover runs app.rolloverAges(now) as a tracked participant.
+func (r *agesRaceRun) rollover(app *App, now time.Time) <-chan agesRaceRolloverResult {
+	ch := make(chan agesRaceRolloverResult, 1)
+	r.spawn(func() {
+		n, err := app.rolloverAges(now)
+		ch <- agesRaceRolloverResult{n, err}
+	})
+	return ch
+}
+
+// sweep runs app.sweepContacts(now) under the run's context as a tracked
+// participant.
+func (r *agesRaceRun) sweep(app *App, now time.Time) <-chan error {
+	ch := make(chan error, 1)
+	r.spawn(func() { ch <- app.sweepContacts(r.ctx, now) })
+	return ch
+}
+
+// joined waits up to d for every tracked participant to return.
+func (r *agesRaceRun) joined(d time.Duration) bool {
+	r.waitOne.Do(func() {
+		go func() {
+			r.wg.Wait()
+			close(r.allDone)
+		}()
+	})
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-r.allDone:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+const agesRaceBackends = `FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend'
+	AND application_name = $1 AND pid <> pg_backend_pid()`
+
+// busy waits up to d for the run's backends to have no work in progress (idle
+// pooled connections do not count) and returns how many still do. It asks from
+// the control connection, so a canceled run context cannot affect it.
+func (r *agesRaceRun) busy(d time.Duration) (int, error) {
+	deadline := time.Now().Add(d)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var n int
+		err := r.control.QueryRowContext(ctx, `SELECT count(*) `+agesRaceBackends+` AND state IS DISTINCT FROM 'idle'`, r.appName).Scan(&n)
+		cancel()
+		if err != nil || n == 0 || !time.Now().Before(deadline) {
+			return n, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// terminate ends every backend of the run from the control connection and
+// returns how many it signaled.
+func (r *agesRaceRun) terminate() (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var n int
+	err := r.control.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT pg_terminate_backend(pid) `+agesRaceBackends+`) s`, r.appName).Scan(&n)
+	return n, err
+}
+
+// backendState returns the application_name and state of backend pid, and false
+// when there is no such backend.
+func (r *agesRaceRun) backendState(pid int) (app, state string, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var a, s sql.NullString
+	err = r.control.QueryRowContext(ctx, "SELECT application_name, state FROM pg_stat_activity WHERE pid = $1", pid).Scan(&a, &s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return a.String, s.String, err == nil, err
+}
+
+// stop releases every barrier, cancels the context and joins the participants,
+// then verifies from the control connection that none of the run's backends is
+// still working. A participant that outlasts grace is reported and its backends
+// terminated; one that outlasts final is a fail-closed abort. It returns only
+// once the participants are gone (or abort has returned in a test of stop), and
+// a failed stop is retried by the next call instead of being recorded as done.
+func (r *agesRaceRun) stop() {
+	r.stopMu.Lock()
+	defer r.stopMu.Unlock()
+	if r.stopped {
+		return
+	}
+	r.mu.Lock()
+	r.sealed = true
+	releases := append([]func(){}, r.releases...)
+	r.mu.Unlock()
+	for _, release := range releases {
+		release()
+	}
+	r.cancel()
+
+	joined := r.joined(r.grace)
+	left, err := r.busy(r.grace)
+	if joined && err == nil && left == 0 {
+		r.stopped = true
+		return
+	}
+	r.report("a database participant did not stop within %v after its barriers were released and its context was canceled (joined: %v, backends still working: %d, check: %v); terminating the run's backends", r.grace, joined, left, err)
+	killed, kerr := r.terminate()
+	joined = r.joined(r.final)
+	left, err = r.busy(r.final)
+	if kerr != nil {
+		r.report("terminate the run's backends: %v", kerr)
+	}
+	if !joined || err != nil || left != 0 || kerr != nil {
+		r.abort(fmt.Sprintf("a database participant is still alive after %d backends were terminated (joined: %v, backends still working: %d, check: %v, terminate: %v); the process ends so that no later test runs against it", killed, joined, left, err, kerr))
+		return
+	}
+	r.stopped = true
+}
+
+// agesRaceWorld is a contact fixture with one group event, a traced and bounded
+// database handle and clients that hold their notices. f.outsider is the erased
+// person, f.leader asks, f.subject is the unrelated person and f.admin acts.
+type agesRaceWorld struct {
+	t      *testing.T
+	f      *contactAPIFixture
+	app    *App
+	db     *gorm.DB
+	run    *agesRaceRun
+	states *erasureTestStateLog
+	ev     models.Event
+	occ    models.EventOccurrence
+	seq    int
+}
+
+func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
+	t.Helper()
+	f := newContactAPIFixture(t, false)
+	for _, c := range []*apiClient{f.lc, f.sc, f.ac, f.gc, f.oc} {
+		c.holdNotices = true
+	}
+	w := &agesRaceWorld{t: t, f: f, app: f.app}
+	w.ev, w.occ = seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
+	// Barriers and sessions are registered on the swapped handle (F4).
+	w.run, w.states = newAgesRaceRun(t, f.app)
+	w.db = w.run.db
+	return w
+}
+
+// request inserts one occurrence_add request on the world's date. The caller
+// may adjust the row before it is written (the identity columns cannot be
+// changed afterwards).
+func (w *agesRaceWorld) request(requester, subject uint, status, note string, adjust ...func(*models.ContactRequest)) models.ContactRequest {
+	w.t.Helper()
+	w.seq++
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	occ := w.occ.ID
+	r := models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: requester, SubjectUserID: subject,
+		ContextType: policy.ContactEvent, ContextID: w.ev.ID, OccurrenceID: &occ,
+		Reason: fmt.Sprintf("identifying race reason %d", w.seq), SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
+		Status: status, AddAttendanceMode: models.AttendanceInPerson, AddChildcareAgesNote: note,
+		CreatedAt: created, ExpiresAt: created.Add(14 * 24 * time.Hour)}
+	if status == policy.ContactWithdrawn {
+		done := created.Add(10 * time.Minute)
+		r.CompletedAt, r.WithdrawnByID = &done, &requester
+	}
+	for _, f := range adjust {
+		f(&r)
+	}
+	erasureMustCreate(w.t, w.db, &r)
+	return r
+}
+
+// seedTasks writes the waiting review tasks a pending request has (the
+// subject's, and the admin's when it needs one) the way request creation does.
+func (w *agesRaceWorld) seedTasks(r models.ContactRequest) {
+	w.t.Helper()
+	erasureSeedRequestTasks(w.t, w.db, r, w.f.admin.ID)
+}
+
+// agesRaceExpired makes a pending request whose lifetime ended long ago.
+func agesRaceExpired(r *models.ContactRequest) {
+	r.CreatedAt = r.CreatedAt.AddDate(0, 0, -30)
+	r.ExpiresAt = r.CreatedAt.Add(14 * 24 * time.Hour)
+}
+
+// agesRaceNeedsAdmin makes a pending request the kind a teen's subject gets.
+func agesRaceNeedsAdmin(r *models.ContactRequest) {
+	r.NeedsAdmin, r.AdminDecision = true, policy.ContactPending
+}
+
+func (w *agesRaceWorld) rows() map[uint]erasureAgesNoteRow { return erasureRequestRows(w.t, w.db) }
+
+// erase is the real DELETE of id by the admin behind c.
+func (w *agesRaceWorld) erase(c *apiClient, id uint) <-chan httpResult {
+	return w.run.do(c, "DELETE", "/api/v1/admin/users/"+itoa(id), nil)
+}
+
+// decide is the subject's real approval of request id.
+func (w *agesRaceWorld) decide(c *apiClient, id uint) <-chan httpResult {
+	return w.run.do(c, "POST", "/api/v1/add-requests/"+itoa(id)+"/decision", map[string]string{"party": "subject", "decision": policy.ContactApproved})
+}
+
+// remove is the leader's real removal of registration reg from the world's date.
+func (w *agesRaceWorld) remove(reg uint) <-chan httpResult {
+	return w.run.do(w.f.lc, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", w.ev.ID),
+		map[string]any{"registrationId": reg, "date": models.FormatCalendarDate(w.occ.OriginalDate), "note": "Moved away"})
+}
+
+// makeTeen turns u into a teen who is already past eighteen, so the age
+// rollover will convert them.
+func (w *agesRaceWorld) makeTeen(u *models.User) {
+	w.t.Helper()
+	birth := time.Now().UTC().AddDate(-18, 0, -2)
+	if err := w.db.Model(u).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+		w.t.Fatal(err)
+	}
+	erasureMustCreate(w.t, w.db, &models.TeenConsent{
+		TeenUserID: u.ID, Scope: models.TeenConsentAccount, Status: models.ConsentGranted,
+		GrantedBy: w.f.admin.ID, GranterRole: models.ConsentAdmin,
+		EvidenceText: "Verified guardian consent", At: time.Now().UTC().Add(-time.Hour),
+	})
+}
+
+// holdSweep does what sweepContacts does (the try-lock, then
+// reconcileContacts(contactChange{}) at now) on a pinned session and holds the
+// open transaction until release. It returns once the sweep has done its work
+// and holds the gate; pid is that session's backend.
+func (w *agesRaceWorld) holdSweep(now time.Time) (pid int, done <-chan error, release func()) {
+	t := w.t
+	t.Helper()
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(resume) }) }
+	pid, done = startDBSession(t, w.db, "ages-sweep", func(conn *gorm.DB) error {
+		return conn.Transaction(func(tx *gorm.DB) error {
+			var locked bool
+			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", contactLockID).Scan(&locked).Error; err != nil {
+				return err
+			}
+			if !locked {
+				return errors.New("the model sweep could not take the contact gate")
+			}
+			if _, err := w.app.reconcileContacts(tx, now, contactChange{}); err != nil {
+				return err
+			}
+			close(reached)
+			select {
+			case <-resume:
+				return nil
+			case <-tx.Statement.Context.Done():
+				return tx.Statement.Context.Err()
+			}
+		})
+	})
+	w.run.hold(release)
+	awaitDBSignal(t, reached)
+	return pid, done, release
+}
+
+// agesRaceAfterScrub is the first ages-note UPDATE of the erasure of uid,
+// stopped after it ran: SQLContains and VarAt are legal after gorm:raw (F6).
+// noted is how many ids that batch carries; the subject's bind parameter
+// follows them, so a later batch of another size never matches and the barrier
+// fires on the first batch only. The caller sets PID.
+func agesRaceAfterScrub(uid uint, noted int) erasureTestPoint {
+	return erasureTestPoint{Processor: "raw", After: true, Step: "gorm:raw",
+		SQLContains: agesNoteUpdatePrefix, VarAt: map[int]any{noted: uid}}
+}
+
+// agesRaceGateWaiter polls until exactly one backend of this database waits for
+// the contact gate (an ungranted advisory row in pg_locks for contactLockID) and
+// pg_blocking_pids of that backend is exactly the blocker, then returns it.
+// The blocker must hold the gate.
+func agesRaceGateWaiter(t *testing.T, db *gorm.DB, blocker int, who string) int {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var waiters []int
+		if err := db.Raw(`SELECT l.pid FROM pg_locks l WHERE l.locktype = 'advisory' AND NOT l.granted
+			AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND l.classid::bigint = ? AND l.objid::bigint = ? AND l.objsubid = 1
+			AND pg_blocking_pids(l.pid) = ARRAY[?]::int[] ORDER BY l.pid`,
+			contactLockID>>32, contactLockID&0xffffffff, blocker).Scan(&waiters).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(waiters) == 1 {
+			requireContactGate(t, db, waiters[0], false, who)
+			requireContactGate(t, db, blocker, true, "the gate holder")
+			return waiters[0]
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("%s never waited for the contact gate behind backend %d (%d candidates)", who, blocker, len(waiters))
+		}
+	}
+}
+
+// agesRaceNoGateWaiter fails when anyone in this database waits for the contact
+// gate. Other databases of the cluster (another test's) are not counted.
+func agesRaceNoGateWaiter(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		AND classid::bigint = ? AND objid::bigint = ? AND objsubid = 1`, contactLockID>>32, contactLockID&0xffffffff).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d backends wait for the contact gate, want none", n)
+	}
+}
+
+// agesRaceAwait waits for a result with a bound.
+func agesRaceAwait[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never finished", what)
+		var zero T
+		return zero
+	}
+}
+
+// agesRaceOK awaits an HTTP result and requires 200.
+func agesRaceOK(t *testing.T, ch <-chan httpResult, what string) {
+	t.Helper()
+	if r := awaitResult(t, ch); r.code != http.StatusOK {
+		t.Fatalf("%s: %d %s", what, r.code, r.body)
+	}
+}
+
+// agesRaceStates requires that the failed statements recorded on the traced
+// handle are exactly want, counted by SQLSTATE (F4).
+func agesRaceStates(t *testing.T, log *erasureTestStateLog, want map[string]int) {
+	t.Helper()
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	got := map[string]int{}
+	for _, e := range log.entries {
+		got[e.Code]++
+	}
+	if want == nil {
+		want = map[string]int{}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("failed statements by SQLSTATE = %v, want %v (all: %v)", got, want, log.entries)
+	}
+}
+
+// agesRaceSame requires the request row to be byte-identical.
+func agesRaceSame(t *testing.T, label string, b, a erasureAgesNoteRow) {
+	t.Helper()
+	if a.Whole != b.Whole {
+		t.Errorf("%s changed:\n%s\n%s", label, b.Whole, a.Whole)
+	}
+}
+
+// agesRaceScrubbed requires the note gone and nothing else of the row changed.
+func agesRaceScrubbed(t *testing.T, label string, b, a erasureAgesNoteRow) {
+	t.Helper()
+	if a.Note != "" {
+		t.Errorf("%s: note is %q, want empty", label, a.Note)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Rest != b.Rest {
+		t.Errorf("%s: more than the note changed:\n%s\n%s", label, b.Rest, a.Rest)
+	}
+}
+
+// agesRaceEndedByErasure requires a pending row to be ended by the erasure's
+// own lifecycle inside span, with every column but the lifecycle's and the
+// note as it was.
+func agesRaceEndedByErasure(t *testing.T, label string, b, a erasureAgesNoteRow, span erasureSpan) {
+	t.Helper()
+	if a.Note != "" {
+		t.Errorf("%s: note is %q, want empty", label, a.Note)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Status != policy.ContactEnded || a.EndReason != policy.ContactAccountDisabled {
+		t.Errorf("%s: status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactAccountDisabled)
+	}
+	if !span.hasPtr(a.CompletedAt) {
+		t.Errorf("%s: completed_at %v is outside the erasure (%v to %v)", label, a.CompletedAt, span.Start, span.End)
+	}
+	if a.Preserved != b.Preserved {
+		t.Errorf("%s: a column other than status, end_reason, completed_at and the note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+	}
+}
+
+// agesRaceTurned18 requires the lifecycle the age rollover's preliminary
+// sweep gives the pending request of a subject who has turned eighteen
+// (policy.ContactTurned18, from needs_admin and the subject's age): ended with
+// that reason at the rollover's own injected clock now (stored to the
+// microsecond), the reason unchanged, and every column but the lifecycle's and
+// the note as it was.
+func agesRaceTurned18(t *testing.T, label string, b, a erasureAgesNoteRow, now time.Time) {
+	t.Helper()
+	if a.Status != policy.ContactEnded || a.EndReason != policy.ContactTurned18 {
+		t.Errorf("%s: status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactTurned18)
+	}
+	if a.CompletedAt == nil || !a.CompletedAt.Equal(now) {
+		t.Errorf("%s: completed_at %v, want the rollover's clock %v", label, a.CompletedAt, now)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Preserved != b.Preserved {
+		t.Errorf("%s: a column other than status, end_reason, completed_at and the note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+	}
+}
+
+func agesRaceID(id *uint) string {
+	if id == nil {
+		return "none"
+	}
+	return strconv.FormatUint(uint64(*id), 10)
+}
+
+// agesRaceAccessKind is the access columns of a registration as values, with
+// the instants and the fixture's own ids left out (the issuer and the request
+// as whether they are the expected ones), so a race and its twin can be set
+// side by side. It never replaces the fixed rules of agesRaceGrantedAccess and
+// agesRaceEndedAccess.
+func agesRaceAccessKind(r models.Registration, issuer, request uint) string {
+	return fmt.Sprintf("status=%s origin=%s end_reason=%s issuer_is_leader=%t request_is_own=%t ended_by=%s departure_membership=%s departure_actor=%s",
+		r.Status, r.AccessOrigin, r.AccessEndReason, erasureSameID(r.AccessIssuerID, &issuer), erasureSameID(r.AccessRequestID, &request),
+		agesRaceID(r.AccessEndedBy), agesRaceID(r.AccessDepartureMembershipID), agesRaceID(r.AccessDepartureActorID))
+}
+
+// agesRaceGrantedAccess requires a registration as the subject's approval of
+// request left it: going, with live manager-add access issued by issuer for
+// that request, granted inside the approval, with no ending and no departure
+// provenance.
+func agesRaceGrantedAccess(t *testing.T, label string, reg models.Registration, issuer, request uint, span erasureSpan) {
+	t.Helper()
+	if reg.UserID == nil || reg.Status != models.RegGoing || reg.AccessOrigin != policy.OccurrenceOriginManagerAdd ||
+		!erasureSameID(reg.AccessIssuerID, &issuer) || !erasureSameID(reg.AccessRequestID, &request) ||
+		reg.AccessDepartureMembershipID != nil || reg.AccessDepartureActorID != nil {
+		t.Fatalf("%s: the approval did not leave a going registration with manager-add access issued by %d for request %d: %s",
+			label, issuer, request, erasureAccessColumns(t, reg))
+	}
+	if !span.hasPtr(reg.AccessGrantedAt) {
+		t.Fatalf("%s: access granted at %v, outside the approval (%v to %v)", label, reg.AccessGrantedAt, span.Start, span.End)
+	}
+	if reg.AccessEndedAt != nil || reg.AccessEndReason != "" || reg.AccessEndedBy != nil {
+		t.Fatalf("%s: access is already ended: %s", label, erasureAccessColumns(t, reg))
+	}
+}
+
+// agesRaceEndedAccess requires the registration as the erasure leaves it: the
+// registration as the approval left it (every identity, origin, issuer,
+// request, departure and grant column, the grant instant included), with only
+// the ending changed, to reason account_disabled and no ender, at an instant
+// inside the erasure and not before the grant.
+func agesRaceEndedAccess(t *testing.T, label string, granted, ended models.Registration, span erasureSpan) {
+	t.Helper()
+	if ended.AccessEndedAt == nil {
+		t.Fatalf("%s: registration %d still has live access after the erasure", label, granted.ID)
+	}
+	want := granted
+	want.AccessEndedAt, want.AccessEndReason, want.AccessEndedBy = ended.AccessEndedAt, policy.ContactAccountDisabled, nil
+	if got, w := erasureAccessColumns(t, ended), erasureAccessColumns(t, want); got != w {
+		t.Errorf("%s: the access columns after the erasure:\n%s\nwant (only the ending, reason %q, no ender):\n%s", label, got, policy.ContactAccountDisabled, w)
+	}
+	if !span.hasMicro(accessMicro(*ended.AccessEndedAt)) {
+		t.Errorf("%s: access ended at %v, outside the erasure (%v to %v)", label, ended.AccessEndedAt, span.Start, span.End)
+	}
+	if granted.AccessGrantedAt != nil && ended.AccessEndedAt.Before(*granted.AccessGrantedAt) {
+		t.Errorf("%s: access ended at %v, before it was granted at %v", label, ended.AccessEndedAt, granted.AccessGrantedAt)
+	}
+}
+
+// agesRaceAuditWant is one audit row a step must have written. Meta is the
+// complete meta; when it is nil, Has lists the keys that must carry these
+// values and the rest of the meta is not judged. AnyIP allows the client
+// address of an HTTP actor; a system row must have none.
+type agesRaceAuditWant struct {
+	Type   string
+	ID     uint
+	Action string
+	Actor  *uint
+	Meta   map[string]any
+	Has    map[string]any
+	AnyIP  bool
+}
+
+// agesRaceNoticeWant is one new notice a step must have written, to a person
+// who is still there. Dedupe is its exact dedupe key ("" when it has none).
+// Each must have one queued email delivery and one notify.deliver job.
+type agesRaceNoticeWant struct {
+	To     uint
+	Kind   string
+	Type   string // subject type
+	ID     uint   // subject id
+	Dedupe string
+}
+
+// agesRaceTaskWant is an open task of the ledger before the step that the step
+// must close: who holds it, its kind and subject, how it was resolved and by whom.
+type agesRaceTaskWant struct {
+	Owner      uint
+	Kind       string
+	ID         uint
+	Resolution string
+	By         *uint
+}
+
+// agesRaceStep is what one operation (or the two that finish a request together)
+// must have done to the audit, notice, delivery and job rows, judged by
+// agesRaceLedger between the ledger before it and the ledger after it.
+type agesRaceStep struct {
+	Name    string
+	Span    erasureSpan // when its rows were written; the zero value skips the time checks
+	Audit   []agesRaceAuditWant
+	Notices []agesRaceNoticeWant
+	Tasks   []agesRaceTaskWant
+	Gone    uint // a person the step erased: their notices and deliveries must be gone, and nothing new may name them
+	Cleanup int  // new avatar.cleanup jobs, for Gone
+	Partial bool // the wanted rows are required but others are allowed
+}
+
+func agesRaceDeleted(admin, subject uint) agesRaceAuditWant {
+	return agesRaceAuditWant{Type: "user", ID: subject, Action: audit.UserDeleted, Actor: &admin, Meta: map[string]any{}, AnyIP: true}
+}
+
+// agesRaceEndMeta is the meta of the audit row that finishes a pending
+// occurrence_add request (finishContactRequest, contactAudit).
+func agesRaceEndMeta(r models.ContactRequest, outcome, reason string) map[string]any {
+	return map[string]any{"purpose": r.Purpose, "requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID,
+		"contextType": r.ContextType, "contextId": r.ContextID, "needsAdmin": r.NeedsAdmin, "outcome": outcome,
+		"reason": reason, "occurrenceId": *r.OccurrenceID}
+}
+
+// agesRaceEndRow is the audit row for a pending request ended (outcome ended,
+// with a reason) or expired (outcome expired, no reason) with no actor.
+func agesRaceEndRow(r models.ContactRequest, outcome, reason string) agesRaceAuditWant {
+	action := audit.AddEnded
+	if outcome == policy.ContactExpired {
+		action = audit.AddExpired
+	}
+	return agesRaceAuditWant{Type: "add_request", ID: r.ID, Action: action, Meta: agesRaceEndMeta(r, outcome, reason)}
+}
+
+// agesRaceUpdated is the add.updated notice a finished request sends to a
+// person; key is the request's status at that point (ended or expired).
+func agesRaceUpdated(to uint, r models.ContactRequest, key string) agesRaceNoticeWant {
+	return agesRaceNoticeWant{To: to, Kind: notify.AddUpdated, Type: "add_request", ID: r.ID, Dedupe: fmt.Sprintf("add:%d:%s", r.ID, key)}
+}
+
+// agesRaceTask is the review task of owner for r that a finished request closes.
+func agesRaceTask(owner uint, r models.ContactRequest, admin bool, resolution string, by *uint) agesRaceTaskWant {
+	kind := notify.AddSubjectReview
+	if admin {
+		kind = notify.AddAdminReview
+	}
+	return agesRaceTaskWant{Owner: owner, Kind: kind, ID: r.ID, Resolution: resolution, By: by}
+}
+
+// agesRaceLedger judges what one step did between two ledgers. Every earlier
+// audit row, delivery and job is byte-identical (Gone's deliveries aside); every
+// earlier notice is byte-identical except the tasks the step closes (resolved
+// inside the step, by the wanted resolver, as the wanted outcome, changing
+// nothing else) and Gone's, which are gone. New rows are exactly the wanted ones,
+// unless Partial: audit rows with their actor and meta, notices with their
+// dedupe key and subject, one queued email delivery and one notify.deliver job
+// per notice, and Cleanup avatar.cleanup jobs for Gone.
+func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) {
+	t.Helper()
+	name := st.Name
+	timed := !st.Span.Start.IsZero()
+	inside := func(at time.Time) bool { return !timed || st.Span.has(at) }
+
+	// Audit.
+	for id, b := range before.Audit {
+		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
+		}
+	}
+	type auditKey struct {
+		Type   string
+		ID     uint
+		Action string
+	}
+	wantAudit := map[auditKey]agesRaceAuditWant{}
+	for _, w := range st.Audit {
+		k := auditKey{w.Type, w.ID, w.Action}
+		if _, dup := wantAudit[k]; dup {
+			t.Fatalf("%s: the step expects two audit rows %+v", name, k)
+		}
+		wantAudit[k] = w
+	}
+	seenAudit := map[auditKey]bool{}
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; old {
+			continue
+		}
+		k := auditKey{a.TargetType, a.TargetID, a.Action}
+		w, ok := wantAudit[k]
+		switch {
+		case !ok:
+			if !st.Partial {
+				t.Errorf("%s: unexpected new audit row %d: %s on %s %d, meta %s", name, id, a.Action, a.TargetType, a.TargetID, a.MetaJSON)
+			}
+			continue
+		case seenAudit[k]:
+			t.Errorf("%s: audit row %+v was written twice", name, k)
+			continue
+		}
+		seenAudit[k] = true
+		if !erasureSameID(a.ActorID, w.Actor) {
+			t.Errorf("%s: audit %+v has actor %v, want %v", name, k, a.ActorID, w.Actor)
+		}
+		if !w.AnyIP && a.IP != "" {
+			t.Errorf("%s: audit %+v has ip %q, want none", name, k, a.IP)
+		}
+		if !inside(a.At) {
+			t.Errorf("%s: audit %+v written at %v, outside the step (%v to %v)", name, k, a.At, st.Span.Start, st.Span.End)
+		}
+		got := erasureMetaOf(t, a.MetaJSON)
+		if w.Meta != nil {
+			if want := erasureWire(t, w.Meta); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: audit %+v has meta %v, want %v", name, k, got, want)
+			}
+		}
+		if w.Has != nil {
+			for key, want := range erasureWire(t, w.Has) {
+				if !reflect.DeepEqual(got[key], want) {
+					t.Errorf("%s: audit %+v has meta %q = %v, want %v (meta %v)", name, k, key, got[key], want, got)
+				}
+			}
+		}
+	}
+	for k := range wantAudit {
+		if !seenAudit[k] {
+			t.Errorf("%s: expected audit row %+v was not written", name, k)
+		}
+	}
+
+	// Notices: Gone's are gone, the tasks the step closes are resolved, nothing else moves.
+	closed := map[uint]agesRaceTaskWant{}
+	for _, tw := range st.Tasks {
+		var open []models.Notification
+		for _, n := range before.Notices {
+			if n.UserID == tw.Owner && n.Kind == tw.Kind && n.SubjectID != nil && *n.SubjectID == tw.ID && n.Waiting && n.ResolvedAt == nil {
+				open = append(open, n)
+			}
+		}
+		if len(open) != 1 {
+			t.Fatalf("%s: %d open %s tasks for user %d on subject %d before the step, want 1", name, len(open), tw.Kind, tw.Owner, tw.ID)
+		}
+		closed[open[0].ID] = tw
+	}
+	for id, b := range before.Notices {
+		a, kept := after.Notices[id]
+		tw, isTask := closed[id]
+		switch {
+		case st.Gone != 0 && b.UserID == st.Gone:
+			if kept {
+				t.Errorf("%s: notice %d (%s) of the erased person survives", name, id, b.Kind)
+			}
+		case !kept:
+			t.Errorf("%s: notice %d (%s) of user %d is gone", name, id, b.Kind, b.UserID)
+		case isTask:
+			if a.ResolvedAt == nil || !inside(*a.ResolvedAt) || !erasureSameID(a.ResolvedByID, tw.By) || a.Resolution != tw.Resolution {
+				t.Errorf("%s: task %d (%s) of user %d resolved at %v by %v as %q, want inside the step, by %v, as %q",
+					name, id, b.Kind, b.UserID, a.ResolvedAt, a.ResolvedByID, a.Resolution, tw.By, tw.Resolution)
+			}
+			want := b
+			want.ResolvedAt, want.ResolvedByID, want.Resolution = a.ResolvedAt, tw.By, tw.Resolution
+			if erasureJSON(t, a) != erasureJSON(t, want) {
+				t.Errorf("%s: task %d changed beyond its resolution:\n%s\n%s", name, id, erasureJSON(t, b), erasureJSON(t, a))
+			}
+		case erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: notice %d (%s) of user %d changed:\n%s\n%s", name, id, b.Kind, b.UserID, erasureJSON(t, b), erasureJSON(t, a))
+		}
+	}
+	type noticeKey struct {
+		To     uint
+		Kind   string
+		ID     uint
+		Dedupe string
+	}
+	wantNotices := map[noticeKey]agesRaceNoticeWant{}
+	for _, w := range st.Notices {
+		k := noticeKey{w.To, w.Kind, w.ID, w.Dedupe}
+		if _, dup := wantNotices[k]; dup {
+			t.Fatalf("%s: the step expects two notices %+v", name, k)
+		}
+		wantNotices[k] = w
+	}
+	matched := map[uint]models.Notification{}
+	for id, n := range after.Notices {
+		if _, old := before.Notices[id]; old {
+			continue
+		}
+		if st.Gone != 0 && n.UserID == st.Gone {
+			t.Errorf("%s: the erased person holds new notice %d (%s)", name, id, n.Kind)
+			continue
+		}
+		var sid uint
+		if n.SubjectID != nil {
+			sid = *n.SubjectID
+		}
+		dedupe := ""
+		if n.DedupeKey != nil {
+			dedupe = *n.DedupeKey
+		}
+		k := noticeKey{n.UserID, n.Kind, sid, dedupe}
+		w, ok := wantNotices[k]
+		if !ok {
+			if !st.Partial {
+				t.Errorf("%s: unexpected new notice %d: %s for user %d, key %q, subject %s %d", name, id, n.Kind, n.UserID, dedupe, n.SubjectType, sid)
+			}
+			continue
+		}
+		delete(wantNotices, k)
+		matched[id] = n
+		if n.SubjectType != w.Type {
+			t.Errorf("%s: notice %d has subject type %q, want %q", name, id, n.SubjectType, w.Type)
+		}
+		if !inside(n.CreatedAt) {
+			t.Errorf("%s: notice %d created %v, outside the step (%v to %v)", name, id, n.CreatedAt, st.Span.Start, st.Span.End)
+		}
+	}
+	for k := range wantNotices {
+		t.Errorf("%s: expected notice %+v was not written", name, k)
+	}
+
+	// Deliveries.
+	for id, b := range before.Deliveries {
+		a, kept := after.Deliveries[id]
+		switch {
+		case st.Gone != 0 && b.UserID == st.Gone:
+			if kept {
+				t.Errorf("%s: delivery %d of the erased person survives", name, id)
+			}
+		case !kept || erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: delivery %d of user %d changed or is gone", name, id, b.UserID)
+		}
+	}
+	newDeliveries := map[uint]models.NotificationDelivery{}
+	for id, d := range after.Deliveries {
+		if _, old := before.Deliveries[id]; old {
+			continue
+		}
+		if st.Gone != 0 && d.UserID == st.Gone {
+			t.Errorf("%s: the erased person holds new delivery %d", name, id)
+			continue
+		}
+		if _, dup := newDeliveries[d.NotificationID]; dup {
+			t.Errorf("%s: notice %d has two new deliveries", name, d.NotificationID)
+		}
+		newDeliveries[d.NotificationID] = d
+	}
+	for id, n := range matched {
+		d, ok := newDeliveries[id]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery row", name, id)
+			continue
+		}
+		delete(newDeliveries, id)
+		if d.Channel != models.DeliveryEmail || d.UserID != n.UserID || d.Status != models.DeliveryQueued || !inside(d.CreatedAt) || !inside(d.UpdatedAt) {
+			t.Errorf("%s: delivery %d of notice %d is %s/%s for user %d written %v/%v; want a queued email for user %d inside the step",
+				name, d.ID, id, d.Channel, d.Status, d.UserID, d.CreatedAt, d.UpdatedAt, n.UserID)
+		}
+	}
+	if !st.Partial {
+		for id, d := range newDeliveries {
+			t.Errorf("%s: unexpected new delivery for notice %d (user %d)", name, id, d.UserID)
+		}
+	}
+
+	// Jobs.
+	for id, b := range before.Jobs {
+		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)
+		}
+	}
+	queuedJob := func(j models.Job, maxAttempts int) {
+		t.Helper()
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.MaxAttempts != maxAttempts || j.LockedAt != nil || j.LockedBy != "" || j.LastError != "" ||
+			!inside(j.RunAt) || !inside(j.CreatedAt) {
+			t.Errorf("%s: job %d (%s) is %s with %d attempts of %d, run at %v, created %v; want queued, no attempts, max %d, inside the step",
+				name, j.ID, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.RunAt, j.CreatedAt, maxAttempts)
+		}
+	}
+	deliverJobs := map[string]models.Job{}
+	var cleanups []models.Job
+	for id, j := range after.Jobs {
+		if _, old := before.Jobs[id]; old {
+			continue
+		}
+		switch {
+		case j.Kind == notify.DeliverKind && j.UniqueKey != nil:
+			deliverJobs[*j.UniqueKey] = j
+		case j.Kind == kindAvatarCleanup:
+			cleanups = append(cleanups, j)
+		default:
+			if !st.Partial {
+				t.Errorf("%s: unexpected new job %d (%s) %s", name, id, j.Kind, j.Payload)
+			}
+		}
+	}
+	for id := range matched {
+		key := notify.DeliverKey(id)
+		j, ok := deliverJobs[key]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery job", name, id)
+			continue
+		}
+		delete(deliverJobs, key)
+		queuedJob(j, 8)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"notificationId": float64(id)}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: job %d payload %v, want %v", name, j.ID, got, want)
+		}
+	}
+	if !st.Partial {
+		for key, j := range deliverJobs {
+			t.Errorf("%s: unexpected delivery job %s (%s)", name, key, j.Payload)
+		}
+	}
+	if len(cleanups) != st.Cleanup {
+		t.Errorf("%s: %d new avatar cleanup jobs, want %d", name, len(cleanups), st.Cleanup)
+	}
+	for _, j := range cleanups {
+		queuedJob(j, jobs.DefaultMaxAttempts)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"userId": float64(st.Gone)}; !reflect.DeepEqual(got, want) || j.UniqueKey != nil {
+			t.Errorf("%s: cleanup job %d payload %v key %v, want %v and none", name, j.ID, got, j.UniqueKey, want)
+		}
+	}
+}
+
+func agesRacePID(v *atomic.Int64) int { return int(v.Load()) }
+
+// TestAgesNoteErasureRaceDecisionThenErasure is CA-1. The subject's approval
+// holds the gate and has not written; the erasure waits behind it (advisory
+// evidence, blocked only by the decision's backend). The approval grants and
+// commits, the erasure then scrubs the granted row through the completion
+// exception and commits. The request is exactly as the decision left it but for
+// the note, and the registration still names the request.
+//
+// The access is judged against fixed rules, not against the twin: as the
+// approval leaves it (agesRaceGrantedAccess) and, after the erasure, the same
+// columns with only the ending changed (agesRaceEndedAccess). The twin, whose
+// note was empty and which no race touched (the pre-T07 result), is held to the
+// same rules with its own ids and times and must also match the race by kind.
+// The erasure's audit, notice, delivery and job rows are judged in full.
+func TestAgesNoteErasureRaceDecisionThenErasure(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+
+	// The control: the same approval and an erasure with no note and no race.
+	twin := newTestUser(t, w.app, "ages-twin", erasurePW, models.RoleMember)
+	twinClient := loginAPI(t, w.app, "ages-twin", erasurePW)
+	twinClient.holdNotices = true
+	tp := w.request(leader.ID, twin.ID, policy.ContactPending, "")
+	twinApproval := erasureSpan{Start: time.Now().UTC()}
+	agesRaceOK(t, w.decide(twinClient, tp.ID), "twin approval")
+	twinApproval.End = time.Now().UTC()
+	var twinGranted models.Registration
+	if err := db.Where("user_id = ? AND occurrence_id = ?", twin.ID, w.occ.ID).First(&twinGranted).Error; err != nil {
+		t.Fatalf("the twin's approval left no registration: %v", err)
+	}
+	agesRaceGrantedAccess(t, "twin", twinGranted, leader.ID, tp.ID, twinApproval)
+	twinErasure := erasureSpan{Start: time.Now().UTC()}
+	agesRaceOK(t, w.erase(f.ac, twin.ID), "twin erasure")
+	twinErasure.End = time.Now().UTC()
+	var twinEnded models.Registration
+	if err := db.First(&twinEnded, twinGranted.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	agesRaceEndedAccess(t, "twin", twinGranted, twinEnded, twinErasure)
+
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	base := erasureLedgerOf(t, db)
+
+	var decisionPID, erasurePID atomic.Int64
+	decisionReached, releaseDecision := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+		Table: "contact_requests", PID: &decisionPID})
+	hold := erasureTestBeforeNotificationsDelete(u.ID)
+	hold.PID = &erasurePID
+	erasureReached, releaseErasure := w.run.pause(hold)
+
+	approval := erasureSpan{Start: time.Now().UTC()}
+	dec := w.decide(f.oc, p.ID)
+	awaitDBSignal(t, decisionReached) // the approval holds the gate and has written nothing
+	requireContactGate(t, db, agesRacePID(&decisionPID), true, "the approval")
+	erasure := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(&decisionPID), "the erasure")
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", u.ID); n != 0 {
+		t.Fatal("the erasure soft-deleted the subject while the approval held the gate")
+	}
+	releaseDecision()
+	agesRaceOK(t, dec, "approval")
+	approval.End = time.Now().UTC()
+	awaitDBSignal(t, erasureReached) // the approval has committed; the erasure holds the gate and has not scrubbed
+	if waiter != agesRacePID(&erasurePID) {
+		t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+	}
+	left := w.rows()[p.ID]
+	atGrant := erasureLedgerOf(t, db)
+	var granted models.ContactRequest
+	if err := db.First(&granted, p.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var reg models.Registration
+	if err := db.Where("user_id = ? AND occurrence_id = ?", u.ID, w.occ.ID).First(&reg).Error; err != nil {
+		t.Fatalf("the approval left no registration: %v", err)
+	}
+	if granted.Status != policy.ContactGranted || granted.CompletedTargetID == nil || *granted.CompletedTargetID != reg.ID ||
+		reg.AccessRequestID == nil || *reg.AccessRequestID != p.ID {
+		t.Fatalf("the approval did not grant: request %q target %v, registration names %v", granted.Status, granted.CompletedTargetID, reg.AccessRequestID)
+	}
+	agesRaceGrantedAccess(t, "race", reg, leader.ID, p.ID, approval)
+	if left.Note != agesRaceNote {
+		t.Errorf("the note is %q before the scrub, want %q", left.Note, agesRaceNote)
+	}
+	// What the approval itself wrote. The contact suites judge it in full; this
+	// race needs these rows and notices to exist, and the task closed.
+	agesRaceLedger(t, agesRaceStep{Name: "the approval", Partial: true,
+		Audit: []agesRaceAuditWant{
+			{Type: "add_request", ID: p.ID, Action: audit.AddDecision, Actor: &u.ID, AnyIP: true, Has: map[string]any{
+				"purpose": policy.RequestOccurrenceAdd, "requesterId": leader.ID, "subjectUserId": u.ID, "occurrenceId": w.occ.ID,
+				"reason": policy.ContactSubject + ":" + policy.ContactApproved}},
+			{Type: "add_request", ID: p.ID, Action: audit.AddCompleted, Actor: &u.ID, AnyIP: true, Has: map[string]any{
+				"purpose": policy.RequestOccurrenceAdd, "requesterId": leader.ID, "subjectUserId": u.ID, "occurrenceId": w.occ.ID,
+				"outcome": policy.ContactGranted}},
+			{Type: "event", ID: w.ev.ID, Action: audit.RegistrationAdded, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+				"registrationId": reg.ID, "userId": u.ID, "newStatus": models.RegGoing}},
+			{Type: accessTargetType, ID: reg.ID, Action: audit.OccurrenceAccessAdded, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+				"subjectUserId": u.ID, "occurrenceId": w.occ.ID, "registrationId": reg.ID, "origin": policy.OccurrenceOriginManagerAdd,
+				"issuerId": leader.ID, "requestId": p.ID, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt)}},
+		},
+		Notices: []agesRaceNoticeWant{
+			agesRaceUpdated(leader.ID, p, "decision:subject"),
+			agesRaceUpdated(u.ID, p, "decision:subject"),
+			agesRaceUpdated(leader.ID, p, "completed"),
+			{To: u.ID, Kind: notify.OccurrenceAdded, Type: accessTargetType, ID: reg.ID, Dedupe: accessAddedKey(reg)},
+		},
+		Tasks: []agesRaceTaskWant{agesRaceTask(u.ID, p, false, policy.ContactApproved, &u.ID)},
+	}, base, atGrant)
+
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	erasure.End = time.Now().UTC()
+
+	after := w.rows()[p.ID]
+	agesRaceScrubbed(t, "granted request", left, after)
+	var ended models.Registration
+	if err := db.First(&ended, reg.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ended.AccessRequestID == nil || *ended.AccessRequestID != p.ID {
+		t.Errorf("the registration names request %v, want %d", ended.AccessRequestID, p.ID)
+	}
+	agesRaceEndedAccess(t, "race", reg, ended, erasure)
+	if got, want := agesRaceAccessKind(ended, leader.ID, p.ID), agesRaceAccessKind(twinEnded, leader.ID, tp.ID); got != want {
+		t.Errorf("the registration's access after the race (%s) is not of the kind the twin's erasure leaves (%s)", got, want)
+	}
+	// The erasure finishes the access: its snapshot, its one extra audit row and
+	// what it removes are all that it adds.
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			{Type: accessTargetType, ID: reg.ID, Action: audit.OccurrenceAccessEnded, Meta: map[string]any{
+				"subjectUserId": u.ID, "occurrenceId": w.occ.ID, "eventId": w.ev.ID,
+				"organizerType": policy.ContactGroup, "organizerId": f.group.ID, "registrationId": reg.ID,
+				"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
+				"issuerId": leader.ID, "requestId": p.ID,
+				"endedAtMicro": accessMicro(*ended.AccessEndedAt), "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}},
+		},
+	}, atGrant, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+	t.Logf("approval backend %d, erasure backend %d, gate waiter %d; request %q", decisionPID.Load(), erasurePID.Load(), waiter, granted.Status)
+}
+
+// TestAgesNoteErasureRaceErasureThenDecision is CA-2. The erasure holds the
+// gate with its scrub done and uncommitted. The subject's approval (authorized
+// before the erasure committed) waits behind it, then finds a deleted subject
+// and is refused. The note was already empty when it ran, and the approval
+// changed nothing on the request. The two together write exactly the erasure's
+// audit row and ending of the request, the notice to the requester and the
+// approval's refusal, and the subject's task goes with them.
+func TestAgesNoteErasureRaceErasureThenDecision(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 1)
+	hold.PID = &erasurePID
+	reached, release := w.run.pause(hold)
+
+	span := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	awaitDBSignal(t, reached) // the scrub ran; nothing has committed
+	requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+	if got := w.rows()[p.ID].Note; got != agesRaceNote {
+		t.Errorf("another session sees note %q before the erasure commits, want %q", got, agesRaceNote)
+	}
+	dec := w.decide(f.oc, p.ID)
+	agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the approval")
+	release()
+	agesRaceOK(t, del, "erasure")
+	span.End = time.Now().UTC()
+	r := awaitResult(t, dec)
+	both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	if r.code < 400 || r.code >= 500 {
+		t.Errorf("approval after the erasure: %d %s, want a refusal", r.code, r.body)
+	}
+	t.Logf("approval after the erasure: %d %s", r.code, r.body)
+
+	after := w.rows()[p.ID]
+	agesRaceEndedByErasure(t, "request", before[p.ID], after, span)
+	if after.Note != "" {
+		t.Errorf("note %q after the erasure", after.Note)
+	}
+	if n := countRows(t, db, "registrations", "access_request_id = ?", p.ID); n != 0 {
+		t.Errorf("%d registrations name the request, want none", n)
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure and the refused approval", Span: both, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+			// The deleted subject has no live account behind the gate: the
+			// approval is refused as a stale session and recorded, with the
+			// subject as its actor.
+			{Type: "add_request", ID: 0, Action: audit.AddRefused, Actor: &u.ID, AnyIP: true, Has: map[string]any{"reason": "stale_session"}},
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+	}, l0, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// agesRaceExpiry is CA-3: one erasure against the expiry sweep. T is the erased
+// subject's pending request, H their terminal one, X an unrelated pending
+// request that has already expired. order is "erasure-first", "sweep-first" or
+// "crossing" (sweep first, with T's expiry between the two clocks).
+//
+// T's fate is fixed by the case: ended by the removal of its subject when it has
+// not expired at the erasure's clock, expired when (in the crossing case) its
+// expiry is after the sweep's clock and before the erasure's. The sweep's rows
+// (X expired, a notice to both parties, X's task closed) and the erasure's (T
+// finished, the notice to the requester, T's task removed with the subject) are
+// each judged in full.
+func agesRaceExpiry(t *testing.T, order string) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, other, leader := f.outsider, f.subject, f.leader
+	crossing := order == "crossing"
+	sweepNow := time.Now().UTC().Truncate(time.Microsecond)
+	var tReq models.ContactRequest
+	if crossing {
+		// Expired at the erasure's clock, not at the sweep's.
+		exp := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+		tReq = w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, func(r *models.ContactRequest) {
+			r.ExpiresAt, r.CreatedAt = exp, exp.Add(-14*24*time.Hour)
+		})
+		sweepNow = exp.Add(-time.Minute)
+		if !sweepNow.Before(tReq.ExpiresAt) {
+			t.Fatalf("the sweep's clock %v is not before T's expiry %v", sweepNow, tReq.ExpiresAt)
+		}
+	} else {
+		tReq = w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	}
+	hReq := w.request(leader.ID, u.ID, policy.ContactWithdrawn, agesRaceNote)
+	xReq := w.request(leader.ID, other.ID, policy.ContactPending, "unrelated note", agesRaceExpired)
+	w.seedTasks(tReq)
+	w.seedTasks(xReq)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	// The fixed fate of T under the erasure.
+	tStatus, tReason := policy.ContactEnded, policy.ContactAccountDisabled
+	if crossing {
+		tStatus, tReason = policy.ContactExpired, ""
+	}
+	// The rows the sweep writes for X, and the rows the erasure writes for T.
+	sweepStep := func(span erasureSpan) agesRaceStep {
+		return agesRaceStep{Name: "the sweep", Span: span,
+			Audit: []agesRaceAuditWant{agesRaceEndRow(xReq, policy.ContactExpired, "")},
+			Notices: []agesRaceNoticeWant{
+				agesRaceUpdated(leader.ID, xReq, policy.ContactExpired),
+				agesRaceUpdated(other.ID, xReq, policy.ContactExpired),
+			},
+			Tasks: []agesRaceTaskWant{agesRaceTask(other.ID, xReq, false, policy.ContactExpired, nil)},
+		}
+	}
+	erasureStep := func(span erasureSpan) agesRaceStep {
+		return agesRaceStep{Name: "the erasure", Span: span, Gone: u.ID, Cleanup: 1,
+			Audit:   []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID), agesRaceEndRow(tReq, tStatus, tReason)},
+			Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, tReq, tStatus)},
+		}
+	}
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 2)
+	hold.PID = &erasurePID
+	erasureReached, releaseErasure := w.run.pause(hold)
+
+	var span erasureSpan
+	var del <-chan httpResult
+	var mid map[uint]erasureAgesNoteRow
+	var l1, l2 erasureLedger
+	var laterSpan erasureSpan
+	switch order {
+	case "erasure-first":
+		// The sweep's try-lock is observed with its result in hand and its
+		// transaction still open: it holds no gate and waits for none.
+		sweepPID := w.run.probe(erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "pg_try_advisory_xact_lock"})
+		sweepReached, releaseSweep := w.run.pause(erasureTestPoint{Processor: "row", After: true, Step: "gorm:row", SQLContains: "pg_try_advisory_xact_lock"})
+		span.Start = time.Now().UTC()
+		del = w.erase(f.ac, u.ID)
+		awaitDBSignal(t, erasureReached)
+		requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+		sweepDone := w.run.sweep(w.app, sweepNow)
+		awaitDBSignal(t, sweepReached)
+		sp := agesRacePID(sweepPID)
+		if sp == 0 || sp == agesRacePID(&erasurePID) {
+			t.Fatalf("the sweep ran on backend %d, the erasure on %d", sp, erasurePID.Load())
+		}
+		var advisory, blockers int64
+		if err := db.Raw("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = ?", sp).Scan(&advisory).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Raw("SELECT cardinality(pg_blocking_pids(?))", sp).Scan(&blockers).Error; err != nil {
+			t.Fatal(err)
+		}
+		if advisory != 0 || blockers != 0 {
+			t.Errorf("the sweep holds or waits for %d advisory locks and is blocked by %d backends, want none of either", advisory, blockers)
+		}
+		agesRaceNoGateWaiter(t, db)
+		releaseSweep()
+		if err := agesRaceAwait(t, sweepDone, "the sweep"); err != nil {
+			t.Fatalf("sweepContacts: %v", err)
+		}
+		// It committed having changed nothing, while the erasure still holds the gate.
+		unchanged := w.rows()
+		for id, b := range before {
+			agesRaceSame(t, fmt.Sprintf("request %d after the sweep that found the gate taken", id), b, unchanged[id])
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the sweep that found the gate taken"}, l0, erasureLedgerOf(t, db))
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		l1 = erasureLedgerOf(t, db)
+	default: // sweep-first, crossing
+		sweepSpan := erasureSpan{Start: time.Now().UTC()}
+		sweepPID, sweepDone, releaseSweep := w.holdSweep(sweepNow)
+		requireContactGate(t, db, sweepPID, true, "the sweep")
+		span.Start = time.Now().UTC()
+		del = w.erase(f.ac, u.ID)
+		waiter := agesRaceGateWaiter(t, db, sweepPID, "the erasure")
+		if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", u.ID); n != 0 {
+			t.Fatal("the erasure soft-deleted the subject while the sweep held the gate")
+		}
+		releaseSweep()
+		if err := awaitDBResult(t, sweepDone); err != nil {
+			t.Fatalf("model sweep: %v", err)
+		}
+		sweepSpan.End = time.Now().UTC()
+		awaitDBSignal(t, erasureReached) // the sweep has committed; the erasure has scrubbed and holds the gate
+		if waiter != agesRacePID(&erasurePID) {
+			t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+		}
+		mid = w.rows()
+		x := mid[xReq.ID]
+		if x.Status != policy.ContactExpired || x.EndReason != "" || x.CompletedAt == nil || !x.CompletedAt.Equal(sweepNow) {
+			t.Errorf("X after the sweep: status %q end_reason %q completed_at %v, want expired, none and %v", x.Status, x.EndReason, x.CompletedAt, sweepNow)
+		}
+		if x.Preserved != before[xReq.ID].Preserved || x.Note != before[xReq.ID].Note {
+			t.Errorf("the sweep changed more than X's lifecycle columns")
+		}
+		agesRaceSame(t, "T after the sweep (eligible, not expired at the sweep's clock)", before[tReq.ID], mid[tReq.ID])
+		agesRaceSame(t, "H after the sweep", before[hReq.ID], mid[hReq.ID])
+		l1 = erasureLedgerOf(t, db)
+		agesRaceLedger(t, sweepStep(sweepSpan), l0, l1)
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		l2 = erasureLedgerOf(t, db)
+		if crossing && !tReq.ExpiresAt.Before(span.Start) {
+			t.Fatalf("T's expiry %v is not before the erasure began (%v)", tReq.ExpiresAt, span.Start)
+		}
+	}
+
+	after := w.rows()
+	// H is terminal: only the note goes.
+	agesRaceScrubbed(t, "H", before[hReq.ID], after[hReq.ID])
+	if h := after[hReq.ID]; h.Status != before[hReq.ID].Status || h.EndReason != before[hReq.ID].EndReason {
+		t.Errorf("H's lifecycle changed: %s/%s", h.Status, h.EndReason)
+	}
+	// T is finished by the erasure, at the erasure's clock: expired when the
+	// case puts its expiry before that clock, otherwise ended by the removal of
+	// its subject.
+	tt := after[tReq.ID]
+	if tt.Note != "" || tt.Reason != before[tReq.ID].Reason || tt.Status != tStatus || tt.EndReason != tReason ||
+		!span.hasPtr(tt.CompletedAt) || tt.Preserved != before[tReq.ID].Preserved {
+		t.Errorf("T: note %q status %q end_reason %q completed_at %v, want empty, %q, %q inside %v..%v with every other column unchanged",
+			tt.Note, tt.Status, tt.EndReason, tt.CompletedAt, tStatus, tReason, span.Start, span.End)
+	}
+	// X: still pending after an erasure that never visits it, and unchanged by
+	// it when the sweep had not run yet.
+	x := after[xReq.ID]
+	if order == "erasure-first" {
+		agesRaceSame(t, "X after the erasure", before[xReq.ID], x)
+		agesRaceLedger(t, erasureStep(span), l0, l1)
+		later := time.Now().UTC().Truncate(time.Microsecond)
+		laterSpan.Start = time.Now().UTC()
+		if err := agesRaceAwait(t, w.run.sweep(w.app, later), "the later sweep"); err != nil {
+			t.Fatalf("later sweep: %v", err)
+		}
+		laterSpan.End = time.Now().UTC()
+		x = w.rows()[xReq.ID]
+		if x.Status != policy.ContactExpired || x.EndReason != "" || x.CompletedAt == nil || !x.CompletedAt.Equal(later) {
+			t.Errorf("X after a later sweep: status %q end_reason %q completed_at %v, want expired, none and %v", x.Status, x.EndReason, x.CompletedAt, later)
+		}
+		agesRaceLedger(t, sweepStep(laterSpan), l1, erasureLedgerOf(t, db))
+	} else {
+		agesRaceSame(t, "X after the erasure that followed the sweep", mid[xReq.ID], x)
+		agesRaceLedger(t, erasureStep(span), l1, l2)
+	}
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceErasureThenSweep(t *testing.T) { agesRaceExpiry(t, "erasure-first") }
+func TestAgesNoteErasureRaceSweepThenErasure(t *testing.T) { agesRaceExpiry(t, "sweep-first") }
+func TestAgesNoteErasureRaceSweepThenErasureCrossingExpiry(t *testing.T) {
+	agesRaceExpiry(t, "crossing")
+}
+
+// agesRaceTwoErasures is CA-4: the requester's erasure and the subject's share
+// one request and serialize on the gate, in either order. Both hold at the
+// notifications delete, which comes before the scrub, so the state between the
+// two commits can be read. The first erasure ends the request and tells the
+// person still there (closing their task unless it is theirs); the second
+// removes that person's rows and adds only its own deletion.
+func agesRaceTwoErasures(t *testing.T, subjectFirst bool) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	asker := newTestUser(t, w.app, "ages-asker", erasurePW, models.RoleMember)
+	subject := newTestUser(t, w.app, "ages-asked", erasurePW, models.RoleMember)
+	admin2 := newTestUser(t, w.app, "ages-admin-2", erasurePW, models.RoleAdmin)
+	ac2 := loginAPI(t, w.app, "ages-admin-2", erasurePW)
+	ac2.holdNotices = true
+	r := w.request(asker.ID, subject.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(r)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var askerPID, subjectPID atomic.Int64
+	pa := erasureTestBeforeNotificationsDelete(asker.ID)
+	pa.PID = &askerPID
+	askerReached, releaseAsker := w.run.pause(pa)
+	ps := erasureTestBeforeNotificationsDelete(subject.ID)
+	ps.PID = &subjectPID
+	subjectReached, releaseSubject := w.run.pause(ps)
+
+	firstReached, releaseFirst, firstPID := askerReached, releaseAsker, &askerPID
+	secondReached, releaseSecond, secondPID := subjectReached, releaseSubject, &subjectPID
+	firstID, secondID := asker.ID, subject.ID
+	// The first erasure leaves the other person; their task closes if they are
+	// the subject, and goes with them if the subject is the one erased.
+	livingID := subject.ID
+	firstTasks := []agesRaceTaskWant{agesRaceTask(subject.ID, r, false, policy.ContactEnded, nil)}
+	if subjectFirst {
+		firstReached, releaseFirst, firstPID, secondReached, releaseSecond, secondPID =
+			subjectReached, releaseSubject, &subjectPID, askerReached, releaseAsker, &askerPID
+		firstID, secondID = subject.ID, asker.ID
+		livingID, firstTasks = asker.ID, nil
+	}
+	span := erasureSpan{Start: time.Now().UTC()}
+	first := w.erase(f.ac, firstID)
+	awaitDBSignal(t, firstReached)
+	requireContactGate(t, db, agesRacePID(firstPID), true, "the first erasure")
+	secondSpan := erasureSpan{Start: time.Now().UTC()}
+	second := w.erase(ac2, secondID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(firstPID), "the second erasure")
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", secondID); n != 0 {
+		t.Fatal("the second erasure deleted its person while the first held the gate")
+	}
+	if got := w.rows()[r.ID]; got.Whole != before[r.ID].Whole {
+		t.Fatal("the request changed before the first erasure released the gate")
+	}
+	releaseFirst()
+	agesRaceOK(t, first, "first erasure")
+	firstSpan := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	awaitDBSignal(t, secondReached) // the first has committed; the second holds the gate and has not scrubbed
+	if waiter != agesRacePID(secondPID) {
+		t.Errorf("the gate waiter was backend %d, the second erasure runs on %d", waiter, secondPID.Load())
+	}
+	// Between the two commits the request is ended by whoever went first; the
+	// note is the scrub's alone, so it is gone only if the subject went first.
+	mid := w.rows()[r.ID]
+	if mid.Status != policy.ContactEnded || mid.EndReason != policy.ContactAccountDisabled || mid.Reason != before[r.ID].Reason {
+		t.Errorf("between the commits: status %q end_reason %q reason %q", mid.Status, mid.EndReason, mid.Reason)
+	}
+	wantMidNote := agesRaceNote
+	if subjectFirst {
+		wantMidNote = ""
+	}
+	if mid.Note != wantMidNote {
+		t.Errorf("between the commits the note is %q, want %q (subject first: %t)", mid.Note, wantMidNote, subjectFirst)
+	}
+	l1 := erasureLedgerOf(t, db)
+	agesRaceLedger(t, agesRaceStep{Name: "the first erasure", Span: firstSpan, Gone: firstID, Cleanup: 1, Tasks: firstTasks,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, firstID),
+			agesRaceEndRow(r, policy.ContactEnded, policy.ContactAccountDisabled),
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(livingID, r, policy.ContactEnded)},
+	}, l0, l1)
+	releaseSecond()
+	agesRaceOK(t, second, "second erasure")
+	span.End = time.Now().UTC()
+	secondSpan.End = span.End
+
+	after := w.rows()[r.ID]
+	agesRaceEndedByErasure(t, "shared request", before[r.ID], after, span)
+	if after.Rest != mid.Rest {
+		t.Errorf("the second erasure changed more than the note:\n%s\n%s", mid.Rest, after.Rest)
+	}
+	// The second erasure ends nothing again: it adds its own deletion, removes
+	// its person's rows (the notice the first sent them included) and queues its
+	// own avatar cleanup.
+	agesRaceLedger(t, agesRaceStep{Name: "the second erasure", Span: secondSpan, Gone: secondID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{agesRaceDeleted(admin2.ID, secondID)},
+	}, l1, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceRequesterThenSubjectErasure(t *testing.T) { agesRaceTwoErasures(t, false) }
+func TestAgesNoteErasureRaceSubjectThenRequesterErasure(t *testing.T) { agesRaceTwoErasures(t, true) }
+
+// agesRaceRemoval is the removal half of CA-5: the leader removes the subject's
+// registration on the request's date, in either order against the subject's
+// erasure.
+//
+// Removal first writes the usual rows: registration.removed with its actor and
+// meta, add.ended ("removed") for the request, the notices to the requester and
+// to the subject (the update and the removal), and closes the subject's task.
+// The erasure that follows ends nothing again. Erasure first finishes the
+// request itself; the removal, whatever it answers, leaves no row at all.
+func agesRaceRemoval(t *testing.T, removalFirst bool) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	uid := u.ID
+	reg := models.Registration{UserID: &uid, OccurrenceID: w.occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb,
+		AttendanceMode: models.AttendanceInPerson}
+	erasureMustCreate(t, db, &reg)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID, removalPID atomic.Int64
+	if removalFirst {
+		// The removal holds the gate and has not written; the erasure is held
+		// after the removal commits so the row can be read as the removal left it.
+		reachedRemoval, releaseRemoval := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+			Table: "registrations", Assign: map[string]any{"status": models.RegRemoved}, PID: &removalPID})
+		hold := erasureTestBeforeNotificationsDelete(u.ID)
+		hold.PID = &erasurePID
+		reachedErasure, releaseErasure := w.run.pause(hold)
+		removal := erasureSpan{Start: time.Now().UTC()}
+		rem := w.remove(reg.ID)
+		awaitDBSignal(t, reachedRemoval)
+		requireContactGate(t, db, agesRacePID(&removalPID), true, "the removal")
+		erasure := erasureSpan{Start: time.Now().UTC()}
+		del := w.erase(f.ac, u.ID)
+		waiter := agesRaceGateWaiter(t, db, agesRacePID(&removalPID), "the erasure")
+		releaseRemoval()
+		agesRaceOK(t, rem, "removal")
+		removal.End = time.Now().UTC()
+		awaitDBSignal(t, reachedErasure)
+		if waiter != agesRacePID(&erasurePID) {
+			t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+		}
+		left := w.rows()[p.ID]
+		if left.Status != policy.ContactEnded || left.EndReason != policy.OccurrenceRemoved || !removal.hasPtr(left.CompletedAt) || left.Note != agesRaceNote {
+			t.Errorf("request as the removal left it: status %q end_reason %q completed_at %v note %q, want ended, %q inside the removal and the note",
+				left.Status, left.EndReason, left.CompletedAt, left.Note, policy.OccurrenceRemoved)
+		}
+		if left.Preserved != before[p.ID].Preserved || left.Reason != before[p.ID].Reason {
+			t.Errorf("the removal changed a column other than the lifecycle's:\n%s\n%s", before[p.ID].Preserved, left.Preserved)
+		}
+		l1 := erasureLedgerOf(t, db)
+		agesRaceLedger(t, agesRaceStep{Name: "the removal", Span: removal,
+			Audit: []agesRaceAuditWant{
+				{Type: "event", ID: w.ev.ID, Action: audit.RegistrationRemoved, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+					"registrationId": reg.ID, "userId": u.ID, "occurrenceId": w.occ.ID,
+					"oldStatus": models.RegGoing, "newStatus": models.RegRemoved, "note": "Moved away"}},
+				agesRaceEndRow(p, policy.ContactEnded, policy.OccurrenceRemoved),
+			},
+			Notices: []agesRaceNoticeWant{
+				agesRaceUpdated(leader.ID, p, policy.ContactEnded),
+				agesRaceUpdated(u.ID, p, policy.ContactEnded),
+				{To: u.ID, Kind: notify.RegistrationRemoved, Type: "occurrence", ID: w.occ.ID},
+			},
+			Tasks: []agesRaceTaskWant{agesRaceTask(u.ID, p, false, policy.ContactEnded, nil)},
+		}, l0, l1)
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		erasure.End = time.Now().UTC()
+
+		// The erasure scrubs the ended row through the identity exception and
+		// does not end it again: the completion branch is not entered and
+		// reconcileContacts does not select it.
+		agesRaceScrubbed(t, "request", left, w.rows()[p.ID])
+		if n := auditCount(t, w.app, audit.RegistrationRemoved); n != 1 {
+			t.Errorf("%d registration.removed rows, want 1", n)
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+			Audit: []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID)},
+		}, l1, erasureLedgerOf(t, db))
+	} else {
+		hold := agesRaceAfterScrub(u.ID, 1)
+		hold.PID = &erasurePID
+		reached, release := w.run.pause(hold)
+		span := erasureSpan{Start: time.Now().UTC()}
+		del := w.erase(f.ac, u.ID)
+		awaitDBSignal(t, reached)
+		requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+		rem := w.remove(reg.ID)
+		agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the removal")
+		release()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		// Whatever the removal answers for a deleted person's registration is
+		// existing behavior; it is recorded and only its effect on the request
+		// and the ledger is asserted.
+		r := awaitResult(t, rem)
+		both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+		t.Logf("removal after the erasure: %d %s", r.code, r.body)
+
+		after := w.rows()
+		agesRaceEndedByErasure(t, "request", before[p.ID], after[p.ID], span)
+		if after[p.ID].EndReason == policy.OccurrenceRemoved {
+			t.Error("the removal ended a request the erasure had already ended")
+		}
+		for id, b := range before {
+			if id != p.ID {
+				agesRaceSame(t, fmt.Sprintf("request %d", id), b, after[id])
+			}
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the erasure and the removal after it", Span: both, Gone: u.ID, Cleanup: 1,
+			Audit: []agesRaceAuditWant{
+				agesRaceDeleted(f.admin.ID, u.ID),
+				agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+			},
+			Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+		}, l0, erasureLedgerOf(t, db))
+	}
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceRemovalThenErasure(t *testing.T) { agesRaceRemoval(t, true) }
+func TestAgesNoteErasureRaceErasureThenRemoval(t *testing.T) { agesRaceRemoval(t, false) }
+
+// agesRaceRolloverResult is what app.rolloverAges returned.
+type agesRaceRolloverResult struct {
+	n   int
+	err error
+}
+
+// TestAgesNoteErasureRaceRolloverThenErasure is the first rollover order of
+// CA-5. The subject is a teen past eighteen whose pending request needs an
+// admin. rolloverAges first runs its preliminary sweep, which holds the gate and
+// ends that request with policy.ContactTurned18 at the rollover's injected clock
+// (the fixture is ended there, not by the per-user step; this test makes no
+// claim that the per-user reconciliation ended a still-pending request). Its
+// per-user transaction then holds the gate (taken in lockTeenLifecycleUsers)
+// before it converts the teen; the erasure waits behind that, then scrubs.
+//
+// The request ends as ended/turned_18 at the injected clock, the reason and
+// every column but the lifecycle's and the note as before, through the rollover
+// and again through the erasure; an identical twin put through the same
+// sequence is held to the same rules and must match. The rollover's rows
+// (the request's end, the turned-18 audit row, the notices and the tasks it
+// closes) and the erasure's are judged in full.
+func TestAgesNoteErasureRaceRolloverThenErasure(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	// The rollover's explicit clock, as the database stores it.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	twin := newTestUser(t, w.app, "ages-twin", erasurePW, models.RoleMember)
+	w.makeTeen(twin)
+	tp := w.request(leader.ID, twin.ID, policy.ContactPending, "", agesRaceNeedsAdmin)
+	twinBefore := w.rows()[tp.ID]
+	if n, err := w.app.rolloverAges(now); err != nil || n != 1 {
+		t.Fatalf("twin rollover: %d changed, %v", n, err)
+	}
+	twinMid := w.rows()[tp.ID]
+	agesRaceTurned18(t, "twin after the rollover", twinBefore, twinMid, now)
+	agesRaceOK(t, w.erase(f.ac, twin.ID), "twin erasure")
+	twinAfter := w.rows()[tp.ID]
+	agesRaceTurned18(t, "twin after the erasure", twinBefore, twinAfter, now)
+
+	w.makeTeen(u)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, agesRaceNeedsAdmin)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var rolloverPID, erasurePID atomic.Int64
+	reachedRollover, releaseRollover := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+		Table: "users", Assign: map[string]any{"account_type": models.AccountAdult}, PID: &rolloverPID})
+	hold := erasureTestBeforeNotificationsDelete(u.ID)
+	hold.PID = &erasurePID
+	reachedErasure, releaseErasure := w.run.pause(hold)
+
+	rollover := erasureSpan{Start: time.Now().UTC()}
+	done := w.run.rollover(w.app, now)
+	awaitDBSignal(t, reachedRollover) // the per-user transaction holds the gate and has not converted the teen
+	requireContactGate(t, db, agesRacePID(&rolloverPID), true, "the rollover")
+	// The preliminary sweep has already committed the end of the request, and
+	// the teen is still a teen: the request was not ended by the conversion.
+	agesRaceTurned18(t, "request while the per-user transaction holds the gate", before[p.ID], w.rows()[p.ID], now)
+	if n := countRows(t, db, "users", "id = ? AND account_type = ?", u.ID, models.AccountTeen); n != 1 {
+		t.Fatalf("the subject is not still a teen while the per-user transaction holds the gate (%d rows)", n)
+	}
+	erasure := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(&rolloverPID), "the erasure")
+	releaseRollover()
+	if r := agesRaceAwait(t, done, "the rollover"); r.err != nil || r.n != 1 {
+		t.Fatalf("rolloverAges = (%d, %v), want (1, nil)", r.n, r.err)
+	}
+	rollover.End = time.Now().UTC()
+	awaitDBSignal(t, reachedErasure)
+	if waiter != agesRacePID(&erasurePID) {
+		t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+	}
+	mid := w.rows()[p.ID]
+	var teen models.User
+	if err := db.First(&teen, u.ID).Error; err != nil || teen.AccountType != models.AccountAdult {
+		t.Fatalf("after the rollover the subject is %q (%v), want adult", teen.AccountType, err)
+	}
+	agesRaceTurned18(t, "request as the rollover left it", before[p.ID], mid, now)
+	if mid.Note != agesRaceNote {
+		t.Errorf("the note is %q after the rollover, want %q", mid.Note, agesRaceNote)
+	}
+	l1 := erasureLedgerOf(t, db)
+	agesRaceLedger(t, agesRaceStep{Name: "the rollover", Span: rollover,
+		Audit: []agesRaceAuditWant{
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactTurned18),
+			{Type: "user", ID: u.ID, Action: audit.UserTurned18, Meta: map[string]any{
+				"previousStatus": models.UserActive, "status": models.UserActive, "churchDate": now.In(churchZone(db)).Format("2006-01-02")}},
+		},
+		Notices: []agesRaceNoticeWant{
+			agesRaceUpdated(leader.ID, p, policy.ContactEnded),
+			agesRaceUpdated(u.ID, p, policy.ContactEnded),
+			{To: u.ID, Kind: notify.AccountTurned18, Type: "user", ID: u.ID, Dedupe: fmt.Sprintf("account.turned_18:%d", u.ID)},
+		},
+		Tasks: []agesRaceTaskWant{
+			agesRaceTask(u.ID, p, false, policy.ContactEnded, nil),
+			agesRaceTask(f.admin.ID, p, true, policy.ContactEnded, nil),
+		},
+	}, l0, l1)
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	erasure.End = time.Now().UTC()
+
+	after := w.rows()[p.ID]
+	agesRaceScrubbed(t, "request", mid, after)
+	agesRaceTurned18(t, "request after rollover then erasure", before[p.ID], after, now)
+	if after.Status != twinAfter.Status || after.EndReason != twinAfter.EndReason {
+		t.Errorf("lifecycle after rollover then erasure = %s/%s, an identical twin gets %s/%s", after.Status, after.EndReason, twinAfter.Status, twinAfter.EndReason)
+	}
+	// The erasure ends nothing again: it adds its own deletion and removes the
+	// subject's rows, the notices the rollover sent them included.
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID)},
+	}, l1, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// TestAgesNoteErasureRaceErasureThenRollover is the second rollover order of
+// CA-5. The erasure holds the gate, uncommitted. rolloverAges runs its
+// preliminary sweep (no try-lock, so nothing happens) and its discovery, which
+// still sees the subject because the soft delete is not committed; that
+// barrier is the evidence that discovery came first. The per-user transaction
+// then waits on the gate in lockTeenLifecycleUsers. After the erasure commits
+// it finds no subject and returns without converting anyone or reconciling.
+// The erasure alone ends the request (account_disabled), closes the admin's
+// task, tells the requester and removes the subject's rows; no turned-18 row
+// exists.
+func TestAgesNoteErasureRaceErasureThenRollover(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	w.makeTeen(u)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, agesRaceNeedsAdmin)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 1)
+	hold.PID = &erasurePID
+	reachedErasure, releaseErasure := w.run.pause(hold)
+	// rolloverAges' Pluck of the teens past eighteen, stopped after it ran.
+	reachedDiscovery, releaseDiscovery := w.run.pause(erasureTestPoint{Processor: "query", After: true, Step: "gorm:query",
+		Table: "users", SQLContains: "birth_date <= "})
+
+	span := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	awaitDBSignal(t, reachedErasure)
+	requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+	done := w.run.rollover(w.app, now)
+	awaitDBSignal(t, reachedDiscovery)
+	// Discovery ran while the erasure held the gate and before it commits: the
+	// subject is not deleted for anyone else, and the preliminary sweep, which
+	// found the gate taken, changed nothing.
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NULL AND account_type = ?", u.ID, models.AccountTeen); n != 1 {
+		t.Fatalf("the subject is not a live teen for other sessions at discovery (%d rows)", n)
+	}
+	unchanged := w.rows()
+	for id, b := range before {
+		agesRaceSame(t, fmt.Sprintf("request %d after the preliminary sweep", id), b, unchanged[id])
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the preliminary sweep that found the gate taken"}, l0, erasureLedgerOf(t, db))
+	agesRaceNoGateWaiter(t, db)
+	releaseDiscovery()
+	agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the per-user rollover transaction")
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	span.End = time.Now().UTC()
+	r := agesRaceAwait(t, done, "the rollover")
+	both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	if r.err != nil || r.n != 0 {
+		t.Fatalf("rolloverAges = (%d, %v), want (0, nil): the deleted subject is skipped", r.n, r.err)
+	}
+
+	after := w.rows()[p.ID]
+	agesRaceEndedByErasure(t, "request", before[p.ID], after, span)
+	var gone models.User
+	if err := db.Unscoped().First(&gone, u.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gone.AccountType != models.AccountTeen || !gone.DeletedAt.Valid {
+		t.Errorf("subject: account type %q deleted %t, want a deleted teen that was never converted", gone.AccountType, gone.DeletedAt.Valid)
+	}
+	if n := auditCount(t, w.app, audit.UserTurned18); n != 0 {
+		t.Errorf("%d user.turned_18 rows, want none: rolloverTeen must not run", n)
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure and the rollover after it", Span: both, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+		Tasks:   []agesRaceTaskWant{agesRaceTask(f.admin.ID, p, true, policy.ContactEnded, nil)},
+	}, l0, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// TestAgesNoteErasureRaceUnlockedReader is CA-9. The erasure is held after its
+// first ages-note batch has run (the barrier cannot match the second batch),
+// with its row locks and uncommitted blanks in place. A reader on its own
+// connection, in a transaction that stays open across the erasure's commit,
+// runs a plain SELECT with no lock and no gate: it is not blocked, and sees
+// every old note. The erasure then commits without waiting for the reader, and
+// the reader's next SELECT sees the blank.
+func TestAgesNoteErasureRaceUnlockedReader(t *testing.T) {
+	const rows = lookupChunk + 1
+	sc := newAgesNoteScene(t, false, rows)
+	run, states := newAgesRaceRun(t, sc.app)
+	db := run.db
+	rec := recordAgesNoteStatements(t, db)
+	before := sc.state(t)
+	uid := sc.erased.ID
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(uid, lookupChunk)
+	hold.PID = &erasurePID
+	reached, release := run.pause(hold)
+
+	del := run.do(sc.ac, "DELETE", "/api/v1/admin/users/"+itoa(uid), nil)
+	awaitDBSignal(t, reached)
+	ePID := agesRacePID(&erasurePID)
+	requireContactGate(t, db, ePID, true, "the erasure")
+	// The control: the erasure's row locks are real. A reader that asked for a
+	// lock would not get one.
+	lockProbe := db.Transaction(func(tx *gorm.DB) error {
+		return tx.Exec(`SELECT 1 FROM contact_requests WHERE id = (SELECT min(id) FROM contact_requests
+			WHERE purpose = 'occurrence_add' AND subject_user_id = ?) FOR UPDATE NOWAIT`, uid).Error
+	})
+	var pe *pgconn.PgError
+	if !errors.As(lockProbe, &pe) || pe.Code != "55P03" {
+		t.Fatalf("FOR UPDATE NOWAIT on the subject's first row = %v, want SQLSTATE 55P03 while the erasure holds it", lockProbe)
+	}
+
+	const count = `SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> ''`
+	first, second := make(chan int64, 1), make(chan int64, 1)
+	resume := make(chan struct{})
+	var once sync.Once
+	resumeReader := func() { once.Do(func() { close(resume) }) }
+	readerPID, readerDone := startDBSession(t, db, "ages-reader", func(conn *gorm.DB) error {
+		return conn.Transaction(func(tx *gorm.DB) error {
+			var n int64
+			if err := tx.Raw(count, uid).Scan(&n).Error; err != nil {
+				return err
+			}
+			first <- n
+			select {
+			case <-resume:
+			case <-tx.Statement.Context.Done():
+				return tx.Statement.Context.Err()
+			}
+			if err := tx.Raw(count, uid).Scan(&n).Error; err != nil {
+				return err
+			}
+			second <- n
+			return nil
+		})
+	})
+	run.hold(resumeReader)
+	if got := agesRaceAwait(t, first, "the unlocked read"); got != rows {
+		t.Errorf("the reader sees %d notes while the erasure is uncommitted, want %d", got, rows)
+	}
+	if readerPID == ePID {
+		t.Fatalf("the reader shares the erasure's backend %d", ePID)
+	}
+	var waits, blockers int64
+	if err := db.Raw("SELECT count(*) FROM pg_locks WHERE pid = ? AND NOT granted", readerPID).Scan(&waits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT cardinality(pg_blocking_pids(?)) + cardinality(pg_blocking_pids(?))", readerPID, ePID).Scan(&blockers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if waits != 0 || blockers != 0 {
+		t.Errorf("the reader has %d ungranted locks, and the reader and the erasure are blocked by %d backends in all; want none", waits, blockers)
+	}
+	var state string
+	if err := db.Raw("SELECT state FROM pg_stat_activity WHERE pid = ?", readerPID).Scan(&state).Error; err != nil || state != "idle in transaction" {
+		t.Fatalf("reader backend state = %q (%v), want idle in transaction: its transaction must stay open across the commit", state, err)
+	}
+
+	release()
+	agesRaceOK(t, del, "erasure") // committed while the reader's transaction was still open
+	resumeReader()
+	if got := agesRaceAwait(t, second, "the reader's second read"); got != 0 {
+		t.Errorf("the reader sees %d notes after the erasure committed, want 0", got)
+	}
+	if err := awaitDBResult(t, readerDone); err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	checkAgesNoteErased(t, before, sc.state(t), rows)
+	_, updates := rec.seen()
+	if want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}; !reflect.DeepEqual(updates, want) {
+		t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v: the barrier is on the first batch and the second ran after it", updates, want)
+	}
+	agesRaceStates(t, states, map[string]int{"55P03": 1})
+}
+
+// Regression tests for agesRaceRun.stop (T07A3-FIX-R4-1). They fail on the
+// teardown it replaces: one that stopped waiting after a timeout, recorded
+// itself as done and let the callbacks, App.DB and the shared database go while
+// a participant was still alive. Each replaces report (and abort) on its own
+// run; nothing is disabled in production code and no shared helper changes.
+
+// TestAgesRaceStopTerminatesWhatItsContextCannotReach starts a participant on a
+// session that no context of the run reaches (Connection hands out a raw
+// connection, which is how startDBSession's sessions work) and sleeps on the
+// server. Cancelation cannot end it, so stop must report it, terminate the
+// run's backends from the control connection and join it, all before cleanups
+// that unregister callbacks and restore App.DB run. The check that it has
+// ended runs as one of those cleanups, registered before hold so that it runs
+// after stop.
+func TestAgesRaceStopTerminatesWhatItsContextCannotReach(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	r.grace = 300 * time.Millisecond
+	var reports []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { t.Errorf("stop gave up: %s", msg) }
+
+	pids, result := make(chan int, 1), make(chan error, 1)
+	r.spawn(func() {
+		result <- r.db.WithContext(context.Background()).Connection(func(conn *gorm.DB) error {
+			conn = conn.Session(&gorm.Session{NewDB: true})
+			var pid int
+			if err := conn.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+				return err
+			}
+			pids <- pid
+			return conn.Exec("SELECT pg_sleep(120)").Error
+		})
+	})
+	var pid int
+	select {
+	case pid = <-pids:
+	case err := <-result:
+		t.Fatalf("the participant ended before it slept: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the participant never reported its backend")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		app, state, ok, err := r.backendState(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && state == "active" {
+			if app != r.appName {
+				t.Fatalf("participant backend %d has application_name %q, want the run's %q", pid, app, r.appName)
+			}
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("participant backend %d is %q (found: %v), want active in pg_sleep", pid, state, ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	started := time.Now()
+	t.Cleanup(func() {
+		// Runs after stop, and before the callbacks come off and App.DB and the
+		// control connection are put back.
+		select {
+		case err := <-result:
+			var pe *pgconn.PgError
+			switch {
+			case err == nil:
+				t.Error("the unreachable participant finished without an error")
+			case errors.As(err, &pe) && pe.Code == "57014":
+				t.Errorf("the participant ended at the server's statement_timeout, not by termination: %v", err)
+			}
+		default:
+			t.Error("the participant was still running when stop returned")
+		}
+		if _, state, ok, err := r.backendState(pid); err != nil || (ok && state == "active") {
+			t.Errorf("backend %d is still working after stop (found: %v, state %q, check: %v)", pid, ok, state, err)
+		}
+		if len(reports) != 1 || !strings.Contains(reports[0], "did not stop") {
+			t.Errorf("reports = %q, want exactly one saying a participant did not stop", reports)
+		}
+		if elapsed := time.Since(started); elapsed > 20*time.Second {
+			t.Errorf("stop took %v: it waited for the server's timeout instead of terminating", elapsed)
+		}
+		r.stopMu.Lock()
+		stopped := r.stopped
+		r.stopMu.Unlock()
+		if !stopped {
+			t.Error("stop returned without recording the participants as gone")
+		}
+	})
+	r.hold(func() {})
+}
+
+// TestAgesRaceStopCancelsABackgroundContextTransaction is the shape of the
+// preliminary sweep in rolloverAges: a transaction on a handle whose context is
+// context.Background. WithContext on App.DB does not reach it; the pool
+// wrapper does, so canceling the run ends its statement on the server without
+// a termination and without a report.
+func TestAgesRaceStopCancelsABackgroundContextTransaction(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	var reports []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { t.Errorf("stop gave up: %s", msg) }
+
+	result := make(chan error, 1)
+	r.spawn(func() {
+		result <- r.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT pg_sleep(120)").Error
+		})
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		n, err := r.busy(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n >= 1 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%d backends of the run are working, want the sleeping transaction", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	started := time.Now()
+	r.stop()
+	if len(reports) != 0 {
+		t.Errorf("stop reported %q: the run's cancelation did not reach the Background-context transaction", reports)
+	}
+	if elapsed := time.Since(started); elapsed >= r.grace {
+		t.Errorf("stop took %v, as long as the %v it waits before it terminates", elapsed, r.grace)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Error("the canceled transaction finished without an error")
+		}
+	default:
+		t.Error("the transaction was still running when stop returned")
+	}
+}
+
+// TestAgesRaceStopFailsClosedWhenAParticipantCannotBeStopped uses a participant
+// that no cancelation and no termination can end (it waits on a channel). stop
+// must call abort, must not record the run as stopped, and must try again on the
+// next call, which succeeds once the participant ends.
+func TestAgesRaceStopFailsClosedWhenAParticipantCannotBeStopped(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	r.grace, r.final = 100*time.Millisecond, 200*time.Millisecond
+	var reports, aborts []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { aborts = append(aborts, msg) }
+
+	block, finished := make(chan struct{}), make(chan struct{})
+	r.spawn(func() {
+		defer close(finished)
+		<-block
+	})
+	r.stop()
+	if len(aborts) != 1 || !strings.Contains(aborts[0], "still alive") {
+		t.Fatalf("aborts = %q, want one saying a participant is still alive", aborts)
+	}
+	if len(reports) != 1 {
+		t.Errorf("reports = %q, want the one timeout report", reports)
+	}
+	if r.stopped {
+		t.Error("a stop that gave up was recorded as done")
+	}
+
+	close(block)
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the participant did not end after it was released")
+	}
+	r.stop()
+	if len(aborts) != 1 {
+		t.Errorf("the retry aborted again: %q", aborts)
+	}
+	if !r.stopped {
+		t.Error("the retry did not record the participants as gone")
+	}
+
+}
+
+// TestAgesRaceStopAbortPreventsCleanup exercises the real abort from a cleanup
+// in a subprocess, with a participant that remains alive. The sentinel is a
+// later cleanup and must not run before the process exits.
+func TestAgesRaceStopAbortPreventsCleanup(t *testing.T) {
+	const marker = "AGES_RACE_ABORT_CHILD"
+	if name := os.Getenv(marker); name != "" {
+		db, err := testdb.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, _ := newAgesRaceRun(t, &App{DB: db})
+		r.grace, r.final = 100*time.Millisecond, 200*time.Millisecond
+		r.spawn(func() { select {} })
+		t.Cleanup(func() { fmt.Fprintln(os.Stderr, "AGES_RACE_TEARDOWN_SENTINEL") })
+		r.hold(func() {})
+		return
+	}
+	app := testApp(t)
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgesRaceStopAbortPreventsCleanup$")
+	cmd.Env = append(os.Environ(), marker+"="+name)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("child exit = %v, want exit 1; output: %s", err, out)
+	}
+	if !strings.Contains(string(out), "a database participant is still alive") || strings.Contains(string(out), "AGES_RACE_TEARDOWN_SENTINEL") {
+		t.Fatalf("child did not abort before later cleanup: %s", out)
+	}
 }
