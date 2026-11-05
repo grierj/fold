@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
@@ -4287,4 +4291,674 @@ func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
 			t.Errorf("%d deadlocks recorded after the retry, want the one", n)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Representative-scale measurement (M7.4 R4-2a-7)
+// ---------------------------------------------------------------------------
+
+// The scale fixture is one church at the size the database review asked for:
+// 5,000 people and, around the erased person U (user 3, address
+// scaleAddress), the rows every R4-2a statement has to look through. Ids are
+// fixed so the numbers in the PR can be reproduced:
+//
+//	users                5,000 (1 and 2 are the admins, 3 is U, 4 is a teen)
+//	messages             300 (1-290 sent, 291-300 scheduled and written by U)
+//	message_recipients   120,000; U on 300 rows: 280 direct, 20 as the copy a
+//	                     guardian gets about teen 4 (every one with address A)
+//	account_requests     10,000; 40 are U's: 20 REQ (10 by approved_user_id,
+//	                     10 pending at A), 10 with guardian_email A and 10
+//	                     member_invite rows U requested
+//	invitations          5,000; 10 in INV (3 accepted by U, 2 for U's household
+//	                     people, 5 unaccepted at A)
+//	guest_signups        5,000; 10 at A (5 unconfirmed, 5 confirmed)
+//	mail_outboxes        2,000; 5 to A in five spellings
+//	registrations        50,000; 60 are U's
+//	consents             20,000; 4 a person
+//	notifications        24,140 including 4,044 admins' waiting tasks
+//	notification_deliveries 20,106; waiting tasks have no delivery
+//
+// Nothing here asserts time. The test is opt-in (FOLD_ERASURE_SCALE=1), not
+// run in CI, and its job is to print numbers for the reviewer.
+const (
+	scaleTargetName = "scale-target"
+	scaleAddress    = "scale-target@example.com"
+	scaleAdminName  = "scale-admin"
+	scaleSecondName = "scale-second"
+	scaleTargetID   = 3
+)
+
+// scaleSeed is one named statement of the fixture. They run on the plain
+// database handle, not through GORM, because GORM reads "@" in a statement as
+// a named parameter and the fixture is full of addresses.
+type scaleSeed struct {
+	name string
+	sql  string
+	args []any
+}
+
+var scaleSeeds = []scaleSeed{
+	{name: "users", sql: `INSERT INTO users (id, email, name, role, status, account_type, session_version, timezone, created_at, updated_at)
+		SELECT n, 'scale-user-' || n || '@example.com', 'Scale User ' || n, 'member', 'active', 'adult', 0, 'America/Denver', now(), now()
+		FROM generate_series(4, 5000) n`},
+	{name: "teen", sql: `UPDATE users SET account_type = 'teen', birth_date = current_date - interval '15 years' WHERE id = 4`},
+	{name: "events", sql: `INSERT INTO events (id, group_id, title, starts_local, duration_minutes, tzid, rrule, location, created_by, created_at, updated_at, visibility, description)
+		SELECT n, NULL, 'Scale event ' || n, '2027-01-01T18:00', 60, 'America/Denver', '', 'Fellowship hall', 1, now(), now(), 'public', 'Seeded'
+		FROM generate_series(1, 5) n`},
+	{name: "occurrences", sql: `INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at, status, created_at, updated_at)
+		SELECT o, 1 + (o - 1) / 100, current_date + 1 + ((o - 1) % 100),
+			now() + (1 + ((o - 1) % 100)) * interval '1 day', now() + (1 + ((o - 1) % 100)) * interval '1 day' + interval '1 hour',
+			'scheduled', now(), now()
+		FROM generate_series(1, 500) o`},
+	{name: "households", sql: `INSERT INTO households (id, name, created_by) SELECT n, 'Household ' || n, 1 FROM generate_series(1, 1001) n`},
+	{name: "household people of U", sql: `INSERT INTO household_people (id, household_id, first_name, last_name, kind, created_by, converted_user_id)
+		VALUES (1, 1, 'Pat', 'Target', 'adult', 1, 3), (2, 1, 'Sam', 'Target', 'adult', 1, NULL)`},
+	{name: "household people", sql: `INSERT INTO household_people (id, household_id, first_name, kind, created_by)
+		SELECT 2 + n, 2 + (n - 1) / 2, 'Person ' || n, 'child', 1 FROM generate_series(1, 2000) n`},
+	{name: "invitations", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, created_at)
+		SELECT n, 'invitee-' || n || '@example.com', 'Invitee ' || n, 1 + n % 4000, 'member', 'adult', 'scale-inv-' || n,
+			now() + interval '7 days', CASE WHEN n % 5 < 2 THEN now() - interval '1 day' END, now()
+		FROM generate_series(1, 4990) n`},
+	{name: "invitations U accepted", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, created_at)
+		SELECT n, 'scale-target-prior-' || n || '@example.com', 'Scale Target', 1, 'member', 'adult', 'scale-inv-' || n,
+			now() + interval '7 days', now() - interval '30 days', now() - interval '31 days'
+		FROM generate_series(4991, 4993) n`},
+	{name: "invitations U household", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, household_person_id, created_at)
+		VALUES (4994, 'conversion@example.com', 'Sam Target', 1, 'member', 'adult', 'scale-inv-4994', now() + interval '7 days', now() - interval '2 days', 2, now()),
+			(4995, 'conversion-open@example.com', 'Pat Target', 1, 'member', 'adult', 'scale-inv-4995', now() + interval '7 days', NULL, 1, now())`},
+	{name: "invitations at A", sql: `INSERT INTO invitations (id, email, phone, name, invited_by, role, account_type, token_hash, expires_at, created_at)
+		SELECT n, $1::text, '555-0111', 'Scale Target', 1 + n % 4000, 'member', 'adult', 'scale-inv-' || n, now() + interval '7 days', now()
+		FROM generate_series(4996, 5000) n`, args: []any{scaleAddress}},
+	{name: "account requests", sql: `INSERT INTO account_requests (id, name, email, phone, account_type, message, source, requested_by, status, decided_at, ip, expires_at, created_at, updated_at, guardian_email, approved_user_id)
+		SELECT n, 'Requester ' || n, 'requester-' || n || '@example.com', '555-0100',
+			CASE WHEN n % 50 = 0 THEN 'teen' ELSE 'adult' END, 'Hello',
+			(ARRAY['self_signup', 'member_invite', 'guest_upgrade'])[1 + n % 3],
+			CASE WHEN n % 3 = 1 THEN 4 + n % 4997 END,
+			CASE n % 5 WHEN 0 THEN 'pending' WHEN 1 THEN 'approved' WHEN 2 THEN 'rejected' WHEN 3 THEN 'expired' ELSE 'withdrawn' END,
+			CASE WHEN n % 5 <> 0 THEN now() END,
+			'203.0.113.' || (n % 250), now() + interval '30 days', now(), now(),
+			CASE WHEN n % 50 = 0 THEN 'guardian-' || n || '@example.com' ELSE '' END,
+			CASE WHEN n % 5 = 1 THEN 4 + n % 4997 END
+		FROM generate_series(1, 9960) n`},
+	{name: "requests approved for U", sql: `INSERT INTO account_requests (id, name, email, phone, message, source, status, decided_at, decision_note, ip, expires_at, approved_user_id)
+		SELECT n, 'Scale Target', 'scale-target-old-' || n || '@example.com', '555-0111', 'Please approve', 'guest_upgrade', 'approved', now(), 'Welcome',
+			'203.0.113.7', now() + interval '30 days', 3
+		FROM generate_series(9961, 9969) n`},
+	{name: "request conversion for U", sql: `INSERT INTO account_requests (id, name, email, phone, message, source, status, decided_at, ip, expires_at, household_person_id, invitation_id, approved_user_id)
+		VALUES (9970, 'Sam Target', 'conversion@example.com', '555-0111', 'Convert me', 'household_conversion', 'approved', now(), '203.0.113.8',
+			now() + interval '30 days', 2, 4994, 3)`},
+	{name: "requests pending at A", sql: `INSERT INTO account_requests (id, name, email, phone, birth_date, message, source, status, ip, expires_at, password_hash)
+		SELECT n, 'Scale Target', $1::text, '555-0111', date '1990-01-01', 'Let me in', 'self_signup', 'pending', '203.0.113.9',
+			now() + interval '30 days', '$2a$04$scaleseedscaleseedscaleseedscaleseedscaleseedscalese'
+		FROM generate_series(9971, 9980) n`, args: []any{scaleAddress}},
+	{name: "requests with guardian A", sql: `INSERT INTO account_requests (id, name, email, account_type, birth_date, message, source, status, ip, expires_at, guardian_email)
+		SELECT n, 'Teen ' || n, 'teen-' || n || '@example.com', 'teen', date '2011-01-01', 'Please', 'self_signup', 'pending', '203.0.113.10',
+			now() + interval '30 days', $1::text
+		FROM generate_series(9981, 9990) n`, args: []any{scaleAddress}},
+	{name: "requests by U", sql: `INSERT INTO account_requests (id, name, email, source, requested_by, status, ip, expires_at)
+		SELECT n, 'Friend ' || n, 'friend-' || n || '@example.com', 'member_invite', 3, 'pending', '198.51.100.7', now() + interval '30 days'
+		FROM generate_series(9991, 10000) n`},
+	{name: "audit acceptance", sql: `INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip, at)
+		SELECT NULL, $1::text, 'invitation', id, jsonb_build_object('userId', 4 + id % 4997), '203.0.113.11', now()
+		FROM invitations WHERE id <= 4990 AND accepted_at IS NOT NULL`, args: []any{audit.InvitationAccepted}},
+	{name: "audit acceptance of U", sql: `INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip, at)
+		SELECT NULL, $1::text, 'invitation', n, jsonb_build_object('userId', 3), '203.0.113.12', now()
+		FROM generate_series(4991, 4993) n`, args: []any{audit.InvitationAccepted}},
+	{name: "audit noise", sql: `INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip, at)
+		SELECT 1 + n % 50, 'group.updated', 'group', n, '{}'::jsonb, '203.0.113.13', now() - n * interval '1 minute'
+		FROM generate_series(1, 20000) n`},
+	{name: "guest signups", sql: `INSERT INTO guest_signups (id, name, email, occurrence_id, token_hash, expires_at, confirmed_at, ip, timezone, created_at, updated_at)
+		SELECT n, 'Guest ' || n, 'guest-' || n || '@example.com', 1 + n % 500, 'scale-gs-' || n, now() + interval '1 day',
+			CASE WHEN n % 2 = 0 THEN now() END, '203.0.113.5', 'America/Denver', now(), now()
+		FROM generate_series(1, 4990) n`},
+	{name: "guest signups at A", sql: `INSERT INTO guest_signups (id, name, email, occurrence_id, token_hash, expires_at, confirmed_at, ip, timezone, created_at, updated_at)
+		SELECT n, 'Scale Target', $1::text, 1 + n % 500, 'scale-gs-' || n, now() + interval '1 day',
+			CASE WHEN n >= 4996 THEN now() END, '203.0.113.6', 'America/Denver', now(), now()
+		FROM generate_series(4991, 5000) n`, args: []any{scaleAddress}},
+	{name: "mail outbox", sql: `INSERT INTO mail_outboxes (id, to_address, subject, body, created_at)
+		SELECT n, 'outbox-' || n || '@example.com', 'Subject ' || n, 'Body', now() FROM generate_series(1, 1995) n`},
+	{name: "mail outbox to A", sql: `INSERT INTO mail_outboxes (id, to_address, subject, body, created_at)
+		SELECT 1995 + n, (ARRAY['scale-target@example.com', 'Scale-Target@Example.com', ' scale-target@example.com', 'scale-target@example.com ', 'SCALE-TARGET@EXAMPLE.COM'])[n],
+			'Subject ' || n, 'Body', now()
+		FROM generate_series(1, 5) n`},
+	{name: "messages", sql: `INSERT INTO messages (id, channel, author_id, status, category, subject, body_text, scheduled_at, sent_at, recipient_count, created_at, updated_at)
+		SELECT m, 'email', CASE WHEN m > 290 THEN 3 ELSE 1 END, CASE WHEN m > 290 THEN 'scheduled' ELSE 'sent' END,
+			'announcement', 'Scale message ' || m, 'Seeded body',
+			CASE WHEN m > 290 THEN now() + interval '1 day' END, CASE WHEN m <= 290 THEN now() - interval '1 day' END,
+			413, now(), now()
+		FROM generate_series(1, 300) m`},
+	{name: "recipients of others", sql: `INSERT INTO message_recipients (message_id, user_id, channel, address, status, error, created_at, updated_at)
+		SELECT m, u, 'email', 'recipient-' || u || '@example.com', st, CASE WHEN st = 'failed' THEN 'mailbox full' ELSE '' END, now(), now()
+		FROM (SELECT 1 + r % 290 AS m, 4 + ((1 + r % 290) * 397 + r / 290) % 4997 AS u, (ARRAY['queued', 'sent', 'failed'])[1 + r % 3] AS st
+			FROM generate_series(0, 119699) r) o`},
+	{name: "recipients U direct", sql: `INSERT INTO message_recipients (message_id, user_id, channel, address, status, error, created_at, updated_at)
+		SELECT m, 3, 'email', $1::text, (ARRAY['queued', 'sent', 'failed'])[1 + m % 3], CASE WHEN m % 3 = 2 THEN 'mailbox full' ELSE '' END, now(), now()
+		FROM generate_series(1, 280) m`, args: []any{scaleAddress}},
+	{name: "recipients U guardian copy", sql: `INSERT INTO message_recipients (message_id, user_id, channel, address, status, copy_of_user_id, created_at, updated_at)
+		SELECT m, 3, 'email', $1::text, (ARRAY['queued', 'sent'])[1 + m % 2], 4, now(), now()
+		FROM generate_series(1, 20) m`, args: []any{scaleAddress}},
+	{name: "registrations", sql: `INSERT INTO registrations (id, occurrence_id, user_id, status, source, manage_token_hash, childcare_ages_note, removal_note, created_at, updated_at)
+		SELECT id, o, u, 'going', 'web', CASE WHEN u = 3 OR id % 20 = 0 THEN 'scale-mt-' || id ELSE '' END,
+			CASE WHEN u = 3 THEN 'ages 2 and 4' ELSE '' END, '', now(), now()
+		FROM (SELECT (o - 1) * 100 + k + 1 AS id, o, CASE WHEN k = 0 AND o <= 60 THEN 3 ELSE 4 + (o * 37 + k) % 4997 END AS u
+			FROM generate_series(1, 500) o, generate_series(0, 99) k) r`},
+	{name: "consents", sql: `INSERT INTO consents (user_id, channel, scope, status, source)
+		SELECT u, 'email', s, 'opted_in', 'web_form'
+		FROM generate_series(1, 5000) u, unnest(ARRAY['all', 'category:groups', 'category:events', 'category:messages']) s`},
+	{name: "notifications", sql: `INSERT INTO notifications (user_id, kind, category, title, link, created_at, updated_at)
+		SELECT u, 'group.joined', 'groups', 'Notice ' || k, '/notifications', now(), now()
+		FROM generate_series(1, 5000) u, generate_series(1, 4) k`},
+	{name: "notifications of U", sql: `INSERT INTO notifications (user_id, kind, category, title, link, created_at, updated_at)
+		SELECT 3, 'group.joined', 'groups', 'Notice ' || k, '/notifications', now(), now() FROM generate_series(5, 100) k`},
+	{name: "tasks", sql: `INSERT INTO notifications (user_id, kind, category, waiting, subject_type, subject_id, title, link, created_at, updated_at)
+		SELECT a.id, $1::text, 'admin', true, 'account_request', r.id, 'Account request', '/admin/requests', now(), now()
+		FROM account_requests r CROSS JOIN (VALUES (1), (2)) AS a(id) WHERE r.status = 'pending'`, args: []any{notify.AccountRequested}},
+	{name: "deliveries", sql: `INSERT INTO notification_deliveries (notification_id, user_id, channel, status, sent_at, created_at, updated_at)
+		SELECT id, user_id, 'email', 'sent', now(), now(), now() FROM notifications WHERE kind <> $1::text`, args: []any{notify.AccountRequested}},
+	{name: "deliveries of U on others", sql: `INSERT INTO notification_deliveries (notification_id, user_id, channel, status, sent_at, created_at, updated_at)
+		SELECT id, 3, 'sms', 'sent', now(), now(), now() FROM notifications
+		WHERE user_id BETWEEN 10 AND 19 AND kind <> $1::text ORDER BY id LIMIT 10`, args: []any{notify.AccountRequested}},
+	{name: "series undo receipts", sql: `INSERT INTO series_undo_receipts (token_hash, actor_id, event_id, snapshot, expires_at, created_at)
+		SELECT 'scale-undo-' || n, CASE WHEN n <= 5 THEN 3 ELSE 4 + n % 4997 END, 1 + n % 5, '[]'::jsonb,
+			now() + interval '1 hour', now() - interval '1 hour'
+		FROM generate_series(1, 1000) n`},
+	{name: "manager add blocks", sql: `INSERT INTO manager_add_blocks (subject_user_id, organizer_type, organizer_id)
+		SELECT CASE WHEN n <= 5 THEN 3 ELSE 4 + n % 4997 END, 'group', n FROM generate_series(1, 1000) n`},
+}
+
+// scaleSequenceTables are the tables the fixture gave explicit ids; their
+// sequences are moved past the fixture so later inserts (audit rows, new
+// notifications) cannot collide.
+var scaleSequenceTables = []string{"users", "events", "event_occurrences", "households", "household_people",
+	"messages", "account_requests", "invitations", "guest_signups", "mail_outboxes", "registrations"}
+
+// newScaleScene creates a fresh migrated database, the two admins and U, seeds
+// the rest of the fixture with SQL, refreshes the planner statistics (without
+// them the plans would be the ones of an empty database) and signs the admin
+// in. base only lends its configuration. Every call is a new database, so each
+// timing starts from the same untouched rows.
+func newScaleScene(t *testing.T, base *App) (*App, *apiClient) {
+	t.Helper()
+	db, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatalf("scale database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered after Fresh's drop, so it runs before it.
+	t.Cleanup(func() { sqlDB.Close() })
+	app := &App{DB: db, Store: base.Store, Config: base.Config, Uploads: base.Uploads,
+		Mailer: mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>"))}
+	admin := newTestUser(t, app, scaleAdminName, erasurePW, models.RoleAdmin)
+	second := newTestUser(t, app, scaleSecondName, erasurePW, models.RoleAdmin)
+	target := newTestUser(t, app, scaleTargetName, erasurePW, models.RoleMember)
+	if admin.ID != 1 || second.ID != 2 || target.ID != scaleTargetID || target.Email != scaleAddress {
+		t.Fatalf("fixture ids are fixed: admin %d, second %d, target %d (%s)", admin.ID, second.ID, target.ID, target.Email)
+	}
+	ctx := context.Background()
+	started := time.Now()
+	for _, s := range scaleSeeds {
+		if _, err := sqlDB.ExecContext(ctx, s.sql, s.args...); err != nil {
+			t.Fatalf("seed %s: %v", s.name, err)
+		}
+	}
+	for _, table := range scaleSequenceTables {
+		if _, err := sqlDB.ExecContext(ctx, fmt.Sprintf(
+			"SELECT setval(pg_get_serial_sequence('%s', 'id'), (SELECT max(id) FROM %s))", table, table)); err != nil {
+			t.Fatalf("sequence of %s: %v", table, err)
+		}
+	}
+	if _, err := sqlDB.ExecContext(ctx, "ANALYZE"); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	t.Logf("seeded in %s", time.Since(started).Round(time.Millisecond))
+	checkScaleFixture(t, db)
+	return app, loginAPI(t, app, scaleAdminName, erasurePW)
+}
+
+// checkScaleFixture fails the test when the fixture is not the shape the
+// plan names, so a typo in the seed cannot quietly measure a smaller church.
+// It also reads the three sets through the real capture, so the selectors the
+// erasure uses see exactly REQ 20, PERS 2 and INV 10.
+func checkScaleFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	want := []struct {
+		what  string
+		query string
+		args  []any
+		n     int64
+	}{
+		{"users", "SELECT count(*) FROM users", nil, 5000},
+		{"messages", "SELECT count(*) FROM messages", nil, 300},
+		{"message_recipients", "SELECT count(*) FROM message_recipients", nil, 120000},
+		{"recipient rows of U", "SELECT count(*) FROM message_recipients WHERE user_id = 3", nil, 300},
+		{"direct rows of U", "SELECT count(*) FROM message_recipients WHERE user_id = 3 AND copy_of_user_id IS NULL", nil, 280},
+		{"guardian copies of U", "SELECT count(*) FROM message_recipients WHERE user_id = 3 AND copy_of_user_id IS NOT NULL", nil, 20},
+		{"queued rows of U", "SELECT count(*) FROM message_recipients WHERE user_id = 3 AND status = 'queued'", nil, 103},
+		{"scheduled messages of U", "SELECT count(*) FROM messages WHERE author_id = 3 AND status = 'scheduled'", nil, 10},
+		{"account_requests", "SELECT count(*) FROM account_requests", nil, 10000},
+		{"requests of U (REQ, guardian_email, member_invite)", `SELECT count(*) FROM account_requests
+			WHERE approved_user_id = 3 OR (approved_user_id IS NULL AND email = ?) OR guardian_email = ?
+			OR (source = 'member_invite' AND requested_by = 3)`, []any{scaleAddress, scaleAddress}, 40},
+		{"pending REQ of U", "SELECT count(*) FROM account_requests WHERE status = 'pending' AND approved_user_id IS NULL AND email = ?", []any{scaleAddress}, 10},
+		{"invitations", "SELECT count(*) FROM invitations", nil, 5000},
+		{"guest_signups", "SELECT count(*) FROM guest_signups", nil, 5000},
+		{"guest_signups at A", "SELECT count(*) FROM guest_signups WHERE email = ?", []any{scaleAddress}, 10},
+		{"unconfirmed guest_signups at A", "SELECT count(*) FROM guest_signups WHERE email = ? AND confirmed_at IS NULL", []any{scaleAddress}, 5},
+		{"mail_outboxes", "SELECT count(*) FROM mail_outboxes", nil, 2000},
+		{"mail_outboxes to A", "SELECT count(*) FROM mail_outboxes WHERE lower(btrim(to_address)) = ?", []any{scaleAddress}, 5},
+		{"registrations", "SELECT count(*) FROM registrations", nil, 50000},
+		{"registrations of U", "SELECT count(*) FROM registrations WHERE user_id = 3", nil, 60},
+		{"consents", "SELECT count(*) FROM consents", nil, 20000},
+		{"series_undo_receipts of U", "SELECT count(*) FROM series_undo_receipts WHERE actor_id = 3", nil, 5},
+		{"manager_add_blocks of U", "SELECT count(*) FROM manager_add_blocks WHERE subject_user_id = 3", nil, 5},
+		{"deliveries of U on others", `SELECT count(*) FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id
+			WHERE d.user_id = 3 AND n.user_id <> 3`, nil, 10},
+	}
+	for _, w := range want {
+		var n int64
+		if err := db.Raw(w.query, w.args...).Scan(&n).Error; err != nil {
+			t.Fatalf("fixture check %s: %v", w.what, err)
+		}
+		if n != w.n {
+			t.Fatalf("fixture has %d %s, want %d", n, w.what, w.n)
+		}
+	}
+	var u models.User
+	if err := db.First(&u, scaleTargetID).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := captureErasureSubject(&u)
+	if err := captureErasureSetsIn(db, &s); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Requests) != 20 || len(s.People) != 2 || len(s.Invitations) != 10 {
+		t.Fatalf("captured REQ %d, PERS %d, INV %d, want 20, 2 and 10", len(s.Requests), len(s.People), len(s.Invitations))
+	}
+}
+
+// scaleStatement names one statement the report covers: the erasure statements
+// R4-2a added, the three capture queries it added to the lock, and the
+// snapshot lock query. A statement belongs to the first entry whose every
+// fragment its (whitespace-collapsed) SQL contains. The fragments are the
+// literal text of the production SQL, so a reworded statement stops matching
+// and the test says which one went missing.
+type scaleStatement struct {
+	label string
+	has   []string
+}
+
+var scaleStatements = []scaleStatement{
+	{"capture REQ", []string{"FROM account_requests", "approved_user_id IS NULL AND email"}},
+	{"capture PERS", []string{"FROM household_people WHERE converted_user_id"}},
+	{"capture INV a: acceptance audit", []string{"FROM audit_logs", "invitation.accepted"}},
+	{"capture INV b: conversion request", []string{"SELECT invitation_id FROM account_requests"}},
+	{"capture INV c: household person", []string{"FROM invitations WHERE household_person_id IN"}},
+	{"capture INV d: unaccepted at address", []string{"FROM invitations WHERE email", "accepted_at IS NULL"}},
+	{"requests 1: withdraw pending", []string{"UPDATE account_requests SET status = 'withdrawn'"}},
+	{"requests 2: scrub REQ", []string{"UPDATE account_requests SET name"}},
+	{"requests 3: member_invite ip", []string{"UPDATE account_requests SET ip"}},
+	{"requests 4: guardian_email", []string{"UPDATE account_requests SET guardian_email"}},
+	{"invitations 5: scrub INV", []string{"UPDATE invitations SET"}},
+	{"guest_signups 6: delete unconfirmed", []string{"DELETE FROM guest_signups"}},
+	{"guest_signups 6: anonymize confirmed", []string{"UPDATE guest_signups SET"}},
+	{"mail_outboxes 7: delete", []string{"DELETE FROM mail_outboxes"}},
+	{"messages 8: cancel scheduled", []string{"UPDATE messages SET"}},
+	{"message_recipients 9: scrub", []string{"UPDATE message_recipients SET"}},
+	{"series_undo_receipts 10: delete", []string{"DELETE FROM series_undo_receipts"}},
+	{"manager_add_blocks 11: delete", []string{"DELETE FROM manager_add_blocks"}},
+	{"registrations 12: scrub", []string{"UPDATE registrations SET"}},
+	{"notification_deliveries 13: delete", []string{"DELETE FROM notification_deliveries"}},
+	{"snapshot lock: users FOR KEY SHARE", []string{`FROM "users"`, "FOR KEY SHARE"}},
+}
+
+const scaleRecipientLabel = "message_recipients 9: scrub"
+
+func scaleLabel(sqlText string) string {
+	sqlText = strings.Join(strings.Fields(sqlText), " ")
+	for _, s := range scaleStatements {
+		match := true
+		for _, f := range s.has {
+			if !strings.Contains(sqlText, f) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return s.label
+		}
+	}
+	return ""
+}
+
+// scalePlan is the EXPLAIN (ANALYZE, BUFFERS) output of one statement.
+type scalePlan struct {
+	label string
+	lines []string
+}
+
+// scaleExplainer runs EXPLAIN (ANALYZE, BUFFERS) on the statements of the real
+// erasure functions without a copy of their SQL. While armed, a GORM callback
+// before each raw, row and query statement that sits in a transaction and
+// matches scaleStatements opens a savepoint, runs the EXPLAIN on the same
+// connection (ANALYZE really executes the statement), rolls back to the
+// savepoint and lets the statement run for real, so the production code sees
+// the state it would have seen and the erasure order is kept. Statements that
+// GORM builds inside its own callbacks (the model Delete of notifications, the
+// Updates in Resolve, Create in audit.Write) are not seen.
+type scaleExplainer struct {
+	armed atomic.Bool
+	mu    sync.Mutex
+	plans []scalePlan
+	name  string
+	db    *gorm.DB
+}
+
+func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
+	t.Helper()
+	x := &scaleExplainer{name: "test:scale_explain", db: db}
+	if err := db.Callback().Raw().Before("gorm:raw").Register(x.name, x.hook); err != nil {
+		t.Fatalf("register raw explainer: %v", err)
+	}
+	if err := db.Callback().Row().Before("gorm:row").Register(x.name, x.hook); err != nil {
+		t.Fatalf("register row explainer: %v", err)
+	}
+	if err := db.Callback().Query().Before("gorm:query").Register(x.name, x.hook); err != nil {
+		t.Fatalf("register query explainer: %v", err)
+	}
+	t.Cleanup(func() {
+		x.armed.Store(false)
+		_ = db.Callback().Raw().Remove(x.name)
+		_ = db.Callback().Row().Remove(x.name)
+		_ = db.Callback().Query().Remove(x.name)
+	})
+	return x
+}
+
+func (x *scaleExplainer) hook(db *gorm.DB) {
+	if !x.armed.Load() || db.Error != nil || db.DryRun || db.Statement.ConnPool == nil {
+		return
+	}
+	// Only inside a transaction: the savepoint below needs one.
+	if _, ok := db.Statement.ConnPool.(gorm.TxCommitter); !ok {
+		return
+	}
+	if db.Statement.SQL.Len() == 0 {
+		callbacks.BuildQuerySQL(db)
+		if db.Error != nil {
+			return
+		}
+	}
+	text := db.Statement.SQL.String()
+	label := scaleLabel(text)
+	if label == "" {
+		return
+	}
+	ctx, pool := db.Statement.Context, db.Statement.ConnPool
+	var lines []string
+	err := func() error {
+		if _, err := pool.ExecContext(ctx, "SAVEPOINT scale_explain"); err != nil {
+			return err
+		}
+		rows, err := pool.QueryContext(ctx, "EXPLAIN (ANALYZE, BUFFERS) "+text, db.Statement.Vars...)
+		if err == nil {
+			for rows.Next() {
+				var line string
+				if err = rows.Scan(&line); err != nil {
+					break
+				}
+				lines = append(lines, line)
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			rows.Close()
+		}
+		// Undo the executed statement, also after a failure, so the
+		// transaction is usable again either way.
+		if _, rerr := pool.ExecContext(ctx, "ROLLBACK TO SAVEPOINT scale_explain"); rerr != nil && err == nil {
+			err = rerr
+		}
+		if _, rerr := pool.ExecContext(ctx, "RELEASE SAVEPOINT scale_explain"); rerr != nil && err == nil {
+			err = rerr
+		}
+		return err
+	}()
+	if err != nil {
+		db.AddError(fmt.Errorf("explain %s: %w", label, err))
+		return
+	}
+	x.mu.Lock()
+	x.plans = append(x.plans, scalePlan{label: label, lines: lines})
+	x.mu.Unlock()
+}
+
+var (
+	scaleActualRe = regexp.MustCompile(`actual time=[\d.]+\.\.[\d.]+ rows=([\d.]+)`)
+	scaleExecRe   = regexp.MustCompile(`Execution Time: ([\d.]+) ms`)
+	scaleScanRe   = regexp.MustCompile(`(?:Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan)`)
+	scaleSeqRe    = regexp.MustCompile(`Seq Scan on (\w+)`)
+	scaleRemovedR = regexp.MustCompile(`Rows Removed by Filter: (\d+)`)
+)
+
+// scaleRow is one line of the report.
+type scaleRow struct {
+	label string
+	ms    float64
+	rows  string
+	node  string
+	seq   string
+}
+
+func summarizeScalePlan(p scalePlan) scaleRow {
+	r := scaleRow{label: p.label, rows: "-", node: "-", seq: "-"}
+	var seqs []string
+	for i, line := range p.lines {
+		if m := scaleExecRe.FindStringSubmatch(line); m != nil {
+			r.ms, _ = strconv.ParseFloat(m[1], 64)
+		}
+		if m := scaleSeqRe.FindStringSubmatch(line); m != nil {
+			seen := false
+			for _, s := range seqs {
+				seen = seen || s == m[1]
+			}
+			if !seen {
+				seqs = append(seqs, m[1])
+			}
+		}
+		if r.node != "-" || !scaleScanRe.MatchString(line) {
+			continue
+		}
+		node := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "->"))
+		if cut := strings.Index(node, "  (cost="); cut >= 0 {
+			node = node[:cut]
+		}
+		r.node = node
+		if m := scaleActualRe.FindStringSubmatch(line); m != nil {
+			r.rows = m[1]
+		}
+		for _, next := range p.lines[i+1:] {
+			if strings.Contains(next, "->") {
+				break
+			}
+			if m := scaleRemovedR.FindStringSubmatch(next); m != nil {
+				r.rows += " (" + m[1] + " removed by filter)"
+				break
+			}
+		}
+	}
+	if len(seqs) > 0 {
+		r.seq = strings.Join(seqs, ", ")
+	}
+	return r
+}
+
+var errScaleRollback = errors.New("scale explain: roll back")
+
+// explainScaleErasure runs the erasure's statements in the order of
+// apiAdminDeleteUser (capture, account requests, the notifications delete,
+// dependent records) plus the snapshot lock query at a 5,000-person
+// audience, all in one transaction that is rolled back, and returns the plans.
+// It leaves out the gate, the credential deletes, the hand-offs, the tombstone,
+// promoteOnDisable and the throttle delete: none of them is a statement R4-2a
+// added.
+func explainScaleErasure(t *testing.T, app *App) []scalePlan {
+	t.Helper()
+	x := newScaleExplainer(t, app.DB)
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.First(&u, scaleTargetID).Error; err != nil {
+			return err
+		}
+		x.armed.Store(true)
+		defer x.armed.Store(false)
+		s := captureErasureSubject(&u)
+		if err := captureErasureSetsIn(tx, &s); err != nil {
+			return err
+		}
+		if err := eraseAccountRequestsIn(tx, s, 1); err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
+			return err
+		}
+		if err := eraseDependentRecordsIn(tx, s, 1, "198.51.100.1"); err != nil {
+			return err
+		}
+		// The send path's lock over a 5,000-person audience: every user
+		// once, a hundred of them also as the teen of a guardian copy.
+		audience := make([]models.MessageRecipient, 0, 5100)
+		for id := uint(1); id <= 5000; id++ {
+			audience = append(audience, models.MessageRecipient{UserID: id, Channel: models.DeliveryEmail})
+		}
+		teen := uint(4)
+		for i := 0; i < 100; i++ {
+			audience = append(audience, models.MessageRecipient{UserID: 5 + uint(i), Channel: models.DeliveryEmail, CopyOfUserID: &teen})
+		}
+		live, err := lockSnapshotUsers(tx, audience)
+		if err != nil {
+			return err
+		}
+		if len(live) != 5000 {
+			return fmt.Errorf("snapshot lock saw %d live users, want 5000", len(live))
+		}
+		return errScaleRollback
+	})
+	if !errors.Is(err, errScaleRollback) {
+		t.Fatalf("explain transaction: %v", err)
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return append([]scalePlan(nil), x.plans...)
+}
+
+// logScaleReport prints the table, the totals the review cares about and,
+// below them, every full plan with its buffer counts. It returns the
+// recipient statement's time.
+func logScaleReport(t *testing.T, plans []scalePlan) float64 {
+	t.Helper()
+	counts := map[string]int{}
+	seen := map[string]bool{}
+	for _, p := range plans {
+		counts[p.label]++
+		seen[p.label] = true
+	}
+	for _, s := range scaleStatements {
+		if !seen[s.label] {
+			t.Errorf("no plan for %q: the statement did not run or its SQL no longer matches", s.label)
+		}
+	}
+	t.Logf("%-40s %10s  %-34s %-44s %s", "statement", "time (ms)", "rows at scan node", "plan node", "sequential scans")
+	var recipientMS, snapshotMS float64
+	snapshotQueries := 0
+	index := map[string]int{}
+	for _, p := range plans {
+		r := summarizeScalePlan(p)
+		label := r.label
+		if counts[label] > 1 {
+			index[label]++
+			label = fmt.Sprintf("%s #%d", label, index[label])
+		}
+		t.Logf("%-40s %10.3f  %-34s %-44s %s", label, r.ms, r.rows, r.node, r.seq)
+		switch p.label {
+		case scaleRecipientLabel:
+			recipientMS = r.ms
+		case "snapshot lock: users FOR KEY SHARE":
+			snapshotMS += r.ms
+			snapshotQueries++
+		}
+	}
+	bound := float64(erasureRecipientWait.Milliseconds())
+	t.Logf("recipient statement: %.3f ms against the %.0f ms (%s) statement_timeout, %.4f%% of the bound",
+		recipientMS, bound, erasureRecipientWait, recipientMS/bound*100)
+	t.Logf("snapshot lock: %d queries of up to 500 users, %.3f ms in all", snapshotQueries, snapshotMS)
+	for _, p := range plans {
+		t.Logf("--- %s\n%s", p.label, strings.Join(p.lines, "\n"))
+	}
+	return recipientMS
+}
+
+// TestAccountErasureScale measures the erasure at the size of a large church
+// (see the fixture comment above). It skips unless FOLD_ERASURE_SCALE=1, needs
+// a scratch DATABASE_URL (it creates and drops four databases) and asserts
+// nothing about time: it checks only that the fixture has the planned shape and
+// that the erasure answered 200 and left no copy of the address in the
+// tables it names.
+//
+//	FOLD_ERASURE_SCALE=1 DATABASE_URL=<scratch> go test -run TestAccountErasureScale -count=1 -v .
+//
+// Three fresh seeds each take the real DELETE /admin/users/:id once; the
+// median is reported. A fourth fresh seed gets the EXPLAIN (ANALYZE, BUFFERS)
+// run in a rolled-back transaction, so the plans' dead tuples never touch a
+// timed run.
+func TestAccountErasureScale(t *testing.T) {
+	if os.Getenv("FOLD_ERASURE_SCALE") != "1" {
+		t.Skip("set FOLD_ERASURE_SCALE=1 to run the representative-scale erasure measurement (opt-in, not run in CI)")
+	}
+	base := testApp(t)
+	var timings []time.Duration
+	for i := 1; i <= 3; i++ {
+		t.Run(fmt.Sprintf("delete seed %d", i), func(t *testing.T) {
+			app, ac := newScaleScene(t, base)
+			started := time.Now()
+			r := deleteAccount(ac, scaleTargetID, nil)
+			elapsed := time.Since(started)
+			if r.code != http.StatusOK {
+				t.Fatalf("delete: %d %s", r.code, r.body)
+			}
+			var left int64
+			if err := app.DB.Raw(`SELECT
+				(SELECT count(*) FROM message_recipients WHERE lower(address) = ?)
+				+ (SELECT count(*) FROM account_requests WHERE lower(email) = ? OR lower(guardian_email) = ?)
+				+ (SELECT count(*) FROM invitations WHERE lower(email) = ?)
+				+ (SELECT count(*) FROM guest_signups WHERE lower(email) = ?)
+				+ (SELECT count(*) FROM mail_outboxes WHERE lower(btrim(to_address)) = ?)`,
+				scaleAddress, scaleAddress, scaleAddress, scaleAddress, scaleAddress, scaleAddress).Scan(&left).Error; err != nil {
+				t.Fatal(err)
+			}
+			if left != 0 {
+				t.Fatalf("%d rows still hold the erased address", left)
+			}
+			if n := countRows(t, app.DB, "users", "id = ? AND deleted_at IS NOT NULL", scaleTargetID); n != 1 {
+				t.Fatalf("erased user is not soft-deleted (%d rows)", n)
+			}
+			timings = append(timings, elapsed)
+			t.Logf("real DELETE on seed %d: %s", i, elapsed.Round(time.Millisecond))
+		})
+	}
+	var recipientMS float64
+	t.Run("explain", func(t *testing.T) {
+		app, _ := newScaleScene(t, base)
+		recipientMS = logScaleReport(t, explainScaleErasure(t, app))
+	})
+	if len(timings) != 3 {
+		t.Fatalf("only %d of 3 timed deletes completed", len(timings))
+	}
+	sorted := append([]time.Duration(nil), timings...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	t.Logf("real DELETE of U at scale: median %s of %v (fastest %s, slowest %s)",
+		sorted[1].Round(time.Millisecond), timings, sorted[0].Round(time.Millisecond), sorted[2].Round(time.Millisecond))
+	t.Logf("recipient statement %.3f ms; whole DELETE median %s; bound %s", recipientMS, sorted[1].Round(time.Millisecond), erasureRecipientWait)
 }
