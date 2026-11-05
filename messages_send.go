@@ -250,6 +250,17 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	}
 	rows = append(rows, pushRows...)
 	return db.Transaction(func(tx *gorm.DB) error {
+		// Everyone the snapshot names is locked FOR KEY SHARE, in ascending
+		// id, before the claim: the rows below take that lock on their
+		// users through their foreign keys anyway, and an account erasure
+		// takes the user FOR UPDATE first. A person erased after the facts
+		// were read is therefore seen as gone here, and no row is inserted
+		// that still carries their address (L1: users, then the message).
+		live, err := lockSnapshotUsers(tx, rows)
+		if err != nil {
+			return err
+		}
+		rows = revalidateSnapshotRows(rows, live)
 		// The claim holds only if nobody changed the message since it was
 		// read; if somebody did, it is checked again (stillDue).
 		res := tx.Model(&models.Message{}).Where("id = ? AND status = ? AND scheduled_at = ? AND updated_at = ?", m.ID, models.MessageScheduled, m.ScheduledAt, m.UpdatedAt).
@@ -285,6 +296,67 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		}
 		return enqueueBatches(tx, m.ID, queued, "")
 	})
+}
+
+// lockSnapshotUsers locks every user a snapshot names (each row's recipient
+// and, for a guardian copy, the teen it is about) FOR KEY SHARE, ascending id,
+// 500 to a query, and returns the ones that still exist and are not deleted.
+// The read has no soft-delete scope: a deleted row is still locked, and
+// reported as gone.
+func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bool, error) {
+	var ids []uint
+	for _, r := range rows {
+		ids = append(ids, r.UserID)
+		if r.CopyOfUserID != nil {
+			ids = append(ids, *r.CopyOfUserID)
+		}
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	type snapshotUser struct {
+		ID        uint
+		DeletedAt *time.Time
+	}
+	live := map[uint]bool{}
+	for len(ids) > 0 {
+		n := min(len(ids), 500)
+		var got []snapshotUser
+		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", ids[:n]).Order("id").
+			Clauses(clause.Locking{Strength: "KEY SHARE"}).Find(&got).Error; err != nil {
+			return nil, err
+		}
+		for _, u := range got {
+			if u.DeletedAt == nil {
+				live[u.ID] = true
+			}
+		}
+		ids = ids[n:]
+	}
+	return live, nil
+}
+
+// revalidateSnapshotRows applies what lockSnapshotUsers found: an email row
+// (direct or copy) whose recipient is gone is suppressed as not active with no
+// address, a copy about a gone teen is dropped, and a push row for a gone
+// recipient is dropped. The other rows pass through unchanged.
+func revalidateSnapshotRows(rows []models.MessageRecipient, live map[uint]bool) []models.MessageRecipient {
+	out := make([]models.MessageRecipient, 0, len(rows))
+	for _, r := range rows {
+		if r.Channel != models.DeliveryEmail {
+			if live[r.UserID] {
+				out = append(out, r)
+			}
+			continue
+		}
+		if r.CopyOfUserID != nil && !live[*r.CopyOfUserID] {
+			continue
+		}
+		if !live[r.UserID] {
+			r.Status, r.Reason, r.Address = models.RecipientSuppressed, skipNotActive, ""
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // enqueueBatches queues message.deliver_batch jobs of 50 for ids. gen is

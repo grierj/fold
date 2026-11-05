@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2449,5 +2450,1000 @@ func TestInvitationAcceptanceRacingErasure(t *testing.T) {
 				t.Errorf("%d deadlocks recorded", n)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-2a-4: messages and the bounded recipient scrub.
+// ---------------------------------------------------------------------------
+
+// erasureTestRegister and erasureTestUnregister attach a callback to the
+// processor and position a point names.
+func erasureTestRegister(db *gorm.DB, p erasureTestPoint, name string, fn func(*gorm.DB)) error {
+	switch p.Processor {
+	case "query":
+		return erasureTestRegisterQuery(db, p, name, fn)
+	case "row":
+		return erasureTestRegisterRow(db, p, name, fn)
+	case "raw":
+		return erasureTestRegisterRaw(db, p, name, fn)
+	case "create":
+		return erasureTestRegisterCreate(db, p, name, fn)
+	case "update":
+		return erasureTestRegisterUpdate(db, p, name, fn)
+	}
+	return erasureTestRegisterDelete(db, p, name, fn)
+}
+
+func erasureTestUnregister(db *gorm.DB, p erasureTestPoint, name string) {
+	switch p.Processor {
+	case "query":
+		_ = db.Callback().Query().Remove(name)
+	case "row":
+		_ = db.Callback().Row().Remove(name)
+	case "raw":
+		_ = db.Callback().Raw().Remove(name)
+	case "create":
+		_ = db.Callback().Create().Remove(name)
+	case "update":
+		_ = db.Callback().Update().Remove(name)
+	default:
+		_ = db.Callback().Delete().Remove(name)
+	}
+}
+
+// erasureTestProbe stores pg_backend_pid() of the first statement that
+// matches p, read through the statement's own connection, and never blocks it.
+func erasureTestProbe(t *testing.T, db *gorm.DB, p erasureTestPoint) *atomic.Int64 {
+	t.Helper()
+	if err := p.validate(); err != nil {
+		t.Fatalf("erasureTestProbe: %v", err)
+	}
+	var pid atomic.Int64
+	var fired atomic.Bool
+	name := fmt.Sprintf("test:erasure_probe:%d", queryCounterSeq.Add(1))
+	fn := func(tx *gorm.DB) {
+		if tx.Error != nil || !p.matches(tx.Statement) || fired.Swap(true) {
+			return
+		}
+		var got int64
+		if err := tx.Statement.ConnPool.QueryRowContext(tx.Statement.Context, "SELECT pg_backend_pid()").Scan(&got); err != nil {
+			tx.AddError(err)
+			return
+		}
+		pid.Store(got)
+	}
+	if err := erasureTestRegister(db, p, name, fn); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { erasureTestUnregister(db, p, name) })
+	return &pid
+}
+
+// erasureTestWorkerPID records the backend of the message worker that locks
+// recipient recipientID. deliverMessageBatchOnce takes that lock with
+// tx.Raw("SELECT id FROM message_recipients WHERE id = ? AND status = ? FOR
+// UPDATE SKIP LOCKED", row.ID, ...).Scan(&held); Raw builds its SQL and
+// variables before gorm:row, so the probe matches that worker's own row
+// before the lock is taken (F6, F7).
+func erasureTestWorkerPID(t *testing.T, db *gorm.DB, recipientID uint) *atomic.Int64 {
+	t.Helper()
+	return erasureTestProbe(t, db, erasureTestPoint{Processor: "row", Step: "gorm:row",
+		SQLContains: "FOR UPDATE SKIP LOCKED", VarAt: map[int]any{0: recipientID}})
+}
+
+const erasureRecipientScrubPrefix = "UPDATE message_recipients SET address"
+
+// erasureTestStatementWait waits for the erasure's recipient scrub to wait on
+// a lock and returns its backend and the statement's pg_stat_activity
+// query_start. Only that statement has this text.
+func erasureTestStatementWait(t *testing.T, app *App) (pid int, queryStart time.Time) {
+	t.Helper()
+	pid = waitForLockedUsersQuery(t, app, erasureRecipientScrubPrefix+"%")
+	if err := app.DB.Raw("SELECT query_start FROM pg_stat_activity WHERE pid = ?", pid).Scan(&queryStart).Error; err != nil {
+		t.Fatal(err)
+	}
+	return pid, queryStart
+}
+
+// erasureTestWaitBlockedOnlyBy polls every millisecond until the waiter is in
+// the same statement execution (same query_start), active, waiting on a lock
+// and blocked by exactly blocker. It returns when that first held.
+func erasureTestWaitBlockedOnlyBy(t *testing.T, app *App, waiter int, queryStart time.Time, blocker int) time.Time {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var n int
+		if err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity a
+			WHERE a.pid = ? AND a.state = 'active' AND a.wait_event_type = 'Lock' AND a.query_start = ?
+			AND a.query LIKE ? AND pg_blocking_pids(a.pid) = ARRAY[?]::int[]`,
+			waiter, queryStart, erasureRecipientScrubPrefix+"%", blocker).Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		if n == 1 {
+			return time.Now()
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("session %d was never blocked only by session %d in the statement started at %v", waiter, blocker, queryStart)
+		}
+	}
+}
+
+// erasureTestSinceQueryStart is clock_timestamp() - queryStart read on the
+// database clock, so no test-process clock is compared with query_start.
+func erasureTestSinceQueryStart(t *testing.T, app *App, queryStart time.Time) time.Duration {
+	t.Helper()
+	var secs float64
+	if err := app.DB.Raw("SELECT extract(epoch FROM clock_timestamp() - ?::timestamptz)", queryStart).Scan(&secs).Error; err != nil {
+		t.Fatal(err)
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
+// erasureTestFailThrottleDelete makes the erasure's last statement fail, to
+// show that everything before it rolls back.
+func erasureTestFailThrottleDelete(t *testing.T, db *gorm.DB) (stop func()) {
+	t.Helper()
+	name := fmt.Sprintf("test:fail_throttle_delete:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "DELETE FROM login_throttles") {
+			tx.AddError(errors.New("injected throttle failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	stop = func() { once.Do(func() { _ = db.Callback().Raw().Remove(name) }) }
+	t.Cleanup(stop)
+	return stop
+}
+
+const (
+	erasureSeedSubject1 = "Erasure wait one"
+	erasureSeedSubject2 = "Erasure wait two"
+)
+
+// erasureRecipientSeed is the fixture of the bounded-wait tests: the erased
+// member U at one address, an author P, the deleting admin, and two sending
+// messages by P, each with one queued email row for U (R1 inserted first),
+// plus rows of U in the other tables the erasure writes.
+type erasureRecipientSeed struct {
+	s       coreErasureScene
+	u, p    *models.User
+	address string
+	m1, m2  models.Message
+	r1, r2  models.MessageRecipient
+	labels  map[string]map[uint]string
+}
+
+func (e *erasureRecipientSeed) key1() string {
+	return erasureTestSendKey(e.address, erasureSeedSubject1)
+}
+func (e *erasureRecipientSeed) key2() string {
+	return erasureTestSendKey(e.address, erasureSeedSubject2)
+}
+
+func erasureTestRecipientSeed(t *testing.T, app *App) *erasureRecipientSeed {
+	t.Helper()
+	e := &erasureRecipientSeed{}
+	e.s = coreErasureScene{app: app}
+	e.s.admin = newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
+	e.s.second = newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
+	e.s.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	e.s.ac.holdNotices = true
+	db := app.DB
+	e.u = newTestUser(t, app, "rs-u", erasurePW, models.RoleMember)
+	e.p = newTestUser(t, app, "rs-author", erasurePW, models.RoleMember)
+	e.address = mail.NormalizeAddress(e.u.Email)
+	now := time.Now().Add(-time.Minute)
+	message := func(subject string) models.Message {
+		m := models.Message{AuthorID: &e.p.ID, Status: models.MessageSending, Subject: subject, BodyHTML: "<p>Hi {{first_name}}</p>",
+			BodyText: "Hi", ScheduledAt: &now, RecipientCount: 1}
+		erasureMustCreate(t, db, &m)
+		return m
+	}
+	row := func(m models.Message) models.MessageRecipient {
+		r := models.MessageRecipient{MessageID: m.ID, UserID: e.u.ID, Channel: models.DeliveryEmail, Address: e.address, Status: models.RecipientQueued}
+		erasureMustCreate(t, db, &r)
+		return r
+	}
+	e.m1, e.m2 = message(erasureSeedSubject1), message(erasureSeedSubject2)
+	e.r1 = row(e.m1)
+	e.r2 = row(e.m2)
+
+	// U's rows in the other tables the erasure writes.
+	_, occ, _ := erasureEventFixture(t, e.s)
+	expires := time.Now().Add(48 * time.Hour)
+	erasureMustCreate(t, db, &models.Notification{UserID: e.u.ID, Kind: "test.note", Category: "groups", Title: "note", Link: "/"})
+	req := erasureSeedRequest(t, db, models.AccountRequest{Name: "Seed Requester", Email: e.address, Source: models.RequestSelfSignup,
+		Status: models.RequestPending, ExpiresAt: expires})
+	erasureSeedTasks(t, db, &req)
+	invID := erasureInvitation(t, db, e.s.admin.ID, e.address, false, nil)
+	signup := models.GuestSignup{Name: "Seed Guest", Email: e.address, OccurrenceID: occ.ID, TokenHash: "erasure-seed-signup",
+		ExpiresAt: expires, IP: "203.0.113.7", Timezone: "UTC"}
+	erasureMustCreate(t, db, &signup)
+	erasureMustCreate(t, db, &models.MailOutbox{ToAddress: e.address, Subject: "seed", Body: "seed"})
+	seedThrottleRows(t, db, ownedThrottleKeys(e.u.ID, e.address))
+	seedErasureTokens(t, db, e.u.ID, "rs", "rs.pending@example.com")
+	// Credentials and a registration of U, so the comparison covers every
+	// kind of row an erasure deletes or scrubs.
+	seedErasureCalendar(t, db, e.u.ID, "rs-calendar")
+	newPushDevice(t, app, e.u, "rs-phone")
+	erasureMustCreate(t, db, &models.Registration{UserID: &e.u.ID, OccurrenceID: occ.ID, Status: models.RegGoing,
+		Source: models.RegSourceGuestForm, AttendanceMode: models.AttendanceInPerson, ManageTokenHash: "rs-manage-token-hash"})
+	e.labels = map[string]map[uint]string{
+		"user":       {e.u.ID: "U", e.p.ID: "P", e.s.admin.ID: "admin", e.s.second.ID: "second"},
+		"message":    {e.m1.ID: "M1", e.m2.ID: "M2"},
+		"recipient":  {e.r1.ID: "R1", e.r2.ID: "R2"},
+		"request":    {req.ID: "REQ"},
+		"invitation": {invID: "INV"},
+		"signup":     {signup.ID: "SIGNUP"},
+	}
+	return e
+}
+
+func erasureTestIsTimeKey(k string) bool {
+	return k == "at" || strings.HasSuffix(k, "_at") || strings.HasSuffix(k, "_until") ||
+		strings.HasSuffix(k, "_start") || strings.HasSuffix(k, "_for")
+}
+
+// erasureTestIsHashKey: token hashes and the push device's key material,
+// random per run, are compared by class only (none, empty, an erasure marker,
+// or set).
+func erasureTestIsHashKey(k string) bool {
+	return strings.HasSuffix(k, "_hash") || k == "p256dh" || k == "auth"
+}
+
+func erasureTestHashClass(s string) string {
+	switch {
+	case s == "":
+		return "empty"
+	case strings.HasPrefix(s, "erased-"):
+		return "marker"
+	}
+	return "set"
+}
+
+// erasureTestRefNamespace is the explicit mapping from a column or JSON key to
+// the namespace of the generated ids it holds. Only these keys are relabelled;
+// any other number or text is compared exactly.
+var erasureTestRefNamespace = map[string]string{
+	"user_id": "user", "author_id": "user", "actor_id": "user", "invited_by": "user", "decided_by": "user",
+	"requested_by": "user", "copy_of_user_id": "user", "approved_user_id": "user", "registered_by": "user",
+	"removed_by": "user", "userId": "user",
+	"message_id": "message", "messageId": "message",
+	"messageRecipientId": "recipient", "recipientIds": "recipient", "recipient_id": "recipient",
+	"requestId": "request", "invitationId": "invitation", "guestSignupId": "signup",
+}
+
+// erasureTestTargetNamespace maps an audit row's target_type, and a
+// notification's subject_type, to the namespace of its target_id or
+// subject_id; other types keep their number.
+var erasureTestTargetNamespace = map[string]string{
+	"message": "message", "user": "user", "account_request": "request", "invitation": "invitation", "guest_signup": "signup",
+}
+
+func erasureTestLabelID(ns string, id float64, labels map[string]map[uint]string) any {
+	if l, ok := labels[ns][uint(id)]; ok && ns != "" {
+		return ns + ":" + l
+	}
+	return id
+}
+
+// erasureTestProjectField reduces one column or JSON value. ns is the
+// namespace of a polymorphic id column (target_id, subject_id) already
+// resolved from its row.
+func erasureTestProjectField(key, ns string, v any, labels map[string]map[uint]string) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = erasureTestProjectField(k, "", val, labels)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = erasureTestProjectField(key, ns, x[i], labels)
+		}
+		return out
+	case float64:
+		if ns == "" {
+			ns = erasureTestRefNamespace[key]
+		}
+		if ns != "" {
+			return erasureTestLabelID(ns, x, labels)
+		}
+		return x
+	case string:
+		switch {
+		case erasureTestIsTimeKey(key):
+			return x != ""
+		case erasureTestIsHashKey(key):
+			return erasureTestHashClass(x)
+		}
+		return x
+	case nil:
+		switch {
+		case erasureTestIsTimeKey(key):
+			return false
+		case erasureTestIsHashKey(key):
+			return "none"
+		}
+	}
+	return v
+}
+
+// erasureTestProjectRow drops the row's own sequence id (the row is told
+// apart by its natural key) and reduces the rest.
+func erasureTestProjectRow(row map[string]any, labels map[string]map[uint]string) map[string]any {
+	targetType, _ := row["target_type"].(string)
+	subjectType, _ := row["subject_type"].(string)
+	out := make(map[string]any, len(row))
+	for k, val := range row {
+		switch k {
+		case "id":
+			continue
+		case "target_id":
+			out[k] = erasureTestProjectField(k, erasureTestTargetNamespace[targetType], val, labels)
+		case "subject_id":
+			out[k] = erasureTestProjectField(k, erasureTestTargetNamespace[subjectType], val, labels)
+		default:
+			out[k] = erasureTestProjectField(k, "", val, labels)
+		}
+	}
+	return out
+}
+
+// erasureTestProjectionTables reads committed state: every row of the tables
+// the erasure, the message workers and the seed touch, with sequence ids
+// dropped, the ids the seed named replaced by their labels, timestamps reduced
+// to set or null, hashes to their class, and everything else (ordinary text,
+// addresses, ips, provider ids, job kinds, statuses, attempts, errors and
+// labelled job payloads) exactly as stored. Each table's rows are sorted by
+// their own projection, so two runs of the same seed compare equal whatever
+// their sequence ids and clocks.
+func erasureTestProjectionTables(t *testing.T, db *gorm.DB, labels map[string]map[uint]string) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	for _, table := range []string{"users", "memberships", "messages", "message_recipients", "audit_logs", "account_requests",
+		"notifications", "notification_deliveries", "invitations", "guest_signups", "mail_outboxes", "registrations",
+		"login_throttles", "account_tokens", "calendar_tokens", "push_subscriptions", "jobs"} {
+		var raw []string
+		if err := db.Raw("SELECT to_jsonb(r)::text FROM " + table + " r").Scan(&raw).Error; err != nil {
+			t.Fatal(err)
+		}
+		rows := []string{}
+		for _, text := range raw {
+			var v map[string]any
+			if err := json.Unmarshal([]byte(text), &v); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := json.Marshal(erasureTestProjectRow(v, labels))
+			rows = append(rows, string(b))
+		}
+		sort.Strings(rows)
+		out[table] = rows
+	}
+	return out
+}
+
+func erasureTestMessageProjection(t *testing.T, db *gorm.DB, labels map[string]map[uint]string) string {
+	t.Helper()
+	b, _ := json.Marshal(erasureTestProjectionTables(t, db, labels))
+	return string(b)
+}
+
+// erasureWaitRun is one subtest's world: its own seed on a freshly cleared
+// database, a blocking sender, SQLSTATE recording and a worker runner.
+type erasureWaitRun struct {
+	t      *testing.T
+	app    *App
+	seed   *erasureRecipientSeed
+	sender *erasureTestBlockingSender
+	states *erasureTestStateLog
+	ctx    context.Context
+	wg     sync.WaitGroup
+}
+
+func newErasureWaitRun(t *testing.T) *erasureWaitRun {
+	t.Helper()
+	app := testApp(t)
+	r := &erasureWaitRun{t: t, app: app}
+	r.seed = erasureTestRecipientSeed(t, app)
+	r.states = erasureTestSQLStates(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	r.ctx = ctx
+	t.Cleanup(func() {
+		done := make(chan struct{})
+		go func() { r.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("a message worker did not stop")
+		}
+	})
+	r.sender = newErasureTestBlockingSender(t, r.seed.key1(), r.seed.key2())
+	app.Mailer = r.sender
+	return r
+}
+
+// worker runs deliverMessageBatchOnce for m's one row on its own goroutine.
+func (r *erasureWaitRun) worker(m models.Message, rowID uint) <-chan error {
+	ch := make(chan error, 1)
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		ch <- r.app.deliverMessageBatchOnce(r.ctx, messageBatchJob{MessageID: m.ID, RecipientIDs: []uint{rowID}})
+	}()
+	return ch
+}
+
+func (r *erasureWaitRun) erase() <-chan httpResult {
+	return bgDo(r.seed.s.ac, "DELETE", "/api/v1/admin/users/"+itoa(r.seed.u.ID), nil)
+}
+
+func (r *erasureWaitRun) rowStatus(id uint) models.MessageRecipient {
+	r.t.Helper()
+	var row models.MessageRecipient
+	if err := r.app.DB.First(&row, id).Error; err != nil {
+		r.t.Fatal(err)
+	}
+	return row
+}
+
+// awaitStatus polls from a separate session until the row commits status.
+func (r *erasureWaitRun) awaitStatus(id uint, status string) {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.rowStatus(id).Status == status {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.t.Fatalf("recipient %d never became %s", id, status)
+}
+
+func (r *erasureWaitRun) awaitWorker(ch <-chan error) {
+	r.t.Helper()
+	select {
+	case err := <-ch:
+		if err != nil {
+			r.t.Fatalf("worker: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		r.t.Fatal("worker never finished")
+	}
+}
+
+func (r *erasureWaitRun) projection() string {
+	r.t.Helper()
+	return erasureTestMessageProjection(r.t, r.app.DB, r.seed.labels)
+}
+
+// assertNoErasureWrites checks that no erasure write survived (a failed or
+// absent erasure): no user.deleted row, no avatar cleanup job, no message
+// cancellation.
+func (r *erasureWaitRun) assertNoErasureWrites() {
+	r.t.Helper()
+	if n := auditCount(r.t, r.app, audit.UserDeleted); n != 0 {
+		r.t.Errorf("%d user.deleted rows", n)
+	}
+	if n := auditCount(r.t, r.app, audit.MessageCancelled); n != 0 {
+		r.t.Errorf("%d message.cancelled rows", n)
+	}
+	if n := countRows(r.t, r.app.DB, "jobs", "kind = ?", kindAvatarCleanup); n != 0 {
+		r.t.Errorf("%d avatar.cleanup jobs", n)
+	}
+}
+
+func (r *erasureWaitRun) assertCleanRun() {
+	r.t.Helper()
+	if n := r.states.Count("40P01"); n != 0 {
+		r.t.Errorf("%d deadlocks recorded", n)
+	}
+	if others := r.sender.Others(); len(others) != 0 {
+		r.t.Errorf("%d messages that matched no key were sent", len(others))
+	}
+}
+
+// erasureWaitSnapshot is everything an unfinished erasure must leave alone.
+func erasureWaitSnapshot(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	return dumpRows(t, db, "users", "id", "true") + dumpRows(t, db, "audit_logs", "id", "true") +
+		dumpRows(t, db, "account_requests", "id", "true") + dumpRows(t, db, "notifications", "id", "true") +
+		dumpRows(t, db, "invitations", "id", "true") + dumpRows(t, db, "message_recipients", "id", "true")
+}
+
+func erasureTestAssertTimeout(t *testing.T, r *erasureWaitRun, res httpResult) {
+	t.Helper()
+	// DEC-52: a failure a person cannot act on reaches the client as the generic
+	// server error. The handler's own "could not delete user" text is only
+	// logged, and neither it nor the SQLSTATE or statement text reaches the body.
+	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, `"code":"server_error"`) {
+		t.Fatalf("erasure: %d %s, want the generic 500 server_error", res.code, res.body)
+	}
+	for _, leak := range []string{"57014", "statement timeout", "message_recipients", "could not delete user"} {
+		if strings.Contains(res.body, leak) {
+			t.Errorf("the 500 body leaks %q: %s", leak, res.body)
+		}
+	}
+	e := r.states.Only("57014")
+	if !strings.HasPrefix(e.SQL, erasureRecipientScrubPrefix) {
+		t.Errorf("the statement that timed out is %q, want the message_recipients UPDATE", e.SQL)
+	}
+	r.states.mu.Lock()
+	failures := append([]erasureTestStateEntry(nil), r.states.entries...)
+	r.states.mu.Unlock()
+	if len(failures) != 1 {
+		t.Errorf("unexpected failed statements after the scrub timeout: %v", failures)
+	}
+}
+
+// TestAccountErasureRecipientWaitIsBounded: the erasure's recipient scrub runs
+// under a statement_timeout for the whole statement. A worker holds a queued
+// row FOR UPDATE SKIP LOCKED across its provider call; the scrub waits on it.
+// Single and staggered waits are proved by backend PIDs, each against a
+// worker-only control on an identical seed (F5, F7).
+func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
+	old := erasureRecipientWait
+	erasureRecipientWait = time.Second
+	t.Cleanup(func() { erasureRecipientWait = old })
+
+	t.Run("one row released in time", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		del := r.erase()
+		erasureTestStatementWait(t, r.app)
+		time.Sleep(200 * time.Millisecond)
+		r.sender.Release(r.seed.key1())
+		if res := awaitResult(t, del); res.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", res.code, res.body)
+		}
+		r.awaitWorker(w1)
+		got := r.rowStatus(r.seed.r1.ID)
+		if got.Status != models.RecipientSent || got.Address != "" || got.Error != "" {
+			t.Errorf("R1 after the erasure: %+v", got)
+		}
+		r.assertCleanRun()
+	})
+
+	var control2 string
+	t.Run("one row, worker only (2w)", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		erasureTestWorkerPID(t, r.app.DB, r.seed.r1.ID)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		r.sender.Release(r.seed.key1())
+		r.awaitWorker(w1)
+		control2 = r.projection()
+	})
+
+	t.Run("one row never released in time", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		w1pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r1.ID)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		before := erasureWaitSnapshot(t, r.app.DB)
+		del := r.erase()
+		epid, qs := erasureTestStatementWait(t, r.app)
+		observed := erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load()))
+		res := awaitResult(t, del)
+		answered := time.Since(observed)
+		erasureTestAssertTimeout(t, r, res)
+		// Upper bound from the first observation of the wait; the lower bound
+		// is the statement's own age on the database clock, with a 250 ms
+		// tolerance under the 1 s timeout.
+		if answered > 4*time.Second {
+			t.Errorf("the erasure answered %v after the wait was first seen, want under 4s", answered)
+		}
+		if age := erasureTestSinceQueryStart(t, r.app, qs); age < 750*time.Millisecond {
+			t.Errorf("the scrub timed out %v after it started, want at least 750ms", age)
+		}
+		if after := erasureWaitSnapshot(t, r.app.DB); after != before {
+			t.Errorf("a failed erasure left a change:\n%s\n%s", before, after)
+		}
+		r.sender.Release(r.seed.key1())
+		r.awaitWorker(w1)
+		if got := r.projection(); got != control2 {
+			t.Errorf("worker writes differ from the worker-only control:\nrace    %s\ncontrol %s", got, control2)
+		}
+		r.assertNoErasureWrites()
+		if res := awaitResult(t, r.erase()); res.code != http.StatusOK {
+			t.Fatalf("retried erasure: %d %s", res.code, res.body)
+		}
+		if got := r.rowStatus(r.seed.r1.ID); got.Address != "" || got.Status != models.RecipientSent {
+			t.Errorf("R1 after the retry: %+v", got)
+		}
+		r.assertCleanRun()
+	})
+
+	var control3 string
+	t.Run("staggered rows, workers only (3w)", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		w2 := r.worker(r.seed.m2, r.seed.r2.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key2()))
+		r.sender.Release(r.seed.key1())
+		r.awaitStatus(r.seed.r1.ID, models.RecipientSent)
+		r.sender.Release(r.seed.key2())
+		r.awaitWorker(w1)
+		r.awaitWorker(w2)
+		control3 = r.projection()
+	})
+
+	t.Run("staggered rows outlast the whole statement", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		db := r.app.DB
+		ctidOf := func(id uint) (page, off int) {
+			var text string
+			if err := db.Raw("SELECT ctid::text FROM message_recipients WHERE id = ?", id).Scan(&text).Error; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Sscanf(text, "(%d,%d)", &page, &off); err != nil {
+				t.Fatalf("ctid %q: %v", text, err)
+			}
+			return page, off
+		}
+		p1, o1 := ctidOf(r.seed.r1.ID)
+		p2, o2 := ctidOf(r.seed.r2.ID)
+		if p1 > p2 || (p1 == p2 && o1 >= o2) {
+			t.Fatalf("ctid(R1) (%d,%d) is not before ctid(R2) (%d,%d)", p1, o1, p2, o2)
+		}
+		// Every plan PostgreSQL may use here visits R1 before R2, whatever it
+		// picks. A heap scan (sequential or bitmap) walks ctid order, and an
+		// index scan on message_recipients_once (message_id, user_id, channel,
+		// copy_of_user_id) or on the message_id index walks message_id order,
+		// where M1 comes before M2. The test therefore asserts the premise
+		// both ways (R1 is first by ctid and by message id) and that the plan
+		// is one of those; it does not assume which one the planner picks. The
+		// schedule below is also self-checking: if the statement had locked R2
+		// before blocking on R1, W2's SKIP LOCKED read would skip R2 and its
+		// key would never be reached, failing the test.
+		if r.seed.m1.ID >= r.seed.m2.ID {
+			t.Fatalf("M1 (%d) is not before M2 (%d)", r.seed.m1.ID, r.seed.m2.ID)
+		}
+		var plan []string
+		explain := `EXPLAIN UPDATE message_recipients SET address = '', error = '', status = CASE WHEN status = 'queued' THEN 'suppressed' ELSE status END,
+			reason = CASE WHEN status = 'queued' THEN 'not active' ELSE reason END, updated_at = now()
+			WHERE user_id = ? AND (address <> '' OR error <> '' OR status = 'queued')`
+		if err := db.Raw(explain, r.seed.u.ID).Scan(&plan).Error; err != nil {
+			t.Fatal(err)
+		}
+		planText := strings.Join(plan, "\n")
+		inOrder := false
+		for _, ok := range []string{"Seq Scan on message_recipients", "Bitmap Heap Scan on message_recipients",
+			"Index Scan using message_recipients_once on message_recipients", "Index Scan using idx_message_recipients_message on message_recipients"} {
+			inOrder = inOrder || strings.Contains(planText, ok)
+		}
+		if !inOrder {
+			t.Fatalf("the scrub uses a plan whose row order is not known to reach R1 first:\n%s", planText)
+		}
+		w1pid := erasureTestWorkerPID(t, db, r.seed.r1.ID)
+		w2pid := erasureTestWorkerPID(t, db, r.seed.r2.ID)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		del := r.erase()
+		epid, qs := erasureTestStatementWait(t, r.app)
+		t1 := erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load()))
+		w2 := r.worker(r.seed.m2, r.seed.r2.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key2()))
+		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load())) // still W1 alone
+		time.Sleep(time.Until(t1.Add(600 * time.Millisecond)))
+		r.sender.Release(r.seed.key1())
+		r.awaitStatus(r.seed.r1.ID, models.RecipientSent)
+		t2 := erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w2pid.Load()))
+		res := awaitResult(t, del)
+		if since := time.Since(t2); since >= 900*time.Millisecond {
+			t.Errorf("the erasure answered %v after the second wait, want under 900ms", since)
+		}
+		select {
+		case <-w2:
+			t.Fatal("W2 finished before the erasure timed out")
+		default:
+		}
+		if got := r.rowStatus(r.seed.r2.ID); got.Status != models.RecipientQueued {
+			t.Errorf("R2 is %q while W2 still holds it", got.Status)
+		}
+		erasureTestAssertTimeout(t, r, res)
+		r.sender.Release(r.seed.key2())
+		r.awaitWorker(w1)
+		r.awaitWorker(w2)
+		if got := r.projection(); got != control3 {
+			t.Errorf("worker writes differ from the workers-only control:\nrace    %s\ncontrol %s", got, control3)
+		}
+		r.assertNoErasureWrites()
+		r.assertCleanRun()
+	})
+
+	t.Run("staggered rows within the bound", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		w1pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r1.ID)
+		w2pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r2.ID)
+		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
+		del := r.erase()
+		epid, qs := erasureTestStatementWait(t, r.app)
+		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load()))
+		w2 := r.worker(r.seed.m2, r.seed.r2.ID)
+		awaitDBSignal(t, r.sender.Reached(r.seed.key2()))
+		time.Sleep(200 * time.Millisecond)
+		r.sender.Release(r.seed.key1())
+		r.awaitStatus(r.seed.r1.ID, models.RecipientSent)
+		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w2pid.Load()))
+		time.Sleep(200 * time.Millisecond)
+		r.sender.Release(r.seed.key2())
+		if res := awaitResult(t, del); res.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", res.code, res.body)
+		}
+		r.awaitWorker(w1)
+		r.awaitWorker(w2)
+		for _, id := range []uint{r.seed.r1.ID, r.seed.r2.ID} {
+			if got := r.rowStatus(id); got.Address != "" || got.Status != models.RecipientSent {
+				t.Errorf("recipient %d after the erasure: %+v", id, got)
+			}
+		}
+		r.assertCleanRun()
+	})
+
+	t.Run("erasure first", func(t *testing.T) {
+		r := newErasureWaitRun(t)
+		var erasurePID atomic.Int64
+		reached, release := erasureTestPause(t, r.app.DB, erasureTestPoint{Processor: "raw", Step: "gorm:raw",
+			SQLContains: "DELETE FROM login_throttles", PID: &erasurePID})
+		del := r.erase()
+		awaitDBSignal(t, reached) // the recipient scrub has run; the erasure holds R1 and R2
+		r.awaitWorker(r.worker(r.seed.m1, r.seed.r1.ID))
+		select {
+		case <-r.sender.Reached(r.seed.key1()):
+			t.Fatal("a worker reached the provider for a row the erasure held")
+		default:
+		}
+		release()
+		if res := awaitResult(t, del); res.code != http.StatusOK {
+			t.Fatalf("erasure: %d %s", res.code, res.body)
+		}
+		got := r.rowStatus(r.seed.r1.ID)
+		if got.Status != models.RecipientSuppressed || got.Reason != skipNotActive || got.Address != "" {
+			t.Errorf("R1 after the erasure: %+v", got)
+		}
+		r.awaitWorker(r.worker(r.seed.m1, r.seed.r1.ID))
+		select {
+		case <-r.sender.Reached(r.seed.key1()):
+			t.Fatal("a later worker sent to the erased address")
+		default:
+		}
+		r.assertCleanRun()
+	})
+}
+
+// TestAccountErasureCancelsScheduledMessages: the erased author's scheduled
+// messages are cancelled, one message.cancelled row each by the admin, and
+// nothing else about messages changes.
+func TestAccountErasureCancelsScheduledMessages(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	author := newTestUser(t, app, "cancel-author", erasurePW, models.RoleMember)
+	other := newTestUser(t, app, "cancel-other", erasurePW, models.RoleMember)
+	at := time.Now().Add(time.Hour)
+	mk := func(by *models.User, status, subject string) models.Message {
+		m := models.Message{AuthorID: &by.ID, Status: status, Subject: subject, BodyHTML: "<p>x</p>", BodyText: "x"}
+		if status == models.MessageScheduled || status == models.MessageSent {
+			m.ScheduledAt = &at
+		}
+		erasureMustCreate(t, db, &m)
+		return m
+	}
+	scheduled := mk(author, models.MessageScheduled, "Cancel me")
+	draft := mk(author, models.MessageDraft, "A draft")
+	sent := mk(author, models.MessageSent, "Sent")
+	failed := mk(author, models.MessageFailed, "Failed")
+	theirs := mk(other, models.MessageScheduled, "Someone else's")
+	erasureMustCreate(t, db, &models.AuditLog{ActorID: &author.ID, Action: audit.MessageScheduled, TargetType: "message", TargetID: scheduled.ID, IP: "198.51.100.4"})
+	scheduledAudit := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled)
+	untouched := func() string {
+		return dumpRows(t, db, "messages", "id", "id IN ?", []uint{draft.ID, sent.ID, failed.ID, theirs.ID})
+	}
+	before := untouched()
+
+	// A forced failure in the last statement leaves messages and audit alone.
+	snapshot := func() string {
+		return dumpRows(t, db, "messages", "id", "true") + dumpRows(t, db, "audit_logs", "id", "true")
+	}
+	whole := snapshot()
+	stopFailing := erasureTestFailThrottleDelete(t, db)
+	if r := deleteAccount(s.ac, author.ID, nil); r.code != http.StatusInternalServerError {
+		t.Fatalf("forced failure: %d %s, want 500", r.code, r.body)
+	}
+	stopFailing()
+	if got := snapshot(); got != whole {
+		t.Errorf("a failed erasure left a change:\n%s\n%s", whole, got)
+	}
+
+	s.erase(t, author.ID)
+
+	var got models.Message
+	db.First(&got, scheduled.ID)
+	if got.Status != models.MessageCancelled {
+		t.Errorf("the scheduled message is %q, want cancelled", got.Status)
+	}
+	if now := untouched(); now != before {
+		t.Errorf("other messages changed:\nbefore %s\nafter  %s", before, now)
+	}
+	if now := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled); now != scheduledAudit {
+		t.Errorf("the message.scheduled row changed")
+	}
+	var rows []models.AuditLog
+	db.Where("action = ?", audit.MessageCancelled).Find(&rows)
+	var deleted models.AuditLog
+	db.Where("action = ?", audit.UserDeleted).First(&deleted)
+	if len(rows) != 1 || rows[0].TargetID != scheduled.ID || rows[0].TargetType != "message" || rows[0].ActorID == nil ||
+		*rows[0].ActorID != s.admin.ID || rows[0].IP != deleted.IP {
+		t.Errorf("message.cancelled rows: %+v (user.deleted ip %q)", rows, deleted.IP)
+	}
+	// A later message.send for it sends nothing.
+	sender := newErasureTestBlockingSender(t)
+	app.Mailer = sender
+	if err := app.prepareMessage(context.Background(), scheduled.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, db, "message_recipients", "message_id = ?", scheduled.ID); n != 0 || len(sender.Others()) != 0 {
+		t.Errorf("a cancelled message made %d rows and sent %d emails", n, len(sender.Others()))
+	}
+}
+
+// TestAccountErasureScrubsMessageRecipients: the erased person's recipient
+// rows lose their address and error text and queued rows become suppressed;
+// a guardian's copy row about them stays; settling still counts email rows
+// only.
+func TestAccountErasureScrubsMessageRecipients(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	app, db := s.app, s.app.DB
+	u := newTestUser(t, app, "scrub-u", erasurePW, models.RoleMember)
+	guardian := newTestUser(t, app, "scrub-guardian", erasurePW, models.RoleMember)
+	friend := newTestUser(t, app, "scrub-friend", erasurePW, models.RoleMember)
+	author := newTestUser(t, app, "scrub-author", erasurePW, models.RoleMember)
+	at := time.Now().Add(-time.Minute)
+	m := models.Message{AuthorID: &author.ID, Status: models.MessageSending, Subject: "Scrub", BodyHTML: "<p>x</p>", BodyText: "x", ScheduledAt: &at, RecipientCount: 2}
+	erasureMustCreate(t, db, &m)
+	row := func(r models.MessageRecipient) models.MessageRecipient {
+		r.MessageID = m.ID
+		erasureMustCreate(t, db, &r)
+		return r
+	}
+	sentAt := time.Now()
+	queuedEmail := row(models.MessageRecipient{UserID: u.ID, Channel: models.DeliveryEmail, Address: u.Email, Status: models.RecipientQueued})
+	queuedPush := row(models.MessageRecipient{UserID: u.ID, Channel: models.DeliveryPush, Status: models.RecipientQueued})
+	// A second message gives U a sent row with an address and an error text.
+	m2 := models.Message{AuthorID: &author.ID, Status: models.MessageSent, Subject: "Sent", BodyHTML: "<p>x</p>", BodyText: "x", ScheduledAt: &at, SentAt: &sentAt}
+	erasureMustCreate(t, db, &m2)
+	sentEmail := models.MessageRecipient{MessageID: m2.ID, UserID: u.ID, Channel: models.DeliveryEmail, Address: u.Email, Status: models.RecipientSent, Error: "provider said no", SentAt: &sentAt}
+	erasureMustCreate(t, db, &sentEmail)
+	// Rows that are not U's own: a guardian copy about U, and a friend's rows.
+	copyRow := row(models.MessageRecipient{UserID: guardian.ID, CopyOfUserID: &u.ID, Channel: models.DeliveryEmail, Address: guardian.Email, Status: models.RecipientQueued})
+	friendEmail := row(models.MessageRecipient{UserID: friend.ID, Channel: models.DeliveryEmail, Address: friend.Email, Status: models.RecipientSent, SentAt: &sentAt})
+	friendPush := row(models.MessageRecipient{UserID: friend.ID, Channel: models.DeliveryPush, Status: models.RecipientQueued})
+	others := func() string {
+		return dumpRows(t, db, "message_recipients", "id", "id IN ?", []uint{copyRow.ID, friendEmail.ID, friendPush.ID})
+	}
+	before := others()
+
+	s.erase(t, u.ID)
+
+	if now := others(); now != before {
+		t.Errorf("rows that are not the erased person's changed:\nbefore %s\nafter  %s", before, now)
+	}
+	for _, id := range []uint{queuedEmail.ID, queuedPush.ID} {
+		var got models.MessageRecipient
+		db.First(&got, id)
+		if got.Status != models.RecipientSuppressed || got.Reason != skipNotActive || got.Address != "" {
+			t.Errorf("queued row %d: %+v", id, got)
+		}
+	}
+	var got models.MessageRecipient
+	db.First(&got, sentEmail.ID)
+	if got.Status != models.RecipientSent || got.Address != "" || got.Error != "" || got.SentAt == nil {
+		t.Errorf("sent row: %+v", got)
+	}
+	// The friend's queued push row does not hold the message in sending: only
+	// email rows count, and U's email row is no longer queued.
+	if err := db.Model(&models.MessageRecipient{}).Where("id = ?", copyRow.ID).Update("status", models.RecipientSent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error { return app.settleMessage(tx, m.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	var settled models.Message
+	db.First(&settled, m.ID)
+	if settled.Status != models.MessageSent {
+		t.Errorf("the message is %q after its email rows finished, want sent", settled.Status)
+	}
+}
+
+// TestErasureTestMessageProjectionIsDeterministic: the same seed on a freshly
+// cleared database projects identically, which the worker-only comparisons
+// rely on.
+func TestErasureTestMessageProjectionIsDeterministic(t *testing.T) {
+	first := testApp(t)
+	one := erasureTestMessageProjection(t, first.DB, erasureTestRecipientSeed(t, first).labels)
+	second := testApp(t)
+	two := erasureTestMessageProjection(t, second.DB, erasureTestRecipientSeed(t, second).labels)
+	if one != two {
+		t.Errorf("two runs of one seed project differently:\n%s\n%s", one, two)
+	}
+}
+
+// TestErasureTestMessageProjectionDetectsDifferences: the projection tells
+// apart changed ordinary text (including digits), a retargeted job and the
+// writes of an erasure that survived, and returns to equal when a change is
+// put back.
+func TestErasureTestMessageProjectionDetectsDifferences(t *testing.T) {
+	app := testApp(t)
+	seed := erasureTestRecipientSeed(t, app)
+	db := app.DB
+	if _, err := jobs.Enqueue(db, kindMessageSend, messageSendJob{MessageID: seed.m1.ID}, time.Now(), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	base := erasureTestMessageProjection(t, db, seed.labels)
+	baseTables := erasureTestProjectionTables(t, db, seed.labels)
+	if again := erasureTestMessageProjection(t, db, seed.labels); again != base {
+		t.Fatal("one state projects two ways")
+	}
+	for _, table := range []string{"calendar_tokens", "push_subscriptions", "registrations", "account_tokens", "login_throttles",
+		"invitations", "guest_signups", "mail_outboxes", "account_requests", "notifications", "message_recipients", "jobs"} {
+		if len(baseTables[table]) == 0 {
+			t.Errorf("the seed has no %s rows, so the projection cannot show them change", table)
+		}
+	}
+	for _, c := range []struct {
+		name, apply, undo string
+		args, undoArgs    []any
+	}{
+		{"an ip that differs only in a digit", "UPDATE guest_signups SET ip = '203.0.113.8'", "UPDATE guest_signups SET ip = '203.0.113.7'", nil, nil},
+		{"a provider id that differs only in a digit", "UPDATE message_recipients SET provider_message_id = 'pm-2' WHERE id = ?", "UPDATE message_recipients SET provider_message_id = '' WHERE id = ?",
+			[]any{seed.r1.ID}, []any{seed.r1.ID}},
+		{"ordinary text that differs only in case", "UPDATE mail_outboxes SET subject = 'seeD'", "UPDATE mail_outboxes SET subject = 'seed'", nil, nil},
+		{"a job retargeted to another message", "UPDATE jobs SET payload = jsonb_set(payload, '{messageId}', to_jsonb(?::bigint)) WHERE kind = ?",
+			"UPDATE jobs SET payload = jsonb_set(payload, '{messageId}', to_jsonb(?::bigint)) WHERE kind = ?",
+			[]any{seed.m2.ID, kindMessageSend}, []any{seed.m1.ID, kindMessageSend}},
+		{"a job in another state", "UPDATE jobs SET status = 'failed' WHERE kind = ?", "UPDATE jobs SET status = 'queued' WHERE kind = ?",
+			[]any{kindMessageSend}, []any{kindMessageSend}},
+	} {
+		if err := db.Exec(c.apply, c.args...).Error; err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := erasureTestMessageProjection(t, db, seed.labels); got == base {
+			t.Errorf("the projection did not notice %s", c.name)
+		}
+		if err := db.Exec(c.undo, c.undoArgs...).Error; err != nil {
+			t.Fatalf("%s (undo): %v", c.name, err)
+		}
+		if got := erasureTestMessageProjection(t, db, seed.labels); got != base {
+			t.Errorf("the projection did not return to equal after undoing %s", c.name)
+		}
+	}
+
+	// A real erasure leaves writes in every table it scrubs or deletes from.
+	seed.s.erase(t, seed.u.ID)
+	after := erasureTestProjectionTables(t, db, seed.labels)
+	for _, table := range []string{"users", "audit_logs", "account_requests", "notifications", "invitations", "guest_signups",
+		"mail_outboxes", "login_throttles", "account_tokens", "calendar_tokens", "push_subscriptions", "message_recipients", "jobs"} {
+		if strings.Join(after[table], "\n") == strings.Join(baseTables[table], "\n") {
+			t.Errorf("a completed erasure left no difference in %s", table)
+		}
+	}
+	if erasureTestMessageProjection(t, db, seed.labels) == base {
+		t.Error("a completed erasure projects like the seed")
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"fold/internal/audit"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/models"
@@ -239,9 +240,8 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 // takes first (holder, then occurrence, then signup), so the signup rows are
 // reached in the order redemption holds them. It returns the first error
 // unwrapped, issues no further statement after it, and logs nothing.
-// actorID and ip are the deleting admin and the request address; the
-// statements of this task do not use them (later slices' message and audit
-// statements do).
+// actorID and ip are the deleting admin and the request address, used by the
+// message cancellation audit rows.
 func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
 	if len(s.Invitations) > 0 {
 		if err := tx.Exec(`UPDATE invitations SET email = `+erasedRowAddressSQL("invitations")+`,
@@ -259,7 +259,55 @@ func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip str
 		WHERE email = ? AND confirmed_at IS NOT NULL`, s.Address).Error; err != nil {
 		return err
 	}
-	return tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address).Error
+	if err := tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address).Error; err != nil {
+		return err
+	}
+	return eraseMessagesIn(tx, s, actorID, ip)
+}
+
+// eraseMessagesIn is statements 8 and 9 of eraseDependentRecordsIn. (8) The
+// erased author's scheduled messages are cancelled, each with the one
+// message.cancelled row an author's own cancel writes (actor the deleting
+// admin, the caller's address); drafts, failed and sent messages and other
+// people's messages stay (O-8). (9) The erased person's recipient rows lose
+// their address and error text, and a queued row becomes suppressed as not
+// active, so a later send job sends nothing to them. A guardian's copy row
+// that is about the erased person has that person only in copy_of_user_id and
+// stays (M23).
+//
+// The recipient UPDATE runs under a transaction-local statement_timeout of
+// erasureRecipientWait for the whole statement (three separate budgets, none
+// bounding another): a message worker holds one queued row FOR UPDATE SKIP
+// LOCKED across its provider call, so the UPDATE can wait on it. Provider
+// limits (Postmark 15 s a request, SMTP 10 s to dial and 30 s for the
+// exchange) bound nothing here, because the worker's database work uses
+// context.WithoutCancel and a Sender may ignore its ctx; batchDeadline is only
+// a context handed to Send. The 20 s bound covers the whole statement, so
+// successive waits on several rows can use it up whatever the provider does.
+// The 60 s HTTP write budget bounds no transaction. When the statement times
+// out the error comes back unchanged, the Transaction rolls the whole erasure
+// back, and the admin sees the usual "could not delete user" and can retry.
+func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
+	var cancelled []uint
+	if err := tx.Raw(`UPDATE messages SET status = ?, updated_at = now()
+		WHERE author_id = ? AND status = ? RETURNING id`,
+		models.MessageCancelled, s.ID, models.MessageScheduled).Scan(&cancelled).Error; err != nil {
+		return err
+	}
+	sort.Slice(cancelled, func(i, j int) bool { return cancelled[i] < cancelled[j] })
+	for _, id := range cancelled {
+		if err := audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.MessageCancelled,
+			TargetType: "message", TargetID: id, IP: ip}); err != nil {
+			return err
+		}
+	}
+	return withStatementTimeout(tx, erasureRecipientWait, func() error {
+		return tx.Exec(`UPDATE message_recipients SET address = '', error = '',
+			status = CASE WHEN status = 'queued' THEN 'suppressed' ELSE status END,
+			reason = CASE WHEN status = 'queued' THEN ? ELSE reason END, updated_at = now()
+			WHERE user_id = ? AND (address <> '' OR error <> '' OR status = 'queued')`,
+			skipNotActive, s.ID).Error
+	})
 }
 
 // eraseAccountCredentialsIn deletes everything that lets someone act as the
