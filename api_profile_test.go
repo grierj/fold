@@ -22,11 +22,13 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func TestFocalPoints(t *testing.T) {
@@ -1942,5 +1944,361 @@ func TestAvatarCleanupWaitsForBlockedUploadAndKeepsTheNewPhoto(t *testing.T) {
 	}
 	if w := getUpload(t, app, "/uploads/"+newKey); w.Code != http.StatusOK {
 		t.Fatalf("new photo: %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Household self-service writers revalidate the acting account (M7.4 R4-3a-1,
+// inventory 9.6 requirements 1 to 4, F-10 writer side). Every writer takes
+// the acting user row FOR NO KEY UPDATE before the household lock, so an
+// erasure, a disable or a session change that commits first leaves the writer
+// nothing to save, and one that waits for the writer finds a finished write.
+// Rows the writer committed before an erasure stay until R4-3b scrubs
+// households (a stated R4-3b limit, not asserted here).
+// ---------------------------------------------------------------------------
+
+const hwPW = erasurePW
+
+// hwScene is an admin (the erasure's actor), a signed-in member who writes
+// the household, and, when seeded, that member's household with one adult.
+type hwScene struct {
+	coreErasureScene
+	u   *models.User
+	c   *apiClient
+	hid uint // the member's household; 0 before first use
+	pid uint // an adult in it; 0 before first use
+}
+
+func newHWScene(t *testing.T, seeded bool) hwScene {
+	t.Helper()
+	s := hwScene{coreErasureScene: newCoreErasureScene(t)}
+	s.ac.holdNotices = true // F1: before anything is seeded
+	s.u = newTestUser(t, s.app, "hw-writer", hwPW, models.RoleMember)
+	if err := s.app.DB.Model(s.u).Update("name", "Wanda Writer").Error; err != nil {
+		t.Fatal(err)
+	}
+	s.c = newAPIClient(t, s.app)
+	s.c.holdNotices = true
+	s.c.fetchCSRF()
+	if w := s.c.do("POST", "/api/v1/auth/login", map[string]string{"email": testEmail("hw-writer"), "password": hwPW}, true); w.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	if seeded {
+		apiDo(t, s.c, "PUT", "/api/v1/me/household", map[string]any{"name": "Writers", "address": "1 Oak St"}, http.StatusOK)
+		s.hid = getMyHousehold(t, s.c).ID
+		s.pid = addMyPerson(t, s.c, map[string]any{"firstName": "Ada", "kind": "adult"}).ID
+	}
+	return s
+}
+
+// hwRoute is one household writer: its request, the status it answers for a
+// live account (read from api_profile.go: PUT household 200, POST person 201,
+// PUT person 200, DELETE person 200), the audit rows it writes, and the first
+// write to households or household_people it makes. firstWrite matches only
+// facts GORM has set before the step (F6): Table, Where, Dest.
+type hwRoute struct {
+	name       string
+	method     string
+	firstUse   bool // the member has no household yet
+	status     int
+	writes     map[string]int64 // audit rows a live request adds, by action
+	path       func(s hwScene) string
+	body       any
+	firstWrite func(s hwScene) erasureTestPoint
+}
+
+func (r hwRoute) send(c *apiClient, s hwScene) <-chan httpResult {
+	return bgDo(c, r.method, r.path(s), r.body)
+}
+
+func (r hwRoute) do(c *apiClient, s hwScene) httpResult {
+	w := c.do(r.method, r.path(s), r.body, true)
+	return httpResult{w.Code, w.Body.String()}
+}
+
+var hwAuditActions = []string{audit.HouseholdCreated, audit.HouseholdUpdated, audit.HouseholdPersonAdded,
+	audit.HouseholdPersonUpdated, audit.HouseholdPersonRemoved}
+
+var hwRoutes = []hwRoute{
+	{
+		name: "PUT household", method: "PUT", status: http.StatusOK,
+		writes: map[string]int64{audit.HouseholdUpdated: 1},
+		path:   func(hwScene) string { return "/api/v1/me/household" },
+		body:   map[string]any{"name": "Renamed", "address": "2 Elm St"},
+		firstWrite: func(s hwScene) erasureTestPoint {
+			return erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "households",
+				Where: &erasureTestWhere{SQL: "id = ?", Vars: map[int]any{0: s.hid}}}
+		},
+	},
+	{
+		name: "POST person", method: "POST", status: http.StatusCreated,
+		writes: map[string]int64{audit.HouseholdPersonAdded: 1},
+		path:   func(hwScene) string { return "/api/v1/me/household/people" },
+		body:   map[string]any{"firstName": "Bea", "kind": "adult"},
+		firstWrite: func(hwScene) erasureTestPoint {
+			return erasureTestPoint{Processor: "create", Step: "gorm:create", Table: "household_people"}
+		},
+	},
+	{
+		name: "PUT person", method: "PUT", status: http.StatusOK,
+		writes: map[string]int64{audit.HouseholdPersonUpdated: 1},
+		path:   func(s hwScene) string { return "/api/v1/me/household/people/" + itoa(s.pid) },
+		body:   map[string]any{"firstName": "Changed"},
+		firstWrite: func(hwScene) erasureTestPoint {
+			return erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "household_people",
+				Assign: map[string]any{"first_name": "Changed"}}
+		},
+	},
+	{
+		name: "DELETE person", method: "DELETE", status: http.StatusOK,
+		writes: map[string]int64{audit.HouseholdPersonRemoved: 1},
+		path:   func(s hwScene) string { return "/api/v1/me/household/people/" + itoa(s.pid) },
+		firstWrite: func(hwScene) erasureTestPoint {
+			return erasureTestPoint{Processor: "delete", Step: "gorm:delete", Table: "household_people"}
+		},
+	},
+	{
+		name: "first use PUT household", method: "PUT", firstUse: true, status: http.StatusOK,
+		writes: map[string]int64{audit.HouseholdCreated: 1, audit.HouseholdUpdated: 1},
+		path:   func(hwScene) string { return "/api/v1/me/household" },
+		body:   map[string]any{"name": "Fresh"},
+	},
+	{
+		name: "first use POST person", method: "POST", firstUse: true, status: http.StatusCreated,
+		writes: map[string]int64{audit.HouseholdCreated: 1, audit.HouseholdPersonAdded: 1},
+		path:   func(hwScene) string { return "/api/v1/me/household/people" },
+		body:   map[string]any{"firstName": "Bea", "kind": "adult"},
+	},
+}
+
+// hwState is every row a household writer could add or change, plus the audit
+// log and the notifications, as one string.
+func hwState(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var parts []string
+	for _, table := range []string{"households", "household_accounts", "household_people", "guardian_links", "audit_logs", "notifications"} {
+		parts = append(parts, table+": "+dumpRows(t, db, table, "id", "true"))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// hwHoldUser is a test transaction that takes uid FOR UPDATE, as the erasure
+// does, then runs mutate (an UPDATE's SET list, or empty) without committing.
+// It returns its backend PID (F7) and the commit. Cleanup rolls back, so a
+// failed assertion never strands a request.
+func hwHoldUser(t *testing.T, app *App, uid uint, mutate string) (blocker int, commit func()) {
+	t.Helper()
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	var locked models.User
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, uid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Raw("SELECT pg_backend_pid()").Scan(&blocker).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mutate != "" {
+		if err := tx.Exec("UPDATE users SET "+mutate+" WHERE id = ?", uid).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return blocker, func() {
+		if err := tx.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// hwWaiters waits until want backends are blocked on a lock while running a
+// users FOR NO KEY UPDATE select (the writer's user lock) and returns their
+// PIDs.
+func hwWaiters(t *testing.T, app *App, want int) []int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var pids []int
+		if err := app.DB.Raw(`SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+			AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE ? ORDER BY pid`,
+			`%"users"%FOR NO KEY UPDATE%`).Scan(&pids).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(pids) == want {
+			return pids
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("never saw %d backends waiting on the user lock", want)
+	return nil
+}
+
+// hwOneBlockedBy waits until at least one of the waiters is blocked by the
+// blocker's PID (F7). Two requests on one row queue, so the second may wait
+// on the first instead.
+func hwOneBlockedBy(t *testing.T, app *App, waiters []int, blocker int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, w := range waiters {
+			var blocked bool
+			if err := app.DB.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, w).Scan(&blocked).Error; err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no waiter in %v ever waited on session %d", waiters, blocker)
+}
+
+// hwRefusedWhileLocked: the request reaches its user lock while the test
+// transaction holds the row, which then commits mutate. Every route answers
+// 401 unauthorized and nothing it could write changes.
+func hwRefusedWhileLocked(t *testing.T, mutate string) {
+	for _, r := range hwRoutes {
+		t.Run(r.name, func(t *testing.T) {
+			s := newHWScene(t, !r.firstUse)
+			before := hwState(t, s.app.DB)
+			blocker, commit := hwHoldUser(t, s.app, s.u.ID, mutate)
+			res := r.send(s.c, s)
+			waiter := hwWaiters(t, s.app, 1)[0]
+			waitDBBlocked(t, s.app.DB, waiter, blocker)
+			commit()
+			got := awaitResult(t, res)
+			if got.code != http.StatusUnauthorized || !strings.Contains(got.body, `"unauthorized"`) {
+				t.Fatalf("%s: %d %s, want 401 unauthorized", r.name, got.code, got.body)
+			}
+			if after := hwState(t, s.app.DB); after != before {
+				t.Errorf("a refused %s changed household, audit or notification rows:\nbefore %s\nafter  %s", r.name, before, after)
+			}
+		})
+	}
+}
+
+// TestHouseholdWritersRefuseAfterTheAccountIsErased: erasure first. The
+// account is soft-deleted with a new session version before the request's
+// lock is granted.
+func TestHouseholdWritersRefuseAfterTheAccountIsErased(t *testing.T) {
+	hwRefusedWhileLocked(t, "session_version = session_version + 1, deleted_at = now()")
+}
+
+// TestHouseholdWritersRefuseAStaleSession: only session_version changed (a
+// password change or "sign out everywhere"), no delete.
+func TestHouseholdWritersRefuseAStaleSession(t *testing.T) {
+	hwRefusedWhileLocked(t, "session_version = session_version + 1")
+}
+
+// TestHouseholdWriterFirstThenRealErasure: the writer holds the user lock and
+// the household lock and is paused before its first write; the real DELETE
+// /admin/users/:id waits at its user lock behind the writer, then both finish
+// with no deadlock.
+func TestHouseholdWriterFirstThenRealErasure(t *testing.T) {
+	for _, r := range hwRoutes {
+		if r.firstUse {
+			continue
+		}
+		t.Run(r.name, func(t *testing.T) {
+			s := newHWScene(t, true)
+			states := erasureTestSQLStates(t, s.app)
+			var writerPID atomic.Int64
+			p := r.firstWrite(s)
+			p.PID = &writerPID
+			reached, release := erasureTestPause(t, s.app.DB, p)
+			res := r.send(s.c, s)
+			awaitDBSignal(t, reached)
+			del := bgDo(s.ac, "DELETE", "/api/v1/admin/users/"+itoa(s.u.ID), nil)
+			waiter := waitForRowLockWaiter(t, s.app)
+			waitDBBlocked(t, s.app.DB, waiter, int(writerPID.Load()))
+			release()
+			if got := awaitResult(t, res); got.code != r.status {
+				t.Fatalf("%s: %d %s, want %d", r.name, got.code, got.body, r.status)
+			}
+			if got := awaitResult(t, del); got.code != http.StatusOK {
+				t.Fatalf("erasure: %d %s, want 200", got.code, got.body)
+			}
+			if n := states.Count("40P01"); n != 0 {
+				t.Errorf("%d deadlocks recorded", n)
+			}
+		})
+	}
+}
+
+// TestHouseholdWritersStillWorkForALiveAccount: each route answers its own
+// status and writes exactly the audit rows it always did, once.
+func TestHouseholdWritersStillWorkForALiveAccount(t *testing.T) {
+	for _, r := range hwRoutes {
+		t.Run(r.name, func(t *testing.T) {
+			s := newHWScene(t, !r.firstUse)
+			before := map[string]int64{}
+			for _, action := range hwAuditActions {
+				before[action] = auditCount(t, s.app, action)
+			}
+			if got := r.do(s.c, s); got.code != r.status {
+				t.Fatalf("%s: %d %s, want %d", r.name, got.code, got.body, r.status)
+			}
+			for _, action := range hwAuditActions {
+				if got, want := auditCount(t, s.app, action)-before[action], r.writes[action]; got != want {
+					t.Errorf("%s wrote %d %s rows, want %d", r.name, got, action, want)
+				}
+			}
+			if n := countRows(t, s.app.DB, "household_accounts", "user_id = ?", s.u.ID); n != 1 {
+				t.Errorf("%d household seats for the member, want 1", n)
+			}
+		})
+	}
+}
+
+// TestHouseholdFirstUseNamesTheLockedRow: the name is read under the user
+// lock, so a rename that commits while the request waits is the one used.
+func TestHouseholdFirstUseNamesTheLockedRow(t *testing.T) {
+	s := newHWScene(t, false)
+	blocker, commit := hwHoldUser(t, s.app, s.u.ID, "name = 'Wanda Newname'")
+	res := bgDo(s.c, "PUT", "/api/v1/me/household", map[string]any{})
+	waitDBBlocked(t, s.app.DB, hwWaiters(t, s.app, 1)[0], blocker)
+	commit()
+	if got := awaitResult(t, res); got.code != http.StatusOK {
+		t.Fatalf("first use: %d %s, want 200", got.code, got.body)
+	}
+	var name string
+	if err := s.app.DB.Raw("SELECT name FROM households WHERE created_by = ?", s.u.ID).Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	if name != "Newname household" {
+		t.Errorf("household name %q, want it built from the locked row", name)
+	}
+}
+
+// TestHouseholdConcurrentFirstUseMakesOneHousehold: two first uses for one
+// user wait on the same user lock, then leave one household and one seat.
+func TestHouseholdConcurrentFirstUseMakesOneHousehold(t *testing.T) {
+	s := newHWScene(t, false)
+	second := *s.c
+	second.jar = map[string]*http.Cookie{}
+	for name, ck := range s.c.jar {
+		second.jar[name] = ck
+	}
+	blocker, commit := hwHoldUser(t, s.app, s.u.ID, "")
+	one := bgDo(s.c, "PUT", "/api/v1/me/household", map[string]any{"name": "One"})
+	two := bgDo(&second, "PUT", "/api/v1/me/household", map[string]any{"name": "Two"})
+	waiters := hwWaiters(t, s.app, 2)
+	hwOneBlockedBy(t, s.app, waiters, blocker) // the other may queue behind its peer
+	commit()
+	for _, ch := range []<-chan httpResult{one, two} {
+		if got := awaitResult(t, ch); got.code != http.StatusOK {
+			t.Fatalf("first use: %d %s, want 200", got.code, got.body)
+		}
+	}
+	if n := countRows(t, s.app.DB, "households", "created_by = ?", s.u.ID); n != 1 {
+		t.Errorf("%d households, want 1", n)
+	}
+	if n := countRows(t, s.app.DB, "household_accounts", "user_id = ?", s.u.ID); n != 1 {
+		t.Errorf("%d seats, want 1", n)
+	}
+	if n := auditCount(t, s.app, audit.HouseholdCreated); n != 1 {
+		t.Errorf("%d household.created rows, want 1", n)
 	}
 }

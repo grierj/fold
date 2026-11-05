@@ -698,6 +698,73 @@ func defaultHouseholdName(u *models.User) string {
 	return fields[len(fields)-1] + " household"
 }
 
+var (
+	// errHouseholdForbidden is a failed policy.CanManageHousehold or
+	// CanCreateHousehold check made under the user lock.
+	errHouseholdForbidden = errors.New("household not allowed")
+	// errHouseholdPersonGone means the person is not in the household the
+	// locked seat names.
+	errHouseholdPersonGone = errors.New("household person not found")
+)
+
+// lockHouseholdActor is the first lock of every household self-service
+// writer: the acting user row FOR NO KEY UPDATE, taken before lockHousehold
+// (user, then household, as the erasure, lockConversionParticipants and
+// lockAdminHouseholdParticipants do). It takes no contact gate; a writer that
+// takes one takes it before this. A row that is soft-deleted, cannot sign in,
+// or whose session_version or logout_version differ from the request's user
+// answers errSecuritySession and the caller writes nothing. The caller uses
+// the returned row, never the preloaded one, for every later fact.
+func lockHouseholdActor(tx *gorm.DB, me *models.User) (*models.User, error) {
+	var fresh models.User
+	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, me.ID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errSecuritySession
+		}
+		return nil, err
+	}
+	if !fresh.CanSignIn() || fresh.SessionVersion != me.SessionVersion || fresh.LogoutVersion != me.LogoutVersion {
+		return nil, errSecuritySession
+	}
+	return &fresh, nil
+}
+
+// lockHouseholdSeat is lockHouseholdActor plus the seat and the policy
+// check, both read under the lock. noSeat is the error for an account with no
+// seat: forbidden for the household routes, not found for the person routes.
+func lockHouseholdSeat(tx *gorm.DB, me *models.User, noSeat error) (*models.User, models.HouseholdAccount, error) {
+	fresh, err := lockHouseholdActor(tx, me)
+	if err != nil {
+		return nil, models.HouseholdAccount{}, err
+	}
+	seat, found := householdAccountIn(tx, fresh.ID)
+	if !found {
+		return nil, seat, noSeat
+	}
+	if !policy.CanManageHousehold(asPerson(fresh), householdRelOf(seat, true)) {
+		return nil, seat, errHouseholdForbidden
+	}
+	return fresh, seat, nil
+}
+
+// answerHouseholdWriterError answers the errors the lock helpers return and
+// reports whether it did. Statuses and copy are the ones the routes already
+// use: 401 unauthorized for a session the lock found stale, 403 forbidden,
+// 404 for a person outside the caller's household.
+func answerHouseholdWriterError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, errSecuritySession):
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	case errors.Is(err, errHouseholdForbidden):
+		jsonError(c, http.StatusForbidden, "forbidden")
+	case errors.Is(err, errHouseholdPersonGone):
+		jsonError(c, http.StatusNotFound, "household person not found")
+	default:
+		return false
+	}
+	return true
+}
+
 // ensureHousehold loads the user's household, creating it on first use
 // (audited household.created). It answers and reports false on failure.
 func (a *App) ensureHousehold(c *gin.Context, u *models.User) (*models.Household, models.HouseholdAccount, bool) {
@@ -713,19 +780,37 @@ func (a *App) ensureHousehold(c *gin.Context, u *models.User) (*models.Household
 		jsonError(c, http.StatusForbidden, "forbidden")
 		return nil, models.HouseholdAccount{}, false
 	}
-	household := models.Household{Name: defaultHouseholdName(u), CreatedBy: u.ID}
+	var household models.Household
 	var acct models.HouseholdAccount
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// The user lock comes first. Under it the account is still live, a
+		// concurrent first use has either committed its seat (returned here)
+		// or waits for this one, and the name comes from the locked row.
+		fresh, err := lockHouseholdActor(tx, u)
+		if err != nil {
+			return err
+		}
+		if seat, found := householdAccountIn(tx, fresh.ID); found {
+			acct, household = seat, models.Household{}
+			return tx.First(&household, seat.HouseholdID).Error
+		}
+		if !policy.CanCreateHousehold(asPerson(fresh)) {
+			return errHouseholdForbidden
+		}
+		household = models.Household{Name: defaultHouseholdName(fresh), CreatedBy: fresh.ID}
 		if err := tx.Create(&household).Error; err != nil {
 			return err
 		}
-		acct = models.HouseholdAccount{HouseholdID: household.ID, UserID: u.ID, Relation: models.HouseholdRelationGuardian}
+		acct = models.HouseholdAccount{HouseholdID: household.ID, UserID: fresh.ID, Relation: models.HouseholdRelationGuardian}
 		if err := tx.Create(&acct).Error; err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.HouseholdCreated,
+		return audit.Write(tx, audit.Entry{Actor: &fresh.ID, Action: audit.HouseholdCreated,
 			TargetType: "household", TargetID: household.ID, IP: c.ClientIP()})
 	})
+	if answerHouseholdWriterError(c, err) {
+		return nil, models.HouseholdAccount{}, false
+	}
 	if err != nil {
 		// A concurrent first use may have won the unique user row.
 		if acct, found := householdAccountIn(a.DB, u.ID); found {
@@ -1047,11 +1132,19 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 		updates["address"] = address
 	}
 	if len(updates) > 0 {
+		// The household written is the one the locked seat names, which
+		// may differ from the one loaded before the transaction.
+		var householdID uint
 		if err := a.DB.Transaction(func(tx *gorm.DB) error {
-			if err := lockHousehold(tx, household.ID); err != nil {
+			fresh, seat, err := lockHouseholdSeat(tx, apiUser(c), errHouseholdForbidden)
+			if err != nil {
 				return err
 			}
-			if err := tx.Model(household).Updates(updates).Error; err != nil {
+			householdID = seat.HouseholdID
+			if err := lockHousehold(tx, householdID); err != nil {
+				return err
+			}
+			if err := tx.Model(&models.Household{}).Where("id = ?", householdID).Updates(updates).Error; err != nil {
 				return err
 			}
 			fields := []string{}
@@ -1059,15 +1152,20 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 				fields = append(fields, key)
 			}
 			sort.Strings(fields)
-			return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.HouseholdUpdated, TargetType: "household", TargetID: household.ID, Meta: map[string]any{"fields": fields}, IP: c.ClientIP()})
+			return audit.Write(tx, audit.Entry{Actor: &fresh.ID, Action: audit.HouseholdUpdated, TargetType: "household", TargetID: householdID, Meta: map[string]any{"fields": fields}, IP: c.ClientIP()})
 		}); err != nil {
+			if answerHouseholdWriterError(c, err) {
+				return
+			}
 			jsonError(c, http.StatusInternalServerError, "could not save household")
 			return
 		}
-		if err := a.DB.First(household, household.ID).Error; err != nil {
+		var saved models.Household
+		if err := a.DB.First(&saved, householdID).Error; err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not load household")
 			return
 		}
+		household = &saved
 	}
 	out, err := a.toHouseholdJSON(household, apiUser(c))
 	if err != nil {
@@ -1169,8 +1267,7 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 // first use). A child or teen also gets a pending guardian link and the
 // admins a waiting task (DEC-32); an adult needs no approval.
 func (a *App) apiAddHouseholdPerson(c *gin.Context) {
-	household, ok := a.manageMyHousehold(c)
-	if !ok {
+	if _, ok := a.manageMyHousehold(c); !ok {
 		return
 	}
 	me := apiUser(c)
@@ -1183,26 +1280,34 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 	if !ok {
 		return
 	}
-	person.HouseholdID, person.CreatedBy = household.ID, me.ID
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockHousehold(tx, household.ID); err != nil {
+		// User lock first, then the household the locked seat names.
+		fresh, seat, err := lockHouseholdSeat(tx, me, errHouseholdForbidden)
+		if err != nil {
 			return err
 		}
+		if err := lockHousehold(tx, seat.HouseholdID); err != nil {
+			return err
+		}
+		person.HouseholdID, person.CreatedBy = seat.HouseholdID, fresh.ID
 		if err := tx.Create(&person).Error; err != nil {
 			return err
 		}
 		meta := map[string]any{"personId": person.ID, "kind": person.Kind}
 		if policy.NeedsGuardianLink(person.Kind) {
-			link, _, err := createGuardianLink(tx, me.ID, &person)
+			link, _, err := createGuardianLink(tx, fresh.ID, &person)
 			if err != nil {
 				return err
 			}
 			meta["guardianLinkId"] = link.ID
 		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonAdded,
-			TargetType: "household", TargetID: household.ID, Meta: meta, IP: c.ClientIP()})
+		return audit.Write(tx, audit.Entry{Actor: &fresh.ID, Action: audit.HouseholdPersonAdded,
+			TargetType: "household", TargetID: seat.HouseholdID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
+		if answerHouseholdWriterError(c, err) {
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "could not add that person")
 		return
 	}
@@ -1318,11 +1423,20 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		updates["photo_consent"] = *body.PhotoConsent
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockHousehold(tx, person.HouseholdID); err != nil {
+		// User lock first, then the household the locked seat names; the
+		// person must be in it.
+		_, seat, err := lockHouseholdSeat(tx, me, errHouseholdPersonGone)
+		if err != nil {
+			return err
+		}
+		if err := lockHousehold(tx, seat.HouseholdID); err != nil {
 			return err
 		}
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
+		}
+		if person.HouseholdID != seat.HouseholdID {
+			return errHouseholdPersonGone
 		}
 		if person.ConvertedUserID != nil {
 			return errConversionUnavailable
@@ -1388,7 +1502,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 				return err
 			}
 		}
-		_, err := a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
+		_, err = a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
@@ -1400,6 +1514,9 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonUpdated, TargetType: "household", TargetID: person.HouseholdID, Meta: map[string]any{"personId": person.ID, "fields": fields}, IP: c.ClientIP()})
 	})
 	if err != nil {
+		if answerHouseholdWriterError(c, err) {
+			return
+		}
 		if errors.Is(err, errConversionConsent) {
 			conversionError(c, err)
 			return
@@ -1424,17 +1541,26 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 // a soft delete, with live guardian links revoked and any waiting admin
 // task resolved withdrawn, audited in the same transaction.
 func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
-	household, person, ok := a.loadMyHouseholdPerson(c)
+	_, person, ok := a.loadMyHouseholdPerson(c)
 	if !ok {
 		return
 	}
 	me := apiUser(c)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockHousehold(tx, household.ID); err != nil {
+		// User lock first, then the household the locked seat names; the
+		// person must be in it.
+		_, seat, err := lockHouseholdSeat(tx, me, errHouseholdPersonGone)
+		if err != nil {
+			return err
+		}
+		if err := lockHousehold(tx, seat.HouseholdID); err != nil {
 			return err
 		}
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
+		}
+		if person.HouseholdID != seat.HouseholdID {
+			return errHouseholdPersonGone
 		}
 		if person.ConvertedUserID != nil {
 			return errConversionUnavailable
@@ -1457,13 +1583,16 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonRemoved,
-			TargetType: "household", TargetID: household.ID,
+			TargetType: "household", TargetID: seat.HouseholdID,
 			Meta: map[string]any{"personId": person.ID, "kind": person.Kind}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
 		return tx.Delete(person).Error
 	})
 	if err != nil {
+		if answerHouseholdWriterError(c, err) {
+			return
+		}
 		if errors.Is(err, errConversionUnavailable) || errors.Is(err, errConversionConsent) {
 			conversionError(c, err)
 			return
