@@ -1010,6 +1010,11 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := tx.Delete(u).Error; err != nil {
 			return err
 		}
+		// Right after the soft delete: the consents trigger lets this scrub
+		// through only once the transaction's own deleted_at is set.
+		if err := eraseConsentEvidenceIn(tx, s); err != nil {
+			return err
+		}
 		// The deleted account no longer counts, so its seats and childcare
 		// spots are free: promote waiters now (Whittler, PR 109).
 		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {

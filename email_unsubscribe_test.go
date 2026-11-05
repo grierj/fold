@@ -359,6 +359,119 @@ func TestConsentWritersRefuseAfterTheOwnerIsSoftDeleted(t *testing.T) {
 			}
 		})
 	}
+	// R4-2d1b-2: the same five writers against the real erasure, which now
+	// scrubs the owner's consent evidence right after its soft delete.
+	t.Run("real erasure", func(t *testing.T) {
+		for _, w := range consentTestWriters() {
+			t.Run(w.name, func(t *testing.T) {
+				t.Run("writer first", func(t *testing.T) { consentTestRealErasureWriterFirst(t, w) })
+				t.Run("erasure first", func(t *testing.T) { consentTestRealErasureFirst(t, w) })
+			})
+		}
+	})
+}
+
+// consentTestErasureFixture is consentTestFixture plus an admin who can erase
+// the person for real and a push device for the writer that deletes them.
+// Every client holds its notices (F1). erase answers the real
+// DELETE /api/v1/admin/users/:id.
+func consentTestErasureFixture(t *testing.T, w consentTestWriter) (*App, *models.User, *apiClient, func() *httptest.ResponseRecorder) {
+	t.Helper()
+	app, u, c := consentTestFixture(t, w)
+	newTestUser(t, app, "root", "password123456", models.RoleAdmin)
+	admin := loginAPI(t, app, "root", "password123456")
+	admin.holdNotices = true
+	if w.name == "push turn off everywhere" {
+		newPushDevice(t, app, u, "lee-phone")
+	}
+	return app, u, c, func() *httptest.ResponseRecorder {
+		return admin.do("DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil, true)
+	}
+}
+
+func consentTestRowsOf(t *testing.T, app *App, userID uint) []models.Consent {
+	t.Helper()
+	var rows []models.Consent
+	if err := app.DB.Where("user_id = ?", userID).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// consentTestWantErased fails unless the erasure answered 200 {}.
+func consentTestWantErased(t *testing.T, got *httptest.ResponseRecorder) {
+	t.Helper()
+	if got.Code != http.StatusOK || strings.TrimSpace(got.Body.String()) != "{}" {
+		t.Fatalf("erasure answered %d %q, want 200 {}", got.Code, got.Body.String())
+	}
+}
+
+// consentTestWantBlank fails unless the row's three evidence columns are empty.
+func consentTestWantBlank(t *testing.T, what string, c models.Consent) {
+	t.Helper()
+	if c.IP != "" || c.UserAgent != "" || c.EvidenceText != "" {
+		t.Fatalf("%s still carries evidence: ip %q, user agent %q, evidence %q", what, c.IP, c.UserAgent, c.EvidenceText)
+	}
+}
+
+// Writer first: the writer has inserted its row and holds the owner's row
+// FOR NO KEY UPDATE, so the erasure waits at its own FOR UPDATE on that row
+// (the writer's backend is the recorded blocker, F7). When the writer commits,
+// the erasure runs and its scrub blanks the new row along with the seeded one.
+func consentTestRealErasureWriterFirst(t *testing.T, w consentTestWriter) {
+	t.Helper()
+	app, u, c, erase := consentTestErasureFixture(t, w)
+	var writerPID atomic.Int64
+	reached, release := erasureTestPause(t, app.DB, erasureTestPoint{Processor: "create", After: true, Step: "gorm:create", Table: "consents", PID: &writerPID})
+	wait := consentTestAsync(t, func() *httptest.ResponseRecorder { return w.run(t, app, u, c) })
+	awaitDBSignal(t, reached)
+	waitErased := consentTestAsync(t, erase)
+	erasurePID := waitForRowLockWaiter(t, app)
+	waitDBBlocked(t, app.DB, erasurePID, int(writerPID.Load()))
+	release()
+	got, erased := wait(), waitErased()
+	if got.Code != http.StatusOK {
+		t.Fatalf("writer answered %d %q, want 200", got.Code, got.Body.String())
+	}
+	if w.name == "token page switch" && !strings.Contains(got.Body.String(), "emailSettings") {
+		t.Fatalf("writer answered %q, want emailSettings", got.Body.String())
+	}
+	consentTestWantErased(t, erased)
+	rows := consentTestRowsOf(t, app, u.ID)
+	if len(rows) != 2 {
+		t.Fatalf("%d consent rows after the writer and the erasure, want the seeded row and the new one: %+v", len(rows), rows)
+	}
+	consentTestWantBlank(t, "the seeded row", rows[0])
+	consentTestWantBlank(t, "the row the writer committed first", rows[1])
+	if n := rows[1]; n.Channel != w.channel || n.Scope != w.scope || n.Status != w.newStatus {
+		t.Fatalf("new row %+v, want %s %s %s", n, w.channel, w.scope, w.newStatus)
+	}
+}
+
+// Erasure first: the writer is stopped before it takes the owner's row lock,
+// the real erasure completes (soft delete, then the scrub), and the writer then
+// finds a gone owner: it answers its own gone status, appends nothing, and the
+// scrubbed row stays scrubbed.
+func consentTestRealErasureFirst(t *testing.T, w consentTestWriter) {
+	t.Helper()
+	app, u, c, erase := consentTestErasureFixture(t, w)
+	reached, release := consentTestPauseBeforeLock(t, app.DB, u.ID)
+	wait := consentTestAsync(t, func() *httptest.ResponseRecorder { return w.run(t, app, u, c) })
+	awaitDBSignal(t, reached)
+	consentTestWantErased(t, erase())
+	release()
+	got := wait()
+	if got.Code != w.gone || !strings.Contains(got.Body.String(), w.goneBody) {
+		t.Fatalf("writer answered %d %q, want %d containing %q", got.Code, got.Body.String(), w.gone, w.goneBody)
+	}
+	rows := consentTestRowsOf(t, app, u.ID)
+	if len(rows) != 1 {
+		t.Fatalf("%d consent rows after the erasure, want only the seeded one: %+v", len(rows), rows)
+	}
+	consentTestWantBlank(t, "the seeded row", rows[0])
+	if r := rows[0]; r.Channel != w.channel || r.Scope != w.scope || r.Status != w.prior {
+		t.Fatalf("seeded row %+v, want %s %s %s kept", r, w.channel, w.scope, w.prior)
+	}
 }
 
 // The same seeds without the soft delete write what they always did.
