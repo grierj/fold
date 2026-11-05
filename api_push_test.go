@@ -850,3 +850,162 @@ func TestPushSubscribeFromAStaleSessionSavesNothing(t *testing.T) {
 		})
 	}
 }
+
+// pushTestDeviceJSON is the saved device as JSON, so a refused save can show
+// it was not touched.
+func pushTestDeviceJSON(t *testing.T, app *App, id uint) string {
+	t.Helper()
+	var out string
+	if err := app.DB.Raw("SELECT to_jsonb(p)::text FROM push_subscriptions p WHERE id = ?", id).Scan(&out).Error; err != nil || out == "" {
+		t.Fatalf("device %d: %q %v", id, out, err)
+	}
+	return out
+}
+
+// pushTestActorAudit counts the person's push.device_on rows, and of those
+// the ones that record a refused takeover.
+func pushTestActorAudit(t *testing.T, app *App, actor uint) (all, refused int64) {
+	t.Helper()
+	all = countRows(t, app.DB, "audit_logs", "actor_id = ? AND action = ?", actor, audit.PushDeviceOn)
+	refused = countRows(t, app.DB, "audit_logs", "actor_id = ? AND action = ? AND meta_json->>'refused' = 'true'", actor, audit.PushDeviceOn)
+	return all, refused
+}
+
+// subscribe reads the caller's row under FOR UPDATE first; a caller who was
+// erased (or soft-deleted) while it waited is refused with a 401 before the
+// save limit, the insert, the foreign-endpoint branch and its refused audit
+// row, or the consent write.
+func TestPushSubscribeRefusesAGoneCaller(t *testing.T) {
+	const firstLock = "%users%FOR UPDATE%"
+	goneSubscribe := func(t *testing.T, app *App, caller *models.User, c *apiClient, s browserSub) *httptest.ResponseRecorder {
+		t.Helper()
+		return consentTestSoftDeleteWhile(t, app, caller.ID, firstLock, func() *httptest.ResponseRecorder {
+			_, w := subscribe(t, c, s)
+			return w
+		})
+	}
+
+	t.Run("new endpoint", func(t *testing.T) {
+		app, _ := pushTestApp(t)
+		sam := newTestUser(t, app, "sam", "password123456", models.RoleMember)
+		c := loginAPI(t, app, "sam", "password123456")
+		c.holdNotices = true
+		s := newBrowserSub(t, "gone-new")
+		w := goneSubscribe(t, app, sam, c, s)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("gone caller: %d %s", w.Code, w.Body.String())
+		}
+		if n := countRows(t, app.DB, "push_subscriptions", "endpoint = ?", s.Endpoint); n != 0 {
+			t.Fatalf("%d devices saved for a gone caller", n)
+		}
+		if got := len(pushConsents(t, app, sam, "all")); got != 0 {
+			t.Fatalf("%d consent rows for a gone caller", got)
+		}
+		if all, _ := pushTestActorAudit(t, app, sam.ID); all != 0 {
+			t.Fatalf("%d push.device_on rows for a gone caller", all)
+		}
+	})
+
+	// Control for the case above: the same save by a live caller.
+	t.Run("new endpoint, live caller", func(t *testing.T) {
+		app, _ := pushTestApp(t)
+		sam := newTestUser(t, app, "sam", "password123456", models.RoleMember)
+		c := loginAPI(t, app, "sam", "password123456")
+		c.holdNotices = true
+		s := newBrowserSub(t, "live-new")
+		if got, w := subscribe(t, c, s); w.Code != http.StatusOK || !got.Saved {
+			t.Fatalf("live caller: %d %s", w.Code, w.Body.String())
+		}
+		if n := countRows(t, app.DB, "push_subscriptions", "endpoint = ?", s.Endpoint); n != 1 || len(pushConsents(t, app, sam, "all")) != 1 {
+			t.Fatalf("a live save should leave one device and one consent row")
+		}
+		if all, _ := pushTestActorAudit(t, app, sam.ID); all != 1 {
+			t.Fatalf("%d push.device_on rows, want 1", all)
+		}
+	})
+
+	// Someone else's endpoint posted with other keys: a live caller gets the
+	// uniform save answer and one refused audit row; a gone caller gets 401
+	// and no row at all.
+	foreign := func(t *testing.T, gone bool) {
+		app, _ := pushTestApp(t)
+		pat := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+		sam := newTestUser(t, app, "sam", "password123456", models.RoleMember)
+		pc := loginAPI(t, app, "pat", "password123456")
+		pc.holdNotices = true
+		sc := loginAPI(t, app, "sam", "password123456")
+		sc.holdNotices = true
+		k1 := newBrowserSub(t, "shared-endpoint")
+		mine, _ := subscribe(t, pc, k1)
+		if mine.Device == nil {
+			t.Fatal("setup: pat's device was not saved")
+		}
+		k2 := newBrowserSub(t, "other-keys")
+		k2.Endpoint = k1.Endpoint
+		before := pushTestDeviceJSON(t, app, mine.Device.ID)
+		patAudit, _ := pushTestActorAudit(t, app, pat.ID)
+
+		var w *httptest.ResponseRecorder
+		if gone {
+			w = goneSubscribe(t, app, sam, sc, k2)
+		} else {
+			_, w = subscribe(t, sc, k2)
+		}
+		if got := pushTestDeviceJSON(t, app, mine.Device.ID); got != before {
+			t.Fatalf("the other person's device changed:\n before %s\n after  %s", before, got)
+		}
+		if got := len(pushConsents(t, app, sam, "all")); got != 0 {
+			t.Fatalf("%d consent rows for the foreign-endpoint caller", got)
+		}
+		if after, _ := pushTestActorAudit(t, app, pat.ID); after != patAudit {
+			t.Fatal("the device owner's audit rows changed")
+		}
+		all, refused := pushTestActorAudit(t, app, sam.ID)
+		if gone {
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("gone caller: %d %s", w.Code, w.Body.String())
+			}
+			if all != 0 || refused != 0 {
+				t.Fatalf("audit rows for a gone caller: %d (%d refused)", all, refused)
+			}
+			return
+		}
+		var got pushSubscribeJSON
+		decodeJSON(t, w, &got)
+		if w.Code != http.StatusOK || !got.Saved || got.Device == nil || got.Device.ID != mine.Device.ID {
+			t.Fatalf("live caller's answer differs from a save: %d %s", w.Code, w.Body.String())
+		}
+		if all != 1 || refused != 1 {
+			t.Fatalf("live caller: %d push.device_on rows (%d refused), want exactly one refused", all, refused)
+		}
+	}
+	t.Run("foreign endpoint with wrong keys, live caller", func(t *testing.T) { foreign(t, false) })
+	t.Run("foreign endpoint with wrong keys, gone caller", func(t *testing.T) { foreign(t, true) })
+
+	t.Run("own endpoint saved again", func(t *testing.T) {
+		app, _ := pushTestApp(t)
+		sam := newTestUser(t, app, "sam", "password123456", models.RoleMember)
+		c := loginAPI(t, app, "sam", "password123456")
+		c.holdNotices = true
+		s := newBrowserSub(t, "own-endpoint")
+		saved, _ := subscribe(t, c, s)
+		if saved.Device == nil {
+			t.Fatal("setup: the device was not saved")
+		}
+		before := pushTestDeviceJSON(t, app, saved.Device.ID)
+		consents := len(pushConsents(t, app, sam, "all"))
+		audits, _ := pushTestActorAudit(t, app, sam.ID)
+		if w := goneSubscribe(t, app, sam, c, s); w.Code != http.StatusUnauthorized {
+			t.Fatalf("gone caller: %d %s", w.Code, w.Body.String())
+		}
+		if got := pushTestDeviceJSON(t, app, saved.Device.ID); got != before {
+			t.Fatalf("the device changed for a gone caller:\n before %s\n after  %s", before, got)
+		}
+		if got := len(pushConsents(t, app, sam, "all")); got != consents {
+			t.Fatalf("consent rows %d -> %d", consents, got)
+		}
+		if after, _ := pushTestActorAudit(t, app, sam.ID); after != audits {
+			t.Fatalf("audit rows %d -> %d", audits, after)
+		}
+	})
+}

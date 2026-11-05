@@ -1023,7 +1023,7 @@ func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	}
 	switch which.Channel {
 	case "", models.ConsentEmail:
-		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm) {
+		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm, me) {
 			return
 		}
 	case models.ConsentPush:
