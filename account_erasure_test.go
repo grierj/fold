@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
 	"sort"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -529,7 +532,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// every table R4-2a touches identical. This is one transaction with no
 	// competing writer, so equality with the pre-state is the right comparison.
 	s.ac.holdNotices = true
-	_, occ, _ := erasureEventFixture(t, s)
+	eventID, occ, groupID := erasureEventFixture(t, s)
 	expires := time.Now().Add(48 * time.Hour)
 	req := erasureSeedRequest(t, db, models.AccountRequest{Name: "Rollback Requester", Email: addr, Source: models.RequestSelfSignup,
 		Status: models.RequestPending, ExpiresAt: expires})
@@ -550,8 +553,13 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// R4-2d1b-2: the consent scrub runs right after the soft delete, so a
 	// failure in the last statement must leave every consent row as it was.
 	erasureSeedConsentEvidence(t, db, u.ID, "rollback")
+	// R4-T07A: the ages-note scrub also runs right after the soft delete, so the
+	// same late failure must leave the subject's notes as they were, on a
+	// pending and on a terminal row.
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, l.ID, u.ID, groupID, eventID, occ.ID, 1, "rollback pending note")
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, l.ID, u.ID, groupID, eventID, occ.ID, 2, "rollback denied note")
 	tables := []string{"account_requests", "notifications", "invitations", "guest_signups", "mail_outboxes", "messages", "message_recipients",
-		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "users"}
+		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "contact_requests", "users"}
 	writeSet := func() string {
 		var out string
 		for _, table := range tables {
@@ -3888,65 +3896,1779 @@ func TestAccountErasureEndsContactGrantsOnce(t *testing.T) {
 	})
 }
 
-// TestAccountErasureLeavesContactRequestTextForT07 guards the G-7 boundary:
-// the erasure writes no contact_requests statement, so every row's reason and
-// add_childcare_ages_note stay as written, for pending and terminal rows of
-// the contact, group_add and occurrence_add purposes. (The lifecycle may end
-// a pending row; that never touches the text.)
-func TestAccountErasureLeavesContactRequestTextForT07(t *testing.T) {
+// ---------------------------------------------------------------------------
+// R4-T07A: the childcare ages note of the subject's occurrence_add rows.
+// ---------------------------------------------------------------------------
+
+// erasureAgesNoteRow is one contact_requests row as the ages-note tests compare
+// it: the few columns they branch on, the note, the whole row as JSON with and
+// without the note, and the row without the columns the request lifecycle moves.
+type erasureAgesNoteRow struct {
+	ID            uint
+	Purpose       string
+	Status        string
+	Reason        string
+	Note          string
+	SubjectUserID uint
+	RequesterID   uint
+	EndReason     string
+	CompletedAt   *time.Time
+	Rest          string
+	Whole         string
+	// Preserved is the whole row as JSON without status, end_reason and
+	// completed_at (the three columns finishContactRequest moves) and without
+	// the ages note (the scrub's). Every other column, decision timestamps and
+	// the people who decided or withdrew included, appears with its value, so a
+	// pending row that the lifecycle ends must keep it exactly.
+	Preserved string
+}
+
+func erasureRequestRows(t testing.TB, db *gorm.DB) map[uint]erasureAgesNoteRow {
+	t.Helper()
+	var rows []erasureAgesNoteRow
+	if err := db.Raw(`SELECT id, purpose, status, reason, subject_user_id, requester_id, add_childcare_ages_note AS note,
+		end_reason, completed_at,
+		(to_jsonb(r) - 'add_childcare_ages_note')::text AS rest, to_jsonb(r)::text AS whole,
+		(to_jsonb(r) - 'status' - 'end_reason' - 'completed_at' - 'add_childcare_ages_note')::text AS preserved
+		FROM contact_requests r ORDER BY id`).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[uint]erasureAgesNoteRow, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r
+	}
+	return out
+}
+
+// erasureMakeRequest inserts one valid contact_requests row of purpose and
+// status (pending, withdrawn, denied, expired or ended; granted rows come from
+// erasureGrantedAdd) for a live subject. The row honors every CHECK; an
+// occurrence_add row carries note as its childcare ages note.
+func erasureMakeRequest(t *testing.T, db *gorm.DB, purpose, status string, requester, subject, groupID, eventID, occurrenceID uint, n int, note string) models.ContactRequest {
+	t.Helper()
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	r := models.ContactRequest{Purpose: purpose, RequesterID: requester, SubjectUserID: subject, ContextType: policy.ContactGroup, ContextID: groupID,
+		Reason: fmt.Sprintf("identifying reason %d", n), SubjectDecision: policy.ContactPending, Status: status,
+		CreatedAt: created, ExpiresAt: created.Add(24 * 14 * time.Hour)}
+	switch purpose {
+	case policy.RequestContact:
+		r.Fields, r.NeedsAdmin, r.AdminDecision = policy.ContactBoth, true, policy.ContactPending
+	case policy.RequestGroupAdd:
+		r.AdminDecision = policy.ContactNotNeeded
+	case policy.RequestOccurrenceAdd:
+		r.ContextType, r.ContextID, r.OccurrenceID = policy.ContactEvent, eventID, &occurrenceID
+		r.AdminDecision, r.AddAttendanceMode = policy.ContactNotNeeded, models.AttendanceInPerson
+		r.AddChildcareAgesNote = note
+	}
+	done := created.Add(10 * time.Minute)
+	switch status {
+	case policy.ContactWithdrawn:
+		r.CompletedAt, r.WithdrawnByID = &done, &requester
+	case policy.ContactDenied:
+		decided := created.Add(5 * time.Minute)
+		r.SubjectDecision, r.SubjectDecidedBy, r.SubjectDecidedAt = policy.ContactDenied, &subject, &decided
+		r.CompletedAt = &done
+	case policy.ContactEnded:
+		r.CompletedAt, r.EndReason = &done, "event_ended"
+	case policy.ContactExpired:
+		r.CreatedAt = created.AddDate(0, 0, -30)
+		r.ExpiresAt = r.CreatedAt.Add(24 * 14 * time.Hour)
+		end := r.ExpiresAt.Add(time.Minute)
+		r.CompletedAt = &end
+	}
+	erasureMustCreate(t, db, &r)
+	return r
+}
+
+// erasureGrantedAdd makes a granted occurrence_add request for subject on occ
+// the way the completion writes it, in one transaction with the real triggers
+// enabled: the request, a registration (reg, when given, is reused for a
+// replacement), the grant decision and the access provenance with its added
+// snapshot. at is the instant of the grant. The request is created one minute
+// before at: the baseline provenance trigger refuses a replacement request
+// created before the access it replaces ended, so a one-hour lead put B ahead
+// of A's end and failed the seed with 23514.
+func erasureGrantedAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, note string, at time.Time, reg *models.Registration) (models.ContactRequest, models.Registration) {
+	t.Helper()
+	at = at.UTC().Truncate(time.Microsecond)
+	req := models.ContactRequest{RequesterID: issuer.ID, SubjectUserID: subject.ID, Purpose: policy.RequestOccurrenceAdd,
+		ContextType: policy.ContactEvent, ContextID: eventID, OccurrenceID: &occ.ID, AddAttendanceMode: models.AttendanceInPerson,
+		AddChildcareAgesNote: note, Reason: "identifying reason granted", SubjectDecision: policy.ContactPending,
+		AdminDecision: policy.ContactNotNeeded, Status: policy.ContactPending, CreatedAt: at.Add(-time.Minute), ExpiresAt: at.AddDate(0, 0, 14)}
+	var out models.Registration
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req).Error; err != nil {
+			return err
+		}
+		if reg == nil {
+			out = models.Registration{UserID: &subject.ID, OccurrenceID: occ.ID, Status: models.RegGoing, Source: "admin", AttendanceMode: models.AttendanceInPerson}
+			if err := tx.Create(&out).Error; err != nil {
+				return err
+			}
+		} else if err := tx.First(&out, reg.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&req).Updates(map[string]any{"subject_decision": policy.ContactApproved, "subject_decided_by": subject.ID,
+			"subject_decided_at": at, "status": policy.ContactGranted, "completed_at": at, "completed_target_id": out.ID}).Error; err != nil {
+			return err
+		}
+		issuerID := issuer.ID
+		_, err := seedAccessGrantIn(tx, out.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RequestID: &req.ID}, &issuerID, at)
+		return err
+	})
+	if err != nil {
+		t.Fatal("seed granted add request:", err)
+	}
+	if err := db.First(&out, out.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return req, out
+}
+
+// erasureNote is the ages note a granted-row builder writes: the text for the
+// erased person's rows, empty for the twin's, whose erasure the helper cannot
+// change and which therefore stands for the erasure before T07.
+func erasureNote(noted bool, text string) string {
+	if noted {
+		return text
+	}
+	return ""
+}
+
+// erasureGrantedGroupAdd is a granted group_add request for subject into g,
+// written the way the completion writes it: the request, the active membership
+// it names and the grant decision in one transaction under the real triggers.
+func erasureGrantedGroupAdd(t *testing.T, db *gorm.DB, requester, subject *models.User, g *models.Group) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Microsecond)
+	req := models.ContactRequest{RequesterID: requester.ID, SubjectUserID: subject.ID, Purpose: policy.RequestGroupAdd,
+		ContextType: policy.ContactGroup, ContextID: g.ID, Reason: "identifying reason granted group add",
+		SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded, Status: policy.ContactPending,
+		CreatedAt: at.Add(-time.Minute), ExpiresAt: at.AddDate(0, 0, 14)}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req).Error; err != nil {
+			return err
+		}
+		m := models.Membership{UserID: subject.ID, GroupID: g.ID, Role: models.MembershipMember, Status: "active", JoinedAt: at}
+		if err := tx.Create(&m).Error; err != nil {
+			return err
+		}
+		return tx.Model(&req).Updates(map[string]any{"subject_decision": policy.ContactApproved, "subject_decided_by": subject.ID,
+			"subject_decided_at": at, "status": policy.ContactGranted, "completed_at": at, "completed_target_id": m.ID}).Error
+	})
+	if err != nil {
+		t.Fatal("seed granted group_add request:", err)
+	}
+	if err := db.First(&req, req.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+// erasureForgedGrantedAdd inserts a granted occurrence_add request with no
+// completed registration behind it. Its deferred completion event fails with
+// 23514 whenever it is checked, so it shows whether a queued event survived.
+func erasureForgedGrantedAdd(tx *gorm.DB, requester, subject, eventID, occurrenceID uint) error {
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	decided, done, target := at.Add(time.Minute), at.Add(2*time.Minute), uint(2000000000)
+	r := models.ContactRequest{RequesterID: requester, SubjectUserID: subject, Purpose: policy.RequestOccurrenceAdd,
+		ContextType: policy.ContactEvent, ContextID: eventID, OccurrenceID: &occurrenceID, AddAttendanceMode: models.AttendanceInPerson,
+		CompletedTargetID: &target, Reason: "forged granted add", SubjectDecision: policy.ContactApproved,
+		SubjectDecidedBy: &subject, SubjectDecidedAt: &decided, AdminDecision: policy.ContactNotNeeded,
+		Status: policy.ContactGranted, CreatedAt: at, ExpiresAt: at.AddDate(0, 0, 14), CompletedAt: &done}
+	return tx.Create(&r).Error
+}
+
+// erasureReplacedAdd is historical case (a): request A was granted on a
+// registration, its access ended, and request B then took the same
+// registration over. Both notes are nonempty.
+func erasureReplacedAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) (a, b models.ContactRequest, reg models.Registration) {
+	t.Helper()
+	first := time.Now().UTC().Add(-3 * time.Hour)
+	a, reg = erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note A (replaced)"), first, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, first.Add(10*time.Minute))
+	b, reg = erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note B (current)"), first.Add(30*time.Minute), &reg)
+	return a, b, reg
+}
+
+// erasureRetiredAdd is historical case (b): a granted request whose
+// registration was retired (access ended, both snapshots written) and deleted.
+func erasureRetiredAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour)
+	req, reg := erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note (registration deleted)"), at, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, at.Add(10*time.Minute))
+	if err := db.Delete(&models.Registration{}, reg.ID).Error; err != nil {
+		t.Fatal("delete the retired registration:", err)
+	}
+	return req
+}
+
+// erasureEndedAccessAdd is historical case (c), the control: the access only
+// ended and the registration is still in place.
+func erasureEndedAccessAdd(t *testing.T, db *gorm.DB, issuer, subject *models.User, eventID uint, occ models.EventOccurrence, noted bool) models.ContactRequest {
+	t.Helper()
+	at := time.Now().UTC().Add(-3 * time.Hour)
+	req, reg := erasureGrantedAdd(t, db, issuer, subject, eventID, occ, erasureNote(noted, "ages note (access ended)"), at, nil)
+	endSeededAccess(t, db, reg.ID, policy.OccurrenceRemoved, &issuer.ID, at.Add(10*time.Minute))
+	return req
+}
+
+// The classes of fixture row in the ages-note erasure test: the erased person
+// is the subject, is the requester, or is neither.
+const (
+	erasureAsSubject   = "subject"
+	erasureAsRequester = "requester"
+	erasureNeither     = "neither"
+)
+
+// erasureSeedRequestTasks writes the waiting review tasks of a pending request the way
+// request creation does (contactNotice): the subject's, and the admin's when
+// the request needs one.
+func erasureSeedRequestTasks(t *testing.T, db *gorm.DB, r models.ContactRequest, admin uint) {
+	t.Helper()
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if _, err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
+			return err
+		}
+		if !r.NeedsAdmin {
+			return nil
+		}
+		_, err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed the review tasks of request %d: %v", r.ID, err)
+	}
+}
+
+// erasureTask is one review task a pending request leaves open: its kind and
+// the user who holds it.
+type erasureTask struct {
+	Kind  string
+	Owner uint
+}
+
+// erasureReviewTasks is who holds a task for a pending request: its subject,
+// and the reviewing admin when the request needs one.
+func erasureReviewTasks(r models.ContactRequest, admin uint) []erasureTask {
+	subjectKind, adminKind := notify.ContactSubjectReview, notify.ContactAdminReview
+	if r.Purpose != policy.RequestContact {
+		subjectKind, adminKind = notify.AddSubjectReview, notify.AddAdminReview
+	}
+	out := []erasureTask{{subjectKind, r.SubjectUserID}}
+	if r.NeedsAdmin {
+		out = append(out, erasureTask{adminKind, admin})
+	}
+	return out
+}
+
+// erasureSpan is the wall-clock window of one DELETE: from just before the
+// request to just after the response.
+type erasureSpan struct{ Start, End time.Time }
+
+func (s erasureSpan) has(at time.Time) bool {
+	return !at.Before(s.Start.Truncate(time.Microsecond)) && !at.After(s.End)
+}
+
+func (s erasureSpan) hasPtr(at *time.Time) bool { return at != nil && s.has(*at) }
+
+func (s erasureSpan) hasMicro(micro int64) bool {
+	return micro >= s.Start.Truncate(time.Microsecond).UnixMicro() && micro <= s.End.UnixMicro()
+}
+
+func erasureJSON(t testing.TB, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// erasureMetaOf decodes a JSON object the way an audit row's meta reads back:
+// numbers as float64.
+func erasureMetaOf(t testing.TB, raw string) map[string]any {
+	t.Helper()
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("not a JSON object: %q: %v", raw, err)
+	}
+	return m
+}
+
+// erasureWire is a wanted meta map as it reads back from the database.
+func erasureWire(t testing.TB, want map[string]any) map[string]any {
+	t.Helper()
+	return erasureMetaOf(t, erasureJSON(t, want))
+}
+
+func erasureSameID(a, b *uint) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// erasureLedger is every notice, delivery, job and audit row, by id. A run is
+// judged by the rows it added (ids absent before) and by what became of each
+// row that was there.
+type erasureLedger struct {
+	Notices    map[uint]models.Notification
+	Deliveries map[uint]models.NotificationDelivery
+	Jobs       map[uint]models.Job
+	Audit      map[uint]models.AuditLog
+}
+
+func erasureLedgerOf(t testing.TB, db *gorm.DB) erasureLedger {
+	t.Helper()
+	l := erasureLedger{Notices: map[uint]models.Notification{}, Deliveries: map[uint]models.NotificationDelivery{},
+		Jobs: map[uint]models.Job{}, Audit: map[uint]models.AuditLog{}}
+	var notices []models.Notification
+	var deliveries []models.NotificationDelivery
+	var queued []models.Job
+	var logs []models.AuditLog
+	for _, load := range []struct {
+		name string
+		dest any
+	}{{"notifications", &notices}, {"notification_deliveries", &deliveries}, {"jobs", &queued}, {"audit_logs", &logs}} {
+		if err := db.Order("id").Find(load.dest).Error; err != nil {
+			t.Fatalf("read %s: %v", load.name, err)
+		}
+	}
+	for _, n := range notices {
+		l.Notices[n.ID] = n
+	}
+	for _, d := range deliveries {
+		l.Deliveries[d.ID] = d
+	}
+	for _, j := range queued {
+		l.Jobs[j.ID] = j
+	}
+	for _, a := range logs {
+		l.Audit[a.ID] = a
+	}
+	return l
+}
+
+// erasureRun is what one DELETE of one person is judged against.
+type erasureRun struct {
+	Name    string
+	Subject uint // the person erased
+	Admin   uint // the admin who deletes them and reviews contact requests
+	// Pending is every request that was pending and names Subject, as seeded.
+	Pending   []models.ContactRequest
+	Span      erasureSpan
+	Reg       models.Registration // the replacement registration with live access, before the DELETE
+	RegAfter  models.Registration // and after it
+	GroupID   uint
+	EventID   uint // the event of Reg
+	IssuerID  uint // who granted the access
+	RequestID uint // the add request the access names
+}
+
+// erasureLedgerFacts is what checkErasureLedger saw, for the checks that span
+// both runs.
+type erasureLedgerFacts struct {
+	Name       string
+	EndedMeta  map[string]any // meta of the one new occurrence_access.ended snapshot
+	Living     int            // waiting tasks of other people the DELETE closed
+	Deleted    int            // waiting tasks of the erased person that are gone
+	NewNotices int
+}
+
+// erasureEndMeta is the meta of the audit row that ends a pending request
+// because its person is gone (finishContactRequest, contactAudit).
+func erasureEndMeta(r models.ContactRequest) map[string]any {
+	if r.Purpose == policy.RequestContact {
+		return map[string]any{"requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID, "contextType": r.ContextType,
+			"contextId": r.ContextID, "fields": r.Fields, "needsAdmin": r.NeedsAdmin, "outcome": policy.ContactEnded,
+			"reason": policy.ContactAccountDisabled}
+	}
+	m := map[string]any{"purpose": r.Purpose, "requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID,
+		"contextType": r.ContextType, "contextId": r.ContextID, "needsAdmin": r.NeedsAdmin, "outcome": policy.ContactEnded,
+		"reason": policy.ContactAccountDisabled}
+	if r.Purpose == policy.RequestOccurrenceAdd {
+		m["occurrenceId"] = *r.OccurrenceID
+	}
+	return m
+}
+
+// erasureWantNotice is the "updated" notice a pending request's end sends to
+// the party that is still there, as the registry renders it.
+func erasureWantNotice(t testing.TB, r models.ContactRequest, to uint) models.Notification {
+	t.Helper()
+	kind, subjectType, link, prefix := notify.ContactUpdated, "contact_request", "contact-requests", "contact"
+	if r.Purpose != policy.RequestContact {
+		kind, subjectType, link, prefix = notify.AddUpdated, "add_request", "add-requests", "add"
+	}
+	k, ok := notify.Lookup(kind)
+	if !ok {
+		t.Fatalf("kind %q is not registered", kind)
+	}
+	v := notify.Vars{Teen: r.NeedsAdmin, Count: 1}
+	title, body := k.Render(v)
+	emailTitle, emailBody := k.RenderForEmail(v)
+	pushTitle, pushBody, _ := k.RenderForPush(v)
+	id := r.ID
+	dedupe := fmt.Sprintf("%s:%d:%s", prefix, r.ID, policy.ContactEnded)
+	return models.Notification{UserID: to, Kind: kind, Category: notify.CatSafety, SubjectType: subjectType, SubjectID: &id,
+		DedupeKey: &dedupe, Title: title, Body: body, EmailTitle: emailTitle, EmailBody: emailBody, PushTitle: pushTitle, PushBody: pushBody,
+		Link: fmt.Sprintf("/%s/%d", link, r.ID), Actions: "[]", BatchCount: 1, Data: "{}"}
+}
+
+// erasureAccessColumns is the identity and access columns of a registration as
+// one JSON string. A DELETE may change only the ending three of them.
+func erasureAccessColumns(t testing.TB, r models.Registration) string {
+	t.Helper()
+	return erasureJSON(t, struct {
+		ID                  uint
+		UserID              *uint
+		OccurrenceID        uint
+		Status              string
+		Origin              string
+		Issuer              *uint
+		Request             *uint
+		DepartureMembership *uint
+		DepartureActor      *uint
+		GrantedAt           *time.Time
+		EndedAt             *time.Time
+		EndReason           string
+		EndedBy             *uint
+	}{r.ID, r.UserID, r.OccurrenceID, r.Status, r.AccessOrigin, r.AccessIssuerID, r.AccessRequestID,
+		r.AccessDepartureMembershipID, r.AccessDepartureActorID, r.AccessGrantedAt, r.AccessEndedAt, r.AccessEndReason, r.AccessEndedBy})
+}
+
+// checkErasureRequests judges the contact_requests rows of one DELETE. Every row
+// that does not name the erased person is byte-identical (the other run's rows
+// included). A row that was pending and names them ends as "ended" with
+// "account_disabled", completed inside the DELETE, and keeps every other column
+// it had: status, end_reason and completed_at are the lifecycle's, and the note
+// of the subject's occurrence_add row is the scrub's, and nothing else moves.
+// The rest of the person's rows keep their status, decision, reason and
+// timestamps; the subject's occurrence_add rows differ by the note alone.
+func checkErasureRequests(t *testing.T, run erasureRun, before, after map[uint]erasureAgesNoteRow) {
+	t.Helper()
+	if len(after) != len(before) {
+		t.Fatalf("%s: %d contact_requests rows after the DELETE, %d before", run.Name, len(after), len(before))
+	}
+	pending := map[uint]bool{}
+	for _, r := range run.Pending {
+		pending[r.ID] = true
+	}
+	endedPending := 0
+	for id, b := range before {
+		a, ok := after[id]
+		if !ok {
+			t.Errorf("%s: request %d is gone", run.Name, id)
+			continue
+		}
+		label := fmt.Sprintf("%s: request %d (%s %s)", run.Name, id, b.Purpose, b.Status)
+		subjectAdd := b.Purpose == policy.RequestOccurrenceAdd && b.SubjectUserID == run.Subject
+		involved := b.SubjectUserID == run.Subject || b.RequesterID == run.Subject
+		if a.Reason != b.Reason {
+			t.Errorf("%s: reason changed to %q, was %q", label, a.Reason, b.Reason)
+		}
+		if subjectAdd && a.Note != "" {
+			t.Errorf("%s: subject note is %q, want empty", label, a.Note)
+		}
+		if !subjectAdd && a.Note != b.Note {
+			t.Errorf("%s: note is %q, was %q", label, a.Note, b.Note)
+		}
+		switch {
+		case !involved:
+			if a.Whole != b.Whole {
+				t.Errorf("%s: a row naming %d in neither role changed:\n%s\n%s", label, run.Subject, b.Whole, a.Whole)
+			}
+		case b.Status == policy.ContactPending:
+			if !pending[id] {
+				t.Errorf("%s: pending row naming the person is not in the run's fixture list", label)
+			}
+			endedPending++
+			if a.Status != policy.ContactEnded || a.EndReason != policy.ContactAccountDisabled {
+				t.Errorf("%s: ended as status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactAccountDisabled)
+			}
+			if !run.Span.hasPtr(a.CompletedAt) {
+				t.Errorf("%s: completed_at %v is outside the DELETE (%v to %v)", label, a.CompletedAt, run.Span.Start, run.Span.End)
+			}
+			if a.Preserved != b.Preserved {
+				t.Errorf("%s: a column other than status, end_reason, completed_at and the subject's note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+			}
+		case subjectAdd:
+			if a.Rest != b.Rest {
+				t.Errorf("%s: more than the note changed:\n%s\n%s", label, b.Rest, a.Rest)
+			}
+		default:
+			if a.Whole != b.Whole {
+				t.Errorf("%s: a settled row of the person changed:\n%s\n%s", label, b.Whole, a.Whole)
+			}
+		}
+	}
+	if endedPending != len(run.Pending) {
+		t.Errorf("%s: %d pending rows naming the person ended, want %d", run.Name, endedPending, len(run.Pending))
+	}
+}
+
+// erasurePreservedShape is the Preserved projection of a row with the fixture
+// mapping applied: the ids of the erased person and their twin become "person",
+// the row's own id is dropped and every timestamp is reduced to whether it is
+// set (a row and its twin are seeded at different instants).
+func erasurePreservedShape(t testing.TB, preserved string, erased, twin uint) map[string]any {
+	t.Helper()
+	m := erasureMetaOf(t, preserved)
+	delete(m, "id")
+	for _, k := range []string{"requester_id", "subject_user_id", "subject_decided_by", "admin_decided_by", "withdrawn_by_id"} {
+		if id, ok := m[k].(float64); ok && (uint(id) == erased || uint(id) == twin) {
+			m[k] = "person"
+		}
+	}
+	for _, k := range []string{"created_at", "expires_at", "subject_decided_at", "admin_decided_at"} {
+		if m[k] != nil {
+			m[k] = "set"
+		}
+	}
+	return m
+}
+
+// checkErasurePairs sets each erased-side request beside its twin's, by the ids
+// the fixture recorded: one to one, the same purpose, status and reason, the
+// person in the same role, and after both DELETEs the same status and end
+// reason and the same preserved columns under erasurePreservedShape.
+func checkErasurePairs(t *testing.T, erased, twin uint, twinOf map[uint]uint, before, after map[uint]erasureAgesNoteRow) {
+	t.Helper()
+	seen := map[uint]uint{}
+	for id, tid := range twinOf {
+		if prev, dup := seen[tid]; dup {
+			t.Errorf("twin request %d is paired with both %d and %d", tid, prev, id)
+			continue
+		}
+		seen[tid] = id
+		be, bt, ae, at := before[id], before[tid], after[id], after[tid]
+		label := fmt.Sprintf("request %d (%s %s) and its twin %d", id, be.Purpose, be.Status, tid)
+		switch {
+		case be.SubjectUserID == erased:
+			if bt.SubjectUserID != twin || bt.RequesterID != be.RequesterID {
+				t.Errorf("%s: the twin row has requester %d and subject %d, want %d and %d", label, bt.RequesterID, bt.SubjectUserID, be.RequesterID, twin)
+			}
+		case be.RequesterID == erased:
+			if bt.RequesterID != twin || bt.SubjectUserID != be.SubjectUserID {
+				t.Errorf("%s: the twin row has requester %d and subject %d, want %d and %d", label, bt.RequesterID, bt.SubjectUserID, twin, be.SubjectUserID)
+			}
+		default:
+			t.Errorf("%s: the erased-side row does not name the erased person", label)
+			continue
+		}
+		if be.Purpose != bt.Purpose || be.Status != bt.Status || be.Reason != bt.Reason {
+			t.Errorf("%s: purpose/status/reason differ before the DELETE: %q/%q/%q and %q/%q/%q", label, be.Purpose, be.Status, be.Reason, bt.Purpose, bt.Status, bt.Reason)
+		}
+		if ae.Status != at.Status || ae.EndReason != at.EndReason || (ae.CompletedAt == nil) != (at.CompletedAt == nil) {
+			t.Errorf("%s: after the DELETE the rows have status %q/%q, end reason %q/%q, completed %t/%t",
+				label, ae.Status, at.Status, ae.EndReason, at.EndReason, ae.CompletedAt != nil, at.CompletedAt != nil)
+		}
+		for what, pair := range map[string][2]erasureAgesNoteRow{"before": {be, bt}, "after": {ae, at}} {
+			if !reflect.DeepEqual(erasurePreservedShape(t, pair[0].Preserved, erased, twin), erasurePreservedShape(t, pair[1].Preserved, erased, twin)) {
+				t.Errorf("%s: the preserved columns differ %s the DELETE:\n%s\n%s", label, what, pair[0].Preserved, pair[1].Preserved)
+			}
+		}
+	}
+}
+
+// checkErasureLedger judges the audit, notification, delivery and job rows of
+// one DELETE against the expected rows stated in full:
+//
+//   - audit: exactly user.deleted, one end row per pending request that named
+//     the person (contact.ended or add.ended, no actor) and one
+//     occurrence_access.ended snapshot of the replacement registration, each
+//     with its complete meta; every earlier row is byte-identical;
+//   - the replacement registration changes only its ending columns (reason
+//     "account_disabled", no ender, an end inside the DELETE);
+//   - notices: exactly one contact.updated or add.updated per pending request,
+//     to the party still there, rendered by the registry, with the link, the
+//     dedupe key and the subject of its request; none to the erased person,
+//     none "occurrence.updated" for the erased holder of the access; the person
+//     keeps no notice or delivery row; the review tasks of other people on
+//     these requests close as "ended" (no resolver) and are otherwise
+//     unchanged; every other notice is byte-identical;
+//   - deliveries: one queued email row per new notice, none for the person;
+//     others unchanged;
+//   - jobs: one notify.deliver job per new notice, one avatar.cleanup job for
+//     the person, nothing else; earlier jobs unchanged.
+func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedger) erasureLedgerFacts {
+	t.Helper()
+	name, span := run.Name, run.Span
+	facts := erasureLedgerFacts{Name: name}
+
+	// The replacement registration: only the ending moved.
+	reg, regAfter := run.Reg, run.RegAfter
+	if reg.AccessGrantedAt == nil || reg.AccessEndedAt != nil || reg.AccessOrigin != policy.OccurrenceOriginManagerAdd ||
+		!erasureSameID(reg.AccessIssuerID, &run.IssuerID) || !erasureSameID(reg.AccessRequestID, &run.RequestID) {
+		t.Fatalf("%s: the registration was not seeded with live access granted by %d for request %d: %+v", name, run.IssuerID, run.RequestID, reg)
+	}
+	if regAfter.AccessEndedAt == nil {
+		t.Fatalf("%s: registration %d still has live access after the DELETE", name, reg.ID)
+	}
+	wantReg := reg
+	wantReg.AccessEndedAt, wantReg.AccessEndReason, wantReg.AccessEndedBy = regAfter.AccessEndedAt, policy.ContactAccountDisabled, nil
+	if got, want := erasureAccessColumns(t, regAfter), erasureAccessColumns(t, wantReg); got != want {
+		t.Errorf("%s: the access columns of registration %d after the DELETE:\n%s\nwant (only the ending, reason %q, no ender):\n%s", name, reg.ID, got, policy.ContactAccountDisabled, want)
+	}
+	endedMicro := accessMicro(*regAfter.AccessEndedAt)
+	if !span.hasMicro(endedMicro) {
+		t.Errorf("%s: access ended at %v, outside the DELETE (%v to %v)", name, regAfter.AccessEndedAt, span.Start, span.End)
+	}
+
+	// Audit.
+	for id, b := range before.Audit {
+		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
+		}
+	}
+	type auditKey struct {
+		Type   string
+		ID     uint
+		Action string
+	}
+	type wantAudit struct {
+		Actor *uint
+		Meta  map[string]any
+		AnyIP bool
+	}
+	wantRows := map[auditKey]wantAudit{}
+	addAudit := func(k auditKey, w wantAudit) {
+		if _, dup := wantRows[k]; dup {
+			t.Fatalf("%s: the fixture expects two audit rows %+v", name, k)
+		}
+		wantRows[k] = w
+	}
+	admin := run.Admin
+	addAudit(auditKey{"user", run.Subject, audit.UserDeleted}, wantAudit{Actor: &admin, Meta: map[string]any{}, AnyIP: true})
+	for _, r := range run.Pending {
+		action, targetType := audit.ContactEnded, "contact_request"
+		if r.Purpose != policy.RequestContact {
+			action, targetType = audit.AddEnded, "add_request"
+		}
+		addAudit(auditKey{targetType, r.ID, action}, wantAudit{Meta: erasureEndMeta(r)})
+	}
+	addAudit(auditKey{accessTargetType, reg.ID, audit.OccurrenceAccessEnded}, wantAudit{Meta: map[string]any{
+		"subjectUserId": run.Subject, "occurrenceId": reg.OccurrenceID, "eventId": run.EventID,
+		"organizerType": policy.ContactGroup, "organizerId": run.GroupID, "registrationId": reg.ID,
+		"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
+		"issuerId": run.IssuerID, "requestId": run.RequestID,
+		"endedAtMicro": endedMicro, "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}})
+	seenAudit := map[auditKey]bool{}
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; old {
+			continue
+		}
+		k := auditKey{a.TargetType, a.TargetID, a.Action}
+		w, ok := wantRows[k]
+		switch {
+		case !ok:
+			t.Errorf("%s: unexpected new audit row %d: %s on %s %d, meta %s", name, id, a.Action, a.TargetType, a.TargetID, a.MetaJSON)
+			continue
+		case seenAudit[k]:
+			t.Errorf("%s: audit row %+v was written twice", name, k)
+			continue
+		}
+		seenAudit[k] = true
+		if !erasureSameID(a.ActorID, w.Actor) {
+			t.Errorf("%s: audit %+v has actor %v, want %v", name, k, a.ActorID, w.Actor)
+		}
+		if !w.AnyIP && a.IP != "" {
+			t.Errorf("%s: audit %+v has ip %q, want none", name, k, a.IP)
+		}
+		if !span.has(a.At) {
+			t.Errorf("%s: audit %+v written at %v, outside the DELETE (%v to %v)", name, k, a.At, span.Start, span.End)
+		}
+		got := erasureMetaOf(t, a.MetaJSON)
+		if want := erasureWire(t, w.Meta); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: audit %+v has meta %v, want %v", name, k, got, want)
+		}
+		if a.Action == audit.OccurrenceAccessEnded {
+			facts.EndedMeta = got
+		}
+	}
+	for k := range wantRows {
+		if !seenAudit[k] {
+			t.Errorf("%s: expected audit row %+v was not written", name, k)
+		}
+	}
+	endedSnapshots := 0
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; !old && a.Action == audit.OccurrenceAccessEnded && a.TargetType == accessTargetType && a.TargetID == reg.ID {
+			endedSnapshots++
+		}
+	}
+	if endedSnapshots != 1 {
+		t.Errorf("%s: %d new ended snapshots for registration %d, want exactly 1", name, endedSnapshots, reg.ID)
+	}
+
+	// Notices: the person's are gone; the tasks of others close; nothing else moves.
+	closed := map[uint]bool{}
+	for _, r := range run.Pending {
+		for _, task := range erasureReviewTasks(r, run.Admin) {
+			var open []models.Notification
+			for _, n := range before.Notices {
+				if n.UserID == task.Owner && n.Kind == task.Kind && n.SubjectID != nil && *n.SubjectID == r.ID && n.Waiting && n.ResolvedAt == nil {
+					open = append(open, n)
+				}
+			}
+			if len(open) != 1 {
+				t.Fatalf("%s: request %d: %d open %s tasks for user %d before the DELETE, want 1", name, r.ID, len(open), task.Kind, task.Owner)
+			}
+			b := open[0]
+			a, kept := after.Notices[b.ID]
+			if task.Owner == run.Subject {
+				if kept {
+					t.Errorf("%s: the erased person's task %d (%s) survives", name, b.ID, task.Kind)
+				}
+				facts.Deleted++
+				continue
+			}
+			if !kept {
+				t.Errorf("%s: the task %d (%s) of user %d is gone", name, b.ID, task.Kind, task.Owner)
+				continue
+			}
+			closed[b.ID] = true
+			facts.Living++
+			if !span.hasPtr(a.ResolvedAt) || a.ResolvedByID != nil || a.Resolution != policy.ContactEnded {
+				t.Errorf("%s: task %d (%s) resolved at %v by %v as %q, want inside the DELETE, nobody, %q", name, b.ID, task.Kind, a.ResolvedAt, a.ResolvedByID, a.Resolution, policy.ContactEnded)
+			}
+			want := b
+			want.ResolvedAt, want.ResolvedByID, want.Resolution = a.ResolvedAt, nil, policy.ContactEnded
+			if erasureJSON(t, a) != erasureJSON(t, want) {
+				t.Errorf("%s: task %d changed beyond its resolution:\n%s\n%s", name, b.ID, erasureJSON(t, b), erasureJSON(t, a))
+			}
+		}
+	}
+	for id, b := range before.Notices {
+		a, kept := after.Notices[id]
+		switch {
+		case b.UserID == run.Subject:
+			if kept {
+				t.Errorf("%s: notice %d of the erased person survives", name, id)
+			}
+		case closed[id]:
+		case !kept:
+			t.Errorf("%s: notice %d (%s) of user %d is gone", name, id, b.Kind, b.UserID)
+		case erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: notice %d (%s) of user %d changed:\n%s\n%s", name, id, b.Kind, b.UserID, erasureJSON(t, b), erasureJSON(t, a))
+		}
+	}
+	for id, n := range after.Notices {
+		if n.UserID == run.Subject {
+			t.Errorf("%s: the erased person holds notice %d (%s)", name, id, n.Kind)
+		}
+	}
+	for id, d := range after.Deliveries {
+		if d.UserID == run.Subject {
+			t.Errorf("%s: the erased person holds delivery %d", name, id)
+		}
+	}
+	wantNotices := map[string]models.Notification{}
+	for _, r := range run.Pending {
+		to := r.RequesterID
+		if r.RequesterID == run.Subject {
+			to = r.SubjectUserID
+		}
+		w := erasureWantNotice(t, r, to)
+		wantNotices[fmt.Sprintf("%d|%s", w.UserID, *w.DedupeKey)] = w
+	}
+	if len(wantNotices) != len(run.Pending) {
+		t.Fatalf("%s: the fixture expects %d distinct notices for %d pending requests", name, len(wantNotices), len(run.Pending))
+	}
+	shape := func(n models.Notification) string {
+		n.ID, n.CreatedAt, n.UpdatedAt = 0, time.Time{}, time.Time{}
+		return erasureJSON(t, n)
+	}
+	matched := map[uint]models.Notification{}
+	for id, n := range after.Notices {
+		if _, old := before.Notices[id]; old {
+			continue
+		}
+		if n.DedupeKey == nil {
+			t.Errorf("%s: unexpected new notice %d (%s) for user %d", name, id, n.Kind, n.UserID)
+			continue
+		}
+		key := fmt.Sprintf("%d|%s", n.UserID, *n.DedupeKey)
+		w, ok := wantNotices[key]
+		if !ok {
+			t.Errorf("%s: unexpected new notice %d: %s for user %d, key %s, subject %s %v", name, id, n.Kind, n.UserID, *n.DedupeKey, n.SubjectType, n.SubjectID)
+			continue
+		}
+		delete(wantNotices, key)
+		matched[id] = n
+		if !span.has(n.CreatedAt) || !n.CreatedAt.Equal(n.UpdatedAt) {
+			t.Errorf("%s: notice %d created %v updated %v, want equal and inside the DELETE", name, id, n.CreatedAt, n.UpdatedAt)
+		}
+		if got, want := shape(n), shape(w); got != want {
+			t.Errorf("%s: notice %d:\n%s\nwant:\n%s", name, id, got, want)
+		}
+	}
+	for key := range wantNotices {
+		t.Errorf("%s: expected notice %s was not written", name, key)
+	}
+	facts.NewNotices = len(matched)
+
+	// Deliveries.
+	for id, b := range before.Deliveries {
+		a, kept := after.Deliveries[id]
+		switch {
+		case b.UserID == run.Subject:
+			if kept {
+				t.Errorf("%s: delivery %d of the erased person survives", name, id)
+			}
+		case !kept || erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: delivery %d of user %d changed or is gone", name, id, b.UserID)
+		}
+	}
+	newDeliveries := map[uint]models.NotificationDelivery{}
+	for id, d := range after.Deliveries {
+		if _, old := before.Deliveries[id]; old {
+			continue
+		}
+		if _, dup := newDeliveries[d.NotificationID]; dup {
+			t.Errorf("%s: notice %d has two new deliveries", name, d.NotificationID)
+		}
+		newDeliveries[d.NotificationID] = d
+	}
+	for id, n := range matched {
+		d, ok := newDeliveries[id]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery row", name, id)
+			continue
+		}
+		delete(newDeliveries, id)
+		if !span.has(d.CreatedAt) || !span.has(d.UpdatedAt) {
+			t.Errorf("%s: delivery %d written at %v/%v, outside the DELETE", name, d.ID, d.CreatedAt, d.UpdatedAt)
+		}
+		d.ID, d.CreatedAt, d.UpdatedAt = 0, time.Time{}, time.Time{}
+		want := models.NotificationDelivery{NotificationID: id, Channel: models.DeliveryEmail, UserID: n.UserID, Status: models.DeliveryQueued}
+		if erasureJSON(t, d) != erasureJSON(t, want) {
+			t.Errorf("%s: delivery of notice %d:\n%s\nwant:\n%s", name, id, erasureJSON(t, d), erasureJSON(t, want))
+		}
+	}
+	for id, d := range newDeliveries {
+		t.Errorf("%s: unexpected new delivery for notice %d (user %d)", name, id, d.UserID)
+	}
+
+	// Jobs.
+	for id, b := range before.Jobs {
+		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)
+		}
+	}
+	queuedJob := func(j models.Job, maxAttempts int) {
+		t.Helper()
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.MaxAttempts != maxAttempts || j.LockedAt != nil || j.LockedBy != "" || j.LastError != "" ||
+			!span.has(j.RunAt) || !span.has(j.CreatedAt) {
+			t.Errorf("%s: job %d (%s) is %s with %d attempts of %d, run at %v, created %v; want queued, no attempts, max %d, inside the DELETE",
+				name, j.ID, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.RunAt, j.CreatedAt, maxAttempts)
+		}
+	}
+	deliverJobs := map[string]models.Job{}
+	var cleanups []models.Job
+	for id, j := range after.Jobs {
+		if _, old := before.Jobs[id]; old {
+			continue
+		}
+		switch {
+		case j.Kind == notify.DeliverKind && j.UniqueKey != nil:
+			deliverJobs[*j.UniqueKey] = j
+		case j.Kind == kindAvatarCleanup:
+			cleanups = append(cleanups, j)
+		default:
+			t.Errorf("%s: unexpected new job %d (%s) %s", name, id, j.Kind, j.Payload)
+		}
+	}
+	for id := range matched {
+		key := notify.DeliverKey(id)
+		j, ok := deliverJobs[key]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery job", name, id)
+			continue
+		}
+		delete(deliverJobs, key)
+		queuedJob(j, 8)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"notificationId": float64(id)}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: job %d payload %v, want %v", name, j.ID, got, want)
+		}
+	}
+	for key, j := range deliverJobs {
+		t.Errorf("%s: unexpected delivery job %s (%s)", name, key, j.Payload)
+	}
+	if len(cleanups) != 1 {
+		t.Errorf("%s: %d new avatar cleanup jobs, want 1", name, len(cleanups))
+	}
+	for _, j := range cleanups {
+		queuedJob(j, jobs.DefaultMaxAttempts)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"userId": float64(run.Subject)}; !reflect.DeepEqual(got, want) || j.UniqueKey != nil {
+			t.Errorf("%s: cleanup job %d payload %v key %v, want %v and none", name, j.ID, got, j.UniqueKey, want)
+		}
+	}
+	return facts
+}
+
+// agesNoteStatement is one UPDATE of the ages-note scrub as the recorder saw
+// it: the bind parameters it carried and the rows it changed.
+type agesNoteStatement struct {
+	Vars int
+	Rows int64
+}
+
+// agesNoteRecorder is a test-only pair of GORM callbacks. The After gorm:row
+// one keeps the SQL of the lock selection (Raw(...).Scan runs the row
+// processor), the After gorm:raw one the shape of each ages-note UPDATE.
+type agesNoteRecorder struct {
+	mu      sync.Mutex
+	selects []string
+	updates []agesNoteStatement
+}
+
+const (
+	agesNoteSelectPrefix = "SELECT id FROM contact_requests WHERE purpose = 'occurrence_add'"
+	agesNoteUpdatePrefix = "UPDATE contact_requests SET add_childcare_ages_note"
+)
+
+func recordAgesNoteStatements(t *testing.T, db *gorm.DB) *agesNoteRecorder {
+	t.Helper()
+	rec := &agesNoteRecorder{}
+	seq := queryCounterSeq.Add(1)
+	rowName := fmt.Sprintf("test:ages_note_select:%d", seq)
+	rawName := fmt.Sprintf("test:ages_note_update:%d", seq)
+	collapse := func(tx *gorm.DB) string { return strings.Join(strings.Fields(tx.Statement.SQL.String()), " ") }
+	if err := db.Callback().Row().After("gorm:row").Register(rowName, func(tx *gorm.DB) {
+		if sql := collapse(tx); strings.HasPrefix(sql, agesNoteSelectPrefix) {
+			rec.mu.Lock()
+			rec.selects = append(rec.selects, sql)
+			rec.mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Raw().After("gorm:raw").Register(rawName, func(tx *gorm.DB) {
+		if strings.HasPrefix(collapse(tx), agesNoteUpdatePrefix) {
+			rec.mu.Lock()
+			rec.updates = append(rec.updates, agesNoteStatement{Vars: len(tx.Statement.Vars), Rows: tx.RowsAffected})
+			rec.mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Row().Remove(rowName)
+		_ = db.Callback().Raw().Remove(rawName)
+	})
+	return rec
+}
+
+func (r *agesNoteRecorder) seen() ([]string, []agesNoteStatement) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.selects...), append([]agesNoteStatement(nil), r.updates...)
+}
+
+// erasureTestCountThrottleFailures fails the erasure's last statement, the
+// owned throttle delete, and counts how often it did, so a test can show the
+// late failure it meant to force really fired.
+func erasureTestCountThrottleFailures(t *testing.T, db *gorm.DB) *atomic.Int64 {
+	t.Helper()
+	var fired atomic.Int64
+	name := fmt.Sprintf("test:count_throttle_failures:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "DELETE FROM login_throttles") {
+			fired.Add(1)
+			tx.AddError(errors.New("injected throttle failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+	return &fired
+}
+
+// agesNoteState summarizes contact_requests for the erased person U with
+// aggregates only, so it stays cheap at 70,001 rows: how many of U's subject
+// rows still hold a note, and digests of U's subject rows minus the note, of
+// every id and reason, of the rows that name U in neither role, of the notes of
+// the rows where U only asked, and of the ones of those rows that were already
+// terminal when the scene was seeded (pinned by id: the existing lifecycle ends
+// U's pending rows during the erasure, and those rows become terminal then).
+type agesNoteState struct {
+	Total             int64
+	SubjectNotes      int64
+	SubjectRest       string
+	Reasons           string
+	Unrelated         string
+	RequesterNotes    string
+	RequesterTerminal string
+}
+
+func agesNoteStateOf(t testing.TB, db *gorm.DB, u uint, terminal []uint) agesNoteState {
+	t.Helper()
+	var st agesNoteState
+	if err := db.Raw(`SELECT
+		(SELECT count(*) FROM contact_requests) AS total,
+		(SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> '') AS subject_notes,
+		coalesce((SELECT md5(string_agg((to_jsonb(r) - 'add_childcare_ages_note')::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE purpose = 'occurrence_add' AND subject_user_id = ?), '') AS subject_rest,
+		coalesce((SELECT md5(string_agg(id || ':' || reason, '|' ORDER BY id)) FROM contact_requests), '') AS reasons,
+		coalesce((SELECT md5(string_agg(to_jsonb(r)::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE subject_user_id <> ? AND requester_id <> ?), '') AS unrelated,
+		coalesce((SELECT md5(string_agg(id || ':' || add_childcare_ages_note, '|' ORDER BY id)) FROM contact_requests
+			WHERE requester_id = ?), '') AS requester_notes,
+		coalesce((SELECT md5(string_agg(to_jsonb(r)::text, '|' ORDER BY id)) FROM contact_requests r
+			WHERE requester_id = ? AND id IN ?), '') AS requester_terminal`,
+		u, u, u, u, u, u, terminal).Scan(&st).Error; err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// agesNoteScene is an acting admin, an erased person U, the person U is only
+// the requester for, a leader, and three dates of one group event.
+type agesNoteScene struct {
+	app    *App
+	ac     *apiClient
+	erased *models.User
+	other  *models.User
+	leader *models.User
+	group  *models.Group
+	events [3]models.Event
+	occs   [3]models.EventOccurrence
+	// terminal holds the ids of the rows where U only asked that are terminal
+	// before the erasure.
+	terminal []uint
+}
+
+// state is agesNoteStateOf for the scene's erased person.
+func (sc *agesNoteScene) state(t testing.TB) agesNoteState {
+	t.Helper()
+	return agesNoteStateOf(t, sc.app.DB, sc.erased.ID, sc.terminal)
+}
+
+// newAgesNoteApp is testApp, or, when fresh, an App on its own migrated
+// database (the 70,001-row case starts from nothing, as the scale test does).
+func newAgesNoteApp(t *testing.T, fresh bool) *App {
+	t.Helper()
+	base := testApp(t)
+	if !fresh {
+		return base
+	}
+	db, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatalf("fresh database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	return &App{DB: db, Store: base.Store, Config: base.Config, Uploads: base.Uploads,
+		Mailer: mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>"))}
+}
+
+// agesNoteBulkSQL inserts $n terminal occurrence_add rows (denied, withdrawn,
+// expired and ended in turn, each honoring every CHECK, each with a nonempty
+// note) from requester to subject, spread over three dates, in one statement.
+const agesNoteBulkSQL = `WITH p AS (SELECT ?::bigint AS req, ?::bigint AS subj, ?::timestamptz AS created,
+		?::bigint AS e1, ?::bigint AS e2, ?::bigint AS e3, ?::bigint AS o1, ?::bigint AS o2, ?::bigint AS o3),
+	s AS (SELECT g, g % 4 AS k FROM generate_series(1, ?::int) g)
+INSERT INTO contact_requests (requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin,
+	subject_decision, subject_decided_by, subject_decided_at, admin_decision, status, created_at, expires_at, completed_at,
+	withdrawn_by_id, end_reason, purpose, occurrence_id, add_attendance_mode, add_childcare_ages_note)
+SELECT p.req, p.subj, 'event', (ARRAY[p.e1, p.e2, p.e3])[1 + s.g % 3], '', 'identifying reason ' || s.g, false,
+	CASE WHEN s.k = 0 THEN 'denied' ELSE 'pending' END,
+	CASE WHEN s.k = 0 THEN p.subj END,
+	CASE WHEN s.k = 0 THEN p.created + interval '5 minutes' END,
+	'not_needed',
+	CASE s.k WHEN 0 THEN 'denied' WHEN 1 THEN 'withdrawn' WHEN 2 THEN 'expired' ELSE 'ended' END,
+	p.created, p.created + interval '14 days',
+	CASE s.k WHEN 2 THEN p.created + interval '14 days 1 minute' ELSE p.created + interval '10 minutes' END,
+	CASE WHEN s.k = 1 THEN p.req END,
+	CASE WHEN s.k = 3 THEN 'event_ended' ELSE '' END,
+	'occurrence_add', (ARRAY[p.o1, p.o2, p.o3])[1 + s.g % 3], 'in_person', 'ages note ' || s.g
+FROM p CROSS JOIN s`
+
+func (sc *agesNoteScene) bulk(t *testing.T, requester, subject uint, n int) {
+	t.Helper()
+	created := time.Now().UTC().AddDate(0, 0, -30).Truncate(time.Microsecond)
+	if err := sc.app.DB.Exec(agesNoteBulkSQL, requester, subject, created,
+		sc.events[0].ID, sc.events[1].ID, sc.events[2].ID, sc.occs[0].ID, sc.occs[1].ID, sc.occs[2].ID, n).Error; err != nil {
+		t.Fatalf("seed %d rows: %v", n, err)
+	}
+}
+
+// newAgesNoteScene seeds n terminal occurrence_add rows of U as the subject,
+// and the controls: two rows where U only asked (one terminal, one pending),
+// and three rows naming U in neither role (two terminal, one pending).
+func newAgesNoteScene(t *testing.T, fresh bool, n int) *agesNoteScene {
+	t.Helper()
+	app := newAgesNoteApp(t, fresh)
+	newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
+	newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
+	sc := &agesNoteScene{app: app}
+	sc.leader = newTestUser(t, app, "ages-leader", erasurePW, models.RoleMember)
+	sc.erased = newTestUser(t, app, "ages-erased", erasurePW, models.RoleMember)
+	sc.other = newTestUser(t, app, "ages-other", erasurePW, models.RoleMember)
+	sc.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	sc.ac.holdNotices = true
+	sc.group = newTestGroup(t, app, sc.leader, "Ages note group", models.GroupActive)
+	for i := range sc.events {
+		sc.events[i], sc.occs[i] = seedEvent(t, app, sc.group, sc.leader.ID, time.Now().UTC().Add(time.Duration(48+i)*time.Hour))
+	}
+	sc.bulk(t, sc.leader.ID, sc.erased.ID, n)
+	sc.bulk(t, sc.erased.ID, sc.other.ID, 1)
+	sc.bulk(t, sc.leader.ID, sc.other.ID, 2)
+	db := app.DB
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, sc.erased.ID, sc.other.ID, sc.group.ID, sc.events[0].ID, sc.occs[0].ID, 1, "requester-only pending note")
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, sc.leader.ID, sc.other.ID, sc.group.ID, sc.events[0].ID, sc.occs[0].ID, 2, "unrelated pending note")
+	if err := db.Raw(`SELECT id FROM contact_requests WHERE requester_id = ? AND status <> 'pending' ORDER BY id`, sc.erased.ID).Scan(&sc.terminal).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.terminal) == 0 {
+		t.Fatal("the scene seeded no terminal row where the erased person only asked")
+	}
+	return sc
+}
+
+// checkAgesNoteErased asserts the erased state against the state before:
+// U's subject rows lost the note and nothing else, no reason anywhere moved, and
+// the controls are as the pre-T07 erasure leaves them.
+func checkAgesNoteErased(t *testing.T, before, after agesNoteState, wantNotes int64) {
+	t.Helper()
+	if before.SubjectNotes != wantNotes {
+		t.Fatalf("seeded %d subject rows with a note, want %d", before.SubjectNotes, wantNotes)
+	}
+	if after.SubjectNotes != 0 {
+		t.Errorf("%d of the erased person's occurrence_add rows still hold a note", after.SubjectNotes)
+	}
+	if after.Total != before.Total {
+		t.Errorf("contact_requests has %d rows, was %d", after.Total, before.Total)
+	}
+	if after.SubjectRest != before.SubjectRest {
+		t.Errorf("the scrub changed more than the note of the subject rows: md5 %s, was %s", after.SubjectRest, before.SubjectRest)
+	}
+	if after.Reasons != before.Reasons {
+		t.Errorf("a reason (or an id) changed: md5 %s, was %s", after.Reasons, before.Reasons)
+	}
+	if after.Unrelated != before.Unrelated {
+		t.Errorf("a row naming the erased person in neither role changed: md5 %s, was %s", after.Unrelated, before.Unrelated)
+	}
+	if after.RequesterNotes != before.RequesterNotes {
+		t.Errorf("a note on a row where the erased person only asked changed: md5 %s, was %s", after.RequesterNotes, before.RequesterNotes)
+	}
+	if after.RequesterTerminal != before.RequesterTerminal {
+		t.Errorf("a terminal row where the erased person only asked changed: md5 %s, was %s", after.RequesterTerminal, before.RequesterTerminal)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNote (R4-T07A) runs the real DELETE over
+// every class of contact_requests row. The erased person's occurrence_add rows
+// as the subject lose the childcare ages note in every status, including the
+// historical granted ones the baseline completion check would refuse to touch:
+// (a) request A replaced by B on the same registration, (b) a retired and
+// deleted registration, (c) access ended but the registration kept. Nothing
+// else changes: reason stays on every row of every purpose and status, the
+// erased person's contact and group_add rows (a granted group_add among them,
+// whose reason the database still protects) are not scrubbed, rows where they
+// only asked keep their note, and rows naming them in neither role are
+// byte-identical.
+//
+// The existing lifecycle ends the erased person's pending rows during the same
+// DELETE. A twin account holds the same rows with empty notes, which the scrub
+// does not select, and its erasure stands for the erasure before T07. The twin
+// is a cross-check only: what the lifecycle must leave behind is also stated
+// outright, per class of row, so a regression that hit both runs alike still
+// fails. Each run is judged by its own before and after (checkErasureRequests,
+// checkErasureLedger):
+//   - every initially pending row naming the person ends as "ended" with
+//     "account_disabled" and a completed_at inside the DELETE, and every other
+//     column of it is exactly as it was (the note aside, on the subject's
+//     occurrence_add rows);
+//   - the audit rows, notices, deliveries and jobs the DELETE adds are exactly
+//     the expected ones, by id mapping the fixture rows, with waiting tasks
+//     seeded for the living reviewers and for the person, and everything else
+//     (the other person's rows and tasks, unrelated tasks) untouched;
+//   - the replacement registration's live access ends once, with one new
+//     occurrence_access.ended snapshot, and no notice goes to the erased holder.
+//
+// Rows are paired erased-to-twin by the ids the fixture recorded, never by
+// reason text.
+func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	f := newContactAPIFixture(t, false)
 	f.ac.holdNotices = true
 	db := f.app.DB
-	ev, occ := seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
-	erased := f.outsider
-	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	erased, other, leader := f.outsider, f.subject, f.leader
+	// twin is built exactly like erased and gets the same rows with empty
+	// notes. The helper selects only a nonempty note, so erasing twin is the
+	// erasure before T07 (T07A "lifecycle columns equal to what the pre-T07
+	// erasure produces").
+	twin := newTestUser(t, f.app, "contact-twin", "password1234", models.RoleMember)
+	ev, occ := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(48*time.Hour))
+
+	// fixtureRow is one seeded request: the erased side's row and, when the
+	// request names the erased person, the twin's row beside it.
+	type fixtureRow struct {
+		Class   string
+		Req     models.ContactRequest
+		TwinReq models.ContactRequest // zero for a row naming neither person
+		Pending bool
+	}
+	var fixture []fixtureRow
+	// twinOf maps an erased-side request id to its twin's request id.
+	twinOf := map[uint]uint{}
+	seed := func(purpose, status string, requester, subject uint, n int, note string) {
+		row := fixtureRow{Class: erasureNeither}
+		switch {
+		case subject == erased.ID:
+			row.Class = erasureAsSubject
+		case requester == erased.ID:
+			row.Class = erasureAsRequester
+		}
+		row.Req = erasureMakeRequest(t, db, purpose, status, requester, subject, f.group.ID, ev.ID, occ.ID, n, note)
+		row.Pending = status == policy.ContactPending
+		if row.Class != erasureNeither {
+			twinRequester, twinSubject := requester, subject
+			if row.Class == erasureAsRequester {
+				twinRequester = twin.ID
+			} else {
+				twinSubject = twin.ID
+			}
+			row.TwinReq = erasureMakeRequest(t, db, purpose, status, twinRequester, twinSubject, f.group.ID, ev.ID, occ.ID, n, "") // same reason, no note
+			twinOf[row.Req.ID] = row.TwinReq.ID
+		}
+		fixture = append(fixture, row)
+	}
 	n := 0
-	row := func(purpose, status string, requester, subject uint) {
+	mk := func(purpose, status string, requester, subject uint) {
 		n++
-		r := models.ContactRequest{Purpose: purpose, RequesterID: requester, SubjectUserID: subject, ContextType: policy.ContactGroup, ContextID: f.group.ID,
-			Reason: fmt.Sprintf("identifying reason %d", n), SubjectDecision: policy.ContactPending, Status: status,
-			CreatedAt: created, ExpiresAt: created.Add(24 * 14 * time.Hour)}
-		switch purpose {
-		case policy.RequestContact:
-			r.Fields, r.NeedsAdmin, r.AdminDecision = policy.ContactBoth, true, policy.ContactPending
-		case policy.RequestGroupAdd:
-			r.AdminDecision = policy.ContactNotNeeded
-		case policy.RequestOccurrenceAdd:
-			r.ContextType, r.ContextID, r.OccurrenceID = policy.ContactEvent, ev.ID, &occ.ID
-			r.AdminDecision, r.AddAttendanceMode = policy.ContactNotNeeded, models.AttendanceInPerson
-			r.AddChildcareAgesNote = fmt.Sprintf("ages note %d", n)
-		}
-		if status == policy.ContactWithdrawn {
-			done := created.Add(10 * time.Minute)
-			r.CompletedAt, r.WithdrawnByID = &done, &requester
-		}
-		erasureMustCreate(t, db, &r)
+		seed(purpose, status, requester, subject, n, fmt.Sprintf("ages note %d", n))
 	}
-	for _, purpose := range []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd} {
-		for _, status := range []string{policy.ContactPending, policy.ContactWithdrawn} {
-			row(purpose, status, erased.ID, f.subject.ID) // the erased person asked
-			row(purpose, status, f.leader.ID, erased.ID)  // the erased person is asked about
+	purposes := []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd}
+	for _, purpose := range purposes {
+		for _, status := range []string{policy.ContactPending, policy.ContactWithdrawn, policy.ContactDenied, policy.ContactExpired, policy.ContactEnded} {
+			mk(purpose, status, leader.ID, erased.ID) // the erased person is asked about
+			mk(purpose, status, erased.ID, other.ID)  // the erased person asked
+			mk(purpose, status, leader.ID, other.ID)  // neither
 		}
 	}
-	text := func() string {
-		var out string
-		if err := db.Raw(`SELECT coalesce(jsonb_agg(jsonb_build_array(id, reason, add_childcare_ages_note) ORDER BY id)::text, '[]') FROM contact_requests`).Scan(&out).Error; err != nil {
+	// The same class with an empty note and a long note, so an unselected
+	// subject row is part of the fixture.
+	for i, c := range []struct{ status, note string }{{policy.ContactPending, ""}, {policy.ContactDenied, strings.Repeat("x", 200)}} {
+		seed(policy.RequestOccurrenceAdd, c.status, leader.ID, erased.ID, 100+i, c.note)
+	}
+
+	// Granted rows of the erased person, each on its own date, and the twin's
+	// without notes on dates of their own.
+	date := func(i int) (uint, models.EventOccurrence) {
+		e, o := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(time.Duration(72+i)*time.Hour))
+		return e.ID, o
+	}
+	eA, oA := date(0)
+	reqA, reqB, regB := erasureReplacedAdd(t, db, leader, erased, eA, oA, true)
+	eB, oB := date(1)
+	reqRetired := erasureRetiredAdd(t, db, leader, erased, eB, oB, true)
+	eC, oC := date(2)
+	reqEnded := erasureEndedAccessAdd(t, db, leader, erased, eC, oC, true)
+	eT, oT := date(3)
+	_, twinReqB, regTwinB := erasureReplacedAdd(t, db, leader, twin, eT, oT, false)
+	// A baseline recheck of the control passes today, in its own committed
+	// transaction, so the exception is not what makes (c) work.
+	if err := db.Exec(`UPDATE contact_requests SET reason = reason WHERE id = ?`, reqEnded.ID).Error; err != nil {
+		t.Fatalf("control (c): the unchanged completion lookup failed: %v", err)
+	}
+	// A granted group_add of the erased person: the scrub does not select it,
+	// and the baseline rule on its reason stays (checked after the erasure).
+	addGroup := newTestGroup(t, f.app, leader, "Granted group add", models.GroupActive)
+	reqGroupAdd := erasureGrantedGroupAdd(t, db, leader, erased, addGroup)
+	granted := []models.ContactRequest{reqA, reqB, reqRetired, reqEnded}
+
+	// Waiting tasks, written the way a request writes them: the subject's
+	// review task, and the admin's when the request needs one. Every pending
+	// request gets them, the erased person's, the twin's and the rows naming
+	// neither, so the erasure has living reviewers to close tasks for and
+	// unrelated tasks to leave alone.
+	var erasedPending, twinPending []models.ContactRequest
+	neitherPending := 0
+	for _, r := range fixture {
+		if !r.Pending {
+			continue
+		}
+		erasureSeedRequestTasks(t, db, r.Req, f.admin.ID)
+		if r.Class == erasureNeither {
+			neitherPending++
+			continue
+		}
+		erasureSeedRequestTasks(t, db, r.TwinReq, f.admin.ID)
+		erasedPending = append(erasedPending, r.Req)
+		twinPending = append(twinPending, r.TwinReq)
+	}
+	// Per purpose: the person is asked about, the person asks, and neither;
+	// plus the extra pending occurrence_add row of the person as the subject.
+	if len(erasedPending) != 3*2+1 || len(twinPending) != 3*2+1 || neitherPending != 3 {
+		t.Fatalf("seeded %d erased, %d twin and %d unrelated pending rows, want 7, 7 and 3", len(erasedPending), len(twinPending), neitherPending)
+	}
+	if len(twinOf) != 3*5*2+2 {
+		t.Fatalf("%d erased rows have a twin, want %d", len(twinOf), 3*5*2+2)
+	}
+
+	before := erasureRequestRows(t, db)
+	var maxAudit uint
+	if err := db.Raw(`SELECT coalesce(max(id), 0) FROM audit_logs`).Scan(&maxAudit).Error; err != nil {
+		t.Fatal(err)
+	}
+	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
+	snapshotsBefore := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit)
+	state := agesNoteStateOf(t, db, erased.ID, nil)
+	if state.SubjectNotes < int64(len(granted)) {
+		t.Fatalf("only %d subject rows with a note were seeded", state.SubjectNotes)
+	}
+
+	// erase deletes person through the real DELETE and judges the run: the
+	// request rows, then the audit, notice, delivery and job rows, each against
+	// the state taken immediately before this one DELETE.
+	erase := func(name string, person *models.User, pending []models.ContactRequest, reg models.Registration, eventID, requestID uint) (erasureLedgerFacts, models.Registration) {
+		t.Helper()
+		var regBefore, regAfter models.Registration
+		if err := db.First(&regBefore, reg.ID).Error; err != nil {
 			t.Fatal(err)
 		}
+		rowsBefore, ledgerBefore := erasureRequestRows(t, db), erasureLedgerOf(t, db)
+		start := time.Now().UTC()
+		r := deleteAccount(f.ac, person.ID, nil)
+		end := time.Now().UTC()
+		if r.code != http.StatusOK {
+			t.Fatalf("delete %s: %d %s", name, r.code, r.body)
+		}
+		if err := db.First(&regAfter, reg.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		run := erasureRun{Name: name, Subject: person.ID, Admin: f.admin.ID, Pending: pending, Span: erasureSpan{Start: start, End: end},
+			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID}
+		checkErasureRequests(t, run, rowsBefore, erasureRequestRows(t, db))
+		return checkErasureLedger(t, run, ledgerBefore, erasureLedgerOf(t, db)), regAfter
+	}
+	erasedFacts, regAfter := erase("erased", erased, erasedPending, regB, eA, reqB.ID)
+	twinFacts, twinRegAfter := erase("twin", twin, twinPending, regTwinB, eT, twinReqB.ID)
+	// What each run was expected to do, stated once for both: the living
+	// reviewers' tasks it closes (the other party's review task on each pending
+	// contact, group_add and occurrence_add the person asked, and the admin's
+	// on the contact rows) and the person's own tasks it removes (the
+	// person's review task on each of the four pending rows asking about
+	// them). Neither run adds an access-ended notice for the erased holder.
+	for _, facts := range []erasureLedgerFacts{erasedFacts, twinFacts} {
+		if facts.Living != 5 || facts.Deleted != 4 || facts.NewNotices != 7 {
+			t.Errorf("%s: closed %d living tasks, removed %d of the person's, added %d notices; want 5, 4 and 7", facts.Name, facts.Living, facts.Deleted, facts.NewNotices)
+		}
+	}
+
+	after := erasureRequestRows(t, db)
+	if len(after) != len(before) {
+		t.Fatalf("%d rows after the erasure, %d before", len(after), len(before))
+	}
+	checkErasurePairs(t, erased.ID, twin.ID, twinOf, before, after)
+	for _, g := range granted {
+		if a := after[g.ID]; a.Status != policy.ContactGranted || a.Note != "" {
+			t.Errorf("granted request %d: status %q note %q, want granted with an empty note", g.ID, a.Status, a.Note)
+		}
+	}
+	// group_add: granted and unchanged, and the database still refuses a change
+	// of its reason (the scrub is no licence for anything but the note).
+	if a, b := after[reqGroupAdd.ID], before[reqGroupAdd.ID]; a.Whole != b.Whole || a.Status != policy.ContactGranted {
+		t.Errorf("granted group_add changed:\n%s\n%s", b.Whole, a.Whole)
+	}
+	if err := db.Exec(`UPDATE contact_requests SET reason = 'changed' WHERE id = ?`, reqGroupAdd.ID).Error; err == nil || !strings.Contains(err.Error(), "23514") {
+		t.Errorf("a direct change of the granted group_add reason: %v, want SQLSTATE 23514", err)
+	}
+	// (a) the registration keeps B, and B's live access ended in the usual way,
+	// the way the twin's does (the erasure before T07). The ending itself, its
+	// snapshot and the absence of a notice were judged per run above; here the
+	// two runs are set side by side with the ids mapped by the fixture.
+	if regAfter.AccessRequestID == nil || *regAfter.AccessRequestID != reqB.ID || regAfter.AccessEndedAt == nil {
+		t.Errorf("case (a): registration %d names request %v with access ended %v, want B (%d), ended", regAfter.ID, regAfter.AccessRequestID, regAfter.AccessEndedAt, reqB.ID)
+	}
+	if twinRegAfter.AccessRequestID == nil || *twinRegAfter.AccessRequestID != twinReqB.ID || twinRegAfter.AccessEndedAt == nil {
+		t.Errorf("case (a) twin: registration %d names request %v with access ended %v, want B (%d), ended", twinRegAfter.ID, twinRegAfter.AccessRequestID, twinRegAfter.AccessEndedAt, twinReqB.ID)
+	}
+	snapshotShape := func(label string, meta map[string]any, subject, occurrence, event, registration, request uint) map[string]any {
+		out := map[string]any{}
+		for k, v := range meta {
+			out[k] = v
+		}
+		for k, id := range map[string]uint{"subjectUserId": subject, "occurrenceId": occurrence, "eventId": event, "registrationId": registration, "requestId": request} {
+			if got, ok := out[k].(float64); !ok || uint(got) != id {
+				t.Errorf("case (a) %s: snapshot %s is %v, want %d", label, k, out[k], id)
+			}
+			out[k] = "mapped"
+		}
+		delete(out, "grantedAtMicro") // bounded against its registration in checkErasureLedger
+		delete(out, "endedAtMicro")
 		return out
 	}
-	before := text()
-	if n := countRows(t, db, "contact_requests", "true"); n != 12 {
-		t.Fatalf("seeded %d contact requests, want 12", n)
+	gotShape := snapshotShape("erased", erasedFacts.EndedMeta, erased.ID, oA.ID, eA, regB.ID, reqB.ID)
+	wantShape := snapshotShape("twin", twinFacts.EndedMeta, twin.ID, oT.ID, eT, regTwinB.ID, twinReqB.ID)
+	if len(gotShape) == 0 || !reflect.DeepEqual(gotShape, wantShape) {
+		t.Errorf("case (a): the ended snapshot of B is %v, the erasure before T07 writes %v for the twin", gotShape, wantShape)
+	}
+	if got := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit); got != snapshotsBefore {
+		t.Errorf("an access snapshot written before the erasure changed:\n%s\n%s", snapshotsBefore, got)
+	}
+	if st := agesNoteStateOf(t, db, erased.ID, nil); st.SubjectNotes != 0 {
+		t.Errorf("%d subject notes left", st.SubjectNotes)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteStatement calls the helper alone,
+// inside a test transaction after the tombstone and the soft delete, and
+// checks statement-level preservation (helper-only scope): every selected row
+// changes by its note alone, every other contact_requests row is byte
+// identical, and the grants, registrations, audit, notifications, deliveries
+// and jobs are untouched. It also pins the shape of the statements: the
+// selection takes its row locks in ascending id order, and when no row
+// qualifies no UPDATE is sent.
+func TestAccountErasureScrubsSubjectAgesNoteStatement(t *testing.T) {
+	sc := newAgesNoteScene(t, false, 6)
+	db := sc.app.DB
+	g, ev, occ := sc.group.ID, sc.events[0].ID, sc.occs[0].ID
+	n := 10
+	for _, purpose := range []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd} {
+		n++
+		erasureMakeRequest(t, db, purpose, policy.ContactPending, sc.leader.ID, sc.erased.ID, g, ev, occ, n, "subject pending note")
+		n++
+		erasureMakeRequest(t, db, purpose, policy.ContactWithdrawn, sc.leader.ID, sc.erased.ID, g, ev, occ, n, "subject withdrawn note")
+	}
+	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, sc.leader.ID, sc.erased.ID, g, ev, occ, 50, "")
+	rec := recordAgesNoteStatements(t, db)
+	errRollBack := errors.New("roll the statement test back")
+	snap := func(tx *gorm.DB) string {
+		return dumpRows(t, tx, "contact_grants", "id", "true") + dumpRows(t, tx, "registrations", "id", "true") +
+			dumpRows(t, tx, "audit_logs", "id", "true") + dumpRows(t, tx, "notifications", "id", "true") +
+			dumpRows(t, tx, "notification_deliveries", "id", "true") + dumpRows(t, tx, "jobs", "id", "true")
+	}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var u models.User
+		if err := tx.First(&u, sc.erased.ID).Error; err != nil {
+			return err
+		}
+		if err := tombstoneUserIn(tx, &u); err != nil {
+			return err
+		}
+		if err := tx.Delete(&u).Error; err != nil {
+			return err
+		}
+		s := captureErasureSubject(&u)
+		rowsBefore, othersBefore := erasureRequestRows(t, tx), snap(tx)
+		selected := 0
+		for _, r := range rowsBefore {
+			if r.Purpose == policy.RequestOccurrenceAdd && r.SubjectUserID == sc.erased.ID && r.Note != "" {
+				selected++
+			}
+		}
+		if selected != 8 {
+			t.Errorf("fixture selects %d rows, want 8 (6 bulk rows plus the pending and withdrawn occurrence_add rows)", selected)
+		}
+
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		rowsAfter := erasureRequestRows(t, tx)
+		for id, b := range rowsBefore {
+			a := rowsAfter[id]
+			if b.Purpose == policy.RequestOccurrenceAdd && b.SubjectUserID == sc.erased.ID && b.Note != "" {
+				if a.Note != "" || a.Rest != b.Rest {
+					t.Errorf("selected request %d: note %q, rest changed %t", id, a.Note, a.Rest != b.Rest)
+				}
+			} else if a.Whole != b.Whole {
+				t.Errorf("request %d was not selected and changed:\n%s\n%s", id, b.Whole, a.Whole)
+			}
+			if a.Reason != b.Reason {
+				t.Errorf("request %d: reason changed", id)
+			}
+		}
+		if got := snap(tx); got != othersBefore {
+			t.Errorf("the helper changed a table other than contact_requests")
+		}
+		selects, updates := rec.seen()
+		if len(selects) != 1 || !strings.Contains(selects[0], "ORDER BY id FOR UPDATE") {
+			t.Errorf("lock selection statements %q, want one that orders by id and takes FOR UPDATE", selects)
+		}
+		var changed int64
+		for _, u := range updates {
+			changed += u.Rows
+		}
+		if len(updates) != 1 || changed != int64(selected) {
+			t.Errorf("%d UPDATEs changed %d rows, want one that changed %d", len(updates), changed, selected)
+		}
+
+		// Nothing qualifies now: the selection runs and no UPDATE follows.
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		selects2, updates2 := rec.seen()
+		if len(selects2) != 2 || len(updates2) != len(updates) {
+			t.Errorf("second run sent %d selections and %d UPDATEs in all, want 2 and %d", len(selects2), len(updates2), len(updates))
+		}
+		return errRollBack
+	})
+	if !errors.Is(err, errRollBack) {
+		t.Fatalf("statement transaction: %v", err)
+	}
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds lookupChunk+1 rows of
+// the erased subject, one more than one batch, and erases through the real
+// DELETE: the helper sends exactly two UPDATEs, a full batch and a batch of
+// one, each carrying its ids and the subject as bind parameters. A late
+// failure after both batches rolls them back together.
+func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
+	const rows = lookupChunk + 1
+	want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}
+	t.Run("commit", func(t *testing.T) {
+		sc := newAgesNoteScene(t, false, rows)
+		rec := recordAgesNoteStatements(t, sc.app.DB)
+		before := sc.state(t)
+		if r := deleteAccount(sc.ac, sc.erased.ID, nil); r.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", r.code, r.body)
+		}
+		checkAgesNoteErased(t, before, sc.state(t), rows)
+		selects, updates := rec.seen()
+		if len(selects) != 1 {
+			t.Errorf("%d lock selections, want 1", len(selects))
+		}
+		if !reflect.DeepEqual(updates, want) {
+			t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v", updates, want)
+		}
+	})
+	t.Run("late failure", func(t *testing.T) {
+		sc := newAgesNoteScene(t, false, rows)
+		rec := recordAgesNoteStatements(t, sc.app.DB)
+		failed := erasureTestCountThrottleFailures(t, sc.app.DB)
+		before := sc.state(t)
+		if r := deleteAccount(sc.ac, sc.erased.ID, nil); r.code != http.StatusInternalServerError {
+			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
+		}
+		// Both batches ran and committed nothing: the failure came after them.
+		if _, updates := rec.seen(); !reflect.DeepEqual(updates, want) {
+			t.Errorf("UPDATEs before the failure = %+v, want %+v", updates, want)
+		}
+		if got := failed.Load(); got != 1 {
+			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
+		}
+		if after := sc.state(t); after != before {
+			t.Errorf("a failed erasure left a change in contact_requests:\n%+v\n%+v", before, after)
+		}
+		if n := countRows(t, sc.app.DB, "users", "id = ? AND deleted_at IS NOT NULL", sc.erased.ID); n != 0 {
+			t.Errorf("the failed erasure left the user soft-deleted")
+		}
+	})
+}
+
+// TestAccountErasureAgesNoteSavepointRollback rolls the scrub back to a
+// savepoint after the soft delete (inventory H7). The rows have their notes
+// again, and the outer transaction still commits with a historical granted
+// row in the scrub.
+//
+// The scrub's own queued completion events cannot show whether they survived:
+// the licensed blank's event is skipped by design, so a survivor would pass
+// too. So the savepoint also queues an event that must fail, a forged granted
+// request with no registration behind it, and the proof is that it is gone:
+// SET CONSTRAINTS add_request_completed IMMEDIATE, which checks every event
+// still queued, passes after the rollback, and so does the COMMIT. The control
+// subtest does the same without the rollback and gets 23514 from the forged
+// event, so the passing case is not a no-op. No trigger is disabled.
+func TestAccountErasureAgesNoteSavepointRollback(t *testing.T) {
+	setup := func(t *testing.T) (*contactAPIFixture, map[uint]erasureAgesNoteRow, models.Event, models.EventOccurrence) {
+		f := newContactAPIFixture(t, false)
+		db := f.app.DB
+		erased, leader := f.outsider, f.leader
+		ev, occ := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(48*time.Hour))
+		erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, leader.ID, erased.ID, f.group.ID, ev.ID, occ.ID, 1, "pending note")
+		erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, leader.ID, erased.ID, f.group.ID, ev.ID, occ.ID, 2, "denied note")
+		eA, oA := seedEvent(t, f.app, f.group, leader.ID, time.Now().UTC().Add(72*time.Hour))
+		erasureReplacedAdd(t, db, leader, erased, eA.ID, oA, true)
+		return f, erasureRequestRows(t, db), ev, occ
+	}
+	// softDeleted tombstones and soft-deletes the erased person in tx, the two
+	// statements the scrub's licence needs before it.
+	softDeleted := func(tx *gorm.DB, id uint) (erasureSubject, error) {
+		var u models.User
+		if err := tx.First(&u, id).Error; err != nil {
+			return erasureSubject{}, err
+		}
+		if err := tombstoneUserIn(tx, &u); err != nil {
+			return erasureSubject{}, err
+		}
+		if err := tx.Delete(&u).Error; err != nil {
+			return erasureSubject{}, err
+		}
+		return captureErasureSubject(&u), nil
 	}
 
-	if r := deleteAccount(f.ac, erased.ID, nil); r.code != http.StatusOK {
-		t.Fatalf("delete: %d %s", r.code, r.body)
-	}
+	t.Run("rollback to savepoint", func(t *testing.T) {
+		f, before, ev, occ := setup(t)
+		db := f.app.DB
+		errSavepoint := errors.New("roll back to the savepoint")
+		err := db.Transaction(func(tx *gorm.DB) error {
+			s, err := softDeleted(tx, f.outsider.ID)
+			if err != nil {
+				return err
+			}
+			inner := tx.Transaction(func(sp *gorm.DB) error {
+				if err := eraseContactRequestTextIn(sp, s); err != nil {
+					return err
+				}
+				if st := agesNoteStateOf(t, sp, f.outsider.ID, nil); st.SubjectNotes != 0 {
+					t.Errorf("%d notes left inside the savepoint after the scrub", st.SubjectNotes)
+				}
+				if err := erasureForgedGrantedAdd(sp, f.leader.ID, f.subject.ID, ev.ID, occ.ID); err != nil {
+					return fmt.Errorf("forged insert: %w", err)
+				}
+				return errSavepoint
+			})
+			if !errors.Is(inner, errSavepoint) {
+				return fmt.Errorf("savepoint: %v", inner)
+			}
+			for id, r := range erasureRequestRows(t, tx) {
+				if r.Whole != before[id].Whole {
+					t.Errorf("request %d after the rollback to the savepoint:\n%s\n%s", id, before[id].Whole, r.Whole)
+				}
+			}
+			// Every event still queued is checked now. The forged one was
+			// queued inside the savepoint, so this passes only if the rollback
+			// discarded it with the scrub.
+			if err := tx.Exec(`SET CONSTRAINTS add_request_completed IMMEDIATE`).Error; err != nil {
+				return fmt.Errorf("a completion event queued inside the rolled-back savepoint survived: %w", err)
+			}
+			return tx.Exec(`SET CONSTRAINTS add_request_completed DEFERRED`).Error
+		})
+		if err != nil {
+			t.Fatalf("the outer transaction did not commit after the savepoint rollback: %v", err)
+		}
+		for id, r := range erasureRequestRows(t, db) {
+			if r.Whole != before[id].Whole {
+				t.Errorf("request %d after the commit:\n%s\n%s", id, before[id].Whole, r.Whole)
+			}
+		}
+	})
 
-	if got := text(); got != before {
-		t.Errorf("contact request text changed:\nbefore %s\nafter  %s", before, got)
+	t.Run("control without the rollback", func(t *testing.T) {
+		f, before, ev, occ := setup(t)
+		db := f.app.DB
+		errDone := errors.New("control finished")
+		err := db.Transaction(func(tx *gorm.DB) error {
+			s, err := softDeleted(tx, f.outsider.ID)
+			if err != nil {
+				return err
+			}
+			if err := eraseContactRequestTextIn(tx, s); err != nil {
+				return err
+			}
+			if err := erasureForgedGrantedAdd(tx, f.leader.ID, f.subject.ID, ev.ID, occ.ID); err != nil {
+				return fmt.Errorf("forged insert: %w", err)
+			}
+			err = tx.Exec(`SET CONSTRAINTS add_request_completed IMMEDIATE`).Error
+			if err == nil || !strings.Contains(err.Error(), "23514") || !strings.Contains(err.Error(), "date add requires completed occurrence access") {
+				t.Errorf("SET CONSTRAINTS IMMEDIATE with the forged event queued = %v, want 23514 from the forged completion check", err)
+			}
+			return errDone
+		})
+		if !errors.Is(err, errDone) {
+			t.Fatalf("control transaction: %v", err)
+		}
+		// Nothing of the control persisted.
+		for id, r := range erasureRequestRows(t, db) {
+			if b, ok := before[id]; !ok || r.Whole != b.Whole {
+				t.Errorf("request %d after the control rolled back:\n%s", id, r.Whole)
+			}
+		}
+		if len(erasureRequestRows(t, db)) != len(before) {
+			t.Errorf("the control left the forged request behind")
+		}
+	})
+}
+
+// TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit (opt-in) erases a
+// subject with 70,001 qualifying rows, more than PostgreSQL's 65,535 bind
+// parameters in one statement, through the real DELETE on a fresh database.
+// Skipped unless FOLD_ERASURE_SCALE=1. Run:
+//
+//	FOLD_ERASURE_SCALE=1 DATABASE_URL=<scratch> go test -run TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit -count=1 -v .
+//
+// Commit: HTTP 200, 15 UPDATEs (14 of 5,000 rows and one of 1), none with more
+// than lookupChunk+1 parameters, 70,001 rows changed in all, every note blank,
+// reason and the controls unchanged. Rollback, on a second fresh database: the
+// same seed, the erasure's last statement is made to fail after the helper, the
+// batches have all run, and every note and the user are as they were.
+func TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit(t *testing.T) {
+	if os.Getenv("FOLD_ERASURE_SCALE") != "1" {
+		t.Skip("set FOLD_ERASURE_SCALE=1 to run the 70,001-row bind-limit erasure (opt-in, not run in CI)")
 	}
+	const rows = 70001
+	if rows <= math.MaxUint16 {
+		t.Fatalf("%d rows do not exceed the %d bind-parameter limit", rows, math.MaxUint16)
+	}
+	statements := (rows + lookupChunk - 1) / lookupChunk
+	seed := func(t *testing.T) (*agesNoteScene, *agesNoteRecorder, time.Duration) {
+		started := time.Now()
+		sc := newAgesNoteScene(t, true, rows)
+		return sc, recordAgesNoteStatements(t, sc.app.DB), time.Since(started)
+	}
+	check := func(t *testing.T, updates []agesNoteStatement) (largest int) {
+		t.Helper()
+		var changed int64
+		for _, u := range updates {
+			changed += u.Rows
+			largest = max(largest, u.Vars)
+			if u.Vars > lookupChunk+1 {
+				t.Errorf("an UPDATE carried %d bind parameters, more than %d", u.Vars, lookupChunk+1)
+			}
+		}
+		if len(updates) != statements || changed != rows {
+			t.Errorf("%d UPDATEs changed %d rows, want %d UPDATEs changing %d", len(updates), changed, statements, rows)
+		}
+		if last := updates[len(updates)-1]; last.Rows != int64(rows-(statements-1)*lookupChunk) {
+			t.Errorf("the last batch changed %d rows", last.Rows)
+		}
+		return largest
+	}
+	t.Run("commit", func(t *testing.T) {
+		sc, rec, seeded := seed(t)
+		before := sc.state(t)
+		started := time.Now()
+		r := deleteAccount(sc.ac, sc.erased.ID, nil)
+		erased := time.Since(started)
+		if r.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", r.code, r.body)
+		}
+		checkAgesNoteErased(t, before, sc.state(t), rows)
+		_, updates := rec.seen()
+		largest := check(t, updates)
+		t.Logf("70,001-row commit: seeded in %s, erased in %s, %d UPDATEs, largest bind-parameter count %d", seeded.Round(time.Millisecond), erased.Round(time.Millisecond), len(updates), largest)
+	})
+	t.Run("rollback", func(t *testing.T) {
+		sc, rec, seeded := seed(t)
+		failed := erasureTestCountThrottleFailures(t, sc.app.DB)
+		before := sc.state(t)
+		started := time.Now()
+		r := deleteAccount(sc.ac, sc.erased.ID, nil)
+		erased := time.Since(started)
+		if r.code != http.StatusInternalServerError {
+			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
+		}
+		_, updates := rec.seen()
+		largest := check(t, updates)
+		if got := failed.Load(); got != 1 {
+			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
+		}
+		if after := sc.state(t); after != before {
+			t.Errorf("a failed erasure left a change in contact_requests:\n%+v\n%+v", before, after)
+		}
+		if n := countRows(t, sc.app.DB, "users", "id = ? AND deleted_at IS NOT NULL", sc.erased.ID); n != 0 {
+			t.Errorf("the failed erasure left the user soft-deleted")
+		}
+		t.Logf("70,001-row rollback: seeded in %s, failed erasure took %s, %d UPDATEs ran before the failure, largest bind-parameter count %d", seeded.Round(time.Millisecond), erased.Round(time.Millisecond), len(updates), largest)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -4433,6 +6155,11 @@ func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
 //	consents             20,000; 4 a person
 //	notifications        24,140 including 4,044 admins' waiting tasks
 //	notification_deliveries 20,106; waiting tasks have no delivery
+//	contact_requests     10,000 across 3,005 subjects (R4-T07A-4), no granted row;
+//	                     9,992 name neither U (1-9992, 1,998 pending), U is the
+//	                     subject of four occurrence_add rows with notes (9993-9996:
+//	                     denied, ended, pending, pending) and only the requester
+//	                     of four (9997-10000: denied, ended, pending, pending)
 //
 // Nothing here asserts time. The test is opt-in (FOLD_ERASURE_SCALE=1), not
 // run in CI, and its job is to print numbers for the reviewer.
@@ -4584,13 +6311,67 @@ var scaleSeeds = []scaleSeed{
 		FROM generate_series(1, 1000) n`},
 	{name: "manager add blocks", sql: `INSERT INTO manager_add_blocks (subject_user_id, organizer_type, organizer_id)
 		SELECT CASE WHEN n <= 5 THEN 3 ELSE 4 + n % 4997 END, 'group', n FROM generate_series(1, 1000) n`},
+	// R4-T07A-4: contact_requests at the size of a large church. Synthetic text
+	// only. Subjects 4-3003 and requesters 3004-4503 never meet U (3), so the
+	// bulk rows are the unrelated control, pending ones included. They sit in
+	// contexts U neither leads nor hosts (the fixture has no groups, and U has
+	// no membership or hosting). No granted row: the deferred completion check
+	// would need a matching registration.
+	{name: "contact requests unrelated", sql: scaleContactRequestsSQL(`SELECT n,
+			3004 + n % 1500, 4 + n % 3000,
+			(ARRAY['contact', 'group_add', 'occurrence_add'])[1 + n % 3],
+			(ARRAY['pending', 'denied', 'withdrawn', 'expired', 'ended'])[1 + n % 5]
+		FROM generate_series(1, 9992) n`)},
+	{name: "contact requests with U as subject", sql: scaleContactRequestsSQL(`VALUES
+			(9993, 3004, 3, 'occurrence_add', 'denied'), (9994, 3005, 3, 'occurrence_add', 'ended'),
+			(9995, 3006, 3, 'occurrence_add', 'pending'), (9996, 3007, 3, 'occurrence_add', 'pending')`)},
+	{name: "contact requests by U only", sql: scaleContactRequestsSQL(`VALUES
+			(9997, 3, 4010, 'occurrence_add', 'denied'), (9998, 3, 4011, 'contact', 'ended'),
+			(9999, 3, 4012, 'occurrence_add', 'pending'), (10000, 3, 4013, 'group_add', 'pending')`)},
+}
+
+// scaleContactRequestsSQL is the INSERT of contact_requests rows for the
+// tuples (n, requester, subject, purpose, status) that source selects. Every
+// row honors the table's CHECKs: the purpose's scope columns, the decision
+// and lifecycle columns of its status (a denied row carries the subject's
+// denial, a withdrawn one its requester, an expired one completes after
+// expires_at), and an occurrence_add row carries a non-empty synthetic ages
+// note. Reasons are synthetic too. 'granted' is not a status it can write.
+func scaleContactRequestsSQL(source string) string {
+	return `INSERT INTO contact_requests (id, requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin,
+			subject_decision, subject_decided_by, subject_decided_at, admin_decision, status, created_at, expires_at, completed_at,
+			withdrawn_by_id, end_reason, purpose, occurrence_id, add_attendance_mode, add_guest_count, add_childcare_count, add_childcare_ages_note)
+		SELECT s.n, s.requester, s.subject,
+			CASE s.purpose WHEN 'occurrence_add' THEN 'event' WHEN 'group_add' THEN 'group' ELSE (ARRAY['group', 'event'])[1 + s.n % 2] END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 1 + (s.n % 500) / 100
+				WHEN s.purpose = 'contact' AND s.n % 2 = 1 THEN 1 + s.n % 5
+				ELSE 1 + s.n % 40 END,
+			CASE WHEN s.purpose = 'contact' THEN (ARRAY['email', 'phone', 'both'])[1 + s.n % 3] ELSE '' END,
+			'Synthetic reason ' || s.n, false,
+			CASE WHEN s.status = 'denied' THEN 'denied' ELSE 'pending' END,
+			CASE WHEN s.status = 'denied' THEN s.subject END,
+			CASE WHEN s.status = 'denied' THEN s.made + interval '5 minutes' END,
+			'not_needed', s.status, s.made, s.made + interval '14 days',
+			CASE s.status WHEN 'pending' THEN NULL
+				WHEN 'expired' THEN s.made + interval '14 days' + interval '1 minute'
+				ELSE s.made + interval '10 minutes' END,
+			CASE WHEN s.status = 'withdrawn' THEN s.requester END,
+			CASE WHEN s.status = 'ended' THEN 'event_ended' ELSE '' END,
+			s.purpose,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 1 + s.n % 500 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN (ARRAY['in_person', 'remote'])[1 + s.n % 2] ELSE '' END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN s.n % 6 ELSE 0 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN s.n % 4 ELSE 0 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 'Synthetic ages note ' || s.n ELSE '' END
+		FROM (SELECT v.*, CASE WHEN v.status = 'expired' THEN now() - interval '40 days' ELSE now() - interval '1 hour' END AS made
+			FROM (` + source + `) AS v(n, requester, subject, purpose, status)) s`
 }
 
 // scaleSequenceTables are the tables the fixture gave explicit ids; their
 // sequences are moved past the fixture so later inserts (audit rows, new
 // notifications) cannot collide.
 var scaleSequenceTables = []string{"users", "events", "event_occurrences", "households", "household_people",
-	"messages", "account_requests", "invitations", "guest_signups", "mail_outboxes", "registrations"}
+	"messages", "account_requests", "invitations", "guest_signups", "mail_outboxes", "registrations", "contact_requests"}
 
 // newScaleScene creates a fresh migrated database, the two admins and U, seeds
 // the rest of the fixture with SQL, refreshes the planner statistics (without
@@ -4683,6 +6464,31 @@ func checkScaleFixture(t *testing.T, db *gorm.DB) {
 		{"manager_add_blocks of U", "SELECT count(*) FROM manager_add_blocks WHERE subject_user_id = 3", nil, 5},
 		{"deliveries of U on others", `SELECT count(*) FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id
 			WHERE d.user_id = 3 AND n.user_id <> 3`, nil, 10},
+		// R4-T07A-4: the counts the ages-note oracles and the verdict's S_U read.
+		{"contact_requests", "SELECT count(*) FROM contact_requests", nil, 10000},
+		{"distinct subjects of contact_requests", "SELECT count(DISTINCT subject_user_id) FROM contact_requests", nil, 3005},
+		{"granted contact_requests", "SELECT count(*) FROM contact_requests WHERE status = 'granted'", nil, 0},
+		{"occurrence_add contact_requests with an empty note", "SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND add_childcare_ages_note = ''", nil, 0},
+		{"contact_requests of other purposes with a note", "SELECT count(*) FROM contact_requests WHERE purpose <> 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 0},
+		{"contact_requests with a reason", "SELECT count(*) FROM contact_requests WHERE reason <> ''", nil, 10000},
+		{"contact purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'contact'", nil, 3330 + 1},
+		{"group_add purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'group_add'", nil, 3331 + 1},
+		{"occurrence_add purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add'", nil, 3331 + 4 + 2},
+		{"S_U: contact_requests with U as subject", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3", nil, 4},
+		{"U subject occurrence_add rows with a note", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 4},
+		{"U subject rows, terminal", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND status <> 'pending'", nil, 2},
+		{"U subject rows, pending", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND status = 'pending'", nil, 2},
+		{"rows where U is only the requester", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3", nil, 4},
+		{"rows where U is only the requester, terminal", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND status <> 'pending'", nil, 2},
+		{"rows where U is only the requester, pending", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND status = 'pending'", nil, 2},
+		{"rows where U is only the requester with a note", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND add_childcare_ages_note <> ''", nil, 2},
+		{"unrelated contact_requests (neither subject nor requester is U)", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3", nil, 9992},
+		{"unrelated pending contact_requests", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3 AND status = 'pending'", nil, 1998},
+		{"unrelated pending occurrence_add contact_requests with a note", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3 AND status = 'pending' AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 666},
+		{"unrelated contact_requests in a status", "SELECT count(DISTINCT status) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3", nil, 5},
+		// U leads and hosts nothing, so no unrelated request sits in a context U runs.
+		{"memberships of U", "SELECT count(*) FROM memberships WHERE user_id = 3", nil, 0},
+		{"event_hosts of U", "SELECT count(*) FROM event_hosts WHERE user_id = 3", nil, 0},
 	}
 	for _, w := range want {
 		var n int64
@@ -4740,11 +6546,17 @@ var scaleStatements = []scaleStatement{
 	{"notification_deliveries 13: delete", []string{"DELETE FROM notification_deliveries"}},
 	{scaleConsentLabel, []string{"UPDATE consents SET ip"}},
 	{"snapshot lock: users FOR KEY SHARE", []string{`FROM "users"`, "FOR KEY SHARE"}},
+	// R4-T07A-4. Dropping ORDER BY id from the helper's lock selection makes the
+	// first fragment set match nothing, and the run fails with "no plan for".
+	{scaleAgesNoteSelectLabel, []string{"FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id", "ORDER BY id FOR UPDATE"}},
+	{scaleAgesNoteUpdateLabel, []string{"UPDATE contact_requests SET add_childcare_ages_note"}},
 }
 
 const (
-	scaleRecipientLabel = "message_recipients 9: scrub"
-	scaleConsentLabel   = "consents 14: scrub evidence"
+	scaleRecipientLabel      = "message_recipients 9: scrub"
+	scaleConsentLabel        = "consents 14: scrub evidence"
+	scaleAgesNoteSelectLabel = "contact_requests 15: ages-note lock selection"
+	scaleAgesNoteUpdateLabel = "contact_requests 16: ages-note scrub"
 )
 
 func scaleLabel(sqlText string) string {
@@ -4768,6 +6580,21 @@ func scaleLabel(sqlText string) string {
 type scalePlan struct {
 	label string
 	lines []string
+	// sql and vars are the statement text and bind values EXPLAIN ANALYZE
+	// really executed (the real execution follows with the same ones). They
+	// let the ages-note classifier bind the plan's displayed values to this
+	// exact execution. vars hold ids only; they never reach a log.
+	sql  string
+	vars []any
+}
+
+// scaleExecution is one real execution of a statement whose RowsAffected the
+// explainer records: its text, its bind values and the rows the driver
+// reported.
+type scaleExecution struct {
+	sql  string
+	vars []any
+	rows int64
 }
 
 // scaleExplainer runs EXPLAIN (ANALYZE, BUFFERS) on the statements of the real
@@ -4788,13 +6615,16 @@ type scaleExplainer struct {
 	// The execution runs after the EXPLAIN's savepoint is rolled back, so it
 	// sees the same rows the EXPLAIN did.
 	affected map[string][]int64
-	name     string
-	db       *gorm.DB
+	// execs is, for scaleAgesNoteUpdateLabel, the text, binds and RowsAffected
+	// of each real execution (same After gorm:raw callback).
+	execs map[string][]scaleExecution
+	name  string
+	db    *gorm.DB
 }
 
 func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	t.Helper()
-	x := &scaleExplainer{name: "test:scale_explain", db: db, affected: map[string][]int64{}}
+	x := &scaleExplainer{name: "test:scale_explain", db: db, affected: map[string][]int64{}, execs: map[string][]scaleExecution{}}
 	if err := db.Callback().Raw().Before("gorm:raw").Register(x.name, x.hook); err != nil {
 		t.Fatalf("register raw explainer: %v", err)
 	}
@@ -4817,18 +6647,24 @@ func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	return x
 }
 
-// rowsHook records how many rows the real execution of the consent scrub
-// touched (db.RowsAffected, which RawExec sets from the driver's result). It
-// adds no RETURNING to the production statement and runs no statement of its own.
+// rowsHook records how many rows the real execution of the consent scrub and
+// of the ages-note scrub touched (db.RowsAffected, which RawExec sets from the
+// driver's result), and the ages-note statement's text and binds. It adds no
+// RETURNING to the production statement and runs no statement of its own.
 func (x *scaleExplainer) rowsHook(db *gorm.DB) {
 	if !x.armed.Load() || db.Error != nil || db.DryRun || db.Statement.ConnPool == nil {
 		return
 	}
-	if scaleLabel(db.Statement.SQL.String()) != scaleConsentLabel {
+	label := scaleLabel(db.Statement.SQL.String())
+	if label != scaleConsentLabel && label != scaleAgesNoteUpdateLabel {
 		return
 	}
 	x.mu.Lock()
-	x.affected[scaleConsentLabel] = append(x.affected[scaleConsentLabel], db.RowsAffected)
+	x.affected[label] = append(x.affected[label], db.RowsAffected)
+	if label == scaleAgesNoteUpdateLabel {
+		x.execs[label] = append(x.execs[label], scaleExecution{sql: db.Statement.SQL.String(),
+			vars: append([]any(nil), db.Statement.Vars...), rows: db.RowsAffected})
+	}
 	x.mu.Unlock()
 }
 
@@ -4886,7 +6722,7 @@ func (x *scaleExplainer) hook(db *gorm.DB) {
 		return
 	}
 	x.mu.Lock()
-	x.plans = append(x.plans, scalePlan{label: label, lines: lines})
+	x.plans = append(x.plans, scalePlan{label: label, lines: lines, sql: text, vars: append([]any(nil), db.Statement.Vars...)})
 	x.mu.Unlock()
 }
 
@@ -4966,8 +6802,24 @@ var errScaleRollback = errors.New("scale explain: roll back")
 // after the transaction's own soft delete with the trigger's users lookup
 // seeing deleted_at (before it the statement raises P0001, so a recorded plan
 // proves the position).
+//
+// R4-T07A-4: eraseContactRequestTextIn follows, still after the soft delete
+// (before it the UPDATE raises 23514 and no plan is recorded), with the
+// helper-only oracle around it. This is a rolled-back statement-plan
+// measurement, not production order: the capture, account-request,
+// notification, dependent-record and snapshot-lock statements run before the
+// soft delete here, and it omits the contact gate, deletionHostPlan, the
+// hand-offs, promoteOnDisable, the final throttle delete and contactMutation's
+// reconcileContacts. It proves the plans on representative data and the
+// helper's own scope; it does not prove production statement order or lock
+// order. The harness is not reordered in this lane.
 func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 	t.Helper()
+	facts := readScaleAgesNoteFacts(t, app.DB)
+	if len(facts.BatchIDs) == 0 {
+		t.Fatal("the fixture has no ages note for U to scrub")
+	}
+	var helperOnly scaleHelperOnlyResult
 	x := newScaleExplainer(t, app.DB)
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
 		var u models.User
@@ -5012,6 +6864,19 @@ func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 		if err := eraseConsentEvidenceIn(tx, s); err != nil {
 			return err
 		}
+		scopeBefore, err := scaleHelperScopeState(tx, facts.BatchIDs)
+		if err != nil {
+			return err
+		}
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		x.armed.Store(false)
+		scopeAfter, err := scaleHelperScopeState(tx, facts.BatchIDs)
+		if err != nil {
+			return err
+		}
+		helperOnly = scaleHelperOnlyCompare(scopeBefore, scopeAfter)
 		return errScaleRollback
 	})
 	if !errors.Is(err, errScaleRollback) {
@@ -5019,18 +6884,28 @@ func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := scaleExplain{plans: append([]scalePlan(nil), x.plans...), affected: map[string][]int64{}}
+	out := scaleExplain{plans: append([]scalePlan(nil), x.plans...), affected: map[string][]int64{}, execs: map[string][]scaleExecution{},
+		agesFacts: facts, helperOnly: helperOnly}
 	for label, n := range x.affected {
 		out.affected[label] = append([]int64(nil), n...)
+	}
+	for label, e := range x.execs {
+		out.execs[label] = append([]scaleExecution(nil), e...)
 	}
 	return out
 }
 
 // scaleExplain is what explainScaleErasure measured: the plans, and the rows
-// each real execution of the consent scrub (scaleConsentLabel) touched.
+// each real execution of the consent scrub (scaleConsentLabel) and of the
+// ages-note UPDATE (scaleAgesNoteUpdateLabel) touched.
 type scaleExplain struct {
 	plans    []scalePlan
 	affected map[string][]int64
+	// execs are the real executions of the ages-note UPDATE (R4-T07A-4); the
+	// two fields after them are the fixture facts and the helper-only oracle.
+	execs      map[string][]scaleExecution
+	agesFacts  scaleAgesNoteFacts
+	helperOnly scaleHelperOnlyResult
 }
 
 var (
@@ -5181,6 +7056,16 @@ func logScaleReport(t *testing.T, plans []scalePlan) float64 {
 // FOLD_ERASURE_SCALE_JSON=<path> to write the plan, the counts and the medians
 // as JSON (results/r4-2d1b-scale.json).
 //
+// R4-T07A-4: the explain subtest also measures the ages-note lock selection and
+// UPDATE (RowsAffected = 4, five binds, four add_request_identity calls, the
+// helper-only scope) and classifies both plans with scaleAgesNoteScanVerdict;
+// bounded = false is logged and recorded, never a failure. Each of the three
+// timed deletes reads the contact_requests controls before and after: (u)
+// requests naming neither U as subject nor requester stay whole, pending ones
+// included; (r) U's requester-only rows keep their id, note and reason, and
+// their lifecycle is the pre-T07 result; (s) U's subject rows lose only the
+// note. Reason is unchanged on every row.
+//
 // Three fresh seeds each take the real DELETE /admin/users/:id once; the
 // median is reported. A fourth fresh seed gets the EXPLAIN (ANALYZE, BUFFERS)
 // run in a rolled-back transaction, so the plans' dead tuples never touch a
@@ -5196,6 +7081,8 @@ func TestAccountErasureScale(t *testing.T) {
 			app, ac := newScaleScene(t, base)
 			// The unrelated-person control (c3), recorded right after seeding.
 			othersBefore, targetRestBefore := scaleConsentControl(t, app.DB)
+			// R4-T07A-4: the contact_requests controls, read right before the same DELETE.
+			requestsBefore := readScaleContactState(t, app.DB)
 			started := time.Now()
 			r := deleteAccount(ac, scaleTargetID, nil)
 			elapsed := time.Since(started)
@@ -5203,6 +7090,7 @@ func TestAccountErasureScale(t *testing.T) {
 				t.Fatalf("delete: %d %s", r.code, r.body)
 			}
 			othersAfter, targetRestAfter := scaleConsentControl(t, app.DB)
+			checkScaleContactErasure(t, requestsBefore, readScaleContactState(t, app.DB))
 			if othersAfter != othersBefore {
 				t.Errorf("(c3) another person's consent rows changed: md5 %s, was %s", othersAfter, othersBefore)
 			}
@@ -5241,11 +7129,13 @@ func TestAccountErasureScale(t *testing.T) {
 	var recipientMS float64
 	var run scaleExplain
 	var facts scaleConsentFacts
+	var ages scaleAgesNoteEvidence
 	t.Run("explain", func(t *testing.T) {
 		app, _ := newScaleScene(t, base)
 		run = explainScaleErasure(t, app)
 		recipientMS = logScaleReport(t, run.plans)
 		facts = checkScaleConsentScrub(t, run)
+		ages = checkScaleAgesNoteScrub(t, run)
 	})
 	if len(timings) != 3 {
 		t.Fatalf("only %d of 3 timed deletes completed", len(timings))
@@ -5255,7 +7145,7 @@ func TestAccountErasureScale(t *testing.T) {
 	t.Logf("real DELETE of U at scale: median %s of %v (fastest %s, slowest %s)",
 		sorted[1].Round(time.Millisecond), timings, sorted[0].Round(time.Millisecond), sorted[2].Round(time.Millisecond))
 	t.Logf("recipient statement %.3f ms; whole DELETE median %s; bound %s", recipientMS, sorted[1].Round(time.Millisecond), erasureRecipientWait)
-	writeScaleResults(t, run, facts, timings, sorted[1])
+	writeScaleResults(t, run, facts, ages, timings, sorted[1])
 }
 
 // scaleConsentControl is the unrelated-person control: one hash over every
@@ -5283,7 +7173,7 @@ func scaleConsentControl(t *testing.T, db *gorm.DB) (others, targetRest string) 
 // timed medians for the database review, as JSON at FOLD_ERASURE_SCALE_JSON
 // (the results directory's r4-2d1b-scale.json). It writes nothing when the
 // variable is unset.
-func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, timings []time.Duration, median time.Duration) {
+func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, ages scaleAgesNoteEvidence, timings []time.Duration, median time.Duration) {
 	t.Helper()
 	path := os.Getenv("FOLD_ERASURE_SCALE_JSON")
 	if path == "" {
@@ -5308,6 +7198,9 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 		"usesIdxConsentsLatest":   facts.usesLatest,
 		"timedDeleteMillis":       millis,
 		"timedDeleteMedianMillis": float64(median.Microseconds()) / 1000,
+		// R4-T07A-4: the ages-note statements' plans, counts, verdicts and the
+		// helper-only oracle (no secrets, addresses, capabilities or note text).
+		"agesNote": ages,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -5316,4 +7209,4231 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 		t.Fatalf("write %s: %v", path, err)
 	}
 	t.Logf("wrote %s", path)
+}
+
+// ---------------------------------------------------------------------------
+// R4-T07A-4: statement plans and whole-erasure controls for the ages-note scrub
+// ---------------------------------------------------------------------------
+
+// What the scale run can and cannot show about eraseContactRequestTextIn.
+//
+// explainScaleErasure measures the helper's two statements with EXPLAIN
+// (ANALYZE, BUFFERS) on a 10,000-row contact_requests table, in a transaction
+// it rolls back, after that transaction's own soft delete (before it the UPDATE
+// would raise 23514 and no plan would be recorded). The harness is not the
+// production statement order: it runs the capture, account-request, notification
+// and dependent-record statements and the snapshot-lock probe BEFORE the soft
+// delete, and it leaves out the contact gate, deletionHostPlan, the hand-offs,
+// promoteOnDisable, the final throttle delete and contactMutation's
+// reconcileContacts. So it proves the plans on representative data and the
+// helper's scope; it does not prove production statement order or lock order.
+// Whole-erasure evidence is the three real DELETE runs (their controls below)
+// and the concurrency tests.
+//
+// Boundedness is claimed only where scaleAgesNoteScanVerdict says bounded for
+// both statements. The scale run never fails on bounded = false: the verdict and
+// the raw plans go to the evidence file, and a false verdict is an open
+// database-review finding (RC-4), not a reason to change a query here.
+
+// The id blocks of the fixture's contact_requests rows for U (see the seeds).
+var (
+	scaleCRSubjectTerminal   = []uint{9993, 9994}
+	scaleCRSubjectPending    = []uint{9995, 9996}
+	scaleCRRequesterTerminal = []uint{9997, 9998}
+	scaleCRRequesterPending  = []uint{9999, 10000}
+)
+
+// scaleMD5 is one md5 over expr of the contact_requests rows (alias c) matching
+// where, in id order; ” for no rows.
+func scaleMD5(db *gorm.DB, expr, where string, args ...any) (string, error) {
+	var out string
+	err := db.Raw(fmt.Sprintf("SELECT coalesce(md5(string_agg(%s, ',' ORDER BY c.id)), '') FROM contact_requests c WHERE %s", expr, where), args...).Scan(&out).Error
+	return out, err
+}
+
+// scaleAgesNoteFacts are the fixture facts recorded beside the plans, read
+// before the erasure: the table's size, S_U (every contact_requests row with
+// subject U, any purpose and status), the unrelated rows and the ids statement
+// 1 must select.
+type scaleAgesNoteFacts struct {
+	Total            int64  `json:"contactRequests"`
+	SU               int64  `json:"subjectRowsOfU"`
+	Unrelated        int64  `json:"unrelated"`
+	UnrelatedPending int64  `json:"unrelatedPending"`
+	BatchIDs         []uint `json:"batchIds"`
+}
+
+func readScaleAgesNoteFacts(t *testing.T, db *gorm.DB) scaleAgesNoteFacts {
+	t.Helper()
+	var f scaleAgesNoteFacts
+	count := func(dst *int64, query string, args ...any) {
+		if err := db.Raw(query, args...).Scan(dst).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	count(&f.Total, "SELECT count(*) FROM contact_requests")
+	count(&f.SU, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ?", scaleTargetID)
+	count(&f.Unrelated, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ?", scaleTargetID, scaleTargetID)
+	count(&f.UnrelatedPending, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ? AND status = 'pending'", scaleTargetID, scaleTargetID)
+	if err := db.Raw("SELECT id FROM contact_requests WHERE purpose = ? AND subject_user_id = ? AND add_childcare_ages_note <> '' ORDER BY id",
+		policy.RequestOccurrenceAdd, scaleTargetID).Scan(&f.BatchIDs).Error; err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// scaleHelperScope is what the helper-only oracle hashes inside the rolled-back
+// transaction: every row the lock selection did not pick, the picked rows
+// without their note, every id and reason, and how many picked rows still hold
+// a note. Hashes only; no row text is kept.
+type scaleHelperScope struct {
+	Others, SelectedRest, Reasons string
+	SelectedRows, SelectedNotes   int64
+}
+
+func scaleHelperScopeState(db *gorm.DB, selected []uint) (scaleHelperScope, error) {
+	var s scaleHelperScope
+	var err error
+	if s.Others, err = scaleMD5(db, "to_jsonb(c)::text", "c.id NOT IN ?", selected); err != nil {
+		return s, err
+	}
+	if s.SelectedRest, err = scaleMD5(db, "(to_jsonb(c) - 'add_childcare_ages_note')::text", "c.id IN ?", selected); err != nil {
+		return s, err
+	}
+	if s.Reasons, err = scaleMD5(db, "c.id::text || ':' || c.reason", "true"); err != nil {
+		return s, err
+	}
+	err = db.Raw("SELECT count(*), count(*) FILTER (WHERE add_childcare_ages_note <> '') FROM contact_requests WHERE id IN ?", selected).
+		Row().Scan(&s.SelectedRows, &s.SelectedNotes)
+	return s, err
+}
+
+// scaleHelperOnlyResult is the "helper-only scope" oracle: inside
+// explainScaleErasure, the helper changed the picked rows' note and nothing
+// else, and no other row at all.
+type scaleHelperOnlyResult struct {
+	SelectedRows          int64 `json:"selectedRows"`
+	SelectedNotesBefore   int64 `json:"selectedNotesBefore"`
+	SelectedNotesAfter    int64 `json:"selectedNotesAfter"`
+	OthersUnchanged       bool  `json:"otherRowsUnchanged"`
+	SelectedRestUnchanged bool  `json:"selectedRowsUnchangedExceptNote"`
+	ReasonsUnchanged      bool  `json:"reasonsUnchanged"`
+}
+
+func scaleHelperOnlyCompare(before, after scaleHelperScope) scaleHelperOnlyResult {
+	return scaleHelperOnlyResult{
+		SelectedRows:          after.SelectedRows,
+		SelectedNotesBefore:   before.SelectedNotes,
+		SelectedNotesAfter:    after.SelectedNotes,
+		OthersUnchanged:       before.Others != "" && before.Others == after.Others,
+		SelectedRestUnchanged: before.SelectedRest != "" && before.SelectedRest == after.SelectedRest && before.SelectedRows == after.SelectedRows,
+		ReasonsUnchanged:      before.Reasons != "" && before.Reasons == after.Reasons,
+	}
+}
+
+// ---- real-erasure controls (the three timed DELETE runs) -------------------
+
+// scaleLifecycle is the lifecycle of one request after the erasure.
+type scaleLifecycle struct {
+	Status    string
+	EndReason string
+	Done      bool
+}
+
+// scaleContactState is the control read before and after a real erasure of U:
+// hashes of the classes the erasure must leave alone, counts, and the
+// lifecycle of U's pending rows.
+type scaleContactState struct {
+	Total, SubjectRows, SubjectNotes, SubjectBlank int64
+	UnrelatedPendingRows                           int64
+	Reasons                                        string // (id, reason) of every row
+	Unrelated, UnrelatedPending                    string // (u) whole rows
+	RequesterNoteReason                            string // (r) (id, note, reason)
+	RequesterTerminal, RequesterPendingKept        string // (r) whole / all but lifecycle
+	SubjectTerminalRest, SubjectPendingKept        string // (s) all but the note / all but lifecycle and note
+	Lifecycle                                      map[uint]scaleLifecycle
+}
+
+func readScaleContactState(t *testing.T, db *gorm.DB) scaleContactState {
+	t.Helper()
+	var s scaleContactState
+	sum := func(expr, where string, args ...any) string {
+		out, err := scaleMD5(db, expr, where, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out == "" {
+			t.Fatalf("the contact_requests control hashed no rows (%s)", where)
+		}
+		return out
+	}
+	count := func(dst *int64, query string, args ...any) {
+		if err := db.Raw(query, args...).Scan(dst).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	const lifecycle = "'status' - 'end_reason' - 'completed_at'"
+	count(&s.Total, "SELECT count(*) FROM contact_requests")
+	count(&s.SubjectRows, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ?", scaleTargetID)
+	count(&s.SubjectNotes, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ? AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", scaleTargetID)
+	count(&s.SubjectBlank, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ? AND purpose = 'occurrence_add' AND add_childcare_ages_note = ''", scaleTargetID)
+	count(&s.UnrelatedPendingRows, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ? AND status = 'pending'", scaleTargetID, scaleTargetID)
+	s.Reasons = sum("c.id::text || ':' || c.reason", "true")
+	s.Unrelated = sum("to_jsonb(c)::text", "c.subject_user_id <> ? AND c.requester_id <> ?", scaleTargetID, scaleTargetID)
+	s.UnrelatedPending = sum("to_jsonb(c)::text", "c.subject_user_id <> ? AND c.requester_id <> ? AND c.status = 'pending'", scaleTargetID, scaleTargetID)
+	s.RequesterNoteReason = sum("c.id::text || ':' || c.add_childcare_ages_note || ':' || c.reason", "c.requester_id = ? AND c.subject_user_id <> ?", scaleTargetID, scaleTargetID)
+	s.RequesterTerminal = sum("to_jsonb(c)::text", "c.id IN ?", scaleCRRequesterTerminal)
+	s.RequesterPendingKept = sum("(to_jsonb(c) - "+lifecycle+")::text", "c.id IN ?", scaleCRRequesterPending)
+	s.SubjectTerminalRest = sum("(to_jsonb(c) - 'add_childcare_ages_note')::text", "c.id IN ?", scaleCRSubjectTerminal)
+	s.SubjectPendingKept = sum("(to_jsonb(c) - "+lifecycle+" - 'add_childcare_ages_note')::text", "c.id IN ?", scaleCRSubjectPending)
+	pending := append(append([]uint(nil), scaleCRSubjectPending...), scaleCRRequesterPending...)
+	var rows []struct {
+		ID        uint
+		Status    string
+		EndReason string
+		Done      bool
+	}
+	if err := db.Raw("SELECT id, status, end_reason, completed_at IS NOT NULL AS done FROM contact_requests WHERE id IN ? ORDER BY id", pending).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	s.Lifecycle = map[uint]scaleLifecycle{}
+	for _, r := range rows {
+		s.Lifecycle[r.ID] = scaleLifecycle{Status: r.Status, EndReason: r.EndReason, Done: r.Done}
+	}
+	return s
+}
+
+// checkScaleContactErasure judges one real erasure of U against the state read
+// just before it. The classes: (u) requests that name neither U as subject nor
+// as requester, (r) U's requester-only rows, (s) U's subject rows. The fixed
+// pre-T07 lifecycle result is what reconcileContacts does today, with the
+// ages-note scrub not involved: U's account is disabled, so AddIneligibility
+// answers account_disabled before it reads anything else, and a pending row of
+// U's, as subject or as requester, is ended with that reason (nothing here
+// expires: every pending row's expires_at is in the future). Terminal rows are
+// not candidates for reconcileContacts and stay whole. The reason column is
+// R4-T07B's and stays on every row of every class.
+func checkScaleContactErasure(t *testing.T, before, after scaleContactState) {
+	t.Helper()
+	if before.Total != 10000 || after.Total != before.Total || after.SubjectRows != before.SubjectRows {
+		t.Errorf("contact_requests rows: %d before and %d after, U's subject rows %d before and %d after; the erasure keeps every row",
+			before.Total, after.Total, before.SubjectRows, after.SubjectRows)
+	}
+	if after.Reasons != before.Reasons {
+		t.Errorf("a request's reason changed (every class): md5 %s, was %s", after.Reasons, before.Reasons)
+	}
+	// (u) the control set holds pending rows, checked on their own so a hash over
+	// terminal rows alone cannot pass.
+	if before.UnrelatedPendingRows < 1 || after.UnrelatedPendingRows != before.UnrelatedPendingRows {
+		t.Errorf("(u) unrelated pending rows: %d before and %d after, want at least one and the same", before.UnrelatedPendingRows, after.UnrelatedPendingRows)
+	}
+	if after.Unrelated != before.Unrelated {
+		t.Errorf("(u) an unrelated request changed: md5 %s, was %s", after.Unrelated, before.Unrelated)
+	}
+	if after.UnrelatedPending != before.UnrelatedPending {
+		t.Errorf("(u) an unrelated pending request changed: md5 %s, was %s", after.UnrelatedPending, before.UnrelatedPending)
+	}
+	// (r)
+	if after.RequesterNoteReason != before.RequesterNoteReason {
+		t.Errorf("(r) a requester-only row's id, note or reason changed: md5 %s, was %s", after.RequesterNoteReason, before.RequesterNoteReason)
+	}
+	if after.RequesterTerminal != before.RequesterTerminal {
+		t.Errorf("(r) a terminal requester-only row changed: md5 %s, was %s", after.RequesterTerminal, before.RequesterTerminal)
+	}
+	if after.RequesterPendingKept != before.RequesterPendingKept {
+		t.Errorf("(r) a pending requester-only row changed beyond its lifecycle: md5 %s, was %s", after.RequesterPendingKept, before.RequesterPendingKept)
+	}
+	// (s)
+	if before.SubjectNotes != 4 || after.SubjectNotes != 0 || after.SubjectBlank != 4 {
+		t.Errorf("(s) U's subject occurrence_add notes: %d before and %d after (%d blank), want 4, 0 and 4", before.SubjectNotes, after.SubjectNotes, after.SubjectBlank)
+	}
+	if after.SubjectTerminalRest != before.SubjectTerminalRest {
+		t.Errorf("(s) a terminal subject row changed beyond its note: md5 %s, was %s", after.SubjectTerminalRest, before.SubjectTerminalRest)
+	}
+	if after.SubjectPendingKept != before.SubjectPendingKept {
+		t.Errorf("(s) a pending subject row changed beyond its lifecycle and note: md5 %s, was %s", after.SubjectPendingKept, before.SubjectPendingKept)
+	}
+	for _, id := range append(append([]uint(nil), scaleCRSubjectPending...), scaleCRRequesterPending...) {
+		if b := before.Lifecycle[id]; b.Status != "pending" || b.Done {
+			t.Errorf("request %d was %+v before the erasure, want pending", id, b)
+		}
+		if a := after.Lifecycle[id]; a.Status != "ended" || a.EndReason != "account_disabled" || !a.Done {
+			t.Errorf("pending request %d after the erasure: status %q, end_reason %q, completed %v; the pre-T07 result is ended / account_disabled / completed",
+				id, a.Status, a.EndReason, a.Done)
+		}
+	}
+}
+
+// ---- plan parsing and the boundedness classifier --------------------------
+
+// scalePlanNode is one node of EXPLAIN (ANALYZE, BUFFERS) text.
+type scalePlanNode struct {
+	col       int
+	label     string
+	typ       string // "" when the classifier does not know the node
+	relation  string
+	index     string
+	hasActual bool
+	never     bool
+	rows      float64
+	loops     int64
+	attrs     map[string]string // first value of each "Name: value" line under the node
+	parent    int
+	children  []int
+}
+
+var (
+	scaleNodeRe  = regexp.MustCompile(`^(\s*)(->\s+)?(\S.*?)\s+\(cost=[^)]*\)(?:\s+\(actual time=[\d.]+\.\.[\d.]+ rows=([\d.]+) loops=(\d+)\)|\s+\((never executed)\))?\s*$`)
+	scaleAttrRe  = regexp.MustCompile(`^\s+([A-Z][A-Za-z ]*): (.*)$`)
+	scaleUsingRe = regexp.MustCompile(`^ using (\S+) on (\S+)`)
+	scaleOnRe    = regexp.MustCompile(`^ on (\S+)`)
+
+	// Longest first: "Index Scan" is a prefix of "Index Scan Backward".
+	scaleNodeTypes = []string{"Index Only Scan Backward", "Index Only Scan", "Index Scan Backward", "Index Scan",
+		"Bitmap Heap Scan", "Bitmap Index Scan", "BitmapAnd", "BitmapOr", "Seq Scan", "LockRows", "Sort", "Update"}
+)
+
+func scaleClassifyLabel(n *scalePlanNode) {
+	for _, typ := range scaleNodeTypes {
+		if n.label != typ && !strings.HasPrefix(n.label, typ+" ") {
+			continue
+		}
+		n.typ = typ
+		rest := strings.TrimPrefix(n.label, typ)
+		switch typ {
+		case "Index Scan", "Index Scan Backward", "Index Only Scan", "Index Only Scan Backward":
+			if m := scaleUsingRe.FindStringSubmatch(rest); m != nil {
+				n.index, n.relation = m[1], m[2]
+			}
+		case "Bitmap Index Scan":
+			if m := scaleOnRe.FindStringSubmatch(rest); m != nil {
+				n.index = m[1]
+			}
+		case "Seq Scan", "Bitmap Heap Scan", "Update":
+			if m := scaleOnRe.FindStringSubmatch(rest); m != nil {
+				n.relation = m[1]
+			}
+		}
+		return
+	}
+}
+
+// scaleParsePlan reads plan text into nodes (parents by indentation of the
+// "->" arrow). It refuses a node line it cannot read, a second root and a plan
+// that does not start at a root node. Attribute lines attach to the node above
+// them until the footer (Planning, Trigger, Execution Time) begins.
+func scaleParsePlan(lines []string) ([]*scalePlanNode, error) {
+	var nodes []*scalePlanNode
+	var stack []int
+	cur, footer := -1, false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " ")
+		isNode := strings.Contains(line, "(cost=") || strings.HasPrefix(trimmed, "->")
+		if !isNode && i > 0 && len(line) == len(trimmed) {
+			footer, cur = true, -1
+			continue
+		}
+		if isNode {
+			m := scaleNodeRe.FindStringSubmatch(line)
+			if m == nil || footer {
+				return nil, fmt.Errorf("line %d is not a plan node the classifier can read", i+1)
+			}
+			col := len(m[1])
+			if len(nodes) == 0 && (col != 0 || m[2] != "") {
+				return nil, fmt.Errorf("the plan does not start at a root node")
+			}
+			for len(stack) > 0 && nodes[stack[len(stack)-1]].col >= col {
+				stack = stack[:len(stack)-1]
+			}
+			n := &scalePlanNode{col: col, label: strings.TrimSpace(m[3]), attrs: map[string]string{}, parent: -1}
+			if len(stack) > 0 {
+				n.parent = stack[len(stack)-1]
+			} else if len(nodes) > 0 {
+				return nil, fmt.Errorf("line %d starts a second root", i+1)
+			}
+			switch {
+			case m[6] != "":
+				n.never = true
+			case m[4] != "":
+				rows, err := strconv.ParseFloat(m[4], 64)
+				loops, err2 := strconv.ParseInt(m[5], 10, 64)
+				if err != nil || err2 != nil {
+					return nil, fmt.Errorf("line %d has unreadable actual counters", i+1)
+				}
+				n.hasActual, n.rows, n.loops = true, rows, loops
+			}
+			scaleClassifyLabel(n)
+			nodes = append(nodes, n)
+			idx := len(nodes) - 1
+			if n.parent >= 0 {
+				nodes[n.parent].children = append(nodes[n.parent].children, idx)
+			}
+			stack = append(stack, idx)
+			cur = idx
+			continue
+		}
+		if cur < 0 {
+			continue
+		}
+		if m := scaleAttrRe.FindStringSubmatch(line); m != nil {
+			if _, seen := nodes[cur].attrs[m[1]]; !seen {
+				nodes[cur].attrs[m[1]] = strings.TrimSpace(m[2])
+			}
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("the plan has no nodes")
+	}
+	return nodes, nil
+}
+
+// scaleTriggerCalls is the calls= of the named trigger's line in the plan footer.
+func scaleTriggerCalls(lines []string, trigger string) (int64, bool) {
+	re := regexp.MustCompile(`^Trigger ` + regexp.QuoteMeta(trigger) + `: time=[\d.]+ calls=(\d+)`)
+	for _, line := range lines {
+		if m := re.FindStringSubmatch(line); m != nil {
+			n, err := strconv.ParseInt(m[1], 10, 64)
+			return n, err == nil
+		}
+	}
+	return 0, false
+}
+
+// scaleStripParens removes parentheses that wrap the whole text.
+func scaleStripParens(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+			return s
+		}
+		depth, wraps, quoted := 0, false, false
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if c == '\'' {
+				quoted = !quoted
+			}
+			if quoted || c == '\'' {
+				continue
+			}
+			if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					wraps = i == len(s)-1
+					break
+				}
+			}
+		}
+		if !wraps {
+			return s
+		}
+		s = s[1 : len(s)-1]
+	}
+}
+
+// scaleSplitAt splits at the top-level separator, outside quotes and brackets.
+func scaleSplitAt(s, sep string) []string {
+	var parts []string
+	depth, start, quoted := 0, 0, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\'' {
+			quoted = !quoted
+			continue
+		}
+		if quoted {
+			continue
+		}
+		if c == '(' || c == '[' {
+			depth++
+		} else if c == ')' || c == ']' {
+			depth--
+		} else if depth == 0 && strings.HasPrefix(s[i:], sep) {
+			parts = append(parts, s[start:i])
+			start = i + len(sep)
+			i = start - 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// scaleSplitAnd splits at the top-level " AND ".
+func scaleSplitAnd(s string) []string { return scaleSplitAt(s, " AND ") }
+
+// scaleSplitOr splits at the top-level " OR ".
+func scaleSplitOr(s string) []string { return scaleSplitAt(s, " OR ") }
+
+// scaleVarUint reads a captured bind value as an id.
+func scaleVarUint(v any) (uint64, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if rv.Int() < 0 {
+			return 0, false
+		}
+		return uint64(rv.Int()), true
+	}
+	return 0, false
+}
+
+var (
+	scaleValueRe     = regexp.MustCompile(`^(?:'(\d+)'::bigint|(\d+)|\$(\d+))$`)
+	scaleArrayLitRe  = regexp.MustCompile(`^'\{([\d,]*)\}'::bigint\[\]$`)
+	scaleArrayExprRe = regexp.MustCompile(`^ARRAY\[(.*)\]$`)
+)
+
+// scaleDecodeValue reads one displayed value: a bigint literal, a number or a
+// $n bind parameter resolved against the captured Vars of that execution.
+func scaleDecodeValue(tok string, vars []any) (uint64, bool) {
+	m := scaleValueRe.FindStringSubmatch(scaleStripParens(tok))
+	if m == nil {
+		return 0, false
+	}
+	switch {
+	case m[1] != "":
+		n, err := strconv.ParseUint(m[1], 10, 64)
+		return n, err == nil
+	case m[2] != "":
+		n, err := strconv.ParseUint(m[2], 10, 64)
+		return n, err == nil
+	}
+	i, err := strconv.Atoi(m[3])
+	if err != nil || i < 1 || i > len(vars) {
+		return 0, false
+	}
+	return scaleVarUint(vars[i-1])
+}
+
+// scaleDecodeArray reads the argument of "id = ANY (...)": a '{...}'::bigint[]
+// literal or ARRAY[...] of values.
+func scaleDecodeArray(s string, vars []any) ([]uint64, bool) {
+	var items []string
+	if m := scaleArrayLitRe.FindStringSubmatch(s); m != nil {
+		if m[1] != "" {
+			items = strings.Split(m[1], ",")
+		}
+	} else if m := scaleArrayExprRe.FindStringSubmatch(s); m != nil {
+		items = strings.Split(m[1], ",")
+	} else {
+		return nil, false
+	}
+	out := make([]uint64, 0, len(items))
+	for _, it := range items {
+		v, ok := scaleDecodeValue(it, vars)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, v)
+	}
+	return out, true
+}
+
+// scaleSameIDs compares decoded ids with the batch as sorted lists: the same
+// set and the same count, not the same length alone.
+func scaleSameIDs(got []uint64, batch []uint) bool {
+	if len(got) != len(batch) {
+		return false
+	}
+	a := append([]uint64(nil), got...)
+	b := make([]uint64, len(batch))
+	for i, id := range batch {
+		b[i] = uint64(id)
+	}
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	return reflect.DeepEqual(a, b)
+}
+
+// scaleRestriction is what a displayed condition restricts, decoded. A problem
+// that is only a mismatch (two subjects, two id restrictions) is a problem; one
+// the classifier could not resolve at all also sets unresolved, which withholds
+// the exact totals.
+type scaleRestriction struct {
+	hasSubject bool
+	subject    uint64
+	hasIDs     bool
+	ids        []uint64
+	problems   []string
+	unresolved bool
+}
+
+// scaleIDTerm reads one "id = ANY (...)" or "id = value" term. isID is false for
+// any other text; ok is false when it is an id term the classifier cannot decode.
+func scaleIDTerm(term string, vars []any) (ids []uint64, isID, ok bool) {
+	switch {
+	case strings.HasPrefix(term, "id = ANY "):
+		ids, ok = scaleDecodeArray(scaleStripParens(strings.TrimPrefix(term, "id = ANY ")), vars)
+		return ids, true, ok
+	case strings.HasPrefix(term, "id = "):
+		v, ok := scaleDecodeValue(strings.TrimPrefix(term, "id = "), vars)
+		return []uint64{v}, true, ok
+	}
+	return nil, false, true
+}
+
+// scaleParseRestriction reads the subject_user_id and id terms of a condition:
+// top-level conjuncts, and an OR group made only of id terms (a BitmapOr's
+// Recheck Cond) as one id set. Other conjuncts are ignored: they can only narrow
+// the scan, and the classifier credits only what it understands. An OR group
+// that mixes id or subject terms with other text, or a displayed value it cannot
+// resolve, is unresolved.
+var scaleRelevantColumnRe = regexp.MustCompile(`\b(?:id|subject_user_id)\b`)
+
+func scaleParseRestriction(cond string, vars []any) scaleRestriction {
+	var r scaleRestriction
+	if strings.TrimSpace(cond) == "" {
+		return r
+	}
+	unresolved := func(msg string) {
+		r.problems = append(r.problems, msg)
+		r.unresolved = true
+	}
+	addIDs := func(ids []uint64) {
+		if r.hasIDs {
+			r.problems = append(r.problems, "the condition restricts ids twice")
+			return
+		}
+		r.hasIDs, r.ids = true, ids
+	}
+	for _, c := range scaleSplitAnd(scaleStripParens(cond)) {
+		c = scaleStripParens(c)
+		if parts := scaleSplitOr(c); len(parts) > 1 {
+			var union []uint64
+			relevant, other, bad := false, false, false
+			for _, p := range parts {
+				p = scaleStripParens(p)
+				if strings.HasPrefix(p, "subject_user_id = ") {
+					relevant, bad = true, true
+					unresolved("an OR group names a subject, which the classifier does not read")
+					continue
+				}
+				ids, isID, ok := scaleIDTerm(p, vars)
+				switch {
+				case !isID:
+					other = true
+					if scaleRelevantColumnRe.MatchString(p) {
+						bad = true
+						unresolved("an unsupported OR subtree names an id or subject")
+					}
+				case !ok:
+					relevant, bad = true, true
+					unresolved("a displayed id in an OR group is not a number or bind parameter the classifier resolves")
+				default:
+					relevant = true
+					union = append(union, ids...)
+				}
+			}
+			if relevant && other && !bad {
+				unresolved("an OR group mixes id restrictions with other terms the classifier does not read")
+			} else if relevant && !bad {
+				addIDs(union)
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(c, "subject_user_id = "):
+			v, ok := scaleDecodeValue(strings.TrimPrefix(c, "subject_user_id = "), vars)
+			if !ok {
+				unresolved("a displayed subject value is not a number or bind parameter the classifier resolves")
+				continue
+			}
+			if r.hasSubject && r.subject != v {
+				r.problems = append(r.problems, "the condition names two subjects")
+			}
+			r.hasSubject, r.subject = true, v
+		default:
+			ids, isID, ok := scaleIDTerm(c, vars)
+			switch {
+			case !isID:
+				if scaleRelevantColumnRe.MatchString(c) {
+					unresolved("an unsupported condition names an id or subject")
+				}
+			case !ok:
+				unresolved("a displayed id or id array is not one the classifier resolves")
+			default:
+				addIDs(ids)
+			}
+		}
+	}
+	return r
+}
+
+// scaleScanInput is one measured execution: its plan text, the statement text
+// and bind values EXPLAIN ANALYZE ran, and the facts the caller knows
+// independently (U, the batch ids, S_U).
+type scaleScanInput struct {
+	Statement string // "select" or "update"
+	Lines     []string
+	SQL       string
+	Vars      []any
+	Subject   uint
+	Batch     []uint
+	SU        int64
+}
+
+// scaleBindingProblems checks the captured SQL and Vars of the execution
+// against the independent facts: the binds are exactly U (select) or exactly
+// the batch ids and U (update), in the placeholders the SQL shows. unresolved
+// is true when a captured bind could not be read as an id at all, not merely
+// when it differs from the independent fact.
+func scaleBindingProblems(in scaleScanInput) (out []string, unresolved bool) {
+	text := strings.ReplaceAll(strings.Join(strings.Fields(in.SQL), " "), ", ", ",")
+	isSubject := func(v any) bool {
+		u, ok := scaleVarUint(v)
+		return ok && u == uint64(in.Subject)
+	}
+	switch in.Statement {
+	case "select":
+		if len(in.Batch) != 0 {
+			out = append(out, "a select has no batch ids")
+		}
+		if len(in.Vars) != 1 || !isSubject(in.Vars[0]) {
+			out = append(out, fmt.Sprintf("the captured binds (%d) are not exactly U", len(in.Vars)))
+			if len(in.Vars) == 1 {
+				if _, ok := scaleVarUint(in.Vars[0]); !ok {
+					unresolved = true
+				}
+			}
+		}
+		if !strings.Contains(text, "subject_user_id = $1") {
+			out = append(out, "the captured SQL does not bind U as $1")
+		}
+	case "update":
+		n := len(in.Batch)
+		if n == 0 {
+			return append(out, "no batch ids to bind"), true
+		}
+		if len(in.Vars) != n+1 {
+			return append(out, fmt.Sprintf("%d bind values captured, want the %d batch ids and U", len(in.Vars), n)), true
+		}
+		got := make([]uint64, 0, n)
+		placeholders := make([]string, n)
+		for i, v := range in.Vars[:n] {
+			id, ok := scaleVarUint(v)
+			if !ok {
+				return append(out, "a captured id bind is not an id"), true
+			}
+			got = append(got, id)
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		}
+		if !scaleSameIDs(got, in.Batch) {
+			out = append(out, "the captured id binds are not the batch ids")
+		}
+		if !isSubject(in.Vars[n]) {
+			out = append(out, "the captured subject bind is not U")
+			if _, ok := scaleVarUint(in.Vars[n]); !ok {
+				unresolved = true
+			}
+		}
+		if !strings.Contains(text, "id IN ("+strings.Join(placeholders, ",")+")") {
+			out = append(out, "the captured SQL does not bind the batch ids as $1.. in one IN list")
+		}
+		if !strings.Contains(text, "subject_user_id = $"+strconv.Itoa(n+1)) {
+			out = append(out, "the captured SQL does not bind U as the last parameter")
+		}
+	default:
+		out = append(out, "unknown statement kind "+strconv.Quote(in.Statement))
+		unresolved = true
+	}
+	return out, unresolved
+}
+
+// scaleScanNodeEvidence is what the report keeps about one node that reads
+// contact_requests (role "heap") or feeds a bitmap heap scan ("bitmap-index").
+// Plan text holds ids, column names and constants only: no note text, address
+// or capability.
+type scaleScanNodeEvidence struct {
+	Role             string  `json:"role"`
+	Node             string  `json:"node"`
+	Index            string  `json:"index,omitempty"`
+	IndexCond        string  `json:"indexCond,omitempty"`
+	RecheckCond      string  `json:"recheckCond,omitempty"`
+	Filter           string  `json:"filter,omitempty"`
+	ActualRows       float64 `json:"actualRows"`
+	Loops            int64   `json:"loops"`
+	RemovedByFilter  float64 `json:"rowsRemovedByFilter"`
+	RemovedByRecheck float64 `json:"rowsRemovedByIndexRecheck"`
+	HeapBlocksExact  int64   `json:"heapBlocksExact"`
+	HeapBlocksLossy  int64   `json:"heapBlocksLossy"`
+	BuffersHit       int64   `json:"buffersSharedHit"`
+	BuffersRead      int64   `json:"buffersSharedRead"`
+	Restriction      string  `json:"restriction"`
+}
+
+// scaleScanVerdict is the classifier's answer for one execution. Bounded is true
+// only when every proof predicate holds and every accounted observation is
+// within its bound. Candidates (heap rows examined: actual rows plus rows
+// removed by filter and by index recheck) and BitmapEntries (index entries,
+// attributed apart so an entry and its heap tuple are never two candidates) are
+// valid only when their Known flag is set; an unsupported, incomplete or
+// rounded measurement leaves them unavailable, never zero.
+type scaleScanVerdict struct {
+	Statement            string                  `json:"statement"`
+	ExactBindingOK       bool                    `json:"exactBindingOk"`
+	AccessConditionOK    bool                    `json:"accessConditionOk"`
+	MeasurementComplete  bool                    `json:"measurementComplete"`
+	NonLossy             bool                    `json:"nonLossy"`
+	LoopsOne             bool                    `json:"loopsOne"`
+	AllBranchesAccounted bool                    `json:"allBranchesAccounted"`
+	Candidates           int64                   `json:"candidates"`
+	CandidatesKnown      bool                    `json:"candidatesKnown"`
+	BitmapEntries        int64                   `json:"bitmapEntries"`
+	BitmapEntriesKnown   bool                    `json:"bitmapEntriesKnown"`
+	FeedingRows          int64                   `json:"feedingRows"`
+	FeedingRowsKnown     bool                    `json:"feedingRowsKnown"`
+	Bound                int64                   `json:"bound"`
+	Bounded              bool                    `json:"bounded"`
+	Reasons              []string                `json:"reasons"`
+	OmittedZero          []string                `json:"omittedZeroCounters,omitempty"`
+	Nodes                []scaleScanNodeEvidence `json:"nodes"`
+}
+
+// scaleAttrNumber reads a "Name: N" counter of a node. An absent counter is
+// present=false, ok=true (the text format omits zero counters, which the caller
+// decodes as zero only on a node that has its actual counters). A counter that
+// is not exactly one finite, nonnegative number is ok=false with value 0, so a
+// bad value is never carried into an export or a sum.
+func scaleAttrNumber(n *scalePlanNode, name string) (value float64, present, ok bool) {
+	raw, found := n.attrs[name]
+	if !found {
+		return 0, false, true
+	}
+	fields := strings.Fields(raw)
+	if len(fields) != 1 {
+		return 0, true, false
+	}
+	parsed, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
+		return 0, true, false
+	}
+	return parsed, true, true
+}
+
+// scaleMaxCount is an exclusive bound: raw 2^53+1 rounds to 2^53 in
+// float64, so the threshold itself must also be refused.
+const scaleMaxCount = 1 << 53
+
+// scaleWholeCount converts a finite, nonnegative, integral counter that a
+// float64 represents exactly; anything else is refused with ok=false.
+func scaleWholeCount(v float64) (int64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v != math.Trunc(v) || v >= scaleMaxCount {
+		return 0, false
+	}
+	return int64(v), true
+}
+
+// scaleAddCount adds two nonnegative counters, refusing an overflow.
+func scaleAddCount(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 || a > math.MaxInt64-b {
+		return 0, false
+	}
+	return a + b, true
+}
+
+var scaleDigitsRe = regexp.MustCompile(`^[0-9]+$`)
+
+// scaleHeapBlocks reads "Heap Blocks: exact=N lossy=M". The text format omits a
+// zero part, so an absent part is zero; a part that is unknown, repeated, not a
+// plain nonnegative integer or too large for int64 makes the whole line
+// unreadable (ok=false) rather than a zero.
+func scaleHeapBlocks(raw string) (exact, lossy int64, ok bool) {
+	seen := map[string]bool{}
+	for _, f := range strings.Fields(raw) {
+		k, val, cut := strings.Cut(f, "=")
+		if !cut || (k != "exact" && k != "lossy") || seen[k] || !scaleDigitsRe.MatchString(val) {
+			return 0, 0, false
+		}
+		n, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		seen[k] = true
+		if k == "exact" {
+			exact = n
+		} else {
+			lossy = n
+		}
+	}
+	return exact, lossy, true
+}
+
+// scaleBuffers reads the shared hit and read counts of a "Buffers:" line.
+func scaleBuffers(raw string) (hit, read int64) {
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.HasPrefix(part, "shared ") {
+			continue
+		}
+		for _, f := range strings.Fields(part)[1:] {
+			k, val, ok := strings.Cut(f, "=")
+			n, err := strconv.ParseInt(val, 10, 64)
+			if !ok || err != nil {
+				continue
+			}
+			switch k {
+			case "hit":
+				hit = n
+			case "read":
+				read = n
+			}
+		}
+	}
+	return hit, read
+}
+
+func scaleNodeEvidence(n *scalePlanNode, role string) scaleScanNodeEvidence {
+	e := scaleScanNodeEvidence{Role: role, Node: n.label, Index: n.index, IndexCond: n.attrs["Index Cond"],
+		RecheckCond: n.attrs["Recheck Cond"], Filter: n.attrs["Filter"], ActualRows: n.rows, Loops: n.loops, Restriction: "none"}
+	e.RemovedByFilter, _, _ = scaleAttrNumber(n, "Rows Removed by Filter")
+	e.RemovedByRecheck, _, _ = scaleAttrNumber(n, "Rows Removed by Index Recheck")
+	if exact, lossy, ok := scaleHeapBlocks(n.attrs["Heap Blocks"]); ok {
+		e.HeapBlocksExact, e.HeapBlocksLossy = exact, lossy
+	}
+	e.BuffersHit, e.BuffersRead = scaleBuffers(n.attrs["Buffers"])
+	return e
+}
+
+// scaleIDsWithin reports whether ids are distinct members of the batch.
+func scaleIDsWithin(ids []uint64, batch []uint) bool {
+	in := map[uint64]bool{}
+	for _, b := range batch {
+		in[uint64(b)] = true
+	}
+	seen := map[uint64]bool{}
+	for _, id := range ids {
+		if !in[id] || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
+// scaleAgesNoteScanVerdict decides, conservatively, whether the measured
+// execution of one ages-note statement was bounded by the subject's own rows
+// (RC-4). It claims nothing it did not prove:
+//
+//   - the displayed parameters are bound to the captured SQL and Vars of this
+//     execution and to the caller's independent facts (U, the batch ids as a
+//     set). Every subject and id the plan displays in an Index Cond, a Recheck
+//     Cond or a Filter, and each BitmapOr leaf on its own, is decoded and checked
+//     that way; a Filter or Recheck Cond validates a binding but never qualifies
+//     as access;
+//   - every contact_requests feeding scan must restrict access through an Index
+//     Cond (or, for a bitmap heap scan, through the Index Cond of its feeding
+//     Bitmap Index Scan leaves) to U or, for the UPDATE, to exactly the batch
+//     ids; Filter alone does not qualify, and a sequential scan never does;
+//   - only supported, non-lossy shapes with loops=1 and complete counters prove
+//     anything. Counters the text format omits when zero (Rows Removed by
+//     Filter, Rows Removed by Index Recheck) read as zero only on a node that
+//     has its actual counters; a missing actual, a "never executed" node, a
+//     rounded average, any rows removed by index recheck or lossy page, an
+//     unreadable, negative, nonfinite or oversized counter, an unknown node or an
+//     unclaimed bitmap node leaves the measurement unproven;
+//   - candidates are summed over feeding scans and bitmap entries over bitmap
+//     index leaves, apart from each other, and each sum is held to the bound
+//     (S_U for a subject restriction, the batch size for exact ids; the smaller
+//     one when scans differ);
+//   - an exact total is published only when the measurement is complete,
+//     non-lossy, loops=1, fully accounted and every displayed binding resolved;
+//     otherwise the Known flags stay false and the totals zero, and only the
+//     per-node counters in Nodes remain.
+func scaleAgesNoteScanVerdict(in scaleScanInput) scaleScanVerdict {
+	v := scaleScanVerdict{Statement: in.Statement, Bound: -1, ExactBindingOK: true, AccessConditionOK: true,
+		MeasurementComplete: true, NonLossy: true, LoopsOne: true, AllBranchesAccounted: true, Reasons: []string{}}
+	fail := func(format string, args ...any) { v.Reasons = append(v.Reasons, fmt.Sprintf(format, args...)) }
+	// unresolved: some displayed or captured binding could not be read at all.
+	problems, unresolved := scaleBindingProblems(in)
+	for _, p := range problems {
+		v.ExactBindingOK = false
+		fail("binding: %s", p)
+	}
+	nodes, err := scaleParsePlan(in.Lines)
+	if err != nil {
+		fail("not proven: %v", err)
+		v.AccessConditionOK, v.MeasurementComplete, v.NonLossy, v.LoopsOne, v.AllBranchesAccounted = false, false, false, false, false
+		return v
+	}
+
+	var heaps []int
+	claimed := map[int]bool{}
+	for i, n := range nodes {
+		switch n.typ {
+		case "Update":
+			if n.relation != "contact_requests" {
+				v.AllBranchesAccounted = false
+				fail("not proven: the plan updates %q, not contact_requests", n.relation)
+			}
+		case "LockRows", "Sort":
+		case "Seq Scan", "Index Scan", "Index Scan Backward", "Index Only Scan", "Index Only Scan Backward", "Bitmap Heap Scan":
+			if n.relation != "contact_requests" {
+				v.AllBranchesAccounted = false
+				fail("not proven: %q reads %q, which this statement's measurement does not account for", n.label, n.relation)
+				continue
+			}
+			heaps = append(heaps, i)
+		case "Bitmap Index Scan", "BitmapOr", "BitmapAnd":
+			// Judged with the bitmap heap scan above them; unclaimed ones are
+			// reported after the loop.
+		default:
+			v.AllBranchesAccounted = false
+			fail("not proven: unknown plan node %q", n.label)
+		}
+	}
+
+	var candidates, entries, feeding, bound int64
+	bound = -1
+	sawBitmap, overflow := false, false
+	lower := func(b int64) {
+		if bound < 0 || b < bound {
+			bound = b
+		}
+	}
+	// add sums nonnegative counters; an overflow leaves the measurement unproven.
+	add := func(dst *int64, k int64) {
+		sum, ok := scaleAddCount(*dst, k)
+		if !ok {
+			if !overflow {
+				fail("not proven: the counters overflow when summed")
+			}
+			overflow, v.MeasurementComplete = true, false
+			return
+		}
+		*dst = sum
+	}
+	// validate decodes one displayed condition and checks every subject and id it
+	// names against U and the batch. A subset condition (one BitmapOr leaf) need
+	// only name distinct members of the batch; any other names exactly the batch.
+	// It says nothing about whether the condition qualifies as access.
+	validate := func(where, cond string, subset bool) (scaleRestriction, bool) {
+		r := scaleParseRestriction(cond, in.Vars)
+		bad := false
+		for _, p := range r.problems {
+			fail("binding: %s: %s", where, p)
+			bad = true
+		}
+		unresolved = unresolved || r.unresolved
+		if r.hasSubject && r.subject != uint64(in.Subject) {
+			fail("binding: %s: the displayed subject %d is not U (%d)", where, r.subject, in.Subject)
+			bad = true
+		}
+		if r.hasIDs {
+			if subset && !scaleIDsWithin(r.ids, in.Batch) {
+				fail("binding: %s: the displayed ids (%d) are not distinct members of the captured batch ids (%d)", where, len(r.ids), len(in.Batch))
+				bad = true
+			} else if !subset && !scaleSameIDs(r.ids, in.Batch) {
+				fail("binding: %s: the displayed ids (%d) are not the captured batch ids (%d) as a set", where, len(r.ids), len(in.Batch))
+				bad = true
+			}
+		}
+		if bad {
+			v.ExactBindingOK = false
+		}
+		return r, !bad
+	}
+	// judge turns a validated restriction into its access kind and bound.
+	judge := func(r scaleRestriction, valid bool) (kind string, b int64) {
+		if !valid {
+			return "", -1
+		}
+		switch {
+		case r.hasIDs && in.Statement == "update":
+			return "ids", int64(len(in.Batch))
+		case r.hasSubject:
+			if in.SU <= 0 {
+				fail("not proven: S_U is not known, so a subject restriction has no bound")
+				return "", -1
+			}
+			return "subject", in.SU
+		}
+		return "", -1
+	}
+
+	for _, i := range heaps {
+		n := nodes[i]
+		e := scaleNodeEvidence(n, "heap")
+		if n.never || !n.hasActual {
+			v.MeasurementComplete = false
+			fail("not proven: %q has no actual counters (never executed or not analyzed)", n.label)
+		} else {
+			if n.loops != 1 {
+				v.LoopsOne = false
+				fail("not proven: %q ran %d loops, so its row counts are rounded averages", n.label, n.loops)
+			}
+			if _, ok := scaleWholeCount(n.rows); !ok {
+				v.MeasurementComplete = false
+				fail("not proven: %q reports a fractional row count (or one that is unreadable or oversized)", n.label)
+			}
+		}
+		rows, _ := scaleWholeCount(n.rows)
+		removedF, hasF, okF := scaleAttrNumber(n, "Rows Removed by Filter")
+		removedR, _, okR := scaleAttrNumber(n, "Rows Removed by Index Recheck")
+		for _, c := range []struct {
+			name string
+			f    float64
+			ok   bool
+		}{{"Rows Removed by Filter", removedF, okF}, {"Rows Removed by Index Recheck", removedR, okR}} {
+			if _, ok := scaleWholeCount(c.f); !c.ok || !ok {
+				v.MeasurementComplete = false
+				fail("not proven: %q reports an unreadable, fractional or oversized %q", n.label, c.name)
+			}
+		}
+		if !hasF && n.attrs["Filter"] != "" && n.hasActual {
+			v.OmittedZero = append(v.OmittedZero, n.label+": Rows Removed by Filter")
+		}
+		removedFilter, _ := scaleWholeCount(removedF)
+		removedRecheck, _ := scaleWholeCount(removedR)
+		cand := rows
+		add(&cand, removedFilter)
+		add(&cand, removedRecheck)
+		// Every displayed Filter is decoded for its bindings on every scan type; it
+		// is never credited as access.
+		validate(n.label+" Filter", n.attrs["Filter"], false)
+		var lossy int64
+
+		switch n.typ {
+		case "Seq Scan":
+			v.AccessConditionOK = false
+			fail("a sequential scan of contact_requests examined %d rows to find its output; no index restricts access", cand)
+		case "Bitmap Heap Scan":
+			sawBitmap = true
+			if n.attrs["Recheck Cond"] == "" {
+				v.MeasurementComplete = false
+				fail("not proven: %q has no Recheck Cond", n.label)
+			}
+			validate(n.label+" Recheck Cond", n.attrs["Recheck Cond"], false)
+			raw, shown := n.attrs["Heap Blocks"]
+			var exact int64
+			blocksOK := true
+			if shown {
+				exact, lossy, blocksOK = scaleHeapBlocks(raw)
+				if !blocksOK {
+					v.MeasurementComplete = false
+					fail("not proven: %q shows a Heap Blocks line the classifier cannot read", n.label)
+				}
+			}
+			e.HeapBlocksExact, e.HeapBlocksLossy = exact, lossy
+			if cand > 0 {
+				blocks, sumOK := scaleAddCount(exact, lossy)
+				switch {
+				case !shown:
+					v.MeasurementComplete = false
+					fail("not proven: %q read %d rows but shows no Heap Blocks line", n.label, cand)
+				case blocksOK && (!sumOK || blocks == 0):
+					v.MeasurementComplete = false
+					fail("not proven: %q read %d rows but reports no valid heap block count", n.label, cand)
+				}
+			}
+			// The feeding bitmap tree: leaves are Bitmap Index Scans; a BitmapOr is
+			// walked; a BitmapAnd or anything else is not classified.
+			var leaves []int
+			var walk func(parent int)
+			walk = func(parent int) {
+				for _, c := range nodes[parent].children {
+					claimed[c] = true
+					switch nodes[c].typ {
+					case "Bitmap Index Scan":
+						leaves = append(leaves, c)
+					case "BitmapOr":
+						walk(c)
+					default:
+						v.AllBranchesAccounted = false
+						fail("not proven: %q under a bitmap heap scan is not classified", nodes[c].label)
+					}
+				}
+			}
+			walk(i)
+			orWrapped := len(leaves) > 1
+			if len(leaves) == 0 {
+				v.AllBranchesAccounted = false
+				fail("not proven: %q has no feeding Bitmap Index Scan", n.label)
+			}
+			var union scaleRestriction
+			unionValid := true
+			for _, l := range leaves {
+				ln := nodes[l]
+				le := scaleNodeEvidence(ln, "bitmap-index")
+				if ln.never || !ln.hasActual {
+					v.MeasurementComplete = false
+					fail("not proven: %q has no actual counters", ln.label)
+				} else {
+					if ln.loops != 1 {
+						v.LoopsOne = false
+						fail("not proven: %q ran %d loops", ln.label, ln.loops)
+					}
+					if k, ok := scaleWholeCount(ln.rows); !ok {
+						v.MeasurementComplete = false
+						fail("not proven: %q reports an unreadable, fractional or oversized entry count", ln.label)
+					} else {
+						add(&entries, k)
+					}
+				}
+				// Each leaf is validated on its own before any aggregation.
+				r, valid := validate(ln.label+" Index Cond", ln.attrs["Index Cond"], orWrapped)
+				if orWrapped {
+					// Every leaf of a BitmapOr must restrict to ids; together they
+					// are the batch.
+					if !r.hasIDs {
+						v.AccessConditionOK = false
+						fail("a BitmapOr leaf %q does not restrict to ids through its Index Cond", ln.label)
+					}
+					unionValid = unionValid && valid
+					union.hasIDs, union.ids = true, append(union.ids, r.ids...)
+					le.Restriction = "ids"
+				} else {
+					kind, b := judge(r, valid)
+					le.Restriction = kind
+					if kind == "" {
+						v.AccessConditionOK = false
+						fail("no selective Index Cond on %q (a Filter alone does not qualify)", ln.label)
+					} else {
+						lower(b)
+					}
+				}
+				v.Nodes = append(v.Nodes, le)
+			}
+			if orWrapped {
+				if unionValid && !scaleSameIDs(union.ids, in.Batch) {
+					v.ExactBindingOK, unionValid = false, false
+					fail("binding: the BitmapOr leaves name %d ids, not the captured batch ids (%d) as a set", len(union.ids), len(in.Batch))
+				}
+				kind, b := judge(union, unionValid)
+				if kind != "ids" {
+					v.AccessConditionOK = false
+					fail("the BitmapOr leaves do not restrict access to exactly the batch ids")
+				} else {
+					lower(b)
+					e.Restriction = kind
+				}
+			} else if len(leaves) == 1 {
+				e.Restriction = v.Nodes[len(v.Nodes)-1].Restriction
+			}
+		default: // Index Scan, Index Only Scan, backward forms
+			r, valid := validate(n.label+" Index Cond", n.attrs["Index Cond"], false)
+			kind, b := judge(r, valid)
+			e.Restriction = kind
+			if kind == "" {
+				v.AccessConditionOK = false
+				fail("no selective Index Cond on %q (a Filter alone does not qualify); it examined %d rows to find its output", n.label, cand)
+			} else {
+				lower(b)
+			}
+		}
+		// Index recheck work, on any scan type, and lossy bitmap pages are work the
+		// classifier does not bound.
+		if lossy > 0 || removedRecheck > 0 {
+			v.NonLossy = false
+			fail("not proven: %q did index recheck or lossy bitmap work (lossy blocks %d, rows removed by index recheck %d)", n.label, lossy, removedRecheck)
+		}
+		add(&candidates, cand)
+		add(&feeding, rows)
+		v.Nodes = append(v.Nodes, e)
+	}
+	for i, n := range nodes {
+		if (n.typ == "Bitmap Index Scan" || n.typ == "BitmapOr" || n.typ == "BitmapAnd") && !claimed[i] {
+			v.AllBranchesAccounted = false
+			fail("not proven: %q feeds no bitmap heap scan the classifier read", n.label)
+		}
+	}
+	if len(heaps) == 0 {
+		v.AccessConditionOK = false
+		fail("no scan of contact_requests was found in the plan")
+	}
+	v.Bound = bound
+	// An exact total exists only for a complete, non-lossy, fully resolved
+	// measurement; the raw per-node counters stay in Nodes either way.
+	known := v.MeasurementComplete && v.NonLossy && v.LoopsOne && v.AllBranchesAccounted && !unresolved && !overflow && len(heaps) > 0
+	if unresolved {
+		fail("not proven: a displayed or captured binding could not be resolved, so no exact total is published")
+	}
+	over := false
+	if known {
+		v.Candidates, v.CandidatesKnown = candidates, true
+		v.FeedingRows, v.FeedingRowsKnown = feeding, true
+		if sawBitmap {
+			v.BitmapEntries, v.BitmapEntriesKnown = entries, true
+		}
+		if bound >= 0 && candidates > bound {
+			over = true
+			fail("examined %d candidates, above the bound %d", candidates, bound)
+		}
+		if bound >= 0 && sawBitmap && entries > bound {
+			over = true
+			fail("%d bitmap index entries, above the bound %d", entries, bound)
+		}
+	}
+	v.Bounded = v.ExactBindingOK && v.AccessConditionOK && v.MeasurementComplete && v.NonLossy && v.LoopsOne &&
+		v.AllBranchesAccounted && known && bound >= 0 && !over
+	return v
+}
+
+// ---- the evidence of one scale run ----------------------------------------
+
+type scaleStatementEvidence struct {
+	Label        string           `json:"label"`
+	SQL          string           `json:"sql"`
+	Plan         []string         `json:"plan"`
+	Millis       float64          `json:"executionMillis"`
+	Binds        int              `json:"bindCount"`
+	RowsAffected []int64          `json:"rowsAffected,omitempty"`
+	TopRows      int64            `json:"topNodeRows"`
+	TriggerCalls int64            `json:"addRequestIdentityCalls"`
+	TriggerFound bool             `json:"addRequestIdentityFound"`
+	Verdict      scaleScanVerdict `json:"verdict"`
+}
+
+type scaleAgesNoteEvidence struct {
+	Facts      scaleAgesNoteFacts     `json:"fixture"`
+	HelperOnly scaleHelperOnlyResult  `json:"helperOnlyScope"`
+	Select     scaleStatementEvidence `json:"select"`
+	Update     scaleStatementEvidence `json:"update"`
+}
+
+// checkScaleAgesNoteScrub asserts the counts that tell a real scrub from an
+// empty one, each on its own (the lock selection's four rows, the real UPDATE's
+// RowsAffected = 4 with five binds, the trigger's four calls, the helper-only
+// scope), and classifies both statements' plans. A false verdict is logged as
+// an open database-review finding; it does not fail the run.
+func checkScaleAgesNoteScrub(t *testing.T, run scaleExplain) scaleAgesNoteEvidence {
+	t.Helper()
+	facts := run.agesFacts
+	want := int64(len(facts.BatchIDs))
+	if want != 4 {
+		t.Fatalf("the fixture selects %d ages notes for U, want 4", want)
+	}
+	find := func(label string) *scalePlan {
+		var found *scalePlan
+		n := 0
+		for i := range run.plans {
+			if run.plans[i].label == label {
+				found = &run.plans[i]
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%d plans recorded for %q, want exactly 1 (four rows are one lock selection and one UPDATE batch)", n, label)
+		}
+		return found
+	}
+	ev := scaleAgesNoteEvidence{Facts: facts, HelperOnly: run.helperOnly}
+	h := run.helperOnly
+	if !h.OthersUnchanged || !h.SelectedRestUnchanged || !h.ReasonsUnchanged || h.SelectedRows != want || h.SelectedNotesBefore != want || h.SelectedNotesAfter != 0 {
+		t.Errorf("helper-only scope: %+v; want every row the lock selection did not pick unchanged, each of the %d picked rows unchanged except a blank note, and no reason changed", h, want)
+	}
+	millis := func(lines []string) float64 {
+		for _, l := range lines {
+			if m := scaleExecRe.FindStringSubmatch(l); m != nil {
+				f, _ := strconv.ParseFloat(m[1], 64)
+				return f
+			}
+		}
+		return -1
+	}
+
+	sel := find(scaleAgesNoteSelectLabel)
+	ev.Select = scaleStatementEvidence{Label: sel.label, SQL: strings.Join(strings.Fields(sel.sql), " "), Plan: sel.lines, Millis: millis(sel.lines), Binds: len(sel.vars), TopRows: -1}
+	if nodes, err := scaleParsePlan(sel.lines); err != nil {
+		t.Errorf("lock selection plan: %v", err)
+	} else if top := nodes[0]; top.typ != "LockRows" || !top.hasActual || top.loops != 1 || top.rows != float64(want) {
+		t.Errorf("lock selection: the top node %q does not report %d rows in one loop", top.label, want)
+	} else {
+		ev.Select.TopRows = int64(top.rows)
+	}
+	if len(sel.vars) != 1 {
+		t.Errorf("lock selection carried %d binds, want 1", len(sel.vars))
+	}
+	ev.Select.Verdict = scaleAgesNoteScanVerdict(scaleScanInput{Statement: "select", Lines: sel.lines, SQL: sel.sql, Vars: sel.vars,
+		Subject: scaleTargetID, SU: facts.SU})
+
+	upd := find(scaleAgesNoteUpdateLabel)
+	ev.Update = scaleStatementEvidence{Label: upd.label, SQL: strings.Join(strings.Fields(upd.sql), " "), Plan: upd.lines, Millis: millis(upd.lines),
+		Binds: len(upd.vars), RowsAffected: run.affected[scaleAgesNoteUpdateLabel], TopRows: 0}
+	if got := run.affected[scaleAgesNoteUpdateLabel]; len(got) != 1 || got[0] != want {
+		t.Errorf("the real UPDATE's RowsAffected: %v, want exactly one execution touching %d rows", got, want)
+	}
+	if len(upd.vars) != int(want)+1 {
+		t.Errorf("the UPDATE carried %d binds, want %d (the batch ids and U)", len(upd.vars), want+1)
+	}
+	if execs := run.execs[scaleAgesNoteUpdateLabel]; len(execs) != 1 || execs[0].sql != upd.sql || !reflect.DeepEqual(execs[0].vars, upd.vars) {
+		t.Errorf("the measured UPDATE and its real execution are not one statement with one set of binds (%d executions recorded)", len(execs))
+	}
+	ev.Update.TriggerCalls, ev.Update.TriggerFound = scaleTriggerCalls(upd.lines, "add_request_identity")
+	if !ev.Update.TriggerFound || ev.Update.TriggerCalls != want {
+		t.Errorf("'Trigger add_request_identity' reports calls=%d (found %v), want calls=%d:\n%s", ev.Update.TriggerCalls, ev.Update.TriggerFound, want, strings.Join(upd.lines, "\n"))
+	}
+	ev.Update.Verdict = scaleAgesNoteScanVerdict(scaleScanInput{Statement: "update", Lines: upd.lines, SQL: upd.sql, Vars: upd.vars,
+		Subject: scaleTargetID, Batch: facts.BatchIDs, SU: facts.SU})
+
+	for _, s := range []scaleStatementEvidence{ev.Select, ev.Update} {
+		v := s.Verdict
+		t.Logf("ages-note %s: bounded=%v (binding %v, access %v, complete %v, non-lossy %v, loops=1 %v, branches %v); candidates %d (known %v), bitmap entries %d (known %v), feeding rows %d (known %v), bound %d; %.3f ms; reasons %q",
+			v.Statement, v.Bounded, v.ExactBindingOK, v.AccessConditionOK, v.MeasurementComplete, v.NonLossy, v.LoopsOne, v.AllBranchesAccounted,
+			v.Candidates, v.CandidatesKnown, v.BitmapEntries, v.BitmapEntriesKnown, v.FeedingRows, v.FeedingRowsKnown, v.Bound, s.Millis, v.Reasons)
+		if !v.Bounded {
+			t.Logf("ages-note %s: OPEN DATABASE-REVIEW FINDING: boundedness is not proven, so no claim is made; the raw plan is in the evidence file", v.Statement)
+		}
+	}
+	t.Logf("ages-note UPDATE: RowsAffected %v, %d binds, add_request_identity calls %d (found %v), helper-only scope %+v",
+		ev.Update.RowsAffected, ev.Update.Binds, ev.Update.TriggerCalls, ev.Update.TriggerFound, ev.HelperOnly)
+	return ev
+}
+
+// ---- the classifier's unit test (ordinary CI, no database) ----------------
+
+func agesPad(n int) string { return strings.Repeat(" ", n) }
+
+// agesNode renders one node of EXPLAIN (ANALYZE, BUFFERS) text with its
+// attribute lines. rows "" omits the actual counters and "never" prints
+// "(never executed)".
+func agesNode(col int, label, rows string, loops int, attrs ...string) string {
+	cost := "(cost=0.29..8.31 rows=1 width=14)"
+	arrow := ""
+	if col > 0 {
+		arrow = "->  "
+	}
+	switch rows {
+	case "":
+	case "never":
+		cost += " (never executed)"
+	default:
+		cost += fmt.Sprintf(" (actual time=0.020..0.022 rows=%s loops=%d)", rows, loops)
+	}
+	out := agesPad(col) + arrow + label + "  " + cost + "\n"
+	for _, a := range attrs {
+		out += agesPad(col+6) + a + "\n"
+	}
+	return out
+}
+
+const agesFooter = "Planning Time: 0.110 ms\nExecution Time: 0.098 ms\n"
+
+func agesSelectPlan(scan string) string {
+	return "LockRows  (cost=4.30..16.69 rows=1 width=14) (actual time=0.050..0.056 rows=4 loops=1)\n  Buffers: shared hit=9\n" +
+		"  ->  Sort  (cost=4.30..4.31 rows=1 width=14) (actual time=0.040..0.041 rows=4 loops=1)\n" +
+		"        Sort Key: id\n        Sort Method: quicksort  Memory: 25kB\n        Buffers: shared hit=5\n" + scan + agesFooter
+}
+
+func agesUpdatePlan(children, trigger string) string {
+	return "Update on contact_requests  (cost=0.29..16.34 rows=0 width=0) (actual time=0.310..0.310 rows=0 loops=1)\n" + children +
+		"Planning Time: 0.210 ms\n" + trigger + "Execution Time: 0.404 ms\n"
+}
+
+const agesTrigger4 = "Trigger add_request_identity: time=0.200 calls=4\n"
+
+const agesFilter = "Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text))"
+
+func agesUpdateSQL(n int) string {
+	ph := make([]string, n)
+	for i := range ph {
+		ph[i] = "$" + strconv.Itoa(i+1)
+	}
+	return "UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id IN (" + strings.Join(ph, ",") + ") AND purpose = 'occurrence_add' AND subject_user_id = $" +
+		strconv.Itoa(n+1) + " AND add_childcare_ages_note <> ''"
+}
+
+const agesSelectSQL = "SELECT id FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = $1 AND add_childcare_ages_note <> '' ORDER BY id FOR UPDATE"
+
+func agesVars(subject uint, ids ...uint) []any {
+	out := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		out = append(out, id)
+	}
+	return append(out, subject)
+}
+
+func TestAgesNoteErasureScanVerdict(t *testing.T) {
+	batch := []uint{9993, 9994, 9995, 9996}
+	subjectIdx := func(rows string, loops int, attrs ...string) string {
+		return agesNode(8, "Index Scan using contact_requests_subject on contact_requests", rows, loops, attrs...)
+	}
+	idxCond := "Index Cond: (subject_user_id = '3'::bigint)"
+	pkAny := "Index Cond: (id = ANY ('{9993,9994,9995,9996}'::bigint[]))"
+	updScan := func(rows string, loops int, attrs ...string) string {
+		return agesNode(2, "Index Scan using contact_requests_pkey on contact_requests", rows, loops, attrs...)
+	}
+	bitmapSubject := func(heapRows string, heapAttrs []string, leafRows string, leafCond string) string {
+		return agesNode(8, "Bitmap Heap Scan on contact_requests", heapRows, 1, heapAttrs...) +
+			agesNode(14, "Bitmap Index Scan on contact_requests_subject", leafRows, 1, leafCond, "Buffers: shared hit=2")
+	}
+	orLeaves := func(rowsPer string, ids ...string) string {
+		out := agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+			"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9996))", agesFilter, "Heap Blocks: exact=1", "Buffers: shared hit=6") +
+			agesNode(8, "BitmapOr", "4", 1)
+		for _, id := range ids {
+			out += agesNode(14, "Bitmap Index Scan on contact_requests_pkey", rowsPer, 1, "Index Cond: (id = '"+id+"'::bigint)", "Buffers: shared hit=2")
+		}
+		return out
+	}
+	subjRecheck := "Recheck Cond: (subject_user_id = '3'::bigint)"
+	realFilter := func(ids string) string {
+		return "Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text) AND (id = ANY ('{" + ids + "}'::bigint[])))"
+	}
+	// bmSel is the select's subject bitmap pair with the given heap attribute lines.
+	bmSel := func(heapAttrs ...string) string {
+		return agesSelectPlan(bitmapSubject("4", append([]string{subjRecheck, agesFilter}, heapAttrs...), "4", idxCond))
+	}
+	// bmUpd is the recorded UPDATE shape: subject access, the batch ids only in Filter.
+	bmUpd := func(recheck, filter string) string {
+		return agesUpdatePlan(agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1, recheck, filter, "Heap Blocks: exact=1", "Buffers: shared hit=3")+
+			agesNode(8, "Bitmap Index Scan on contact_requests_subject", "4", 1, idxCond, "Buffers: shared hit=2"), agesTrigger4)
+	}
+	// orSubjects is a BitmapOr whose leaves also name a subject each.
+	orSubjects := func(subjects ...string) string {
+		out := agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+			"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9996))", agesFilter, "Heap Blocks: exact=1", "Buffers: shared hit=6") +
+			agesNode(8, "BitmapOr", "4", 1)
+		for i, sj := range subjects {
+			out += agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1,
+				"Index Cond: ((id = '"+strconv.Itoa(9993+i)+"'::bigint) AND (subject_user_id = '"+sj+"'::bigint))", "Buffers: shared hit=2")
+		}
+		return out
+	}
+	updVars := agesVars(3, batch...)
+	// sel runs the select against S_U = 4 unless a bound is given.
+	sel := func(plan string, su ...int64) scaleScanInput {
+		bound := int64(4)
+		if len(su) > 0 {
+			bound = su[0]
+		}
+		return scaleScanInput{Statement: "select", Lines: strings.Split(strings.TrimSuffix(plan, "\n"), "\n"), SQL: agesSelectSQL, Vars: agesVars(3), Subject: 3, SU: bound}
+	}
+	upd := func(plan string, su int64, ids []uint, vars []any) scaleScanInput {
+		return scaleScanInput{Statement: "update", Lines: strings.Split(strings.TrimSuffix(plan, "\n"), "\n"), SQL: agesUpdateSQL(len(ids)), Vars: vars, Subject: 3, Batch: ids, SU: su}
+	}
+
+	type flag int
+	const (
+		fBinding flag = iota
+		fAccess
+		fComplete
+		fNonLossy
+		fLoops
+		fBranches
+	)
+	cases := []struct {
+		name       string
+		in         scaleScanInput
+		bounded    bool
+		bound      int64
+		candidates int64
+		entries    int64 // -1: not a bitmap plan
+		falseFlags []flag
+		reason     string
+		unknown    bool // candidates unavailable
+	}{
+		// ---- positive: loops=1, complete non-lossy counters, exact binding, every branch accounted
+		{name: "select: selective subject index scan, omitted-zero counters",
+			in:      sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Buffers: shared hit=5")), 4),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "select: subject index scan, filtered rows count as candidates within S_U",
+			in:      sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 4", "Buffers: shared hit=5")), 8),
+			bounded: true, bound: 8, candidates: 8, entries: -1},
+		{name: "select: subject bitmap pair, index entries and heap candidates attributed separately",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter, "Rows Removed by Filter: 2", "Heap Blocks: exact=1", "Buffers: shared hit=4"},
+				"6", idxCond)), 6),
+			bounded: true, bound: 6, candidates: 6, entries: 6},
+		{name: "select: PostgreSQL 18 decimal counters that are whole numbers",
+			in:      sel(agesSelectPlan(subjectIdx("4.00", 1, idxCond, agesFilter)), 4),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: exact batch id set through the primary key",
+			in:      upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter, "Buffers: shared hit=12"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: bind placeholders in the plan resolve against the captured Vars",
+			in:      upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY (ARRAY[$1, $2, $3, $4]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: subject access through a bound parameter",
+			in:      upd(agesUpdatePlan(agesNode(2, "Index Scan using contact_requests_subject on contact_requests", "4", 1, "Index Cond: (subject_user_id = $5)", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: BitmapOr of scalar id equalities, entries aggregated",
+			in:      upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9996"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+		{name: "update: scalar equality for a one-id batch",
+			in: upd(agesUpdatePlan(updScan("1", 1, "Index Cond: (id = '9993'::bigint)", agesFilter), "Trigger add_request_identity: time=0.100 calls=1\n"),
+				4, []uint{9993}, agesVars(3, 9993)),
+			bounded: true, bound: 1, candidates: 1, entries: -1},
+		{name: "update: the recorded shape, subject index access with the batch ids in Filter",
+			in:      upd(bmUpd(subjRecheck, realFilter("9993,9994,9995,9996")), 4, batch, updVars),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+		{name: "update: BitmapOr leaves that each also name U",
+			in:      upd(agesUpdatePlan(orSubjects("3", "3", "3", "3"), agesTrigger4), 4, batch, updVars),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+
+		// ---- negative
+		{name: "nonselective primary-key scan: four outputs, 9,996 filtered, no Index Cond",
+			in: sel(agesSelectPlan(agesNode(8, "Index Scan using contact_requests_pkey on contact_requests", "4", 1,
+				"Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text) AND (subject_user_id = '3'::bigint))", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "no selective Index Cond", candidates: 10000},
+		{name: "sequential scan",
+			in: sel(agesSelectPlan(agesNode(8, "Seq Scan on contact_requests", "4", 1,
+				"Filter: (subject_user_id = '3'::bigint)", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "sequential scan", candidates: 10000},
+		{name: "update: correct length, wrong ids",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY ('{9993,9994,9995,9999}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 4},
+		{name: "update: wrong element count (three of four)",
+			in:         upd(agesUpdatePlan(updScan("3", 1, "Index Cond: (id = ANY ('{9993,9994,9995}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 3},
+		{name: "update: wrong element count (five of four)",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY ('{9993,9994,9995,9996,9996}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 4},
+		{name: "update: displayed subject is not the captured U",
+			in:         upd(agesUpdatePlan(agesNode(2, "Index Scan using contact_requests_subject on contact_requests", "4", 1, "Index Cond: (subject_user_id = '4'::bigint)", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4},
+		{name: "update: captured subject bind is not U",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter), agesTrigger4), 4, batch, agesVars(4, batch...)),
+			falseFlags: []flag{fBinding}, reason: "captured subject bind is not U", candidates: 4},
+		{name: "update: captured id binds differ from the batch",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter), agesTrigger4), 4, batch, agesVars(3, 9993, 9994, 9995, 9997)),
+			falseFlags: []flag{fBinding}, reason: "captured id binds are not the batch ids", candidates: 4},
+		{name: "update: placeholder outside the captured Vars",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY (ARRAY[$1, $2, $3, $9]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "id array is not one the classifier resolves", unknown: true, bound: -1},
+		{name: "filter-only restriction on the subject index",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, "Filter: (subject_user_id = '3'::bigint)", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "no selective Index Cond", candidates: 10000},
+		{name: "observed count above the bound",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 5")), 4),
+			falseFlags: nil, reason: "above the bound 4", candidates: 9, bound: 4},
+		{name: "loops greater than one with an in-bound rounded product",
+			in:         sel(agesSelectPlan(subjectIdx("2", 2, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fLoops}, reason: "rounded averages", unknown: true, bound: 4},
+		{name: "fractional row count",
+			in:         sel(agesSelectPlan(subjectIdx("3.50", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "fractional row count", unknown: true, bound: 4},
+		{name: "lossy bitmap work",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter, "Rows Removed by Index Recheck: 3", "Heap Blocks: exact=1 lossy=1"},
+				"4", idxCond)), 4),
+			falseFlags: []flag{fNonLossy}, reason: "lossy bitmap work", unknown: true, bound: 4},
+		{name: "incomplete counters: a scan without its actual part",
+			in:         sel(agesSelectPlan(subjectIdx("", 0, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "no actual counters", unknown: true, bound: 4},
+		{name: "incomplete counters: a scan that never executed",
+			in:         sel(agesSelectPlan(subjectIdx("never", 0, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "no actual counters", unknown: true, bound: 4},
+		{name: "incomplete counters: a bitmap heap scan that returned rows but shows no Heap Blocks",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter},
+				"4", idxCond)), 4),
+			falseFlags: []flag{fComplete}, reason: "shows no Heap Blocks line", unknown: true, bound: 4},
+		{name: "unparseable node",
+			in: sel(agesSelectPlan("        ->  Index Scan using contact_requests_subject on contact_requests  (cost=0.29..8.31 rows=1 width=14) (actual time=garbage)\n"+
+				"              "+idxCond+"\n"), 4),
+			falseFlags: []flag{fAccess, fComplete, fNonLossy, fLoops, fBranches}, reason: "not a plan node the classifier can read", unknown: true, bound: -1},
+		{name: "unknown node",
+			in: sel(agesSelectPlan(agesNode(8, "Nested Loop", "4", 1)+
+				agesNode(14, "Index Scan using contact_requests_subject on contact_requests", "4", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fBranches}, reason: "unknown plan node", unknown: true, bound: 4},
+		{name: "unaccounted extra branch: a second scan of another relation",
+			in: upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter)+agesNode(2, "Index Scan using users_pkey on users", "1", 1, "Index Cond: (id = '3'::bigint)"), agesTrigger4),
+				4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBranches}, reason: "does not account for", unknown: true, bound: 4},
+		{name: "unaccounted extra branch: a BitmapOr leaf outside the batch",
+			in:         upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9996", "9999"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "do not restrict access to exactly the batch ids", candidates: 4, entries: 5},
+		{name: "BitmapOr entries above the bound",
+			in:         upd(agesUpdatePlan(orLeaves("2", "9993", "9994", "9995", "9996"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: nil, reason: "bitmap index entries, above the bound 4", bound: 4, candidates: 4, entries: 8},
+		{name: "bitmap index scan under no bitmap heap scan",
+			in:         upd(agesUpdatePlan(agesNode(2, "Bitmap Index Scan on contact_requests_pkey", "4", 1, pkAny), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fAccess, fBranches}, reason: "feeds no bitmap heap scan", unknown: true, bound: -1},
+
+		// ---- T07A-SR1: recheck work and unavailable totals
+		{name: "SR1: an ordinary index scan with 9,996 rows removed by index recheck",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Index Recheck: 9996")), 4),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: the update's primary-key scan with rows removed by index recheck",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter, "Rows Removed by Index Recheck: 1"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: a bitmap heap scan with recheck removals but no lossy page",
+			in:         sel(bmSel("Rows Removed by Index Recheck: 2", "Heap Blocks: exact=1")),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: an unreadable recheck counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Index Recheck: many")), 4),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+
+		// ---- T07A-SR2: every displayed binding is validated, none is credited as access
+		{name: "SR2: the update's Filter names a wrong id set",
+			in:         upd(bmUpd(subjRecheck, realFilter("9993,9994,9995,9999")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Filter names too few ids",
+			in:         upd(bmUpd(subjRecheck, realFilter("9993,9994,9995")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Filter id array cannot be resolved",
+			in:         upd(bmUpd(subjRecheck, "Filter: (id = ANY (ARRAY[$1, $2, $3, $9]))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "id array is not one the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: the select's Recheck Cond names another subject",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '4'::bigint)", agesFilter, "Heap Blocks: exact=1"}, "4", idxCond)), 4),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Recheck Cond names another subject",
+			in:         upd(bmUpd("Recheck Cond: (subject_user_id = '4'::bigint)", realFilter("9993,9994,9995,9996")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the select's Recheck Cond has an out-of-range placeholder",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = $9)", agesFilter, "Heap Blocks: exact=1"}, "4", idxCond)), 4),
+			falseFlags: []flag{fBinding}, reason: "not a number or bind parameter the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: a Filter naming another subject on a qualifying index scan",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (subject_user_id = '4'::bigint)")), 4),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, bound: 4},
+		{name: "SR2: a Filter with an unresolved subject on a qualifying index scan",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (subject_user_id = $7)")), 4),
+			falseFlags: []flag{fBinding}, reason: "not a number or bind parameter the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: a Filter naming ids on the select, which has no batch",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (id = ANY ('{9993}'::bigint[]))")), 4),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, bound: 4},
+		{name: "SR2: an earlier BitmapOr leaf names another subject, the last names U",
+			in:         upd(agesUpdatePlan(orSubjects("4", "3", "3", "3"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4, entries: 4},
+		{name: "SR2: a middle BitmapOr leaf names another subject",
+			in:         upd(agesUpdatePlan(orSubjects("3", "5", "3", "3"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4, entries: 4},
+		{name: "SR2: the BitmapOr Recheck Cond names ids outside the batch",
+			in: upd(agesUpdatePlan(agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+				"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9999))", agesFilter, "Heap Blocks: exact=1")+
+				agesNode(8, "BitmapOr", "4", 1)+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9993'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9994'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9995'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9996'::bigint)"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: a BitmapOr leaf repeats an id",
+			in:         upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9993"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "the BitmapOr leaves", candidates: 4, entries: 4},
+
+		{name: "SR2: nested OR of ANDs hides wrong displayed ID",
+			in:         upd(bmUpd(subjRecheck, "Filter: (((status = 'denied'::text) AND (id = ANY ('{9993,9999}'::bigint[]))) OR ((status = 'ended'::text) AND (id = '9994'::bigint)))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "unsupported OR subtree", unknown: true, bound: 4},
+		{name: "SR2: nested OR of ANDs hides unresolved ID",
+			in:         upd(bmUpd(subjRecheck, "Filter: (((status = 'denied'::text) AND (id = ANY (ARRAY[9993,$9]))) OR ((status = 'ended'::text) AND (id = '9994'::bigint)))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "unsupported OR subtree", unknown: true, bound: 4},
+		{name: "SR3: raw removed counter beyond float precision",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9007199254740993"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: raw node counter beyond float precision",
+			in:         sel(agesSelectPlan(subjectIdx("9007199254740993", 1, idxCond, agesFilter))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+
+		// ---- T07A-SR3: unreadable, negative, nonfinite and oversized counters
+		{name: "SR3: lossy blocks that are not a number",
+			in:         sel(bmSel("Heap Blocks: exact=1 lossy=unknown")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: negative lossy blocks",
+			in:         sel(bmSel("Heap Blocks: exact=1 lossy=-1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a signed exact block count",
+			in:         sel(bmSel("Heap Blocks: exact=+1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a malformed exact block count",
+			in:         sel(bmSel("Heap Blocks: exact=x lossy=0")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a repeated heap block part",
+			in:         sel(bmSel("Heap Blocks: exact=1 exact=1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: an unknown heap block part",
+			in:         sel(bmSel("Heap Blocks: exact=1 frozen=2")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a heap block count past int64",
+			in:         sel(bmSel("Heap Blocks: exact=9223372036854775808")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: rows read but zero heap blocks",
+			in:         sel(bmSel("Heap Blocks: exact=0")),
+			falseFlags: []flag{fComplete}, reason: "no valid heap block count", unknown: true, bound: 4},
+		{name: "SR3: a nonfinite filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: +Inf"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a NaN filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: NaN"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a negative filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: -1"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a filter counter with a trailing word",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 5 rows"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a filter counter past int64",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9223372036854775808"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: a filter counter past exact float64 range",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9007199254740994"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: an actual row count past int64",
+			in:         sel(agesSelectPlan(subjectIdx("99999999999999999999999", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: a bitmap index entry count past int64",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{subjRecheck, agesFilter, "Heap Blocks: exact=1"}, "99999999999999999999999", idxCond)), 4),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := scaleAgesNoteScanVerdict(tc.in)
+			if v.Bounded != tc.bounded {
+				t.Fatalf("bounded = %v, want %v\nverdict %+v", v.Bounded, tc.bounded, v)
+			}
+			flags := map[flag]bool{fBinding: v.ExactBindingOK, fAccess: v.AccessConditionOK, fComplete: v.MeasurementComplete,
+				fNonLossy: v.NonLossy, fLoops: v.LoopsOne, fBranches: v.AllBranchesAccounted}
+			falseSet := map[flag]bool{}
+			for _, f := range tc.falseFlags {
+				falseSet[f] = true
+			}
+			for f, got := range flags {
+				if got == falseSet[f] {
+					t.Errorf("predicate %d = %v, want %v\nverdict %+v", f, got, !falseSet[f], v)
+				}
+			}
+			if tc.bounded {
+				if len(v.Reasons) != 0 || v.Bound != tc.bound || !v.CandidatesKnown || v.Candidates != tc.candidates || !v.FeedingRowsKnown {
+					t.Errorf("positive case: reasons %q, bound %d, candidates %d (known %v), feeding known %v; want no reasons, bound %d, candidates %d\nverdict %+v",
+						v.Reasons, v.Bound, v.Candidates, v.CandidatesKnown, v.FeedingRowsKnown, tc.bound, tc.candidates, v)
+				}
+				if tc.entries >= 0 && (!v.BitmapEntriesKnown || v.BitmapEntries != tc.entries) {
+					t.Errorf("bitmap entries %d (known %v), want %d", v.BitmapEntries, v.BitmapEntriesKnown, tc.entries)
+				}
+				if tc.entries < 0 && v.BitmapEntriesKnown {
+					t.Errorf("a plan without a bitmap reports bitmap entries")
+				}
+				return
+			}
+			found := false
+			for _, r := range v.Reasons {
+				found = found || strings.Contains(r, tc.reason)
+			}
+			if !found {
+				t.Errorf("no reason mentions %q: %q", tc.reason, v.Reasons)
+			}
+			if tc.unknown && (v.CandidatesKnown || v.Candidates != 0 || v.BitmapEntriesKnown || v.FeedingRowsKnown) {
+				t.Errorf("an unproven measurement reports counts: candidates %d (known %v), entries known %v, feeding known %v",
+					v.Candidates, v.CandidatesKnown, v.BitmapEntriesKnown, v.FeedingRowsKnown)
+			}
+			if !tc.unknown && tc.candidates > 0 && (!v.CandidatesKnown || v.Candidates != tc.candidates) {
+				t.Errorf("candidates %d (known %v), want %d", v.Candidates, v.CandidatesKnown, tc.candidates)
+			}
+			if !tc.unknown && tc.entries > 0 && (!v.BitmapEntriesKnown || v.BitmapEntries != tc.entries) {
+				t.Errorf("bitmap entries %d (known %v), want %d", v.BitmapEntries, v.BitmapEntriesKnown, tc.entries)
+			}
+			if tc.bound != 0 && v.Bound != tc.bound {
+				t.Errorf("bound %d, want %d", v.Bound, tc.bound)
+			}
+		})
+	}
+
+	t.Run("a plan with no scan of contact_requests proves nothing", func(t *testing.T) {
+		v := scaleAgesNoteScanVerdict(upd(agesUpdatePlan("", agesTrigger4), 4, batch, agesVars(3, batch...)))
+		if v.Bounded || v.AccessConditionOK {
+			t.Errorf("bounded %v, access %v for a plan with no scan", v.Bounded, v.AccessConditionOK)
+		}
+	})
+	t.Run("parsers", func(t *testing.T) {
+		if got := scaleSplitAnd("(a = 1) AND (b = ANY ('{1,2}'::bigint[])) AND c"); len(got) != 3 {
+			t.Errorf("split into %q, want 3 conjuncts", got)
+		}
+		if got := scaleStripParens("((subject_user_id = 3))"); got != "subject_user_id = 3" {
+			t.Errorf("strip gave %q", got)
+		}
+		if got := scaleStripParens("(a) AND (b)"); got != "(a) AND (b)" {
+			t.Errorf("strip changed %q", got)
+		}
+		for tok, want := range map[string]uint64{"3": 3, "'3'::bigint": 3, "($2)": 7} {
+			if got, ok := scaleDecodeValue(tok, []any{uint(5), uint(7)}); !ok || got != want {
+				t.Errorf("decode %q = %d, %v; want %d", tok, got, ok, want)
+			}
+		}
+		for _, tok := range []string{"$3", "$0", "abc", "'3'::text", "3 OR 4"} {
+			if got, ok := scaleDecodeValue(tok, []any{uint(5), uint(7)}); ok {
+				t.Errorf("decode %q = %d, want a refusal", tok, got)
+			}
+		}
+		if got, ok := scaleDecodeArray("'{9993,9994}'::bigint[]", nil); !ok || !scaleSameIDs(got, []uint{9994, 9993}) {
+			t.Errorf("array literal decoded to %v, %v", got, ok)
+		}
+		if scaleSameIDs([]uint64{1, 2, 4}, []uint{1, 2, 3}) || scaleSameIDs([]uint64{1, 2}, []uint{1, 2, 3}) || scaleSameIDs([]uint64{1, 1, 2}, []uint{1, 2, 3}) {
+			t.Errorf("scaleSameIDs accepted ids that are not the batch")
+		}
+		if n, found := scaleTriggerCalls([]string{"Trigger consents_append_only: time=1.0 calls=9", "Trigger add_request_identity: time=0.200 calls=4"}, "add_request_identity"); !found || n != 4 {
+			t.Errorf("trigger calls %d, %v", n, found)
+		}
+		if _, found := scaleTriggerCalls([]string{"Execution Time: 1 ms"}, "add_request_identity"); found {
+			t.Errorf("found a trigger line in a plan without one")
+		}
+		if hit, read := scaleBuffers("shared hit=5 read=2 dirtied=1, temp read=9"); hit != 5 || read != 2 {
+			t.Errorf("buffers hit %d read %d", hit, read)
+		}
+		if e, l, ok := scaleHeapBlocks("exact=3 lossy=2"); !ok || e != 3 || l != 2 {
+			t.Errorf("heap blocks %d %d %v", e, l, ok)
+		}
+		if e, l, ok := scaleHeapBlocks("exact=3"); !ok || e != 3 || l != 0 {
+			t.Errorf("an omitted lossy part is zero: %d %d %v", e, l, ok)
+		}
+		for _, raw := range []string{"exact=1 lossy=unknown", "exact=1 lossy=-1", "exact=+1", "exact=1 exact=2", "exact=1 frozen=2", "exact", "1",
+			"exact=9223372036854775808", "exact=1.5"} {
+			if e, l, ok := scaleHeapBlocks(raw); ok || e != 0 || l != 0 {
+				t.Errorf("heap blocks %q read as %d %d %v, want a refusal", raw, e, l, ok)
+			}
+		}
+		for _, v := range []float64{math.Inf(1), math.Inf(-1), math.NaN(), -1, 0.5, scaleMaxCount + 2, 1e30} {
+			if n, ok := scaleWholeCount(v); ok {
+				t.Errorf("scaleWholeCount(%v) = %d, want a refusal", v, n)
+			}
+		}
+		if n, ok := scaleWholeCount(scaleMaxCount); ok {
+			t.Errorf("scaleWholeCount(2^53) = %d, want a refusal", n)
+		}
+		if _, ok := scaleAddCount(math.MaxInt64, 1); ok {
+			t.Errorf("scaleAddCount accepted an overflow")
+		}
+		if _, ok := scaleAddCount(-1, 1); ok {
+			t.Errorf("scaleAddCount accepted a negative counter")
+		}
+		if n, ok := scaleAddCount(math.MaxInt64-1, 1); !ok || n != math.MaxInt64 {
+			t.Errorf("scaleAddCount(MaxInt64-1, 1) = %d, %v", n, ok)
+		}
+		for _, raw := range []string{"+Inf", "-Inf", "NaN", "-1", "1 2", "abc", ""} {
+			node := &scalePlanNode{attrs: map[string]string{"Rows Removed by Filter": raw}}
+			if v, present, ok := scaleAttrNumber(node, "Rows Removed by Filter"); ok || !present || v != 0 {
+				t.Errorf("counter %q read as %v present %v ok %v, want an unreadable counter", raw, v, present, ok)
+			}
+		}
+		if r := scaleParseRestriction("((id = 9993) OR (id = '9994'::bigint) OR (id = $1))", []any{uint(9995)}); !r.hasIDs || len(r.problems) != 0 ||
+			!scaleSameIDs(r.ids, []uint{9993, 9994, 9995}) {
+			t.Errorf("an OR of id equalities read as %+v", r)
+		}
+		for _, cond := range []string{"((id = 9993) OR (purpose = 'x'::text))", "((id = 9993) OR (subject_user_id = 3))", "((id = 9993) OR (id = $9))"} {
+			if r := scaleParseRestriction(cond, []any{uint(1)}); !r.unresolved || len(r.problems) == 0 {
+				t.Errorf("condition %q was not left unresolved: %+v", cond, r)
+			}
+		}
+		if r := scaleParseRestriction("(subject_user_id = 3) AND (id = 9993) AND (id = 9994)", nil); r.unresolved || len(r.problems) != 1 {
+			t.Errorf("two id restrictions are a mismatch, not an unresolved value: %+v", r)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// R4-T07A-3: concurrency acceptance CA-1 to CA-5 and CA-9 against the real
+// erasure (DELETE /admin/users/:id) and the real competing operations.
+//
+// Every case holds one participant at a barrier that fires once (F3), on facts
+// that are legal for its position (F6): Table, Where, Assign and Locking
+// before a GORM chain; SQLContains and VarAt only on a row or raw statement or
+// after the step. The holder's own backend PID is stored by the barrier or by
+// startDBSession (F7). The waiter is then proved by an ungranted advisory row
+// in pg_locks for contactLockID whose pg_blocking_pids is exactly the holder.
+// SQLSTATEs come from the bounded traced handle (F4) and every case ends by
+// saying which statements failed. The cases claim only what they show: one
+// ordering per test.
+//
+// Bounds and joins (T07A3-R4, T07A3-FIX-R4-1). agesRaceRun swaps in, as the
+// handle the production code reads as App.DB, one whose pool is a test-owned
+// wrapper (agesRacePool). The wrapper puts the run's context on every begin,
+// statement, query and prepare, in a transaction as well as outside one, and
+// that context is what stop cancels. This is how cancellation reaches the one
+// call site that discards App.DB's context: rolloverAges runs its preliminary
+// sweep on context.Background, so WithContext alone would not bound it, but the
+// wrapper sees the begin and each statement of that sweep whatever context GORM
+// hands it. Connections also send the server a cancel request when a context is
+// canceled, and carry lock_timeout, statement_timeout and
+// idle_in_transaction_session_timeout. Those server settings are per lock wait,
+// per statement and per idle gap; they are a backstop for a backend whose
+// client is gone and bound no whole transaction. What bounds the work is the
+// run's context deadline (agesRaceBound), and only for calls that go through
+// the wrapper; a goroutine that does not touch the database is not bounded by
+// it at all.
+//
+// stop is the only teardown. It releases the barriers, cancels the context and
+// joins every tracked participant (HTTP requests, rollovers, sweeps) and then
+// checks from a separate control connection that no backend of this run's
+// application_name is still working. If either check fails inside grace, stop
+// reports it, terminates the run's backends with pg_terminate_backend on that
+// control connection, and joins and checks again within final. If a participant
+// is still alive then, stop calls abort, which exits the process, so no
+// later test can run against a live participant and no callback is unregistered,
+// no handle restored and no shared database reset under it. Exiting is the
+// only isolation available to a test-only helper, because the shared helpers
+// cannot be changed and a failed Cleanup does not stop later tests. Sessions
+// the shared startDBSession starts are not tracked by the wait group; they are
+// covered by the backend check and by their own cleanup join, which runs before
+// callbacks are removed (cleanups run last in, first out and hold registers
+// stop after every barrier).
+//
+// Oracles (T07A3-R1 to R3). Each case states, apart from any twin, the access,
+// lifecycle and time it expects, and judges the audit, notice, delivery and job
+// rows of the operation that finishes the request or the access with
+// agesRaceLedger: exact ids, actors, metas and times, and no row it did not
+// expect. A step marked Partial (the approval, whose own effects the contact
+// suites cover) requires its rows but allows others.
+// ---------------------------------------------------------------------------
+
+const agesRaceNote = "ages 2 and 5"
+
+// agesRaceBound is the deadline of the run's context: after it every begin,
+// statement and pool wait made through the traced handle fails. It does not
+// bound a goroutine that does not use the database, which stop's join reports.
+const agesRaceBound = 30 * time.Second
+
+// agesRaceSeq numbers runs so each one's connections carry their own
+// application_name, which is how the control connection finds them.
+var agesRaceSeq atomic.Int64
+
+// agesRaceRun owns every database participant of one race test.
+type agesRaceRun struct {
+	t       *testing.T
+	db      *gorm.DB // the traced handle: pauses and sessions register on its callbacks
+	ctx     context.Context
+	cancel  context.CancelFunc
+	appName string    // application_name of every pooled connection of db
+	control *sql.Conn // a connection of its own, never used by a participant
+	wg      sync.WaitGroup
+	allDone chan struct{} // closed once wg reaches zero
+	waitOne sync.Once
+
+	mu       sync.Mutex
+	releases []func()
+	sealed   bool // stop has begun: no participant may start
+
+	stopMu  sync.Mutex
+	stopped bool // every participant is verified gone; a failed stop leaves it false
+
+	// grace is how long stop waits after the barriers are released and the
+	// context is canceled; final is the wait after the backends are terminated.
+	grace, final time.Duration
+	// report records a problem and fails the test (t.Errorf). abort is the
+	// fail-closed step: it exits, ending the process. Tests of stop replace
+	// both; nothing else does.
+	report func(format string, args ...any)
+	abort  func(msg string)
+}
+
+// agesRaceMerge returns a context that ends when ctx or stop does. The caller
+// that reads rows (and so cannot cancel when the call returns) drops the cancel
+// func: the context is released when the run's context ends, which stop
+// guarantees.
+func agesRaceMerge(ctx, stop context.Context) (context.Context, func()) {
+	merged, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(stop, cancel)
+	return merged, func() { unhook(); cancel() }
+}
+
+// agesRacePool is the ConnPool of the traced handle: *sql.DB, with the run's
+// context added to every call.
+type agesRacePool struct {
+	db   *sql.DB
+	stop context.Context
+}
+
+func (p *agesRacePool) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.PrepareContext(c, query)
+}
+
+func (p *agesRacePool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	c, done := agesRaceMerge(ctx, p.stop)
+	defer done()
+	return p.db.ExecContext(c, query, args...)
+}
+
+func (p *agesRacePool) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.QueryContext(c, query, args...)
+}
+
+func (p *agesRacePool) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	return p.db.QueryRowContext(c, query, args...)
+}
+
+// BeginTx gives GORM a transaction whose own statements carry the run's context
+// too: database/sql does not pass the transaction's context to a statement
+// made with another, so a begin alone would not reach a statement already
+// waiting on a lock.
+func (p *agesRacePool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
+	c, _ := agesRaceMerge(ctx, p.stop)
+	tx, err := p.db.BeginTx(c, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &agesRaceTx{tx: tx, db: p.db, stop: p.stop}, nil
+}
+
+// GetDBConn lets db.DB() and Connection reach the pool. Sessions made that way
+// carry their own contexts.
+func (p *agesRacePool) GetDBConn() (*sql.DB, error) { return p.db, nil }
+
+// agesRaceTx is agesRacePool inside a transaction. It is a gorm.TxCommitter, as
+// *sql.Tx is, so savepoints, txguard and notify see an ordinary transaction.
+type agesRaceTx struct {
+	tx   *sql.Tx
+	db   *sql.DB
+	stop context.Context
+}
+
+func (x *agesRaceTx) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.PrepareContext(c, query)
+}
+
+func (x *agesRaceTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	c, done := agesRaceMerge(ctx, x.stop)
+	defer done()
+	return x.tx.ExecContext(c, query, args...)
+}
+
+func (x *agesRaceTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.QueryContext(c, query, args...)
+}
+
+func (x *agesRaceTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	c, _ := agesRaceMerge(ctx, x.stop)
+	return x.tx.QueryRowContext(c, query, args...)
+}
+
+func (x *agesRaceTx) Commit() error   { return x.tx.Commit() }
+func (x *agesRaceTx) Rollback() error { return x.tx.Rollback() }
+
+func (x *agesRaceTx) GetDBConn() (*sql.DB, error) { return x.db, nil }
+
+// newAgesRaceRun swaps app.DB for a traced handle on the same database, like
+// erasureTestSQLStates, and adds the bounds described above, plus a control
+// connection opened now so that terminating works even when the pool is full.
+// The original is put back on cleanup, after stop has verified the participants
+// gone (cleanups run last in, first out). The returned log records every failed
+// statement by SQLSTATE.
+func newAgesRaceRun(t *testing.T, app *App) (*agesRaceRun, *erasureTestStateLog) {
+	t.Helper()
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := testdb.URL(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appName := fmt.Sprintf("fold-race-%d-%d", os.Getpid(), agesRaceSeq.Add(1))
+
+	ctrlCfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrlCfg.RuntimeParams["application_name"] = appName + "-ctl"
+	ctrlCfg.RuntimeParams["statement_timeout"] = "5s"
+	ctrlCfg.RuntimeParams["lock_timeout"] = "5s"
+	ctrlDB := stdlib.OpenDB(*ctrlCfg)
+	ctrlDB.SetMaxOpenConns(1)
+	connCtx, connCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	control, err := ctrlDB.Conn(connCtx)
+	connCancel()
+	if err != nil {
+		_ = ctrlDB.Close()
+		t.Fatalf("open the control connection: %v", err)
+	}
+
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		_ = control.Close()
+		_ = ctrlDB.Close()
+		t.Fatal(err)
+	}
+	log := &erasureTestStateLog{t: t}
+	cfg.Tracer = erasureTestTracer{log: log}
+	if cfg.RuntimeParams == nil {
+		cfg.RuntimeParams = map[string]string{}
+	}
+	cfg.RuntimeParams["application_name"] = appName
+	cfg.RuntimeParams["lock_timeout"] = "20s"
+	cfg.RuntimeParams["statement_timeout"] = "30s"
+	cfg.RuntimeParams["idle_in_transaction_session_timeout"] = "30s"
+	// A canceled context also cancels the statement on the server, not only
+	// the client's wait for it.
+	cfg.BuildContextWatcherHandler = func(c *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: c, DeadlineDelay: time.Second}
+	}
+	sqlDB := stdlib.OpenDB(*cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), agesRaceBound)
+	traced, err := gorm.Open(postgres.New(postgres.Config{Conn: &agesRacePool{db: sqlDB, stop: ctx}}), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		cancel()
+		_ = sqlDB.Close()
+		_ = control.Close()
+		_ = ctrlDB.Close()
+		t.Fatal(err)
+	}
+	if err := traced.Use(txguard.Plugin{}); err != nil {
+		t.Fatal(err)
+	}
+	original := app.DB
+	run := &agesRaceRun{t: t, db: traced, ctx: ctx, cancel: cancel, appName: appName, control: control,
+		allDone: make(chan struct{}), grace: 5 * time.Second, final: 10 * time.Second,
+		report: t.Errorf, abort: func(msg string) { fmt.Fprintln(os.Stderr, msg); os.Exit(1) }}
+	app.DB = traced.WithContext(ctx)
+	// Registered first so they run last, after stop.
+	t.Cleanup(func() {
+		app.DB = original
+		_ = sqlDB.Close()
+	})
+	t.Cleanup(func() {
+		cancel()
+		_ = control.Close()
+		_ = ctrlDB.Close()
+	})
+	t.Cleanup(run.stop)
+	return run, log
+}
+
+// hold keeps release to be called when the run stops, and registers stop again:
+// the last cleanup registered runs first, so stop always comes before the
+// cleanup of any pause or probe made so far.
+func (r *agesRaceRun) hold(release func()) {
+	r.mu.Lock()
+	r.releases = append(r.releases, release)
+	r.mu.Unlock()
+	r.t.Cleanup(r.stop)
+}
+
+// pause is erasureTestPause on the traced handle, released by stop.
+func (r *agesRaceRun) pause(p erasureTestPoint) (<-chan struct{}, func()) {
+	r.t.Helper()
+	reached, release := erasureTestPause(r.t, r.db, p)
+	r.hold(release)
+	return reached, release
+}
+
+// probe is erasureTestProbe on the traced handle; stop runs before it is
+// unregistered.
+func (r *agesRaceRun) probe(p erasureTestPoint) *atomic.Int64 {
+	r.t.Helper()
+	pid := erasureTestProbe(r.t, r.db, p)
+	r.t.Cleanup(r.stop)
+	return pid
+}
+
+// spawn runs work as a tracked participant.
+func (r *agesRaceRun) spawn(work func()) {
+	r.mu.Lock()
+	if r.sealed {
+		r.mu.Unlock()
+		r.t.Fatal("a participant was started after the run began to stop")
+	}
+	r.wg.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.wg.Done()
+		work()
+	}()
+}
+
+// do is bgDo with the run's context on the request and the participant tracked.
+func (r *agesRaceRun) do(c *apiClient, method, path string, body any) <-chan httpResult {
+	c.ctx = r.ctx
+	ch := make(chan httpResult, 1)
+	r.spawn(func() {
+		w := c.do(method, path, body, true)
+		ch <- httpResult{w.Code, w.Body.String()}
+	})
+	return ch
+}
+
+// rollover runs app.rolloverAges(now) as a tracked participant.
+func (r *agesRaceRun) rollover(app *App, now time.Time) <-chan agesRaceRolloverResult {
+	ch := make(chan agesRaceRolloverResult, 1)
+	r.spawn(func() {
+		n, err := app.rolloverAges(now)
+		ch <- agesRaceRolloverResult{n, err}
+	})
+	return ch
+}
+
+// sweep runs app.sweepContacts(now) under the run's context as a tracked
+// participant.
+func (r *agesRaceRun) sweep(app *App, now time.Time) <-chan error {
+	ch := make(chan error, 1)
+	r.spawn(func() { ch <- app.sweepContacts(r.ctx, now) })
+	return ch
+}
+
+// joined waits up to d for every tracked participant to return.
+func (r *agesRaceRun) joined(d time.Duration) bool {
+	r.waitOne.Do(func() {
+		go func() {
+			r.wg.Wait()
+			close(r.allDone)
+		}()
+	})
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-r.allDone:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+const agesRaceBackends = `FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend'
+	AND application_name = $1 AND pid <> pg_backend_pid()`
+
+// busy waits up to d for the run's backends to have no work in progress (idle
+// pooled connections do not count) and returns how many still do. It asks from
+// the control connection, so a canceled run context cannot affect it.
+func (r *agesRaceRun) busy(d time.Duration) (int, error) {
+	deadline := time.Now().Add(d)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var n int
+		err := r.control.QueryRowContext(ctx, `SELECT count(*) `+agesRaceBackends+` AND state IS DISTINCT FROM 'idle'`, r.appName).Scan(&n)
+		cancel()
+		if err != nil || n == 0 || !time.Now().Before(deadline) {
+			return n, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// terminate ends every backend of the run from the control connection and
+// returns how many it signaled.
+func (r *agesRaceRun) terminate() (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var n int
+	err := r.control.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT pg_terminate_backend(pid) `+agesRaceBackends+`) s`, r.appName).Scan(&n)
+	return n, err
+}
+
+// backendState returns the application_name and state of backend pid, and false
+// when there is no such backend.
+func (r *agesRaceRun) backendState(pid int) (app, state string, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var a, s sql.NullString
+	err = r.control.QueryRowContext(ctx, "SELECT application_name, state FROM pg_stat_activity WHERE pid = $1", pid).Scan(&a, &s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return a.String, s.String, err == nil, err
+}
+
+// stop releases every barrier, cancels the context and joins the participants,
+// then verifies from the control connection that none of the run's backends is
+// still working. A participant that outlasts grace is reported and its backends
+// terminated; one that outlasts final is a fail-closed abort. It returns only
+// once the participants are gone (or abort has returned in a test of stop), and
+// a failed stop is retried by the next call instead of being recorded as done.
+func (r *agesRaceRun) stop() {
+	r.stopMu.Lock()
+	defer r.stopMu.Unlock()
+	if r.stopped {
+		return
+	}
+	r.mu.Lock()
+	r.sealed = true
+	releases := append([]func(){}, r.releases...)
+	r.mu.Unlock()
+	for _, release := range releases {
+		release()
+	}
+	r.cancel()
+
+	joined := r.joined(r.grace)
+	left, err := r.busy(r.grace)
+	if joined && err == nil && left == 0 {
+		r.stopped = true
+		return
+	}
+	r.report("a database participant did not stop within %v after its barriers were released and its context was canceled (joined: %v, backends still working: %d, check: %v); terminating the run's backends", r.grace, joined, left, err)
+	killed, kerr := r.terminate()
+	joined = r.joined(r.final)
+	left, err = r.busy(r.final)
+	if kerr != nil {
+		r.report("terminate the run's backends: %v", kerr)
+	}
+	if !joined || err != nil || left != 0 || kerr != nil {
+		r.abort(fmt.Sprintf("a database participant is still alive after %d backends were terminated (joined: %v, backends still working: %d, check: %v, terminate: %v); the process ends so that no later test runs against it", killed, joined, left, err, kerr))
+		return
+	}
+	r.stopped = true
+}
+
+// agesRaceWorld is a contact fixture with one group event, a traced and bounded
+// database handle and clients that hold their notices. f.outsider is the erased
+// person, f.leader asks, f.subject is the unrelated person and f.admin acts.
+type agesRaceWorld struct {
+	t      *testing.T
+	f      *contactAPIFixture
+	app    *App
+	db     *gorm.DB
+	run    *agesRaceRun
+	states *erasureTestStateLog
+	ev     models.Event
+	occ    models.EventOccurrence
+	seq    int
+}
+
+func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
+	t.Helper()
+	f := newContactAPIFixture(t, false)
+	for _, c := range []*apiClient{f.lc, f.sc, f.ac, f.gc, f.oc} {
+		c.holdNotices = true
+	}
+	w := &agesRaceWorld{t: t, f: f, app: f.app}
+	w.ev, w.occ = seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
+	// Barriers and sessions are registered on the swapped handle (F4).
+	w.run, w.states = newAgesRaceRun(t, f.app)
+	w.db = w.run.db
+	return w
+}
+
+// request inserts one occurrence_add request on the world's date. The caller
+// may adjust the row before it is written (the identity columns cannot be
+// changed afterwards).
+func (w *agesRaceWorld) request(requester, subject uint, status, note string, adjust ...func(*models.ContactRequest)) models.ContactRequest {
+	w.t.Helper()
+	w.seq++
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	occ := w.occ.ID
+	r := models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: requester, SubjectUserID: subject,
+		ContextType: policy.ContactEvent, ContextID: w.ev.ID, OccurrenceID: &occ,
+		Reason: fmt.Sprintf("identifying race reason %d", w.seq), SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
+		Status: status, AddAttendanceMode: models.AttendanceInPerson, AddChildcareAgesNote: note,
+		CreatedAt: created, ExpiresAt: created.Add(14 * 24 * time.Hour)}
+	if status == policy.ContactWithdrawn {
+		done := created.Add(10 * time.Minute)
+		r.CompletedAt, r.WithdrawnByID = &done, &requester
+	}
+	for _, f := range adjust {
+		f(&r)
+	}
+	erasureMustCreate(w.t, w.db, &r)
+	return r
+}
+
+// seedTasks writes the waiting review tasks a pending request has (the
+// subject's, and the admin's when it needs one) the way request creation does.
+func (w *agesRaceWorld) seedTasks(r models.ContactRequest) {
+	w.t.Helper()
+	erasureSeedRequestTasks(w.t, w.db, r, w.f.admin.ID)
+}
+
+// agesRaceExpired makes a pending request whose lifetime ended long ago.
+func agesRaceExpired(r *models.ContactRequest) {
+	r.CreatedAt = r.CreatedAt.AddDate(0, 0, -30)
+	r.ExpiresAt = r.CreatedAt.Add(14 * 24 * time.Hour)
+}
+
+// agesRaceNeedsAdmin makes a pending request the kind a teen's subject gets.
+func agesRaceNeedsAdmin(r *models.ContactRequest) {
+	r.NeedsAdmin, r.AdminDecision = true, policy.ContactPending
+}
+
+func (w *agesRaceWorld) rows() map[uint]erasureAgesNoteRow { return erasureRequestRows(w.t, w.db) }
+
+// erase is the real DELETE of id by the admin behind c.
+func (w *agesRaceWorld) erase(c *apiClient, id uint) <-chan httpResult {
+	return w.run.do(c, "DELETE", "/api/v1/admin/users/"+itoa(id), nil)
+}
+
+// decide is the subject's real approval of request id.
+func (w *agesRaceWorld) decide(c *apiClient, id uint) <-chan httpResult {
+	return w.run.do(c, "POST", "/api/v1/add-requests/"+itoa(id)+"/decision", map[string]string{"party": "subject", "decision": policy.ContactApproved})
+}
+
+// remove is the leader's real removal of registration reg from the world's date.
+func (w *agesRaceWorld) remove(reg uint) <-chan httpResult {
+	return w.run.do(w.f.lc, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", w.ev.ID),
+		map[string]any{"registrationId": reg, "date": models.FormatCalendarDate(w.occ.OriginalDate), "note": "Moved away"})
+}
+
+// makeTeen turns u into a teen who is already past eighteen, so the age
+// rollover will convert them.
+func (w *agesRaceWorld) makeTeen(u *models.User) {
+	w.t.Helper()
+	birth := time.Now().UTC().AddDate(-18, 0, -2)
+	if err := w.db.Model(u).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+		w.t.Fatal(err)
+	}
+	erasureMustCreate(w.t, w.db, &models.TeenConsent{
+		TeenUserID: u.ID, Scope: models.TeenConsentAccount, Status: models.ConsentGranted,
+		GrantedBy: w.f.admin.ID, GranterRole: models.ConsentAdmin,
+		EvidenceText: "Verified guardian consent", At: time.Now().UTC().Add(-time.Hour),
+	})
+}
+
+// holdSweep does what sweepContacts does (the try-lock, then
+// reconcileContacts(contactChange{}) at now) on a pinned session and holds the
+// open transaction until release. It returns once the sweep has done its work
+// and holds the gate; pid is that session's backend.
+func (w *agesRaceWorld) holdSweep(now time.Time) (pid int, done <-chan error, release func()) {
+	t := w.t
+	t.Helper()
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(resume) }) }
+	pid, done = startDBSession(t, w.db, "ages-sweep", func(conn *gorm.DB) error {
+		return conn.Transaction(func(tx *gorm.DB) error {
+			var locked bool
+			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", contactLockID).Scan(&locked).Error; err != nil {
+				return err
+			}
+			if !locked {
+				return errors.New("the model sweep could not take the contact gate")
+			}
+			if _, err := w.app.reconcileContacts(tx, now, contactChange{}); err != nil {
+				return err
+			}
+			close(reached)
+			select {
+			case <-resume:
+				return nil
+			case <-tx.Statement.Context.Done():
+				return tx.Statement.Context.Err()
+			}
+		})
+	})
+	w.run.hold(release)
+	awaitDBSignal(t, reached)
+	return pid, done, release
+}
+
+// agesRaceAfterScrub is the first ages-note UPDATE of the erasure of uid,
+// stopped after it ran: SQLContains and VarAt are legal after gorm:raw (F6).
+// noted is how many ids that batch carries; the subject's bind parameter
+// follows them, so a later batch of another size never matches and the barrier
+// fires on the first batch only. The caller sets PID.
+func agesRaceAfterScrub(uid uint, noted int) erasureTestPoint {
+	return erasureTestPoint{Processor: "raw", After: true, Step: "gorm:raw",
+		SQLContains: agesNoteUpdatePrefix, VarAt: map[int]any{noted: uid}}
+}
+
+// agesRaceGateWaiter polls until exactly one backend of this database waits for
+// the contact gate (an ungranted advisory row in pg_locks for contactLockID) and
+// pg_blocking_pids of that backend is exactly the blocker, then returns it.
+// The blocker must hold the gate.
+func agesRaceGateWaiter(t *testing.T, db *gorm.DB, blocker int, who string) int {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		var waiters []int
+		if err := db.Raw(`SELECT l.pid FROM pg_locks l WHERE l.locktype = 'advisory' AND NOT l.granted
+			AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND l.classid::bigint = ? AND l.objid::bigint = ? AND l.objsubid = 1
+			AND pg_blocking_pids(l.pid) = ARRAY[?]::int[] ORDER BY l.pid`,
+			contactLockID>>32, contactLockID&0xffffffff, blocker).Scan(&waiters).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(waiters) == 1 {
+			requireContactGate(t, db, waiters[0], false, who)
+			requireContactGate(t, db, blocker, true, "the gate holder")
+			return waiters[0]
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("%s never waited for the contact gate behind backend %d (%d candidates)", who, blocker, len(waiters))
+		}
+	}
+}
+
+// agesRaceNoGateWaiter fails when anyone in this database waits for the contact
+// gate. Other databases of the cluster (another test's) are not counted.
+func agesRaceNoGateWaiter(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		AND classid::bigint = ? AND objid::bigint = ? AND objsubid = 1`, contactLockID>>32, contactLockID&0xffffffff).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d backends wait for the contact gate, want none", n)
+	}
+}
+
+// agesRaceAwait waits for a result with a bound.
+func agesRaceAwait[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never finished", what)
+		var zero T
+		return zero
+	}
+}
+
+// agesRaceOK awaits an HTTP result and requires 200.
+func agesRaceOK(t *testing.T, ch <-chan httpResult, what string) {
+	t.Helper()
+	if r := awaitResult(t, ch); r.code != http.StatusOK {
+		t.Fatalf("%s: %d %s", what, r.code, r.body)
+	}
+}
+
+// agesRaceStates requires that the failed statements recorded on the traced
+// handle are exactly want, counted by SQLSTATE (F4).
+func agesRaceStates(t *testing.T, log *erasureTestStateLog, want map[string]int) {
+	t.Helper()
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	got := map[string]int{}
+	for _, e := range log.entries {
+		got[e.Code]++
+	}
+	if want == nil {
+		want = map[string]int{}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("failed statements by SQLSTATE = %v, want %v (all: %v)", got, want, log.entries)
+	}
+}
+
+// agesRaceSame requires the request row to be byte-identical.
+func agesRaceSame(t *testing.T, label string, b, a erasureAgesNoteRow) {
+	t.Helper()
+	if a.Whole != b.Whole {
+		t.Errorf("%s changed:\n%s\n%s", label, b.Whole, a.Whole)
+	}
+}
+
+// agesRaceScrubbed requires the note gone and nothing else of the row changed.
+func agesRaceScrubbed(t *testing.T, label string, b, a erasureAgesNoteRow) {
+	t.Helper()
+	if a.Note != "" {
+		t.Errorf("%s: note is %q, want empty", label, a.Note)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Rest != b.Rest {
+		t.Errorf("%s: more than the note changed:\n%s\n%s", label, b.Rest, a.Rest)
+	}
+}
+
+// agesRaceEndedByErasure requires a pending row to be ended by the erasure's
+// own lifecycle inside span, with every column but the lifecycle's and the
+// note as it was.
+func agesRaceEndedByErasure(t *testing.T, label string, b, a erasureAgesNoteRow, span erasureSpan) {
+	t.Helper()
+	if a.Note != "" {
+		t.Errorf("%s: note is %q, want empty", label, a.Note)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Status != policy.ContactEnded || a.EndReason != policy.ContactAccountDisabled {
+		t.Errorf("%s: status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactAccountDisabled)
+	}
+	if !span.hasPtr(a.CompletedAt) {
+		t.Errorf("%s: completed_at %v is outside the erasure (%v to %v)", label, a.CompletedAt, span.Start, span.End)
+	}
+	if a.Preserved != b.Preserved {
+		t.Errorf("%s: a column other than status, end_reason, completed_at and the note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+	}
+}
+
+// agesRaceTurned18 requires the lifecycle the age rollover's preliminary
+// sweep gives the pending request of a subject who has turned eighteen
+// (policy.ContactTurned18, from needs_admin and the subject's age): ended with
+// that reason at the rollover's own injected clock now (stored to the
+// microsecond), the reason unchanged, and every column but the lifecycle's and
+// the note as it was.
+func agesRaceTurned18(t *testing.T, label string, b, a erasureAgesNoteRow, now time.Time) {
+	t.Helper()
+	if a.Status != policy.ContactEnded || a.EndReason != policy.ContactTurned18 {
+		t.Errorf("%s: status %q end_reason %q, want %q and %q", label, a.Status, a.EndReason, policy.ContactEnded, policy.ContactTurned18)
+	}
+	if a.CompletedAt == nil || !a.CompletedAt.Equal(now) {
+		t.Errorf("%s: completed_at %v, want the rollover's clock %v", label, a.CompletedAt, now)
+	}
+	if a.Reason != b.Reason {
+		t.Errorf("%s: reason is %q, was %q", label, a.Reason, b.Reason)
+	}
+	if a.Preserved != b.Preserved {
+		t.Errorf("%s: a column other than status, end_reason, completed_at and the note changed:\n%s\n%s", label, b.Preserved, a.Preserved)
+	}
+}
+
+func agesRaceID(id *uint) string {
+	if id == nil {
+		return "none"
+	}
+	return strconv.FormatUint(uint64(*id), 10)
+}
+
+// agesRaceAccessKind is the access columns of a registration as values, with
+// the instants and the fixture's own ids left out (the issuer and the request
+// as whether they are the expected ones), so a race and its twin can be set
+// side by side. It never replaces the fixed rules of agesRaceGrantedAccess and
+// agesRaceEndedAccess.
+func agesRaceAccessKind(r models.Registration, issuer, request uint) string {
+	return fmt.Sprintf("status=%s origin=%s end_reason=%s issuer_is_leader=%t request_is_own=%t ended_by=%s departure_membership=%s departure_actor=%s",
+		r.Status, r.AccessOrigin, r.AccessEndReason, erasureSameID(r.AccessIssuerID, &issuer), erasureSameID(r.AccessRequestID, &request),
+		agesRaceID(r.AccessEndedBy), agesRaceID(r.AccessDepartureMembershipID), agesRaceID(r.AccessDepartureActorID))
+}
+
+// agesRaceGrantedAccess requires a registration as the subject's approval of
+// request left it: going, with live manager-add access issued by issuer for
+// that request, granted inside the approval, with no ending and no departure
+// provenance.
+func agesRaceGrantedAccess(t *testing.T, label string, reg models.Registration, issuer, request uint, span erasureSpan) {
+	t.Helper()
+	if reg.UserID == nil || reg.Status != models.RegGoing || reg.AccessOrigin != policy.OccurrenceOriginManagerAdd ||
+		!erasureSameID(reg.AccessIssuerID, &issuer) || !erasureSameID(reg.AccessRequestID, &request) ||
+		reg.AccessDepartureMembershipID != nil || reg.AccessDepartureActorID != nil {
+		t.Fatalf("%s: the approval did not leave a going registration with manager-add access issued by %d for request %d: %s",
+			label, issuer, request, erasureAccessColumns(t, reg))
+	}
+	if !span.hasPtr(reg.AccessGrantedAt) {
+		t.Fatalf("%s: access granted at %v, outside the approval (%v to %v)", label, reg.AccessGrantedAt, span.Start, span.End)
+	}
+	if reg.AccessEndedAt != nil || reg.AccessEndReason != "" || reg.AccessEndedBy != nil {
+		t.Fatalf("%s: access is already ended: %s", label, erasureAccessColumns(t, reg))
+	}
+}
+
+// agesRaceEndedAccess requires the registration as the erasure leaves it: the
+// registration as the approval left it (every identity, origin, issuer,
+// request, departure and grant column, the grant instant included), with only
+// the ending changed, to reason account_disabled and no ender, at an instant
+// inside the erasure and not before the grant.
+func agesRaceEndedAccess(t *testing.T, label string, granted, ended models.Registration, span erasureSpan) {
+	t.Helper()
+	if ended.AccessEndedAt == nil {
+		t.Fatalf("%s: registration %d still has live access after the erasure", label, granted.ID)
+	}
+	want := granted
+	want.AccessEndedAt, want.AccessEndReason, want.AccessEndedBy = ended.AccessEndedAt, policy.ContactAccountDisabled, nil
+	if got, w := erasureAccessColumns(t, ended), erasureAccessColumns(t, want); got != w {
+		t.Errorf("%s: the access columns after the erasure:\n%s\nwant (only the ending, reason %q, no ender):\n%s", label, got, policy.ContactAccountDisabled, w)
+	}
+	if !span.hasMicro(accessMicro(*ended.AccessEndedAt)) {
+		t.Errorf("%s: access ended at %v, outside the erasure (%v to %v)", label, ended.AccessEndedAt, span.Start, span.End)
+	}
+	if granted.AccessGrantedAt != nil && ended.AccessEndedAt.Before(*granted.AccessGrantedAt) {
+		t.Errorf("%s: access ended at %v, before it was granted at %v", label, ended.AccessEndedAt, granted.AccessGrantedAt)
+	}
+}
+
+// agesRaceAuditWant is one audit row a step must have written. Meta is the
+// complete meta; when it is nil, Has lists the keys that must carry these
+// values and the rest of the meta is not judged. AnyIP allows the client
+// address of an HTTP actor; a system row must have none.
+type agesRaceAuditWant struct {
+	Type   string
+	ID     uint
+	Action string
+	Actor  *uint
+	Meta   map[string]any
+	Has    map[string]any
+	AnyIP  bool
+}
+
+// agesRaceNoticeWant is one new notice a step must have written, to a person
+// who is still there. Dedupe is its exact dedupe key ("" when it has none).
+// Each must have one queued email delivery and one notify.deliver job.
+type agesRaceNoticeWant struct {
+	To     uint
+	Kind   string
+	Type   string // subject type
+	ID     uint   // subject id
+	Dedupe string
+}
+
+// agesRaceTaskWant is an open task of the ledger before the step that the step
+// must close: who holds it, its kind and subject, how it was resolved and by whom.
+type agesRaceTaskWant struct {
+	Owner      uint
+	Kind       string
+	ID         uint
+	Resolution string
+	By         *uint
+}
+
+// agesRaceStep is what one operation (or the two that finish a request together)
+// must have done to the audit, notice, delivery and job rows, judged by
+// agesRaceLedger between the ledger before it and the ledger after it.
+type agesRaceStep struct {
+	Name    string
+	Span    erasureSpan // when its rows were written; the zero value skips the time checks
+	Audit   []agesRaceAuditWant
+	Notices []agesRaceNoticeWant
+	Tasks   []agesRaceTaskWant
+	Gone    uint // a person the step erased: their notices and deliveries must be gone, and nothing new may name them
+	Cleanup int  // new avatar.cleanup jobs, for Gone
+	Partial bool // the wanted rows are required but others are allowed
+}
+
+func agesRaceDeleted(admin, subject uint) agesRaceAuditWant {
+	return agesRaceAuditWant{Type: "user", ID: subject, Action: audit.UserDeleted, Actor: &admin, Meta: map[string]any{}, AnyIP: true}
+}
+
+// agesRaceEndMeta is the meta of the audit row that finishes a pending
+// occurrence_add request (finishContactRequest, contactAudit).
+func agesRaceEndMeta(r models.ContactRequest, outcome, reason string) map[string]any {
+	return map[string]any{"purpose": r.Purpose, "requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID,
+		"contextType": r.ContextType, "contextId": r.ContextID, "needsAdmin": r.NeedsAdmin, "outcome": outcome,
+		"reason": reason, "occurrenceId": *r.OccurrenceID}
+}
+
+// agesRaceEndRow is the audit row for a pending request ended (outcome ended,
+// with a reason) or expired (outcome expired, no reason) with no actor.
+func agesRaceEndRow(r models.ContactRequest, outcome, reason string) agesRaceAuditWant {
+	action := audit.AddEnded
+	if outcome == policy.ContactExpired {
+		action = audit.AddExpired
+	}
+	return agesRaceAuditWant{Type: "add_request", ID: r.ID, Action: action, Meta: agesRaceEndMeta(r, outcome, reason)}
+}
+
+// agesRaceUpdated is the add.updated notice a finished request sends to a
+// person; key is the request's status at that point (ended or expired).
+func agesRaceUpdated(to uint, r models.ContactRequest, key string) agesRaceNoticeWant {
+	return agesRaceNoticeWant{To: to, Kind: notify.AddUpdated, Type: "add_request", ID: r.ID, Dedupe: fmt.Sprintf("add:%d:%s", r.ID, key)}
+}
+
+// agesRaceTask is the review task of owner for r that a finished request closes.
+func agesRaceTask(owner uint, r models.ContactRequest, admin bool, resolution string, by *uint) agesRaceTaskWant {
+	kind := notify.AddSubjectReview
+	if admin {
+		kind = notify.AddAdminReview
+	}
+	return agesRaceTaskWant{Owner: owner, Kind: kind, ID: r.ID, Resolution: resolution, By: by}
+}
+
+// agesRaceLedger judges what one step did between two ledgers. Every earlier
+// audit row, delivery and job is byte-identical (Gone's deliveries aside); every
+// earlier notice is byte-identical except the tasks the step closes (resolved
+// inside the step, by the wanted resolver, as the wanted outcome, changing
+// nothing else) and Gone's, which are gone. New rows are exactly the wanted ones,
+// unless Partial: audit rows with their actor and meta, notices with their
+// dedupe key and subject, one queued email delivery and one notify.deliver job
+// per notice, and Cleanup avatar.cleanup jobs for Gone.
+func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) {
+	t.Helper()
+	name := st.Name
+	timed := !st.Span.Start.IsZero()
+	inside := func(at time.Time) bool { return !timed || st.Span.has(at) }
+
+	// Audit.
+	for id, b := range before.Audit {
+		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
+		}
+	}
+	type auditKey struct {
+		Type   string
+		ID     uint
+		Action string
+	}
+	wantAudit := map[auditKey]agesRaceAuditWant{}
+	for _, w := range st.Audit {
+		k := auditKey{w.Type, w.ID, w.Action}
+		if _, dup := wantAudit[k]; dup {
+			t.Fatalf("%s: the step expects two audit rows %+v", name, k)
+		}
+		wantAudit[k] = w
+	}
+	seenAudit := map[auditKey]bool{}
+	for id, a := range after.Audit {
+		if _, old := before.Audit[id]; old {
+			continue
+		}
+		k := auditKey{a.TargetType, a.TargetID, a.Action}
+		w, ok := wantAudit[k]
+		switch {
+		case !ok:
+			if !st.Partial {
+				t.Errorf("%s: unexpected new audit row %d: %s on %s %d, meta %s", name, id, a.Action, a.TargetType, a.TargetID, a.MetaJSON)
+			}
+			continue
+		case seenAudit[k]:
+			t.Errorf("%s: audit row %+v was written twice", name, k)
+			continue
+		}
+		seenAudit[k] = true
+		if !erasureSameID(a.ActorID, w.Actor) {
+			t.Errorf("%s: audit %+v has actor %v, want %v", name, k, a.ActorID, w.Actor)
+		}
+		if !w.AnyIP && a.IP != "" {
+			t.Errorf("%s: audit %+v has ip %q, want none", name, k, a.IP)
+		}
+		if !inside(a.At) {
+			t.Errorf("%s: audit %+v written at %v, outside the step (%v to %v)", name, k, a.At, st.Span.Start, st.Span.End)
+		}
+		got := erasureMetaOf(t, a.MetaJSON)
+		if w.Meta != nil {
+			if want := erasureWire(t, w.Meta); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: audit %+v has meta %v, want %v", name, k, got, want)
+			}
+		}
+		if w.Has != nil {
+			for key, want := range erasureWire(t, w.Has) {
+				if !reflect.DeepEqual(got[key], want) {
+					t.Errorf("%s: audit %+v has meta %q = %v, want %v (meta %v)", name, k, key, got[key], want, got)
+				}
+			}
+		}
+	}
+	for k := range wantAudit {
+		if !seenAudit[k] {
+			t.Errorf("%s: expected audit row %+v was not written", name, k)
+		}
+	}
+
+	// Notices: Gone's are gone, the tasks the step closes are resolved, nothing else moves.
+	closed := map[uint]agesRaceTaskWant{}
+	for _, tw := range st.Tasks {
+		var open []models.Notification
+		for _, n := range before.Notices {
+			if n.UserID == tw.Owner && n.Kind == tw.Kind && n.SubjectID != nil && *n.SubjectID == tw.ID && n.Waiting && n.ResolvedAt == nil {
+				open = append(open, n)
+			}
+		}
+		if len(open) != 1 {
+			t.Fatalf("%s: %d open %s tasks for user %d on subject %d before the step, want 1", name, len(open), tw.Kind, tw.Owner, tw.ID)
+		}
+		closed[open[0].ID] = tw
+	}
+	for id, b := range before.Notices {
+		a, kept := after.Notices[id]
+		tw, isTask := closed[id]
+		switch {
+		case st.Gone != 0 && b.UserID == st.Gone:
+			if kept {
+				t.Errorf("%s: notice %d (%s) of the erased person survives", name, id, b.Kind)
+			}
+		case !kept:
+			t.Errorf("%s: notice %d (%s) of user %d is gone", name, id, b.Kind, b.UserID)
+		case isTask:
+			if a.ResolvedAt == nil || !inside(*a.ResolvedAt) || !erasureSameID(a.ResolvedByID, tw.By) || a.Resolution != tw.Resolution {
+				t.Errorf("%s: task %d (%s) of user %d resolved at %v by %v as %q, want inside the step, by %v, as %q",
+					name, id, b.Kind, b.UserID, a.ResolvedAt, a.ResolvedByID, a.Resolution, tw.By, tw.Resolution)
+			}
+			want := b
+			want.ResolvedAt, want.ResolvedByID, want.Resolution = a.ResolvedAt, tw.By, tw.Resolution
+			if erasureJSON(t, a) != erasureJSON(t, want) {
+				t.Errorf("%s: task %d changed beyond its resolution:\n%s\n%s", name, id, erasureJSON(t, b), erasureJSON(t, a))
+			}
+		case erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: notice %d (%s) of user %d changed:\n%s\n%s", name, id, b.Kind, b.UserID, erasureJSON(t, b), erasureJSON(t, a))
+		}
+	}
+	type noticeKey struct {
+		To     uint
+		Kind   string
+		ID     uint
+		Dedupe string
+	}
+	wantNotices := map[noticeKey]agesRaceNoticeWant{}
+	for _, w := range st.Notices {
+		k := noticeKey{w.To, w.Kind, w.ID, w.Dedupe}
+		if _, dup := wantNotices[k]; dup {
+			t.Fatalf("%s: the step expects two notices %+v", name, k)
+		}
+		wantNotices[k] = w
+	}
+	matched := map[uint]models.Notification{}
+	for id, n := range after.Notices {
+		if _, old := before.Notices[id]; old {
+			continue
+		}
+		if st.Gone != 0 && n.UserID == st.Gone {
+			t.Errorf("%s: the erased person holds new notice %d (%s)", name, id, n.Kind)
+			continue
+		}
+		var sid uint
+		if n.SubjectID != nil {
+			sid = *n.SubjectID
+		}
+		dedupe := ""
+		if n.DedupeKey != nil {
+			dedupe = *n.DedupeKey
+		}
+		k := noticeKey{n.UserID, n.Kind, sid, dedupe}
+		w, ok := wantNotices[k]
+		if !ok {
+			if !st.Partial {
+				t.Errorf("%s: unexpected new notice %d: %s for user %d, key %q, subject %s %d", name, id, n.Kind, n.UserID, dedupe, n.SubjectType, sid)
+			}
+			continue
+		}
+		delete(wantNotices, k)
+		matched[id] = n
+		if n.SubjectType != w.Type {
+			t.Errorf("%s: notice %d has subject type %q, want %q", name, id, n.SubjectType, w.Type)
+		}
+		if !inside(n.CreatedAt) {
+			t.Errorf("%s: notice %d created %v, outside the step (%v to %v)", name, id, n.CreatedAt, st.Span.Start, st.Span.End)
+		}
+	}
+	for k := range wantNotices {
+		t.Errorf("%s: expected notice %+v was not written", name, k)
+	}
+
+	// Deliveries.
+	for id, b := range before.Deliveries {
+		a, kept := after.Deliveries[id]
+		switch {
+		case st.Gone != 0 && b.UserID == st.Gone:
+			if kept {
+				t.Errorf("%s: delivery %d of the erased person survives", name, id)
+			}
+		case !kept || erasureJSON(t, a) != erasureJSON(t, b):
+			t.Errorf("%s: delivery %d of user %d changed or is gone", name, id, b.UserID)
+		}
+	}
+	newDeliveries := map[uint]models.NotificationDelivery{}
+	for id, d := range after.Deliveries {
+		if _, old := before.Deliveries[id]; old {
+			continue
+		}
+		if st.Gone != 0 && d.UserID == st.Gone {
+			t.Errorf("%s: the erased person holds new delivery %d", name, id)
+			continue
+		}
+		if _, dup := newDeliveries[d.NotificationID]; dup {
+			t.Errorf("%s: notice %d has two new deliveries", name, d.NotificationID)
+		}
+		newDeliveries[d.NotificationID] = d
+	}
+	for id, n := range matched {
+		d, ok := newDeliveries[id]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery row", name, id)
+			continue
+		}
+		delete(newDeliveries, id)
+		if d.Channel != models.DeliveryEmail || d.UserID != n.UserID || d.Status != models.DeliveryQueued || !inside(d.CreatedAt) || !inside(d.UpdatedAt) {
+			t.Errorf("%s: delivery %d of notice %d is %s/%s for user %d written %v/%v; want a queued email for user %d inside the step",
+				name, d.ID, id, d.Channel, d.Status, d.UserID, d.CreatedAt, d.UpdatedAt, n.UserID)
+		}
+	}
+	if !st.Partial {
+		for id, d := range newDeliveries {
+			t.Errorf("%s: unexpected new delivery for notice %d (user %d)", name, id, d.UserID)
+		}
+	}
+
+	// Jobs.
+	for id, b := range before.Jobs {
+		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)
+		}
+	}
+	queuedJob := func(j models.Job, maxAttempts int) {
+		t.Helper()
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.MaxAttempts != maxAttempts || j.LockedAt != nil || j.LockedBy != "" || j.LastError != "" ||
+			!inside(j.RunAt) || !inside(j.CreatedAt) {
+			t.Errorf("%s: job %d (%s) is %s with %d attempts of %d, run at %v, created %v; want queued, no attempts, max %d, inside the step",
+				name, j.ID, j.Kind, j.Status, j.Attempts, j.MaxAttempts, j.RunAt, j.CreatedAt, maxAttempts)
+		}
+	}
+	deliverJobs := map[string]models.Job{}
+	var cleanups []models.Job
+	for id, j := range after.Jobs {
+		if _, old := before.Jobs[id]; old {
+			continue
+		}
+		switch {
+		case j.Kind == notify.DeliverKind && j.UniqueKey != nil:
+			deliverJobs[*j.UniqueKey] = j
+		case j.Kind == kindAvatarCleanup:
+			cleanups = append(cleanups, j)
+		default:
+			if !st.Partial {
+				t.Errorf("%s: unexpected new job %d (%s) %s", name, id, j.Kind, j.Payload)
+			}
+		}
+	}
+	for id := range matched {
+		key := notify.DeliverKey(id)
+		j, ok := deliverJobs[key]
+		if !ok {
+			t.Errorf("%s: notice %d has no delivery job", name, id)
+			continue
+		}
+		delete(deliverJobs, key)
+		queuedJob(j, 8)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"notificationId": float64(id)}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: job %d payload %v, want %v", name, j.ID, got, want)
+		}
+	}
+	if !st.Partial {
+		for key, j := range deliverJobs {
+			t.Errorf("%s: unexpected delivery job %s (%s)", name, key, j.Payload)
+		}
+	}
+	if len(cleanups) != st.Cleanup {
+		t.Errorf("%s: %d new avatar cleanup jobs, want %d", name, len(cleanups), st.Cleanup)
+	}
+	for _, j := range cleanups {
+		queuedJob(j, jobs.DefaultMaxAttempts)
+		if got, want := erasureMetaOf(t, j.Payload), map[string]any{"userId": float64(st.Gone)}; !reflect.DeepEqual(got, want) || j.UniqueKey != nil {
+			t.Errorf("%s: cleanup job %d payload %v key %v, want %v and none", name, j.ID, got, j.UniqueKey, want)
+		}
+	}
+}
+
+func agesRacePID(v *atomic.Int64) int { return int(v.Load()) }
+
+// TestAgesNoteErasureRaceDecisionThenErasure is CA-1. The subject's approval
+// holds the gate and has not written; the erasure waits behind it (advisory
+// evidence, blocked only by the decision's backend). The approval grants and
+// commits, the erasure then scrubs the granted row through the completion
+// exception and commits. The request is exactly as the decision left it but for
+// the note, and the registration still names the request.
+//
+// The access is judged against fixed rules, not against the twin: as the
+// approval leaves it (agesRaceGrantedAccess) and, after the erasure, the same
+// columns with only the ending changed (agesRaceEndedAccess). The twin, whose
+// note was empty and which no race touched (the pre-T07 result), is held to the
+// same rules with its own ids and times and must also match the race by kind.
+// The erasure's audit, notice, delivery and job rows are judged in full.
+func TestAgesNoteErasureRaceDecisionThenErasure(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+
+	// The control: the same approval and an erasure with no note and no race.
+	twin := newTestUser(t, w.app, "ages-twin", erasurePW, models.RoleMember)
+	twinClient := loginAPI(t, w.app, "ages-twin", erasurePW)
+	twinClient.holdNotices = true
+	tp := w.request(leader.ID, twin.ID, policy.ContactPending, "")
+	twinApproval := erasureSpan{Start: time.Now().UTC()}
+	agesRaceOK(t, w.decide(twinClient, tp.ID), "twin approval")
+	twinApproval.End = time.Now().UTC()
+	var twinGranted models.Registration
+	if err := db.Where("user_id = ? AND occurrence_id = ?", twin.ID, w.occ.ID).First(&twinGranted).Error; err != nil {
+		t.Fatalf("the twin's approval left no registration: %v", err)
+	}
+	agesRaceGrantedAccess(t, "twin", twinGranted, leader.ID, tp.ID, twinApproval)
+	twinErasure := erasureSpan{Start: time.Now().UTC()}
+	agesRaceOK(t, w.erase(f.ac, twin.ID), "twin erasure")
+	twinErasure.End = time.Now().UTC()
+	var twinEnded models.Registration
+	if err := db.First(&twinEnded, twinGranted.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	agesRaceEndedAccess(t, "twin", twinGranted, twinEnded, twinErasure)
+
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	base := erasureLedgerOf(t, db)
+
+	var decisionPID, erasurePID atomic.Int64
+	decisionReached, releaseDecision := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+		Table: "contact_requests", PID: &decisionPID})
+	hold := erasureTestBeforeNotificationsDelete(u.ID)
+	hold.PID = &erasurePID
+	erasureReached, releaseErasure := w.run.pause(hold)
+
+	approval := erasureSpan{Start: time.Now().UTC()}
+	dec := w.decide(f.oc, p.ID)
+	awaitDBSignal(t, decisionReached) // the approval holds the gate and has written nothing
+	requireContactGate(t, db, agesRacePID(&decisionPID), true, "the approval")
+	erasure := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(&decisionPID), "the erasure")
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", u.ID); n != 0 {
+		t.Fatal("the erasure soft-deleted the subject while the approval held the gate")
+	}
+	releaseDecision()
+	agesRaceOK(t, dec, "approval")
+	approval.End = time.Now().UTC()
+	awaitDBSignal(t, erasureReached) // the approval has committed; the erasure holds the gate and has not scrubbed
+	if waiter != agesRacePID(&erasurePID) {
+		t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+	}
+	left := w.rows()[p.ID]
+	atGrant := erasureLedgerOf(t, db)
+	var granted models.ContactRequest
+	if err := db.First(&granted, p.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var reg models.Registration
+	if err := db.Where("user_id = ? AND occurrence_id = ?", u.ID, w.occ.ID).First(&reg).Error; err != nil {
+		t.Fatalf("the approval left no registration: %v", err)
+	}
+	if granted.Status != policy.ContactGranted || granted.CompletedTargetID == nil || *granted.CompletedTargetID != reg.ID ||
+		reg.AccessRequestID == nil || *reg.AccessRequestID != p.ID {
+		t.Fatalf("the approval did not grant: request %q target %v, registration names %v", granted.Status, granted.CompletedTargetID, reg.AccessRequestID)
+	}
+	agesRaceGrantedAccess(t, "race", reg, leader.ID, p.ID, approval)
+	if left.Note != agesRaceNote {
+		t.Errorf("the note is %q before the scrub, want %q", left.Note, agesRaceNote)
+	}
+	// What the approval itself wrote. The contact suites judge it in full; this
+	// race needs these rows and notices to exist, and the task closed.
+	agesRaceLedger(t, agesRaceStep{Name: "the approval", Partial: true,
+		Audit: []agesRaceAuditWant{
+			{Type: "add_request", ID: p.ID, Action: audit.AddDecision, Actor: &u.ID, AnyIP: true, Has: map[string]any{
+				"purpose": policy.RequestOccurrenceAdd, "requesterId": leader.ID, "subjectUserId": u.ID, "occurrenceId": w.occ.ID,
+				"reason": policy.ContactSubject + ":" + policy.ContactApproved}},
+			{Type: "add_request", ID: p.ID, Action: audit.AddCompleted, Actor: &u.ID, AnyIP: true, Has: map[string]any{
+				"purpose": policy.RequestOccurrenceAdd, "requesterId": leader.ID, "subjectUserId": u.ID, "occurrenceId": w.occ.ID,
+				"outcome": policy.ContactGranted}},
+			{Type: "event", ID: w.ev.ID, Action: audit.RegistrationAdded, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+				"registrationId": reg.ID, "userId": u.ID, "newStatus": models.RegGoing}},
+			{Type: accessTargetType, ID: reg.ID, Action: audit.OccurrenceAccessAdded, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+				"subjectUserId": u.ID, "occurrenceId": w.occ.ID, "registrationId": reg.ID, "origin": policy.OccurrenceOriginManagerAdd,
+				"issuerId": leader.ID, "requestId": p.ID, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt)}},
+		},
+		Notices: []agesRaceNoticeWant{
+			agesRaceUpdated(leader.ID, p, "decision:subject"),
+			agesRaceUpdated(u.ID, p, "decision:subject"),
+			agesRaceUpdated(leader.ID, p, "completed"),
+			{To: u.ID, Kind: notify.OccurrenceAdded, Type: accessTargetType, ID: reg.ID, Dedupe: accessAddedKey(reg)},
+		},
+		Tasks: []agesRaceTaskWant{agesRaceTask(u.ID, p, false, policy.ContactApproved, &u.ID)},
+	}, base, atGrant)
+
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	erasure.End = time.Now().UTC()
+
+	after := w.rows()[p.ID]
+	agesRaceScrubbed(t, "granted request", left, after)
+	var ended models.Registration
+	if err := db.First(&ended, reg.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ended.AccessRequestID == nil || *ended.AccessRequestID != p.ID {
+		t.Errorf("the registration names request %v, want %d", ended.AccessRequestID, p.ID)
+	}
+	agesRaceEndedAccess(t, "race", reg, ended, erasure)
+	if got, want := agesRaceAccessKind(ended, leader.ID, p.ID), agesRaceAccessKind(twinEnded, leader.ID, tp.ID); got != want {
+		t.Errorf("the registration's access after the race (%s) is not of the kind the twin's erasure leaves (%s)", got, want)
+	}
+	// The erasure finishes the access: its snapshot, its one extra audit row and
+	// what it removes are all that it adds.
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			{Type: accessTargetType, ID: reg.ID, Action: audit.OccurrenceAccessEnded, Meta: map[string]any{
+				"subjectUserId": u.ID, "occurrenceId": w.occ.ID, "eventId": w.ev.ID,
+				"organizerType": policy.ContactGroup, "organizerId": f.group.ID, "registrationId": reg.ID,
+				"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
+				"issuerId": leader.ID, "requestId": p.ID,
+				"endedAtMicro": accessMicro(*ended.AccessEndedAt), "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}},
+		},
+	}, atGrant, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+	t.Logf("approval backend %d, erasure backend %d, gate waiter %d; request %q", decisionPID.Load(), erasurePID.Load(), waiter, granted.Status)
+}
+
+// TestAgesNoteErasureRaceErasureThenDecision is CA-2. The erasure holds the
+// gate with its scrub done and uncommitted. The subject's approval (authorized
+// before the erasure committed) waits behind it, then finds a deleted subject
+// and is refused. The note was already empty when it ran, and the approval
+// changed nothing on the request. The two together write exactly the erasure's
+// audit row and ending of the request, the notice to the requester and the
+// approval's refusal, and the subject's task goes with them.
+func TestAgesNoteErasureRaceErasureThenDecision(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 1)
+	hold.PID = &erasurePID
+	reached, release := w.run.pause(hold)
+
+	span := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	awaitDBSignal(t, reached) // the scrub ran; nothing has committed
+	requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+	if got := w.rows()[p.ID].Note; got != agesRaceNote {
+		t.Errorf("another session sees note %q before the erasure commits, want %q", got, agesRaceNote)
+	}
+	dec := w.decide(f.oc, p.ID)
+	agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the approval")
+	release()
+	agesRaceOK(t, del, "erasure")
+	span.End = time.Now().UTC()
+	r := awaitResult(t, dec)
+	both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	if r.code < 400 || r.code >= 500 {
+		t.Errorf("approval after the erasure: %d %s, want a refusal", r.code, r.body)
+	}
+	t.Logf("approval after the erasure: %d %s", r.code, r.body)
+
+	after := w.rows()[p.ID]
+	agesRaceEndedByErasure(t, "request", before[p.ID], after, span)
+	if after.Note != "" {
+		t.Errorf("note %q after the erasure", after.Note)
+	}
+	if n := countRows(t, db, "registrations", "access_request_id = ?", p.ID); n != 0 {
+		t.Errorf("%d registrations name the request, want none", n)
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure and the refused approval", Span: both, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+			// The deleted subject has no live account behind the gate: the
+			// approval is refused as a stale session and recorded, with the
+			// subject as its actor.
+			{Type: "add_request", ID: 0, Action: audit.AddRefused, Actor: &u.ID, AnyIP: true, Has: map[string]any{"reason": "stale_session"}},
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+	}, l0, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// agesRaceExpiry is CA-3: one erasure against the expiry sweep. T is the erased
+// subject's pending request, H their terminal one, X an unrelated pending
+// request that has already expired. order is "erasure-first", "sweep-first" or
+// "crossing" (sweep first, with T's expiry between the two clocks).
+//
+// T's fate is fixed by the case: ended by the removal of its subject when it has
+// not expired at the erasure's clock, expired when (in the crossing case) its
+// expiry is after the sweep's clock and before the erasure's. The sweep's rows
+// (X expired, a notice to both parties, X's task closed) and the erasure's (T
+// finished, the notice to the requester, T's task removed with the subject) are
+// each judged in full.
+func agesRaceExpiry(t *testing.T, order string) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, other, leader := f.outsider, f.subject, f.leader
+	crossing := order == "crossing"
+	sweepNow := time.Now().UTC().Truncate(time.Microsecond)
+	var tReq models.ContactRequest
+	if crossing {
+		// Expired at the erasure's clock, not at the sweep's.
+		exp := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+		tReq = w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, func(r *models.ContactRequest) {
+			r.ExpiresAt, r.CreatedAt = exp, exp.Add(-14*24*time.Hour)
+		})
+		sweepNow = exp.Add(-time.Minute)
+		if !sweepNow.Before(tReq.ExpiresAt) {
+			t.Fatalf("the sweep's clock %v is not before T's expiry %v", sweepNow, tReq.ExpiresAt)
+		}
+	} else {
+		tReq = w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	}
+	hReq := w.request(leader.ID, u.ID, policy.ContactWithdrawn, agesRaceNote)
+	xReq := w.request(leader.ID, other.ID, policy.ContactPending, "unrelated note", agesRaceExpired)
+	w.seedTasks(tReq)
+	w.seedTasks(xReq)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	// The fixed fate of T under the erasure.
+	tStatus, tReason := policy.ContactEnded, policy.ContactAccountDisabled
+	if crossing {
+		tStatus, tReason = policy.ContactExpired, ""
+	}
+	// The rows the sweep writes for X, and the rows the erasure writes for T.
+	sweepStep := func(span erasureSpan) agesRaceStep {
+		return agesRaceStep{Name: "the sweep", Span: span,
+			Audit: []agesRaceAuditWant{agesRaceEndRow(xReq, policy.ContactExpired, "")},
+			Notices: []agesRaceNoticeWant{
+				agesRaceUpdated(leader.ID, xReq, policy.ContactExpired),
+				agesRaceUpdated(other.ID, xReq, policy.ContactExpired),
+			},
+			Tasks: []agesRaceTaskWant{agesRaceTask(other.ID, xReq, false, policy.ContactExpired, nil)},
+		}
+	}
+	erasureStep := func(span erasureSpan) agesRaceStep {
+		return agesRaceStep{Name: "the erasure", Span: span, Gone: u.ID, Cleanup: 1,
+			Audit:   []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID), agesRaceEndRow(tReq, tStatus, tReason)},
+			Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, tReq, tStatus)},
+		}
+	}
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 2)
+	hold.PID = &erasurePID
+	erasureReached, releaseErasure := w.run.pause(hold)
+
+	var span erasureSpan
+	var del <-chan httpResult
+	var mid map[uint]erasureAgesNoteRow
+	var l1, l2 erasureLedger
+	var laterSpan erasureSpan
+	switch order {
+	case "erasure-first":
+		// The sweep's try-lock is observed with its result in hand and its
+		// transaction still open: it holds no gate and waits for none.
+		sweepPID := w.run.probe(erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "pg_try_advisory_xact_lock"})
+		sweepReached, releaseSweep := w.run.pause(erasureTestPoint{Processor: "row", After: true, Step: "gorm:row", SQLContains: "pg_try_advisory_xact_lock"})
+		span.Start = time.Now().UTC()
+		del = w.erase(f.ac, u.ID)
+		awaitDBSignal(t, erasureReached)
+		requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+		sweepDone := w.run.sweep(w.app, sweepNow)
+		awaitDBSignal(t, sweepReached)
+		sp := agesRacePID(sweepPID)
+		if sp == 0 || sp == agesRacePID(&erasurePID) {
+			t.Fatalf("the sweep ran on backend %d, the erasure on %d", sp, erasurePID.Load())
+		}
+		var advisory, blockers int64
+		if err := db.Raw("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = ?", sp).Scan(&advisory).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Raw("SELECT cardinality(pg_blocking_pids(?))", sp).Scan(&blockers).Error; err != nil {
+			t.Fatal(err)
+		}
+		if advisory != 0 || blockers != 0 {
+			t.Errorf("the sweep holds or waits for %d advisory locks and is blocked by %d backends, want none of either", advisory, blockers)
+		}
+		agesRaceNoGateWaiter(t, db)
+		releaseSweep()
+		if err := agesRaceAwait(t, sweepDone, "the sweep"); err != nil {
+			t.Fatalf("sweepContacts: %v", err)
+		}
+		// It committed having changed nothing, while the erasure still holds the gate.
+		unchanged := w.rows()
+		for id, b := range before {
+			agesRaceSame(t, fmt.Sprintf("request %d after the sweep that found the gate taken", id), b, unchanged[id])
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the sweep that found the gate taken"}, l0, erasureLedgerOf(t, db))
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		l1 = erasureLedgerOf(t, db)
+	default: // sweep-first, crossing
+		sweepSpan := erasureSpan{Start: time.Now().UTC()}
+		sweepPID, sweepDone, releaseSweep := w.holdSweep(sweepNow)
+		requireContactGate(t, db, sweepPID, true, "the sweep")
+		span.Start = time.Now().UTC()
+		del = w.erase(f.ac, u.ID)
+		waiter := agesRaceGateWaiter(t, db, sweepPID, "the erasure")
+		if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", u.ID); n != 0 {
+			t.Fatal("the erasure soft-deleted the subject while the sweep held the gate")
+		}
+		releaseSweep()
+		if err := awaitDBResult(t, sweepDone); err != nil {
+			t.Fatalf("model sweep: %v", err)
+		}
+		sweepSpan.End = time.Now().UTC()
+		awaitDBSignal(t, erasureReached) // the sweep has committed; the erasure has scrubbed and holds the gate
+		if waiter != agesRacePID(&erasurePID) {
+			t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+		}
+		mid = w.rows()
+		x := mid[xReq.ID]
+		if x.Status != policy.ContactExpired || x.EndReason != "" || x.CompletedAt == nil || !x.CompletedAt.Equal(sweepNow) {
+			t.Errorf("X after the sweep: status %q end_reason %q completed_at %v, want expired, none and %v", x.Status, x.EndReason, x.CompletedAt, sweepNow)
+		}
+		if x.Preserved != before[xReq.ID].Preserved || x.Note != before[xReq.ID].Note {
+			t.Errorf("the sweep changed more than X's lifecycle columns")
+		}
+		agesRaceSame(t, "T after the sweep (eligible, not expired at the sweep's clock)", before[tReq.ID], mid[tReq.ID])
+		agesRaceSame(t, "H after the sweep", before[hReq.ID], mid[hReq.ID])
+		l1 = erasureLedgerOf(t, db)
+		agesRaceLedger(t, sweepStep(sweepSpan), l0, l1)
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		l2 = erasureLedgerOf(t, db)
+		if crossing && !tReq.ExpiresAt.Before(span.Start) {
+			t.Fatalf("T's expiry %v is not before the erasure began (%v)", tReq.ExpiresAt, span.Start)
+		}
+	}
+
+	after := w.rows()
+	// H is terminal: only the note goes.
+	agesRaceScrubbed(t, "H", before[hReq.ID], after[hReq.ID])
+	if h := after[hReq.ID]; h.Status != before[hReq.ID].Status || h.EndReason != before[hReq.ID].EndReason {
+		t.Errorf("H's lifecycle changed: %s/%s", h.Status, h.EndReason)
+	}
+	// T is finished by the erasure, at the erasure's clock: expired when the
+	// case puts its expiry before that clock, otherwise ended by the removal of
+	// its subject.
+	tt := after[tReq.ID]
+	if tt.Note != "" || tt.Reason != before[tReq.ID].Reason || tt.Status != tStatus || tt.EndReason != tReason ||
+		!span.hasPtr(tt.CompletedAt) || tt.Preserved != before[tReq.ID].Preserved {
+		t.Errorf("T: note %q status %q end_reason %q completed_at %v, want empty, %q, %q inside %v..%v with every other column unchanged",
+			tt.Note, tt.Status, tt.EndReason, tt.CompletedAt, tStatus, tReason, span.Start, span.End)
+	}
+	// X: still pending after an erasure that never visits it, and unchanged by
+	// it when the sweep had not run yet.
+	x := after[xReq.ID]
+	if order == "erasure-first" {
+		agesRaceSame(t, "X after the erasure", before[xReq.ID], x)
+		agesRaceLedger(t, erasureStep(span), l0, l1)
+		later := time.Now().UTC().Truncate(time.Microsecond)
+		laterSpan.Start = time.Now().UTC()
+		if err := agesRaceAwait(t, w.run.sweep(w.app, later), "the later sweep"); err != nil {
+			t.Fatalf("later sweep: %v", err)
+		}
+		laterSpan.End = time.Now().UTC()
+		x = w.rows()[xReq.ID]
+		if x.Status != policy.ContactExpired || x.EndReason != "" || x.CompletedAt == nil || !x.CompletedAt.Equal(later) {
+			t.Errorf("X after a later sweep: status %q end_reason %q completed_at %v, want expired, none and %v", x.Status, x.EndReason, x.CompletedAt, later)
+		}
+		agesRaceLedger(t, sweepStep(laterSpan), l1, erasureLedgerOf(t, db))
+	} else {
+		agesRaceSame(t, "X after the erasure that followed the sweep", mid[xReq.ID], x)
+		agesRaceLedger(t, erasureStep(span), l1, l2)
+	}
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceErasureThenSweep(t *testing.T) { agesRaceExpiry(t, "erasure-first") }
+func TestAgesNoteErasureRaceSweepThenErasure(t *testing.T) { agesRaceExpiry(t, "sweep-first") }
+func TestAgesNoteErasureRaceSweepThenErasureCrossingExpiry(t *testing.T) {
+	agesRaceExpiry(t, "crossing")
+}
+
+// agesRaceTwoErasures is CA-4: the requester's erasure and the subject's share
+// one request and serialize on the gate, in either order. Both hold at the
+// notifications delete, which comes before the scrub, so the state between the
+// two commits can be read. The first erasure ends the request and tells the
+// person still there (closing their task unless it is theirs); the second
+// removes that person's rows and adds only its own deletion.
+func agesRaceTwoErasures(t *testing.T, subjectFirst bool) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	asker := newTestUser(t, w.app, "ages-asker", erasurePW, models.RoleMember)
+	subject := newTestUser(t, w.app, "ages-asked", erasurePW, models.RoleMember)
+	admin2 := newTestUser(t, w.app, "ages-admin-2", erasurePW, models.RoleAdmin)
+	ac2 := loginAPI(t, w.app, "ages-admin-2", erasurePW)
+	ac2.holdNotices = true
+	r := w.request(asker.ID, subject.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(r)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var askerPID, subjectPID atomic.Int64
+	pa := erasureTestBeforeNotificationsDelete(asker.ID)
+	pa.PID = &askerPID
+	askerReached, releaseAsker := w.run.pause(pa)
+	ps := erasureTestBeforeNotificationsDelete(subject.ID)
+	ps.PID = &subjectPID
+	subjectReached, releaseSubject := w.run.pause(ps)
+
+	firstReached, releaseFirst, firstPID := askerReached, releaseAsker, &askerPID
+	secondReached, releaseSecond, secondPID := subjectReached, releaseSubject, &subjectPID
+	firstID, secondID := asker.ID, subject.ID
+	// The first erasure leaves the other person; their task closes if they are
+	// the subject, and goes with them if the subject is the one erased.
+	livingID := subject.ID
+	firstTasks := []agesRaceTaskWant{agesRaceTask(subject.ID, r, false, policy.ContactEnded, nil)}
+	if subjectFirst {
+		firstReached, releaseFirst, firstPID, secondReached, releaseSecond, secondPID =
+			subjectReached, releaseSubject, &subjectPID, askerReached, releaseAsker, &askerPID
+		firstID, secondID = subject.ID, asker.ID
+		livingID, firstTasks = asker.ID, nil
+	}
+	span := erasureSpan{Start: time.Now().UTC()}
+	first := w.erase(f.ac, firstID)
+	awaitDBSignal(t, firstReached)
+	requireContactGate(t, db, agesRacePID(firstPID), true, "the first erasure")
+	secondSpan := erasureSpan{Start: time.Now().UTC()}
+	second := w.erase(ac2, secondID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(firstPID), "the second erasure")
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NOT NULL", secondID); n != 0 {
+		t.Fatal("the second erasure deleted its person while the first held the gate")
+	}
+	if got := w.rows()[r.ID]; got.Whole != before[r.ID].Whole {
+		t.Fatal("the request changed before the first erasure released the gate")
+	}
+	releaseFirst()
+	agesRaceOK(t, first, "first erasure")
+	firstSpan := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	awaitDBSignal(t, secondReached) // the first has committed; the second holds the gate and has not scrubbed
+	if waiter != agesRacePID(secondPID) {
+		t.Errorf("the gate waiter was backend %d, the second erasure runs on %d", waiter, secondPID.Load())
+	}
+	// Between the two commits the request is ended by whoever went first; the
+	// note is the scrub's alone, so it is gone only if the subject went first.
+	mid := w.rows()[r.ID]
+	if mid.Status != policy.ContactEnded || mid.EndReason != policy.ContactAccountDisabled || mid.Reason != before[r.ID].Reason {
+		t.Errorf("between the commits: status %q end_reason %q reason %q", mid.Status, mid.EndReason, mid.Reason)
+	}
+	wantMidNote := agesRaceNote
+	if subjectFirst {
+		wantMidNote = ""
+	}
+	if mid.Note != wantMidNote {
+		t.Errorf("between the commits the note is %q, want %q (subject first: %t)", mid.Note, wantMidNote, subjectFirst)
+	}
+	l1 := erasureLedgerOf(t, db)
+	agesRaceLedger(t, agesRaceStep{Name: "the first erasure", Span: firstSpan, Gone: firstID, Cleanup: 1, Tasks: firstTasks,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, firstID),
+			agesRaceEndRow(r, policy.ContactEnded, policy.ContactAccountDisabled),
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(livingID, r, policy.ContactEnded)},
+	}, l0, l1)
+	releaseSecond()
+	agesRaceOK(t, second, "second erasure")
+	span.End = time.Now().UTC()
+	secondSpan.End = span.End
+
+	after := w.rows()[r.ID]
+	agesRaceEndedByErasure(t, "shared request", before[r.ID], after, span)
+	if after.Rest != mid.Rest {
+		t.Errorf("the second erasure changed more than the note:\n%s\n%s", mid.Rest, after.Rest)
+	}
+	// The second erasure ends nothing again: it adds its own deletion, removes
+	// its person's rows (the notice the first sent them included) and queues its
+	// own avatar cleanup.
+	agesRaceLedger(t, agesRaceStep{Name: "the second erasure", Span: secondSpan, Gone: secondID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{agesRaceDeleted(admin2.ID, secondID)},
+	}, l1, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceRequesterThenSubjectErasure(t *testing.T) { agesRaceTwoErasures(t, false) }
+func TestAgesNoteErasureRaceSubjectThenRequesterErasure(t *testing.T) { agesRaceTwoErasures(t, true) }
+
+// agesRaceRemoval is the removal half of CA-5: the leader removes the subject's
+// registration on the request's date, in either order against the subject's
+// erasure.
+//
+// Removal first writes the usual rows: registration.removed with its actor and
+// meta, add.ended ("removed") for the request, the notices to the requester and
+// to the subject (the update and the removal), and closes the subject's task.
+// The erasure that follows ends nothing again. Erasure first finishes the
+// request itself; the removal, whatever it answers, leaves no row at all.
+func agesRaceRemoval(t *testing.T, removalFirst bool) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	uid := u.ID
+	reg := models.Registration{UserID: &uid, OccurrenceID: w.occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb,
+		AttendanceMode: models.AttendanceInPerson}
+	erasureMustCreate(t, db, &reg)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID, removalPID atomic.Int64
+	if removalFirst {
+		// The removal holds the gate and has not written; the erasure is held
+		// after the removal commits so the row can be read as the removal left it.
+		reachedRemoval, releaseRemoval := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+			Table: "registrations", Assign: map[string]any{"status": models.RegRemoved}, PID: &removalPID})
+		hold := erasureTestBeforeNotificationsDelete(u.ID)
+		hold.PID = &erasurePID
+		reachedErasure, releaseErasure := w.run.pause(hold)
+		removal := erasureSpan{Start: time.Now().UTC()}
+		rem := w.remove(reg.ID)
+		awaitDBSignal(t, reachedRemoval)
+		requireContactGate(t, db, agesRacePID(&removalPID), true, "the removal")
+		erasure := erasureSpan{Start: time.Now().UTC()}
+		del := w.erase(f.ac, u.ID)
+		waiter := agesRaceGateWaiter(t, db, agesRacePID(&removalPID), "the erasure")
+		releaseRemoval()
+		agesRaceOK(t, rem, "removal")
+		removal.End = time.Now().UTC()
+		awaitDBSignal(t, reachedErasure)
+		if waiter != agesRacePID(&erasurePID) {
+			t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+		}
+		left := w.rows()[p.ID]
+		if left.Status != policy.ContactEnded || left.EndReason != policy.OccurrenceRemoved || !removal.hasPtr(left.CompletedAt) || left.Note != agesRaceNote {
+			t.Errorf("request as the removal left it: status %q end_reason %q completed_at %v note %q, want ended, %q inside the removal and the note",
+				left.Status, left.EndReason, left.CompletedAt, left.Note, policy.OccurrenceRemoved)
+		}
+		if left.Preserved != before[p.ID].Preserved || left.Reason != before[p.ID].Reason {
+			t.Errorf("the removal changed a column other than the lifecycle's:\n%s\n%s", before[p.ID].Preserved, left.Preserved)
+		}
+		l1 := erasureLedgerOf(t, db)
+		agesRaceLedger(t, agesRaceStep{Name: "the removal", Span: removal,
+			Audit: []agesRaceAuditWant{
+				{Type: "event", ID: w.ev.ID, Action: audit.RegistrationRemoved, Actor: &leader.ID, AnyIP: true, Has: map[string]any{
+					"registrationId": reg.ID, "userId": u.ID, "occurrenceId": w.occ.ID,
+					"oldStatus": models.RegGoing, "newStatus": models.RegRemoved, "note": "Moved away"}},
+				agesRaceEndRow(p, policy.ContactEnded, policy.OccurrenceRemoved),
+			},
+			Notices: []agesRaceNoticeWant{
+				agesRaceUpdated(leader.ID, p, policy.ContactEnded),
+				agesRaceUpdated(u.ID, p, policy.ContactEnded),
+				{To: u.ID, Kind: notify.RegistrationRemoved, Type: "occurrence", ID: w.occ.ID},
+			},
+			Tasks: []agesRaceTaskWant{agesRaceTask(u.ID, p, false, policy.ContactEnded, nil)},
+		}, l0, l1)
+		releaseErasure()
+		agesRaceOK(t, del, "erasure")
+		erasure.End = time.Now().UTC()
+
+		// The erasure scrubs the ended row through the identity exception and
+		// does not end it again: the completion branch is not entered and
+		// reconcileContacts does not select it.
+		agesRaceScrubbed(t, "request", left, w.rows()[p.ID])
+		if n := auditCount(t, w.app, audit.RegistrationRemoved); n != 1 {
+			t.Errorf("%d registration.removed rows, want 1", n)
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+			Audit: []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID)},
+		}, l1, erasureLedgerOf(t, db))
+	} else {
+		hold := agesRaceAfterScrub(u.ID, 1)
+		hold.PID = &erasurePID
+		reached, release := w.run.pause(hold)
+		span := erasureSpan{Start: time.Now().UTC()}
+		del := w.erase(f.ac, u.ID)
+		awaitDBSignal(t, reached)
+		requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+		rem := w.remove(reg.ID)
+		agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the removal")
+		release()
+		agesRaceOK(t, del, "erasure")
+		span.End = time.Now().UTC()
+		// Whatever the removal answers for a deleted person's registration is
+		// existing behavior; it is recorded and only its effect on the request
+		// and the ledger is asserted.
+		r := awaitResult(t, rem)
+		both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+		t.Logf("removal after the erasure: %d %s", r.code, r.body)
+
+		after := w.rows()
+		agesRaceEndedByErasure(t, "request", before[p.ID], after[p.ID], span)
+		if after[p.ID].EndReason == policy.OccurrenceRemoved {
+			t.Error("the removal ended a request the erasure had already ended")
+		}
+		for id, b := range before {
+			if id != p.ID {
+				agesRaceSame(t, fmt.Sprintf("request %d", id), b, after[id])
+			}
+		}
+		agesRaceLedger(t, agesRaceStep{Name: "the erasure and the removal after it", Span: both, Gone: u.ID, Cleanup: 1,
+			Audit: []agesRaceAuditWant{
+				agesRaceDeleted(f.admin.ID, u.ID),
+				agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+			},
+			Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+		}, l0, erasureLedgerOf(t, db))
+	}
+	agesRaceStates(t, w.states, nil)
+}
+
+func TestAgesNoteErasureRaceRemovalThenErasure(t *testing.T) { agesRaceRemoval(t, true) }
+func TestAgesNoteErasureRaceErasureThenRemoval(t *testing.T) { agesRaceRemoval(t, false) }
+
+// agesRaceRolloverResult is what app.rolloverAges returned.
+type agesRaceRolloverResult struct {
+	n   int
+	err error
+}
+
+// TestAgesNoteErasureRaceRolloverThenErasure is the first rollover order of
+// CA-5. The subject is a teen past eighteen whose pending request needs an
+// admin. rolloverAges first runs its preliminary sweep, which holds the gate and
+// ends that request with policy.ContactTurned18 at the rollover's injected clock
+// (the fixture is ended there, not by the per-user step; this test makes no
+// claim that the per-user reconciliation ended a still-pending request). Its
+// per-user transaction then holds the gate (taken in lockTeenLifecycleUsers)
+// before it converts the teen; the erasure waits behind that, then scrubs.
+//
+// The request ends as ended/turned_18 at the injected clock, the reason and
+// every column but the lifecycle's and the note as before, through the rollover
+// and again through the erasure; an identical twin put through the same
+// sequence is held to the same rules and must match. The rollover's rows
+// (the request's end, the turned-18 audit row, the notices and the tasks it
+// closes) and the erasure's are judged in full.
+func TestAgesNoteErasureRaceRolloverThenErasure(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	// The rollover's explicit clock, as the database stores it.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	twin := newTestUser(t, w.app, "ages-twin", erasurePW, models.RoleMember)
+	w.makeTeen(twin)
+	tp := w.request(leader.ID, twin.ID, policy.ContactPending, "", agesRaceNeedsAdmin)
+	twinBefore := w.rows()[tp.ID]
+	if n, err := w.app.rolloverAges(now); err != nil || n != 1 {
+		t.Fatalf("twin rollover: %d changed, %v", n, err)
+	}
+	twinMid := w.rows()[tp.ID]
+	agesRaceTurned18(t, "twin after the rollover", twinBefore, twinMid, now)
+	agesRaceOK(t, w.erase(f.ac, twin.ID), "twin erasure")
+	twinAfter := w.rows()[tp.ID]
+	agesRaceTurned18(t, "twin after the erasure", twinBefore, twinAfter, now)
+
+	w.makeTeen(u)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, agesRaceNeedsAdmin)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var rolloverPID, erasurePID atomic.Int64
+	reachedRollover, releaseRollover := w.run.pause(erasureTestPoint{Processor: "update", Step: "gorm:update",
+		Table: "users", Assign: map[string]any{"account_type": models.AccountAdult}, PID: &rolloverPID})
+	hold := erasureTestBeforeNotificationsDelete(u.ID)
+	hold.PID = &erasurePID
+	reachedErasure, releaseErasure := w.run.pause(hold)
+
+	rollover := erasureSpan{Start: time.Now().UTC()}
+	done := w.run.rollover(w.app, now)
+	awaitDBSignal(t, reachedRollover) // the per-user transaction holds the gate and has not converted the teen
+	requireContactGate(t, db, agesRacePID(&rolloverPID), true, "the rollover")
+	// The preliminary sweep has already committed the end of the request, and
+	// the teen is still a teen: the request was not ended by the conversion.
+	agesRaceTurned18(t, "request while the per-user transaction holds the gate", before[p.ID], w.rows()[p.ID], now)
+	if n := countRows(t, db, "users", "id = ? AND account_type = ?", u.ID, models.AccountTeen); n != 1 {
+		t.Fatalf("the subject is not still a teen while the per-user transaction holds the gate (%d rows)", n)
+	}
+	erasure := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	waiter := agesRaceGateWaiter(t, db, agesRacePID(&rolloverPID), "the erasure")
+	releaseRollover()
+	if r := agesRaceAwait(t, done, "the rollover"); r.err != nil || r.n != 1 {
+		t.Fatalf("rolloverAges = (%d, %v), want (1, nil)", r.n, r.err)
+	}
+	rollover.End = time.Now().UTC()
+	awaitDBSignal(t, reachedErasure)
+	if waiter != agesRacePID(&erasurePID) {
+		t.Errorf("the gate waiter was backend %d, the erasure runs on %d", waiter, erasurePID.Load())
+	}
+	mid := w.rows()[p.ID]
+	var teen models.User
+	if err := db.First(&teen, u.ID).Error; err != nil || teen.AccountType != models.AccountAdult {
+		t.Fatalf("after the rollover the subject is %q (%v), want adult", teen.AccountType, err)
+	}
+	agesRaceTurned18(t, "request as the rollover left it", before[p.ID], mid, now)
+	if mid.Note != agesRaceNote {
+		t.Errorf("the note is %q after the rollover, want %q", mid.Note, agesRaceNote)
+	}
+	l1 := erasureLedgerOf(t, db)
+	agesRaceLedger(t, agesRaceStep{Name: "the rollover", Span: rollover,
+		Audit: []agesRaceAuditWant{
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactTurned18),
+			{Type: "user", ID: u.ID, Action: audit.UserTurned18, Meta: map[string]any{
+				"previousStatus": models.UserActive, "status": models.UserActive, "churchDate": now.In(churchZone(db)).Format("2006-01-02")}},
+		},
+		Notices: []agesRaceNoticeWant{
+			agesRaceUpdated(leader.ID, p, policy.ContactEnded),
+			agesRaceUpdated(u.ID, p, policy.ContactEnded),
+			{To: u.ID, Kind: notify.AccountTurned18, Type: "user", ID: u.ID, Dedupe: fmt.Sprintf("account.turned_18:%d", u.ID)},
+		},
+		Tasks: []agesRaceTaskWant{
+			agesRaceTask(u.ID, p, false, policy.ContactEnded, nil),
+			agesRaceTask(f.admin.ID, p, true, policy.ContactEnded, nil),
+		},
+	}, l0, l1)
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	erasure.End = time.Now().UTC()
+
+	after := w.rows()[p.ID]
+	agesRaceScrubbed(t, "request", mid, after)
+	agesRaceTurned18(t, "request after rollover then erasure", before[p.ID], after, now)
+	if after.Status != twinAfter.Status || after.EndReason != twinAfter.EndReason {
+		t.Errorf("lifecycle after rollover then erasure = %s/%s, an identical twin gets %s/%s", after.Status, after.EndReason, twinAfter.Status, twinAfter.EndReason)
+	}
+	// The erasure ends nothing again: it adds its own deletion and removes the
+	// subject's rows, the notices the rollover sent them included.
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure", Span: erasure, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{agesRaceDeleted(f.admin.ID, u.ID)},
+	}, l1, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// TestAgesNoteErasureRaceErasureThenRollover is the second rollover order of
+// CA-5. The erasure holds the gate, uncommitted. rolloverAges runs its
+// preliminary sweep (no try-lock, so nothing happens) and its discovery, which
+// still sees the subject because the soft delete is not committed; that
+// barrier is the evidence that discovery came first. The per-user transaction
+// then waits on the gate in lockTeenLifecycleUsers. After the erasure commits
+// it finds no subject and returns without converting anyone or reconciling.
+// The erasure alone ends the request (account_disabled), closes the admin's
+// task, tells the requester and removes the subject's rows; no turned-18 row
+// exists.
+func TestAgesNoteErasureRaceErasureThenRollover(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	f, db := w.f, w.db
+	u, leader := f.outsider, f.leader
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	w.makeTeen(u)
+	p := w.request(leader.ID, u.ID, policy.ContactPending, agesRaceNote, agesRaceNeedsAdmin)
+	w.seedTasks(p)
+	before := w.rows()
+	l0 := erasureLedgerOf(t, db)
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(u.ID, 1)
+	hold.PID = &erasurePID
+	reachedErasure, releaseErasure := w.run.pause(hold)
+	// rolloverAges' Pluck of the teens past eighteen, stopped after it ran.
+	reachedDiscovery, releaseDiscovery := w.run.pause(erasureTestPoint{Processor: "query", After: true, Step: "gorm:query",
+		Table: "users", SQLContains: "birth_date <= "})
+
+	span := erasureSpan{Start: time.Now().UTC()}
+	del := w.erase(f.ac, u.ID)
+	awaitDBSignal(t, reachedErasure)
+	requireContactGate(t, db, agesRacePID(&erasurePID), true, "the erasure")
+	done := w.run.rollover(w.app, now)
+	awaitDBSignal(t, reachedDiscovery)
+	// Discovery ran while the erasure held the gate and before it commits: the
+	// subject is not deleted for anyone else, and the preliminary sweep, which
+	// found the gate taken, changed nothing.
+	if n := countRows(t, db, "users", "id = ? AND deleted_at IS NULL AND account_type = ?", u.ID, models.AccountTeen); n != 1 {
+		t.Fatalf("the subject is not a live teen for other sessions at discovery (%d rows)", n)
+	}
+	unchanged := w.rows()
+	for id, b := range before {
+		agesRaceSame(t, fmt.Sprintf("request %d after the preliminary sweep", id), b, unchanged[id])
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the preliminary sweep that found the gate taken"}, l0, erasureLedgerOf(t, db))
+	agesRaceNoGateWaiter(t, db)
+	releaseDiscovery()
+	agesRaceGateWaiter(t, db, agesRacePID(&erasurePID), "the per-user rollover transaction")
+	releaseErasure()
+	agesRaceOK(t, del, "erasure")
+	span.End = time.Now().UTC()
+	r := agesRaceAwait(t, done, "the rollover")
+	both := erasureSpan{Start: span.Start, End: time.Now().UTC()}
+	if r.err != nil || r.n != 0 {
+		t.Fatalf("rolloverAges = (%d, %v), want (0, nil): the deleted subject is skipped", r.n, r.err)
+	}
+
+	after := w.rows()[p.ID]
+	agesRaceEndedByErasure(t, "request", before[p.ID], after, span)
+	var gone models.User
+	if err := db.Unscoped().First(&gone, u.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gone.AccountType != models.AccountTeen || !gone.DeletedAt.Valid {
+		t.Errorf("subject: account type %q deleted %t, want a deleted teen that was never converted", gone.AccountType, gone.DeletedAt.Valid)
+	}
+	if n := auditCount(t, w.app, audit.UserTurned18); n != 0 {
+		t.Errorf("%d user.turned_18 rows, want none: rolloverTeen must not run", n)
+	}
+	agesRaceLedger(t, agesRaceStep{Name: "the erasure and the rollover after it", Span: both, Gone: u.ID, Cleanup: 1,
+		Audit: []agesRaceAuditWant{
+			agesRaceDeleted(f.admin.ID, u.ID),
+			agesRaceEndRow(p, policy.ContactEnded, policy.ContactAccountDisabled),
+		},
+		Notices: []agesRaceNoticeWant{agesRaceUpdated(leader.ID, p, policy.ContactEnded)},
+		Tasks:   []agesRaceTaskWant{agesRaceTask(f.admin.ID, p, true, policy.ContactEnded, nil)},
+	}, l0, erasureLedgerOf(t, db))
+	agesRaceStates(t, w.states, nil)
+}
+
+// TestAgesNoteErasureRaceUnlockedReader is CA-9. The erasure is held after its
+// first ages-note batch has run (the barrier cannot match the second batch),
+// with its row locks and uncommitted blanks in place. A reader on its own
+// connection, in a transaction that stays open across the erasure's commit,
+// runs a plain SELECT with no lock and no gate: it is not blocked, and sees
+// every old note. The erasure then commits without waiting for the reader, and
+// the reader's next SELECT sees the blank.
+func TestAgesNoteErasureRaceUnlockedReader(t *testing.T) {
+	const rows = lookupChunk + 1
+	sc := newAgesNoteScene(t, false, rows)
+	run, states := newAgesRaceRun(t, sc.app)
+	db := run.db
+	rec := recordAgesNoteStatements(t, db)
+	before := sc.state(t)
+	uid := sc.erased.ID
+
+	var erasurePID atomic.Int64
+	hold := agesRaceAfterScrub(uid, lookupChunk)
+	hold.PID = &erasurePID
+	reached, release := run.pause(hold)
+
+	del := run.do(sc.ac, "DELETE", "/api/v1/admin/users/"+itoa(uid), nil)
+	awaitDBSignal(t, reached)
+	ePID := agesRacePID(&erasurePID)
+	requireContactGate(t, db, ePID, true, "the erasure")
+	// The control: the erasure's row locks are real. A reader that asked for a
+	// lock would not get one.
+	lockProbe := db.Transaction(func(tx *gorm.DB) error {
+		return tx.Exec(`SELECT 1 FROM contact_requests WHERE id = (SELECT min(id) FROM contact_requests
+			WHERE purpose = 'occurrence_add' AND subject_user_id = ?) FOR UPDATE NOWAIT`, uid).Error
+	})
+	var pe *pgconn.PgError
+	if !errors.As(lockProbe, &pe) || pe.Code != "55P03" {
+		t.Fatalf("FOR UPDATE NOWAIT on the subject's first row = %v, want SQLSTATE 55P03 while the erasure holds it", lockProbe)
+	}
+
+	const count = `SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> ''`
+	first, second := make(chan int64, 1), make(chan int64, 1)
+	resume := make(chan struct{})
+	var once sync.Once
+	resumeReader := func() { once.Do(func() { close(resume) }) }
+	readerPID, readerDone := startDBSession(t, db, "ages-reader", func(conn *gorm.DB) error {
+		return conn.Transaction(func(tx *gorm.DB) error {
+			var n int64
+			if err := tx.Raw(count, uid).Scan(&n).Error; err != nil {
+				return err
+			}
+			first <- n
+			select {
+			case <-resume:
+			case <-tx.Statement.Context.Done():
+				return tx.Statement.Context.Err()
+			}
+			if err := tx.Raw(count, uid).Scan(&n).Error; err != nil {
+				return err
+			}
+			second <- n
+			return nil
+		})
+	})
+	run.hold(resumeReader)
+	if got := agesRaceAwait(t, first, "the unlocked read"); got != rows {
+		t.Errorf("the reader sees %d notes while the erasure is uncommitted, want %d", got, rows)
+	}
+	if readerPID == ePID {
+		t.Fatalf("the reader shares the erasure's backend %d", ePID)
+	}
+	var waits, blockers int64
+	if err := db.Raw("SELECT count(*) FROM pg_locks WHERE pid = ? AND NOT granted", readerPID).Scan(&waits).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT cardinality(pg_blocking_pids(?)) + cardinality(pg_blocking_pids(?))", readerPID, ePID).Scan(&blockers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if waits != 0 || blockers != 0 {
+		t.Errorf("the reader has %d ungranted locks, and the reader and the erasure are blocked by %d backends in all; want none", waits, blockers)
+	}
+	var state string
+	if err := db.Raw("SELECT state FROM pg_stat_activity WHERE pid = ?", readerPID).Scan(&state).Error; err != nil || state != "idle in transaction" {
+		t.Fatalf("reader backend state = %q (%v), want idle in transaction: its transaction must stay open across the commit", state, err)
+	}
+
+	release()
+	agesRaceOK(t, del, "erasure") // committed while the reader's transaction was still open
+	resumeReader()
+	if got := agesRaceAwait(t, second, "the reader's second read"); got != 0 {
+		t.Errorf("the reader sees %d notes after the erasure committed, want 0", got)
+	}
+	if err := awaitDBResult(t, readerDone); err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+	checkAgesNoteErased(t, before, sc.state(t), rows)
+	_, updates := rec.seen()
+	if want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}; !reflect.DeepEqual(updates, want) {
+		t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v: the barrier is on the first batch and the second ran after it", updates, want)
+	}
+	agesRaceStates(t, states, map[string]int{"55P03": 1})
+}
+
+// Regression tests for agesRaceRun.stop (T07A3-FIX-R4-1). They fail on the
+// teardown it replaces: one that stopped waiting after a timeout, recorded
+// itself as done and let the callbacks, App.DB and the shared database go while
+// a participant was still alive. Each replaces report (and abort) on its own
+// run; nothing is disabled in production code and no shared helper changes.
+
+// TestAgesRaceStopTerminatesWhatItsContextCannotReach starts a participant on a
+// session that no context of the run reaches (Connection hands out a raw
+// connection, which is how startDBSession's sessions work) and sleeps on the
+// server. Cancelation cannot end it, so stop must report it, terminate the
+// run's backends from the control connection and join it, all before cleanups
+// that unregister callbacks and restore App.DB run. The check that it has
+// ended runs as one of those cleanups, registered before hold so that it runs
+// after stop.
+func TestAgesRaceStopTerminatesWhatItsContextCannotReach(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	r.grace = 300 * time.Millisecond
+	var reports []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { t.Errorf("stop gave up: %s", msg) }
+
+	pids, result := make(chan int, 1), make(chan error, 1)
+	r.spawn(func() {
+		result <- r.db.WithContext(context.Background()).Connection(func(conn *gorm.DB) error {
+			conn = conn.Session(&gorm.Session{NewDB: true})
+			var pid int
+			if err := conn.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+				return err
+			}
+			pids <- pid
+			return conn.Exec("SELECT pg_sleep(120)").Error
+		})
+	})
+	var pid int
+	select {
+	case pid = <-pids:
+	case err := <-result:
+		t.Fatalf("the participant ended before it slept: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the participant never reported its backend")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		app, state, ok, err := r.backendState(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && state == "active" {
+			if app != r.appName {
+				t.Fatalf("participant backend %d has application_name %q, want the run's %q", pid, app, r.appName)
+			}
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("participant backend %d is %q (found: %v), want active in pg_sleep", pid, state, ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	started := time.Now()
+	t.Cleanup(func() {
+		// Runs after stop, and before the callbacks come off and App.DB and the
+		// control connection are put back.
+		select {
+		case err := <-result:
+			var pe *pgconn.PgError
+			switch {
+			case err == nil:
+				t.Error("the unreachable participant finished without an error")
+			case errors.As(err, &pe) && pe.Code == "57014":
+				t.Errorf("the participant ended at the server's statement_timeout, not by termination: %v", err)
+			}
+		default:
+			t.Error("the participant was still running when stop returned")
+		}
+		if _, state, ok, err := r.backendState(pid); err != nil || (ok && state == "active") {
+			t.Errorf("backend %d is still working after stop (found: %v, state %q, check: %v)", pid, ok, state, err)
+		}
+		if len(reports) != 1 || !strings.Contains(reports[0], "did not stop") {
+			t.Errorf("reports = %q, want exactly one saying a participant did not stop", reports)
+		}
+		if elapsed := time.Since(started); elapsed > 20*time.Second {
+			t.Errorf("stop took %v: it waited for the server's timeout instead of terminating", elapsed)
+		}
+		r.stopMu.Lock()
+		stopped := r.stopped
+		r.stopMu.Unlock()
+		if !stopped {
+			t.Error("stop returned without recording the participants as gone")
+		}
+	})
+	r.hold(func() {})
+}
+
+// TestAgesRaceStopCancelsABackgroundContextTransaction is the shape of the
+// preliminary sweep in rolloverAges: a transaction on a handle whose context is
+// context.Background. WithContext on App.DB does not reach it; the pool
+// wrapper does, so canceling the run ends its statement on the server without
+// a termination and without a report.
+func TestAgesRaceStopCancelsABackgroundContextTransaction(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	var reports []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { t.Errorf("stop gave up: %s", msg) }
+
+	result := make(chan error, 1)
+	r.spawn(func() {
+		result <- r.db.WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+			return tx.Exec("SELECT pg_sleep(120)").Error
+		})
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		n, err := r.busy(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n >= 1 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%d backends of the run are working, want the sleeping transaction", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	started := time.Now()
+	r.stop()
+	if len(reports) != 0 {
+		t.Errorf("stop reported %q: the run's cancelation did not reach the Background-context transaction", reports)
+	}
+	if elapsed := time.Since(started); elapsed >= r.grace {
+		t.Errorf("stop took %v, as long as the %v it waits before it terminates", elapsed, r.grace)
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Error("the canceled transaction finished without an error")
+		}
+	default:
+		t.Error("the transaction was still running when stop returned")
+	}
+}
+
+// TestAgesRaceStopFailsClosedWhenAParticipantCannotBeStopped uses a participant
+// that no cancelation and no termination can end (it waits on a channel). stop
+// must call abort, must not record the run as stopped, and must try again on the
+// next call, which succeeds once the participant ends.
+func TestAgesRaceStopFailsClosedWhenAParticipantCannotBeStopped(t *testing.T) {
+	w := newAgesRaceWorld(t)
+	r := w.run
+	r.grace, r.final = 100*time.Millisecond, 200*time.Millisecond
+	var reports, aborts []string
+	r.report = func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) }
+	r.abort = func(msg string) { aborts = append(aborts, msg) }
+
+	block, finished := make(chan struct{}), make(chan struct{})
+	r.spawn(func() {
+		defer close(finished)
+		<-block
+	})
+	r.stop()
+	if len(aborts) != 1 || !strings.Contains(aborts[0], "still alive") {
+		t.Fatalf("aborts = %q, want one saying a participant is still alive", aborts)
+	}
+	if len(reports) != 1 {
+		t.Errorf("reports = %q, want the one timeout report", reports)
+	}
+	if r.stopped {
+		t.Error("a stop that gave up was recorded as done")
+	}
+
+	close(block)
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the participant did not end after it was released")
+	}
+	r.stop()
+	if len(aborts) != 1 {
+		t.Errorf("the retry aborted again: %q", aborts)
+	}
+	if !r.stopped {
+		t.Error("the retry did not record the participants as gone")
+	}
+
+}
+
+// TestAgesRaceStopAbortPreventsCleanup exercises the real abort from a cleanup
+// in a subprocess, with a participant that remains alive. The sentinel is a
+// later cleanup and must not run before the process exits.
+func TestAgesRaceStopAbortPreventsCleanup(t *testing.T) {
+	const marker = "AGES_RACE_ABORT_CHILD"
+	if name := os.Getenv(marker); name != "" {
+		db, err := testdb.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, _ := newAgesRaceRun(t, &App{DB: db})
+		r.grace, r.final = 100*time.Millisecond, 200*time.Millisecond
+		r.spawn(func() { select {} })
+		t.Cleanup(func() { fmt.Fprintln(os.Stderr, "AGES_RACE_TEARDOWN_SENTINEL") })
+		r.hold(func() {})
+		return
+	}
+	app := testApp(t)
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAgesRaceStopAbortPreventsCleanup$")
+	cmd.Env = append(os.Environ(), marker+"="+name)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("child exit = %v, want exit 1; output: %s", err, out)
+	}
+	if !strings.Contains(string(out), "a database participant is still alive") || strings.Contains(string(out), "AGES_RACE_TEARDOWN_SENTINEL") {
+		t.Fatalf("child did not abort before later cleanup: %s", out)
+	}
 }

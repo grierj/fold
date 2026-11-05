@@ -277,7 +277,8 @@ func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip str
 // is written, so the access-provenance trigger takes its unchanged branch;
 // (13) their notification delivery rows are deleted, which catches anything
 // the notifications cascade missed. contact_requests is deliberately not
-// touched here: its identifying text waits on gates G-7a..d (R4-2a-T07), and
+// touched here: the childcare ages note of the person's occurrence-add rows is
+// blanked by eraseContactRequestTextIn (reason stays under R4-T07B), and
 // contact_grants have no new ending path, since reconcileContacts already ends
 // them. It returns the first error unwrapped and issues no later statement.
 func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
@@ -391,6 +392,51 @@ func eraseOwnedThrottleKeysIn(tx *gorm.DB, s erasureSubject) error {
 func eraseConsentEvidenceIn(tx *gorm.DB, s erasureSubject) error {
 	return tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
 		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error
+}
+
+// eraseContactRequestTextIn blanks add_childcare_ages_note on the erased
+// person's occurrence_add rows, whatever their status, and nothing else
+// (R4-T07A). The person is the subject of those rows; rows where they only
+// asked stay as written, and reason is not touched here (it waits for
+// R4-T07B).
+//
+// It must run after the soft delete in the same transaction: the
+// add_request_identity trigger (migration 00004) licenses this one blank only
+// while the subject's users row has deleted_at set, and the transaction sees
+// its own soft delete. Before it, the UPDATE raises 23514.
+//
+// Locks, in order: the contact gate and the user row FOR UPDATE (taken by the
+// caller), then every selected request row FOR UPDATE in ascending id in one
+// SELECT, then the writes, in batches of at most lookupChunk ids in that same
+// ascending order, so one statement never carries more bind parameters than
+// PostgreSQL's 65535 and no row lock is taken after a write. Nothing is
+// promised about the order rows are visited inside one UPDATE. Every batch is
+// part of the caller's transaction, so a failure in any of them rolls back
+// all of them. It returns errors unwrapped and logs nothing.
+func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
+	var ids []uint
+	if err := tx.Raw("SELECT id FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> '' ORDER BY id FOR UPDATE", s.ID).Scan(&ids).Error; err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var total int64
+	for start := 0; start < len(ids); start += lookupChunk {
+		chunk := ids[start:min(start+lookupChunk, len(ids))]
+		res := tx.Exec("UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id IN ? AND purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> ''", chunk, s.ID)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != int64(len(chunk)) {
+			return fmt.Errorf("ages-note scrub changed %d of %d rows", res.RowsAffected, len(chunk))
+		}
+		total += res.RowsAffected
+	}
+	if total != int64(len(ids)) {
+		return fmt.Errorf("ages-note scrub changed %d of %d rows", total, len(ids))
+	}
+	return nil
 }
 
 // tombstoneUserIn scrubs the personal columns of the erased account in the

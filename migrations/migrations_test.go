@@ -3043,3 +3043,1368 @@ func TestConsentScrubKeepsThePreviousWriterWorking(t *testing.T) {
 		t.Fatalf("the living owner's row changed: %+v (%v)", kept, err)
 	}
 }
+
+// The 00004 ages-note tests (M7.4 R4-T07A, DEC-141's Nov 3, 2026 amendment).
+// The migration lets two functions allow exactly one blank: an occurrence_add
+// row's ages note goes from non-empty to '' while every other column stays equal
+// and the subject's users row is soft-deleted and can be share-locked without
+// waiting. add_request_identity() admits the UPDATE; add_request_completed()
+// skips the historical completion recheck for the deferred event of that same
+// UPDATE on a granted row. Everything else runs the baseline body.
+//
+// Every test that claims the 00004 contract opens a fresh unmigrated database and
+// runs UpTo(agesNoteTriggerTestVersion); none uses the latest version, so a later
+// migration cannot change what these tests prove. The latest-schema checks
+// (TestNoDrift, TestBaselineFileShape and the down/up tests) stay separate.
+//
+// Evidence kinds, as the mutation plan records them. A behavioral kill is a test
+// that fails at run time because the database now does something else. A
+// structural rejection is a text or shape assertion that fails with no change in
+// what the database does. A behavioral equivalence is a written argument, never a
+// kill.
+//
+//	M1  identity drops the users lookup          behavioral kill: TestAgesNoteTriggerAllowsOnlyTheErasureBlank
+//	                                             (living subject, missing users row)
+//	M2  identity drops the whole-row comparison  behavioral kill: TestAgesNoteTriggerAllowsOnlyTheErasureBlank
+//	                                             (blank plus another column) and TestAgesNoteTriggerCoversAddedColumns (ii)
+//	M3  completion drops the exception           behavioral kill: TestAgesNoteTriggerHistoricalCompletion a and b
+//	                                             (replaced and deleted provenance fail at COMMIT); case c, a valid
+//	                                             live completion, is a control and is not counted
+//	M4a completion drops its row comparison      structural rejection: TestAgesNoteTriggerShape (prefix fidelity);
+//	                                             behaviorally equivalent while add_request_identity is the only
+//	                                             BEFORE UPDATE trigger (H2), because every UPDATE that reaches the
+//	                                             completion function passed the identity comparison first
+//	M4b completion drops OLD.status = 'granted' structural rejection: TestAgesNoteTriggerShape (prefix fidelity);
+//	                                             behaviorally equivalent while the row comparison holds, since a
+//	                                             skipped event then has NEW.status = OLD.status and a status other
+//	                                             than granted checks nothing in the baseline body
+//	M10 Down restores a different body           behavioral kill and structural rejection: TestAgesNoteMigrationDownAndUp
+//	M12 identity locks FOR SHARE without NOWAIT  behavioral kill: TestAgesNoteTriggerLockOutcomes (CA-6)
+//
+// Nothing here disables, drops or creates a trigger, or changes the session's
+// trigger firing mode: the reviewed configuration (both triggers enabled, firing
+// as origin) is the one under test, and TestAgesNoteTriggerShape asserts it.
+
+const (
+	agesNoteTriggerTestVersion = 4
+	agesNoteMigrationFile      = "00004_ages_note_erasure_scrub.sql"
+	agesNoteIdentityMsg        = "request purpose, add options and terminal outcome are immutable"
+	agesNoteCompletionMsg      = "date add requires completed occurrence access"
+	agesNoteText               = "Ages 3 and 5, one needs a quiet corner"
+)
+
+// agesNoteDB is a database migrated to one version with a small fixture: user 1
+// leads group 10 and requests; user 2 is the subject who is erased later; user 3
+// is a living subject; user 4 is another subject. Event 20 has occurrences 30
+// to 69. accessDB supplies the audit-snapshot helpers.
+type agesNoteDB struct {
+	accessDB
+	p *goose.Provider
+}
+
+func newAgesNoteDB(t *testing.T, version int64) agesNoteDB {
+	t.Helper()
+	name := testdb.Fresh(t, false)
+	db := openSQL(t, name)
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(context.Background(), version); err != nil {
+		t.Fatalf("up to %d: %v", version, err)
+	}
+	a := agesNoteDB{accessDB: accessDB{t: t, db: db}, p: p}
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status,role,account_type) VALUES
+		 (1,'ages-leader@example.com','active','member','adult'),
+		 (2,'ages-subject@example.com','active','member','adult'),
+		 (3,'ages-living@example.com','active','member','adult'),
+		 (4,'ages-other@example.com','active','member','adult')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Ages group',1,'active','invite_only')`,
+		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
+		 VALUES(20,10,'Ages series','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
+		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status)
+		 SELECT 30 + n, 20, date '2026-12-01' + n, timestamptz '2026-12-01 18:00Z' + n * interval '1 day',
+		        timestamptz '2026-12-01 19:00Z' + n * interval '1 day', 'scheduled'
+		 FROM generate_series(0, 39) n`,
+	} {
+		a.exec(q)
+	}
+	return a
+}
+
+func (a agesNoteDB) migrateTo(version int64) {
+	a.t.Helper()
+	if _, err := a.p.UpTo(context.Background(), version); err != nil {
+		a.t.Fatalf("up to %d: %v", version, err)
+	}
+}
+
+func (a agesNoteDB) migrateDownTo(version int64) {
+	a.t.Helper()
+	if _, err := a.p.DownTo(context.Background(), version); err != nil {
+		a.t.Fatalf("down to %d: %v", version, err)
+	}
+	if got, err := a.p.GetDBVersion(context.Background()); err != nil || got != version {
+		a.t.Fatalf("version after the down = %d, %v, want %d", got, err, version)
+	}
+}
+
+func (a agesNoteDB) register(id, occurrence, user int) {
+	a.t.Helper()
+	a.exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES($1,$2,$3,'going','admin')`, id, occurrence, user)
+}
+
+// agesNoteOutcome gives the six columns that differ by status, in the order
+// subject_decision, subject_decided_by, subject_decided_at, completed_at,
+// withdrawn_by_id, end_reason. Every combination honors every CHECK of
+// contact_requests. Granted rows are built by complete, never inserted.
+func agesNoteOutcome(status string, requester, subject int) string {
+	switch status {
+	case "pending":
+		return `'pending', NULL, NULL, NULL, NULL, ''`
+	case "denied":
+		return fmt.Sprintf(`'denied', %d, '2026-10-25 12:00Z', '2026-10-25 12:00Z', NULL, ''`, subject)
+	case "withdrawn":
+		return fmt.Sprintf(`'pending', NULL, NULL, '2026-10-25 12:00Z', %d, ''`, requester)
+	case "expired":
+		return `'pending', NULL, NULL, '2026-11-08 12:00Z', NULL, ''`
+	case "ended":
+		return `'pending', NULL, NULL, '2026-10-25 12:00Z', NULL, 'removed'`
+	}
+	panic("agesNoteOutcome: no fixture for status " + status)
+}
+
+// addRequest inserts an occurrence_add request created on 2026-10-24 12:00Z.
+func (a agesNoteDB) addRequest(id, requester, subject, occurrence int, status, reason, note string) {
+	a.t.Helper()
+	a.exec(fmt.Sprintf(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,reason,needs_admin,
+		subject_decision,subject_decided_by,subject_decided_at,completed_at,withdrawn_by_id,end_reason,
+		admin_decision,status,created_at,expires_at,purpose,occurrence_id,add_attendance_mode,add_childcare_ages_note)
+		VALUES(%d,%d,%d,'event',20,'',$1,true,%s,'pending','%s','2026-10-24 12:00Z','2026-11-07 12:00Z','occurrence_add',%d,'in_person',$2)`,
+		id, requester, subject, agesNoteOutcome(status, requester, subject), status, occurrence), reason, note)
+}
+
+// pendingAt inserts a pending occurrence_add request created at a chosen time.
+func (a agesNoteDB) pendingAt(id, requester, subject, occurrence int, created, note string) {
+	a.t.Helper()
+	a.exec(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,admin_decision,
+		created_at,expires_at,purpose,occurrence_id,add_attendance_mode,add_childcare_ages_note)
+		VALUES($1,$2,$3,'event',20,'',true,'pending',$4::timestamptz,$4::timestamptz + interval '14 days','occurrence_add',$5,'in_person',$6)`,
+		id, requester, subject, created, occurrence, note)
+}
+
+// complete grants a pending request on a registration in one transaction, the way
+// the application does: approve, move to granted, then write the access columns.
+// Decisions come one day, the completion and the access two days, after creation.
+func (a agesNoteDB) complete(request, registration int) error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, s := range []struct {
+		q    string
+		args []any
+	}{
+		{`UPDATE contact_requests SET subject_decision='approved', subject_decided_by=subject_user_id, subject_decided_at=created_at + interval '1 day',
+			admin_decision='approved', admin_decided_by=requester_id, admin_decided_at=created_at + interval '1 day' WHERE id=$1`, []any{request}},
+		{`UPDATE contact_requests SET status='granted', completed_at=created_at + interval '2 days', completed_target_id=$2 WHERE id=$1`, []any{request, registration}},
+		{`UPDATE registrations SET access_origin='manager_add', access_issuer_id=1, access_request_id=$1,
+			access_granted_at=(SELECT created_at + interval '2 days' FROM contact_requests WHERE id=$1),
+			access_ended_at=NULL, access_end_reason='', access_ended_by=NULL WHERE id=$2`, []any{request, registration}},
+	} {
+		if _, err := tx.Exec(s.q, s.args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (a agesNoteDB) endAccess(registration int, endedAt string) {
+	a.t.Helper()
+	a.exec(`UPDATE registrations SET access_ended_at=$2::timestamptz, access_end_reason='declined', access_ended_by=user_id WHERE id=$1`, registration, endedAt)
+}
+
+// recordHistory writes the added and ended audit snapshots the provenance
+// trigger needs before a grant can be replaced or its registration deleted.
+func (a agesNoteDB) recordHistory(request, registration, subject, occurrence int, endedAt string) {
+	a.t.Helper()
+	var granted string
+	if err := a.db.QueryRow(`SELECT access_granted_at::text FROM registrations WHERE id=$1`, registration).Scan(&granted); err != nil {
+		a.t.Fatal(err)
+	}
+	extra := map[string]any{"issuerId": 1, "requestId": request}
+	a.recordAdded(registration, subject, occurrence, "manager_add", granted, extra)
+	a.recordEnded(registration, subject, occurrence, "manager_add", granted, endedAt, "declined", subject, extra)
+}
+
+func (a agesNoteDB) tombstone(user int) {
+	a.t.Helper()
+	a.exec(`UPDATE users SET deleted_at = now() WHERE id = $1`, user)
+}
+
+// seedRows builds every row the tests use, while user 2 is still alive.
+//
+//	100-104        pending, subject 2 (103 has a nonempty reason, 104 is for the stale restore)
+//	111-114        denied, withdrawn, expired, ended, subject 2
+//	120            granted, live and valid, registration 140
+//	121            granted, access ended and the registration kept (control c), registration 141
+//	122 and 123    granted, request 122 replaced by 123 on registration 142 (case a)
+//	124            granted, registration 143 ended with snapshots and deleted (case b)
+//	130            pending, living subject 3
+//	131            pending, subject 99 who has no users row
+//	132            pending, requester 2 and living subject 3 (requester-only)
+//	133            denied group_add with a reason, subject 2
+//	134            pending contact request
+//	135            pending, subject 3 (fresh completion), registration 151
+func (a agesNoteDB) seedRows() {
+	a.t.Helper()
+	note := func(id int) string { return fmt.Sprintf("%s (%d)", agesNoteText, id) }
+	for _, r := range []struct {
+		id, requester, subject, occurrence int
+		status, reason                     string
+	}{
+		{100, 1, 2, 30, "pending", ""}, {101, 1, 2, 31, "pending", ""}, {102, 1, 2, 32, "pending", ""},
+		{103, 1, 2, 33, "pending", "Please add me, I was away"}, {104, 1, 2, 33, "pending", ""},
+		{111, 1, 2, 30, "denied", ""}, {112, 1, 2, 31, "withdrawn", ""}, {113, 1, 2, 32, "expired", ""}, {114, 1, 2, 33, "ended", ""},
+		{130, 1, 3, 30, "pending", ""}, {131, 1, 99, 30, "pending", ""}, {132, 2, 3, 30, "pending", ""}, {135, 1, 3, 31, "pending", ""},
+	} {
+		a.addRequest(r.id, r.requester, r.subject, r.occurrence, r.status, r.reason, note(r.id))
+	}
+	a.register(151, 31, 3)
+	for _, g := range []struct{ request, registration, occurrence int }{{120, 140, 34}, {121, 141, 35}, {122, 142, 36}, {124, 143, 37}} {
+		a.register(g.registration, g.occurrence, 2)
+		a.addRequest(g.request, 1, 2, g.occurrence, "pending", "", note(g.request))
+		if err := a.complete(g.request, g.registration); err != nil {
+			a.t.Fatalf("grant request %d: %v", g.request, err)
+		}
+	}
+	a.endAccess(141, "2026-10-27 12:00Z")
+	a.endAccess(142, "2026-10-27 12:00Z")
+	a.recordHistory(122, 142, 2, 36, "2026-10-27 12:00Z")
+	a.pendingAt(123, 1, 2, 36, "2026-10-28 12:00Z", note(123))
+	if err := a.complete(123, 142); err != nil {
+		a.t.Fatalf("replace request 122 with 123: %v", err)
+	}
+	a.endAccess(143, "2026-10-27 12:00Z")
+	a.recordHistory(124, 143, 2, 37, "2026-10-27 12:00Z")
+	a.exec(`DELETE FROM registrations WHERE id = 143`)
+	a.exec(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,reason,needs_admin,
+		subject_decision,subject_decided_by,subject_decided_at,admin_decision,status,created_at,expires_at,completed_at,purpose)
+		VALUES(133,1,2,'group',10,'','Group reason',true,'denied',2,'2026-10-25 12:00Z','pending','denied',
+		'2026-10-24 12:00Z','2026-11-07 12:00Z','2026-10-25 12:00Z','group_add')`)
+	a.exec(`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,admin_decision,created_at,expires_at)
+		VALUES(134,1,4,'group',10,'email',false,'not_needed','2026-10-24 12:00Z','2026-11-07 12:00Z')`)
+}
+
+// rows returns every contact_requests row as jsonb text by id. With strip it
+// leaves out the ages note, the one column the blank may change.
+func (a agesNoteDB) rows(strip bool) map[int]string {
+	a.t.Helper()
+	q := `SELECT id, to_jsonb(c)::text FROM contact_requests c`
+	if strip {
+		q = `SELECT id, (to_jsonb(c) - 'add_childcare_ages_note')::text FROM contact_requests c`
+	}
+	rs, err := a.db.Query(q)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	defer rs.Close()
+	out := map[int]string{}
+	for rs.Next() {
+		var id int
+		var doc string
+		if err := rs.Scan(&id, &doc); err != nil {
+			a.t.Fatal(err)
+		}
+		out[id] = doc
+	}
+	if err := rs.Err(); err != nil {
+		a.t.Fatal(err)
+	}
+	return out
+}
+
+func (a agesNoteDB) noteOf(id int) string {
+	a.t.Helper()
+	var note string
+	if err := a.db.QueryRow(`SELECT add_childcare_ages_note FROM contact_requests WHERE id = $1`, id).Scan(&note); err != nil {
+		a.t.Fatal(err)
+	}
+	return note
+}
+
+// digest hashes a table's rows, so a test can show the blank touched nothing else.
+func (a agesNoteDB) digest(table string) string {
+	a.t.Helper()
+	var sum string
+	if err := a.db.QueryRow(`SELECT coalesce(md5(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id)), '') FROM ` + table + ` t`).Scan(&sum); err != nil {
+		a.t.Fatal(err)
+	}
+	return sum
+}
+
+type agesNoteStep struct {
+	label string
+	q     string
+	args  []any
+}
+
+// runTx runs the steps in one transaction and returns the label of the step that
+// failed ("COMMIT" for the commit) with its error. With immediate it first makes
+// the completion trigger check at the end of each statement. It stops at the first
+// failure, so no later statement runs against an aborted transaction.
+func (a agesNoteDB) runTx(immediate bool, steps ...agesNoteStep) (string, error) {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return "begin", err
+	}
+	defer tx.Rollback()
+	if immediate {
+		if _, err := tx.Exec(`SET CONSTRAINTS add_request_completed IMMEDIATE`); err != nil {
+			return "set constraints", err
+		}
+	}
+	for _, s := range steps {
+		if _, err := tx.Exec(s.q, s.args...); err != nil {
+			return s.label, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "COMMIT", err
+	}
+	return "", nil
+}
+
+// agesNoteWantError checks SQLSTATE and, when msg is not empty, the message.
+func agesNoteWantError(t *testing.T, label string, err error, code, msg string) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Errorf("%s: %v, want %s %q", label, err, code, msg)
+		return
+	}
+	if pgErr.Code != code || (msg != "" && pgErr.Message != msg) {
+		t.Errorf("%s: %s %q, want %s %q", label, pgErr.Code, pgErr.Message, code, msg)
+	}
+}
+
+// agesNoteSameRows reports every id whose row differs between two snapshots.
+func agesNoteSameRows(t *testing.T, label string, got, want map[int]string, skip ...int) {
+	t.Helper()
+	skipped := map[int]bool{}
+	for _, id := range skip {
+		skipped[id] = true
+	}
+	if len(got) != len(want) {
+		t.Errorf("%s: %d rows, want %d", label, len(got), len(want))
+	}
+	for id, doc := range want {
+		if skipped[id] {
+			continue
+		}
+		if got[id] != doc {
+			t.Errorf("%s: row %d is %s, want %s", label, id, got[id], doc)
+		}
+	}
+}
+
+const agesNoteBlankSQL = `UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id = $1`
+
+// TestAgesNoteTriggerAllowsOnlyTheErasureBlank runs the licence at 00004. The blank
+// of a soft-deleted subject's occurrence_add note commits at every status,
+// including a granted row with a valid registration. Every direct-SQL variation
+// fails with SQLSTATE 23514 from the identity trigger and writes nothing.
+func TestAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	a.seedRows()
+	a.tombstone(2)
+	before := a.rows(false)
+
+	const blank = `UPDATE contact_requests SET add_childcare_ages_note = ''`
+	for _, c := range []struct {
+		label string
+		q     string
+	}{
+		{"living subject", blank + ` WHERE id = 130`},
+		{"subject whose users row is missing", blank + ` WHERE id = 131`},
+		{"requester-only row, living subject", blank + ` WHERE id = 132`},
+		{"nonempty replacement for a deleted subject", `UPDATE contact_requests SET add_childcare_ages_note = 'replacement' WHERE id = 100`},
+		{"blank and reason cleared on a pending row that has a reason", blank + `, reason = '' WHERE id = 103`},
+		{"blank and reason changed", blank + `, reason = 'changed' WHERE id = 100`},
+		{"blank and withdrawal", blank + `, status = 'withdrawn', withdrawn_by_id = 1, completed_at = '2026-10-25 12:00Z' WHERE id = 100`},
+		{"blank and denial", blank + `, subject_decision = 'denied', subject_decided_by = 2, subject_decided_at = '2026-10-25 12:00Z',
+			status = 'denied', completed_at = '2026-10-25 12:00Z' WHERE id = 100`},
+		{"blank and an admin decision", blank + `, admin_decision = 'approved', admin_decided_by = 1, admin_decided_at = '2026-10-25 12:00Z' WHERE id = 100`},
+		{"blank and completed_target_id", blank + `, completed_target_id = 140 WHERE id = 100`},
+		{"blank and expires_at", blank + `, expires_at = expires_at + interval '1 day' WHERE id = 100`},
+		{"blank and completed_at", blank + `, completed_at = '2026-10-25 12:00Z' WHERE id = 100`},
+		{"blank and the guest count", blank + `, add_guest_count = 1 WHERE id = 100`},
+		{"blank and the childcare count", blank + `, add_childcare_count = 1 WHERE id = 100`},
+		{"blank and a nullable column", blank + `, withdrawn_by_id = 1 WHERE id = 100`},
+		{"blank and reason on a terminal row", blank + `, reason = 'x' WHERE id = 111`},
+		{"blank and status on a terminal row", blank + `, status = 'expired', completed_at = '2026-11-08 12:00Z' WHERE id = 111`},
+		{"reason change on a terminal group_add row", `UPDATE contact_requests SET reason = 'edited' WHERE id = 133`},
+	} {
+		_, err := a.db.Exec(c.q)
+		agesNoteWantError(t, c.label, err, "23514", agesNoteIdentityMsg)
+	}
+	agesNoteSameRows(t, "rows after the refusals", a.rows(false), before)
+
+	// The licensed blank, alone, at every status. The pending row 103 keeps its
+	// reason, and the granted rows 120 to 124 cover a valid live grant, ended
+	// access, a replaced request, its replacement and a deleted registration.
+	blanked := []int{100, 103, 111, 112, 113, 114, 120, 121, 122, 123, 124}
+	var statuses int
+	if err := a.db.QueryRow(`SELECT count(DISTINCT status) FROM contact_requests WHERE id IN (100, 111, 112, 113, 114, 120)`).Scan(&statuses); err != nil || statuses != 6 {
+		t.Fatalf("the blanked rows cover %d statuses (%v), want pending, granted, denied, withdrawn, expired and ended", statuses, err)
+	}
+	for _, id := range blanked {
+		stripped := a.rows(true)
+		res, err := a.db.Exec(agesNoteBlankSQL, id)
+		if err != nil {
+			t.Errorf("licensed blank of request %d: %v", id, err)
+			continue
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			t.Errorf("blank of request %d affected %d rows (%v), want 1", id, n, err)
+		}
+		if got := a.noteOf(id); got != "" {
+			t.Errorf("request %d note after the blank = %q, want empty", id, got)
+		}
+		agesNoteSameRows(t, fmt.Sprintf("every column but the note after blanking %d", id), a.rows(true), stripped)
+	}
+	agesNoteSameRows(t, "rows the blank did not touch", a.rows(false), before, blanked...)
+	var reason string
+	if err := a.db.QueryRow(`SELECT reason FROM contact_requests WHERE id = 103`).Scan(&reason); err != nil || reason != "Please add me, I was away" {
+		t.Fatalf("reason of request 103 after the blank = %q (%v), want it unchanged", reason, err)
+	}
+
+	// A blank row cannot be restored: a stale save that puts the old text back is
+	// a nonempty replacement.
+	if _, err := a.db.Exec(agesNoteBlankSQL, 104); err != nil {
+		t.Fatalf("blank of request 104: %v", err)
+	}
+	_, err := a.db.Exec(`UPDATE contact_requests SET add_childcare_ages_note = $2 WHERE id = $1`, 104, agesNoteText)
+	agesNoteWantError(t, "stale restore after a blank", err, "23514", agesNoteIdentityMsg)
+	if got := a.noteOf(104); got != "" {
+		t.Errorf("request 104 note after the refused restore = %q, want empty", got)
+	}
+
+	// A contact request's reason is not protected by these triggers (the baseline
+	// rule, documented here rather than prevented): the change commits.
+	if _, err := a.db.Exec(`UPDATE contact_requests SET reason = 'changed' WHERE id = 134`); err != nil {
+		t.Errorf("reason change on a contact request: %v", err)
+	}
+}
+
+type agesNoteWant struct{ step, msg string }
+
+// TestAgesNoteTriggerDeferredCases walks D1 to D6 through the deferred completion
+// trigger, each in default deferral and in immediate mode. Each case records
+// which call returns the error and its SQLSTATE, and checks that nothing
+// persisted. A statement after a failing one never runs.
+func TestAgesNoteTriggerDeferredCases(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	a.seedRows()
+	a.tombstone(2)
+
+	blank := func(id int) agesNoteStep {
+		return agesNoteStep{label: "licensed blank", q: agesNoteBlankSQL, args: []any{id}}
+	}
+	approve := func(id int) agesNoteStep {
+		return agesNoteStep{label: "approve", args: []any{id}, q: `UPDATE contact_requests SET subject_decision='approved', subject_decided_by=subject_user_id,
+			subject_decided_at='2026-10-25 12:00Z', admin_decision='approved', admin_decided_by=1, admin_decided_at='2026-10-25 12:00Z' WHERE id=$1`}
+	}
+	grant := func(label string, id, target int) agesNoteStep {
+		return agesNoteStep{label: label, args: []any{id, target},
+			q: `UPDATE contact_requests SET status='granted', completed_at='2026-10-25 12:00Z', completed_target_id=$2 WHERE id=$1`}
+	}
+	forged := agesNoteStep{label: "forged granted insert", q: `INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,
+		subject_decision,subject_decided_by,subject_decided_at,admin_decision,admin_decided_by,admin_decided_at,
+		status,created_at,expires_at,completed_at,purpose,occurrence_id,add_attendance_mode,add_childcare_ages_note,completed_target_id)
+		VALUES(150,1,2,'event',20,'',true,'approved',2,'2026-10-25 12:00Z','approved',1,'2026-10-25 12:00Z',
+		'granted','2026-10-24 12:00Z','2026-11-07 12:00Z','2026-10-25 12:00Z','occurrence_add',38,'in_person','forged note',999)`}
+	setImmediate := agesNoteStep{label: "SET CONSTRAINTS", q: `SET CONSTRAINTS add_request_completed IMMEDIATE`}
+
+	run := func(name string, immediate bool, steps []agesNoteStep, want agesNoteWant) {
+		t.Helper()
+		mode := "default deferral"
+		if immediate {
+			mode = "immediate"
+		}
+		label := name + ", " + mode
+		before := a.rows(false)
+		failed, err := a.runTx(immediate, steps...)
+		if want.step == "" {
+			if err != nil {
+				t.Errorf("%s: failed at %q: %v, want it to commit", label, failed, err)
+			}
+			return
+		}
+		if failed != want.step {
+			t.Errorf("%s: failed at %q (%v), want the failure at %q", label, failed, err, want.step)
+			return
+		}
+		agesNoteWantError(t, label, err, "23514", want.msg)
+		agesNoteSameRows(t, label+" left rows behind", a.rows(false), before)
+	}
+
+	// D1: a forged granted INSERT, then a licensed blank. Under default deferral
+	// both statements succeed and COMMIT fails from the INSERT's own event; in
+	// immediate mode the INSERT fails at the end of its statement and the blank
+	// is never sent.
+	d1 := []agesNoteStep{forged, blank(100)}
+	run("D1", false, d1, agesNoteWant{"COMMIT", agesNoteCompletionMsg})
+	run("D1", true, d1, agesNoteWant{"forged granted insert", agesNoteCompletionMsg})
+
+	// D2: a move to granted without its completion, then a licensed blank of the
+	// same row. Each deferred event keeps its own old and new row.
+	d2 := []agesNoteStep{approve(101), grant("move to granted without completion", 101, 999), blank(101)}
+	run("D2", false, d2, agesNoteWant{"COMMIT", agesNoteCompletionMsg})
+	run("D2", true, d2, agesNoteWant{"move to granted without completion", agesNoteCompletionMsg})
+
+	// D3: a licensed blank of a granted row, then any other change to it. The
+	// second statement fails at once in both modes, from the identity trigger,
+	// which is never deferred. Nothing is asserted about the blank's own event.
+	d3 := []agesNoteStep{blank(120), {label: "later change", q: `UPDATE contact_requests SET reason = 'later change' WHERE id = 120`}}
+	run("D3", false, d3, agesNoteWant{"later change", agesNoteIdentityMsg})
+	run("D3", true, d3, agesNoteWant{"later change", agesNoteIdentityMsg})
+
+	// D4: a licensed blank of a pending row, then an unlicensed move to granted.
+	d4 := []agesNoteStep{blank(102), approve(102), grant("unlicensed move to granted", 102, 999)}
+	run("D4", false, d4, agesNoteWant{"COMMIT", agesNoteCompletionMsg})
+	run("D4", true, d4, agesNoteWant{"unlicensed move to granted", agesNoteCompletionMsg})
+
+	// D5: the D1 INSERT or the D2 UPDATE, then a licensed blank, then SET
+	// CONSTRAINTS IMMEDIATE. The SET statement fails from the queued forged
+	// event; no order between the events is assumed.
+	run("D5 after the D1 insert", false, append(append([]agesNoteStep{}, d1...), setImmediate), agesNoteWant{"SET CONSTRAINTS", agesNoteCompletionMsg})
+	run("D5 after the D2 update", false, append(append([]agesNoteStep{}, d2...), setImmediate), agesNoteWant{"SET CONSTRAINTS", agesNoteCompletionMsg})
+
+	// H6: a no-op UPDATE of an already valid granted request passes in both
+	// modes. A fresh completion in immediate mode fails at the request write
+	// (its request moves to granted before the registration names it), and under
+	// default deferral without the registration write it fails at COMMIT. This is
+	// recorded, not fixed: write order is unchanged.
+	noop := []agesNoteStep{{label: "no-op update", q: `UPDATE contact_requests SET reason = reason WHERE id = 120`}}
+	run("H6 no-op update of a valid granted request", false, noop, agesNoteWant{})
+	run("H6 no-op update of a valid granted request", true, noop, agesNoteWant{})
+	fresh := []agesNoteStep{approve(135), grant("fresh completion", 135, 151)}
+	run("H6 fresh completion", true, fresh, agesNoteWant{"fresh completion", agesNoteCompletionMsg})
+	run("H6 fresh completion without the registration write", false, fresh, agesNoteWant{"COMMIT", agesNoteCompletionMsg})
+
+	// D6: a licensed blank alone commits in both modes and changes nothing but the
+	// note. Request 122 has replaced provenance, 124 a deleted registration.
+	for _, c := range []struct {
+		immediate bool
+		id        int
+	}{{false, 122}, {true, 124}} {
+		stripped := a.rows(true)
+		registrations := a.digest("registrations")
+		run("D6", c.immediate, []agesNoteStep{blank(c.id)}, agesNoteWant{})
+		if got := a.noteOf(c.id); got != "" {
+			t.Errorf("D6 request %d note = %q, want empty", c.id, got)
+		}
+		agesNoteSameRows(t, fmt.Sprintf("D6 every column but the note of request %d", c.id), a.rows(true), stripped)
+		if got := a.digest("registrations"); got != registrations {
+			t.Errorf("D6 request %d: the blank changed a registration", c.id)
+		}
+	}
+}
+
+// TestAgesNoteTriggerHistoricalCompletion blanks granted rows whose completion
+// facts moved. The baseline recheck (a no-op UPDATE) fails for a and b, so the
+// exception is what lets the blank commit; c is a valid live completion and a
+// control for the lookup itself. Registrations and audit snapshots are untouched.
+func TestAgesNoteTriggerHistoricalCompletion(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	a.seedRows()
+	a.tombstone(2)
+	for _, c := range []struct {
+		name    string
+		id      int
+		control bool
+	}{
+		{"a: request replaced by a newer one on the same registration", 122, false},
+		{"b: registration retired with snapshots and deleted", 124, false},
+		{"c: access ended, registration still in place (control)", 121, true},
+	} {
+		_, err := a.db.Exec(`UPDATE contact_requests SET reason = reason WHERE id = $1`, c.id)
+		if c.control {
+			if err != nil {
+				t.Errorf("%s: the baseline recheck of a valid completion failed: %v", c.name, err)
+			}
+		} else {
+			agesNoteWantError(t, c.name+": the baseline recheck", err, "23514", agesNoteCompletionMsg)
+		}
+		stripped, registrations, audit := a.rows(true), a.digest("registrations"), a.digest("audit_logs")
+		if _, err := a.db.Exec(agesNoteBlankSQL, c.id); err != nil {
+			t.Errorf("%s: licensed blank: %v", c.name, err)
+			continue
+		}
+		if got := a.noteOf(c.id); got != "" {
+			t.Errorf("%s: note after the blank = %q, want empty", c.name, got)
+		}
+		agesNoteSameRows(t, c.name+": every column but the note", a.rows(true), stripped)
+		if a.digest("registrations") != registrations || a.digest("audit_logs") != audit {
+			t.Errorf("%s: the blank changed a registration or an audit row", c.name)
+		}
+	}
+	var holder int
+	if err := a.db.QueryRow(`SELECT access_request_id FROM registrations WHERE id = 142`).Scan(&holder); err != nil || holder != 123 {
+		t.Fatalf("registration 142 names request %d (%v), want the replacement 123", holder, err)
+	}
+	if _, err := a.db.Exec(agesNoteBlankSQL, 123); err != nil {
+		t.Errorf("licensed blank of the replacement: %v", err)
+	}
+}
+
+// agesNoteBypassWords lists the RC-1(a) words found in a migration's text, case
+// insensitively with whitespace collapsed.
+func agesNoteBypassWords(src string) []string {
+	text := strings.Join(strings.Fields(strings.ToLower(src)), " ")
+	var found []string
+	for _, w := range []string{"disable trigger", "enable replica trigger", "enable always trigger", "session_replication_role",
+		"set_config", "current_setting", "drop trigger", "create trigger", "alter table"} {
+		if strings.Contains(text, w) {
+			found = append(found, w)
+		}
+	}
+	return found
+}
+
+// TestAgesNoteMigrationFileHasNoTriggerBypass reads the migration's own text
+// (hard constraint H8 as scoped by RC-1(a)), after showing the detector works.
+func TestAgesNoteMigrationFileHasNoTriggerBypass(t *testing.T) {
+	t.Parallel()
+	if got := agesNoteBypassWords("ALTER  TABLE x\nDISABLE TRIGGER y; SELECT set_config('session_replication_role','replica',true);"); len(got) != 4 {
+		t.Fatalf("detector found %q in its fixture, want alter table, disable trigger, session_replication_role and set_config", got)
+	}
+	b, err := migrations.Files.ReadFile(agesNoteMigrationFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if found := agesNoteBypassWords(src); len(found) > 0 {
+		t.Errorf("%s contains %q", agesNoteMigrationFile, found)
+	}
+	if strings.Contains(strings.ToLower(src), "-- contracts:") {
+		t.Errorf("%s has a contracts line, but nothing is dropped or renamed (DEC-138)", agesNoteMigrationFile)
+	}
+	if !strings.Contains(src, "DEC-138") || strings.Count(src, "-- +goose StatementBegin") != 4 || strings.Count(src, "-- +goose StatementEnd") != 4 {
+		t.Errorf("%s lacks its DEC-138 note or the four statement blocks (two in Up, two in Down)", agesNoteMigrationFile)
+	}
+}
+
+// agesNoteCollapse collapses runs of whitespace to one space outside string
+// literals, trims both ends and keeps case.
+func agesNoteCollapse(s string) string {
+	var b strings.Builder
+	inQuote, pendingSpace := false, false
+	for _, r := range s {
+		if !inQuote && (r == ' ' || r == '\n' || r == '\t' || r == '\r') {
+			pendingSpace = b.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			b.WriteByte(' ')
+			pendingSpace = false
+		}
+		if r == '\'' {
+			inQuote = !inQuote
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// The adopted compact templates (inventory T07, "the two function shapes"): the
+// text each new body adds in front of the previous body.
+const (
+	agesNoteIdentityTemplate  = `DECLARE v public.contact_requests%ROWTYPE; BEGIN IF TG_OP = 'UPDATE' THEN IF OLD.purpose = 'occurrence_add' AND OLD.add_childcare_ages_note <> '' AND NEW.add_childcare_ages_note = '' THEN v := NEW; v.add_childcare_ages_note := OLD.add_childcare_ages_note; IF v IS NOT DISTINCT FROM OLD THEN PERFORM 1 FROM public.users u WHERE u.id = OLD.subject_user_id AND u.deleted_at IS NOT NULL FOR SHARE OF u NOWAIT; IF FOUND THEN RETURN NEW; END IF; END IF; END IF; END IF;`
+	agesNoteCompletedTemplate = `DECLARE v public.contact_requests%ROWTYPE; BEGIN IF TG_OP = 'UPDATE' THEN IF OLD.purpose = 'occurrence_add' AND OLD.status = 'granted' AND OLD.add_childcare_ages_note <> '' AND NEW.add_childcare_ages_note = '' THEN v := NEW; v.add_childcare_ages_note := OLD.add_childcare_ages_note; IF v IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF; END IF; END IF;`
+)
+
+// agesNoteFidelity proves a replaced body is the template followed by the
+// previous body, byte for byte. It splits the new source at the first occurrence
+// of the previous body's first statement; the part in front, whitespace
+// collapsed outside string literals, must equal the template; the rest must
+// equal the previous source after its BEGIN line, including the closing END.
+// This is the structural rejection for M4a and M4b: changing a word of the new
+// statements changes no runtime outcome the tests can see, but it does change
+// this comparison.
+func agesNoteFidelity(t *testing.T, label, previous, current, template string) {
+	t.Helper()
+	const begin = "\nBEGIN\n"
+	i := strings.Index(previous, begin)
+	if i < 0 {
+		t.Errorf("%s: the previous source has no BEGIN line", label)
+		return
+	}
+	rest := previous[i+len(begin):]
+	first := rest[:strings.Index(rest, "\n")+1]
+	j := strings.Index(current, first)
+	if j < 0 {
+		t.Errorf("%s: the new source does not contain the previous body's first statement %q", label, first)
+		return
+	}
+	if current[j:] != rest {
+		t.Errorf("%s: the new source from the previous first statement is not the previous body byte for byte:\n%q\nwant\n%q", label, current[j:], rest)
+	}
+	if got := agesNoteCollapse(current[:j]); got != template {
+		t.Errorf("%s: the added prefix is\n%s\nwant\n%s", label, got, template)
+	}
+}
+
+type agesNoteShapeSnapshot struct {
+	triggers, constraints, others, attributes, identitySrc, completedSrc string
+}
+
+func agesNoteLines(t *testing.T, db *sql.DB, q string) string {
+	t.Helper()
+	rs, err := db.Query(q)
+	if err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	defer rs.Close()
+	var out []string
+	for rs.Next() {
+		var s string
+		if err := rs.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	if err := rs.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(out, "\n")
+}
+
+func agesNoteShape(t *testing.T, db *sql.DB) agesNoteShapeSnapshot {
+	t.Helper()
+	return agesNoteShapeSnapshot{
+		triggers: agesNoteLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text, t.tgfoid::regprocedure::text)
+			FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal ORDER BY t.tgname`),
+		constraints: agesNoteLines(t, db, `SELECT concat_ws('|', c.conrelid::regclass::text, c.conname, pg_get_constraintdef(c.oid))
+			FROM pg_constraint c WHERE c.conrelid IN ('public.contact_requests'::regclass, 'public.contact_grants'::regclass, 'public.registrations'::regclass)
+			ORDER BY c.conrelid::regclass::text, c.conname`),
+		others: agesNoteLines(t, db, `SELECT p.oid::regprocedure::text || E'\n' || pg_get_functiondef(p.oid)
+			FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = 'public' AND p.prokind = 'f' AND p.proname NOT IN ('add_request_identity', 'add_request_completed')
+			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+			ORDER BY p.oid::regprocedure::text`),
+		attributes: agesNoteLines(t, db, `SELECT concat_ws('|', p.proname, coalesce(p.proconfig::text, 'no config'), p.prosecdef::text, p.provolatile::text,
+			l.lanname, pg_get_userbyid(p.proowner), p.prorettype::regtype::text)
+			FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
+			WHERE p.oid IN ('public.add_request_identity()'::regprocedure, 'public.add_request_completed()'::regprocedure) ORDER BY p.proname`),
+		identitySrc:  agesNoteLines(t, db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_identity()'::regprocedure`),
+		completedSrc: agesNoteLines(t, db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_completed()'::regprocedure`),
+	}
+}
+
+// agesNoteSameShape compares everything but the two function sources, and the
+// sources too when withSource is set.
+func agesNoteSameShape(t *testing.T, label string, got, want agesNoteShapeSnapshot, withSource bool) {
+	t.Helper()
+	for _, c := range []struct{ what, got, want string }{
+		{"trigger definitions (tgtype, tgdeferrable, tginitdeferred, tgenabled, tgfoid)", got.triggers, want.triggers},
+		{"constraint definitions of contact_requests, contact_grants and registrations", got.constraints, want.constraints},
+		{"definitions of every other public function", got.others, want.others},
+		{"attributes of the two replaced functions (config, security, volatility, language, owner, result)", got.attributes, want.attributes},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: %s changed:\n%s\nwant\n%s", label, c.what, c.got, c.want)
+		}
+	}
+	if withSource && (got.identitySrc != want.identitySrc || got.completedSrc != want.completedSrc) {
+		t.Errorf("%s: a replaced function body differs from the one it should equal", label)
+	}
+}
+
+// TestAgesNoteTriggerShape holds H1 to H4 at the version before 00004, at 00004,
+// after the way down, and after up again: the two triggers keep their timing,
+// deferral and enablement (reviewed configuration: both enabled, firing as
+// origin); no other trigger exists; constraints and every other function are
+// untouched; and each replaced body is the adopted prefix plus the previous body
+// byte for byte. The prefix comparison is the structural rejection for M4a and
+// M4b.
+func TestAgesNoteTriggerShape(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion-1); err != nil {
+		t.Fatal(err)
+	}
+	previous := agesNoteShape(t, db)
+	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion); err != nil {
+		t.Fatal(err)
+	}
+	current := agesNoteShape(t, db)
+	agesNoteSameShape(t, "00004 against the version before it", current, previous, false)
+	if current.identitySrc == previous.identitySrc || current.completedSrc == previous.completedSrc {
+		t.Fatal("00004 left a baseline function body in place")
+	}
+	agesNoteFidelity(t, "add_request_identity", previous.identitySrc, current.identitySrc, agesNoteIdentityTemplate)
+	agesNoteFidelity(t, "add_request_completed", previous.completedSrc, current.completedSrc, agesNoteCompletedTemplate)
+
+	// H1 and H2 stated outright: exactly these two triggers, enabled as origin,
+	// the identity one BEFORE UPDATE FOR EACH ROW and the only BEFORE UPDATE trigger,
+	// the completion one an AFTER INSERT OR UPDATE FOR EACH ROW constraint trigger
+	// deferrable and initially deferred.
+	const wantTriggers = "add_request_completed|21|true|true|O\nadd_request_identity|19|false|false|O"
+	if got := agesNoteLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text)
+			FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal ORDER BY t.tgname`); got != wantTriggers {
+		t.Errorf("non-internal triggers on contact_requests:\n%s\nwant\n%s", got, wantTriggers)
+	}
+	if got := agesNoteLines(t, db, `SELECT t.tgname FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal
+		AND (t.tgtype & 2) <> 0 AND (t.tgtype & 16) <> 0`); got != "add_request_identity" {
+		t.Errorf("BEFORE UPDATE triggers on contact_requests = %q, want only add_request_identity", got)
+	}
+	if got := agesNoteLines(t, db, `SELECT count(*)::text FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+		WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal AND t.tgname = p.proname`); got != "2" {
+		t.Errorf("triggers calling the function of their own name = %s, want 2", got)
+	}
+
+	moveTo := func(version int64) {
+		t.Helper()
+		var err error
+		if version < agesNoteTriggerTestVersion {
+			_, err = p.DownTo(ctx, version)
+		} else {
+			_, err = p.UpTo(ctx, version)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	moveTo(agesNoteTriggerTestVersion - 1)
+	agesNoteSameShape(t, "after the way down", agesNoteShape(t, db), previous, true)
+	moveTo(agesNoteTriggerTestVersion)
+	agesNoteSameShape(t, "after up again", agesNoteShape(t, db), current, true)
+}
+
+// TestAgesNoteMigrationDownAndUp walks 00004 away and back over seeded rows.
+// Down restores the previous bodies byte for byte, so the blank is refused again
+// (M10), and neither direction touches a row or restores scrubbed text.
+func TestAgesNoteMigrationDownAndUp(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion-1)
+	a.seedRows()
+	a.tombstone(2)
+	source := func() (identity, completed string) {
+		t.Helper()
+		return agesNoteLines(t, a.db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_identity()'::regprocedure`),
+			agesNoteLines(t, a.db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_completed()'::regprocedure`)
+	}
+	baselineIdentity, baselineCompleted := source()
+	_, err := a.db.Exec(agesNoteBlankSQL, 100)
+	agesNoteWantError(t, "blank before 00004", err, "23514", agesNoteIdentityMsg)
+	seeded := a.rows(false)
+
+	a.migrateTo(agesNoteTriggerTestVersion)
+	if identity, completed := source(); identity == baselineIdentity || completed == baselineCompleted {
+		t.Fatal("00004 left a baseline function body in place")
+	}
+	agesNoteSameRows(t, "rows after 00004", a.rows(false), seeded)
+	if _, err := a.db.Exec(agesNoteBlankSQL, 100); err != nil {
+		t.Fatalf("blank at version %d: %v", agesNoteTriggerTestVersion, err)
+	}
+	_, err = a.db.Exec(agesNoteBlankSQL, 130)
+	agesNoteWantError(t, "blank of a living subject's row at the new version", err, "23514", agesNoteIdentityMsg)
+	blanked := a.rows(false)
+
+	a.migrateDownTo(agesNoteTriggerTestVersion - 1)
+	if identity, completed := source(); identity != baselineIdentity || completed != baselineCompleted {
+		t.Fatalf("a function body after the down is not the previous one byte for byte:\n%q\n%q\nwant\n%q\n%q", identity, completed, baselineIdentity, baselineCompleted)
+	}
+	agesNoteSameRows(t, "rows after the down (scrubbed text is not restored)", a.rows(false), blanked)
+	_, err = a.db.Exec(agesNoteBlankSQL, 101)
+	agesNoteWantError(t, "blank after the down", err, "23514", agesNoteIdentityMsg)
+
+	a.migrateTo(agesNoteTriggerTestVersion)
+	if _, err := a.db.Exec(agesNoteBlankSQL, 101); err != nil {
+		t.Fatalf("blank after up again: %v", err)
+	}
+	agesNoteSameRows(t, "rows after up again", a.rows(false), blanked, 101)
+	if got := a.noteOf(101); got != "" {
+		t.Fatalf("note of request 101 after the second blank = %q, want empty", got)
+	}
+}
+
+// TestAgesNoteMigrationWaitsForExclusiveTableLock checks that the migration's
+// lock timeout bounds its wait for a conflicting table lock, and that it can
+// be applied after the holder releases that lock.
+func TestAgesNoteMigrationWaitsForExclusiveTableLock(t *testing.T) {
+	t.Parallel()
+	name := testdb.Fresh(t, false)
+	db := openSQL(t, name)
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion-1); err != nil {
+		t.Fatalf("up to %d: %v", agesNoteTriggerTestVersion-1, err)
+	}
+	holder, err := openSQL(t, name).BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.Exec(`LOCK TABLE contact_requests IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := openSQL(t, name).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	if _, err := probe.ExecContext(ctx, `SET lock_timeout = '200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.ExecContext(ctx, `SELECT count(*) FROM contact_requests`); pgErrorCode(err) != "55P03" {
+		t.Fatalf("a read of contact_requests under the held lock: %v (code %q), want lock_not_available 55P03", err, pgErrorCode(err))
+	}
+	mctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = p.UpTo(mctx, agesNoteTriggerTestVersion)
+	elapsed := time.Since(start)
+	if pgErrorCode(err) != "55P03" {
+		t.Fatalf("UpTo(%d) with contact_requests locked ACCESS EXCLUSIVE: %v (code %q) after %s, want 55P03", agesNoteTriggerTestVersion, err, pgErrorCode(err), elapsed)
+	}
+	if err := holder.Rollback(); err != nil {
+		t.Fatalf("release exclusive table lock: %v", err)
+	}
+	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion); err != nil {
+		t.Fatalf("UpTo(%d) after releasing table lock: %v", agesNoteTriggerTestVersion, err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != agesNoteTriggerTestVersion {
+		t.Fatalf("version after the migration = %d, %v, want %d", version, err, agesNoteTriggerTestVersion)
+	}
+}
+
+// agesNotePreviousWriter plays the statement shapes the previous binary sends
+// (create, decide, complete, a no-op save of a granted row, withdraw, expire,
+// end on removal, and the changes the triggers must keep refusing) at one
+// version and returns what each did, with the final rows. Every step names what
+// it must do; the same script runs at both versions.
+func agesNotePreviousWriter(t *testing.T, version int64) ([]string, map[int]string) {
+	t.Helper()
+	a := newAgesNoteDB(t, version)
+	var out []string
+	step := func(label string, err error, wantCode string) {
+		t.Helper()
+		got := "ok"
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			got = pgErr.Code + " " + pgErr.Message
+		} else if err != nil {
+			got = "error " + err.Error()
+		}
+		out = append(out, label+": "+got)
+		if (wantCode == "" && got != "ok") || (wantCode != "" && !strings.HasPrefix(got, wantCode+" ")) {
+			t.Errorf("version %d, %s: %s, want %q", version, label, got, wantCode)
+		}
+	}
+	exec := func(label, wantCode, q string, args ...any) {
+		t.Helper()
+		_, err := a.db.Exec(q, args...)
+		step(label, err, wantCode)
+	}
+	note := func(id int) string { return fmt.Sprintf("%s (%d)", agesNoteText, id) }
+	a.register(150, 30, 3)
+	a.register(151, 31, 3)
+	for id := 200; id <= 206; id++ {
+		subject := 3
+		if id == 206 {
+			subject = 4
+		}
+		a.addRequest(id, 1, subject, 30, "pending", "", note(id))
+	}
+	exec("decide (whole-row save)", "", `UPDATE contact_requests SET subject_decision='approved', subject_decided_by=3, subject_decided_at='2026-10-25 12:00Z',
+		admin_decision='approved', admin_decided_by=1, admin_decided_at='2026-10-25 12:00Z', reason=reason, add_childcare_ages_note=add_childcare_ages_note WHERE id=200`)
+	step("complete", a.complete(200, 150), "")
+	exec("no-op save of a granted request", "", `UPDATE contact_requests SET reason = reason WHERE id = 200`)
+	exec("change to a granted request", "23514", `UPDATE contact_requests SET reason = 'x' WHERE id = 200`)
+	exec("withdraw", "", `UPDATE contact_requests SET status='withdrawn', withdrawn_by_id=1, completed_at='2026-10-25 12:00Z' WHERE id=201`)
+	exec("expire", "", `UPDATE contact_requests SET status='expired', completed_at='2026-11-08 12:00Z' WHERE id=202`)
+	exec("end on removal", "", `UPDATE contact_requests SET status='ended', end_reason='removed', completed_at='2026-10-25 12:00Z' WHERE id=203`)
+	exec("blank of an ended row, living subject", "23514", agesNoteBlankSQL, 203)
+	exec("blank of a pending row, living subject", "23514", agesNoteBlankSQL, 204)
+	exec("note change on a pending row", "23514", `UPDATE contact_requests SET add_childcare_ages_note = 'changed' WHERE id = 204`)
+	failed, err := a.runTx(false,
+		agesNoteStep{label: "approve", q: `UPDATE contact_requests SET subject_decision='approved', subject_decided_by=3, subject_decided_at='2026-10-25 12:00Z',
+			admin_decision='approved', admin_decided_by=1, admin_decided_at='2026-10-25 12:00Z' WHERE id=205`},
+		agesNoteStep{label: "grant", q: `UPDATE contact_requests SET status='granted', completed_at='2026-10-25 12:00Z', completed_target_id=151 WHERE id=205`})
+	out = append(out, "granted without its access: "+failed)
+	step("granted without its access", err, "23514")
+	a.tombstone(4)
+	exec("end for a deleted subject", "", `UPDATE contact_requests SET status='ended', end_reason='account_disabled', completed_at='2026-10-25 12:00Z' WHERE id=206`)
+	exec("whole-row save for a deleted subject", "", `UPDATE contact_requests SET reason = reason WHERE id = 206`)
+	return out, a.rows(false)
+}
+
+// TestAgesNoteMigrationKeepsThePreviousWriterWorking is the DEC-138 previous-release
+// check. The previous binary never sends a blank of the ages note, so at 00004
+// every statement it can send behaves exactly as at the version before, with the
+// same SQLSTATE and message, and leaves the same rows.
+func TestAgesNoteMigrationKeepsThePreviousWriterWorking(t *testing.T) {
+	t.Parallel()
+	previousOut, previousRows := agesNotePreviousWriter(t, agesNoteTriggerTestVersion-1)
+	currentOut, currentRows := agesNotePreviousWriter(t, agesNoteTriggerTestVersion)
+	if p, c := strings.Join(previousOut, "\n"), strings.Join(currentOut, "\n"); p != c {
+		t.Fatalf("the previous writer's outcomes differ at version %d:\n%s\nwant (version %d)\n%s", agesNoteTriggerTestVersion, c, agesNoteTriggerTestVersion-1, p)
+	}
+	agesNoteSameRows(t, "rows after the previous writer's script", currentRows, previousRows)
+}
+
+// agesNoteWatchLocks samples pg_locks for one backend until the returned function
+// is called, which reports how many samples were taken and how many showed an
+// ungranted lock. Sampling cannot prove "at no point"; it is evidence.
+func agesNoteWatchLocks(ctx context.Context, db *sql.DB, pid int) func() (int, int) {
+	stop := make(chan struct{})
+	done := make(chan [2]int, 1)
+	go func() {
+		var res [2]int
+		for {
+			select {
+			case <-stop:
+				done <- res
+				return
+			default:
+			}
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks WHERE pid = $1 AND NOT granted`, pid).Scan(&n); err == nil {
+				res[0]++
+				if n > 0 {
+					res[1]++
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return func() (int, int) {
+		close(stop)
+		res := <-done
+		return res[0], res[1]
+	}
+}
+
+// TestAgesNoteTriggerLockOutcomes is CA-6 to CA-8 at the SQL level, with separate
+// database/sql sessions. The licence takes FOR SHARE OF the tombstoned users row
+// with NOWAIT. A holder with NO KEY UPDATE or FOR UPDATE makes the blank fail at
+// once with 55P03 (M12 would wait instead); a holder with KEY SHARE or SHARE does
+// not block it, and the share it takes then blocks a later NO KEY UPDATE until it
+// ends; a living subject or an uncommitted deletion fails with 23514 without
+// hanging. Waits are bounded with lock_timeout and real lock evidence is read
+// from pg_locks and pg_blocking_pids.
+func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	a.seedRows()
+	a.tombstone(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	session := func(t *testing.T, label string) (*sql.Conn, int) {
+		t.Helper()
+		conn, err := a.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("%s session: %v", label, err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		var pid int
+		if err := conn.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatalf("%s session pid: %v", label, err)
+		}
+		return conn, pid
+	}
+	hold := func(t *testing.T, label, mode string) (*sql.Tx, int) {
+		t.Helper()
+		conn, pid := session(t, label)
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { tx.Rollback() })
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = 2 `+mode).Scan(&one); err != nil {
+			t.Fatalf("%s %s: %v", label, mode, err)
+		}
+		var granted int
+		if err := a.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks WHERE pid = $1 AND locktype = 'transactionid' AND granted`, pid).Scan(&granted); err != nil || granted < 1 {
+			t.Fatalf("%s %s: its lock is not granted in pg_locks (%d rows, %v)", label, mode, granted, err)
+		}
+		return tx, pid
+	}
+
+	// CA-6: a holder with NO KEY UPDATE, and separately FOR UPDATE.
+	for i, mode := range []string{"FOR NO KEY UPDATE", "FOR UPDATE"} {
+		id := 101 + i
+		t.Run("CA-6 "+mode, func(t *testing.T) {
+			holder, _ := hold(t, "holder", mode)
+			defer holder.Rollback()
+			b, bPID := session(t, "blanker")
+			if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
+				t.Fatal(err)
+			}
+			stop := agesNoteWatchLocks(ctx, a.db, bPID)
+			start := time.Now()
+			_, err := b.ExecContext(ctx, agesNoteBlankSQL, id)
+			elapsed := time.Since(start)
+			samples, ungranted := stop()
+			if pgErrorCode(err) != "55P03" {
+				t.Fatalf("blank under %s: %v (code %q), want lock_not_available 55P03", mode, err, pgErrorCode(err))
+			}
+			if elapsed > 1500*time.Millisecond {
+				t.Errorf("the blank took %s to fail, want well inside the 2s lock_timeout (it waited)", elapsed)
+			}
+			if ungranted != 0 {
+				t.Errorf("%d of %d pg_locks samples showed an ungranted lock for the blanker", ungranted, samples)
+			}
+			t.Logf("CA-6 %s: 55P03 after %s, %d samples, %d ungranted", mode, elapsed, samples, ungranted)
+			if got := a.noteOf(id); got == "" {
+				t.Errorf("request %d was blanked although the blank failed", id)
+			}
+		})
+	}
+
+	// CA-7: a holder with KEY SHARE, and separately SHARE. The blank succeeds and
+	// keeps a SHARE in its open transaction; the holder ends before the probe
+	// starts, so the probe's NO KEY UPDATE waits on the blanker alone.
+	for i, mode := range []string{"FOR KEY SHARE", "FOR SHARE"} {
+		id := 101 + i
+		t.Run("CA-7 "+mode, func(t *testing.T) {
+			holder, _ := hold(t, "holder", mode)
+			defer holder.Rollback()
+			bConn, bPID := session(t, "blanker")
+			btx, err := bConn.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer btx.Rollback()
+			if _, err := btx.ExecContext(ctx, agesNoteBlankSQL, id); err != nil {
+				t.Fatalf("blank under %s: %v, want it to succeed", mode, err)
+			}
+			var bXID string
+			if err := btx.QueryRowContext(ctx, `SELECT pg_current_xact_id()::xid::text`).Scan(&bXID); err != nil {
+				t.Fatal(err)
+			}
+			if err := holder.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+
+			dConn, dPID := session(t, "probe")
+			dtx, err := dConn.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dtx.Rollback()
+			if _, err := dtx.ExecContext(ctx, `SET LOCAL lock_timeout = '15s'`); err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() {
+				var one int
+				result <- dtx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = 2 FOR NO KEY UPDATE`).Scan(&one)
+			}()
+			want := fmt.Sprintf("{%d}", bPID)
+			var blockers string
+			deadline := time.Now().Add(10 * time.Second)
+			for blockers != want && time.Now().Before(deadline) {
+				if err := a.db.QueryRowContext(ctx, `SELECT pg_blocking_pids($1)::text`, dPID).Scan(&blockers); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-result:
+					t.Fatalf("the probe returned (%v) before the blanker ended", err)
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			if blockers != want {
+				t.Fatalf("pg_blocking_pids(probe) = %s, want only the blanker %s", blockers, want)
+			}
+			var waiting int
+			if err := a.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks WHERE pid = $1 AND NOT granted AND locktype = 'transactionid' AND transactionid::text = $2`, dPID, bXID).Scan(&waiting); err != nil || waiting != 1 {
+				t.Errorf("the probe has %d ungranted transaction-id locks on the blanker's xid %s (%v), want 1", waiting, bXID, err)
+			}
+			if err := btx.Commit(); err != nil {
+				t.Fatalf("commit of the blank: %v", err)
+			}
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatalf("the probe after the blanker ended: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the probe still waits after the blanker ended")
+			}
+			if got := a.noteOf(id); got != "" {
+				t.Errorf("request %d note after the committed blank = %q, want empty", id, got)
+			}
+		})
+	}
+
+	// CA-8: a living subject, and a deletion another session has not committed.
+	// Both fail with 23514 at once; neither hangs.
+	t.Run("CA-8 living subject and uncommitted deletion", func(t *testing.T) {
+		b, _ := session(t, "blanker")
+		if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := b.ExecContext(ctx, agesNoteBlankSQL, 130)
+		agesNoteWantError(t, "living subject", err, "23514", agesNoteIdentityMsg)
+		if time.Since(start) > 1500*time.Millisecond {
+			t.Errorf("the living-subject refusal took %s", time.Since(start))
+		}
+		deleterConn, _ := session(t, "deleter")
+		dtx, err := deleterConn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer dtx.Rollback()
+		if _, err := dtx.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = 3`); err != nil {
+			t.Fatal(err)
+		}
+		start = time.Now()
+		_, err = b.ExecContext(ctx, agesNoteBlankSQL, 130)
+		elapsed := time.Since(start)
+		agesNoteWantError(t, "deletion not yet committed", err, "23514", agesNoteIdentityMsg)
+		if elapsed > 1500*time.Millisecond {
+			t.Errorf("the refusal under an uncommitted deletion took %s, want no wait", elapsed)
+		}
+		if got := a.noteOf(130); got == "" {
+			t.Error("request 130 was blanked although the subject was not deleted")
+		}
+	})
+}
+
+// TestAgesNoteTriggerCoversAddedColumns shows that a column added after both
+// functions compiled in a session is still compared (RC-3: for one int column
+// here; a column type without an equality operator would fail closed and needs
+// its own review). One session stays pinned for the whole test. It runs a blank
+// that compiles both functions, a second session adds the column, and the first
+// session then blanks (i) succeeds with the column still 0, (ii) a blank that
+// also sets the column is refused with 23514 and writes nothing, and (iii) a
+// granted row's blank still commits through the completion prefix. In (ii) the
+// BEFORE trigger rejects first, so the completion comparison is not observed on
+// its own there; it stays covered by the prefix fidelity in TestAgesNoteTriggerShape.
+func TestAgesNoteTriggerCoversAddedColumns(t *testing.T) {
+	t.Parallel()
+	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for i, id := range []int{300, 301, 302} {
+		a.addRequest(id, 1, 2, 30+i, "pending", "", fmt.Sprintf("%s (%d)", agesNoteText, id))
+	}
+	for i, id := range []int{310, 311} {
+		a.register(320+i, 34+i, 2)
+		a.addRequest(id, 1, 2, 34+i, "pending", "", fmt.Sprintf("%s (%d)", agesNoteText, id))
+		if err := a.complete(id, 320+i); err != nil {
+			t.Fatalf("grant request %d: %v", id, err)
+		}
+	}
+	a.tombstone(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	conn1, err := a.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn1.Close()
+	var pid1 int
+	if err := conn1.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid1); err != nil {
+		t.Fatal(err)
+	}
+	blankIn := func(tx *sql.Tx, ids ...int) error {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, agesNoteBlankSQL, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	inTx := func(f func(tx *sql.Tx) error) error {
+		tx, err := conn1.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := f(tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	// Compile both functions in this session, and release every lock.
+	if err := inTx(func(tx *sql.Tx) error { return blankIn(tx, 300, 310) }); err != nil {
+		t.Fatalf("first blanks on the pinned session: %v", err)
+	}
+
+	// Another session adds the column.
+	conn2, err := a.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn2.Close()
+	tx2, err := conn2.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx2.Rollback()
+	if _, err := tx2.ExecContext(ctx, `SET LOCAL lock_timeout = '5s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx2.ExecContext(ctx, `ALTER TABLE contact_requests ADD COLUMN t07a_probe int NOT NULL DEFAULT 0`); err != nil {
+		t.Fatalf("add the probe column: %v", err)
+	}
+	if err := tx2.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var pid int
+	if err := conn1.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil || pid != pid1 {
+		t.Fatalf("the pinned session is backend %d (%v), want %d", pid, err, pid1)
+	}
+	probeOf := func(id int) (note string, probe int) {
+		t.Helper()
+		if err := a.db.QueryRow(`SELECT add_childcare_ages_note, t07a_probe FROM contact_requests WHERE id = $1`, id).Scan(&note, &probe); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	// (i) a plain blank after the DDL.
+	if err := inTx(func(tx *sql.Tx) error { return blankIn(tx, 301) }); err != nil {
+		t.Fatalf("(i) blank after the new column: %v", err)
+	}
+	if note, probe := probeOf(301); note != "" || probe != 0 {
+		t.Errorf("(i) request 301 has note %q and probe %d, want empty and 0", note, probe)
+	}
+	// (ii) a blank that also sets the new column is refused and writes nothing.
+	before, _ := probeOf(302)
+	err = inTx(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE contact_requests SET add_childcare_ages_note = '', t07a_probe = 1 WHERE id = 302`)
+		return err
+	})
+	agesNoteWantError(t, "(ii) blank that also sets the new column", err, "23514", agesNoteIdentityMsg)
+	if note, probe := probeOf(302); note != before || probe != 0 {
+		t.Errorf("(ii) request 302 has note %q and probe %d after the refusal, want %q and 0", note, probe, before)
+	}
+	// (iii) the completion prefix after the DDL in the same session.
+	if err := inTx(func(tx *sql.Tx) error { return blankIn(tx, 311) }); err != nil {
+		t.Fatalf("(iii) blank of a granted row after the new column: %v", err)
+	}
+	if note, probe := probeOf(311); note != "" || probe != 0 {
+		t.Errorf("(iii) request 311 has note %q and probe %d, want empty and 0", note, probe)
+	}
+}
