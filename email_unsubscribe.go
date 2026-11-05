@@ -107,9 +107,13 @@ func (a *App) oneClickUnsubscribe(c *gin.Context) {
 		return
 	}
 	if err := a.DB.Transaction(func(tx *gorm.DB) error {
-		_, err := setEmailConsent(tx, u.ID, scope, models.ConsentOptedOut, models.ConsentSourceUnsubscribe, c.ClientIP(), c.Request.UserAgent())
+		_, err := setEmailConsent(tx, u.ID, scope, models.ConsentOptedOut, models.ConsentSourceUnsubscribe, c.ClientIP(), c.Request.UserAgent(), nil)
 		return err
 	}); err != nil {
+		if errors.Is(err, errConsentSubjectGone) {
+			c.String(http.StatusNotFound, "This unsubscribe link isn't valid.")
+			return
+		}
 		c.String(http.StatusInternalServerError, "We couldn't unsubscribe you. Please try again.")
 		return
 	}
@@ -119,20 +123,38 @@ func (a *App) oneClickUnsubscribe(c *gin.Context) {
 // setEmailConsent appends a consent row for (user, email, scope) when the
 // latest one says otherwise, and reports whether it did. Consent history is
 // append-only (5.3); the person's row is locked so two quick changes can't
-// interleave.
-func setEmailConsent(tx *gorm.DB, userID uint, scope, status, source, ip, userAgent string) (bool, error) {
+// interleave. A signed-in writer passes its session (see setConsent); a
+// signed link passes nil.
+func setEmailConsent(tx *gorm.DB, userID uint, scope, status, source, ip, userAgent string, session *models.User) (bool, error) {
 	// No row means opted in (the default for members, 7.4).
 	return setConsent(tx, models.Consent{UserID: userID, Channel: models.ConsentEmail, Scope: scope, Status: status,
-		Source: source, IP: ip, UserAgent: userAgent}, models.ConsentOptedIn)
+		Source: source, IP: ip, UserAgent: userAgent}, models.ConsentOptedIn, session)
 }
+
+// errConsentSubjectGone: the person a consent write names was erased (or
+// soft-deleted) before the write took their row lock. Nothing is written.
+var errConsentSubjectGone = errors.New("consent: the person's account is gone")
 
 // setConsent appends row when the latest (user, channel, scope) record
 // says otherwise, and reports whether it did; none is the status in force
 // with no record. Consent history is append-only (5.3); the person's row is
-// locked so two quick changes can't interleave.
-func setConsent(tx *gorm.DB, row models.Consent, none string) (bool, error) {
-	if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", row.UserID).Error; err != nil {
+// locked so two quick changes can't interleave. Under that lock a missing or
+// soft-deleted person returns errConsentSubjectGone and writes nothing, so an
+// erasure that committed first is never followed by a stale consent row. A
+// signed-in writer passes its session: if the locked row's status, session
+// version or logout version differ from it, errSecuritySession is returned
+// and nothing is written. A signed link passes nil.
+func setConsent(tx *gorm.DB, row models.Consent, none string, session *models.User) (bool, error) {
+	var fresh models.User
+	if err := tx.Raw("SELECT id, status, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR NO KEY UPDATE", row.UserID).Scan(&fresh).Error; err != nil {
 		return false, err
+	}
+	if fresh.ID == 0 || fresh.DeletedAt.Valid {
+		return false, errConsentSubjectGone
+	}
+	if session != nil && (fresh.Status != session.Status || fresh.SessionVersion != session.SessionVersion ||
+		fresh.LogoutVersion != session.LogoutVersion) {
+		return false, errSecuritySession
 	}
 	var latest models.Consent
 	err := tx.Where("user_id = ? AND channel = ? AND scope = ?", row.UserID, row.Channel, row.Scope).

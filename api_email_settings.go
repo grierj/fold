@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"unicode"
@@ -69,8 +70,10 @@ type emailSettingsChange struct {
 	OptionalEmailOff *bool `json:"optionalEmailOff"`
 }
 
-// applyEmailSettings validates and writes one change; false means a 400 was sent.
-func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string) bool {
+// applyEmailSettings validates and writes one change; false means an error was
+// sent. A signed-in caller passes its session, so a stale or erased one answers
+// 401; a signed link passes nil, and an erased person answers 404.
+func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, session *models.User) bool {
 	var body emailSettingsChange
 	// BodyWith: Me → Notifications reads the body first for its channel.
 	if err := c.ShouldBindBodyWith(&body, binding.JSON); err != nil {
@@ -105,12 +108,20 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string) 
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		for _, k := range kinds {
-			if _, err := setEmailConsent(tx, u.ID, categoryScope(k), status, source, c.ClientIP(), c.Request.UserAgent()); err != nil {
+			if _, err := setEmailConsent(tx, u.ID, categoryScope(k), status, source, c.ClientIP(), c.Request.UserAgent(), session); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
+		if session != nil {
+			jsonError(c, http.StatusUnauthorized, "unauthorized")
+		} else {
+			jsonError(c, http.StatusNotFound, "not found")
+		}
+		return false
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save email settings")
 		return false
@@ -154,7 +165,7 @@ func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if !a.applyEmailSettings(c, u, models.ConsentSourceUnsubscribe) {
+	if !a.applyEmailSettings(c, u, models.ConsentSourceUnsubscribe, nil) {
 		return
 	}
 	s, err := a.emailSettingsFor(a.DB, u)
