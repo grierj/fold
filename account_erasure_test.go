@@ -6155,6 +6155,11 @@ func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
 //	consents             20,000; 4 a person
 //	notifications        24,140 including 4,044 admins' waiting tasks
 //	notification_deliveries 20,106; waiting tasks have no delivery
+//	contact_requests     10,000 across 3,005 subjects (R4-T07A-4), no granted row;
+//	                     9,992 name neither U (1-9992, 1,998 pending), U is the
+//	                     subject of four occurrence_add rows with notes (9993-9996:
+//	                     denied, ended, pending, pending) and only the requester
+//	                     of four (9997-10000: denied, ended, pending, pending)
 //
 // Nothing here asserts time. The test is opt-in (FOLD_ERASURE_SCALE=1), not
 // run in CI, and its job is to print numbers for the reviewer.
@@ -6306,13 +6311,67 @@ var scaleSeeds = []scaleSeed{
 		FROM generate_series(1, 1000) n`},
 	{name: "manager add blocks", sql: `INSERT INTO manager_add_blocks (subject_user_id, organizer_type, organizer_id)
 		SELECT CASE WHEN n <= 5 THEN 3 ELSE 4 + n % 4997 END, 'group', n FROM generate_series(1, 1000) n`},
+	// R4-T07A-4: contact_requests at the size of a large church. Synthetic text
+	// only. Subjects 4-3003 and requesters 3004-4503 never meet U (3), so the
+	// bulk rows are the unrelated control, pending ones included. They sit in
+	// contexts U neither leads nor hosts (the fixture has no groups, and U has
+	// no membership or hosting). No granted row: the deferred completion check
+	// would need a matching registration.
+	{name: "contact requests unrelated", sql: scaleContactRequestsSQL(`SELECT n,
+			3004 + n % 1500, 4 + n % 3000,
+			(ARRAY['contact', 'group_add', 'occurrence_add'])[1 + n % 3],
+			(ARRAY['pending', 'denied', 'withdrawn', 'expired', 'ended'])[1 + n % 5]
+		FROM generate_series(1, 9992) n`)},
+	{name: "contact requests with U as subject", sql: scaleContactRequestsSQL(`VALUES
+			(9993, 3004, 3, 'occurrence_add', 'denied'), (9994, 3005, 3, 'occurrence_add', 'ended'),
+			(9995, 3006, 3, 'occurrence_add', 'pending'), (9996, 3007, 3, 'occurrence_add', 'pending')`)},
+	{name: "contact requests by U only", sql: scaleContactRequestsSQL(`VALUES
+			(9997, 3, 4010, 'occurrence_add', 'denied'), (9998, 3, 4011, 'contact', 'ended'),
+			(9999, 3, 4012, 'occurrence_add', 'pending'), (10000, 3, 4013, 'group_add', 'pending')`)},
+}
+
+// scaleContactRequestsSQL is the INSERT of contact_requests rows for the
+// tuples (n, requester, subject, purpose, status) that source selects. Every
+// row honors the table's CHECKs: the purpose's scope columns, the decision
+// and lifecycle columns of its status (a denied row carries the subject's
+// denial, a withdrawn one its requester, an expired one completes after
+// expires_at), and an occurrence_add row carries a non-empty synthetic ages
+// note. Reasons are synthetic too. 'granted' is not a status it can write.
+func scaleContactRequestsSQL(source string) string {
+	return `INSERT INTO contact_requests (id, requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin,
+			subject_decision, subject_decided_by, subject_decided_at, admin_decision, status, created_at, expires_at, completed_at,
+			withdrawn_by_id, end_reason, purpose, occurrence_id, add_attendance_mode, add_guest_count, add_childcare_count, add_childcare_ages_note)
+		SELECT s.n, s.requester, s.subject,
+			CASE s.purpose WHEN 'occurrence_add' THEN 'event' WHEN 'group_add' THEN 'group' ELSE (ARRAY['group', 'event'])[1 + s.n % 2] END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 1 + (s.n % 500) / 100
+				WHEN s.purpose = 'contact' AND s.n % 2 = 1 THEN 1 + s.n % 5
+				ELSE 1 + s.n % 40 END,
+			CASE WHEN s.purpose = 'contact' THEN (ARRAY['email', 'phone', 'both'])[1 + s.n % 3] ELSE '' END,
+			'Synthetic reason ' || s.n, false,
+			CASE WHEN s.status = 'denied' THEN 'denied' ELSE 'pending' END,
+			CASE WHEN s.status = 'denied' THEN s.subject END,
+			CASE WHEN s.status = 'denied' THEN s.made + interval '5 minutes' END,
+			'not_needed', s.status, s.made, s.made + interval '14 days',
+			CASE s.status WHEN 'pending' THEN NULL
+				WHEN 'expired' THEN s.made + interval '14 days' + interval '1 minute'
+				ELSE s.made + interval '10 minutes' END,
+			CASE WHEN s.status = 'withdrawn' THEN s.requester END,
+			CASE WHEN s.status = 'ended' THEN 'event_ended' ELSE '' END,
+			s.purpose,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 1 + s.n % 500 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN (ARRAY['in_person', 'remote'])[1 + s.n % 2] ELSE '' END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN s.n % 6 ELSE 0 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN s.n % 4 ELSE 0 END,
+			CASE WHEN s.purpose = 'occurrence_add' THEN 'Synthetic ages note ' || s.n ELSE '' END
+		FROM (SELECT v.*, CASE WHEN v.status = 'expired' THEN now() - interval '40 days' ELSE now() - interval '1 hour' END AS made
+			FROM (` + source + `) AS v(n, requester, subject, purpose, status)) s`
 }
 
 // scaleSequenceTables are the tables the fixture gave explicit ids; their
 // sequences are moved past the fixture so later inserts (audit rows, new
 // notifications) cannot collide.
 var scaleSequenceTables = []string{"users", "events", "event_occurrences", "households", "household_people",
-	"messages", "account_requests", "invitations", "guest_signups", "mail_outboxes", "registrations"}
+	"messages", "account_requests", "invitations", "guest_signups", "mail_outboxes", "registrations", "contact_requests"}
 
 // newScaleScene creates a fresh migrated database, the two admins and U, seeds
 // the rest of the fixture with SQL, refreshes the planner statistics (without
@@ -6405,6 +6464,31 @@ func checkScaleFixture(t *testing.T, db *gorm.DB) {
 		{"manager_add_blocks of U", "SELECT count(*) FROM manager_add_blocks WHERE subject_user_id = 3", nil, 5},
 		{"deliveries of U on others", `SELECT count(*) FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id
 			WHERE d.user_id = 3 AND n.user_id <> 3`, nil, 10},
+		// R4-T07A-4: the counts the ages-note oracles and the verdict's S_U read.
+		{"contact_requests", "SELECT count(*) FROM contact_requests", nil, 10000},
+		{"distinct subjects of contact_requests", "SELECT count(DISTINCT subject_user_id) FROM contact_requests", nil, 3005},
+		{"granted contact_requests", "SELECT count(*) FROM contact_requests WHERE status = 'granted'", nil, 0},
+		{"occurrence_add contact_requests with an empty note", "SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add' AND add_childcare_ages_note = ''", nil, 0},
+		{"contact_requests of other purposes with a note", "SELECT count(*) FROM contact_requests WHERE purpose <> 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 0},
+		{"contact_requests with a reason", "SELECT count(*) FROM contact_requests WHERE reason <> ''", nil, 10000},
+		{"contact purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'contact'", nil, 3330 + 1},
+		{"group_add purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'group_add'", nil, 3331 + 1},
+		{"occurrence_add purpose rows", "SELECT count(*) FROM contact_requests WHERE purpose = 'occurrence_add'", nil, 3331 + 4 + 2},
+		{"S_U: contact_requests with U as subject", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3", nil, 4},
+		{"U subject occurrence_add rows with a note", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 4},
+		{"U subject rows, terminal", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND status <> 'pending'", nil, 2},
+		{"U subject rows, pending", "SELECT count(*) FROM contact_requests WHERE subject_user_id = 3 AND status = 'pending'", nil, 2},
+		{"rows where U is only the requester", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3", nil, 4},
+		{"rows where U is only the requester, terminal", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND status <> 'pending'", nil, 2},
+		{"rows where U is only the requester, pending", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND status = 'pending'", nil, 2},
+		{"rows where U is only the requester with a note", "SELECT count(*) FROM contact_requests WHERE requester_id = 3 AND subject_user_id <> 3 AND add_childcare_ages_note <> ''", nil, 2},
+		{"unrelated contact_requests (neither subject nor requester is U)", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3", nil, 9992},
+		{"unrelated pending contact_requests", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3 AND status = 'pending'", nil, 1998},
+		{"unrelated pending occurrence_add contact_requests with a note", "SELECT count(*) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3 AND status = 'pending' AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", nil, 666},
+		{"unrelated contact_requests in a status", "SELECT count(DISTINCT status) FROM contact_requests WHERE subject_user_id <> 3 AND requester_id <> 3", nil, 5},
+		// U leads and hosts nothing, so no unrelated request sits in a context U runs.
+		{"memberships of U", "SELECT count(*) FROM memberships WHERE user_id = 3", nil, 0},
+		{"event_hosts of U", "SELECT count(*) FROM event_hosts WHERE user_id = 3", nil, 0},
 	}
 	for _, w := range want {
 		var n int64
@@ -6462,11 +6546,17 @@ var scaleStatements = []scaleStatement{
 	{"notification_deliveries 13: delete", []string{"DELETE FROM notification_deliveries"}},
 	{scaleConsentLabel, []string{"UPDATE consents SET ip"}},
 	{"snapshot lock: users FOR KEY SHARE", []string{`FROM "users"`, "FOR KEY SHARE"}},
+	// R4-T07A-4. Dropping ORDER BY id from the helper's lock selection makes the
+	// first fragment set match nothing, and the run fails with "no plan for".
+	{scaleAgesNoteSelectLabel, []string{"FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id", "ORDER BY id FOR UPDATE"}},
+	{scaleAgesNoteUpdateLabel, []string{"UPDATE contact_requests SET add_childcare_ages_note"}},
 }
 
 const (
-	scaleRecipientLabel = "message_recipients 9: scrub"
-	scaleConsentLabel   = "consents 14: scrub evidence"
+	scaleRecipientLabel      = "message_recipients 9: scrub"
+	scaleConsentLabel        = "consents 14: scrub evidence"
+	scaleAgesNoteSelectLabel = "contact_requests 15: ages-note lock selection"
+	scaleAgesNoteUpdateLabel = "contact_requests 16: ages-note scrub"
 )
 
 func scaleLabel(sqlText string) string {
@@ -6490,6 +6580,21 @@ func scaleLabel(sqlText string) string {
 type scalePlan struct {
 	label string
 	lines []string
+	// sql and vars are the statement text and bind values EXPLAIN ANALYZE
+	// really executed (the real execution follows with the same ones). They
+	// let the ages-note classifier bind the plan's displayed values to this
+	// exact execution. vars hold ids only; they never reach a log.
+	sql  string
+	vars []any
+}
+
+// scaleExecution is one real execution of a statement whose RowsAffected the
+// explainer records: its text, its bind values and the rows the driver
+// reported.
+type scaleExecution struct {
+	sql  string
+	vars []any
+	rows int64
 }
 
 // scaleExplainer runs EXPLAIN (ANALYZE, BUFFERS) on the statements of the real
@@ -6510,13 +6615,16 @@ type scaleExplainer struct {
 	// The execution runs after the EXPLAIN's savepoint is rolled back, so it
 	// sees the same rows the EXPLAIN did.
 	affected map[string][]int64
-	name     string
-	db       *gorm.DB
+	// execs is, for scaleAgesNoteUpdateLabel, the text, binds and RowsAffected
+	// of each real execution (same After gorm:raw callback).
+	execs map[string][]scaleExecution
+	name  string
+	db    *gorm.DB
 }
 
 func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	t.Helper()
-	x := &scaleExplainer{name: "test:scale_explain", db: db, affected: map[string][]int64{}}
+	x := &scaleExplainer{name: "test:scale_explain", db: db, affected: map[string][]int64{}, execs: map[string][]scaleExecution{}}
 	if err := db.Callback().Raw().Before("gorm:raw").Register(x.name, x.hook); err != nil {
 		t.Fatalf("register raw explainer: %v", err)
 	}
@@ -6539,18 +6647,24 @@ func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	return x
 }
 
-// rowsHook records how many rows the real execution of the consent scrub
-// touched (db.RowsAffected, which RawExec sets from the driver's result). It
-// adds no RETURNING to the production statement and runs no statement of its own.
+// rowsHook records how many rows the real execution of the consent scrub and
+// of the ages-note scrub touched (db.RowsAffected, which RawExec sets from the
+// driver's result), and the ages-note statement's text and binds. It adds no
+// RETURNING to the production statement and runs no statement of its own.
 func (x *scaleExplainer) rowsHook(db *gorm.DB) {
 	if !x.armed.Load() || db.Error != nil || db.DryRun || db.Statement.ConnPool == nil {
 		return
 	}
-	if scaleLabel(db.Statement.SQL.String()) != scaleConsentLabel {
+	label := scaleLabel(db.Statement.SQL.String())
+	if label != scaleConsentLabel && label != scaleAgesNoteUpdateLabel {
 		return
 	}
 	x.mu.Lock()
-	x.affected[scaleConsentLabel] = append(x.affected[scaleConsentLabel], db.RowsAffected)
+	x.affected[label] = append(x.affected[label], db.RowsAffected)
+	if label == scaleAgesNoteUpdateLabel {
+		x.execs[label] = append(x.execs[label], scaleExecution{sql: db.Statement.SQL.String(),
+			vars: append([]any(nil), db.Statement.Vars...), rows: db.RowsAffected})
+	}
 	x.mu.Unlock()
 }
 
@@ -6608,7 +6722,7 @@ func (x *scaleExplainer) hook(db *gorm.DB) {
 		return
 	}
 	x.mu.Lock()
-	x.plans = append(x.plans, scalePlan{label: label, lines: lines})
+	x.plans = append(x.plans, scalePlan{label: label, lines: lines, sql: text, vars: append([]any(nil), db.Statement.Vars...)})
 	x.mu.Unlock()
 }
 
@@ -6688,8 +6802,24 @@ var errScaleRollback = errors.New("scale explain: roll back")
 // after the transaction's own soft delete with the trigger's users lookup
 // seeing deleted_at (before it the statement raises P0001, so a recorded plan
 // proves the position).
+//
+// R4-T07A-4: eraseContactRequestTextIn follows, still after the soft delete
+// (before it the UPDATE raises 23514 and no plan is recorded), with the
+// helper-only oracle around it. This is a rolled-back statement-plan
+// measurement, not production order: the capture, account-request,
+// notification, dependent-record and snapshot-lock statements run before the
+// soft delete here, and it omits the contact gate, deletionHostPlan, the
+// hand-offs, promoteOnDisable, the final throttle delete and contactMutation's
+// reconcileContacts. It proves the plans on representative data and the
+// helper's own scope; it does not prove production statement order or lock
+// order. The harness is not reordered in this lane.
 func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 	t.Helper()
+	facts := readScaleAgesNoteFacts(t, app.DB)
+	if len(facts.BatchIDs) == 0 {
+		t.Fatal("the fixture has no ages note for U to scrub")
+	}
+	var helperOnly scaleHelperOnlyResult
 	x := newScaleExplainer(t, app.DB)
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
 		var u models.User
@@ -6734,6 +6864,19 @@ func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 		if err := eraseConsentEvidenceIn(tx, s); err != nil {
 			return err
 		}
+		scopeBefore, err := scaleHelperScopeState(tx, facts.BatchIDs)
+		if err != nil {
+			return err
+		}
+		if err := eraseContactRequestTextIn(tx, s); err != nil {
+			return err
+		}
+		x.armed.Store(false)
+		scopeAfter, err := scaleHelperScopeState(tx, facts.BatchIDs)
+		if err != nil {
+			return err
+		}
+		helperOnly = scaleHelperOnlyCompare(scopeBefore, scopeAfter)
 		return errScaleRollback
 	})
 	if !errors.Is(err, errScaleRollback) {
@@ -6741,18 +6884,28 @@ func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := scaleExplain{plans: append([]scalePlan(nil), x.plans...), affected: map[string][]int64{}}
+	out := scaleExplain{plans: append([]scalePlan(nil), x.plans...), affected: map[string][]int64{}, execs: map[string][]scaleExecution{},
+		agesFacts: facts, helperOnly: helperOnly}
 	for label, n := range x.affected {
 		out.affected[label] = append([]int64(nil), n...)
+	}
+	for label, e := range x.execs {
+		out.execs[label] = append([]scaleExecution(nil), e...)
 	}
 	return out
 }
 
 // scaleExplain is what explainScaleErasure measured: the plans, and the rows
-// each real execution of the consent scrub (scaleConsentLabel) touched.
+// each real execution of the consent scrub (scaleConsentLabel) and of the
+// ages-note UPDATE (scaleAgesNoteUpdateLabel) touched.
 type scaleExplain struct {
 	plans    []scalePlan
 	affected map[string][]int64
+	// execs are the real executions of the ages-note UPDATE (R4-T07A-4); the
+	// two fields after them are the fixture facts and the helper-only oracle.
+	execs      map[string][]scaleExecution
+	agesFacts  scaleAgesNoteFacts
+	helperOnly scaleHelperOnlyResult
 }
 
 var (
@@ -6903,6 +7056,16 @@ func logScaleReport(t *testing.T, plans []scalePlan) float64 {
 // FOLD_ERASURE_SCALE_JSON=<path> to write the plan, the counts and the medians
 // as JSON (results/r4-2d1b-scale.json).
 //
+// R4-T07A-4: the explain subtest also measures the ages-note lock selection and
+// UPDATE (RowsAffected = 4, five binds, four add_request_identity calls, the
+// helper-only scope) and classifies both plans with scaleAgesNoteScanVerdict;
+// bounded = false is logged and recorded, never a failure. Each of the three
+// timed deletes reads the contact_requests controls before and after: (u)
+// requests naming neither U as subject nor requester stay whole, pending ones
+// included; (r) U's requester-only rows keep their id, note and reason, and
+// their lifecycle is the pre-T07 result; (s) U's subject rows lose only the
+// note. Reason is unchanged on every row.
+//
 // Three fresh seeds each take the real DELETE /admin/users/:id once; the
 // median is reported. A fourth fresh seed gets the EXPLAIN (ANALYZE, BUFFERS)
 // run in a rolled-back transaction, so the plans' dead tuples never touch a
@@ -6918,6 +7081,8 @@ func TestAccountErasureScale(t *testing.T) {
 			app, ac := newScaleScene(t, base)
 			// The unrelated-person control (c3), recorded right after seeding.
 			othersBefore, targetRestBefore := scaleConsentControl(t, app.DB)
+			// R4-T07A-4: the contact_requests controls, read right before the same DELETE.
+			requestsBefore := readScaleContactState(t, app.DB)
 			started := time.Now()
 			r := deleteAccount(ac, scaleTargetID, nil)
 			elapsed := time.Since(started)
@@ -6925,6 +7090,7 @@ func TestAccountErasureScale(t *testing.T) {
 				t.Fatalf("delete: %d %s", r.code, r.body)
 			}
 			othersAfter, targetRestAfter := scaleConsentControl(t, app.DB)
+			checkScaleContactErasure(t, requestsBefore, readScaleContactState(t, app.DB))
 			if othersAfter != othersBefore {
 				t.Errorf("(c3) another person's consent rows changed: md5 %s, was %s", othersAfter, othersBefore)
 			}
@@ -6963,11 +7129,13 @@ func TestAccountErasureScale(t *testing.T) {
 	var recipientMS float64
 	var run scaleExplain
 	var facts scaleConsentFacts
+	var ages scaleAgesNoteEvidence
 	t.Run("explain", func(t *testing.T) {
 		app, _ := newScaleScene(t, base)
 		run = explainScaleErasure(t, app)
 		recipientMS = logScaleReport(t, run.plans)
 		facts = checkScaleConsentScrub(t, run)
+		ages = checkScaleAgesNoteScrub(t, run)
 	})
 	if len(timings) != 3 {
 		t.Fatalf("only %d of 3 timed deletes completed", len(timings))
@@ -6977,7 +7145,7 @@ func TestAccountErasureScale(t *testing.T) {
 	t.Logf("real DELETE of U at scale: median %s of %v (fastest %s, slowest %s)",
 		sorted[1].Round(time.Millisecond), timings, sorted[0].Round(time.Millisecond), sorted[2].Round(time.Millisecond))
 	t.Logf("recipient statement %.3f ms; whole DELETE median %s; bound %s", recipientMS, sorted[1].Round(time.Millisecond), erasureRecipientWait)
-	writeScaleResults(t, run, facts, timings, sorted[1])
+	writeScaleResults(t, run, facts, ages, timings, sorted[1])
 }
 
 // scaleConsentControl is the unrelated-person control: one hash over every
@@ -7005,7 +7173,7 @@ func scaleConsentControl(t *testing.T, db *gorm.DB) (others, targetRest string) 
 // timed medians for the database review, as JSON at FOLD_ERASURE_SCALE_JSON
 // (the results directory's r4-2d1b-scale.json). It writes nothing when the
 // variable is unset.
-func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, timings []time.Duration, median time.Duration) {
+func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, ages scaleAgesNoteEvidence, timings []time.Duration, median time.Duration) {
 	t.Helper()
 	path := os.Getenv("FOLD_ERASURE_SCALE_JSON")
 	if path == "" {
@@ -7030,6 +7198,9 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 		"usesIdxConsentsLatest":   facts.usesLatest,
 		"timedDeleteMillis":       millis,
 		"timedDeleteMedianMillis": float64(median.Microseconds()) / 1000,
+		// R4-T07A-4: the ages-note statements' plans, counts, verdicts and the
+		// helper-only oracle (no secrets, addresses, capabilities or note text).
+		"agesNote": ages,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -7038,6 +7209,1905 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 		t.Fatalf("write %s: %v", path, err)
 	}
 	t.Logf("wrote %s", path)
+}
+
+// ---------------------------------------------------------------------------
+// R4-T07A-4: statement plans and whole-erasure controls for the ages-note scrub
+// ---------------------------------------------------------------------------
+
+// What the scale run can and cannot show about eraseContactRequestTextIn.
+//
+// explainScaleErasure measures the helper's two statements with EXPLAIN
+// (ANALYZE, BUFFERS) on a 10,000-row contact_requests table, in a transaction
+// it rolls back, after that transaction's own soft delete (before it the UPDATE
+// would raise 23514 and no plan would be recorded). The harness is not the
+// production statement order: it runs the capture, account-request, notification
+// and dependent-record statements and the snapshot-lock probe BEFORE the soft
+// delete, and it leaves out the contact gate, deletionHostPlan, the hand-offs,
+// promoteOnDisable, the final throttle delete and contactMutation's
+// reconcileContacts. So it proves the plans on representative data and the
+// helper's scope; it does not prove production statement order or lock order.
+// Whole-erasure evidence is the three real DELETE runs (their controls below)
+// and the concurrency tests.
+//
+// Boundedness is claimed only where scaleAgesNoteScanVerdict says bounded for
+// both statements. The scale run never fails on bounded = false: the verdict and
+// the raw plans go to the evidence file, and a false verdict is an open
+// database-review finding (RC-4), not a reason to change a query here.
+
+// The id blocks of the fixture's contact_requests rows for U (see the seeds).
+var (
+	scaleCRSubjectTerminal   = []uint{9993, 9994}
+	scaleCRSubjectPending    = []uint{9995, 9996}
+	scaleCRRequesterTerminal = []uint{9997, 9998}
+	scaleCRRequesterPending  = []uint{9999, 10000}
+)
+
+// scaleMD5 is one md5 over expr of the contact_requests rows (alias c) matching
+// where, in id order; ” for no rows.
+func scaleMD5(db *gorm.DB, expr, where string, args ...any) (string, error) {
+	var out string
+	err := db.Raw(fmt.Sprintf("SELECT coalesce(md5(string_agg(%s, ',' ORDER BY c.id)), '') FROM contact_requests c WHERE %s", expr, where), args...).Scan(&out).Error
+	return out, err
+}
+
+// scaleAgesNoteFacts are the fixture facts recorded beside the plans, read
+// before the erasure: the table's size, S_U (every contact_requests row with
+// subject U, any purpose and status), the unrelated rows and the ids statement
+// 1 must select.
+type scaleAgesNoteFacts struct {
+	Total            int64  `json:"contactRequests"`
+	SU               int64  `json:"subjectRowsOfU"`
+	Unrelated        int64  `json:"unrelated"`
+	UnrelatedPending int64  `json:"unrelatedPending"`
+	BatchIDs         []uint `json:"batchIds"`
+}
+
+func readScaleAgesNoteFacts(t *testing.T, db *gorm.DB) scaleAgesNoteFacts {
+	t.Helper()
+	var f scaleAgesNoteFacts
+	count := func(dst *int64, query string, args ...any) {
+		if err := db.Raw(query, args...).Scan(dst).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	count(&f.Total, "SELECT count(*) FROM contact_requests")
+	count(&f.SU, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ?", scaleTargetID)
+	count(&f.Unrelated, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ?", scaleTargetID, scaleTargetID)
+	count(&f.UnrelatedPending, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ? AND status = 'pending'", scaleTargetID, scaleTargetID)
+	if err := db.Raw("SELECT id FROM contact_requests WHERE purpose = ? AND subject_user_id = ? AND add_childcare_ages_note <> '' ORDER BY id",
+		policy.RequestOccurrenceAdd, scaleTargetID).Scan(&f.BatchIDs).Error; err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// scaleHelperScope is what the helper-only oracle hashes inside the rolled-back
+// transaction: every row the lock selection did not pick, the picked rows
+// without their note, every id and reason, and how many picked rows still hold
+// a note. Hashes only; no row text is kept.
+type scaleHelperScope struct {
+	Others, SelectedRest, Reasons string
+	SelectedRows, SelectedNotes   int64
+}
+
+func scaleHelperScopeState(db *gorm.DB, selected []uint) (scaleHelperScope, error) {
+	var s scaleHelperScope
+	var err error
+	if s.Others, err = scaleMD5(db, "to_jsonb(c)::text", "c.id NOT IN ?", selected); err != nil {
+		return s, err
+	}
+	if s.SelectedRest, err = scaleMD5(db, "(to_jsonb(c) - 'add_childcare_ages_note')::text", "c.id IN ?", selected); err != nil {
+		return s, err
+	}
+	if s.Reasons, err = scaleMD5(db, "c.id::text || ':' || c.reason", "true"); err != nil {
+		return s, err
+	}
+	err = db.Raw("SELECT count(*), count(*) FILTER (WHERE add_childcare_ages_note <> '') FROM contact_requests WHERE id IN ?", selected).
+		Row().Scan(&s.SelectedRows, &s.SelectedNotes)
+	return s, err
+}
+
+// scaleHelperOnlyResult is the "helper-only scope" oracle: inside
+// explainScaleErasure, the helper changed the picked rows' note and nothing
+// else, and no other row at all.
+type scaleHelperOnlyResult struct {
+	SelectedRows          int64 `json:"selectedRows"`
+	SelectedNotesBefore   int64 `json:"selectedNotesBefore"`
+	SelectedNotesAfter    int64 `json:"selectedNotesAfter"`
+	OthersUnchanged       bool  `json:"otherRowsUnchanged"`
+	SelectedRestUnchanged bool  `json:"selectedRowsUnchangedExceptNote"`
+	ReasonsUnchanged      bool  `json:"reasonsUnchanged"`
+}
+
+func scaleHelperOnlyCompare(before, after scaleHelperScope) scaleHelperOnlyResult {
+	return scaleHelperOnlyResult{
+		SelectedRows:          after.SelectedRows,
+		SelectedNotesBefore:   before.SelectedNotes,
+		SelectedNotesAfter:    after.SelectedNotes,
+		OthersUnchanged:       before.Others != "" && before.Others == after.Others,
+		SelectedRestUnchanged: before.SelectedRest != "" && before.SelectedRest == after.SelectedRest && before.SelectedRows == after.SelectedRows,
+		ReasonsUnchanged:      before.Reasons != "" && before.Reasons == after.Reasons,
+	}
+}
+
+// ---- real-erasure controls (the three timed DELETE runs) -------------------
+
+// scaleLifecycle is the lifecycle of one request after the erasure.
+type scaleLifecycle struct {
+	Status    string
+	EndReason string
+	Done      bool
+}
+
+// scaleContactState is the control read before and after a real erasure of U:
+// hashes of the classes the erasure must leave alone, counts, and the
+// lifecycle of U's pending rows.
+type scaleContactState struct {
+	Total, SubjectRows, SubjectNotes, SubjectBlank int64
+	UnrelatedPendingRows                           int64
+	Reasons                                        string // (id, reason) of every row
+	Unrelated, UnrelatedPending                    string // (u) whole rows
+	RequesterNoteReason                            string // (r) (id, note, reason)
+	RequesterTerminal, RequesterPendingKept        string // (r) whole / all but lifecycle
+	SubjectTerminalRest, SubjectPendingKept        string // (s) all but the note / all but lifecycle and note
+	Lifecycle                                      map[uint]scaleLifecycle
+}
+
+func readScaleContactState(t *testing.T, db *gorm.DB) scaleContactState {
+	t.Helper()
+	var s scaleContactState
+	sum := func(expr, where string, args ...any) string {
+		out, err := scaleMD5(db, expr, where, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out == "" {
+			t.Fatalf("the contact_requests control hashed no rows (%s)", where)
+		}
+		return out
+	}
+	count := func(dst *int64, query string, args ...any) {
+		if err := db.Raw(query, args...).Scan(dst).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	const lifecycle = "'status' - 'end_reason' - 'completed_at'"
+	count(&s.Total, "SELECT count(*) FROM contact_requests")
+	count(&s.SubjectRows, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ?", scaleTargetID)
+	count(&s.SubjectNotes, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ? AND purpose = 'occurrence_add' AND add_childcare_ages_note <> ''", scaleTargetID)
+	count(&s.SubjectBlank, "SELECT count(*) FROM contact_requests WHERE subject_user_id = ? AND purpose = 'occurrence_add' AND add_childcare_ages_note = ''", scaleTargetID)
+	count(&s.UnrelatedPendingRows, "SELECT count(*) FROM contact_requests WHERE subject_user_id <> ? AND requester_id <> ? AND status = 'pending'", scaleTargetID, scaleTargetID)
+	s.Reasons = sum("c.id::text || ':' || c.reason", "true")
+	s.Unrelated = sum("to_jsonb(c)::text", "c.subject_user_id <> ? AND c.requester_id <> ?", scaleTargetID, scaleTargetID)
+	s.UnrelatedPending = sum("to_jsonb(c)::text", "c.subject_user_id <> ? AND c.requester_id <> ? AND c.status = 'pending'", scaleTargetID, scaleTargetID)
+	s.RequesterNoteReason = sum("c.id::text || ':' || c.add_childcare_ages_note || ':' || c.reason", "c.requester_id = ? AND c.subject_user_id <> ?", scaleTargetID, scaleTargetID)
+	s.RequesterTerminal = sum("to_jsonb(c)::text", "c.id IN ?", scaleCRRequesterTerminal)
+	s.RequesterPendingKept = sum("(to_jsonb(c) - "+lifecycle+")::text", "c.id IN ?", scaleCRRequesterPending)
+	s.SubjectTerminalRest = sum("(to_jsonb(c) - 'add_childcare_ages_note')::text", "c.id IN ?", scaleCRSubjectTerminal)
+	s.SubjectPendingKept = sum("(to_jsonb(c) - "+lifecycle+" - 'add_childcare_ages_note')::text", "c.id IN ?", scaleCRSubjectPending)
+	pending := append(append([]uint(nil), scaleCRSubjectPending...), scaleCRRequesterPending...)
+	var rows []struct {
+		ID        uint
+		Status    string
+		EndReason string
+		Done      bool
+	}
+	if err := db.Raw("SELECT id, status, end_reason, completed_at IS NOT NULL AS done FROM contact_requests WHERE id IN ? ORDER BY id", pending).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	s.Lifecycle = map[uint]scaleLifecycle{}
+	for _, r := range rows {
+		s.Lifecycle[r.ID] = scaleLifecycle{Status: r.Status, EndReason: r.EndReason, Done: r.Done}
+	}
+	return s
+}
+
+// checkScaleContactErasure judges one real erasure of U against the state read
+// just before it. The classes: (u) requests that name neither U as subject nor
+// as requester, (r) U's requester-only rows, (s) U's subject rows. The fixed
+// pre-T07 lifecycle result is what reconcileContacts does today, with the
+// ages-note scrub not involved: U's account is disabled, so AddIneligibility
+// answers account_disabled before it reads anything else, and a pending row of
+// U's, as subject or as requester, is ended with that reason (nothing here
+// expires: every pending row's expires_at is in the future). Terminal rows are
+// not candidates for reconcileContacts and stay whole. The reason column is
+// R4-T07B's and stays on every row of every class.
+func checkScaleContactErasure(t *testing.T, before, after scaleContactState) {
+	t.Helper()
+	if before.Total != 10000 || after.Total != before.Total || after.SubjectRows != before.SubjectRows {
+		t.Errorf("contact_requests rows: %d before and %d after, U's subject rows %d before and %d after; the erasure keeps every row",
+			before.Total, after.Total, before.SubjectRows, after.SubjectRows)
+	}
+	if after.Reasons != before.Reasons {
+		t.Errorf("a request's reason changed (every class): md5 %s, was %s", after.Reasons, before.Reasons)
+	}
+	// (u) the control set holds pending rows, checked on their own so a hash over
+	// terminal rows alone cannot pass.
+	if before.UnrelatedPendingRows < 1 || after.UnrelatedPendingRows != before.UnrelatedPendingRows {
+		t.Errorf("(u) unrelated pending rows: %d before and %d after, want at least one and the same", before.UnrelatedPendingRows, after.UnrelatedPendingRows)
+	}
+	if after.Unrelated != before.Unrelated {
+		t.Errorf("(u) an unrelated request changed: md5 %s, was %s", after.Unrelated, before.Unrelated)
+	}
+	if after.UnrelatedPending != before.UnrelatedPending {
+		t.Errorf("(u) an unrelated pending request changed: md5 %s, was %s", after.UnrelatedPending, before.UnrelatedPending)
+	}
+	// (r)
+	if after.RequesterNoteReason != before.RequesterNoteReason {
+		t.Errorf("(r) a requester-only row's id, note or reason changed: md5 %s, was %s", after.RequesterNoteReason, before.RequesterNoteReason)
+	}
+	if after.RequesterTerminal != before.RequesterTerminal {
+		t.Errorf("(r) a terminal requester-only row changed: md5 %s, was %s", after.RequesterTerminal, before.RequesterTerminal)
+	}
+	if after.RequesterPendingKept != before.RequesterPendingKept {
+		t.Errorf("(r) a pending requester-only row changed beyond its lifecycle: md5 %s, was %s", after.RequesterPendingKept, before.RequesterPendingKept)
+	}
+	// (s)
+	if before.SubjectNotes != 4 || after.SubjectNotes != 0 || after.SubjectBlank != 4 {
+		t.Errorf("(s) U's subject occurrence_add notes: %d before and %d after (%d blank), want 4, 0 and 4", before.SubjectNotes, after.SubjectNotes, after.SubjectBlank)
+	}
+	if after.SubjectTerminalRest != before.SubjectTerminalRest {
+		t.Errorf("(s) a terminal subject row changed beyond its note: md5 %s, was %s", after.SubjectTerminalRest, before.SubjectTerminalRest)
+	}
+	if after.SubjectPendingKept != before.SubjectPendingKept {
+		t.Errorf("(s) a pending subject row changed beyond its lifecycle and note: md5 %s, was %s", after.SubjectPendingKept, before.SubjectPendingKept)
+	}
+	for _, id := range append(append([]uint(nil), scaleCRSubjectPending...), scaleCRRequesterPending...) {
+		if b := before.Lifecycle[id]; b.Status != "pending" || b.Done {
+			t.Errorf("request %d was %+v before the erasure, want pending", id, b)
+		}
+		if a := after.Lifecycle[id]; a.Status != "ended" || a.EndReason != "account_disabled" || !a.Done {
+			t.Errorf("pending request %d after the erasure: status %q, end_reason %q, completed %v; the pre-T07 result is ended / account_disabled / completed",
+				id, a.Status, a.EndReason, a.Done)
+		}
+	}
+}
+
+// ---- plan parsing and the boundedness classifier --------------------------
+
+// scalePlanNode is one node of EXPLAIN (ANALYZE, BUFFERS) text.
+type scalePlanNode struct {
+	col       int
+	label     string
+	typ       string // "" when the classifier does not know the node
+	relation  string
+	index     string
+	hasActual bool
+	never     bool
+	rows      float64
+	loops     int64
+	attrs     map[string]string // first value of each "Name: value" line under the node
+	parent    int
+	children  []int
+}
+
+var (
+	scaleNodeRe  = regexp.MustCompile(`^(\s*)(->\s+)?(\S.*?)\s+\(cost=[^)]*\)(?:\s+\(actual time=[\d.]+\.\.[\d.]+ rows=([\d.]+) loops=(\d+)\)|\s+\((never executed)\))?\s*$`)
+	scaleAttrRe  = regexp.MustCompile(`^\s+([A-Z][A-Za-z ]*): (.*)$`)
+	scaleUsingRe = regexp.MustCompile(`^ using (\S+) on (\S+)`)
+	scaleOnRe    = regexp.MustCompile(`^ on (\S+)`)
+
+	// Longest first: "Index Scan" is a prefix of "Index Scan Backward".
+	scaleNodeTypes = []string{"Index Only Scan Backward", "Index Only Scan", "Index Scan Backward", "Index Scan",
+		"Bitmap Heap Scan", "Bitmap Index Scan", "BitmapAnd", "BitmapOr", "Seq Scan", "LockRows", "Sort", "Update"}
+)
+
+func scaleClassifyLabel(n *scalePlanNode) {
+	for _, typ := range scaleNodeTypes {
+		if n.label != typ && !strings.HasPrefix(n.label, typ+" ") {
+			continue
+		}
+		n.typ = typ
+		rest := strings.TrimPrefix(n.label, typ)
+		switch typ {
+		case "Index Scan", "Index Scan Backward", "Index Only Scan", "Index Only Scan Backward":
+			if m := scaleUsingRe.FindStringSubmatch(rest); m != nil {
+				n.index, n.relation = m[1], m[2]
+			}
+		case "Bitmap Index Scan":
+			if m := scaleOnRe.FindStringSubmatch(rest); m != nil {
+				n.index = m[1]
+			}
+		case "Seq Scan", "Bitmap Heap Scan", "Update":
+			if m := scaleOnRe.FindStringSubmatch(rest); m != nil {
+				n.relation = m[1]
+			}
+		}
+		return
+	}
+}
+
+// scaleParsePlan reads plan text into nodes (parents by indentation of the
+// "->" arrow). It refuses a node line it cannot read, a second root and a plan
+// that does not start at a root node. Attribute lines attach to the node above
+// them until the footer (Planning, Trigger, Execution Time) begins.
+func scaleParsePlan(lines []string) ([]*scalePlanNode, error) {
+	var nodes []*scalePlanNode
+	var stack []int
+	cur, footer := -1, false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " ")
+		isNode := strings.Contains(line, "(cost=") || strings.HasPrefix(trimmed, "->")
+		if !isNode && i > 0 && len(line) == len(trimmed) {
+			footer, cur = true, -1
+			continue
+		}
+		if isNode {
+			m := scaleNodeRe.FindStringSubmatch(line)
+			if m == nil || footer {
+				return nil, fmt.Errorf("line %d is not a plan node the classifier can read", i+1)
+			}
+			col := len(m[1])
+			if len(nodes) == 0 && (col != 0 || m[2] != "") {
+				return nil, fmt.Errorf("the plan does not start at a root node")
+			}
+			for len(stack) > 0 && nodes[stack[len(stack)-1]].col >= col {
+				stack = stack[:len(stack)-1]
+			}
+			n := &scalePlanNode{col: col, label: strings.TrimSpace(m[3]), attrs: map[string]string{}, parent: -1}
+			if len(stack) > 0 {
+				n.parent = stack[len(stack)-1]
+			} else if len(nodes) > 0 {
+				return nil, fmt.Errorf("line %d starts a second root", i+1)
+			}
+			switch {
+			case m[6] != "":
+				n.never = true
+			case m[4] != "":
+				rows, err := strconv.ParseFloat(m[4], 64)
+				loops, err2 := strconv.ParseInt(m[5], 10, 64)
+				if err != nil || err2 != nil {
+					return nil, fmt.Errorf("line %d has unreadable actual counters", i+1)
+				}
+				n.hasActual, n.rows, n.loops = true, rows, loops
+			}
+			scaleClassifyLabel(n)
+			nodes = append(nodes, n)
+			idx := len(nodes) - 1
+			if n.parent >= 0 {
+				nodes[n.parent].children = append(nodes[n.parent].children, idx)
+			}
+			stack = append(stack, idx)
+			cur = idx
+			continue
+		}
+		if cur < 0 {
+			continue
+		}
+		if m := scaleAttrRe.FindStringSubmatch(line); m != nil {
+			if _, seen := nodes[cur].attrs[m[1]]; !seen {
+				nodes[cur].attrs[m[1]] = strings.TrimSpace(m[2])
+			}
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("the plan has no nodes")
+	}
+	return nodes, nil
+}
+
+// scaleTriggerCalls is the calls= of the named trigger's line in the plan footer.
+func scaleTriggerCalls(lines []string, trigger string) (int64, bool) {
+	re := regexp.MustCompile(`^Trigger ` + regexp.QuoteMeta(trigger) + `: time=[\d.]+ calls=(\d+)`)
+	for _, line := range lines {
+		if m := re.FindStringSubmatch(line); m != nil {
+			n, err := strconv.ParseInt(m[1], 10, 64)
+			return n, err == nil
+		}
+	}
+	return 0, false
+}
+
+// scaleStripParens removes parentheses that wrap the whole text.
+func scaleStripParens(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+			return s
+		}
+		depth, wraps, quoted := 0, false, false
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if c == '\'' {
+				quoted = !quoted
+			}
+			if quoted || c == '\'' {
+				continue
+			}
+			if c == '(' {
+				depth++
+			} else if c == ')' {
+				depth--
+				if depth == 0 {
+					wraps = i == len(s)-1
+					break
+				}
+			}
+		}
+		if !wraps {
+			return s
+		}
+		s = s[1 : len(s)-1]
+	}
+}
+
+// scaleSplitAt splits at the top-level separator, outside quotes and brackets.
+func scaleSplitAt(s, sep string) []string {
+	var parts []string
+	depth, start, quoted := 0, 0, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\'' {
+			quoted = !quoted
+			continue
+		}
+		if quoted {
+			continue
+		}
+		if c == '(' || c == '[' {
+			depth++
+		} else if c == ')' || c == ']' {
+			depth--
+		} else if depth == 0 && strings.HasPrefix(s[i:], sep) {
+			parts = append(parts, s[start:i])
+			start = i + len(sep)
+			i = start - 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// scaleSplitAnd splits at the top-level " AND ".
+func scaleSplitAnd(s string) []string { return scaleSplitAt(s, " AND ") }
+
+// scaleSplitOr splits at the top-level " OR ".
+func scaleSplitOr(s string) []string { return scaleSplitAt(s, " OR ") }
+
+// scaleVarUint reads a captured bind value as an id.
+func scaleVarUint(v any) (uint64, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if rv.Int() < 0 {
+			return 0, false
+		}
+		return uint64(rv.Int()), true
+	}
+	return 0, false
+}
+
+var (
+	scaleValueRe     = regexp.MustCompile(`^(?:'(\d+)'::bigint|(\d+)|\$(\d+))$`)
+	scaleArrayLitRe  = regexp.MustCompile(`^'\{([\d,]*)\}'::bigint\[\]$`)
+	scaleArrayExprRe = regexp.MustCompile(`^ARRAY\[(.*)\]$`)
+)
+
+// scaleDecodeValue reads one displayed value: a bigint literal, a number or a
+// $n bind parameter resolved against the captured Vars of that execution.
+func scaleDecodeValue(tok string, vars []any) (uint64, bool) {
+	m := scaleValueRe.FindStringSubmatch(scaleStripParens(tok))
+	if m == nil {
+		return 0, false
+	}
+	switch {
+	case m[1] != "":
+		n, err := strconv.ParseUint(m[1], 10, 64)
+		return n, err == nil
+	case m[2] != "":
+		n, err := strconv.ParseUint(m[2], 10, 64)
+		return n, err == nil
+	}
+	i, err := strconv.Atoi(m[3])
+	if err != nil || i < 1 || i > len(vars) {
+		return 0, false
+	}
+	return scaleVarUint(vars[i-1])
+}
+
+// scaleDecodeArray reads the argument of "id = ANY (...)": a '{...}'::bigint[]
+// literal or ARRAY[...] of values.
+func scaleDecodeArray(s string, vars []any) ([]uint64, bool) {
+	var items []string
+	if m := scaleArrayLitRe.FindStringSubmatch(s); m != nil {
+		if m[1] != "" {
+			items = strings.Split(m[1], ",")
+		}
+	} else if m := scaleArrayExprRe.FindStringSubmatch(s); m != nil {
+		items = strings.Split(m[1], ",")
+	} else {
+		return nil, false
+	}
+	out := make([]uint64, 0, len(items))
+	for _, it := range items {
+		v, ok := scaleDecodeValue(it, vars)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, v)
+	}
+	return out, true
+}
+
+// scaleSameIDs compares decoded ids with the batch as sorted lists: the same
+// set and the same count, not the same length alone.
+func scaleSameIDs(got []uint64, batch []uint) bool {
+	if len(got) != len(batch) {
+		return false
+	}
+	a := append([]uint64(nil), got...)
+	b := make([]uint64, len(batch))
+	for i, id := range batch {
+		b[i] = uint64(id)
+	}
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	return reflect.DeepEqual(a, b)
+}
+
+// scaleRestriction is what a displayed condition restricts, decoded. A problem
+// that is only a mismatch (two subjects, two id restrictions) is a problem; one
+// the classifier could not resolve at all also sets unresolved, which withholds
+// the exact totals.
+type scaleRestriction struct {
+	hasSubject bool
+	subject    uint64
+	hasIDs     bool
+	ids        []uint64
+	problems   []string
+	unresolved bool
+}
+
+// scaleIDTerm reads one "id = ANY (...)" or "id = value" term. isID is false for
+// any other text; ok is false when it is an id term the classifier cannot decode.
+func scaleIDTerm(term string, vars []any) (ids []uint64, isID, ok bool) {
+	switch {
+	case strings.HasPrefix(term, "id = ANY "):
+		ids, ok = scaleDecodeArray(scaleStripParens(strings.TrimPrefix(term, "id = ANY ")), vars)
+		return ids, true, ok
+	case strings.HasPrefix(term, "id = "):
+		v, ok := scaleDecodeValue(strings.TrimPrefix(term, "id = "), vars)
+		return []uint64{v}, true, ok
+	}
+	return nil, false, true
+}
+
+// scaleParseRestriction reads the subject_user_id and id terms of a condition:
+// top-level conjuncts, and an OR group made only of id terms (a BitmapOr's
+// Recheck Cond) as one id set. Other conjuncts are ignored: they can only narrow
+// the scan, and the classifier credits only what it understands. An OR group
+// that mixes id or subject terms with other text, or a displayed value it cannot
+// resolve, is unresolved.
+var scaleRelevantColumnRe = regexp.MustCompile(`\b(?:id|subject_user_id)\b`)
+
+func scaleParseRestriction(cond string, vars []any) scaleRestriction {
+	var r scaleRestriction
+	if strings.TrimSpace(cond) == "" {
+		return r
+	}
+	unresolved := func(msg string) {
+		r.problems = append(r.problems, msg)
+		r.unresolved = true
+	}
+	addIDs := func(ids []uint64) {
+		if r.hasIDs {
+			r.problems = append(r.problems, "the condition restricts ids twice")
+			return
+		}
+		r.hasIDs, r.ids = true, ids
+	}
+	for _, c := range scaleSplitAnd(scaleStripParens(cond)) {
+		c = scaleStripParens(c)
+		if parts := scaleSplitOr(c); len(parts) > 1 {
+			var union []uint64
+			relevant, other, bad := false, false, false
+			for _, p := range parts {
+				p = scaleStripParens(p)
+				if strings.HasPrefix(p, "subject_user_id = ") {
+					relevant, bad = true, true
+					unresolved("an OR group names a subject, which the classifier does not read")
+					continue
+				}
+				ids, isID, ok := scaleIDTerm(p, vars)
+				switch {
+				case !isID:
+					other = true
+					if scaleRelevantColumnRe.MatchString(p) {
+						bad = true
+						unresolved("an unsupported OR subtree names an id or subject")
+					}
+				case !ok:
+					relevant, bad = true, true
+					unresolved("a displayed id in an OR group is not a number or bind parameter the classifier resolves")
+				default:
+					relevant = true
+					union = append(union, ids...)
+				}
+			}
+			if relevant && other && !bad {
+				unresolved("an OR group mixes id restrictions with other terms the classifier does not read")
+			} else if relevant && !bad {
+				addIDs(union)
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(c, "subject_user_id = "):
+			v, ok := scaleDecodeValue(strings.TrimPrefix(c, "subject_user_id = "), vars)
+			if !ok {
+				unresolved("a displayed subject value is not a number or bind parameter the classifier resolves")
+				continue
+			}
+			if r.hasSubject && r.subject != v {
+				r.problems = append(r.problems, "the condition names two subjects")
+			}
+			r.hasSubject, r.subject = true, v
+		default:
+			ids, isID, ok := scaleIDTerm(c, vars)
+			switch {
+			case !isID:
+				if scaleRelevantColumnRe.MatchString(c) {
+					unresolved("an unsupported condition names an id or subject")
+				}
+			case !ok:
+				unresolved("a displayed id or id array is not one the classifier resolves")
+			default:
+				addIDs(ids)
+			}
+		}
+	}
+	return r
+}
+
+// scaleScanInput is one measured execution: its plan text, the statement text
+// and bind values EXPLAIN ANALYZE ran, and the facts the caller knows
+// independently (U, the batch ids, S_U).
+type scaleScanInput struct {
+	Statement string // "select" or "update"
+	Lines     []string
+	SQL       string
+	Vars      []any
+	Subject   uint
+	Batch     []uint
+	SU        int64
+}
+
+// scaleBindingProblems checks the captured SQL and Vars of the execution
+// against the independent facts: the binds are exactly U (select) or exactly
+// the batch ids and U (update), in the placeholders the SQL shows. unresolved
+// is true when a captured bind could not be read as an id at all, not merely
+// when it differs from the independent fact.
+func scaleBindingProblems(in scaleScanInput) (out []string, unresolved bool) {
+	text := strings.ReplaceAll(strings.Join(strings.Fields(in.SQL), " "), ", ", ",")
+	isSubject := func(v any) bool {
+		u, ok := scaleVarUint(v)
+		return ok && u == uint64(in.Subject)
+	}
+	switch in.Statement {
+	case "select":
+		if len(in.Batch) != 0 {
+			out = append(out, "a select has no batch ids")
+		}
+		if len(in.Vars) != 1 || !isSubject(in.Vars[0]) {
+			out = append(out, fmt.Sprintf("the captured binds (%d) are not exactly U", len(in.Vars)))
+			if len(in.Vars) == 1 {
+				if _, ok := scaleVarUint(in.Vars[0]); !ok {
+					unresolved = true
+				}
+			}
+		}
+		if !strings.Contains(text, "subject_user_id = $1") {
+			out = append(out, "the captured SQL does not bind U as $1")
+		}
+	case "update":
+		n := len(in.Batch)
+		if n == 0 {
+			return append(out, "no batch ids to bind"), true
+		}
+		if len(in.Vars) != n+1 {
+			return append(out, fmt.Sprintf("%d bind values captured, want the %d batch ids and U", len(in.Vars), n)), true
+		}
+		got := make([]uint64, 0, n)
+		placeholders := make([]string, n)
+		for i, v := range in.Vars[:n] {
+			id, ok := scaleVarUint(v)
+			if !ok {
+				return append(out, "a captured id bind is not an id"), true
+			}
+			got = append(got, id)
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		}
+		if !scaleSameIDs(got, in.Batch) {
+			out = append(out, "the captured id binds are not the batch ids")
+		}
+		if !isSubject(in.Vars[n]) {
+			out = append(out, "the captured subject bind is not U")
+			if _, ok := scaleVarUint(in.Vars[n]); !ok {
+				unresolved = true
+			}
+		}
+		if !strings.Contains(text, "id IN ("+strings.Join(placeholders, ",")+")") {
+			out = append(out, "the captured SQL does not bind the batch ids as $1.. in one IN list")
+		}
+		if !strings.Contains(text, "subject_user_id = $"+strconv.Itoa(n+1)) {
+			out = append(out, "the captured SQL does not bind U as the last parameter")
+		}
+	default:
+		out = append(out, "unknown statement kind "+strconv.Quote(in.Statement))
+		unresolved = true
+	}
+	return out, unresolved
+}
+
+// scaleScanNodeEvidence is what the report keeps about one node that reads
+// contact_requests (role "heap") or feeds a bitmap heap scan ("bitmap-index").
+// Plan text holds ids, column names and constants only: no note text, address
+// or capability.
+type scaleScanNodeEvidence struct {
+	Role             string  `json:"role"`
+	Node             string  `json:"node"`
+	Index            string  `json:"index,omitempty"`
+	IndexCond        string  `json:"indexCond,omitempty"`
+	RecheckCond      string  `json:"recheckCond,omitempty"`
+	Filter           string  `json:"filter,omitempty"`
+	ActualRows       float64 `json:"actualRows"`
+	Loops            int64   `json:"loops"`
+	RemovedByFilter  float64 `json:"rowsRemovedByFilter"`
+	RemovedByRecheck float64 `json:"rowsRemovedByIndexRecheck"`
+	HeapBlocksExact  int64   `json:"heapBlocksExact"`
+	HeapBlocksLossy  int64   `json:"heapBlocksLossy"`
+	BuffersHit       int64   `json:"buffersSharedHit"`
+	BuffersRead      int64   `json:"buffersSharedRead"`
+	Restriction      string  `json:"restriction"`
+}
+
+// scaleScanVerdict is the classifier's answer for one execution. Bounded is true
+// only when every proof predicate holds and every accounted observation is
+// within its bound. Candidates (heap rows examined: actual rows plus rows
+// removed by filter and by index recheck) and BitmapEntries (index entries,
+// attributed apart so an entry and its heap tuple are never two candidates) are
+// valid only when their Known flag is set; an unsupported, incomplete or
+// rounded measurement leaves them unavailable, never zero.
+type scaleScanVerdict struct {
+	Statement            string                  `json:"statement"`
+	ExactBindingOK       bool                    `json:"exactBindingOk"`
+	AccessConditionOK    bool                    `json:"accessConditionOk"`
+	MeasurementComplete  bool                    `json:"measurementComplete"`
+	NonLossy             bool                    `json:"nonLossy"`
+	LoopsOne             bool                    `json:"loopsOne"`
+	AllBranchesAccounted bool                    `json:"allBranchesAccounted"`
+	Candidates           int64                   `json:"candidates"`
+	CandidatesKnown      bool                    `json:"candidatesKnown"`
+	BitmapEntries        int64                   `json:"bitmapEntries"`
+	BitmapEntriesKnown   bool                    `json:"bitmapEntriesKnown"`
+	FeedingRows          int64                   `json:"feedingRows"`
+	FeedingRowsKnown     bool                    `json:"feedingRowsKnown"`
+	Bound                int64                   `json:"bound"`
+	Bounded              bool                    `json:"bounded"`
+	Reasons              []string                `json:"reasons"`
+	OmittedZero          []string                `json:"omittedZeroCounters,omitempty"`
+	Nodes                []scaleScanNodeEvidence `json:"nodes"`
+}
+
+// scaleAttrNumber reads a "Name: N" counter of a node. An absent counter is
+// present=false, ok=true (the text format omits zero counters, which the caller
+// decodes as zero only on a node that has its actual counters). A counter that
+// is not exactly one finite, nonnegative number is ok=false with value 0, so a
+// bad value is never carried into an export or a sum.
+func scaleAttrNumber(n *scalePlanNode, name string) (value float64, present, ok bool) {
+	raw, found := n.attrs[name]
+	if !found {
+		return 0, false, true
+	}
+	fields := strings.Fields(raw)
+	if len(fields) != 1 {
+		return 0, true, false
+	}
+	parsed, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
+		return 0, true, false
+	}
+	return parsed, true, true
+}
+
+// scaleMaxCount is an exclusive bound: raw 2^53+1 rounds to 2^53 in
+// float64, so the threshold itself must also be refused.
+const scaleMaxCount = 1 << 53
+
+// scaleWholeCount converts a finite, nonnegative, integral counter that a
+// float64 represents exactly; anything else is refused with ok=false.
+func scaleWholeCount(v float64) (int64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v != math.Trunc(v) || v >= scaleMaxCount {
+		return 0, false
+	}
+	return int64(v), true
+}
+
+// scaleAddCount adds two nonnegative counters, refusing an overflow.
+func scaleAddCount(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 || a > math.MaxInt64-b {
+		return 0, false
+	}
+	return a + b, true
+}
+
+var scaleDigitsRe = regexp.MustCompile(`^[0-9]+$`)
+
+// scaleHeapBlocks reads "Heap Blocks: exact=N lossy=M". The text format omits a
+// zero part, so an absent part is zero; a part that is unknown, repeated, not a
+// plain nonnegative integer or too large for int64 makes the whole line
+// unreadable (ok=false) rather than a zero.
+func scaleHeapBlocks(raw string) (exact, lossy int64, ok bool) {
+	seen := map[string]bool{}
+	for _, f := range strings.Fields(raw) {
+		k, val, cut := strings.Cut(f, "=")
+		if !cut || (k != "exact" && k != "lossy") || seen[k] || !scaleDigitsRe.MatchString(val) {
+			return 0, 0, false
+		}
+		n, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		seen[k] = true
+		if k == "exact" {
+			exact = n
+		} else {
+			lossy = n
+		}
+	}
+	return exact, lossy, true
+}
+
+// scaleBuffers reads the shared hit and read counts of a "Buffers:" line.
+func scaleBuffers(raw string) (hit, read int64) {
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.HasPrefix(part, "shared ") {
+			continue
+		}
+		for _, f := range strings.Fields(part)[1:] {
+			k, val, ok := strings.Cut(f, "=")
+			n, err := strconv.ParseInt(val, 10, 64)
+			if !ok || err != nil {
+				continue
+			}
+			switch k {
+			case "hit":
+				hit = n
+			case "read":
+				read = n
+			}
+		}
+	}
+	return hit, read
+}
+
+func scaleNodeEvidence(n *scalePlanNode, role string) scaleScanNodeEvidence {
+	e := scaleScanNodeEvidence{Role: role, Node: n.label, Index: n.index, IndexCond: n.attrs["Index Cond"],
+		RecheckCond: n.attrs["Recheck Cond"], Filter: n.attrs["Filter"], ActualRows: n.rows, Loops: n.loops, Restriction: "none"}
+	e.RemovedByFilter, _, _ = scaleAttrNumber(n, "Rows Removed by Filter")
+	e.RemovedByRecheck, _, _ = scaleAttrNumber(n, "Rows Removed by Index Recheck")
+	if exact, lossy, ok := scaleHeapBlocks(n.attrs["Heap Blocks"]); ok {
+		e.HeapBlocksExact, e.HeapBlocksLossy = exact, lossy
+	}
+	e.BuffersHit, e.BuffersRead = scaleBuffers(n.attrs["Buffers"])
+	return e
+}
+
+// scaleIDsWithin reports whether ids are distinct members of the batch.
+func scaleIDsWithin(ids []uint64, batch []uint) bool {
+	in := map[uint64]bool{}
+	for _, b := range batch {
+		in[uint64(b)] = true
+	}
+	seen := map[uint64]bool{}
+	for _, id := range ids {
+		if !in[id] || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
+// scaleAgesNoteScanVerdict decides, conservatively, whether the measured
+// execution of one ages-note statement was bounded by the subject's own rows
+// (RC-4). It claims nothing it did not prove:
+//
+//   - the displayed parameters are bound to the captured SQL and Vars of this
+//     execution and to the caller's independent facts (U, the batch ids as a
+//     set). Every subject and id the plan displays in an Index Cond, a Recheck
+//     Cond or a Filter, and each BitmapOr leaf on its own, is decoded and checked
+//     that way; a Filter or Recheck Cond validates a binding but never qualifies
+//     as access;
+//   - every contact_requests feeding scan must restrict access through an Index
+//     Cond (or, for a bitmap heap scan, through the Index Cond of its feeding
+//     Bitmap Index Scan leaves) to U or, for the UPDATE, to exactly the batch
+//     ids; Filter alone does not qualify, and a sequential scan never does;
+//   - only supported, non-lossy shapes with loops=1 and complete counters prove
+//     anything. Counters the text format omits when zero (Rows Removed by
+//     Filter, Rows Removed by Index Recheck) read as zero only on a node that
+//     has its actual counters; a missing actual, a "never executed" node, a
+//     rounded average, any rows removed by index recheck or lossy page, an
+//     unreadable, negative, nonfinite or oversized counter, an unknown node or an
+//     unclaimed bitmap node leaves the measurement unproven;
+//   - candidates are summed over feeding scans and bitmap entries over bitmap
+//     index leaves, apart from each other, and each sum is held to the bound
+//     (S_U for a subject restriction, the batch size for exact ids; the smaller
+//     one when scans differ);
+//   - an exact total is published only when the measurement is complete,
+//     non-lossy, loops=1, fully accounted and every displayed binding resolved;
+//     otherwise the Known flags stay false and the totals zero, and only the
+//     per-node counters in Nodes remain.
+func scaleAgesNoteScanVerdict(in scaleScanInput) scaleScanVerdict {
+	v := scaleScanVerdict{Statement: in.Statement, Bound: -1, ExactBindingOK: true, AccessConditionOK: true,
+		MeasurementComplete: true, NonLossy: true, LoopsOne: true, AllBranchesAccounted: true, Reasons: []string{}}
+	fail := func(format string, args ...any) { v.Reasons = append(v.Reasons, fmt.Sprintf(format, args...)) }
+	// unresolved: some displayed or captured binding could not be read at all.
+	problems, unresolved := scaleBindingProblems(in)
+	for _, p := range problems {
+		v.ExactBindingOK = false
+		fail("binding: %s", p)
+	}
+	nodes, err := scaleParsePlan(in.Lines)
+	if err != nil {
+		fail("not proven: %v", err)
+		v.AccessConditionOK, v.MeasurementComplete, v.NonLossy, v.LoopsOne, v.AllBranchesAccounted = false, false, false, false, false
+		return v
+	}
+
+	var heaps []int
+	claimed := map[int]bool{}
+	for i, n := range nodes {
+		switch n.typ {
+		case "Update":
+			if n.relation != "contact_requests" {
+				v.AllBranchesAccounted = false
+				fail("not proven: the plan updates %q, not contact_requests", n.relation)
+			}
+		case "LockRows", "Sort":
+		case "Seq Scan", "Index Scan", "Index Scan Backward", "Index Only Scan", "Index Only Scan Backward", "Bitmap Heap Scan":
+			if n.relation != "contact_requests" {
+				v.AllBranchesAccounted = false
+				fail("not proven: %q reads %q, which this statement's measurement does not account for", n.label, n.relation)
+				continue
+			}
+			heaps = append(heaps, i)
+		case "Bitmap Index Scan", "BitmapOr", "BitmapAnd":
+			// Judged with the bitmap heap scan above them; unclaimed ones are
+			// reported after the loop.
+		default:
+			v.AllBranchesAccounted = false
+			fail("not proven: unknown plan node %q", n.label)
+		}
+	}
+
+	var candidates, entries, feeding, bound int64
+	bound = -1
+	sawBitmap, overflow := false, false
+	lower := func(b int64) {
+		if bound < 0 || b < bound {
+			bound = b
+		}
+	}
+	// add sums nonnegative counters; an overflow leaves the measurement unproven.
+	add := func(dst *int64, k int64) {
+		sum, ok := scaleAddCount(*dst, k)
+		if !ok {
+			if !overflow {
+				fail("not proven: the counters overflow when summed")
+			}
+			overflow, v.MeasurementComplete = true, false
+			return
+		}
+		*dst = sum
+	}
+	// validate decodes one displayed condition and checks every subject and id it
+	// names against U and the batch. A subset condition (one BitmapOr leaf) need
+	// only name distinct members of the batch; any other names exactly the batch.
+	// It says nothing about whether the condition qualifies as access.
+	validate := func(where, cond string, subset bool) (scaleRestriction, bool) {
+		r := scaleParseRestriction(cond, in.Vars)
+		bad := false
+		for _, p := range r.problems {
+			fail("binding: %s: %s", where, p)
+			bad = true
+		}
+		unresolved = unresolved || r.unresolved
+		if r.hasSubject && r.subject != uint64(in.Subject) {
+			fail("binding: %s: the displayed subject %d is not U (%d)", where, r.subject, in.Subject)
+			bad = true
+		}
+		if r.hasIDs {
+			if subset && !scaleIDsWithin(r.ids, in.Batch) {
+				fail("binding: %s: the displayed ids (%d) are not distinct members of the captured batch ids (%d)", where, len(r.ids), len(in.Batch))
+				bad = true
+			} else if !subset && !scaleSameIDs(r.ids, in.Batch) {
+				fail("binding: %s: the displayed ids (%d) are not the captured batch ids (%d) as a set", where, len(r.ids), len(in.Batch))
+				bad = true
+			}
+		}
+		if bad {
+			v.ExactBindingOK = false
+		}
+		return r, !bad
+	}
+	// judge turns a validated restriction into its access kind and bound.
+	judge := func(r scaleRestriction, valid bool) (kind string, b int64) {
+		if !valid {
+			return "", -1
+		}
+		switch {
+		case r.hasIDs && in.Statement == "update":
+			return "ids", int64(len(in.Batch))
+		case r.hasSubject:
+			if in.SU <= 0 {
+				fail("not proven: S_U is not known, so a subject restriction has no bound")
+				return "", -1
+			}
+			return "subject", in.SU
+		}
+		return "", -1
+	}
+
+	for _, i := range heaps {
+		n := nodes[i]
+		e := scaleNodeEvidence(n, "heap")
+		if n.never || !n.hasActual {
+			v.MeasurementComplete = false
+			fail("not proven: %q has no actual counters (never executed or not analyzed)", n.label)
+		} else {
+			if n.loops != 1 {
+				v.LoopsOne = false
+				fail("not proven: %q ran %d loops, so its row counts are rounded averages", n.label, n.loops)
+			}
+			if _, ok := scaleWholeCount(n.rows); !ok {
+				v.MeasurementComplete = false
+				fail("not proven: %q reports a fractional row count (or one that is unreadable or oversized)", n.label)
+			}
+		}
+		rows, _ := scaleWholeCount(n.rows)
+		removedF, hasF, okF := scaleAttrNumber(n, "Rows Removed by Filter")
+		removedR, _, okR := scaleAttrNumber(n, "Rows Removed by Index Recheck")
+		for _, c := range []struct {
+			name string
+			f    float64
+			ok   bool
+		}{{"Rows Removed by Filter", removedF, okF}, {"Rows Removed by Index Recheck", removedR, okR}} {
+			if _, ok := scaleWholeCount(c.f); !c.ok || !ok {
+				v.MeasurementComplete = false
+				fail("not proven: %q reports an unreadable, fractional or oversized %q", n.label, c.name)
+			}
+		}
+		if !hasF && n.attrs["Filter"] != "" && n.hasActual {
+			v.OmittedZero = append(v.OmittedZero, n.label+": Rows Removed by Filter")
+		}
+		removedFilter, _ := scaleWholeCount(removedF)
+		removedRecheck, _ := scaleWholeCount(removedR)
+		cand := rows
+		add(&cand, removedFilter)
+		add(&cand, removedRecheck)
+		// Every displayed Filter is decoded for its bindings on every scan type; it
+		// is never credited as access.
+		validate(n.label+" Filter", n.attrs["Filter"], false)
+		var lossy int64
+
+		switch n.typ {
+		case "Seq Scan":
+			v.AccessConditionOK = false
+			fail("a sequential scan of contact_requests examined %d rows to find its output; no index restricts access", cand)
+		case "Bitmap Heap Scan":
+			sawBitmap = true
+			if n.attrs["Recheck Cond"] == "" {
+				v.MeasurementComplete = false
+				fail("not proven: %q has no Recheck Cond", n.label)
+			}
+			validate(n.label+" Recheck Cond", n.attrs["Recheck Cond"], false)
+			raw, shown := n.attrs["Heap Blocks"]
+			var exact int64
+			blocksOK := true
+			if shown {
+				exact, lossy, blocksOK = scaleHeapBlocks(raw)
+				if !blocksOK {
+					v.MeasurementComplete = false
+					fail("not proven: %q shows a Heap Blocks line the classifier cannot read", n.label)
+				}
+			}
+			e.HeapBlocksExact, e.HeapBlocksLossy = exact, lossy
+			if cand > 0 {
+				blocks, sumOK := scaleAddCount(exact, lossy)
+				switch {
+				case !shown:
+					v.MeasurementComplete = false
+					fail("not proven: %q read %d rows but shows no Heap Blocks line", n.label, cand)
+				case blocksOK && (!sumOK || blocks == 0):
+					v.MeasurementComplete = false
+					fail("not proven: %q read %d rows but reports no valid heap block count", n.label, cand)
+				}
+			}
+			// The feeding bitmap tree: leaves are Bitmap Index Scans; a BitmapOr is
+			// walked; a BitmapAnd or anything else is not classified.
+			var leaves []int
+			var walk func(parent int)
+			walk = func(parent int) {
+				for _, c := range nodes[parent].children {
+					claimed[c] = true
+					switch nodes[c].typ {
+					case "Bitmap Index Scan":
+						leaves = append(leaves, c)
+					case "BitmapOr":
+						walk(c)
+					default:
+						v.AllBranchesAccounted = false
+						fail("not proven: %q under a bitmap heap scan is not classified", nodes[c].label)
+					}
+				}
+			}
+			walk(i)
+			orWrapped := len(leaves) > 1
+			if len(leaves) == 0 {
+				v.AllBranchesAccounted = false
+				fail("not proven: %q has no feeding Bitmap Index Scan", n.label)
+			}
+			var union scaleRestriction
+			unionValid := true
+			for _, l := range leaves {
+				ln := nodes[l]
+				le := scaleNodeEvidence(ln, "bitmap-index")
+				if ln.never || !ln.hasActual {
+					v.MeasurementComplete = false
+					fail("not proven: %q has no actual counters", ln.label)
+				} else {
+					if ln.loops != 1 {
+						v.LoopsOne = false
+						fail("not proven: %q ran %d loops", ln.label, ln.loops)
+					}
+					if k, ok := scaleWholeCount(ln.rows); !ok {
+						v.MeasurementComplete = false
+						fail("not proven: %q reports an unreadable, fractional or oversized entry count", ln.label)
+					} else {
+						add(&entries, k)
+					}
+				}
+				// Each leaf is validated on its own before any aggregation.
+				r, valid := validate(ln.label+" Index Cond", ln.attrs["Index Cond"], orWrapped)
+				if orWrapped {
+					// Every leaf of a BitmapOr must restrict to ids; together they
+					// are the batch.
+					if !r.hasIDs {
+						v.AccessConditionOK = false
+						fail("a BitmapOr leaf %q does not restrict to ids through its Index Cond", ln.label)
+					}
+					unionValid = unionValid && valid
+					union.hasIDs, union.ids = true, append(union.ids, r.ids...)
+					le.Restriction = "ids"
+				} else {
+					kind, b := judge(r, valid)
+					le.Restriction = kind
+					if kind == "" {
+						v.AccessConditionOK = false
+						fail("no selective Index Cond on %q (a Filter alone does not qualify)", ln.label)
+					} else {
+						lower(b)
+					}
+				}
+				v.Nodes = append(v.Nodes, le)
+			}
+			if orWrapped {
+				if unionValid && !scaleSameIDs(union.ids, in.Batch) {
+					v.ExactBindingOK, unionValid = false, false
+					fail("binding: the BitmapOr leaves name %d ids, not the captured batch ids (%d) as a set", len(union.ids), len(in.Batch))
+				}
+				kind, b := judge(union, unionValid)
+				if kind != "ids" {
+					v.AccessConditionOK = false
+					fail("the BitmapOr leaves do not restrict access to exactly the batch ids")
+				} else {
+					lower(b)
+					e.Restriction = kind
+				}
+			} else if len(leaves) == 1 {
+				e.Restriction = v.Nodes[len(v.Nodes)-1].Restriction
+			}
+		default: // Index Scan, Index Only Scan, backward forms
+			r, valid := validate(n.label+" Index Cond", n.attrs["Index Cond"], false)
+			kind, b := judge(r, valid)
+			e.Restriction = kind
+			if kind == "" {
+				v.AccessConditionOK = false
+				fail("no selective Index Cond on %q (a Filter alone does not qualify); it examined %d rows to find its output", n.label, cand)
+			} else {
+				lower(b)
+			}
+		}
+		// Index recheck work, on any scan type, and lossy bitmap pages are work the
+		// classifier does not bound.
+		if lossy > 0 || removedRecheck > 0 {
+			v.NonLossy = false
+			fail("not proven: %q did index recheck or lossy bitmap work (lossy blocks %d, rows removed by index recheck %d)", n.label, lossy, removedRecheck)
+		}
+		add(&candidates, cand)
+		add(&feeding, rows)
+		v.Nodes = append(v.Nodes, e)
+	}
+	for i, n := range nodes {
+		if (n.typ == "Bitmap Index Scan" || n.typ == "BitmapOr" || n.typ == "BitmapAnd") && !claimed[i] {
+			v.AllBranchesAccounted = false
+			fail("not proven: %q feeds no bitmap heap scan the classifier read", n.label)
+		}
+	}
+	if len(heaps) == 0 {
+		v.AccessConditionOK = false
+		fail("no scan of contact_requests was found in the plan")
+	}
+	v.Bound = bound
+	// An exact total exists only for a complete, non-lossy, fully resolved
+	// measurement; the raw per-node counters stay in Nodes either way.
+	known := v.MeasurementComplete && v.NonLossy && v.LoopsOne && v.AllBranchesAccounted && !unresolved && !overflow && len(heaps) > 0
+	if unresolved {
+		fail("not proven: a displayed or captured binding could not be resolved, so no exact total is published")
+	}
+	over := false
+	if known {
+		v.Candidates, v.CandidatesKnown = candidates, true
+		v.FeedingRows, v.FeedingRowsKnown = feeding, true
+		if sawBitmap {
+			v.BitmapEntries, v.BitmapEntriesKnown = entries, true
+		}
+		if bound >= 0 && candidates > bound {
+			over = true
+			fail("examined %d candidates, above the bound %d", candidates, bound)
+		}
+		if bound >= 0 && sawBitmap && entries > bound {
+			over = true
+			fail("%d bitmap index entries, above the bound %d", entries, bound)
+		}
+	}
+	v.Bounded = v.ExactBindingOK && v.AccessConditionOK && v.MeasurementComplete && v.NonLossy && v.LoopsOne &&
+		v.AllBranchesAccounted && known && bound >= 0 && !over
+	return v
+}
+
+// ---- the evidence of one scale run ----------------------------------------
+
+type scaleStatementEvidence struct {
+	Label        string           `json:"label"`
+	SQL          string           `json:"sql"`
+	Plan         []string         `json:"plan"`
+	Millis       float64          `json:"executionMillis"`
+	Binds        int              `json:"bindCount"`
+	RowsAffected []int64          `json:"rowsAffected,omitempty"`
+	TopRows      int64            `json:"topNodeRows"`
+	TriggerCalls int64            `json:"addRequestIdentityCalls"`
+	TriggerFound bool             `json:"addRequestIdentityFound"`
+	Verdict      scaleScanVerdict `json:"verdict"`
+}
+
+type scaleAgesNoteEvidence struct {
+	Facts      scaleAgesNoteFacts     `json:"fixture"`
+	HelperOnly scaleHelperOnlyResult  `json:"helperOnlyScope"`
+	Select     scaleStatementEvidence `json:"select"`
+	Update     scaleStatementEvidence `json:"update"`
+}
+
+// checkScaleAgesNoteScrub asserts the counts that tell a real scrub from an
+// empty one, each on its own (the lock selection's four rows, the real UPDATE's
+// RowsAffected = 4 with five binds, the trigger's four calls, the helper-only
+// scope), and classifies both statements' plans. A false verdict is logged as
+// an open database-review finding; it does not fail the run.
+func checkScaleAgesNoteScrub(t *testing.T, run scaleExplain) scaleAgesNoteEvidence {
+	t.Helper()
+	facts := run.agesFacts
+	want := int64(len(facts.BatchIDs))
+	if want != 4 {
+		t.Fatalf("the fixture selects %d ages notes for U, want 4", want)
+	}
+	find := func(label string) *scalePlan {
+		var found *scalePlan
+		n := 0
+		for i := range run.plans {
+			if run.plans[i].label == label {
+				found = &run.plans[i]
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%d plans recorded for %q, want exactly 1 (four rows are one lock selection and one UPDATE batch)", n, label)
+		}
+		return found
+	}
+	ev := scaleAgesNoteEvidence{Facts: facts, HelperOnly: run.helperOnly}
+	h := run.helperOnly
+	if !h.OthersUnchanged || !h.SelectedRestUnchanged || !h.ReasonsUnchanged || h.SelectedRows != want || h.SelectedNotesBefore != want || h.SelectedNotesAfter != 0 {
+		t.Errorf("helper-only scope: %+v; want every row the lock selection did not pick unchanged, each of the %d picked rows unchanged except a blank note, and no reason changed", h, want)
+	}
+	millis := func(lines []string) float64 {
+		for _, l := range lines {
+			if m := scaleExecRe.FindStringSubmatch(l); m != nil {
+				f, _ := strconv.ParseFloat(m[1], 64)
+				return f
+			}
+		}
+		return -1
+	}
+
+	sel := find(scaleAgesNoteSelectLabel)
+	ev.Select = scaleStatementEvidence{Label: sel.label, SQL: strings.Join(strings.Fields(sel.sql), " "), Plan: sel.lines, Millis: millis(sel.lines), Binds: len(sel.vars), TopRows: -1}
+	if nodes, err := scaleParsePlan(sel.lines); err != nil {
+		t.Errorf("lock selection plan: %v", err)
+	} else if top := nodes[0]; top.typ != "LockRows" || !top.hasActual || top.loops != 1 || top.rows != float64(want) {
+		t.Errorf("lock selection: the top node %q does not report %d rows in one loop", top.label, want)
+	} else {
+		ev.Select.TopRows = int64(top.rows)
+	}
+	if len(sel.vars) != 1 {
+		t.Errorf("lock selection carried %d binds, want 1", len(sel.vars))
+	}
+	ev.Select.Verdict = scaleAgesNoteScanVerdict(scaleScanInput{Statement: "select", Lines: sel.lines, SQL: sel.sql, Vars: sel.vars,
+		Subject: scaleTargetID, SU: facts.SU})
+
+	upd := find(scaleAgesNoteUpdateLabel)
+	ev.Update = scaleStatementEvidence{Label: upd.label, SQL: strings.Join(strings.Fields(upd.sql), " "), Plan: upd.lines, Millis: millis(upd.lines),
+		Binds: len(upd.vars), RowsAffected: run.affected[scaleAgesNoteUpdateLabel], TopRows: 0}
+	if got := run.affected[scaleAgesNoteUpdateLabel]; len(got) != 1 || got[0] != want {
+		t.Errorf("the real UPDATE's RowsAffected: %v, want exactly one execution touching %d rows", got, want)
+	}
+	if len(upd.vars) != int(want)+1 {
+		t.Errorf("the UPDATE carried %d binds, want %d (the batch ids and U)", len(upd.vars), want+1)
+	}
+	if execs := run.execs[scaleAgesNoteUpdateLabel]; len(execs) != 1 || execs[0].sql != upd.sql || !reflect.DeepEqual(execs[0].vars, upd.vars) {
+		t.Errorf("the measured UPDATE and its real execution are not one statement with one set of binds (%d executions recorded)", len(execs))
+	}
+	ev.Update.TriggerCalls, ev.Update.TriggerFound = scaleTriggerCalls(upd.lines, "add_request_identity")
+	if !ev.Update.TriggerFound || ev.Update.TriggerCalls != want {
+		t.Errorf("'Trigger add_request_identity' reports calls=%d (found %v), want calls=%d:\n%s", ev.Update.TriggerCalls, ev.Update.TriggerFound, want, strings.Join(upd.lines, "\n"))
+	}
+	ev.Update.Verdict = scaleAgesNoteScanVerdict(scaleScanInput{Statement: "update", Lines: upd.lines, SQL: upd.sql, Vars: upd.vars,
+		Subject: scaleTargetID, Batch: facts.BatchIDs, SU: facts.SU})
+
+	for _, s := range []scaleStatementEvidence{ev.Select, ev.Update} {
+		v := s.Verdict
+		t.Logf("ages-note %s: bounded=%v (binding %v, access %v, complete %v, non-lossy %v, loops=1 %v, branches %v); candidates %d (known %v), bitmap entries %d (known %v), feeding rows %d (known %v), bound %d; %.3f ms; reasons %q",
+			v.Statement, v.Bounded, v.ExactBindingOK, v.AccessConditionOK, v.MeasurementComplete, v.NonLossy, v.LoopsOne, v.AllBranchesAccounted,
+			v.Candidates, v.CandidatesKnown, v.BitmapEntries, v.BitmapEntriesKnown, v.FeedingRows, v.FeedingRowsKnown, v.Bound, s.Millis, v.Reasons)
+		if !v.Bounded {
+			t.Logf("ages-note %s: OPEN DATABASE-REVIEW FINDING: boundedness is not proven, so no claim is made; the raw plan is in the evidence file", v.Statement)
+		}
+	}
+	t.Logf("ages-note UPDATE: RowsAffected %v, %d binds, add_request_identity calls %d (found %v), helper-only scope %+v",
+		ev.Update.RowsAffected, ev.Update.Binds, ev.Update.TriggerCalls, ev.Update.TriggerFound, ev.HelperOnly)
+	return ev
+}
+
+// ---- the classifier's unit test (ordinary CI, no database) ----------------
+
+func agesPad(n int) string { return strings.Repeat(" ", n) }
+
+// agesNode renders one node of EXPLAIN (ANALYZE, BUFFERS) text with its
+// attribute lines. rows "" omits the actual counters and "never" prints
+// "(never executed)".
+func agesNode(col int, label, rows string, loops int, attrs ...string) string {
+	cost := "(cost=0.29..8.31 rows=1 width=14)"
+	arrow := ""
+	if col > 0 {
+		arrow = "->  "
+	}
+	switch rows {
+	case "":
+	case "never":
+		cost += " (never executed)"
+	default:
+		cost += fmt.Sprintf(" (actual time=0.020..0.022 rows=%s loops=%d)", rows, loops)
+	}
+	out := agesPad(col) + arrow + label + "  " + cost + "\n"
+	for _, a := range attrs {
+		out += agesPad(col+6) + a + "\n"
+	}
+	return out
+}
+
+const agesFooter = "Planning Time: 0.110 ms\nExecution Time: 0.098 ms\n"
+
+func agesSelectPlan(scan string) string {
+	return "LockRows  (cost=4.30..16.69 rows=1 width=14) (actual time=0.050..0.056 rows=4 loops=1)\n  Buffers: shared hit=9\n" +
+		"  ->  Sort  (cost=4.30..4.31 rows=1 width=14) (actual time=0.040..0.041 rows=4 loops=1)\n" +
+		"        Sort Key: id\n        Sort Method: quicksort  Memory: 25kB\n        Buffers: shared hit=5\n" + scan + agesFooter
+}
+
+func agesUpdatePlan(children, trigger string) string {
+	return "Update on contact_requests  (cost=0.29..16.34 rows=0 width=0) (actual time=0.310..0.310 rows=0 loops=1)\n" + children +
+		"Planning Time: 0.210 ms\n" + trigger + "Execution Time: 0.404 ms\n"
+}
+
+const agesTrigger4 = "Trigger add_request_identity: time=0.200 calls=4\n"
+
+const agesFilter = "Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text))"
+
+func agesUpdateSQL(n int) string {
+	ph := make([]string, n)
+	for i := range ph {
+		ph[i] = "$" + strconv.Itoa(i+1)
+	}
+	return "UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id IN (" + strings.Join(ph, ",") + ") AND purpose = 'occurrence_add' AND subject_user_id = $" +
+		strconv.Itoa(n+1) + " AND add_childcare_ages_note <> ''"
+}
+
+const agesSelectSQL = "SELECT id FROM contact_requests WHERE purpose = 'occurrence_add' AND subject_user_id = $1 AND add_childcare_ages_note <> '' ORDER BY id FOR UPDATE"
+
+func agesVars(subject uint, ids ...uint) []any {
+	out := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		out = append(out, id)
+	}
+	return append(out, subject)
+}
+
+func TestAgesNoteErasureScanVerdict(t *testing.T) {
+	batch := []uint{9993, 9994, 9995, 9996}
+	subjectIdx := func(rows string, loops int, attrs ...string) string {
+		return agesNode(8, "Index Scan using contact_requests_subject on contact_requests", rows, loops, attrs...)
+	}
+	idxCond := "Index Cond: (subject_user_id = '3'::bigint)"
+	pkAny := "Index Cond: (id = ANY ('{9993,9994,9995,9996}'::bigint[]))"
+	updScan := func(rows string, loops int, attrs ...string) string {
+		return agesNode(2, "Index Scan using contact_requests_pkey on contact_requests", rows, loops, attrs...)
+	}
+	bitmapSubject := func(heapRows string, heapAttrs []string, leafRows string, leafCond string) string {
+		return agesNode(8, "Bitmap Heap Scan on contact_requests", heapRows, 1, heapAttrs...) +
+			agesNode(14, "Bitmap Index Scan on contact_requests_subject", leafRows, 1, leafCond, "Buffers: shared hit=2")
+	}
+	orLeaves := func(rowsPer string, ids ...string) string {
+		out := agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+			"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9996))", agesFilter, "Heap Blocks: exact=1", "Buffers: shared hit=6") +
+			agesNode(8, "BitmapOr", "4", 1)
+		for _, id := range ids {
+			out += agesNode(14, "Bitmap Index Scan on contact_requests_pkey", rowsPer, 1, "Index Cond: (id = '"+id+"'::bigint)", "Buffers: shared hit=2")
+		}
+		return out
+	}
+	subjRecheck := "Recheck Cond: (subject_user_id = '3'::bigint)"
+	realFilter := func(ids string) string {
+		return "Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text) AND (id = ANY ('{" + ids + "}'::bigint[])))"
+	}
+	// bmSel is the select's subject bitmap pair with the given heap attribute lines.
+	bmSel := func(heapAttrs ...string) string {
+		return agesSelectPlan(bitmapSubject("4", append([]string{subjRecheck, agesFilter}, heapAttrs...), "4", idxCond))
+	}
+	// bmUpd is the recorded UPDATE shape: subject access, the batch ids only in Filter.
+	bmUpd := func(recheck, filter string) string {
+		return agesUpdatePlan(agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1, recheck, filter, "Heap Blocks: exact=1", "Buffers: shared hit=3")+
+			agesNode(8, "Bitmap Index Scan on contact_requests_subject", "4", 1, idxCond, "Buffers: shared hit=2"), agesTrigger4)
+	}
+	// orSubjects is a BitmapOr whose leaves also name a subject each.
+	orSubjects := func(subjects ...string) string {
+		out := agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+			"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9996))", agesFilter, "Heap Blocks: exact=1", "Buffers: shared hit=6") +
+			agesNode(8, "BitmapOr", "4", 1)
+		for i, sj := range subjects {
+			out += agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1,
+				"Index Cond: ((id = '"+strconv.Itoa(9993+i)+"'::bigint) AND (subject_user_id = '"+sj+"'::bigint))", "Buffers: shared hit=2")
+		}
+		return out
+	}
+	updVars := agesVars(3, batch...)
+	// sel runs the select against S_U = 4 unless a bound is given.
+	sel := func(plan string, su ...int64) scaleScanInput {
+		bound := int64(4)
+		if len(su) > 0 {
+			bound = su[0]
+		}
+		return scaleScanInput{Statement: "select", Lines: strings.Split(strings.TrimSuffix(plan, "\n"), "\n"), SQL: agesSelectSQL, Vars: agesVars(3), Subject: 3, SU: bound}
+	}
+	upd := func(plan string, su int64, ids []uint, vars []any) scaleScanInput {
+		return scaleScanInput{Statement: "update", Lines: strings.Split(strings.TrimSuffix(plan, "\n"), "\n"), SQL: agesUpdateSQL(len(ids)), Vars: vars, Subject: 3, Batch: ids, SU: su}
+	}
+
+	type flag int
+	const (
+		fBinding flag = iota
+		fAccess
+		fComplete
+		fNonLossy
+		fLoops
+		fBranches
+	)
+	cases := []struct {
+		name       string
+		in         scaleScanInput
+		bounded    bool
+		bound      int64
+		candidates int64
+		entries    int64 // -1: not a bitmap plan
+		falseFlags []flag
+		reason     string
+		unknown    bool // candidates unavailable
+	}{
+		// ---- positive: loops=1, complete non-lossy counters, exact binding, every branch accounted
+		{name: "select: selective subject index scan, omitted-zero counters",
+			in:      sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Buffers: shared hit=5")), 4),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "select: subject index scan, filtered rows count as candidates within S_U",
+			in:      sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 4", "Buffers: shared hit=5")), 8),
+			bounded: true, bound: 8, candidates: 8, entries: -1},
+		{name: "select: subject bitmap pair, index entries and heap candidates attributed separately",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter, "Rows Removed by Filter: 2", "Heap Blocks: exact=1", "Buffers: shared hit=4"},
+				"6", idxCond)), 6),
+			bounded: true, bound: 6, candidates: 6, entries: 6},
+		{name: "select: PostgreSQL 18 decimal counters that are whole numbers",
+			in:      sel(agesSelectPlan(subjectIdx("4.00", 1, idxCond, agesFilter)), 4),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: exact batch id set through the primary key",
+			in:      upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter, "Buffers: shared hit=12"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: bind placeholders in the plan resolve against the captured Vars",
+			in:      upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY (ARRAY[$1, $2, $3, $4]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: subject access through a bound parameter",
+			in:      upd(agesUpdatePlan(agesNode(2, "Index Scan using contact_requests_subject on contact_requests", "4", 1, "Index Cond: (subject_user_id = $5)", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: -1},
+		{name: "update: BitmapOr of scalar id equalities, entries aggregated",
+			in:      upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9996"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+		{name: "update: scalar equality for a one-id batch",
+			in: upd(agesUpdatePlan(updScan("1", 1, "Index Cond: (id = '9993'::bigint)", agesFilter), "Trigger add_request_identity: time=0.100 calls=1\n"),
+				4, []uint{9993}, agesVars(3, 9993)),
+			bounded: true, bound: 1, candidates: 1, entries: -1},
+		{name: "update: the recorded shape, subject index access with the batch ids in Filter",
+			in:      upd(bmUpd(subjRecheck, realFilter("9993,9994,9995,9996")), 4, batch, updVars),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+		{name: "update: BitmapOr leaves that each also name U",
+			in:      upd(agesUpdatePlan(orSubjects("3", "3", "3", "3"), agesTrigger4), 4, batch, updVars),
+			bounded: true, bound: 4, candidates: 4, entries: 4},
+
+		// ---- negative
+		{name: "nonselective primary-key scan: four outputs, 9,996 filtered, no Index Cond",
+			in: sel(agesSelectPlan(agesNode(8, "Index Scan using contact_requests_pkey on contact_requests", "4", 1,
+				"Filter: ((add_childcare_ages_note <> ''::text) AND (purpose = 'occurrence_add'::text) AND (subject_user_id = '3'::bigint))", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "no selective Index Cond", candidates: 10000},
+		{name: "sequential scan",
+			in: sel(agesSelectPlan(agesNode(8, "Seq Scan on contact_requests", "4", 1,
+				"Filter: (subject_user_id = '3'::bigint)", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "sequential scan", candidates: 10000},
+		{name: "update: correct length, wrong ids",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY ('{9993,9994,9995,9999}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 4},
+		{name: "update: wrong element count (three of four)",
+			in:         upd(agesUpdatePlan(updScan("3", 1, "Index Cond: (id = ANY ('{9993,9994,9995}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 3},
+		{name: "update: wrong element count (five of four)",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY ('{9993,9994,9995,9996,9996}'::bigint[]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "not the captured batch ids", candidates: 4},
+		{name: "update: displayed subject is not the captured U",
+			in:         upd(agesUpdatePlan(agesNode(2, "Index Scan using contact_requests_subject on contact_requests", "4", 1, "Index Cond: (subject_user_id = '4'::bigint)", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4},
+		{name: "update: captured subject bind is not U",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter), agesTrigger4), 4, batch, agesVars(4, batch...)),
+			falseFlags: []flag{fBinding}, reason: "captured subject bind is not U", candidates: 4},
+		{name: "update: captured id binds differ from the batch",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter), agesTrigger4), 4, batch, agesVars(3, 9993, 9994, 9995, 9997)),
+			falseFlags: []flag{fBinding}, reason: "captured id binds are not the batch ids", candidates: 4},
+		{name: "update: placeholder outside the captured Vars",
+			in:         upd(agesUpdatePlan(updScan("4", 1, "Index Cond: (id = ANY (ARRAY[$1, $2, $3, $9]))", agesFilter), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "id array is not one the classifier resolves", unknown: true, bound: -1},
+		{name: "filter-only restriction on the subject index",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, "Filter: (subject_user_id = '3'::bigint)", "Rows Removed by Filter: 9996")), 4),
+			falseFlags: []flag{fAccess}, reason: "no selective Index Cond", candidates: 10000},
+		{name: "observed count above the bound",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 5")), 4),
+			falseFlags: nil, reason: "above the bound 4", candidates: 9, bound: 4},
+		{name: "loops greater than one with an in-bound rounded product",
+			in:         sel(agesSelectPlan(subjectIdx("2", 2, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fLoops}, reason: "rounded averages", unknown: true, bound: 4},
+		{name: "fractional row count",
+			in:         sel(agesSelectPlan(subjectIdx("3.50", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "fractional row count", unknown: true, bound: 4},
+		{name: "lossy bitmap work",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter, "Rows Removed by Index Recheck: 3", "Heap Blocks: exact=1 lossy=1"},
+				"4", idxCond)), 4),
+			falseFlags: []flag{fNonLossy}, reason: "lossy bitmap work", unknown: true, bound: 4},
+		{name: "incomplete counters: a scan without its actual part",
+			in:         sel(agesSelectPlan(subjectIdx("", 0, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "no actual counters", unknown: true, bound: 4},
+		{name: "incomplete counters: a scan that never executed",
+			in:         sel(agesSelectPlan(subjectIdx("never", 0, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "no actual counters", unknown: true, bound: 4},
+		{name: "incomplete counters: a bitmap heap scan that returned rows but shows no Heap Blocks",
+			in: sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '3'::bigint)", agesFilter},
+				"4", idxCond)), 4),
+			falseFlags: []flag{fComplete}, reason: "shows no Heap Blocks line", unknown: true, bound: 4},
+		{name: "unparseable node",
+			in: sel(agesSelectPlan("        ->  Index Scan using contact_requests_subject on contact_requests  (cost=0.29..8.31 rows=1 width=14) (actual time=garbage)\n"+
+				"              "+idxCond+"\n"), 4),
+			falseFlags: []flag{fAccess, fComplete, fNonLossy, fLoops, fBranches}, reason: "not a plan node the classifier can read", unknown: true, bound: -1},
+		{name: "unknown node",
+			in: sel(agesSelectPlan(agesNode(8, "Nested Loop", "4", 1)+
+				agesNode(14, "Index Scan using contact_requests_subject on contact_requests", "4", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fBranches}, reason: "unknown plan node", unknown: true, bound: 4},
+		{name: "unaccounted extra branch: a second scan of another relation",
+			in: upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter)+agesNode(2, "Index Scan using users_pkey on users", "1", 1, "Index Cond: (id = '3'::bigint)"), agesTrigger4),
+				4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBranches}, reason: "does not account for", unknown: true, bound: 4},
+		{name: "unaccounted extra branch: a BitmapOr leaf outside the batch",
+			in:         upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9996", "9999"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fBinding, fAccess}, reason: "do not restrict access to exactly the batch ids", candidates: 4, entries: 5},
+		{name: "BitmapOr entries above the bound",
+			in:         upd(agesUpdatePlan(orLeaves("2", "9993", "9994", "9995", "9996"), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: nil, reason: "bitmap index entries, above the bound 4", bound: 4, candidates: 4, entries: 8},
+		{name: "bitmap index scan under no bitmap heap scan",
+			in:         upd(agesUpdatePlan(agesNode(2, "Bitmap Index Scan on contact_requests_pkey", "4", 1, pkAny), agesTrigger4), 4, batch, agesVars(3, batch...)),
+			falseFlags: []flag{fAccess, fBranches}, reason: "feeds no bitmap heap scan", unknown: true, bound: -1},
+
+		// ---- T07A-SR1: recheck work and unavailable totals
+		{name: "SR1: an ordinary index scan with 9,996 rows removed by index recheck",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Index Recheck: 9996")), 4),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: the update's primary-key scan with rows removed by index recheck",
+			in:         upd(agesUpdatePlan(updScan("4", 1, pkAny, agesFilter, "Rows Removed by Index Recheck: 1"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: a bitmap heap scan with recheck removals but no lossy page",
+			in:         sel(bmSel("Rows Removed by Index Recheck: 2", "Heap Blocks: exact=1")),
+			falseFlags: []flag{fNonLossy}, reason: "index recheck or lossy bitmap work", unknown: true, bound: 4},
+		{name: "SR1: an unreadable recheck counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Index Recheck: many")), 4),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+
+		// ---- T07A-SR2: every displayed binding is validated, none is credited as access
+		{name: "SR2: the update's Filter names a wrong id set",
+			in:         upd(bmUpd(subjRecheck, realFilter("9993,9994,9995,9999")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Filter names too few ids",
+			in:         upd(bmUpd(subjRecheck, realFilter("9993,9994,9995")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Filter id array cannot be resolved",
+			in:         upd(bmUpd(subjRecheck, "Filter: (id = ANY (ARRAY[$1, $2, $3, $9]))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "id array is not one the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: the select's Recheck Cond names another subject",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = '4'::bigint)", agesFilter, "Heap Blocks: exact=1"}, "4", idxCond)), 4),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the update's Recheck Cond names another subject",
+			in:         upd(bmUpd("Recheck Cond: (subject_user_id = '4'::bigint)", realFilter("9993,9994,9995,9996")), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: the select's Recheck Cond has an out-of-range placeholder",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{"Recheck Cond: (subject_user_id = $9)", agesFilter, "Heap Blocks: exact=1"}, "4", idxCond)), 4),
+			falseFlags: []flag{fBinding}, reason: "not a number or bind parameter the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: a Filter naming another subject on a qualifying index scan",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (subject_user_id = '4'::bigint)")), 4),
+			falseFlags: []flag{fBinding}, reason: "is not U", candidates: 4, bound: 4},
+		{name: "SR2: a Filter with an unresolved subject on a qualifying index scan",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (subject_user_id = $7)")), 4),
+			falseFlags: []flag{fBinding}, reason: "not a number or bind parameter the classifier resolves", unknown: true, bound: 4},
+		{name: "SR2: a Filter naming ids on the select, which has no batch",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, "Filter: (id = ANY ('{9993}'::bigint[]))")), 4),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, bound: 4},
+		{name: "SR2: an earlier BitmapOr leaf names another subject, the last names U",
+			in:         upd(agesUpdatePlan(orSubjects("4", "3", "3", "3"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4, entries: 4},
+		{name: "SR2: a middle BitmapOr leaf names another subject",
+			in:         upd(agesUpdatePlan(orSubjects("3", "5", "3", "3"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "is not U", candidates: 4, entries: 4},
+		{name: "SR2: the BitmapOr Recheck Cond names ids outside the batch",
+			in: upd(agesUpdatePlan(agesNode(2, "Bitmap Heap Scan on contact_requests", "4", 1,
+				"Recheck Cond: ((id = 9993) OR (id = 9994) OR (id = 9995) OR (id = 9999))", agesFilter, "Heap Blocks: exact=1")+
+				agesNode(8, "BitmapOr", "4", 1)+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9993'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9994'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9995'::bigint)")+
+				agesNode(14, "Bitmap Index Scan on contact_requests_pkey", "1", 1, "Index Cond: (id = '9996'::bigint)"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "not the captured batch ids", candidates: 4, entries: 4, bound: 4},
+		{name: "SR2: a BitmapOr leaf repeats an id",
+			in:         upd(agesUpdatePlan(orLeaves("1", "9993", "9994", "9995", "9993"), agesTrigger4), 4, batch, updVars),
+			falseFlags: []flag{fBinding, fAccess}, reason: "the BitmapOr leaves", candidates: 4, entries: 4},
+
+		{name: "SR2: nested OR of ANDs hides wrong displayed ID",
+			in:         upd(bmUpd(subjRecheck, "Filter: (((status = 'denied'::text) AND (id = ANY ('{9993,9999}'::bigint[]))) OR ((status = 'ended'::text) AND (id = '9994'::bigint)))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "unsupported OR subtree", unknown: true, bound: 4},
+		{name: "SR2: nested OR of ANDs hides unresolved ID",
+			in:         upd(bmUpd(subjRecheck, "Filter: (((status = 'denied'::text) AND (id = ANY (ARRAY[9993,$9]))) OR ((status = 'ended'::text) AND (id = '9994'::bigint)))"), 4, batch, updVars),
+			falseFlags: []flag{fBinding}, reason: "unsupported OR subtree", unknown: true, bound: 4},
+		{name: "SR3: raw removed counter beyond float precision",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9007199254740993"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: raw node counter beyond float precision",
+			in:         sel(agesSelectPlan(subjectIdx("9007199254740993", 1, idxCond, agesFilter))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+
+		// ---- T07A-SR3: unreadable, negative, nonfinite and oversized counters
+		{name: "SR3: lossy blocks that are not a number",
+			in:         sel(bmSel("Heap Blocks: exact=1 lossy=unknown")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: negative lossy blocks",
+			in:         sel(bmSel("Heap Blocks: exact=1 lossy=-1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a signed exact block count",
+			in:         sel(bmSel("Heap Blocks: exact=+1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a malformed exact block count",
+			in:         sel(bmSel("Heap Blocks: exact=x lossy=0")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a repeated heap block part",
+			in:         sel(bmSel("Heap Blocks: exact=1 exact=1")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: an unknown heap block part",
+			in:         sel(bmSel("Heap Blocks: exact=1 frozen=2")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: a heap block count past int64",
+			in:         sel(bmSel("Heap Blocks: exact=9223372036854775808")),
+			falseFlags: []flag{fComplete}, reason: "Heap Blocks line the classifier cannot read", unknown: true, bound: 4},
+		{name: "SR3: rows read but zero heap blocks",
+			in:         sel(bmSel("Heap Blocks: exact=0")),
+			falseFlags: []flag{fComplete}, reason: "no valid heap block count", unknown: true, bound: 4},
+		{name: "SR3: a nonfinite filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: +Inf"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a NaN filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: NaN"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a negative filter counter",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: -1"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a filter counter with a trailing word",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 5 rows"))),
+			falseFlags: []flag{fComplete}, reason: "unreadable", unknown: true, bound: 4},
+		{name: "SR3: a filter counter past int64",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9223372036854775808"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: a filter counter past exact float64 range",
+			in:         sel(agesSelectPlan(subjectIdx("4", 1, idxCond, agesFilter, "Rows Removed by Filter: 9007199254740994"))),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: an actual row count past int64",
+			in:         sel(agesSelectPlan(subjectIdx("99999999999999999999999", 1, idxCond, agesFilter)), 4),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+		{name: "SR3: a bitmap index entry count past int64",
+			in:         sel(agesSelectPlan(bitmapSubject("4", []string{subjRecheck, agesFilter, "Heap Blocks: exact=1"}, "99999999999999999999999", idxCond)), 4),
+			falseFlags: []flag{fComplete}, reason: "oversized", unknown: true, bound: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := scaleAgesNoteScanVerdict(tc.in)
+			if v.Bounded != tc.bounded {
+				t.Fatalf("bounded = %v, want %v\nverdict %+v", v.Bounded, tc.bounded, v)
+			}
+			flags := map[flag]bool{fBinding: v.ExactBindingOK, fAccess: v.AccessConditionOK, fComplete: v.MeasurementComplete,
+				fNonLossy: v.NonLossy, fLoops: v.LoopsOne, fBranches: v.AllBranchesAccounted}
+			falseSet := map[flag]bool{}
+			for _, f := range tc.falseFlags {
+				falseSet[f] = true
+			}
+			for f, got := range flags {
+				if got == falseSet[f] {
+					t.Errorf("predicate %d = %v, want %v\nverdict %+v", f, got, !falseSet[f], v)
+				}
+			}
+			if tc.bounded {
+				if len(v.Reasons) != 0 || v.Bound != tc.bound || !v.CandidatesKnown || v.Candidates != tc.candidates || !v.FeedingRowsKnown {
+					t.Errorf("positive case: reasons %q, bound %d, candidates %d (known %v), feeding known %v; want no reasons, bound %d, candidates %d\nverdict %+v",
+						v.Reasons, v.Bound, v.Candidates, v.CandidatesKnown, v.FeedingRowsKnown, tc.bound, tc.candidates, v)
+				}
+				if tc.entries >= 0 && (!v.BitmapEntriesKnown || v.BitmapEntries != tc.entries) {
+					t.Errorf("bitmap entries %d (known %v), want %d", v.BitmapEntries, v.BitmapEntriesKnown, tc.entries)
+				}
+				if tc.entries < 0 && v.BitmapEntriesKnown {
+					t.Errorf("a plan without a bitmap reports bitmap entries")
+				}
+				return
+			}
+			found := false
+			for _, r := range v.Reasons {
+				found = found || strings.Contains(r, tc.reason)
+			}
+			if !found {
+				t.Errorf("no reason mentions %q: %q", tc.reason, v.Reasons)
+			}
+			if tc.unknown && (v.CandidatesKnown || v.Candidates != 0 || v.BitmapEntriesKnown || v.FeedingRowsKnown) {
+				t.Errorf("an unproven measurement reports counts: candidates %d (known %v), entries known %v, feeding known %v",
+					v.Candidates, v.CandidatesKnown, v.BitmapEntriesKnown, v.FeedingRowsKnown)
+			}
+			if !tc.unknown && tc.candidates > 0 && (!v.CandidatesKnown || v.Candidates != tc.candidates) {
+				t.Errorf("candidates %d (known %v), want %d", v.Candidates, v.CandidatesKnown, tc.candidates)
+			}
+			if !tc.unknown && tc.entries > 0 && (!v.BitmapEntriesKnown || v.BitmapEntries != tc.entries) {
+				t.Errorf("bitmap entries %d (known %v), want %d", v.BitmapEntries, v.BitmapEntriesKnown, tc.entries)
+			}
+			if tc.bound != 0 && v.Bound != tc.bound {
+				t.Errorf("bound %d, want %d", v.Bound, tc.bound)
+			}
+		})
+	}
+
+	t.Run("a plan with no scan of contact_requests proves nothing", func(t *testing.T) {
+		v := scaleAgesNoteScanVerdict(upd(agesUpdatePlan("", agesTrigger4), 4, batch, agesVars(3, batch...)))
+		if v.Bounded || v.AccessConditionOK {
+			t.Errorf("bounded %v, access %v for a plan with no scan", v.Bounded, v.AccessConditionOK)
+		}
+	})
+	t.Run("parsers", func(t *testing.T) {
+		if got := scaleSplitAnd("(a = 1) AND (b = ANY ('{1,2}'::bigint[])) AND c"); len(got) != 3 {
+			t.Errorf("split into %q, want 3 conjuncts", got)
+		}
+		if got := scaleStripParens("((subject_user_id = 3))"); got != "subject_user_id = 3" {
+			t.Errorf("strip gave %q", got)
+		}
+		if got := scaleStripParens("(a) AND (b)"); got != "(a) AND (b)" {
+			t.Errorf("strip changed %q", got)
+		}
+		for tok, want := range map[string]uint64{"3": 3, "'3'::bigint": 3, "($2)": 7} {
+			if got, ok := scaleDecodeValue(tok, []any{uint(5), uint(7)}); !ok || got != want {
+				t.Errorf("decode %q = %d, %v; want %d", tok, got, ok, want)
+			}
+		}
+		for _, tok := range []string{"$3", "$0", "abc", "'3'::text", "3 OR 4"} {
+			if got, ok := scaleDecodeValue(tok, []any{uint(5), uint(7)}); ok {
+				t.Errorf("decode %q = %d, want a refusal", tok, got)
+			}
+		}
+		if got, ok := scaleDecodeArray("'{9993,9994}'::bigint[]", nil); !ok || !scaleSameIDs(got, []uint{9994, 9993}) {
+			t.Errorf("array literal decoded to %v, %v", got, ok)
+		}
+		if scaleSameIDs([]uint64{1, 2, 4}, []uint{1, 2, 3}) || scaleSameIDs([]uint64{1, 2}, []uint{1, 2, 3}) || scaleSameIDs([]uint64{1, 1, 2}, []uint{1, 2, 3}) {
+			t.Errorf("scaleSameIDs accepted ids that are not the batch")
+		}
+		if n, found := scaleTriggerCalls([]string{"Trigger consents_append_only: time=1.0 calls=9", "Trigger add_request_identity: time=0.200 calls=4"}, "add_request_identity"); !found || n != 4 {
+			t.Errorf("trigger calls %d, %v", n, found)
+		}
+		if _, found := scaleTriggerCalls([]string{"Execution Time: 1 ms"}, "add_request_identity"); found {
+			t.Errorf("found a trigger line in a plan without one")
+		}
+		if hit, read := scaleBuffers("shared hit=5 read=2 dirtied=1, temp read=9"); hit != 5 || read != 2 {
+			t.Errorf("buffers hit %d read %d", hit, read)
+		}
+		if e, l, ok := scaleHeapBlocks("exact=3 lossy=2"); !ok || e != 3 || l != 2 {
+			t.Errorf("heap blocks %d %d %v", e, l, ok)
+		}
+		if e, l, ok := scaleHeapBlocks("exact=3"); !ok || e != 3 || l != 0 {
+			t.Errorf("an omitted lossy part is zero: %d %d %v", e, l, ok)
+		}
+		for _, raw := range []string{"exact=1 lossy=unknown", "exact=1 lossy=-1", "exact=+1", "exact=1 exact=2", "exact=1 frozen=2", "exact", "1",
+			"exact=9223372036854775808", "exact=1.5"} {
+			if e, l, ok := scaleHeapBlocks(raw); ok || e != 0 || l != 0 {
+				t.Errorf("heap blocks %q read as %d %d %v, want a refusal", raw, e, l, ok)
+			}
+		}
+		for _, v := range []float64{math.Inf(1), math.Inf(-1), math.NaN(), -1, 0.5, scaleMaxCount + 2, 1e30} {
+			if n, ok := scaleWholeCount(v); ok {
+				t.Errorf("scaleWholeCount(%v) = %d, want a refusal", v, n)
+			}
+		}
+		if n, ok := scaleWholeCount(scaleMaxCount); ok {
+			t.Errorf("scaleWholeCount(2^53) = %d, want a refusal", n)
+		}
+		if _, ok := scaleAddCount(math.MaxInt64, 1); ok {
+			t.Errorf("scaleAddCount accepted an overflow")
+		}
+		if _, ok := scaleAddCount(-1, 1); ok {
+			t.Errorf("scaleAddCount accepted a negative counter")
+		}
+		if n, ok := scaleAddCount(math.MaxInt64-1, 1); !ok || n != math.MaxInt64 {
+			t.Errorf("scaleAddCount(MaxInt64-1, 1) = %d, %v", n, ok)
+		}
+		for _, raw := range []string{"+Inf", "-Inf", "NaN", "-1", "1 2", "abc", ""} {
+			node := &scalePlanNode{attrs: map[string]string{"Rows Removed by Filter": raw}}
+			if v, present, ok := scaleAttrNumber(node, "Rows Removed by Filter"); ok || !present || v != 0 {
+				t.Errorf("counter %q read as %v present %v ok %v, want an unreadable counter", raw, v, present, ok)
+			}
+		}
+		if r := scaleParseRestriction("((id = 9993) OR (id = '9994'::bigint) OR (id = $1))", []any{uint(9995)}); !r.hasIDs || len(r.problems) != 0 ||
+			!scaleSameIDs(r.ids, []uint{9993, 9994, 9995}) {
+			t.Errorf("an OR of id equalities read as %+v", r)
+		}
+		for _, cond := range []string{"((id = 9993) OR (purpose = 'x'::text))", "((id = 9993) OR (subject_user_id = 3))", "((id = 9993) OR (id = $9))"} {
+			if r := scaleParseRestriction(cond, []any{uint(1)}); !r.unresolved || len(r.problems) == 0 {
+				t.Errorf("condition %q was not left unresolved: %+v", cond, r)
+			}
+		}
+		if r := scaleParseRestriction("(subject_user_id = 3) AND (id = 9993) AND (id = 9994)", nil); r.unresolved || len(r.problems) != 1 {
+			t.Errorf("two id restrictions are a mismatch, not an unresolved value: %+v", r)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
