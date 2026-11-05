@@ -32,6 +32,13 @@ jobs:
       DATABASE_URL: postgres://church:church@localhost:5432/fold?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and tags for the contract gate (PLAN 14.1).
+          fetch-depth: 0
+      # A contract migration needs its expand in an earlier tagged release (PLAN 14.1, DEC-138).
+      - name: Contract migration gate
+        run: bash scripts/contract-gate.sh
+        shell: bash
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
