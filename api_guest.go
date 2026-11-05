@@ -300,6 +300,29 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			hashToken(body.Token)).First(&signup).Error; err != nil {
 			return errTokenInvalid
 		}
+		// The guest's own row first, then the occurrence: the holder-then-
+		// occurrence order of registerLocked and its siblings
+		// (api_registrations.go:1069/1096, 1681/1695, 1946/1963 and
+		// api_occurrence_mutations.go:489/492). An account erasure holds the
+		// guest FOR UPDATE and then wants the occurrence (promoteOnDisable),
+		// so a redemption that held the occurrence first and wrote the guest
+		// last could be one side of a cycle. The row is locked FOR NO KEY
+		// UPDATE before anything else and read again under that lock: an
+		// erased or re-addressed account no longer redeems.
+		var user models.User
+		found := tx.Where("email = ?", signup.Email).Limit(1).Find(&user).RowsAffected == 1
+		if found {
+			if err := tx.Unscoped().Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).
+				Select("id, email, status, deleted_at, name, timezone").First(&user, user.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errTokenInvalid
+				}
+				return err
+			}
+			if user.DeletedAt.Valid || normalizeEmail(user.Email) != normalizeEmail(signup.Email) {
+				return errTokenInvalid
+			}
+		}
 		occ, err := lockOccurrence(tx, signup.OccurrenceID)
 		if err != nil {
 			return errGuestEventGone
@@ -324,8 +347,6 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			!policy.CanRegisterGuest(viewOf(dateEvent(&ev, occ), false), gp) {
 			return errGuestEventGone
 		}
-		var user models.User
-		found := tx.Where("email = ?", signup.Email).Limit(1).Find(&user).RowsAffected == 1
 		if found && user.Status != models.UserGuest {
 			// An account arrived for this address after the form. The
 			// person proved the mailbox is theirs by opening the link,

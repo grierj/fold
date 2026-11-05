@@ -2079,3 +2079,375 @@ func TestErasureTestSQLStatesRecordsFailures(t *testing.T) {
 		t.Errorf("%d deadlocks recorded", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// R4-2a-3: invitations, guest signups and the dev outbox.
+// ---------------------------------------------------------------------------
+
+// erasureEventFixture is a public group's event with one future occurrence,
+// made by the scene's admin.
+func erasureEventFixture(t *testing.T, s coreErasureScene) (eventID uint, occ models.EventOccurrence, groupID uint) {
+	t.Helper()
+	s.ac.holdNotices = true
+	groupID = createGroupAs(t, s.ac, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, s.ac, groupID, "Picnic")
+	if err := s.app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ev.ID, occ, groupID
+}
+
+func erasureInvitationRow(t *testing.T, db *gorm.DB, id uint) models.Invitation {
+	t.Helper()
+	var inv models.Invitation
+	if err := db.First(&inv, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return inv
+}
+
+// TestAccountErasureAnonymizesInvitations: T17 cases 1-6 through the real
+// DELETE. Every INV row loses address, phone, name and token and keeps its
+// inviter and acceptance; an open one is revoked. The excluded rows are
+// byte-identical.
+func TestAccountErasureAnonymizesInvitations(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	db := s.app.DB
+	const a0, a = "invanon.old@x.test", "invanon.now@x.test"
+	u := newTestUser(t, s.app, a, erasurePW, models.RoleMember)
+	other := newTestUser(t, s.app, "invanon-other@x.test", erasurePW, models.RoleMember)
+	inviter := s.admin
+
+	// (1) accepted at A0, the address changed to A since.
+	i1 := erasureInvitation(t, db, inviter.ID, a0, true, nil)
+	erasureAcceptedAudit(t, db, i1, fmt.Sprintf(`{"userId":%d}`, u.ID))
+	// (4) open at the current address.
+	i4 := erasureInvitation(t, db, inviter.ID, a, false, nil)
+	// (5) a completed conversion: the request carries one invitation, the
+	// person another.
+	hh := models.Household{Name: "Invitation family", CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &hh)
+	p1 := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Done", Kind: models.HouseholdAdult, CreatedBy: inviter.ID, ConvertedUserID: &u.ID}
+	erasureMustCreate(t, db, &p1)
+	iB := erasureInvitation(t, db, inviter.ID, "invanon.conv1@x.test", true, nil)
+	iC := erasureInvitation(t, db, inviter.ID, "invanon.conv2@x.test", true, &p1.ID)
+	erasureRequest(t, db, "invanon.conv1@x.test", models.RequestHouseholdConversion, models.RequestApproved, &u.ID, &p1.ID, &iB)
+	// Excluded: (2) another account took A0 and accepted its own; (3) accepted
+	// with no userId, accepted at A with no audit row, open at the past
+	// address; (6) one the person sent and one to a third address.
+	i2 := erasureInvitation(t, db, inviter.ID, a0, true, nil)
+	erasureAcceptedAudit(t, db, i2, fmt.Sprintf(`{"userId":%d}`, other.ID))
+	i3 := erasureInvitation(t, db, inviter.ID, a, true, nil)
+	erasureAcceptedAudit(t, db, i3, `{}`)
+	i3b := erasureInvitation(t, db, inviter.ID, a, true, nil)
+	i3c := erasureInvitation(t, db, inviter.ID, a0, false, nil)
+	i5 := erasureInvitation(t, db, u.ID, "invanon.third@x.test", false, nil)
+	i6 := erasureInvitation(t, db, inviter.ID, "invanon.third@x.test", false, nil)
+	all := []uint{i1, i4, iB, iC, i2, i3, i3b, i3c, i5, i6}
+	if err := db.Exec("UPDATE invitations SET phone = '555-0100', name = 'Real Name' WHERE id IN ?", all).Error; err != nil {
+		t.Fatal(err)
+	}
+	excluded := []uint{i2, i3, i3b, i3c, i5, i6}
+	before := dumpRows(t, db, "invitations", "id", "id IN ?", excluded)
+
+	s.erase(t, u.ID)
+
+	if got := dumpRows(t, db, "invitations", "id", "id IN ?", excluded); got != before {
+		t.Errorf("excluded invitations changed:\nbefore %s\nafter  %s", before, got)
+	}
+	for _, c := range []struct {
+		id       uint
+		accepted bool
+	}{{i1, true}, {i4, false}, {iB, true}, {iC, true}} {
+		got := erasureInvitationRow(t, db, c.id)
+		if got.Email != fmt.Sprintf("deleted-invitations-%d@deleted.invalid", c.id) || got.Phone != "" || got.Name != "" ||
+			got.TokenHash != fmt.Sprintf("erased-invitations-%d", c.id) {
+			t.Errorf("invitation %d keeps personal data: %+v", c.id, got)
+		}
+		if got.InvitedBy != inviter.ID || (got.AcceptedAt != nil) != c.accepted || (got.RevokedAt != nil) == c.accepted {
+			t.Errorf("invitation %d: invited_by %d accepted %v revoked %v, want accepted=%v and revoked only when it was open",
+				c.id, got.InvitedBy, got.AcceptedAt != nil, got.RevokedAt != nil, c.accepted)
+		}
+	}
+}
+
+func TestAccountErasureInvitationOwnershipAfterReuse(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	db := s.app.DB
+	const oldAddress = "reuse.previous@x.test"
+	first := newTestUser(t, s.app, "reuse.current@x.test", erasurePW, models.RoleMember)
+	later := newTestUser(t, s.app, oldAddress, erasurePW, models.RoleMember)
+	prior := erasureInvitation(t, db, s.admin.ID, oldAddress, true, nil)
+	erasureAcceptedAudit(t, db, prior, fmt.Sprintf(`{"userId":%d}`, first.ID))
+	current := erasureInvitation(t, db, s.admin.ID, oldAddress, true, nil)
+	erasureAcceptedAudit(t, db, current, fmt.Sprintf(`{"userId":%d}`, later.ID))
+	before := dumpRows(t, db, "invitations", "id", "id = ?", prior)
+	s.erase(t, later.ID)
+	if got := dumpRows(t, db, "invitations", "id", "id = ?", prior); got != before {
+		t.Errorf("prior holder's invitation changed: before %s, after %s", before, got)
+	}
+	got := erasureInvitationRow(t, db, current)
+	if got.Email != fmt.Sprintf("deleted-invitations-%d@deleted.invalid", current) || got.TokenHash != fmt.Sprintf("erased-invitations-%d", current) {
+		t.Errorf("later holder's invitation was not anonymized: %+v", got)
+	}
+}
+
+func TestAccountErasureStagedConversionInvitation(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	db := s.app.DB
+	u := newTestUser(t, s.app, "staged.erase@x.test", erasurePW, models.RoleMember)
+	hh := models.Household{Name: "Staged family", CreatedBy: s.admin.ID}
+	erasureMustCreate(t, db, &hh)
+	person := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Staged", Kind: models.HouseholdTeen, CreatedBy: s.admin.ID}
+	erasureMustCreate(t, db, &person)
+	if err := db.Delete(&person).Error; err != nil {
+		t.Fatal(err)
+	}
+	id := erasureInvitation(t, db, s.admin.ID, "staged.invite@x.test", true, &person.ID)
+	req := erasureRequest(t, db, "staged.invite@x.test", models.RequestHouseholdConversion, models.RequestApproved, &u.ID, &person.ID, &id)
+	before := erasureInvitationRow(t, db, id)
+	s.erase(t, u.ID)
+	after := erasureInvitationRow(t, db, id)
+	if after.Email != fmt.Sprintf("deleted-invitations-%d@deleted.invalid", id) || after.TokenHash != fmt.Sprintf("erased-invitations-%d", id) || after.Name != "" || after.Phone != "" {
+		t.Errorf("staged invitation was not anonymized: %+v", after)
+	}
+	if after.InvitedBy != before.InvitedBy || after.HouseholdPersonID == nil || *after.HouseholdPersonID != person.ID || after.AcceptedAt == nil || before.AcceptedAt == nil || !after.AcceptedAt.Equal(*before.AcceptedAt) {
+		t.Errorf("staged invitation lost links or acceptance: before %+v, after %+v", before, after)
+	}
+	request := erasureRequestRow(t, db, req)
+	if request.ApprovedUserID == nil || *request.ApprovedUserID != u.ID || request.HouseholdPersonID == nil || *request.HouseholdPersonID != person.ID || request.InvitationID == nil || *request.InvitationID != id {
+		t.Errorf("staged request lost its links: %+v", request)
+	}
+}
+
+// TestAccountErasureGuestSignupsAndOutbox: a pending signup at the address is
+// deleted, a confirmed one is anonymized and keeps its occurrence and times,
+// outbox rows to the address go in any case or spacing, and other addresses
+// are untouched.
+func TestAccountErasureGuestSignupsAndOutbox(t *testing.T) {
+	s := newCoreErasureScene(t)
+	db := s.app.DB
+	_, occ, _ := erasureEventFixture(t, s)
+	const a, b = "gsout.guest@x.test", "gsout.other@x.test"
+	guest := models.User{Email: a, Name: "Guest Person", Role: models.RoleMember, Status: models.UserGuest}
+	erasureMustCreate(t, db, &guest)
+	confirmed := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
+	signup := func(email string, at *time.Time, hash string) models.GuestSignup {
+		g := models.GuestSignup{Name: "Signup Name", Email: email, OccurrenceID: occ.ID, TokenHash: hash, ExpiresAt: time.Now().Add(time.Hour).Truncate(time.Microsecond),
+			ConfirmedAt: at, IP: "203.0.113.5", Timezone: "America/Boise"}
+		erasureMustCreate(t, db, &g)
+		return g
+	}
+	pend := signup(a, nil, "gsout-pending-a")
+	conf := signup(a, &confirmed, "gsout-confirmed-a")
+	otherPend := signup(b, nil, "gsout-pending-b")
+	otherConf := signup(b, &confirmed, "gsout-confirmed-b")
+	for _, to := range []string{a, "  GSOUT.Guest@X.test ", b} {
+		erasureMustCreate(t, db, &models.MailOutbox{ToAddress: to, Subject: "hello", Body: "body"})
+	}
+	untouched := func() string {
+		return dumpRows(t, db, "guest_signups", "id", "id IN ?", []uint{otherPend.ID, otherConf.ID}) +
+			dumpRows(t, db, "mail_outboxes", "id", "to_address = ?", b)
+	}
+	before := untouched()
+
+	s.erase(t, guest.ID)
+
+	if got := untouched(); got != before {
+		t.Errorf("other addresses changed:\nbefore %s\nafter  %s", before, got)
+	}
+	if n := countRows(t, db, "guest_signups", "id = ?", pend.ID); n != 0 {
+		t.Error("the pending signup survived")
+	}
+	var got models.GuestSignup
+	if err := db.First(&got, conf.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != fmt.Sprintf("deleted-guest_signups-%d@deleted.invalid", conf.ID) || got.TokenHash != fmt.Sprintf("erased-guest_signups-%d", conf.ID) ||
+		got.Name != "" || got.IP != "" || got.Timezone != "" {
+		t.Errorf("confirmed signup keeps personal data: %+v", got)
+	}
+	if got.OccurrenceID != occ.ID || got.ConfirmedAt == nil || !got.ConfirmedAt.Equal(confirmed) || !got.ExpiresAt.Equal(conf.ExpiresAt) {
+		t.Errorf("confirmed signup lost its occurrence or times: %+v", got)
+	}
+	if n := countRows(t, db, "mail_outboxes", "lower(btrim(to_address)) = ?", a); n != 0 {
+		t.Errorf("%d outbox rows to the erased address remain", n)
+	}
+}
+
+// TestQueuedDependentMailForErasedAccountSendsNothing follows
+// TestQueuedAccountMailForErasedAccountSendsNothing for the classes R4-2a
+// owns: invitation, guest verification and account-request received, rejected
+// and conversion_approved. The same limit applies, scoped by timing: this
+// proves only preparations that start after the erasure commits. A
+// preparation that committed before the erasure may still have rotated a
+// capability and sent to the captured address.
+func TestQueuedDependentMailForErasedAccountSendsNothing(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	db := s.app.DB
+	eventID, occ, _ := erasureEventFixture(t, s)
+	_ = eventID
+	u := newTestUser(t, s.app, "queued-dep-u", erasurePW, models.RoleMember)
+	addr := mail.NormalizeAddress(u.Email)
+	expires := time.Now().Add(24 * time.Hour)
+
+	invID := erasureInvitation(t, db, s.admin.ID, addr, false, nil)
+	signup := models.GuestSignup{Name: "Queued Guest", Email: addr, OccurrenceID: occ.ID, TokenHash: "queued-dep-signup", ExpiresAt: expires, Timezone: "UTC"}
+	erasureMustCreate(t, db, &signup)
+	received := erasureSeedRequest(t, db, models.AccountRequest{Name: "Received", Email: addr, Source: models.RequestSelfSignup, Status: models.RequestPending, ExpiresAt: expires})
+	rejected := erasureSeedRequest(t, db, models.AccountRequest{Name: "Rejected", Email: addr, Source: models.RequestSelfSignup, Status: models.RequestRejected, DecisionNote: "no", ExpiresAt: expires})
+	conversion := erasureSeedRequest(t, db, models.AccountRequest{Name: "Converted", Email: addr, Source: models.RequestHouseholdConversion, Status: models.RequestApproved, ExpiresAt: expires})
+
+	type preparation struct {
+		name string
+		run  func(tx *gorm.DB) (mail.Message, bool, error)
+	}
+	preparations := []preparation{
+		{"invitation", func(tx *gorm.DB) (mail.Message, bool, error) { return s.app.prepareInvitationMail(tx, invID) }},
+		{"guest verification", func(tx *gorm.DB) (mail.Message, bool, error) { return s.app.prepareGuestVerification(tx, signup.ID) }},
+		{"request received", func(tx *gorm.DB) (mail.Message, bool, error) {
+			return s.app.prepareAccountRequestMail(tx, received.ID, requestMailReceived)
+		}},
+		{"request rejected", func(tx *gorm.DB) (mail.Message, bool, error) {
+			return s.app.prepareAccountRequestMail(tx, rejected.ID, requestMailRejected)
+		}},
+		{"request conversion approved", func(tx *gorm.DB) (mail.Message, bool, error) {
+			return s.app.prepareAccountRequestMail(tx, conversion.ID, requestMailConversionApproved)
+		}},
+	}
+	// Each is deliverable before the erasure; the rollback keeps any minted
+	// or rotated capability from being committed.
+	for _, p := range preparations {
+		tx := db.Begin()
+		_, eligible, err := p.run(tx)
+		tx.Rollback()
+		if err != nil || !eligible {
+			t.Fatalf("%s must be eligible before erasure: eligible=%v err=%v", p.name, eligible, err)
+		}
+	}
+	// holdNotices is set above, before the jobs are queued; nothing drains
+	// them, only the prepares below run.
+	for _, job := range []struct {
+		kind    string
+		payload any
+	}{
+		{kindInvitationMail, invitationMailJob{InvitationID: invID}},
+		{kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: signup.ID}},
+		{kindAccountRequestMail, requestMailJob{RequestID: received.ID, Case: requestMailReceived}},
+		{kindAccountRequestMail, requestMailJob{RequestID: rejected.ID, Case: requestMailRejected}},
+		{kindAccountRequestMail, requestMailJob{RequestID: conversion.ID, Case: requestMailConversionApproved}},
+	} {
+		if _, err := jobs.Enqueue(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s.erase(t, u.ID)
+
+	for _, p := range preparations {
+		var ok bool
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var err error
+			_, ok, err = p.run(tx)
+			return err
+		})
+		if err != nil || ok {
+			t.Errorf("%s: ok=%v err=%v, want nothing to send and no error", p.name, ok, err)
+		}
+	}
+}
+
+// TestInvitationAcceptanceRacingErasure: acceptance and the erasure serialize
+// on the contact gate. Acceptance first, the erasure waits and then
+// anonymizes the accepted invitation (found through its audit userId);
+// erasure first, acceptance finds no live invitation and creates no account.
+func TestInvitationAcceptanceRacingErasure(t *testing.T) {
+	for _, order := range []string{"acceptance-first", "erasure-first"} {
+		t.Run(order, func(t *testing.T) {
+			s := newCoreErasureScene(t)
+			s.ac.holdNotices = true
+			app := s.app
+			const address = "race.guest@x.test"
+			guest := models.User{Email: address, Name: "Race Guest", Role: models.RoleMember, Status: models.UserGuest}
+			erasureMustCreate(t, app.DB, &guest)
+			const raw = "invitation-racing-an-erasure"
+			inv := models.Invitation{Email: address, Name: "Race Guest", InvitedBy: s.admin.ID, TokenHash: hashToken(raw),
+				Role: "member", AccountType: "adult", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+			erasureMustCreate(t, app.DB, &inv)
+			var users0 int64
+			app.DB.Unscoped().Model(&models.User{}).Count(&users0)
+
+			states := erasureTestSQLStates(t, app)
+			anon := anonClient(t, app, "10.0.0.88")
+			anon.holdNotices = true
+			accept := func() <-chan httpResult {
+				return bgDo(anon, "POST", "/api/v1/invitations/accept", map[string]string{
+					"token": raw, "name": "Race Guest", "password": erasurePW, "ageBand": "adult"})
+			}
+			delPath := "/api/v1/admin/users/" + itoa(guest.ID)
+			gate := "%pg_advisory_xact_lock%"
+			var acceptCode, deleteCode int
+			var acceptBody string
+			switch order {
+			case "acceptance-first":
+				var acceptPID atomic.Int64
+				reached, release := erasureTestPause(t, app.DB, erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "invitations", PID: &acceptPID})
+				acc := accept()
+				awaitDBSignal(t, reached) // acceptance holds the gate and has not claimed the invitation
+				del := bgDo(s.ac, "DELETE", delPath, nil)
+				erasurePID := waitForLockedUsersQuery(t, app, gate)
+				waitDBBlocked(t, app.DB, erasurePID, int(acceptPID.Load()))
+				release()
+				a := awaitResult(t, acc)
+				d := awaitResult(t, del)
+				acceptCode, acceptBody, deleteCode = a.code, a.body, d.code
+				if acceptCode != http.StatusOK {
+					t.Fatalf("accept: %d %s", acceptCode, acceptBody)
+				}
+				got := erasureInvitationRow(t, app.DB, inv.ID)
+				if got.Email != fmt.Sprintf("deleted-invitations-%d@deleted.invalid", inv.ID) || got.TokenHash != fmt.Sprintf("erased-invitations-%d", inv.ID) ||
+					got.AcceptedAt == nil || got.RevokedAt != nil {
+					t.Errorf("the accepted invitation was not anonymized in place: %+v", got)
+				}
+			case "erasure-first":
+				var erasurePID atomic.Int64
+				p := erasureTestBeforeNotificationsDelete(guest.ID)
+				p.PID = &erasurePID
+				reached, release := erasureTestPause(t, app.DB, p)
+				del := bgDo(s.ac, "DELETE", delPath, nil)
+				awaitDBSignal(t, reached)
+				acc := accept()
+				acceptPID := waitForLockedUsersQuery(t, app, gate)
+				waitDBBlocked(t, app.DB, acceptPID, int(erasurePID.Load()))
+				release()
+				d := awaitResult(t, del)
+				a := awaitResult(t, acc)
+				acceptCode, acceptBody, deleteCode = a.code, a.body, d.code
+				if acceptCode != http.StatusBadRequest || !strings.Contains(acceptBody, "that invitation is invalid or has expired") {
+					t.Errorf("accept after the erasure: %d %s, want the invalid-invitation answer", acceptCode, acceptBody)
+				}
+				if got := erasureInvitationRow(t, app.DB, inv.ID); got.RevokedAt == nil || got.AcceptedAt != nil {
+					t.Errorf("the open invitation was not revoked: %+v", got)
+				}
+			}
+			if deleteCode != http.StatusOK {
+				t.Fatalf("delete: %d", deleteCode)
+			}
+			var users1 int64
+			app.DB.Unscoped().Model(&models.User{}).Count(&users1)
+			if users1 != users0 {
+				t.Errorf("users: %d, was %d; an account was created", users1, users0)
+			}
+			if n := countRows(t, app.DB, "users", "email = ?", address); n != 0 {
+				t.Errorf("%d users still hold the erased address", n)
+			}
+			if n := states.Count("40P01"); n != 0 {
+				t.Errorf("%d deadlocks recorded", n)
+			}
+		})
+	}
+}

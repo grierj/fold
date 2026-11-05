@@ -225,6 +225,43 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 	return tx.Exec(`UPDATE account_requests SET guardian_email = '' WHERE guardian_email = ?`, s.Address).Error
 }
 
+// eraseDependentRecordsIn scrubs the address-keyed rows around the erased
+// person, after promoteOnDisable and before the throttle delete, which stays
+// the callback's last statement. In order: (5) the invitations in INV keep
+// their inviter, group, household person, acceptance time and revocation
+// but lose address, phone, name and token (an open one is revoked, so its
+// link dies); (6) a guest signup at the erased address that was never
+// confirmed is deleted, a confirmed one is anonymized (placeholder address,
+// marker token, name, ip and timezone cleared) and keeps its occurrence and
+// times; (7) the development outbox copies sent to the address are deleted.
+//
+// Statements 5 and 6 run after the user row lock, which guest redemption also
+// takes first (holder, then occurrence, then signup), so the signup rows are
+// reached in the order redemption holds them. It returns the first error
+// unwrapped, issues no further statement after it, and logs nothing.
+// actorID and ip are the deleting admin and the request address; the
+// statements of this task do not use them (later slices' message and audit
+// statements do).
+func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
+	if len(s.Invitations) > 0 {
+		if err := tx.Exec(`UPDATE invitations SET email = `+erasedRowAddressSQL("invitations")+`,
+			phone = '', name = '', token_hash = `+erasedTokenMarkerSQL("invitations")+`,
+			revoked_at = CASE WHEN accepted_at IS NULL AND revoked_at IS NULL THEN now() ELSE revoked_at END
+			WHERE id IN ?`, s.Invitations).Error; err != nil {
+			return err
+		}
+	}
+	if err := tx.Exec(`DELETE FROM guest_signups WHERE email = ? AND confirmed_at IS NULL`, s.Address).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec(`UPDATE guest_signups SET name = '', email = `+erasedRowAddressSQL("guest_signups")+`,
+		ip = '', timezone = '', token_hash = `+erasedTokenMarkerSQL("guest_signups")+`, updated_at = now()
+		WHERE email = ? AND confirmed_at IS NOT NULL`, s.Address).Error; err != nil {
+		return err
+	}
+	return tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address).Error
+}
+
 // eraseAccountCredentialsIn deletes everything that lets someone act as the
 // erased account later: every account token (used or not, of every kind), the
 // calendar link and the push devices. It runs after the contact gate and the

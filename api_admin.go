@@ -1015,6 +1015,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
 			return err
 		}
+		// Invitations, guest signups and the dev outbox at the held address,
+		// reached after the user and occurrence locks above, in the order
+		// guest redemption holds them (holder, occurrence, signup).
+		if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
+			return err
+		}
 		// Last statement of the callback, so the sign-in rows are held for the
 		// shortest time before commit (detected limit D2).
 		return eraseOwnedThrottleKeysIn(tx, s)
