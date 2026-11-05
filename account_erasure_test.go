@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -774,5 +776,277 @@ func TestErasedGuestIsNotRevivedByInvitationAcceptance(t *testing.T) {
 	}
 	if after := dumpRows(t, db, "users", "id", "id = ?", guest.ID); after != tombstone {
 		t.Fatalf("the tombstone changed when its old address was invited:\nbefore %s\nafter  %s", tombstone, after)
+	}
+}
+
+// erasureCaptured runs captureErasureSetsIn for u inside a transaction that is
+// always rolled back, so a capture is shown to be reads only.
+func erasureCaptured(t *testing.T, db *gorm.DB, u *models.User) erasureSubject {
+	t.Helper()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	s := captureErasureSubject(u)
+	if err := captureErasureSetsIn(tx, &s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func erasureMustCreate(t *testing.T, db *gorm.DB, row any) {
+	t.Helper()
+	if err := db.Create(row).Error; err != nil {
+		t.Fatalf("seed %T: %v", row, err)
+	}
+}
+
+var erasureInvitationSeq int
+
+func erasureInvitation(t *testing.T, db *gorm.DB, by uint, email string, accepted bool, personID *uint) uint {
+	t.Helper()
+	erasureInvitationSeq++
+	inv := models.Invitation{Email: email, InvitedBy: by, Role: "member", AccountType: "adult",
+		TokenHash: fmt.Sprintf("capture-hash-%d", erasureInvitationSeq), ExpiresAt: time.Now().Add(time.Hour),
+		HouseholdPersonID: personID}
+	if accepted {
+		now := time.Now()
+		inv.AcceptedAt = &now
+	}
+	erasureMustCreate(t, db, &inv)
+	return inv.ID
+}
+
+func erasureAcceptedAudit(t *testing.T, db *gorm.DB, invID uint, meta string) {
+	t.Helper()
+	erasureMustCreate(t, db, &models.AuditLog{Action: "invitation.accepted", TargetType: "invitation", TargetID: invID, MetaJSON: meta})
+}
+
+func erasureRequest(t *testing.T, db *gorm.DB, email, source, status string, approved *uint, personID, invID *uint) uint {
+	t.Helper()
+	r := models.AccountRequest{Name: "Someone", Email: email, Source: source, Status: status,
+		ApprovedUserID: approved, HouseholdPersonID: personID, InvitationID: invID, ExpiresAt: time.Now().Add(time.Hour)}
+	erasureMustCreate(t, db, &r)
+	return r.ID
+}
+
+// R4-2a-1: REQ, PERS and INV (inventory 3.1), the T17 cases (1)-(6) and the
+// request cases.
+func TestErasureCapturesRequestInvitationAndPersonSets(t *testing.T) {
+	app := testApp(t)
+	db := app.DB
+	const a0, a = "capset.old@x.test", "capset.now@x.test"
+	u := newTestUser(t, app, a, erasurePW, models.RoleMember)
+	other := newTestUser(t, app, a0, erasurePW, models.RoleMember)
+	inviter := newTestUser(t, app, "capset-inviter@x.test", erasurePW, models.RoleAdmin)
+	uid, oid := u.ID, other.ID
+
+	// (1) accepted at A0, the address then changed to A: found through (a).
+	i1 := erasureInvitation(t, db, inviter.ID, a0, true, nil)
+	erasureAcceptedAudit(t, db, i1, fmt.Sprintf(`{"userId":%d}`, uid))
+	// (2) another account later took A0 and accepted its own invitation there.
+	i2 := erasureInvitation(t, db, inviter.ID, a0, true, nil)
+	erasureAcceptedAudit(t, db, i2, fmt.Sprintf(`{"userId":%d}`, oid))
+	// (3) accepted with no userId in its audit row, an accepted row at A with no
+	// audit at all, and an unaccepted row to the past address: none match.
+	i3 := erasureInvitation(t, db, inviter.ID, a, true, nil)
+	erasureAcceptedAudit(t, db, i3, `{}`)
+	erasureInvitation(t, db, inviter.ID, a, true, nil)
+	oldOpen := erasureInvitation(t, db, inviter.ID, a0, false, nil)
+	// (4) an open invitation to the current address: found through (d).
+	i4 := erasureInvitation(t, db, inviter.ID, a, false, nil)
+	// (6) one the person sent, and one to another address: excluded.
+	erasureInvitation(t, db, uid, "capset.third@x.test", false, nil)
+	erasureInvitation(t, db, inviter.ID, "capset.third@x.test", false, nil)
+
+	// REQ: approved for U at another address, unlinked at A; excluded: approved
+	// for another account carrying A, unlinked at another address.
+	rLinked := erasureRequest(t, db, "capset.elsewhere@x.test", "self_signup", "approved", &uid, nil, nil)
+	rUnlinked := erasureRequest(t, db, a, "self_signup", "pending", nil, nil, nil)
+	erasureRequest(t, db, a, "self_signup", "approved", &oid, nil, nil)
+	erasureRequest(t, db, "capset.unrelated@x.test", "self_signup", "pending", nil, nil, nil)
+
+	s := erasureCaptured(t, db, u)
+	if !sameIDs(s.Requests, rLinked, rUnlinked) {
+		t.Errorf("REQ = %v, want [%d %d]", s.Requests, rLinked, rUnlinked)
+	}
+	if !sameIDs(s.Invitations, i1, i4) {
+		t.Errorf("INV = %v, want [%d %d]", s.Invitations, i1, i4)
+	}
+	if len(s.People) != 0 {
+		t.Errorf("PERS = %v, want none", s.People)
+	}
+	if o := erasureCaptured(t, db, other); !sameIDs(o.Invitations, i2, oldOpen) {
+		t.Errorf("INV of the later holder = %v, want [%d %d] (excluding %d)", o.Invitations, i2, oldOpen, i1)
+	}
+
+	// (5a) a completed conversion: the person points at the user, the request
+	// carries the invitation, a second invitation names the person.
+	conv := newTestUser(t, app, "capset-converted@x.test", erasurePW, models.RoleMember)
+	hh := models.Household{Name: "Capture family", CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &hh)
+	p1 := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Done", Kind: models.HouseholdAdult, CreatedBy: inviter.ID, ConvertedUserID: &conv.ID}
+	erasureMustCreate(t, db, &p1)
+	iB := erasureInvitation(t, db, inviter.ID, "capset.conv1@x.test", true, nil)
+	iC := erasureInvitation(t, db, inviter.ID, "capset.conv2@x.test", true, &p1.ID)
+	rConv := erasureRequest(t, db, "capset.conv1@x.test", "household_conversion", "approved", &conv.ID, &p1.ID, &iB)
+	cs := erasureCaptured(t, db, conv)
+	if !sameIDs(cs.People, p1.ID) || !sameIDs(cs.Invitations, iB, iC) || !sameIDs(cs.Requests, rConv) {
+		t.Errorf("completed conversion: PERS %v INV %v REQ %v, want [%d] [%d %d] [%d]", cs.People, cs.Invitations, cs.Requests, p1.ID, iB, iC, rConv)
+	}
+
+	// (5b) a staged teen conversion: converted_user_id still NULL, the person
+	// soft-deleted; only the approved request links the two.
+	teen := newTestUser(t, app, "capset-teen@x.test", erasurePW, models.RoleMember)
+	p2 := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Staged", Kind: models.HouseholdTeen, CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &p2)
+	if err := db.Delete(&p2).Error; err != nil {
+		t.Fatal(err)
+	}
+	iD := erasureInvitation(t, db, inviter.ID, "capset.teen@x.test", true, nil)
+	erasureRequest(t, db, "capset.teen@x.test", "household_conversion", "approved", &teen.ID, &p2.ID, &iD)
+	ts := erasureCaptured(t, db, teen)
+	if !sameIDs(ts.People, p2.ID) || !sameIDs(ts.Invitations, iD) {
+		t.Errorf("staged conversion: PERS %v INV %v, want [%d] [%d]", ts.People, ts.Invitations, p2.ID, iD)
+	}
+	// A teen with a pending request for a person is not that person.
+	pend := newTestUser(t, app, "capset-pending@x.test", erasurePW, models.RoleMember)
+	p3 := models.HouseholdPerson{HouseholdID: hh.ID, FirstName: "Pending", Kind: models.HouseholdTeen, CreatedBy: inviter.ID}
+	erasureMustCreate(t, db, &p3)
+	erasureRequest(t, db, "capset.pending@x.test", "household_conversion", "pending", nil, &p3.ID, nil)
+	if ps := erasureCaptured(t, db, pend); len(ps.People) != 0 {
+		t.Errorf("pending conversion: PERS = %v, want none", ps.People)
+	}
+
+	// The capture reads only: nothing above was changed.
+	var n int64
+	db.Model(&models.AccountRequest{}).Count(&n)
+	if n != 7 {
+		t.Errorf("account_requests rows = %d, want 7", n)
+	}
+}
+
+func TestErasureHelpers(t *testing.T) {
+	if got := erasedRowAddressSQL("guest_signups"); got != "'deleted-guest_signups-' || id || '@deleted.invalid'" {
+		t.Errorf("erasedRowAddressSQL = %q", got)
+	}
+	if got := erasedTokenMarkerSQL("invitations"); got != "'erased-invitations-' || id" {
+		t.Errorf("erasedTokenMarkerSQL = %q", got)
+	}
+	for addr, want := range map[string]bool{
+		"deleted-7@deleted.invalid":                 true,
+		" Deleted-guest_signups-3@Deleted.Invalid ": true,
+		"deleted-7@deleted.invalid.example.com":     false,
+		"someone@example.com":                       false,
+		"":                                          false,
+	} {
+		if got := isErasedAddress(addr); got != want {
+			t.Errorf("isErasedAddress(%q) = %v, want %v", addr, got, want)
+		}
+	}
+	if erasureRecipientWait != 20*time.Second {
+		t.Errorf("erasureRecipientWait = %v, want 20s", erasureRecipientWait)
+	}
+}
+
+// withStatementTimeout contract, each case on one reserved connection whose
+// session value is 7s.
+func TestErasureStatementTimeoutContract(t *testing.T) {
+	app := testApp(t)
+	err := app.DB.Connection(func(conn *gorm.DB) error {
+		if err := conn.Exec("SET statement_timeout = '7s'").Error; err != nil {
+			return err
+		}
+		defer conn.Exec("RESET statement_timeout")
+		show := func(t *testing.T, db *gorm.DB) string {
+			t.Helper()
+			var v string
+			if err := db.Raw("SHOW statement_timeout").Scan(&v).Error; err != nil {
+				t.Fatal(err)
+			}
+			return v
+		}
+		pgCode := func(err error) string {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) {
+				return pe.Code
+			}
+			return ""
+		}
+
+		t.Run("failure keeps the error and issues no restore", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			var fnErr error
+			err := withStatementTimeout(tx, 50*time.Millisecond, func() error {
+				fnErr = tx.Exec("SELECT pg_sleep(0.2)").Error
+				return fnErr
+			})
+			if fnErr == nil || pgCode(err) != "57014" || !errors.Is(err, fnErr) {
+				t.Fatalf("err = %v (fn returned %v), want the same 57014 error", err, fnErr)
+			}
+			if code := pgCode(tx.Exec("SELECT 1").Error); code != "25P02" {
+				t.Errorf("statement after the failure: code %q, want 25P02", code)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := show(t, conn); got != "7s" {
+				t.Errorf("after rollback statement_timeout = %q, want 7s", got)
+			}
+		})
+
+		t.Run("success restores the prior value", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			var inside string
+			if err := withStatementTimeout(tx, 50*time.Millisecond, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inside != "50ms" {
+				t.Errorf("inside = %q, want 50ms", inside)
+			}
+			if got := show(t, tx); got != "7s" {
+				t.Errorf("after the call, same transaction = %q, want 7s", got)
+			}
+			if err := tx.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := show(t, conn); got != "7s" {
+				t.Errorf("after commit = %q, want 7s", got)
+			}
+		})
+
+		t.Run("a restore failure is returned", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			err := withStatementTimeout(tx, 50*time.Millisecond, func() error {
+				_ = tx.Exec("SELECT 1/0").Error // aborts the transaction; the error is ignored
+				return nil
+			})
+			if pgCode(err) != "25P02" {
+				t.Fatalf("err = %v, want code 25P02", err)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := show(t, conn); got != "7s" {
+				t.Errorf("after rollback statement_timeout = %q, want 7s", got)
+			}
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

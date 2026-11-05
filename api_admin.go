@@ -968,6 +968,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// (memory only), then every credential goes in the slot that revoked
 		// the unused tokens (R4-1-2).
 		s := captureErasureSubject(u)
+		if err := captureErasureSetsIn(tx, &s); err != nil {
+			return err
+		}
 		if err := eraseAccountCredentialsIn(tx, s); err != nil {
 			return err
 		}
