@@ -315,7 +315,8 @@ func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
 // successive waits on several rows can use it up whatever the provider does.
 // The 60 s HTTP write budget bounds no transaction. When the statement times
 // out the error comes back unchanged, the Transaction rolls the whole erasure
-// back, and the admin sees the usual "could not delete user" and can retry.
+// back, and the admin sees a generic server error and can retry. The handler logs
+// "could not delete user".
 func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
 	var cancelled []uint
 	if err := tx.Raw(`UPDATE messages SET status = ?, updated_at = now()

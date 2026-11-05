@@ -160,6 +160,16 @@ describe("NotificationBell", () => {
     expect(sessionStorage.length).toBe(0);
   });
 
+  it("shows a grammatically correct withdrawal to its actor and other admins", async () => {
+    const mine = item({ id: 8, resolution: { outcome: "withdrawn", by: "Me", byMe: true, at: "" } });
+    const theirs = item({ id: 9, resolution: { outcome: "withdrawn", by: "Pat", byMe: false, at: "" } });
+    api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [mine, theirs], next: "" });
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
+    expect(await screen.findByText("You withdrew this")).toBeInTheDocument();
+    expect(screen.getByText("Done · withdrawn by Pat")).toBeInTheDocument();
+  });
+
   it("shows who won when an inline approve loses the race", async () => {
     const { ApiError } = await import("../api");
     api.approveGroup.mockImplementation(async () => {
