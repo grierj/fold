@@ -262,7 +262,36 @@ func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip str
 	if err := tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address).Error; err != nil {
 		return err
 	}
-	return eraseMessagesIn(tx, s, actorID, ip)
+	if err := eraseMessagesIn(tx, s, actorID, ip); err != nil {
+		return err
+	}
+	return eraseActivityRowsIn(tx, s)
+}
+
+// eraseActivityRowsIn is statements 10 to 13 of eraseDependentRecordsIn:
+// (10) the erased actor's series-undo receipts are deleted; (11) the manager
+// add blocks that name the erased person as their subject are deleted (the
+// provenance trigger already refuses a grant to a non-active subject);
+// (12) their registrations lose the manage token hash, the childcare ages
+// note and the removal note, and no access, identity, status or count column
+// is written, so the access-provenance trigger takes its unchanged branch;
+// (13) their notification delivery rows are deleted, which catches anything
+// the notifications cascade missed. contact_requests is deliberately not
+// touched here: its identifying text waits on gates G-7a..d (R4-2a-T07), and
+// contact_grants have no new ending path, since reconcileContacts already ends
+// them. It returns the first error unwrapped and issues no later statement.
+func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
+	if err := tx.Exec(`DELETE FROM series_undo_receipts WHERE actor_id = ?`, s.ID).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec(`DELETE FROM manager_add_blocks WHERE subject_user_id = ?`, s.ID).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec(`UPDATE registrations SET manage_token_hash = '', childcare_ages_note = '', removal_note = ''
+		WHERE user_id = ? AND (manage_token_hash <> '' OR childcare_ages_note <> '' OR removal_note <> '')`, s.ID).Error; err != nil {
+		return err
+	}
+	return tx.Exec(`DELETE FROM notification_deliveries WHERE user_id = ?`, s.ID).Error
 }
 
 // eraseMessagesIn is statements 8 and 9 of eraseDependentRecordsIn. (8) The
