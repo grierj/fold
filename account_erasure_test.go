@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
@@ -546,8 +547,11 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	erasureMustCreate(t, db, &models.Registration{UserID: &u.ID, OccurrenceID: occ.ID, Status: models.RegGoing, Source: models.RegSourceGuestForm,
 		AttendanceMode: models.AttendanceInPerson, ManageTokenHash: "rollback-manage-hash", ChildcareAgesNote: "ages 3", RemovalNote: "note"})
 	erasureSeedActivity(t, s, u, l)
+	// R4-2d1b-2: the consent scrub runs right after the soft delete, so a
+	// failure in the last statement must leave every consent row as it was.
+	erasureSeedConsentEvidence(t, db, u.ID, "rollback")
 	tables := []string{"account_requests", "notifications", "invitations", "guest_signups", "mail_outboxes", "messages", "message_recipients",
-		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "users"}
+		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "users"}
 	writeSet := func() string {
 		var out string
 		for _, table := range tables {
@@ -563,6 +567,118 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	stopThrottle()
 	if got := writeSet(); got != whole {
 		t.Errorf("a failed erasure left a change in the tables R4-2a touches:\n%s\n%s", whole, got)
+	}
+}
+
+// erasureSeedConsentEvidence gives uid six consent rows the way the writers
+// record them: email and push, opted in and out, with every combination of
+// ip, user_agent and evidence_text (the push turn-on path stores the device
+// label as evidence_text). Five rows carry a non-empty field; the sixth is
+// already blank, so a scrub has a row it must leave alone. At is the column
+// default, so the rows keep their creation order.
+func erasureSeedConsentEvidence(t *testing.T, db *gorm.DB, uid uint, tag string) {
+	t.Helper()
+	for _, c := range []models.Consent{
+		{Channel: models.ConsentEmail, Scope: "category:groups", Status: models.ConsentOptedIn, Source: models.ConsentSourceWebForm,
+			EvidenceText: "Turned on at sign-up " + tag, IP: "203.0.113.7", UserAgent: "Mail agent " + tag},
+		{Channel: models.ConsentEmail, Scope: "category:groups", Status: models.ConsentOptedOut, Source: models.ConsentSourceUnsubscribe,
+			IP: "203.0.113.8", UserAgent: "Gmail one-click " + tag},
+		{Channel: models.ConsentEmail, Scope: "category:events", Status: models.ConsentOptedIn, Source: models.ConsentSourceWebForm,
+			UserAgent: "Only an agent " + tag},
+		{Channel: models.ConsentPush, Scope: "all", Status: models.ConsentOptedIn, Source: models.ConsentSourceWebForm,
+			EvidenceText: "Pixel 9 " + tag, IP: "203.0.113.9", UserAgent: "Push agent " + tag},
+		{Channel: models.ConsentPush, Scope: "category:groups", Status: models.ConsentOptedOut, Source: models.ConsentSourceWebForm,
+			IP: "203.0.113.10"},
+		{Channel: models.ConsentEmail, Scope: "category:messages", Status: models.ConsentOptedIn, Source: models.ConsentSourceWebForm},
+	} {
+		c.UserID = uid
+		erasureMustCreate(t, db, &c)
+	}
+}
+
+const erasureConsentRestOf = `SELECT coalesce(jsonb_agg(to_jsonb(c) - 'ip' - 'user_agent' - 'evidence_text' ORDER BY c.id)::text, '[]')
+	FROM consents c WHERE c.user_id = ?`
+
+// Erasing a person blanks the ip, user_agent and evidence_text of their
+// consent rows (T05, M24) and nothing else: the opted-out choice stays, so the
+// optional-mail and push readers decide as before, and another person's rows
+// and every teen_consents row are untouched.
+func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
+	s := newCoreErasureScene(t)
+	s.ac.holdNotices = true
+	db := s.app.DB
+	u := newTestUser(t, s.app, "consent.erased@x.test", erasurePW, models.RoleMember)
+	other := newTestUser(t, s.app, "consent.living@x.test", erasurePW, models.RoleMember)
+	erasureSeedConsentEvidence(t, db, u.ID, "erased")
+	erasureSeedConsentEvidence(t, db, other.ID, "living")
+	for _, id := range []uint{u.ID, other.ID} {
+		erasureMustCreate(t, db, &models.TeenConsent{TeenUserID: id, Scope: models.TeenConsentAccount, Status: models.ConsentRevoked,
+			GrantedBy: s.admin.ID, GranterRole: models.ConsentAdmin, EvidenceText: "Teen evidence"})
+	}
+
+	const nonEmpty = "(ip <> '' OR user_agent <> '' OR evidence_text <> '')"
+	var scrubbed []uint
+	if err := db.Raw("SELECT id FROM consents WHERE user_id = ? AND "+nonEmpty+" ORDER BY id", u.ID).Scan(&scrubbed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(scrubbed) != 5 {
+		t.Fatalf("seed: %d of the erased person's rows carry evidence, want 5", len(scrubbed))
+	}
+	var restBefore string
+	if err := db.Raw(erasureConsentRestOf, u.ID).Scan(&restBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherBefore := dumpRows(t, db, "consents", "id", "user_id = ?", other.ID)
+	teenBefore := dumpRows(t, db, "teen_consents", "id", "true")
+	optOutsBefore, err := emailOptOuts(db, []uint{u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushOnBefore, pushOffBefore, err := pushConsent(db, u.ID, "groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !optOutsBefore[u.ID]["category:groups"] || !pushOnBefore || !pushOffBefore {
+		t.Fatalf("seed: readers see email opt-outs %v, push on %v, push groups off %v", optOutsBefore, pushOnBefore, pushOffBefore)
+	}
+
+	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK || strings.TrimSpace(r.body) != "{}" {
+		t.Fatalf("delete answered %d %s, want 200 {}", r.code, r.body)
+	}
+
+	if n := countRows(t, db, "consents", "user_id = ? AND "+nonEmpty, u.ID); n != 0 {
+		t.Errorf("%d of the erased person's rows still carry evidence", n)
+	}
+	if n := countRows(t, db, "consents", "id IN ? AND ip = '' AND user_agent = '' AND evidence_text = ''", scrubbed); n != int64(len(scrubbed)) {
+		t.Errorf("%d of the %d rows that carried evidence are blank now", n, len(scrubbed))
+	}
+	if n := countRows(t, db, "consents", "user_id = ?", u.ID); n != 6 {
+		t.Errorf("the erased person has %d consent rows, want the 6 they had", n)
+	}
+	var restAfter string
+	if err := db.Raw(erasureConsentRestOf, u.ID).Scan(&restAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if restAfter != restBefore {
+		t.Errorf("the scrub changed more than the three evidence columns:\n%s\n%s", restBefore, restAfter)
+	}
+	if got := dumpRows(t, db, "consents", "id", "user_id = ?", other.ID); got != otherBefore {
+		t.Errorf("another person's consent rows changed:\n%s\n%s", otherBefore, got)
+	}
+	if got := dumpRows(t, db, "teen_consents", "id", "true"); got != teenBefore {
+		t.Errorf("teen_consents changed:\n%s\n%s", teenBefore, got)
+	}
+	optOutsAfter, err := emailOptOuts(db, []uint{u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushOnAfter, pushOffAfter, err := pushConsent(db, u.ID, "groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(optOutsAfter, optOutsBefore) || pushOnAfter != pushOnBefore || pushOffAfter != pushOffBefore {
+		t.Errorf("the readers decide differently after the scrub: email opt-outs %v then %v, push on %v then %v, push groups off %v then %v",
+			optOutsBefore, optOutsAfter, pushOnBefore, pushOnAfter, pushOffBefore, pushOffAfter)
 	}
 }
 
@@ -4442,8 +4558,12 @@ var scaleSeeds = []scaleSeed{
 			CASE WHEN u = 3 THEN 'ages 2 and 4' ELSE '' END, '', now(), now()
 		FROM (SELECT (o - 1) * 100 + k + 1 AS id, o, CASE WHEN k = 0 AND o <= 60 THEN 3 ELSE 4 + (o * 37 + k) % 4997 END AS u
 			FROM generate_series(1, 500) o, generate_series(0, 99) k) r`},
-	{name: "consents", sql: `INSERT INTO consents (user_id, channel, scope, status, source)
-		SELECT u, 'email', s, 'opted_in', 'web_form'
+	// Every row carries evidence as setConsent's web_form path records it: the
+	// request's ip and user agent on all four, and an evidence_text on the
+	// scope 'all' row (one a person) only.
+	{name: "consents", sql: `INSERT INTO consents (user_id, channel, scope, status, source, ip, user_agent, evidence_text)
+		SELECT u, 'email', s, 'opted_in', 'web_form', '198.51.100.' || (1 + u % 250), 'Scale agent ' || (u % 7),
+			CASE WHEN s = 'all' THEN 'Scale evidence ' || u ELSE '' END
 		FROM generate_series(1, 5000) u, unnest(ARRAY['all', 'category:groups', 'category:events', 'category:messages']) s`},
 	{name: "notifications", sql: `INSERT INTO notifications (user_id, kind, category, title, link, created_at, updated_at)
 		SELECT u, 'group.joined', 'groups', 'Notice ' || k, '/notifications', now(), now()
@@ -4552,6 +4672,13 @@ func checkScaleFixture(t *testing.T, db *gorm.DB) {
 		{"registrations", "SELECT count(*) FROM registrations", nil, 50000},
 		{"registrations of U", "SELECT count(*) FROM registrations WHERE user_id = 3", nil, 60},
 		{"consents", "SELECT count(*) FROM consents", nil, 20000},
+		// R4-2d1b-2: an empty measurement cannot pass. U's four rows all carry
+		// evidence (one with an evidence_text) and so do everyone else's.
+		{"consents of U with a non-empty field", `SELECT count(*) FROM consents
+			WHERE user_id = 3 AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')`, nil, 4},
+		{"consents of U with a non-empty evidence_text", "SELECT count(*) FROM consents WHERE user_id = 3 AND evidence_text <> ''", nil, 1},
+		{"consents of everyone else with a non-empty ip and user_agent", `SELECT count(*) FROM consents
+			WHERE user_id <> 3 AND ip <> '' AND user_agent <> ''`, nil, 19996},
 		{"series_undo_receipts of U", "SELECT count(*) FROM series_undo_receipts WHERE actor_id = 3", nil, 5},
 		{"manager_add_blocks of U", "SELECT count(*) FROM manager_add_blocks WHERE subject_user_id = 3", nil, 5},
 		{"deliveries of U on others", `SELECT count(*) FROM notification_deliveries d JOIN notifications n ON n.id = d.notification_id
@@ -4611,10 +4738,14 @@ var scaleStatements = []scaleStatement{
 	{"manager_add_blocks 11: delete", []string{"DELETE FROM manager_add_blocks"}},
 	{"registrations 12: scrub", []string{"UPDATE registrations SET"}},
 	{"notification_deliveries 13: delete", []string{"DELETE FROM notification_deliveries"}},
+	{scaleConsentLabel, []string{"UPDATE consents SET ip"}},
 	{"snapshot lock: users FOR KEY SHARE", []string{`FROM "users"`, "FOR KEY SHARE"}},
 }
 
-const scaleRecipientLabel = "message_recipients 9: scrub"
+const (
+	scaleRecipientLabel = "message_recipients 9: scrub"
+	scaleConsentLabel   = "consents 14: scrub evidence"
+)
 
 func scaleLabel(sqlText string) string {
 	sqlText = strings.Join(strings.Fields(sqlText), " ")
@@ -4652,15 +4783,23 @@ type scaleExplainer struct {
 	armed atomic.Bool
 	mu    sync.Mutex
 	plans []scalePlan
-	name  string
-	db    *gorm.DB
+	// affected is, per label that records it (scaleConsentLabel), the
+	// RowsAffected of each real execution, read by an After gorm:raw callback.
+	// The execution runs after the EXPLAIN's savepoint is rolled back, so it
+	// sees the same rows the EXPLAIN did.
+	affected map[string][]int64
+	name     string
+	db       *gorm.DB
 }
 
 func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	t.Helper()
-	x := &scaleExplainer{name: "test:scale_explain", db: db}
+	x := &scaleExplainer{name: "test:scale_explain", db: db, affected: map[string][]int64{}}
 	if err := db.Callback().Raw().Before("gorm:raw").Register(x.name, x.hook); err != nil {
 		t.Fatalf("register raw explainer: %v", err)
+	}
+	if err := db.Callback().Raw().After("gorm:raw").Register(x.name+":rows", x.rowsHook); err != nil {
+		t.Fatalf("register raw rows callback: %v", err)
 	}
 	if err := db.Callback().Row().Before("gorm:row").Register(x.name, x.hook); err != nil {
 		t.Fatalf("register row explainer: %v", err)
@@ -4671,10 +4810,26 @@ func newScaleExplainer(t *testing.T, db *gorm.DB) *scaleExplainer {
 	t.Cleanup(func() {
 		x.armed.Store(false)
 		_ = db.Callback().Raw().Remove(x.name)
+		_ = db.Callback().Raw().Remove(x.name + ":rows")
 		_ = db.Callback().Row().Remove(x.name)
 		_ = db.Callback().Query().Remove(x.name)
 	})
 	return x
+}
+
+// rowsHook records how many rows the real execution of the consent scrub
+// touched (db.RowsAffected, which RawExec sets from the driver's result). It
+// adds no RETURNING to the production statement and runs no statement of its own.
+func (x *scaleExplainer) rowsHook(db *gorm.DB) {
+	if !x.armed.Load() || db.Error != nil || db.DryRun || db.Statement.ConnPool == nil {
+		return
+	}
+	if scaleLabel(db.Statement.SQL.String()) != scaleConsentLabel {
+		return
+	}
+	x.mu.Lock()
+	x.affected[scaleConsentLabel] = append(x.affected[scaleConsentLabel], db.RowsAffected)
+	x.mu.Unlock()
 }
 
 func (x *scaleExplainer) hook(db *gorm.DB) {
@@ -4804,7 +4959,14 @@ var errScaleRollback = errors.New("scale explain: roll back")
 // It leaves out the gate, the credential deletes, the hand-offs, the tombstone,
 // promoteOnDisable and the throttle delete: none of them is a statement R4-2a
 // added.
-func explainScaleErasure(t *testing.T, app *App) []scalePlan {
+//
+// R4-2d1b-2: after the snapshot-lock check, which needs all 5,000 users live,
+// it runs the model soft delete apiAdminDeleteUser runs and then
+// eraseConsentEvidenceIn, in that order, so the consent scrub's EXPLAIN runs
+// after the transaction's own soft delete with the trigger's users lookup
+// seeing deleted_at (before it the statement raises P0001, so a recorded plan
+// proves the position).
+func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 	t.Helper()
 	x := newScaleExplainer(t, app.DB)
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
@@ -4844,6 +5006,12 @@ func explainScaleErasure(t *testing.T, app *App) []scalePlan {
 		if len(live) != 5000 {
 			return fmt.Errorf("snapshot lock saw %d live users, want 5000", len(live))
 		}
+		if err := tx.Delete(&u).Error; err != nil {
+			return err
+		}
+		if err := eraseConsentEvidenceIn(tx, s); err != nil {
+			return err
+		}
 		return errScaleRollback
 	})
 	if !errors.Is(err, errScaleRollback) {
@@ -4851,7 +5019,104 @@ func explainScaleErasure(t *testing.T, app *App) []scalePlan {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	return append([]scalePlan(nil), x.plans...)
+	out := scaleExplain{plans: append([]scalePlan(nil), x.plans...), affected: map[string][]int64{}}
+	for label, n := range x.affected {
+		out.affected[label] = append([]int64(nil), n...)
+	}
+	return out
+}
+
+// scaleExplain is what explainScaleErasure measured: the plans, and the rows
+// each real execution of the consent scrub (scaleConsentLabel) touched.
+type scaleExplain struct {
+	plans    []scalePlan
+	affected map[string][]int64
+}
+
+var (
+	// scaleTriggerRe is the line EXPLAIN ANALYZE prints for a trigger that
+	// fired: one call per updated row, none for a row the filter skipped.
+	scaleTriggerRe = regexp.MustCompile(`Trigger consents_append_only: time=[\d.]+ calls=(\d+)`)
+	// scaleConsentScanRe is the node that feeds 'Update on consents': whichever
+	// scan of consents the planner chose, with its actual rows and loops from
+	// the same line.
+	scaleConsentScanRe = regexp.MustCompile(`(?:Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan)(?: using \S+)? on consents\b.*actual time=[\d.]+\.\.[\d.]+ rows=([\d.]+) loops=(\d+)`)
+)
+
+// scaleConsentFacts are the two independent counts in the plan of the consent
+// scrub. The top-level 'Update on consents' node reports actual rows=0 because
+// the statement has no RETURNING; that is expected and is not read here.
+type scaleConsentFacts struct {
+	scanNode     string
+	scanRows     int64 // actual rows x loops at the feeding scan
+	scanFound    bool
+	triggerCalls int64
+	triggerFound bool
+	usesLatest   bool // idx_consents_latest appears in the plan
+}
+
+func scaleConsentPlanFacts(lines []string) scaleConsentFacts {
+	var f scaleConsentFacts
+	update := -1
+	for i, line := range lines {
+		if strings.Contains(line, "idx_consents_latest") {
+			f.usesLatest = true
+		}
+		if update < 0 && strings.Contains(line, "Update on consents") {
+			update = i
+		}
+		if m := scaleTriggerRe.FindStringSubmatch(line); m != nil && !f.triggerFound {
+			f.triggerCalls, _ = strconv.ParseInt(m[1], 10, 64)
+			f.triggerFound = true
+		}
+		if update < 0 || i <= update || f.scanFound {
+			continue
+		}
+		if m := scaleConsentScanRe.FindStringSubmatch(line); m != nil {
+			rows, _ := strconv.ParseFloat(m[1], 64)
+			loops, _ := strconv.ParseFloat(m[2], 64)
+			f.scanRows = int64(math.Round(rows * loops))
+			f.scanNode = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "->"))
+			if cut := strings.Index(f.scanNode, "  (cost="); cut >= 0 {
+				f.scanNode = f.scanNode[:cut]
+			}
+			f.scanFound = true
+		}
+	}
+	return f
+}
+
+// checkScaleConsentScrub asserts the three counts that tell a real scrub from
+// an empty one, each on its own so one passing never stands in for another:
+// (c1) the real execution's RowsAffected, with the feeding scan's actual rows
+// x loops as its cross-check, and (c2) the trigger's calls. The unrelated-
+// person control (c3) is asserted by the timed deletes.
+func checkScaleConsentScrub(t *testing.T, run scaleExplain) scaleConsentFacts {
+	t.Helper()
+	var plan *scalePlan
+	for i := range run.plans {
+		if run.plans[i].label == scaleConsentLabel {
+			plan = &run.plans[i]
+		}
+	}
+	if plan == nil {
+		t.Fatalf("no plan for %q: the statement did not run or its SQL no longer matches", scaleConsentLabel)
+	}
+	facts := scaleConsentPlanFacts(plan.lines)
+	if got := run.affected[scaleConsentLabel]; len(got) != 1 || got[0] != 4 {
+		t.Errorf("(c1) the real UPDATE's RowsAffected: %v, want exactly one execution touching 4 rows", got)
+	}
+	if !facts.scanFound || facts.scanRows != 4 {
+		t.Errorf("(c1 cross-check) the scan feeding 'Update on consents' reports %d actual rows x loops (found %v), want 4:\n%s",
+			facts.scanRows, facts.scanFound, strings.Join(plan.lines, "\n"))
+	}
+	if !facts.triggerFound || facts.triggerCalls != 4 {
+		t.Errorf("(c2) 'Trigger consents_append_only' reports calls=%d (found %v), want calls=4:\n%s",
+			facts.triggerCalls, facts.triggerFound, strings.Join(plan.lines, "\n"))
+	}
+	t.Logf("consent scrub: RowsAffected %v, feeding scan %q rows x loops = %d, trigger calls %d, idx_consents_latest used: %v",
+		run.affected[scaleConsentLabel], facts.scanNode, facts.scanRows, facts.triggerCalls, facts.usesLatest)
+	return facts
 }
 
 // logScaleReport prints the table, the totals the review cares about and,
@@ -4909,6 +5174,13 @@ func logScaleReport(t *testing.T, plans []scalePlan) float64 {
 //
 //	FOLD_ERASURE_SCALE=1 DATABASE_URL=<scratch> go test -run TestAccountErasureScale -count=1 -v .
 //
+// R4-2d1b-2: the consent scrub is asserted, not only timed. The explain
+// subtest requires the real UPDATE's RowsAffected = 4 (cross-checked by the
+// feeding scan's actual rows x loops) and the trigger's calls = 4, each on its
+// own; the three timed deletes require the unrelated-person control. Set
+// FOLD_ERASURE_SCALE_JSON=<path> to write the plan, the counts and the medians
+// as JSON (results/r4-2d1b-scale.json).
+//
 // Three fresh seeds each take the real DELETE /admin/users/:id once; the
 // median is reported. A fourth fresh seed gets the EXPLAIN (ANALYZE, BUFFERS)
 // run in a rolled-back transaction, so the plans' dead tuples never touch a
@@ -4922,11 +5194,29 @@ func TestAccountErasureScale(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		t.Run(fmt.Sprintf("delete seed %d", i), func(t *testing.T) {
 			app, ac := newScaleScene(t, base)
+			// The unrelated-person control (c3), recorded right after seeding.
+			othersBefore, targetRestBefore := scaleConsentControl(t, app.DB)
 			started := time.Now()
 			r := deleteAccount(ac, scaleTargetID, nil)
 			elapsed := time.Since(started)
 			if r.code != http.StatusOK {
 				t.Fatalf("delete: %d %s", r.code, r.body)
+			}
+			othersAfter, targetRestAfter := scaleConsentControl(t, app.DB)
+			if othersAfter != othersBefore {
+				t.Errorf("(c3) another person's consent rows changed: md5 %s, was %s", othersAfter, othersBefore)
+			}
+			if n := countRows(t, app.DB, "consents", "user_id <> ? AND ip <> '' AND user_agent <> ''", scaleTargetID); n != 19996 {
+				t.Errorf("(c3) %d of everyone else's consent rows still carry an ip and user agent, want 19996", n)
+			}
+			if n := countRows(t, app.DB, "consents", "user_id = ? AND ip = '' AND user_agent = '' AND evidence_text = ''", scaleTargetID); n != 4 {
+				t.Errorf("(c3) %d of the erased person's 4 consent rows are blank, want all 4", n)
+			}
+			if n := countRows(t, app.DB, "consents", "user_id = ?", scaleTargetID); n != 4 {
+				t.Errorf("(c3) the erased person has %d consent rows, want 4", n)
+			}
+			if targetRestAfter != targetRestBefore {
+				t.Errorf("(c3) the scrub changed more than the three evidence columns: md5 %s, was %s", targetRestAfter, targetRestBefore)
 			}
 			var left int64
 			if err := app.DB.Raw(`SELECT
@@ -4949,9 +5239,13 @@ func TestAccountErasureScale(t *testing.T) {
 		})
 	}
 	var recipientMS float64
+	var run scaleExplain
+	var facts scaleConsentFacts
 	t.Run("explain", func(t *testing.T) {
 		app, _ := newScaleScene(t, base)
-		recipientMS = logScaleReport(t, explainScaleErasure(t, app))
+		run = explainScaleErasure(t, app)
+		recipientMS = logScaleReport(t, run.plans)
+		facts = checkScaleConsentScrub(t, run)
 	})
 	if len(timings) != 3 {
 		t.Fatalf("only %d of 3 timed deletes completed", len(timings))
@@ -4961,4 +5255,65 @@ func TestAccountErasureScale(t *testing.T) {
 	t.Logf("real DELETE of U at scale: median %s of %v (fastest %s, slowest %s)",
 		sorted[1].Round(time.Millisecond), timings, sorted[0].Round(time.Millisecond), sorted[2].Round(time.Millisecond))
 	t.Logf("recipient statement %.3f ms; whole DELETE median %s; bound %s", recipientMS, sorted[1].Round(time.Millisecond), erasureRecipientWait)
+	writeScaleResults(t, run, facts, timings, sorted[1])
+}
+
+// scaleConsentControl is the unrelated-person control: one hash over every
+// other person's consent rows, whole, and one over the erased person's rows
+// without the three evidence columns, so a scrub that touched anything else
+// changes the second and a scrub that reached another person changes the first.
+func scaleConsentControl(t *testing.T, db *gorm.DB) (others, targetRest string) {
+	t.Helper()
+	if err := db.Raw(`SELECT coalesce(md5(string_agg(to_jsonb(c)::text, ',' ORDER BY c.id)), '') FROM consents c WHERE c.user_id <> ?`,
+		scaleTargetID).Scan(&others).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw(`SELECT coalesce(md5(string_agg((to_jsonb(c) - 'ip' - 'user_agent' - 'evidence_text')::text, ',' ORDER BY c.id)), '')
+		FROM consents c WHERE c.user_id = ?`, scaleTargetID).Scan(&targetRest).Error; err != nil {
+		t.Fatal(err)
+	}
+	if others == "" || targetRest == "" {
+		t.Fatal("the consent control hashed no rows")
+	}
+	return others, targetRest
+}
+
+// writeScaleResults records the consent scrub's full plan, the recorded
+// RowsAffected, the feeding scan's rows and loops, the trigger's calls and the
+// timed medians for the database review, as JSON at FOLD_ERASURE_SCALE_JSON
+// (the results directory's r4-2d1b-scale.json). It writes nothing when the
+// variable is unset.
+func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, timings []time.Duration, median time.Duration) {
+	t.Helper()
+	path := os.Getenv("FOLD_ERASURE_SCALE_JSON")
+	if path == "" {
+		return
+	}
+	var lines []string
+	for _, p := range run.plans {
+		if p.label == scaleConsentLabel {
+			lines = p.lines
+		}
+	}
+	millis := make([]float64, 0, len(timings))
+	for _, d := range timings {
+		millis = append(millis, float64(d.Microseconds())/1000)
+	}
+	out, err := json.MarshalIndent(map[string]any{
+		"statement":               scaleConsentLabel,
+		"plan":                    lines,
+		"rowsAffected":            run.affected[scaleConsentLabel],
+		"feedingScan":             map[string]any{"node": facts.scanNode, "actualRowsTimesLoops": facts.scanRows},
+		"triggerCalls":            facts.triggerCalls,
+		"usesIdxConsentsLatest":   facts.usesLatest,
+		"timedDeleteMillis":       millis,
+		"timedDeleteMedianMillis": float64(median.Microseconds()) / 1000,
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	t.Logf("wrote %s", path)
 }

@@ -371,6 +371,28 @@ func eraseOwnedThrottleKeysIn(tx *gorm.DB, s erasureSubject) error {
 	return tx.Exec("DELETE FROM login_throttles WHERE key IN ?", ownedThrottleKeys(s.ID, s.Address)).Error
 }
 
+// eraseConsentEvidenceIn blanks the ip, user_agent and evidence_text of the
+// erased person's consent rows (T05, M24). Everything else on the row stays:
+// the channel, scope, choice and time are the opt-out record the optional-mail
+// and push readers still honor, and no hash or address column is added (O-1).
+// suppressions and teen_consents are not touched (O-4).
+//
+// It must run after the soft delete in the same transaction: the
+// consents_append_only trigger (migration 00003) allows this scrub only while
+// the owner's users row has deleted_at set, and the transaction sees its own
+// soft delete. Before it, the statement raises P0001.
+//
+// Locks: the erasure already holds the user row FOR UPDATE, and every consent
+// writer (setConsent) takes that row FOR NO KEY UPDATE before it inserts, so
+// writers and this scrub serialize on the user row and the row locks taken
+// here on consents cannot form a cycle. Nothing else updates consents and
+// readers take no lock. The filter skips rows that are already blank, which
+// keeps a retry idempotent. It returns the error unwrapped and logs nothing.
+func eraseConsentEvidenceIn(tx *gorm.DB, s erasureSubject) error {
+	return tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
+		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error
+}
+
 // tombstoneUserIn scrubs the personal columns of the erased account in the
 // one UPDATE that also bumps session_version, so every open session ends.
 // The row keeps its id, role (O-11), account_type, created_at and
