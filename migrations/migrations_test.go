@@ -2669,3 +2669,377 @@ func TestSuppressionExpandKeepsThePreviousBinaryWorking(t *testing.T) {
 	}
 	t.Logf("previous goose runner against version %d: Up returned nil and applied nothing; a rollback to the previous image needs no migrate down", latestVersion(t))
 }
+
+// The 00003 consent-erasure-scrub tests (M7.4 R4-2d1, owner decision 1). The
+// migration lets reject_consent_change() allow exactly one UPDATE: blank ip,
+// user_agent and evidence_text on a soft-deleted owner's row, every other
+// column unchanged. Everything else, and every DELETE, keeps the baseline's
+// refusal.
+
+const (
+	consentScrubTestConsentScrubVersion  = 3
+	consentScrubTestConsentAppendOnlyMsg = "consent history is append-only"
+)
+
+// consentScrubTestWantConsentRefused checks the trigger's refusal exactly: SQLSTATE P0001 and
+// the baseline's message.
+func consentScrubTestWantConsentRefused(t *testing.T, label string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: allowed, want P0001 %q", label, consentScrubTestConsentAppendOnlyMsg)
+		return
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "P0001" || pgErr.Message != consentScrubTestConsentAppendOnlyMsg {
+		t.Errorf("%s: %v, want P0001 %q", label, err, consentScrubTestConsentAppendOnlyMsg)
+	}
+}
+
+// consentScrubTestConsentOwners are the ids of the seeded rows: each owner has an email row and
+// a push row carrying an address, a user agent and evidence text.
+type consentScrubTestConsentOwners struct{ living, deleted []int64 }
+
+// consentScrubTestSeedConsentOwners adds a living owner (user 1) and a soft-deleted owner
+// (user 2), each with an email and a push consent row.
+func consentScrubTestSeedConsentOwners(t *testing.T, db *sql.DB) consentScrubTestConsentOwners {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO users(id,email) VALUES (1,'living@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id,email,deleted_at) VALUES (2,'erased@example.com',now())`); err != nil {
+		t.Fatal(err)
+	}
+	var out consentScrubTestConsentOwners
+	for _, owner := range []struct {
+		id  int64
+		ids *[]int64
+	}{{1, &out.living}, {2, &out.deleted}} {
+		for _, channel := range []string{"email", "push"} {
+			var id int64
+			err := db.QueryRow(`INSERT INTO consents(user_id,channel,scope,status,source,evidence_text,ip,user_agent)
+				VALUES ($1,$2,'all','opted_in','web_form','Ticked the box on the form','203.0.113.7','Mozilla/5.0 (test)') RETURNING id`,
+				owner.id, channel).Scan(&id)
+			if err != nil {
+				t.Fatalf("seed %s consent for user %d: %v", channel, owner.id, err)
+			}
+			*owner.ids = append(*owner.ids, id)
+		}
+	}
+	return out
+}
+
+// consentScrubTestConsentSnapshot returns every consents row as jsonb text by id. With strip
+// it leaves out ip, user_agent and evidence_text, the three fields the scrub
+// may change.
+func consentScrubTestConsentSnapshot(t *testing.T, db *sql.DB, strip bool) map[int64]string {
+	t.Helper()
+	q := `SELECT id, to_jsonb(c)::text FROM consents c`
+	if strip {
+		q = `SELECT id, (to_jsonb(c) - 'ip' - 'user_agent' - 'evidence_text')::text FROM consents c`
+	}
+	rows, err := db.Query(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var doc string
+		if err := rows.Scan(&id, &doc); err != nil {
+			t.Fatal(err)
+		}
+		out[id] = doc
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// consentScrubTestSameConsentRows reports every id whose row differs between two snapshots.
+// skip names ids to leave out of the comparison.
+func consentScrubTestSameConsentRows(t *testing.T, label string, got, want map[int64]string, skip ...int64) {
+	t.Helper()
+	skipped := map[int64]bool{}
+	for _, id := range skip {
+		skipped[id] = true
+	}
+	if len(got) != len(want) {
+		t.Errorf("%s: %d rows, want %d", label, len(got), len(want))
+	}
+	for id, doc := range want {
+		if skipped[id] {
+			continue
+		}
+		if got[id] != doc {
+			t.Errorf("%s: row %d is %s, want %s", label, id, got[id], doc)
+		}
+	}
+}
+
+// consentScrubTestConsentFields reads the three fields the scrub blanks.
+func consentScrubTestConsentFields(t *testing.T, db *sql.DB, id int64) (ip, userAgent, evidence string) {
+	t.Helper()
+	if err := db.QueryRow(`SELECT ip, user_agent, evidence_text FROM consents WHERE id = $1`, id).Scan(&ip, &userAgent, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// TestConsentTriggerAllowsOnlyTheErasureScrub runs the trigger at the latest
+// version. The scrub is allowed for a soft-deleted owner and for nobody else;
+// no other change and no DELETE gets through.
+func TestConsentTriggerAllowsOnlyTheErasureScrub(t *testing.T) {
+	t.Parallel()
+	if latest := latestVersion(t); latest < consentScrubTestConsentScrubVersion {
+		t.Fatalf("latest migration = %d, want at least %d (the consent erasure scrub)", latest, consentScrubTestConsentScrubVersion)
+	}
+	db := openSQL(t, testdb.Fresh(t, true))
+	owners := consentScrubTestSeedConsentOwners(t, db)
+	livingRow, goneRow, spareRow := owners.living[0], owners.deleted[0], owners.deleted[1]
+	const blank = `ip = '', user_agent = '', evidence_text = ''`
+	update := func(set string, id int64) error {
+		_, err := db.Exec(`UPDATE consents SET `+set+` WHERE id = $1`, id)
+		return err
+	}
+	remove := func(id int64) error {
+		_, err := db.Exec(`DELETE FROM consents WHERE id = $1`, id)
+		return err
+	}
+	before := consentScrubTestConsentSnapshot(t, db, false)
+
+	// A living owner's rows are append-only, scrub included.
+	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row", update(blank, livingRow))
+	consentScrubTestWantConsentRefused(t, "ordinary update of a living owner's row", update(`status = 'opted_out'`, livingRow))
+	consentScrubTestWantConsentRefused(t, "no-op update of a living owner's row", update(`ip = ip`, livingRow))
+	consentScrubTestWantConsentRefused(t, "delete of a living owner's row", remove(livingRow))
+
+	// A soft-deleted owner's rows allow the scrub and nothing else.
+	for _, c := range []struct{ label, set string }{
+		{"scrub leaving ip", `user_agent = '', evidence_text = ''`},
+		{"scrub leaving user_agent", `ip = '', evidence_text = ''`},
+		{"scrub leaving evidence_text", `ip = '', user_agent = ''`},
+		{"blanking only ip", `ip = ''`},
+		{"blanking only user_agent", `user_agent = ''`},
+		{"blanking only evidence_text", `evidence_text = ''`},
+		{"status changed with the three blanked", blank + `, status = 'opted_out'`},
+		{"scope changed with the three blanked", blank + `, scope = 'category:events'`},
+		{"source changed with the three blanked", blank + `, source = 'admin'`},
+		{"channel changed with the three blanked", blank + `, channel = 'sms'`},
+		{"at changed with the three blanked", blank + `, at = at + interval '1 second'`},
+		{"user_id changed with the three blanked", blank + `, user_id = 1`},
+		{"id changed with the three blanked", blank + `, id = id + 1000`},
+		{"non-empty ip replacement", `ip = 'REDACTED', user_agent = '', evidence_text = ''`},
+		{"non-empty user_agent replacement", `ip = '', user_agent = 'REDACTED', evidence_text = ''`},
+		{"non-empty evidence_text replacement", `ip = '', user_agent = '', evidence_text = 'REDACTED'`},
+		{"edit of the three fields to other text", `ip = '198.51.100.1', user_agent = 'other', evidence_text = 'other'`},
+	} {
+		consentScrubTestWantConsentRefused(t, c.label, update(c.set, goneRow))
+	}
+	consentScrubTestWantConsentRefused(t, "delete of a soft-deleted owner's row", remove(goneRow))
+	consentScrubTestSameConsentRows(t, "rows after the refusals", consentScrubTestConsentSnapshot(t, db, false), before)
+
+	// The scrub itself.
+	strippedBefore := consentScrubTestConsentSnapshot(t, db, true)
+	res, err := db.Exec(`UPDATE consents SET `+blank+` WHERE id = $1`, goneRow)
+	if err != nil {
+		t.Fatalf("scrub of a soft-deleted owner's row: %v", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("scrub affected %d rows (%v), want 1", n, err)
+	}
+	if ip, ua, ev := consentScrubTestConsentFields(t, db, goneRow); ip != "" || ua != "" || ev != "" {
+		t.Fatalf("after the scrub: ip=%q user_agent=%q evidence_text=%q, want all empty", ip, ua, ev)
+	}
+	after := consentScrubTestConsentSnapshot(t, db, false)
+	consentScrubTestSameConsentRows(t, "every column but the three after the scrub", consentScrubTestConsentSnapshot(t, db, true), strippedBefore)
+	consentScrubTestSameConsentRows(t, "rows the scrub did not touch", after, before, goneRow)
+	if err := update(blank, goneRow); err != nil {
+		t.Fatalf("scrubbing an already scrubbed row: %v", err)
+	}
+	// A scrubbed row is still append-only for everything else.
+	consentScrubTestWantConsentRefused(t, "status change on a scrubbed row", update(`status = 'opted_out'`, goneRow))
+	consentScrubTestWantConsentRefused(t, "text added back to a scrubbed row", update(`evidence_text = 'again'`, goneRow))
+	consentScrubTestWantConsentRefused(t, "delete of a scrubbed row", remove(goneRow))
+	if ip, ua, ev := consentScrubTestConsentFields(t, db, spareRow); ip == "" || ua == "" || ev == "" {
+		t.Fatalf("the owner's other row was touched: ip=%q user_agent=%q evidence_text=%q", ip, ua, ev)
+	}
+}
+
+// TestConsentErasureScrubDownAndUp walks 00003 away and back over seeded rows.
+// Down restores the baseline body, so the scrub is refused again, and neither
+// direction touches a row.
+func TestConsentErasureScrubDownAndUp(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
+		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion-1, err)
+	}
+	owners := consentScrubTestSeedConsentOwners(t, db)
+	goneRow, otherRow := owners.deleted[0], owners.deleted[1]
+	const blank = `ip = '', user_agent = '', evidence_text = ''`
+	scrub := func(id int64) error {
+		_, err := db.Exec(`UPDATE consents SET `+blank+` WHERE id = $1`, id)
+		return err
+	}
+	functionSource := func() string {
+		t.Helper()
+		var src string
+		if err := db.QueryRow(`SELECT prosrc FROM pg_proc WHERE oid = 'public.reject_consent_change()'::regprocedure`).Scan(&src); err != nil {
+			t.Fatal(err)
+		}
+		return src
+	}
+	baselineSource := functionSource()
+	consentScrubTestWantConsentRefused(t, "scrub before 00003", scrub(goneRow))
+	seeded := consentScrubTestConsentSnapshot(t, db, false)
+
+	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion); err != nil {
+		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion, err)
+	}
+	if functionSource() == baselineSource {
+		t.Fatal("00003 left the baseline function body in place")
+	}
+	consentScrubTestSameConsentRows(t, "rows after 00003", consentScrubTestConsentSnapshot(t, db, false), seeded)
+	if err := scrub(goneRow); err != nil {
+		t.Fatalf("scrub of the soft-deleted owner's row at version %d: %v", consentScrubTestConsentScrubVersion, err)
+	}
+	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row at the new version", scrub(owners.living[0]))
+	scrubbed := consentScrubTestConsentSnapshot(t, db, false)
+
+	if _, err := p.DownTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
+		t.Fatalf("down to %d: %v", consentScrubTestConsentScrubVersion-1, err)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != consentScrubTestConsentScrubVersion-1 {
+		t.Fatalf("version after the down = %d, %v, want %d", version, err, consentScrubTestConsentScrubVersion-1)
+	}
+	if got := functionSource(); got != baselineSource {
+		t.Fatalf("function body after the down is not the baseline's:\n%q\nwant\n%q", got, baselineSource)
+	}
+	consentScrubTestSameConsentRows(t, "rows after the down", consentScrubTestConsentSnapshot(t, db, false), scrubbed)
+	consentScrubTestWantConsentRefused(t, "scrub of the deleted owner's other row after the down", scrub(otherRow))
+
+	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion); err != nil {
+		t.Fatalf("up again to %d: %v", consentScrubTestConsentScrubVersion, err)
+	}
+	if err := scrub(otherRow); err != nil {
+		t.Fatalf("scrub after up again: %v", err)
+	}
+	consentScrubTestSameConsentRows(t, "rows after up again", consentScrubTestConsentSnapshot(t, db, false), scrubbed, otherRow)
+	if ip, ua, ev := consentScrubTestConsentFields(t, db, otherRow); ip != "" || ua != "" || ev != "" {
+		t.Fatalf("after the second scrub: ip=%q user_agent=%q evidence_text=%q, want all empty", ip, ua, ev)
+	}
+}
+
+// TestConsentScrubMigrationTakesNoConsentsLock holds the strongest lock on
+// consents while 00003 runs. CREATE OR REPLACE FUNCTION does not touch the
+// table, so the migration finishes at once instead of waiting for the 5s
+// lock_timeout. This proves the header's lock claim.
+func TestConsentScrubMigrationTakesNoConsentsLock(t *testing.T) {
+	t.Parallel()
+	name := testdb.Fresh(t, false)
+	db := openSQL(t, name)
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
+		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion-1, err)
+	}
+	holder, err := openSQL(t, name).BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.Exec(`LOCK TABLE consents IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	// Control: the lock really blocks another session.
+	probe, err := openSQL(t, name).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	if _, err := probe.ExecContext(ctx, `SET lock_timeout = '200ms'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.ExecContext(ctx, `SELECT count(*) FROM consents`); pgErrorCode(err) != "55P03" {
+		t.Fatalf("a read of consents under the held lock: %v (code %q), want lock_not_available 55P03", err, pgErrorCode(err))
+	}
+
+	// Well inside the migration's own 5s lock_timeout, so a wait on consents
+	// fails here rather than passing by timing out later.
+	mctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = p.UpTo(mctx, consentScrubTestConsentScrubVersion)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("UpTo(%d) with consents locked ACCESS EXCLUSIVE: %v after %s; the migration waits on consents, so correct its header's lock claim", consentScrubTestConsentScrubVersion, err, elapsed)
+	}
+	if version, err := p.GetDBVersion(ctx); err != nil || version != consentScrubTestConsentScrubVersion {
+		t.Fatalf("version after the migration = %d, %v, want %d", version, err, consentScrubTestConsentScrubVersion)
+	}
+}
+
+// TestConsentScrubKeepsThePreviousWriterWorking is the DEC-138 previous-release
+// check. The previous binary writes consents with a GORM insert (setConsent)
+// and never updates or deletes them, so at version 3 its insert still works and
+// an ordinary UPDATE of a living owner's row is still refused.
+func TestConsentScrubKeepsThePreviousWriterWorking(t *testing.T) {
+	t.Parallel()
+	if latest := latestVersion(t); latest < consentScrubTestConsentScrubVersion {
+		t.Fatalf("latest migration = %d, want at least %d (the consent erasure scrub)", latest, consentScrubTestConsentScrubVersion)
+	}
+	gdb, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	if _, err := sqlDB.Exec(`INSERT INTO users(id,email) VALUES (1,'living@example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.Exec(`INSERT INTO users(id,email,deleted_at) VALUES (2,'erased@example.com',now())`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The previous writer: a plain insert, for a living owner and for a
+	// soft-deleted one (the trigger only watches UPDATE and DELETE).
+	var written []models.Consent
+	for _, userID := range []uint{1, 2} {
+		c := models.Consent{UserID: userID, Channel: models.ConsentEmail, Scope: "all", Status: models.ConsentOptedIn,
+			Source: "web_form", EvidenceText: "Ticked the box", IP: "203.0.113.7", UserAgent: "Mozilla/5.0 (test)"}
+		if err := gdb.Create(&c).Error; err != nil {
+			t.Fatalf("insert of a consent row for user %d: %v", userID, err)
+		}
+		written = append(written, c)
+	}
+	var latest models.Consent
+	if err := gdb.Where("user_id = ? AND channel = ? AND scope = ?", 1, models.ConsentEmail, "all").
+		Order("at DESC, id DESC").First(&latest).Error; err != nil || latest.ID != written[0].ID {
+		t.Fatalf("latest consent read = %d (%v), want %d", latest.ID, err, written[0].ID)
+	}
+
+	// The new body still refuses the updates and deletes the previous release
+	// never sends.
+	err = gdb.Model(&models.Consent{}).Where("id = ?", written[0].ID).Update("status", models.ConsentOptedOut).Error
+	consentScrubTestWantConsentRefused(t, "ordinary update of a living owner's row", err)
+	err = gdb.Model(&models.Consent{}).Where("id = ?", written[0].ID).Updates(map[string]any{"ip": "", "user_agent": "", "evidence_text": ""}).Error
+	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row", err)
+	consentScrubTestWantConsentRefused(t, "delete of a living owner's row", gdb.Delete(&models.Consent{}, written[0].ID).Error)
+	var kept models.Consent
+	if err := gdb.First(&kept, written[0].ID).Error; err != nil || kept.Status != models.ConsentOptedIn || kept.IP != "203.0.113.7" {
+		t.Fatalf("the living owner's row changed: %+v (%v)", kept, err)
+	}
+}
