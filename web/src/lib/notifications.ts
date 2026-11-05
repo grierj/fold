@@ -262,7 +262,7 @@ export function resolutionText(n: Notification): string {
   const r = n.resolution;
   if (!r) return "";
   const verb = OUTCOME[r.outcome] ?? "handled";
-  if (r.byMe) return `You ${verb} this`;
+  if (r.byMe) return `You ${r.outcome === "withdrawn" ? "withdrew" : verb} this`;
   if (r.outcome === "withdrawn") return "Done · withdrawn by " + (r.by || "the leader");
   return `Done · ${verb} by ${r.by || "someone"}`;
 }

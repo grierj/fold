@@ -603,6 +603,11 @@ func (a *App) prepareAccountRequestMail(tx *gorm.DB, requestID uint, kind string
 	if err != nil {
 		return none, false, err
 	}
+	// An erased person's request carries a placeholder address: nothing goes
+	// to it (rejected and conversion_approved would otherwise try).
+	if isErasedAddress(req.Email) {
+		return none, false, nil
+	}
 	conversion := req.Source == models.RequestHouseholdConversion
 	switch kind {
 	case requestMailReceived:

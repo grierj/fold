@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1536,5 +1537,239 @@ func TestGuestHintSurvivesClientDisconnect(t *testing.T) {
 	}
 	if hints := mailJobsOfKind(t, app, kindAccountExistsMail); len(hints) != 1 || !payloadEquals(hints[0], userMailJob{UserID: member.ID}) {
 		t.Fatalf("disconnect lost the hint: %+v", hints)
+	}
+}
+
+// guestRaceFixture is a guest account G at one address with a pending signup
+// S for a future occurrence O. Variant P1 gives G a going registration at O,
+// on an event of capacity 1 with a waitlisted member behind it.
+type guestRaceFixture struct {
+	s       coreErasureScene
+	guest   *models.User
+	occ     models.EventOccurrence
+	signup  models.GuestSignup
+	raw     string
+	waiter  *models.User
+	address string
+	anon    *apiClient
+}
+
+func newGuestRaceFixture(t *testing.T, p1 bool) *guestRaceFixture {
+	t.Helper()
+	s := newCoreErasureScene(t)
+	eventID, occ, groupID := erasureEventFixture(t, s)
+	f := &guestRaceFixture{s: s, occ: occ, address: "racing.guest@example.com", raw: "guest-redemption-racing-an-erasure"}
+	f.guest = &models.User{Email: f.address, Name: "Old Guest Name", Role: models.RoleMember, Status: models.UserGuest, Timezone: "UTC"}
+	erasureMustCreate(t, s.app.DB, f.guest)
+	if p1 {
+		apiDo(t, s.ac, "PUT", fmt.Sprintf("/api/v1/events/%d", eventID), map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+		erasureMustCreate(t, s.app.DB, &models.Registration{UserID: &f.guest.ID, OccurrenceID: occ.ID, Status: models.RegGoing,
+			Source: models.RegSourceGuestForm, AttendanceMode: models.AttendanceInPerson})
+		f.waiter = newTestUser(t, s.app, "racing-waiter", erasurePW, models.RoleMember)
+		var g models.Group
+		if err := s.app.DB.First(&g, groupID).Error; err != nil {
+			t.Fatal(err)
+		}
+		addMember(t, s.app, f.waiter, &g, models.MembershipMember)
+		wc := loginAPI(t, s.app, "racing-waiter", erasurePW)
+		wc.holdNotices = true
+		if code, body := registerAs(wc, eventID, models.FormatCalendarDate(occ.OriginalDate), "going", nil); code != http.StatusOK {
+			t.Fatalf("waiter registers: %d %s", code, body)
+		}
+		if got := regStatus(t, s.app, f.waiter.ID, occ.ID); got != models.RegWaitlisted {
+			t.Fatalf("waiter is %q, want waitlisted", got)
+		}
+	}
+	// The signup's name differs from the guest's, so redemption really
+	// writes G (UPDATE users SET name), the write that closes the L3 cycle.
+	f.signup = models.GuestSignup{Name: "New Signup Name", Email: f.address, OccurrenceID: occ.ID, CreateAccount: true,
+		TokenHash: hashToken(f.raw), ExpiresAt: time.Now().Add(time.Hour), IP: "203.0.113.9", Timezone: "America/Boise"}
+	erasureMustCreate(t, s.app.DB, &f.signup)
+	f.anon = anonClient(t, s.app, "10.9.9.9")
+	f.anon.holdNotices = true
+	return f
+}
+
+func (f *guestRaceFixture) confirm(raw string) <-chan httpResult {
+	return bgDo(f.anon, "POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": raw})
+}
+
+func (f *guestRaceFixture) erase() <-chan httpResult {
+	return bgDo(f.s.ac, "DELETE", "/api/v1/admin/users/"+itoa(f.guest.ID), nil)
+}
+
+// TestGuestRedemptionRacingErasure: guest redemption locks the guest row, then
+// the occurrence, then the signup (the holder-first order of the other
+// registration writers), so it and an erasure of that guest never wait on each
+// other in a cycle. Production schedules only; the mutation proof that
+// removing the holder lock records a 40P01 lives in the PR description.
+//
+// Kept limit, not closed here: a redemption that asked for an account holds
+// the occurrence and then notifies every active admin, which takes KEY SHARE
+// on each admin row, while an erasure of that admin holds the row and waits for
+// the occurrence (promoteOnDisable). Postgres aborts one side with 40P01. That
+// class is recorded in inventory 9.5 by R4-2a-4 and is not claimed away;
+// TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser (account_erasure_test.go)
+// proves its loser rolls back whole.
+func TestGuestRedemptionRacingErasure(t *testing.T) {
+	for _, variant := range []string{"P0", "P1"} {
+		for _, order := range []string{"erasure-first", "redemption-first"} {
+			t.Run(variant+"/"+order, func(t *testing.T) {
+				f := newGuestRaceFixture(t, variant == "P1")
+				app, db := f.s.app, f.s.app.DB
+				var regs0 int64
+				db.Model(&models.Registration{}).Where("user_id = ?", f.guest.ID).Count(&regs0)
+				states := erasureTestSQLStates(t, app)
+				db = app.DB
+
+				var redemption, erasure httpResult
+				switch order {
+				case "erasure-first":
+					var erasurePID atomic.Int64
+					p := erasureTestBeforeNotificationsDelete(f.guest.ID)
+					p.PID = &erasurePID
+					reached, release := erasureTestPause(t, db, p)
+					del := f.erase()
+					awaitDBSignal(t, reached) // the erasure holds the gate and G FOR UPDATE
+					red := f.confirm(f.raw)
+					redemptionPID := waitForLockedUsersQuery(t, app, "%users%FOR NO KEY UPDATE%")
+					waitDBBlocked(t, db, redemptionPID, int(erasurePID.Load()))
+					// Redemption waits at G and holds no occurrence.
+					if err := db.Transaction(func(tx *gorm.DB) error {
+						return tx.Exec("SELECT 1 FROM event_occurrences WHERE id = ? FOR UPDATE NOWAIT", f.occ.ID).Error
+					}); err != nil {
+						t.Errorf("redemption holds the occurrence while it waits at the guest: %v", err)
+					}
+					release()
+					erasure, redemption = awaitResult(t, del), awaitResult(t, red)
+					if redemption.code != http.StatusBadRequest || !strings.Contains(redemption.body, "that link is invalid or has expired") {
+						t.Errorf("redemption: %d %s, want 400 invalid or expired", redemption.code, redemption.body)
+					}
+					if n := countRows(t, db, "guest_signups", "id = ?", f.signup.ID); n != 0 {
+						t.Error("the pending signup survived the erasure")
+					}
+					if n := countRows(t, db, "registrations", "user_id = ?", f.guest.ID); n != regs0 {
+						t.Errorf("registrations of the guest: %d, was %d", n, regs0)
+					}
+					if n := countRows(t, db, "users", "email = ?", f.address); n != 0 {
+						t.Errorf("%d users at the erased address", n)
+					}
+					if n := countRows(t, db, "account_requests", "source = ?", models.RequestGuestUpgrade); n != 0 {
+						t.Errorf("%d guest_upgrade requests were created", n)
+					}
+					if variant == "P1" {
+						if got := regStatus(t, app, f.waiter.ID, f.occ.ID); got != models.RegGoing {
+							t.Errorf("waiter is %q, want promoted to going", got)
+						}
+					}
+				case "redemption-first":
+					var redemptionPID atomic.Int64
+					reached, release := erasureTestPause(t, db, erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "guest_signups", PID: &redemptionPID})
+					red := f.confirm(f.raw)
+					awaitDBSignal(t, reached) // redemption holds G, O and S and has not claimed S
+					del := f.erase()
+					erasurePID := waitForRowLockWaiter(t, app)
+					waitDBBlocked(t, db, erasurePID, int(redemptionPID.Load()))
+					release()
+					redemption, erasure = awaitResult(t, red), awaitResult(t, del)
+					if redemption.code != http.StatusOK {
+						t.Errorf("redemption: %d %s", redemption.code, redemption.body)
+					}
+					var got models.GuestSignup
+					if err := db.First(&got, f.signup.ID).Error; err != nil {
+						t.Fatal(err)
+					}
+					if got.Email != fmt.Sprintf("deleted-guest_signups-%d@deleted.invalid", got.ID) || got.TokenHash != fmt.Sprintf("erased-guest_signups-%d", got.ID) ||
+						got.Name != "" || got.IP != "" || got.Timezone != "" || got.ConfirmedAt == nil {
+						t.Errorf("the redeemed signup was not anonymized: %+v", got)
+					}
+					// Redemption issued a manage token and stored its hash on the
+					// registration it created (P0) or updated (P1); the erasure that
+					// committed after it cleared that hash (R4-2a-5 step 12).
+					if !strings.Contains(redemption.body, `"manageToken":"`) || strings.Contains(redemption.body, `"manageToken":""`) {
+						t.Errorf("redemption issued no manage token: %s", redemption.body)
+					}
+					if n := countRows(t, db, "registrations", "user_id = ? AND occurrence_id = ?", f.guest.ID, f.occ.ID); n != 1 {
+						t.Errorf("%d registrations of the guest at the occurrence, want 1", n)
+					}
+					if n := countRows(t, db, "registrations", "user_id = ? AND occurrence_id = ? AND manage_token_hash = ''", f.guest.ID, f.occ.ID); n != 1 {
+						t.Error("the registration redemption wrote still carries a manage token hash after the erasure")
+					}
+					if variant == "P1" {
+						if got := regStatus(t, app, f.waiter.ID, f.occ.ID); got != models.RegGoing {
+							t.Errorf("waiter is %q, want promoted to going", got)
+						}
+					}
+				}
+				if erasure.code != http.StatusOK {
+					t.Fatalf("erasure: %d %s", erasure.code, erasure.body)
+				}
+				if n := states.Count("40P01"); n != 0 {
+					t.Errorf("%d deadlocks recorded", n)
+				}
+			})
+		}
+	}
+}
+
+// A confirmed signup is anonymized by the erasure and its old raw token
+// redeems nothing.
+func TestGuestRedemptionAfterErasureOfConfirmedSignup(t *testing.T) {
+	f := newGuestRaceFixture(t, false)
+	db := f.s.app.DB
+	confirmed := time.Now().Add(-time.Minute).UTC()
+	if err := db.Model(&models.GuestSignup{}).Where("id = ?", f.signup.ID).Update("confirmed_at", confirmed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, f.erase()); r.code != http.StatusOK {
+		t.Fatalf("erase: %d %s", r.code, r.body)
+	}
+	r := awaitResult(t, f.confirm(f.raw))
+	if r.code != http.StatusBadRequest {
+		t.Errorf("old token after the erasure: %d %s, want 400", r.code, r.body)
+	}
+	if n := countRows(t, db, "registrations", "occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm); n != 0 {
+		t.Errorf("%d guest registrations were created", n)
+	}
+	if n := countRows(t, db, "users", "email = ?", f.address); n != 0 {
+		t.Errorf("%d users at the erased address", n)
+	}
+}
+
+// A pending signup whose link the verification job rotated before the erasure:
+// neither the old nor the new raw token redeems afterwards.
+func TestGuestRedemptionAfterErasureOfRotatedSignup(t *testing.T) {
+	f := newGuestRaceFixture(t, false)
+	app, db := f.s.app, f.s.app.DB
+	var msg mail.Message
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var ok bool
+		var err error
+		msg, ok, err = app.prepareGuestVerification(tx, f.signup.ID)
+		if err == nil && !ok {
+			err = errors.New("verification was not deliverable")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	match := tokenRe.FindStringSubmatch(msg.Text)
+	if len(match) != 2 || match[1] == f.raw {
+		t.Fatalf("the rotated link carries no new token: %q", msg.Text)
+	}
+	newRaw := match[1]
+	if r := awaitResult(t, f.erase()); r.code != http.StatusOK {
+		t.Fatalf("erase: %d %s", r.code, r.body)
+	}
+	for name, raw := range map[string]string{"old": f.raw, "new": newRaw} {
+		if r := awaitResult(t, f.confirm(raw)); r.code != http.StatusBadRequest {
+			t.Errorf("%s token after the erasure: %d %s, want 400", name, r.code, r.body)
+		}
+	}
+	if n := countRows(t, db, "registrations", "occurrence_id = ? AND source = ?", f.occ.ID, models.RegSourceGuestForm); n != 0 {
+		t.Errorf("%d guest registrations were created", n)
+	}
+	if n := countRows(t, db, "users", "email = ?", f.address); n != 0 {
+		t.Errorf("%d users at the erased address", n)
 	}
 }

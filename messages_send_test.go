@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -616,4 +618,251 @@ func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 	if err := mail.Blocked(got["legacy@example.com"], providers.EmailMessage{}); err != nil {
 		t.Errorf("complaint alone blocked required mail: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-2a-4: erasure and the message pipeline.
+// ---------------------------------------------------------------------------
+
+// erasureTestSendKey names one message by its recipient address and subject.
+func erasureTestSendKey(to, subject string) string { return normalizeEmail(to) + "|" + subject }
+
+type erasureTestBlockKey struct {
+	reached     chan struct{}
+	release     chan struct{}
+	reachedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// erasureTestBlockingSender is a mail.Sender for the erasure tests (F2). A
+// message that matches one of its keys closes that key's reached channel and
+// blocks until the key is released or the send context ends; any other
+// message is recorded and returns at once, so it never holds a row lock.
+type erasureTestBlockingSender struct {
+	mu     sync.Mutex
+	keys   map[string]*erasureTestBlockKey
+	others []mail.Message
+}
+
+// newErasureTestBlockingSender blocks the given keys (erasureTestSendKey). Its
+// cleanup releases every key before the test ends.
+func newErasureTestBlockingSender(t *testing.T, keys ...string) *erasureTestBlockingSender {
+	t.Helper()
+	s := &erasureTestBlockingSender{keys: map[string]*erasureTestBlockKey{}}
+	for _, k := range keys {
+		s.keys[k] = &erasureTestBlockKey{reached: make(chan struct{}), release: make(chan struct{})}
+	}
+	t.Cleanup(s.ReleaseAll)
+	return s
+}
+
+func (s *erasureTestBlockingSender) Send(ctx context.Context, m mail.Message) error {
+	k := s.keys[erasureTestSendKey(m.To, m.Subject)]
+	if k == nil {
+		s.mu.Lock()
+		s.others = append(s.others, m)
+		s.mu.Unlock()
+		return nil
+	}
+	k.reachedOnce.Do(func() { close(k.reached) })
+	select {
+	case <-k.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Reached closes when a message with the key is inside Send.
+func (s *erasureTestBlockingSender) Reached(key string) <-chan struct{} { return s.keys[key].reached }
+
+// Release lets the blocked send for key return nil.
+func (s *erasureTestBlockingSender) Release(key string) {
+	k := s.keys[key]
+	k.releaseOnce.Do(func() { close(k.release) })
+}
+
+func (s *erasureTestBlockingSender) ReleaseAll() {
+	for key := range s.keys {
+		s.Release(key)
+	}
+}
+
+// Others are the messages that matched no key.
+func (s *erasureTestBlockingSender) Others() []mail.Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]mail.Message(nil), s.others...)
+}
+
+func snapshotCtx() context.Context {
+	return context.WithValue(context.Background(), testDBOperationKey{}, "snapshot-prepare")
+}
+
+// snapshotPoint is the snapshot's locking read of users: facts GORM sets
+// before gorm:query (the table, the FOR clause and the operation), so a Before
+// barrier matches it (F6).
+func snapshotPoint(after bool) erasureTestPoint {
+	return erasureTestPoint{Processor: "query", Step: "gorm:query", After: after, Table: "users", Locking: true, Operation: "snapshot-prepare"}
+}
+
+func snapshotRowsOf(t *testing.T, app *App, messageID, userID uint) []models.MessageRecipient {
+	t.Helper()
+	var rows []models.MessageRecipient
+	if err := app.DB.Where("message_id = ? AND user_id = ?", messageID, userID).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// snapshotSendsAfterErasure pauses prepareMessageOnce before it locks its
+// users, erases the person, and lets the snapshot go on.
+func snapshotSendsAfterErasure(t *testing.T, f composeFixture, id, erased uint) {
+	t.Helper()
+	reached, release := erasureTestPause(t, f.app.DB, snapshotPoint(false))
+	done := make(chan error, 1)
+	go func() { done <- f.app.prepareMessageOnce(snapshotCtx(), id) }()
+	awaitDBSignal(t, reached)
+	if r := deleteAccount(f.admin, erased, nil); r.code != http.StatusOK {
+		t.Fatalf("delete: %d %s", r.code, r.body)
+	}
+	release()
+	if err := awaitDBResult(t, done); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+}
+
+func snapshotPerson(t *testing.T, f composeFixture, name string) *models.User {
+	t.Helper()
+	u := newTestUser(t, f.app, name, "password1234", models.RoleMember)
+	addMember(t, f.app, u, f.group, models.MembershipMember)
+	return u
+}
+
+func snapshotAddressCount(t *testing.T, app *App, address string) int64 {
+	t.Helper()
+	var n int64
+	if err := app.DB.Raw("SELECT count(*) FROM message_recipients WHERE lower(address) = lower(?)", address).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// The snapshot locks every person it names before it claims the message and
+// reads them again under that lock, so an erasure on either side of the lock
+// leaves no row holding the erased address.
+func TestMessageSnapshotRevalidatesRecipientsUnderLock(t *testing.T) {
+	t.Run("direct recipient erased before the lock", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.admin.holdNotices, f.leader.holdNotices = true, true
+		useFakePush(t, f.app)
+		u := snapshotPerson(t, f, "snap-u")
+		pushConsentRow(t, f.app, u, "all", models.ConsentOptedIn)
+		newPushDevice(t, f.app, u, "snap-phone")
+		address := strings.ToLower(u.Email)
+		id := f.scheduleNow(t, f.leader, "Snapshot A", "<p>Hi</p>", groupAudience(f))
+		snapshotSendsAfterErasure(t, f, id, u.ID)
+
+		rows := snapshotRowsOf(t, f.app, id, u.ID)
+		if len(rows) != 1 || rows[0].Channel != models.DeliveryEmail || rows[0].Status != models.RecipientSuppressed ||
+			rows[0].Reason != skipNotActive || rows[0].Address != "" {
+			t.Errorf("the erased person's rows: %+v, want one suppressed email row with no address and no push row", rows)
+		}
+		var m models.Message
+		f.app.DB.First(&m, id)
+		var queued int64
+		f.app.DB.Model(&models.MessageRecipient{}).Where("message_id = ? AND channel = ? AND status = ?", id, models.DeliveryEmail, models.RecipientQueued).Count(&queued)
+		if queued == 0 || int64(m.RecipientCount) != queued {
+			t.Errorf("recipient_count %d, queued email rows %d", m.RecipientCount, queued)
+		}
+		teen := snapshotRowsOf(t, f.app, id, f.teen.ID)
+		if len(teen) == 0 || teen[0].Status != models.RecipientQueued || teen[0].Address != f.teen.Email {
+			t.Errorf("another recipient changed: %+v", teen)
+		}
+		if n := snapshotAddressCount(t, f.app, address); n != 0 {
+			t.Errorf("%d rows still hold the erased address", n)
+		}
+	})
+
+	t.Run("guardian copy for an erased guardian", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.admin.holdNotices, f.leader.holdNotices = true, true
+		f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+		guardian := newTestUser(t, f.app, "snap-guardian", "password1234", models.RoleMember)
+		f.app.DB.Create(&models.GuardianLink{GuardianUserID: guardian.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+		address := strings.ToLower(guardian.Email)
+		id := f.scheduleNow(t, f.leader, "Snapshot B", "<p>Hi</p>", groupAudience(f))
+		snapshotSendsAfterErasure(t, f, id, guardian.ID)
+
+		rows := snapshotRowsOf(t, f.app, id, guardian.ID)
+		if len(rows) != 1 || rows[0].CopyOfUserID == nil || *rows[0].CopyOfUserID != f.teen.ID ||
+			rows[0].Status != models.RecipientSuppressed || rows[0].Reason != skipNotActive || rows[0].Address != "" {
+			t.Errorf("the guardian's copy row: %+v", rows)
+		}
+		direct := snapshotRowsOf(t, f.app, id, f.teen.ID)
+		if len(direct) != 1 || direct[0].Status != models.RecipientQueued || direct[0].Address != f.teen.Email {
+			t.Errorf("the teen's direct row changed: %+v", direct)
+		}
+		if n := snapshotAddressCount(t, f.app, address); n != 0 {
+			t.Errorf("%d rows still hold the erased address", n)
+		}
+	})
+
+	t.Run("erased teen", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.admin.holdNotices, f.leader.holdNotices = true, true
+		f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+		u := snapshotPerson(t, f, "snap-teen")
+		f.app.DB.Model(u).Update("account_type", models.AccountTeen)
+		parent := newTestUser(t, f.app, "snap-parent", "password1234", models.RoleMember)
+		f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &u.ID, Status: models.GuardianConfirmed})
+		address := strings.ToLower(u.Email)
+		id := f.scheduleNow(t, f.leader, "Snapshot C", "<p>Hi</p>", groupAudience(f))
+		snapshotSendsAfterErasure(t, f, id, u.ID)
+
+		rows := snapshotRowsOf(t, f.app, id, u.ID)
+		if len(rows) != 1 || rows[0].Status != models.RecipientSuppressed || rows[0].Reason != skipNotActive || rows[0].Address != "" {
+			t.Errorf("the erased teen's row: %+v", rows)
+		}
+		var copies int64
+		f.app.DB.Model(&models.MessageRecipient{}).Where("copy_of_user_id = ?", u.ID).Count(&copies)
+		if copies != 0 {
+			t.Errorf("%d guardian copies about the erased teen", copies)
+		}
+		if n := snapshotAddressCount(t, f.app, address); n != 0 {
+			t.Errorf("%d rows still hold the erased address", n)
+		}
+	})
+
+	t.Run("snapshot first", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.admin.holdNotices, f.leader.holdNotices = true, true
+		u := snapshotPerson(t, f, "snap-late")
+		address := strings.ToLower(u.Email)
+		id := f.scheduleNow(t, f.leader, "Snapshot D", "<p>Hi</p>", groupAudience(f))
+		var prepPID atomic.Int64
+		p := snapshotPoint(true)
+		p.PID = &prepPID
+		reached, release := erasureTestPause(t, f.app.DB, p)
+		done := make(chan error, 1)
+		go func() { done <- f.app.prepareMessageOnce(snapshotCtx(), id) }()
+		awaitDBSignal(t, reached) // the snapshot holds U FOR KEY SHARE
+		del := bgDo(f.admin, "DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil)
+		erasurePID := waitForRowLockWaiter(t, f.app)
+		waitDBBlocked(t, f.app.DB, erasurePID, int(prepPID.Load()))
+		release()
+		if err := awaitDBResult(t, done); err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		if r := awaitResult(t, del); r.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", r.code, r.body)
+		}
+		rows := snapshotRowsOf(t, f.app, id, u.ID)
+		if len(rows) != 1 || rows[0].Status != models.RecipientSuppressed || rows[0].Reason != skipNotActive || rows[0].Address != "" {
+			t.Errorf("the snapshot's row for the erased person after the erasure: %+v", rows)
+		}
+		if n := snapshotAddressCount(t, f.app, address); n != 0 {
+			t.Errorf("%d rows still hold the erased address", n)
+		}
+	})
 }

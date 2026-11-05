@@ -968,6 +968,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// (memory only), then every credential goes in the slot that revoked
 		// the unused tokens (R4-1-2).
 		s := captureErasureSubject(u)
+		if err := captureErasureSetsIn(tx, &s); err != nil {
+			return err
+		}
 		if err := eraseAccountCredentialsIn(tx, s); err != nil {
 			return err
 		}
@@ -991,7 +994,16 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		// Notifications go with the person (5.3); the audit log stays.
+		// Every account_requests statement runs before the person's
+		// notifications are deleted, the order expirePendingRequests also
+		// takes (request, then notifications; L2). Its waiting tasks close
+		// as withdrawn by this admin.
+		if err := eraseAccountRequestsIn(tx, s, me.ID); err != nil {
+			return err
+		}
+		// Notifications go with the person (5.3); the audit log stays. The
+		// exact form of this statement is what the erasure tests' barrier
+		// (erasureTestBeforeNotificationsDelete) matches.
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
 		}
@@ -1001,6 +1013,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// The deleted account no longer counts, so its seats and childcare
 		// spots are free: promote waiters now (Whittler, PR 109).
 		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
+			return err
+		}
+		// Invitations, guest signups and the dev outbox at the held address,
+		// reached after the user and occurrence locks above, in the order
+		// guest redemption holds them (holder, occurrence, signup).
+		if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
 			return err
 		}
 		// Last statement of the callback, so the sign-in rows are held for the
