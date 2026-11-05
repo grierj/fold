@@ -55,6 +55,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys (`account_erasure.go`); further stages are tracked in the M7.4
   inventory.
+- `contact_requests` text is immutable except for one blank (R4-T07A): erasing an `occurrence_add`
+  subject clears their `add_childcare_ages_note` through `eraseContactRequestTextIn`
+  (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
+  (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
+  `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
 - Focal points (`AvatarFocalX/Y`, `CoverFocalX/Y`) are stored 0-100 and rendered as CSS
   `object-position`. `AvatarKey` is a blob-store key, not a URL.
 
@@ -273,7 +278,8 @@ unless `APP_ENV=dev`. CLI (C11, PLAN 11.4): `fold` (same as `fold serve`), `fold
 
 The migration chain is the generated baseline (M7.7, DEC-138) plus additive numbered files after it
 (`00002_suppression_address_hash.sql` is the M7.4 R4-S expand)
-(`00003_consent_erasure_scrub.sql` lets the erasure blank a deleted owner's consent evidence, R4-2d1). `TestBaselineFileShape` checks both
+(`00003_consent_erasure_scrub.sql` lets the erasure blank a deleted owner's consent evidence, R4-2d1)
+(`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A). `TestBaselineFileShape` checks both
 through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
 and Down). `scripts/baseline-proof.sh generate`
 made the baseline from the frozen pre-squash chain (commit `be61e582c3011263307e4db4497056f7fd70bfd9`, 63
@@ -390,6 +396,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook writer, and matches by Go-computed hash | `TestSuppressionSQLStaysInItsHelpers`, `TestSuppressionSQLGuardCatchesBypasses` (parse-only; it does not see table names built from non-literal pieces, reflection, SQL sent around GORM, dot-imports of `fold/models` or cross-package helpers) |
 | Suppression matching assumes a UTF8 database with a deterministic default collation | `TestSuppressionMatchingBasis` (`migrations/migrations_test.go`) |
 | Throttle keys come from the typed builders in `throttle_keys.go`, and erasure deletes every owned key | `TestThrottleKeysComeFromBuilders`, `TestThrottleSQLStaysInItsHelpers`, `TestOwnedThrottleKeysCoverEveryOwnedBuilder`, `TestThrottleKeyStringsAreUnchanged`, `TestAccountErasureDeletesOnlyOwnedThrottleKeys` (parse-only; it does not see keys built inside SQL text in a listed helper, SQL sent around GORM, reflection, generics or code outside the root package, and it matches identifiers by name) |
+| Contact-request text is written only at the two creation sites, the ages note is blanked only by `eraseContactRequestTextIn`, and nothing bypasses the two request triggers | `TestContactRequestTextChangesStayInTheirHelpers`, `TestContactRequestTextGuardCatchesBypasses`, `TestContactRequestTextGuardReadsTheRealTree` (`guards_test.go`); `TestAgesNoteMigrationFileHasNoTriggerBypass` (`migrations/migrations_test.go`). Parse-only: it binds names lexically within one file and does not see SQL built from non-literal pieces, constants from other files, reflection, generics, type aliases, values that arrive from another function, a parameter or a field, or SQL sent around GORM. It rejects writes whose destination is implied rather than named (`Create`, `Save`, `Updates` and the like), `OnConflict` with `UpdateAll`, raw `UPDATE`, `INSERT ... ON CONFLICT` and `MERGE` that set either column, every row deletion (R-7), and any call of `eraseContactRequestTextIn` other than the one in the `apiAdminDeleteUser` `contactMutation` callback, which must pass the callback's own `tx` after the soft delete (R-6). Its scoped H8: no `DISABLE`, `ENABLE REPLICA` or `ENABLE ALWAYS TRIGGER`, `DROP TRIGGER`, `CREATE OR REPLACE FUNCTION` for either request function or `session_replication_role` in the ages-note migration or a production Go literal, with one allowance, the `SET LOCAL session_replication_role = replica;` literal in `resetStatements` of `internal/testdb/testdb.go`, plus a check on the real tree that no non-test file outside `internal/testdb` imports it (plain, aliased, blank or dot); `set_config` for `statement_timeout` stays allowed |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
