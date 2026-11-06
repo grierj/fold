@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/testdb"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -766,4 +771,652 @@ func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
 	if after.Status != "expired" || !after.ExpiresAt.Equal(before.ExpiresAt) || after.CompletedTargetID != nil {
 		t.Fatalf("expiry changed contract: %+v", after)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-CTX: the context-bound contact transaction (contactMutationCtx).
+//
+// An App whose handle goes through the fault proxy (internal/testdb/pgproxy.go)
+// runs the call; the shared handle is the control and the observer. Nothing
+// here equates the call's return with the server letting go: each test polls
+// pg_locks and pg_stat_activity for the backend the proxy log names. Tests that
+// set the package bounds restore them and stay serial (no root-package test
+// uses t.Parallel).
+// ---------------------------------------------------------------------------
+
+func setContactBounds(t *testing.T, reserve, serverCap time.Duration) {
+	t.Helper()
+	oldReserve, oldCap := contactCommitReserve, contactServerCap
+	contactCommitReserve, contactServerCap = reserve, serverCap
+	t.Cleanup(func() { contactCommitReserve, contactServerCap = oldReserve, oldCap })
+}
+
+type ctxRig struct {
+	t     *testing.T
+	app   *App // the control and observer, straight to the server
+	papp  *App // the same app through the proxy
+	proxy *testdb.Proxy
+}
+
+func newCtxRigFor(t *testing.T, app *App) *ctxRig {
+	t.Helper()
+	var name string
+	if err := app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxy := testdb.NewProxy(t)
+	db, err := proxy.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	papp := &App{DB: db, Store: app.Store, Config: app.Config, Uploads: app.Uploads, Mailer: app.Mailer}
+	return &ctxRig{t: t, app: app, papp: papp, proxy: proxy}
+}
+
+func newCtxRig(t *testing.T) *ctxRig { return newCtxRigFor(t, testApp(t)) }
+
+// ctxCall is one contactMutationCtx call on its own goroutine.
+type ctxCall struct {
+	start, deadline, returned time.Time
+	err                       error
+}
+
+func (r *ctxRig) call(budget time.Duration, change contactChange, fn func(*gorm.DB) error) <-chan *ctxCall {
+	ch := make(chan *ctxCall, 1)
+	c := &ctxCall{start: time.Now()}
+	c.deadline = c.start.Add(budget)
+	go func() {
+		ctx, cancel := context.WithDeadline(context.Background(), c.deadline)
+		defer cancel()
+		c.err = r.papp.contactMutationCtx(ctx, change, fn)
+		c.returned = time.Now()
+		ch <- c
+	}()
+	return ch
+}
+
+func (r *ctxRig) await(ch <-chan *ctxCall) *ctxCall {
+	r.t.Helper()
+	select {
+	case c := <-ch:
+		return c
+	case <-time.After(30 * time.Second):
+		r.t.Fatal("contactMutationCtx never returned")
+		return nil
+	}
+}
+
+// sentinel writes one settings row, the mark of a callback that ran and was
+// (or was not) rolled back.
+func sentinel(ran *atomic.Bool) func(*gorm.DB) error {
+	return func(tx *gorm.DB) error {
+		ran.Store(true)
+		return tx.Create(&models.Setting{Key: "ctx-sentinel", Value: "x"}).Error
+	}
+}
+
+func (r *ctxRig) seed() string {
+	return dumpRows(r.t, r.app.DB, "settings", "key", "true")
+}
+
+// pidOf polls the proxy log for the backend that ran a statement containing sql.
+func (r *ctxRig) pidOf(sql string) int {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range r.proxy.Find(testdb.KindStatement, "") {
+			if e.PID != 0 && strings.Contains(e.SQL, sql) {
+				return int(e.PID)
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.t.Fatalf("no statement containing %q reached the proxy", sql)
+	return 0
+}
+
+func (r *ctxRig) backendState(pid int) (state, waitType string, ok bool) {
+	r.t.Helper()
+	var row struct {
+		State    string
+		WaitType string
+	}
+	res := r.app.DB.Raw("SELECT coalesce(state, '') AS state, coalesce(wait_event_type, '') AS wait_type FROM pg_stat_activity WHERE pid = ?", pid).Scan(&row)
+	if res.Error != nil {
+		r.t.Fatal(res.Error)
+	}
+	return row.State, row.WaitType, res.RowsAffected > 0
+}
+
+func (r *ctxRig) lockRows(pid int, where string) int64 {
+	r.t.Helper()
+	var n int64
+	if err := r.app.DB.Raw("SELECT count(*) FROM pg_locks WHERE pid = ? AND "+where, pid).Scan(&n).Error; err != nil {
+		r.t.Fatal(err)
+	}
+	return n
+}
+
+// awaitReleased polls until the backend holds and awaits nothing (it is gone,
+// or no lock row names it) and returns when that was first seen.
+func (r *ctxRig) awaitReleased(pid int, within time.Duration) time.Time {
+	r.t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if r.lockRows(pid, "true") == 0 {
+			return time.Now()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.t.Fatalf("backend %d still holds or awaits locks after %s", pid, within)
+	return time.Time{}
+}
+
+func (r *ctxRig) awaitState(pid int, within time.Duration, want func(state, waitType string, ok bool) bool, what string) time.Time {
+	r.t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if st, wt, ok := r.backendState(pid); want(st, wt, ok) {
+			return time.Now()
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	st, wt, ok := r.backendState(pid)
+	r.t.Fatalf("backend %d never reached %s (last: %q %q present=%v)", pid, what, st, wt, ok)
+	return time.Time{}
+}
+
+func (r *ctxRig) gateFree() bool {
+	r.t.Helper()
+	var ok bool
+	if err := r.app.DB.Transaction(func(tx *gorm.DB) error {
+		return tx.Raw("SELECT pg_try_advisory_xact_lock(?)", contactLockID).Scan(&ok).Error
+	}); err != nil {
+		r.t.Fatal(err)
+	}
+	return ok
+}
+
+func waiting(_, wt string, ok bool) bool { return ok && wt == "Lock" }
+
+// statementsOf are the logged statement events (not the commit and rollback
+// echoes) in order.
+func (r *ctxRig) statements() []testdb.Event { return r.proxy.Find(testdb.KindStatement, "") }
+
+func pgCode(err error) string {
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) {
+		return pe.Code
+	}
+	return ""
+}
+
+// Gate-wait expiry, no faults: the call returns at its deadline and the
+// server lets go of the gate soon after, by the cancel and Terminate it was
+// sent.
+func TestContactMutationCtxGateWaitExpiry(t *testing.T) {
+	setContactBounds(t, 100*time.Millisecond, contactServerCap)
+	r := newCtxRig(t)
+	control := r.seed()
+	release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+	defer release()
+	var ran atomic.Bool
+	ch := r.call(300*time.Millisecond, contactChange{}, sentinel(&ran))
+	pid := r.pidOf("pg_advisory_xact_lock")
+	r.awaitState(pid, time.Second, waiting, "waiting on the gate")
+	c := r.await(ch)
+	if elapsed := c.returned.Sub(c.start); elapsed > 1300*time.Millisecond {
+		t.Errorf("returned after %s, want within 1.3s", elapsed)
+	}
+	if classifyContactErr(c.err) != outcomeTimedOut || ran.Load() {
+		t.Errorf("err %v (outcome %d), callback ran %v; want timed out and not run", c.err, classifyContactErr(c.err), ran.Load())
+	}
+	if rollbackConfirmed(c.err) || !errors.Is(c.err, errContactRollback) {
+		t.Errorf("after a context expiry the rollback is never confirmed: %v", c.err)
+	}
+	// D + S + I + 1s, with I the budget.
+	bound := c.deadline.Sub(c.start) + contactServerCap + 300*time.Millisecond + time.Second
+	released := r.awaitReleased(pid, bound)
+	t.Logf("returned %s after D; backend released %s after D", c.returned.Sub(c.deadline), released.Sub(c.deadline))
+	if len(r.proxy.Find(testdb.KindCancel, testdb.ActionForwarded)) != 1 || len(r.proxy.Find(testdb.KindTerminate, testdb.ActionForwarded)) != 1 {
+		t.Errorf("want the cancel and Terminate forwarded: %+v", r.proxy.Events())
+	}
+	if got := r.seed(); got != control {
+		t.Errorf("database changed:\n%s\n%s", got, control)
+	}
+}
+
+// The server cap below the budget: the gate wait ends by statement_timeout
+// and the ROLLBACK is answered before the call returns.
+func TestContactMutationCtxServerCapBelowBudget(t *testing.T) {
+	setContactBounds(t, 100*time.Millisecond, time.Second)
+	r := newCtxRig(t)
+	control := r.seed()
+	release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+	var ran atomic.Bool
+	c := r.await(r.call(5*time.Second, contactChange{}, sentinel(&ran)))
+	elapsed := c.returned.Sub(c.start)
+	if elapsed < 900*time.Millisecond || elapsed > 2500*time.Millisecond {
+		t.Errorf("returned after %s, want about 1s", elapsed)
+	}
+	if pgCode(c.err) != "57014" || classifyContactErr(c.err) != outcomeTimedOut || !rollbackConfirmed(c.err) || ran.Load() {
+		t.Errorf("err %v (code %q): want an acknowledged 57014 timed out, callback not run", c.err, pgCode(c.err))
+	}
+	rb := r.proxy.Find(testdb.KindRollback, testdb.ActionForwarded)
+	if len(rb) != 1 || !rb[0].Time.Before(c.returned) {
+		t.Errorf("want one ROLLBACK forwarded before the return: %+v", rb)
+	}
+	release()
+	if !r.gateFree() {
+		t.Error("the gate is not free after the holder let go")
+	}
+	st := r.statements()
+	begin, cfg, gate := -1, -1, -1
+	for i, e := range st {
+		switch {
+		case begin < 0 && strings.EqualFold(strings.TrimSpace(e.SQL), "begin"):
+			begin = i
+		case cfg < 0 && strings.Contains(e.SQL, "set_config('statement_timeout'"):
+			cfg = i
+		case gate < 0 && strings.Contains(e.SQL, "pg_advisory_xact_lock"):
+			gate = i
+		}
+	}
+	if begin < 0 || cfg != begin+1 || gate <= cfg {
+		t.Errorf("statement order: begin %d, set_config %d, gate %d; want set_config right after begin and before the gate", begin, cfg, gate)
+	}
+	if got := r.seed(); got != control {
+		t.Errorf("database changed:\n%s\n%s", got, control)
+	}
+}
+
+// The three withheld-socket runs: the cancel is dropped, so only Terminate,
+// FIN or the idle timeout can end the backend.
+func TestContactMutationCtxCancelDroppedTerminateWithheld(t *testing.T) {
+	const match = "idle_in_transaction_session_timeout"
+	t.Run("gate released after the return: the idle timeout ends it", func(t *testing.T) {
+		budget := 1500 * time.Millisecond
+		setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+		r := newCtxRig(t)
+		control := r.seed()
+		release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+		r.proxy.Arm(testdb.Faults{Match: match, Cancel: testdb.CancelDrop, Close: testdb.CloseWithholdAll})
+		var ran atomic.Bool
+		ch := r.call(budget, contactChange{}, sentinel(&ran))
+		pid := r.pidOf("pg_advisory_xact_lock")
+		c := r.await(ch)
+		if _, wt, ok := r.backendState(pid); !ok || wt != "Lock" {
+			t.Fatalf("at the return the backend should still wait on the gate: present=%v wait %q", ok, wt)
+		}
+		time.Sleep(300 * time.Millisecond)
+		g := time.Now()
+		release()
+		r.awaitState(pid, time.Second, func(s, _ string, ok bool) bool { return ok && s == "idle in transaction" }, "idle in transaction")
+		ended := r.awaitState(pid, budget+2*time.Second, func(_, _ string, ok bool) bool { return !ok }, "gone")
+		if d := ended.Sub(g); d < budget-150*time.Millisecond || d > budget+time.Second {
+			t.Errorf("the backend ended %s after the gate was released, want about the idle timeout (%s)", d, budget)
+		}
+		for _, e := range r.statements() {
+			if e.Time.After(c.deadline.Add(50 * time.Millisecond)) {
+				t.Errorf("a statement was forwarded after D: %+v", e)
+			}
+		}
+		if len(r.proxy.Find(testdb.KindCommit, "")) != 0 || ran.Load() {
+			t.Errorf("a COMMIT reached the proxy or the callback ran")
+		}
+		for _, kind := range []string{testdb.KindCancel, testdb.KindTerminate, testdb.KindFIN} {
+			if f := r.proxy.Find(kind, testdb.ActionForwarded); len(f) != 0 {
+				t.Errorf("%s forwarded: %+v", kind, f)
+			}
+		}
+		if got := r.seed(); got != control {
+			t.Errorf("database changed")
+		}
+	})
+	t.Run("gate never released: the cap, then the idle timeout", func(t *testing.T) {
+		budget := time.Second
+		setContactBounds(t, 100*time.Millisecond, 2*time.Second)
+		r := newCtxRig(t)
+		release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+		defer release()
+		r.proxy.Arm(testdb.Faults{Match: match, Cancel: testdb.CancelDrop, Close: testdb.CloseWithholdAll})
+		var ran atomic.Bool
+		ch := r.call(budget, contactChange{}, sentinel(&ran))
+		pid := r.pidOf("pg_advisory_xact_lock")
+		c := r.await(ch)
+		aborted := r.awaitState(pid, 5*time.Second, func(s, _ string, ok bool) bool { return ok && s == "idle in transaction (aborted)" }, "idle in transaction (aborted)")
+		if d := aborted.Sub(c.start); d < 1800*time.Millisecond {
+			t.Errorf("the statement ended %s after the start, want about the cap (2s)", d)
+		}
+		// The idle timeout is a session setting, so the abort does not revert
+		// it: the aborted backend holds nothing and ends about I after the
+		// abort, with no cancel, Terminate or FIN having reached it.
+		bound := c.start.Add(budget + contactServerCap + budget + time.Second)
+		ended := r.awaitState(pid, time.Until(bound), func(_, _ string, ok bool) bool { return !ok }, "gone (idle timeout)")
+		if d := ended.Sub(aborted); d < budget-300*time.Millisecond {
+			t.Errorf("the backend ended %s after the abort, want about the idle timeout (%s)", d, budget)
+		}
+		if got := r.lockRows(pid, "true"); got != 0 {
+			t.Errorf("a gone backend still names %d lock rows", got)
+		}
+		for _, kind := range []string{testdb.KindCancel, testdb.KindTerminate, testdb.KindFIN} {
+			if f := r.proxy.Find(kind, testdb.ActionForwarded); len(f) != 0 {
+				t.Errorf("%s forwarded: %+v", kind, f)
+			}
+		}
+	})
+	t.Run("Terminate forwarded, FIN held: Terminate ends it", func(t *testing.T) {
+		budget := 1500 * time.Millisecond
+		setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+		r := newCtxRig(t)
+		release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+		r.proxy.Arm(testdb.Faults{Match: match, Cancel: testdb.CancelDrop, Close: testdb.CloseWithholdFIN})
+		var ran atomic.Bool
+		ch := r.call(budget, contactChange{}, sentinel(&ran))
+		pid := r.pidOf("pg_advisory_xact_lock")
+		r.await(ch)
+		time.Sleep(300 * time.Millisecond)
+		g := time.Now()
+		release()
+		ended := r.awaitState(pid, budget, func(_, _ string, ok bool) bool { return !ok }, "gone before the idle timeout")
+		if d := ended.Sub(g); d > budget/2 {
+			t.Errorf("ended %s after the gate was released, want right after (Terminate), not the idle timeout", d)
+		}
+		if f := r.proxy.Find(testdb.KindTerminate, testdb.ActionForwarded); len(f) != 1 {
+			t.Errorf("want Terminate forwarded: %+v", r.proxy.Events())
+		}
+		// The proxy sees the client's close just after the server has gone
+		// on the Terminate, so give the FIN event a moment to be logged.
+		var held []testdb.Event
+		for stop := time.Now().Add(2 * time.Second); time.Now().Before(stop); time.Sleep(10 * time.Millisecond) {
+			if held = r.proxy.Find(testdb.KindFIN, testdb.ActionHeld); len(held) > 0 {
+				break
+			}
+		}
+		if len(held) != 1 {
+			t.Errorf("want the FIN held: %+v", r.proxy.Events())
+		}
+		if f := r.proxy.Find(testdb.KindFIN, testdb.ActionForwarded); len(f) != 0 {
+			t.Errorf("the FIN was forwarded: %+v", f)
+		}
+	})
+}
+
+// The cancel arrives late: the backend keeps waiting, then ends its wait with
+// 57014 once the cancel lands, and the idle timeout (Terminate is withheld)
+// lets go of everything.
+func TestContactMutationCtxCancelDelayed(t *testing.T) {
+	const match = "idle_in_transaction_session_timeout"
+	budget := 1500 * time.Millisecond
+	t.Run("in the gate wait", func(t *testing.T) {
+		setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+		r := newCtxRig(t)
+		control := r.seed()
+		release, _ := holdAdvisory(t, r.app.DB, contactLockID)
+		defer release()
+		r.proxy.Arm(testdb.Faults{Match: match, Cancel: testdb.CancelHold, Close: testdb.CloseWithholdAll})
+		var ran atomic.Bool
+		ch := r.call(budget, contactChange{}, sentinel(&ran))
+		pid := r.pidOf("pg_advisory_xact_lock")
+		c := r.await(ch)
+		if _, wt, ok := r.backendState(pid); !ok || wt != "Lock" {
+			t.Fatalf("at the return the backend should still wait: present=%v wait %q", ok, wt)
+		}
+		time.Sleep(300 * time.Millisecond)
+		released := time.Now()
+		if !c.returned.Before(released) {
+			t.Error("the call should return before the cancel is released")
+		}
+		r.proxy.ReleaseCancel()
+		r.awaitState(pid, 2*time.Second, func(s, _ string, ok bool) bool { return ok && s == "idle in transaction (aborted)" }, "aborted by the cancel")
+		end := r.awaitReleased(pid, c.deadline.Sub(c.start)+contactServerCap+budget+time.Second)
+		t.Logf("returned %s after D; locks released %s after the cancel", c.returned.Sub(c.deadline), end.Sub(released))
+		r.awaitState(pid, time.Until(c.start.Add(budget+contactServerCap+budget+time.Second)), func(_, _ string, ok bool) bool { return !ok }, "gone (idle timeout)")
+		cancels, terms := r.proxy.Find(testdb.KindCancel, testdb.ActionForwarded), r.proxy.Find(testdb.KindTerminate, "")
+		if len(cancels) != 1 || len(terms) == 0 || terms[0].Time.Before(cancels[0].Time) {
+			t.Errorf("want the Terminate seen only after the cancel completed: cancel %+v, Terminate %+v", cancels, terms)
+		}
+		if got := r.seed(); got != control || ran.Load() {
+			t.Errorf("database changed or the callback ran")
+		}
+	})
+	t.Run("in reconciliation", func(t *testing.T) {
+		setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+		f := newContactAPIFixture(t, false)
+		req := f.create(t, "email", "")
+		r := newCtxRigFor(t, f.app)
+		blocker, _ := beginOwnedTx(t, r.app.DB)
+		if err := blocker.Exec("SELECT id FROM contact_requests WHERE id = ? FOR UPDATE", req.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		r.proxy.Arm(testdb.Faults{Match: match, Cancel: testdb.CancelHold, Close: testdb.CloseWithholdAll})
+		var ran atomic.Bool
+		ch := r.call(budget, contactChange{UserID: f.subject.ID}, sentinel(&ran))
+		pid := r.pidOf("FROM \"contact_requests\"")
+		r.awaitBlocked(pid)
+		c := r.await(ch)
+		if r.lockRows(pid, "locktype = 'advisory' AND granted") != 1 || r.lockRows(pid, "locktype = 'transactionid' AND granted") == 0 {
+			t.Error("after the return the backend should still hold the gate and the callback's row lock")
+		}
+		r.proxy.ReleaseCancel()
+		r.awaitReleased(pid, c.deadline.Sub(c.start)+contactServerCap+budget+time.Second)
+		if n := contactCount(t, f.app, &models.Setting{}, "key = ?", "ctx-sentinel"); n != 0 || !ran.Load() {
+			t.Errorf("sentinel rows %d (callback ran %v), want the write rolled back", n, ran.Load())
+		}
+	})
+}
+
+func (r *ctxRig) awaitBlocked(pid int) {
+	r.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var blockers string
+		if err := r.app.DB.Raw("SELECT pg_blocking_pids(?)::text", pid).Scan(&blockers).Error; err != nil {
+			r.t.Fatal(err)
+		}
+		if blockers != "{}" {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	r.t.Fatalf("backend %d was never blocked", pid)
+}
+
+// Reconciliation expiry with no faults: nothing of the callback survives and
+// the gate frees once the server has let go.
+func TestContactMutationCtxReconciliationExpiry(t *testing.T) {
+	setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+	f := newContactAPIFixture(t, false)
+	req := f.create(t, "email", "")
+	r := newCtxRigFor(t, f.app)
+	blocker, _ := beginOwnedTx(t, r.app.DB)
+	if err := blocker.Exec("SELECT id FROM contact_requests WHERE id = ? FOR UPDATE", req.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var ran atomic.Bool
+	ch := r.call(time.Second, contactChange{UserID: f.subject.ID}, sentinel(&ran))
+	pid := r.pidOf("FROM \"contact_requests\"")
+	r.awaitBlocked(pid)
+	c := r.await(ch)
+	if classifyContactErr(c.err) != outcomeTimedOut {
+		t.Errorf("err %v, want timed out", c.err)
+	}
+	bound := c.deadline.Add(contactServerCap + time.Second + time.Second)
+	for !r.gateFree() {
+		if time.Now().After(bound) {
+			t.Fatal("the gate was not released within D + S + I + 1s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := contactCount(t, f.app, &models.Setting{}, "key = ?", "ctx-sentinel"); n != 0 || !ran.Load() {
+		t.Errorf("sentinel rows %d (callback ran %v), want the write rolled back", n, ran.Load())
+	}
+}
+
+// The default 2 s reserve and the classifier.
+func TestContactMutationCtxReserveAndClassifier(t *testing.T) {
+	t.Run("reserve left after reconciliation", func(t *testing.T) {
+		r := newCtxRig(t)
+		control := r.seed()
+		proceed := make(chan struct{})
+		time.AfterFunc(1500*time.Millisecond, func() { close(proceed) })
+		var ran atomic.Bool
+		c := r.await(r.call(3*time.Second, contactChange{}, func(tx *gorm.DB) error {
+			<-proceed
+			return sentinel(&ran)(tx)
+		}))
+		if !errors.Is(c.err, errCommitReserve) || classifyContactErr(c.err) != outcomeTimedOut || !rollbackConfirmed(c.err) {
+			t.Errorf("err %v, want errCommitReserve, timed out, rollback confirmed", c.err)
+		}
+		if len(r.proxy.Find(testdb.KindCommit, "")) != 0 {
+			t.Error("a COMMIT was sent")
+		}
+		if got := r.seed(); got != control {
+			t.Error("the sentinel was stored")
+		}
+	})
+	t.Run("budget under the reserve sends nothing", func(t *testing.T) {
+		r := newCtxRig(t)
+		before := len(r.proxy.Events())
+		var ran atomic.Bool
+		c := r.await(r.call(1500*time.Millisecond, contactChange{}, sentinel(&ran)))
+		if !errors.Is(c.err, errCommitReserve) || ran.Load() || len(r.proxy.Events()) != before {
+			t.Errorf("err %v, ran %v, events %d -> %d; want errCommitReserve and nothing sent", c.err, ran.Load(), before, len(r.proxy.Events()))
+		}
+	})
+	t.Run("classification table", func(t *testing.T) {
+		pg := func(code string) error { return &pgconn.PgError{Code: code} }
+		for name, cause := range map[string]error{
+			"deadline": context.DeadlineExceeded, "canceled": context.Canceled, "57014": pg("57014"),
+			"unexpected EOF": io.ErrUnexpectedEOF, "23514": pg("23514"),
+		} {
+			if got := classifyContactErr(&contactCommitError{Cause: cause}); got != outcomeUnknown {
+				t.Errorf("commit error wrapping %s: outcome %d, want unknown", name, got)
+			}
+			if rollbackConfirmed(&contactCommitError{Cause: cause}) {
+				t.Errorf("a commit error wrapping %s counts as a confirmed rollback", name)
+			}
+		}
+		for name, tc := range map[string]struct {
+			err  error
+			want contactOutcome
+		}{
+			"reserve":  {errCommitReserve, outcomeTimedOut},
+			"deadline": {context.DeadlineExceeded, outcomeTimedOut},
+			"canceled": {context.Canceled, outcomeTimedOut},
+			"57014":    {pg("57014"), outcomeTimedOut},
+			"55P03":    {pg("55P03"), outcomeFailed},
+			"plain":    {errors.New("boom"), outcomeFailed},
+		} {
+			if got := classifyContactErr(tc.err); got != tc.want {
+				t.Errorf("%s bare: outcome %d, want %d", name, got, tc.want)
+			}
+			if !rollbackConfirmed(tc.err) {
+				t.Errorf("%s bare: rollback should count as confirmed", name)
+			}
+			wrapped := &contactRollbackError{Cause: tc.err, Rollback: sql.ErrTxDone}
+			if got := classifyContactErr(wrapped); got != tc.want {
+				t.Errorf("%s in a rollback error: outcome %d, want %d", name, got, tc.want)
+			}
+			if rollbackConfirmed(wrapped) || !errors.Is(wrapped, errContactRollback) || !errors.Is(wrapped, tc.err) {
+				t.Errorf("%s in a rollback error: confirmed %v, Is rollback %v, Is cause %v", name, rollbackConfirmed(wrapped), errors.Is(wrapped, errContactRollback), errors.Is(wrapped, tc.err))
+			}
+		}
+	})
+}
+
+// Rollback completion is separate from the outcome.
+func TestContactMutationCtxRollbackCompletion(t *testing.T) {
+	setContactBounds(t, 100*time.Millisecond, 5*time.Second)
+	lockNotAvailable := &pgconn.PgError{Code: "55P03"}
+	run := func(t *testing.T, fault testdb.Faults) (*ctxRig, *ctxCall) {
+		r := newCtxRig(t)
+		fault.Match = "set_config('statement_timeout'"
+		r.proxy.Arm(fault)
+		return r, r.await(r.call(5*time.Second, contactChange{}, func(*gorm.DB) error { return lockNotAvailable }))
+	}
+	for name, fault := range map[string]testdb.Faults{
+		"closed without forwarding":         {Rollback: testdb.RollbackCloseUnforwarded},
+		"forwarded, then closed unanswered": {Rollback: testdb.RollbackForwardThenClose},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, c := run(t, fault)
+			if !errors.Is(c.err, errContactRollback) || pgCode(c.err) != "55P03" || classifyContactErr(c.err) != outcomeFailed || rollbackConfirmed(c.err) {
+				t.Errorf("err %v: want a rollback error around 55P03, failed, not confirmed", c.err)
+			}
+			pid := r.pidOf("set_config('statement_timeout'")
+			r.awaitReleased(pid, c.deadline.Sub(c.start)+contactServerCap+5*time.Second)
+		})
+	}
+	t.Run("forwarded and answered", func(t *testing.T) {
+		_, c := run(t, testdb.Faults{})
+		if c.err != lockNotAvailable || !rollbackConfirmed(c.err) || classifyContactErr(c.err) != outcomeFailed {
+			t.Errorf("err %v: want the 55P03 unchanged and confirmed", c.err)
+		}
+	})
+}
+
+// The helpers: no deadline installs nothing, and withStatementTimeout never
+// raises what contactServerCap set.
+func TestContactMutationCtxHelpers(t *testing.T) {
+	t.Run("no deadline sends no set_config", func(t *testing.T) {
+		r := newCtxRig(t)
+		if err := r.papp.contactMutation(contactChange{}, func(tx *gorm.DB) error { return tx.Exec("SELECT 1").Error }); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range r.statements() {
+			if strings.Contains(e.SQL, "set_config") {
+				t.Errorf("a set_config was sent: %q", e.SQL)
+			}
+		}
+	})
+	show := func(t *testing.T, tx *gorm.DB) string {
+		t.Helper()
+		var v string
+		if err := tx.Raw("SHOW statement_timeout").Scan(&v).Error; err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	t.Run("inside the call the recipient bound is the smaller", func(t *testing.T) {
+		setContactBounds(t, 100*time.Millisecond, time.Second)
+		app := testApp(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var inside, after string
+		if err := app.contactMutationCtx(ctx, contactChange{}, func(tx *gorm.DB) error {
+			if err := withStatementTimeout(tx, erasureRecipientWait, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				return err
+			}
+			after = show(t, tx)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if inside != "1s" || after != "1s" {
+			t.Errorf("inside %q, after %q, want 1s both (the cap is never raised and is restored)", inside, after)
+		}
+	})
+	t.Run("outside the call the bound is as before", func(t *testing.T) {
+		app := testApp(t)
+		var inside, after string
+		if err := app.contactMutation(contactChange{}, func(tx *gorm.DB) error {
+			if err := withStatementTimeout(tx, erasureRecipientWait, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				return err
+			}
+			after = show(t, tx)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if inside != "20s" || after == "20s" {
+			t.Errorf("inside %q, after %q, want 20s inside and the session value after", inside, after)
+		}
+	})
 }

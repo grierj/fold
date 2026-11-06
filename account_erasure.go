@@ -158,16 +158,28 @@ var erasureRecipientWait = 20 * time.Second
 // limits are per request (Postmark 15 s, SMTP dial 10 s and exchange 30 s) and
 // the batch deadline is only a context handed to Send. The database bound here
 // covers one statement, so successive waits on rows that workers hold can add
-// up past d. The HTTP write timeout bounds the response and no transaction: an
-// erasure can commit after the browser lost its answer.
+// up past d. The HTTP write timeout bounds the response and no transaction; the
+// admin deletion's own deadline and the contact transaction's server bounds
+// (contactMutationCtx) do. Inside that transaction the call never raises the
+// timeout in force: it sets the smaller of d and the current value.
 func withStatementTimeout(tx *gorm.DB, d time.Duration, fn func() error) error {
-	var prior string
-	if err := tx.Raw("SELECT current_setting('statement_timeout')").Scan(&prior).Error; err != nil {
+	// The text is put back as it was; the milliseconds decide the cap. A
+	// timeout already in force (the contact transaction's contactServerCap)
+	// is never raised: the call sets the smaller of the two, and 0 means none.
+	var cur struct {
+		Text string `gorm:"column:text"`
+		MS   int64  `gorm:"column:ms"`
+	}
+	if err := tx.Raw("SELECT current_setting('statement_timeout') AS text, (SELECT setting::bigint FROM pg_settings WHERE name = 'statement_timeout') AS ms").Scan(&cur).Error; err != nil {
 		return err
 	}
+	prior := cur.Text
 	ms := d.Milliseconds()
 	if ms < 1 {
 		ms = 1
+	}
+	if cur.MS > 0 && cur.MS < ms {
+		ms = cur.MS
 	}
 	if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ms)).Error; err != nil {
 		return err

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -43,28 +46,235 @@ type contactChange struct {
 	GroupID uint
 }
 
-// contactMutation retains the caller's transaction boundary, and ends access
+// Server-side bounds for a contact transaction that has a deadline (R4-CTX).
+// They are vars so tests can set and restore them; a test that sets one stays
+// serial.
+//
+//   - contactCommitReserve is the time that must be left to send COMMIT: with
+//     less, the change is rolled back instead (errCommitReserve).
+//   - contactServerCap is the statement_timeout of the transaction, the longest
+//     any one statement (the gate wait and COMMIT included) may run on the
+//     server.
+//   - adminDeleteBudget is the deadline of an admin's account deletion: the 60
+//     second httpWriteTimeout minus 20 seconds, as syncMailTimeout.
+var (
+	contactCommitReserve = 2 * time.Second
+	contactServerCap     = 20 * time.Second
+	adminDeleteBudget    = 40 * time.Second
+)
+
+var (
+	// errCommitReserve: too little time was left to commit, so the change was
+	// rolled back (or never begun).
+	errCommitReserve = errors.New("not enough time left to commit the contact change")
+	// errContactRollback marks a *contactRollbackError.
+	errContactRollback = errors.New("the contact transaction's rollback was not acknowledged")
+	// errContactCommit marks a *contactCommitError.
+	errContactCommit = errors.New("the contact transaction's commit result is unknown")
+)
+
+// contactRollbackError: the transaction failed before COMMIT and its ROLLBACK
+// was not acknowledged on the live connection, so the server may still hold
+// the gate and the row locks (they end by Terminate, socket close or the idle
+// timeout). Unwrap gives Cause only, so errors.Is and errors.As see the
+// original failure; Rollback is kept for logs.
+type contactRollbackError struct {
+	Cause    error
+	Rollback error
+}
+
+func (e *contactRollbackError) Error() string {
+	return fmt.Sprintf("%v (rollback not acknowledged: %v)", e.Cause, e.Rollback)
+}
+func (e *contactRollbackError) Unwrap() error        { return e.Cause }
+func (e *contactRollbackError) Is(target error) bool { return target == errContactRollback }
+
+// contactCommitError: COMMIT was sent (or may have been) and no answer came
+// back, so the change may or may not be stored. Cause is for logs only;
+// nothing unwraps it, so no caller classifies the failure by what it wraps.
+type contactCommitError struct{ Cause error }
+
+func (e *contactCommitError) Error() string {
+	return fmt.Sprintf("could not confirm the commit: %v", e.Cause)
+}
+func (e *contactCommitError) Is(target error) bool { return target == errContactCommit }
+
+// rollbackConfirmed is true only for an error before COMMIT whose ROLLBACK, if
+// one was needed, came back on the live connection: the server has released
+// the gate and the locks. It says nothing about the outcome.
+func rollbackConfirmed(err error) bool {
+	return err != nil && !errors.Is(err, errContactCommit) && !errors.Is(err, errContactRollback)
+}
+
+type contactOutcome int
+
+const (
+	// outcomeFailed: the change was not stored for a reason other than time.
+	outcomeFailed contactOutcome = iota
+	// outcomeTimedOut: the change was rolled back or never begun because time ran out.
+	outcomeTimedOut
+	// outcomeUnknown: COMMIT was sent and its result never came back.
+	outcomeUnknown
+)
+
+// classifyContactErr is the one place that decides how a contactMutationCtx
+// error ends. A commit error is unknown whatever it wraps; the rest read
+// through *contactRollbackError to the cause. Every consumer classifies
+// through it and never tests for a context error itself.
+func classifyContactErr(err error) contactOutcome {
+	if errors.Is(err, errContactCommit) {
+		return outcomeUnknown
+	}
+	if errors.Is(err, errCommitReserve) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return outcomeTimedOut
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "57014" {
+		return outcomeTimedOut
+	}
+	return outcomeFailed
+}
+
+// discardConn closes a connection instead of returning it to the pool, so a
+// session setting made for one call never reaches another.
+func discardConn(conn *sql.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+}
+
+func ceilMillis(d time.Duration) int64 {
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
+}
+
+// contactMutation is contactMutationCtx without a deadline.
+func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) error {
+	return a.contactMutationCtx(context.Background(), change, fn)
+}
+
+// contactMutationCtx retains the caller's transaction boundary, and ends access
 // using its own writes before commit. A failed audit rolls back the domain
 // mutation too. Notices queue their own delivery in the same transaction.
-func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) error {
-	return a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockContacts(tx); err != nil {
+//
+// When ctx has a deadline D the server is bounded too, because a client
+// deadline is not server cancellation: on expiry the driver closes the
+// connection asynchronously (a cancel request, then Terminate, then the
+// socket), so this can return while the server still runs the statement and
+// holds the gate. The call takes one dedicated connection. Just before BEGIN,
+// r = time.Until(D); with r at most contactCommitReserve the call returns
+// errCommitReserve and sends nothing. Otherwise, before BEGIN, the connection
+// gets a session-level idle_in_transaction_session_timeout = r (whole
+// milliseconds, rounded up), and the first statement after BEGIN sets
+// statement_timeout = contactServerCap for the transaction (and the same idle
+// value, locally). The idle timeout is set on the session, not only for the
+// transaction, because a transaction-local setting is reverted by the abort a
+// statement timeout causes, which would leave an aborted backend connected
+// for as long as its socket stays open. Every statement is sent before D and
+// the one in flight ends by its start + contactServerCap, and the backend then
+// ends at Terminate, socket close or the idle timeout, so the gate and locks
+// are released, and the backend is gone, by D + contactServerCap + r however
+// the cancel and the socket fare. Since that session setting must never reach
+// another caller, the connection is always discarded when the call ends
+// (database/sql closes it), never returned to the pool. Nothing here assumes
+// that returning means the server let go. Without a deadline nothing is set
+// and the statements are the same as before.
+//
+// Errors: before COMMIT (the gate, the callback, either reconcile, the reserve
+// check) the transaction is rolled back and the error returned as it came.
+// If the ROLLBACK is not acknowledged the error is a *contactRollbackError
+// (rollbackConfirmed is false). A COMMIT error of any kind, including a context
+// that ends between the reserve check and COMMIT, is a *contactCommitError.
+// A panic in fn rolls back and panics again.
+func (a *App) contactMutationCtx(ctx context.Context, change contactChange, fn func(*gorm.DB) error) error {
+	deadline, bounded := ctx.Deadline()
+	var remaining time.Duration
+	if bounded {
+		remaining = time.Until(deadline)
+		if remaining <= contactCommitReserve {
+			return errCommitReserve
+		}
+	}
+	db := a.DB.WithContext(ctx)
+	if bounded {
+		sqlDB, err := a.DB.DB()
+		if err != nil {
 			return err
 		}
-		// Event edits can move a retained departure date after its old end.
-		// Persist expiry under the shared gate before the event/occurrence rows
-		// change, so a move cannot resurrect authority that already elapsed.
-		if change.EventID != 0 {
-			if _, err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
-				return err
+		conn, err := sqlDB.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		// Runs last, after the transaction is over. When ctx has ended,
+		// database/sql may still be releasing the transaction from its own
+		// goroutine, and closing waits for that, so it must not hold the caller.
+		defer func() {
+			if ctx.Err() != nil {
+				go discardConn(conn)
+				return
 			}
+			discardConn(conn)
+		}()
+		remaining = time.Until(deadline)
+		if remaining <= contactCommitReserve {
+			return errCommitReserve
 		}
-		if err := fn(tx); err != nil {
+		if _, err := conn.ExecContext(ctx, "SELECT set_config('idle_in_transaction_session_timeout', $1, false)",
+			fmt.Sprintf("%dms", ceilMillis(remaining))); err != nil {
 			return err
 		}
-		_, err := a.reconcileContacts(tx, time.Now().UTC(), change)
-		return err
-	})
+		// db.Statement is the clone WithContext made, so this binds only it.
+		db.Statement.ConnPool = conn
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		if p := recover(); p != nil {
+			_ = tx.Rollback().Error
+			panic(p)
+		}
+	}()
+	rollback := func(cause error) error {
+		finished = true
+		if rerr := tx.Rollback().Error; rerr != nil {
+			return &contactRollbackError{Cause: cause, Rollback: rerr}
+		}
+		return cause
+	}
+	if bounded {
+		if err := tx.Exec("SELECT set_config('statement_timeout', ?, true), set_config('idle_in_transaction_session_timeout', ?, true)",
+			fmt.Sprintf("%dms", ceilMillis(contactServerCap)), fmt.Sprintf("%dms", ceilMillis(remaining))).Error; err != nil {
+			return rollback(err)
+		}
+	}
+	if err := lockContacts(tx); err != nil {
+		return rollback(err)
+	}
+	// Event edits can move a retained departure date after its old end.
+	// Persist expiry under the shared gate before the event/occurrence rows
+	// change, so a move cannot resurrect authority that already elapsed.
+	if change.EventID != 0 {
+		if _, err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
+			return rollback(err)
+		}
+	}
+	if err := fn(tx); err != nil {
+		return rollback(err)
+	}
+	if _, err := a.reconcileContacts(tx, time.Now().UTC(), change); err != nil {
+		return rollback(err)
+	}
+	if ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {
+		return rollback(errCommitReserve)
+	}
+	finished = true
+	if err := tx.Commit().Error; err != nil {
+		return &contactCommitError{Cause: err}
+	}
+	return nil
 }
 
 func contactScope(r models.ContactRequest) policy.ContactScope {

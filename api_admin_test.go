@@ -9,6 +9,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/notify"
+	"fold/internal/testdb"
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
@@ -2163,5 +2164,120 @@ func TestEraseAdminKeepsRole(t *testing.T) {
 	n, err := adminCountIn(s.app.DB)
 	if err != nil || n != 1 || s.app.adminCount() != 1 {
 		t.Errorf("adminCountIn = %d, %v, adminCount = %d, want 1 and 1", n, err, s.app.adminCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-CTX: what the DELETE route says when the deletion's time runs out or its
+// COMMIT goes unanswered. These tests pass unchanged at every later landing
+// head from R4-3b-V on: only the commit-phase classification may answer
+// delete_outcome_unknown, and nothing here may ever say "nothing was deleted"
+// for a COMMIT that was sent.
+// ---------------------------------------------------------------------------
+
+func setAdminDeleteBounds(t *testing.T, budget, reserve time.Duration) {
+	t.Helper()
+	oldBudget, oldReserve := adminDeleteBudget, contactCommitReserve
+	adminDeleteBudget, contactCommitReserve = budget, reserve
+	t.Cleanup(func() { adminDeleteBudget, contactCommitReserve = oldBudget, oldReserve })
+}
+
+func (r *ctxRig) deletedUser(id uint) bool {
+	r.t.Helper()
+	var n int64
+	if err := r.app.DB.Raw("SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NOT NULL", id).Scan(&n).Error; err != nil {
+		r.t.Fatal(err)
+	}
+	return n == 1
+}
+
+func TestAdminDeleteCommitPhaseAnswersUnknown(t *testing.T) {
+	const claim = "idle_in_transaction_session_timeout"
+	deferredFailure := func(t *testing.T, app *App, target *models.User) {
+		t.Helper()
+		for _, q := range []string{
+			`CREATE FUNCTION fold_test_fail_at_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+				BEGIN RAISE EXCEPTION 'deferred refusal' USING ERRCODE = '23514'; END $$`,
+			fmt.Sprintf(`CREATE CONSTRAINT TRIGGER fold_test_fail_at_commit AFTER UPDATE ON users DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+				WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL AND OLD.id = %d) EXECUTE FUNCTION fold_test_fail_at_commit()`, target.ID),
+		} {
+			if err := app.DB.Exec(q).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() {
+			app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_fail_at_commit ON users")
+			app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_fail_at_commit()")
+		})
+	}
+	cases := []struct {
+		name    string
+		fault   testdb.Faults
+		setup   func(*testing.T, *App, *models.User)
+		deleted bool
+	}{
+		{name: "a: the reply held past the budget", fault: testdb.Faults{Match: claim, Commit: testdb.CommitHoldReply}, deleted: true},
+		{name: "b: forwarded, client closed before the reply", fault: testdb.Faults{Match: claim, Commit: testdb.CommitForwardThenClose}, deleted: true},
+		{name: "c: closed without forwarding", fault: testdb.Faults{Match: claim, Commit: testdb.CommitCloseUnforwarded}, deleted: false},
+		{name: "d: a deferred constraint fails at COMMIT", setup: deferredFailure, deleted: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setAdminDeleteBounds(t, 4*time.Second, 300*time.Millisecond)
+			app := testApp(t)
+			newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+			target := newTestUser(t, app, "target", "pw", models.RoleMember)
+			r := newCtxRigFor(t, app)
+			c := loginAPI(t, r.papp, "admin", "pw")
+			if tc.setup != nil {
+				tc.setup(t, app, target)
+			}
+			if tc.fault.Match != "" {
+				r.proxy.Arm(tc.fault)
+			}
+			w := c.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true)
+			if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"delete_outcome_unknown"`) {
+				t.Fatalf("delete: %d %s, want 500 delete_outcome_unknown", w.Code, w.Body.String())
+			}
+			for _, wrong := range []string{"delete_timed_out", "server_error", "nothing"} {
+				if strings.Contains(w.Body.String(), wrong) {
+					t.Errorf("the body says %q after a COMMIT that was sent: %s", wrong, w.Body.String())
+				}
+			}
+			if tc.deleted {
+				deadline := time.Now().Add(5 * time.Second)
+				for !r.deletedUser(target.ID) && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if !r.deletedUser(target.ID) || contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, target.ID) != 1 {
+					t.Error("the tombstone and the user.deleted row should be visible: the COMMIT reached the server")
+				}
+				return
+			}
+			if tc.fault.Match != "" {
+				r.awaitReleased(r.pidOf(claim), 10*time.Second)
+			}
+			if r.deletedUser(target.ID) || contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, target.ID) != 0 {
+				t.Error("the deletion was stored although its COMMIT never completed")
+			}
+		})
+	}
+}
+
+func TestAdminDeleteGateWaitAnswersTimedOut(t *testing.T) {
+	setAdminDeleteBounds(t, time.Second, 100*time.Millisecond)
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target := newTestUser(t, app, "target", "pw", models.RoleMember)
+	c := loginAPI(t, app, "admin", "pw")
+	release, _ := holdAdvisory(t, app.DB, contactLockID)
+	defer release()
+	before := erasureWaitSnapshot(t, app.DB)
+	w := c.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"delete_timed_out"`) {
+		t.Fatalf("delete: %d %s, want 503 delete_timed_out", w.Code, w.Body.String())
+	}
+	if after := erasureWaitSnapshot(t, app.DB); after != before {
+		t.Error("a timed-out deletion changed the database")
 	}
 }

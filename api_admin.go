@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -947,7 +949,14 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// and every church-wide event they host alone, and ending their
 	// memberships. The email is replaced so the address is free for a new
 	// account, and the session version is bumped so open sessions end.
-	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+	//
+	// The deletion has its own deadline, not the request's: a browser that
+	// disconnects must not abort a commit. 40 seconds is the 60 second write
+	// timeout minus 20 (as syncMailTimeout), and contactMutationCtx bounds the
+	// server to it too (R4-CTX).
+	ctx, cancel := context.WithTimeout(context.Background(), adminDeleteBudget)
+	defer cancel()
+	err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 		// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
 		// admin (plain read) and the facts again; see api_host_handoff.go.
 		picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
@@ -1053,7 +1062,20 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not delete user")
+		// Only classifyContactErr decides what a failure means. The log line
+		// never names the account or an address (jobs.CleanError).
+		switch classifyContactErr(err) {
+		case outcomeUnknown:
+			// COMMIT may have reached the server: never say nothing changed.
+			log.Printf("could not confirm user deletion: %s", jobs.CleanError(err))
+			jsonErrorCode(c, http.StatusInternalServerError, "delete_outcome_unknown", "could not confirm whether the account was deleted")
+		case outcomeTimedOut:
+			log.Printf("user deletion timed out (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+			jsonErrorCode(c, http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted")
+		default:
+			log.Printf("could not delete user (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+			jsonError(c, http.StatusInternalServerError, "could not delete user")
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

@@ -4172,7 +4172,8 @@ func (run *ctgRun) text(f *ctgFile, n ast.Node, raw string, parents []ast.Node) 
 }
 
 // ident is R-6: eraseContactRequestTextIn is only ever called, once, from the
-// a.contactMutation callback in apiAdminDeleteUser.
+// a.contactMutationCtx callback in apiAdminDeleteUser (the callback is the
+// last argument).
 func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 	if id.Name != "eraseContactRequestTextIn" || len(parents) < 2 {
 		return
@@ -4208,31 +4209,26 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 		}
 	}
 	if lit < 1 {
-		return "called outside the a.contactMutation callback of apiAdminDeleteUser"
+		return "called outside the a.contactMutationCtx callback of apiAdminDeleteUser"
 	}
 	fl, ok := parents[lit].(*ast.FuncLit)
 	if !ok {
-		return "called outside the a.contactMutation callback of apiAdminDeleteUser"
+		return "called outside the a.contactMutationCtx callback of apiAdminDeleteUser"
 	}
 	outer, ok := parents[lit-1].(*ast.CallExpr)
 	if !ok {
-		return "called in a func literal that is not the a.contactMutation callback"
+		return "called in a func literal that is not the a.contactMutationCtx callback"
 	}
 	osel, ok := outer.Fun.(*ast.SelectorExpr)
-	isArg := false
-	for _, a := range outer.Args {
-		if a == ast.Expr(fl) {
-			isArg = true
-		}
-	}
-	if !ok || osel.Sel.Name != "contactMutation" || !isArg {
-		return "called in a func literal that is not the a.contactMutation callback (a nested tx.Transaction body is not allowed)"
+	isArg := len(outer.Args) > 0 && outer.Args[len(outer.Args)-1] == ast.Expr(fl)
+	if !ok || osel.Sel.Name != "contactMutationCtx" || !isArg {
+		return "called in a func literal that is not the last argument of a.contactMutationCtx (a nested tx.Transaction body and the old a.contactMutation are not allowed)"
 	}
 	var decl *ast.FuncDecl
 	for i := lit - 2; i >= 0 && decl == nil; i-- {
 		switch n := parents[i].(type) {
 		case *ast.FuncLit:
-			return "the a.contactMutation call is itself inside a func literal"
+			return "the a.contactMutationCtx call is itself inside a func literal"
 		case *ast.FuncDecl:
 			decl = n
 		}
@@ -4241,7 +4237,7 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 		return "called from a function other than apiAdminDeleteUser in api_admin.go"
 	}
 	if !ctgIsAppReceiver(decl, osel.X) {
-		return "the callback must be passed to contactMutation on apiAdminDeleteUser's own App receiver, not on another value that has a method of that name"
+		return "the callback must be passed to contactMutationCtx on apiAdminDeleteUser's own App receiver, not on another value that has a method of that name"
 	}
 	viaExpr := false
 	stmt := -1
@@ -4360,7 +4356,7 @@ func ctgViolations(sources map[string]string) []string {
 		run.file(f)
 	}
 	if run.eraseCalls != 1 {
-		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly one call, in apiAdminDeleteUser's a.contactMutation callback (api_admin.go)", run.eraseCalls))
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly one call, in apiAdminDeleteUser's a.contactMutationCtx callback (api_admin.go)", run.eraseCalls))
 	}
 	sort.Strings(run.bad)
 	return run.bad
@@ -4422,6 +4418,12 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 }
 
 func ctgAdminFile(before, after string) string {
+	return ctgAdminFileShape("err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, ", ")", before, after)
+}
+
+// ctgAdminFileShape builds the admin fixture with the call's head (up to the
+// callback) and the text after the callback's closing brace.
+func ctgAdminFileShape(head, tail, before, after string) string {
 	return `package main
 
 import (
@@ -4431,7 +4433,9 @@ import (
 )
 
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
-	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), adminDeleteBudget)
+	defer cancel()
+	` + head + `func(tx *gorm.DB) error {
 		` + before + `
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
@@ -4441,7 +4445,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		` + after + `
 		return nil
-	})
+	}` + tail + `
 	_ = err
 }
 `
@@ -4543,6 +4547,15 @@ func withStatementTimeout(tx *gorm.DB) error {
 }
 `
 
+const ctgLifecycleFile = `package main
+
+import "gorm.io/gorm"
+
+func (a *App) contactMutationCtx(tx *gorm.DB, remaining string) error {
+	return tx.Exec("SELECT set_config('statement_timeout', ?, true), set_config('idle_in_transaction_session_timeout', ?, true)", "20000ms", remaining).Error
+}
+`
+
 const ctgModelsFile = `package models
 
 type ContactRequest struct {
@@ -4558,6 +4571,7 @@ func ctgClean() map[string]string {
 		"account_erasure.go":        ctgErasureFile(ctgErasureLoop),
 		"api_admin.go":              ctgAdminFile("", ctgEraseCall),
 		"api_contact.go":            ctgContactFile,
+		"contact_lifecycle.go":      ctgLifecycleFile,
 		"internal/testdb/testdb.go": ctgTestdbFile(""),
 		"statement_timeout.go":      ctgTimeoutFile,
 		"models/models.go":          ctgModelsFile,
@@ -4922,18 +4936,26 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		// transaction-and-gate wrapper, whether it is a different variable or a local
 		// that reuses the receiver's name.
 		ctgSource("contactMutation on another receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(admin, "err := a.contactMutation(", "runner := directRunner{db: a.DB}\n\terr := runner.contactMutation(", 1),
+			"api_admin.go": strings.Replace(admin, "err := a.contactMutationCtx(", "runner := directRunner{db: a.DB}\n\terr := runner.contactMutationCtx(", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutation(_ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a local that shadows the receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.contactMutation(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.contactMutation(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
+			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.contactMutationCtx(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.contactMutationCtx(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutation(_ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a parameter, not the receiver", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(strings.Replace(admin, "(a *App) apiAdminDeleteUser(c *gin.Context)", "(a *App) apiAdminDeleteUser(c *gin.Context, runner directRunner)", 1),
-				"err := a.contactMutation(", "err := runner.contactMutation(", 1),
+				"err := a.contactMutationCtx(", "err := runner.contactMutationCtx(", 1),
+		}),
+		// R4-CTX: the callback is the last argument of a.contactMutationCtx; the
+		// old call shape fails at the admin site.
+		ctgSource("the old a.contactMutation at the admin site", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFileShape("err := a.contactMutation(contactChange{UserID: u.ID}, ", ")", "", ctgEraseCall),
+		}),
+		ctgSource("a callback that is not the last argument", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFileShape("err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, ", ", nil)", "", ctgEraseCall),
 		}),
 		ctgSource("apiAdminDeleteUser as a function, not an App method", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(admin, "func (a *App) apiAdminDeleteUser(", "func apiAdminDeleteUser(a *App, ", 1),

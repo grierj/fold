@@ -52,6 +52,8 @@ export const ERROR_COPY = {
   household_age_mismatch: "The birth date doesn't match an adult. Check their birth date and choose Child or Teen in Profile if needed.",
   household_remote_childcare: "Remote attendees can't request childcare. Clear their childcare choice before switching to remote.",
   household_registration_holder_unavailable: "The responsible account can't sign this person up right now. Ask your church office to check their account and household.",
+  delete_outcome_unknown: "Fold couldn't confirm whether the account was deleted. Reload this person's page to see whether they are gone before trying again.",
+  delete_timed_out: "Deleting took too long, so nothing was deleted. Try again in a few minutes.",
   // Signing in and passwords
   bad_credentials: "That email and password don't match. Check them and try again.",
   locked_out: "Too many sign-in attempts. Please wait 15 minutes, then try again.",

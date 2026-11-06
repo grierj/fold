@@ -1208,6 +1208,55 @@ func TestErasureStatementTimeoutContract(t *testing.T) {
 			}
 		})
 
+		t.Run("a timeout already in force is never raised", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			if err := tx.Exec("SET LOCAL statement_timeout = '1s'").Error; err != nil {
+				t.Fatal(err)
+			}
+			var inside string
+			if err := withStatementTimeout(tx, 5*time.Second, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inside != "1s" {
+				t.Errorf("inside = %q, want the 1s already in force", inside)
+			}
+			if got := show(t, tx); got != "1s" {
+				t.Errorf("after the call = %q, want 1s", got)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		})
+
+		t.Run("no timeout in force takes the one asked for", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			if err := tx.Exec("SET LOCAL statement_timeout = 0").Error; err != nil {
+				t.Fatal(err)
+			}
+			var inside string
+			if err := withStatementTimeout(tx, 5*time.Second, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inside != "5s" {
+				t.Errorf("inside = %q, want 5s", inside)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		})
+
 		t.Run("a restore failure is returned", func(t *testing.T) {
 			tx := conn.Begin()
 			if tx.Error != nil {
@@ -3134,15 +3183,16 @@ func erasureWaitSnapshot(t *testing.T, db *gorm.DB) string {
 
 func erasureTestAssertTimeout(t *testing.T, r *erasureWaitRun, res httpResult) {
 	t.Helper()
-	// DEC-52: a failure a person cannot act on reaches the client as the generic
-	// server error. The handler's own "could not delete user" text is only
-	// logged, and neither it nor the SQLSTATE or statement text reaches the body.
-	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, `"code":"server_error"`) {
-		t.Fatalf("erasure: %d %s, want the generic 500 server_error", res.code, res.body)
+	// R4-CTX: the statement timeout is a timed-out deletion, which the contact
+	// transaction classifies (classifyContactErr): 503 delete_timed_out, nothing
+	// deleted. Neither the handler's own "could not delete user" text nor the
+	// SQLSTATE or statement text reaches the body.
+	if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, `"code":"delete_timed_out"`) {
+		t.Fatalf("erasure: %d %s, want 503 delete_timed_out", res.code, res.body)
 	}
 	for _, leak := range []string{"57014", "statement timeout", "message_recipients", "could not delete user"} {
 		if strings.Contains(res.body, leak) {
-			t.Errorf("the 500 body leaks %q: %s", leak, res.body)
+			t.Errorf("the 503 body leaks %q: %s", leak, res.body)
 		}
 	}
 	e := r.states.Only("57014")
