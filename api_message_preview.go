@@ -110,15 +110,15 @@ func firstName(name string) string {
 
 // renderMessage renders m for the reader u with the given merge values.
 func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string) (renderedMessage, error) {
-	return a.renderMessageWith(m, u, vals, footerFacts{site: a.siteName(), address: a.churchAddress()})
+	return a.renderMessageWith(m, u, u.Email, vals, footerFacts{site: a.siteName(), address: a.churchAddress()})
 }
 
 // renderMessageWith renders with the church's name and address already
 // read, so a batch reads them once, not once per email.
-func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[string]string, f footerFacts) (renderedMessage, error) {
+func (a *App) renderMessageWith(m *models.Message, u *models.User, to string, vals map[string]string, f footerFacts) (renderedMessage, error) {
 	site, address := f.site, f.address
 	cat := messageCategory(m)
-	token := a.unsubscribeToken(u.ID, categoryScope(cat))
+	token := a.unsubscribeToken(u.ID, categoryScope(cat), to)
 	var lines []string
 	for _, l := range strings.Split(strings.ReplaceAll(address, "\r", ""), "\n") {
 		if l = strings.TrimSpace(l); l != "" {

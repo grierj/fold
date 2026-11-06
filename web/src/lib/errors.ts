@@ -80,6 +80,7 @@ export const ERROR_COPY = {
   message_audience_gone: "That group or event isn't there anymore. Choose another.",
   message_merge_unknown: "One of the merge fields isn't one Fold knows. Use the fields under Insert field, spelled the same way.",
   message_merge_event: "Event fields like the event's title or time only work when you write to one event's people. Remove them, or choose an event.",
+  email_link_turn_on: "This link can only turn email off. To turn email back on, sign in, or use the link in a newer email from us.",
   message_test_opted_out: "This kind of email is turned off in your notification settings, so we didn't send the test. Turn it on in Me → Notifications, then try again.",
   message_test_limit: "You've sent 10 tests in the last hour. Try again a little later.",
   message_test_email: "We can't send to your email address right now, usually because earlier mail to it bounced. Ask an admin to check it, then try again.",

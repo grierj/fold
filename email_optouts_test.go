@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -12,12 +13,13 @@ import (
 
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/providers"
 	"fold/models"
 
 	"gorm.io/gorm"
 )
 
-// No production writer exists in 2a. Fixtures insert retained choices directly.
+// The erasure export lands in 2c. Fixtures insert retained choices directly.
 func seedEmailAddressOff(t *testing.T, app *App, address string, categories ...string) {
 	t.Helper()
 	for _, cat := range categories {
@@ -116,7 +118,7 @@ func TestEmailSettingsHideChoiceSource(t *testing.T) {
 	if err := app.DB.Where("address_hash = ?", mail.AddressHash(u.Email)).Delete(&models.EmailAddressOptOut{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := setEmailConsent(app.DB, u.ID, "category:groups", models.ConsentOptedOut, models.ConsentSourceWebForm, "", "", nil); err != nil {
+	if _, err := setEmailConsent(app.DB, u.ID, "category:groups", models.ConsentOptedOut, models.ConsentSourceWebForm, "", "", u, nil); err != nil {
 		t.Fatal(err)
 	}
 	account, err := app.emailSettingsFor(app.DB, u)
@@ -136,7 +138,7 @@ func TestEmailSettingsHideChoiceSource(t *testing.T) {
 	decodeJSON(t, c.do("GET", "/api/v1/me/notification-settings", nil, false), &me)
 	anon := newAPIClient(t, app)
 	var link tokenSettings
-	decodeJSON(t, anon.do("GET", "/api/v1/email-settings/"+app.unsubscribeToken(u.ID, "category:groups"), nil, false), &link)
+	decodeJSON(t, anon.do("GET", "/api/v1/email-settings/"+app.unsubscribeToken(u.ID, "category:groups", u.Email), nil, false), &link)
 	if !me.Settings.OptionalEmailOff || !link.EmailSettings.OptionalEmailOff || !reflect.DeepEqual(me.Settings.Kinds, link.EmailSettings.Kinds) {
 		t.Fatalf("settings disagree: %+v vs %+v", me, link)
 	}
@@ -312,5 +314,40 @@ func TestReadEmailOffBindsHashesOnly(t *testing.T) {
 	}
 	if !found || strings.Contains(statement, u.Email) {
 		t.Fatalf("choice read did not bind its Go hash: %q, %v", statement, binds)
+	}
+}
+
+func TestEmailTurnOnRecordsAnAffirmationOverAnExistingOptIn(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "holder", "password1234", models.RoleMember)
+	consentTestSeed(t, app, u, models.ConsentEmail, "category:events", models.ConsentOptedIn)
+	seedEmailAddressOff(t, app, u.Email, "events")
+	c := loginAPI(t, app, "holder", "password1234")
+	c.ip, c.ua = "203.0.113.23", "Affirmative holder"
+	wantEmailSettingsStatus(t, c.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "events", "off": false}, true), http.StatusOK)
+	rows := consentTestRowsOf(t, app, u.ID)
+	if len(rows) != 2 || rows[1].Status != models.ConsentOptedIn || rows[1].IP != c.ip || rows[1].UserAgent != c.ua {
+		t.Fatalf("retained choice cleared without new evidence: %+v", rows)
+	}
+	wantRetainedEmailChoice(t, app, u.Email, "events", false)
+}
+
+func TestEmailWebhooksLeaveChoicesUntouched(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "holder", "password1234", models.RoleMember)
+	seedAllEmailAddressOff(t, app, u.Email)
+	consentTestSeed(t, app, u, models.ConsentEmail, "category:events", models.ConsentOptedOut)
+	before, records := consentTestRows(t, app, u.ID), retainedEmailChoices(t, app)
+	for _, kind := range []providers.EventKind{providers.EventBounced, providers.EventComplained, providers.EventDelivered} {
+		err := app.applyEmailEvent(context.Background(), providers.Event{
+			Provider: "postmark", Kind: kind, Address: u.Email, MessageID: string(kind),
+			Permanent: kind != providers.EventDelivered, At: time.Now().Add(-5 * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(before, consentTestRows(t, app, u.ID)) || !reflect.DeepEqual(records, retainedEmailChoices(t, app)) {
+			t.Fatalf("%s report changed email choices", kind)
+		}
 	}
 }

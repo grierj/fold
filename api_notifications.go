@@ -915,7 +915,7 @@ func (a *App) notificationEmailMessage(n *models.Notification, u *models.User, k
 	text += "\n\n" + a.emailLink(n.Link)
 	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
 	if !k.Required {
-		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
+		token := a.unsubscribeToken(u.ID, categoryScope(k.Category), u.Email)
 		msg.ListUnsubscribe = a.oneClickURL(token)
 		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
@@ -988,7 +988,7 @@ func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	}
 	switch which.Channel {
 	case "", models.ConsentEmail:
-		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm, me) {
+		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm, me, nil) {
 			return
 		}
 	case models.ConsentPush:

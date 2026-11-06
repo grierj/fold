@@ -1566,8 +1566,8 @@ Postmark posts one JSON record per request (Delivery, Bounce, SpamComplaint; oth
 ### Email settings (M3.3b, DEC-115, DEC-116)
 
 ```
-GET  /api/v1/email-settings/:token    → 200 {emailSettings, email, fromCategory} | 404   (no sign-in)
-PUT  /api/v1/email-settings/:token    → 200 {emailSettings} | 400 | 404             (no sign-in; CSRF token as usual)
+GET  /api/v1/email-settings/:token    → 200 {emailSettings, email, fromCategory, canTurnOn} | 404   (no sign-in)
+PUT  /api/v1/email-settings/:token    → 200 {emailSettings} | 400 | 403 | 404             (no sign-in; CSRF token as usual)
      body: {category, off} for one kind, or {off} for every kind listed
 GET  /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff, kinds}}
 PUT  /api/v1/me/notification-settings → 200 {settings}
@@ -1577,7 +1577,9 @@ PUT  /api/v1/admin/settings/church-address → 200 {address} | 400 church_addres
      body: {address} — up to 6 lines and 300 characters; empty clears it
 ```
 
-`emailSettings` is `{kinds: [{category, off}], optionalEmailOff}`: the optional kinds the person can get, in order (`groups`, `events`, `messages`, and `admin` for admins only), each off when its latest email consent opts out, and `optionalEmailOff` when every listed kind is off. Account and safety email can't be turned off and isn't listed. The token is an email's unsubscribe token (M3.3a); `email` is the address masked (`s•••@example.com`) and `fromCategory` the kind the link came from. A kind the person doesn't get is 400 `email_kind_unknown`. Each change appends a `consents` row for every kind whose state changes (source `unsubscribe_link` from the token page, `web_form` from Me), with IP and user agent, and nothing for a kind already in that state. The church address is shown, line by line, at the bottom of optional email (PLAN 10.5).
+`canTurnOn` says whether the link was mailed to this account's current address, independent of its email choices. Older v1 links and links mailed to another address can still view settings and turn email off. Any turn-on through those links answers 403 `email_link_turn_on` and changes nothing. Sign in or use a link from a newer email to turn email on. Authorized turn-on clears the current address's retained choice for that kind and records the new account choice.
+
+`emailSettings` is `{kinds: [{category, off}], optionalEmailOff}`: the optional kinds the person can get, in order (`groups`, `events`, `messages`, and `admin` for admins only), each off when its latest email consent opts out or its current destination address has a retained opt-out, and `optionalEmailOff` when every listed kind is off. Account and safety email can't be turned off and isn't listed. The token is an email's unsubscribe token (M3.3a); `email` is the address masked (`s•••@example.com`) and `fromCategory` the kind the link came from. A kind the person doesn't get is 400 `email_kind_unknown`. Each change appends a `consents` row for every kind whose state changes (source `unsubscribe_link` from the token page, `web_form` from Me), with IP and user agent, and also records an affirmative turn-on when it clears a retained address choice even if the account had no earlier consent row. A repeat that changes neither choice writes nothing. The church address is shown, line by line, at the bottom of optional email (PLAN 10.5).
 
 ### Web push (M3.13b, DEC-121 to DEC-129, DEC-134)
 
@@ -1642,7 +1644,7 @@ POST /u/unsubscribe/:token → 200 text "You're unsubscribed." | 404
 
 Every optional email (a notification whose kind isn't required) ends with a footer saying what it is ("You're getting group updates from …"), a link to `/email-settings/<token>` (the email settings page, M3.3b) and the church's postal address when the `church_address` setting is set (PLAN 10.5). It also carries `List-Unsubscribe: <SITE_URL/u/unsubscribe/<token>>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058), written by every adapter (SMTP headers, Postmark `Headers`, the devoutbox's `list_unsubscribe` column). Required mail (account, safety and waiting tasks) never carries either.
 
-The token signs a person and the email's kind (`category:<admin|groups|events|messages>`) with a key derived from `SESSION_SECRET`; it doesn't expire. The one-click POST is outside CSRF (in `csrfExemptRoutes`) and needs no cookie: the token is the only authority. It turns off that kind of email at once (DEC-114) by appending a `consents` row (`opted_out`, source `unsubscribe_link`, with IP, user agent and time) unless the latest row already says so. A token that doesn't verify, names a scope Fold doesn't use, or names a deleted account answers 404 and changes nothing. Tokens in these paths never reach the access log.
+New v2 tokens sign the person and the email's kind (`category:<admin|groups|events|messages>`) with a key derived from `SESSION_SECRET` and carry a second MAC bound to the actual destination address for turn-on authority; they don't expire. V1 tokens keep view and opt-out authority. The one-click POST is outside CSRF (in `csrfExemptRoutes`) and needs no cookie: the token is the only authority. It turns off that kind of email at once (DEC-114) by appending a `consents` row (`opted_out`, source `unsubscribe_link`, with IP, user agent and time) unless the latest row already says so. A token that doesn't verify, names a scope Fold doesn't use, or names a deleted account answers 404 and changes nothing. Tokens in these paths never reach the access log.
 
 ## Conventions
 

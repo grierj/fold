@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 
 	"fold/internal/mail"
@@ -104,3 +105,23 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 	}
 	return out, nil
 }
+
+// clearOptOutOnTurnOn runs only after setConsent has locked and checked the
+// current holder. Refuse an unbound link before looking for any retained record,
+// so the refusal cannot reveal whether that address has a record.
+func clearOptOutOnTurnOn(scope string, session *models.User, link *unsubscribeLink) func(*gorm.DB, *models.User) (bool, error) {
+	return func(tx *gorm.DB, fresh *models.User) (bool, error) {
+		if session == nil && !link.boundTo(fresh.Email) {
+			return false, errUnboundEmailLink
+		}
+		if mail.NormalizeAddress(fresh.Email) == "" {
+			return false, nil
+		}
+		result := tx.Exec("DELETE FROM email_address_optouts WHERE address_hash = ? AND scope = ?", mail.AddressHash(fresh.Email), scope)
+		return result.RowsAffected > 0, result.Error
+	}
+}
+
+const errEmailLinkTurnOn = "this link can only turn email off; sign in or use a newer email to turn it on"
+
+var errUnboundEmailLink = errors.New(errEmailLinkTurnOn)

@@ -711,7 +711,7 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 		msg.BodyHTML = "<p><em>" + html.EscapeString(note) + "</em></p>" + m.BodyHTML
 		msg.BodyText = note + "\n\n" + m.BodyText
 	}
-	r, err := a.renderMessageWith(&msg, reader, vals, footer)
+	r, err := a.renderMessageWith(&msg, reader, row.Address, vals, footer)
 	if err != nil {
 		return mail.Message{}, err
 	}
