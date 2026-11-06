@@ -61,6 +61,8 @@ const auditMalformedConversionLink = `action = 'guardian_link.requested'
 
 // Registry entries are explicit so a new action cannot silently acquire ACTOR.
 // The source census in account_erasure_audit_test.go also pins writer inputs.
+// GuardianLinkRevoked includes eraseHouseholdRecordsIn's account_deleted rows:
+// the deleting admin's request supplies the actor and IP, not the linked subject.
 var auditIPAttribution = map[string][]auditIPRule{
 	audit.ContactHistoryExported:        auditIPOrdinary,
 	audit.OccurrenceAccessAdded:         auditIPOrdinary,

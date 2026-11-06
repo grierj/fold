@@ -92,10 +92,6 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO users(id,email,status,role) VALUES(1,'cli-down@example.com','active','member')`); err != nil {
 		t.Fatal(err)
 	}
-	var tablesBefore int
-	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesBefore); err != nil {
-		t.Fatal(err)
-	}
 	url, err := testdb.URL(name)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +117,12 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 		if !strings.Contains(out.String(), "rolled back") || !strings.Contains(out.String(), files[i]) {
 			t.Fatalf("down-one of %s: stdout %q, want it named as rolled back", files[i], out.String())
 		}
+	}
+	// Additive migrations may create tables that their Down removes. Compare
+	// the refused baseline Down with the schema after those rollbacks.
+	var tablesBefore int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesBefore); err != nil {
+		t.Fatal(err)
 	}
 	out.Reset()
 	errOut.Reset()

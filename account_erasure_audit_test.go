@@ -128,6 +128,17 @@ func TestAuditErasureAttributionAndSubjectMetadata(t *testing.T) {
 		add(action, "guardian_link", 71, &u.ID, meta, true)
 		add(action, "guardian_link", 72, &living.ID, map[string]any{"teenUserId": u.ID, "checkNote": "Keep", "evidenceText": "Keep"}, false)
 	}
+	// Household erasure supplies the deleting admin's actor and IP. Neither
+	// the account_deleted reason nor a linked guardian, teen or person owns it.
+	for _, meta := range []map[string]any{
+		{"reason": "account_deleted", "guardianUserId": u.ID, "personId": 501},
+		{"reason": "account_deleted", "guardianUserId": living.ID, "teenUserId": u.ID},
+	} {
+		add(audit.GuardianLinkRevoked, "guardian_link", 73, &living.ID, meta, false)
+		add(audit.GuardianLinkRevoked, "guardian_link", 74, nil, meta, false)
+	}
+	add(audit.GuardianLinkRevoked, "guardian_link", 75, &u.ID, map[string]any{"reason": "account_deleted", "guardianUserId": living.ID, "personId": 502}, true)
+	add(audit.GuardianLinkRevoked, "guardian_link", 76, &u.ID, map[string]any{"reason": "account_deleted", "guardianUserId": living.ID, "teenUserId": living.ID}, true)
 	add(audit.GuardianLinkRequested, "guardian_link", 1, &u.ID, map[string]any{"source": "claim", "teenUserId": living.ID}, true)
 	add(audit.GuardianLinkRequested, "guardian_link", 2, &living.ID, map[string]any{"source": "claim", "teenUserId": u.ID}, false)
 	for _, action := range []string{audit.UserEmailChanged, audit.EmailChangeRequested, audit.EmailChanged} {
@@ -799,6 +810,7 @@ func TestAuditErasureTeenRealLifecycles(t *testing.T) {
 // No files are parsed by executing them or by loading application state.
 var auditWriterCensus = map[string]string{
 	"account_erasure.go:eraseMessagesIn":                          "043f753af9b72e0ba8b0415eea19223e5eff000922a19561cae0bf5fc27715cc",
+	"account_erasure_households.go:eraseHouseholdRecordsIn":       "db83661f4610294b4f39178909ac1293e14ff55caab90f4131a196270dd11d09",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
 	"api_account_requests.go:apiConfirmAccountSetup":              "f97b48dcb56a3e178e94d2c297f260fa526f176e68252f55b8085d4a774e0acb",
@@ -1200,8 +1212,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 117 {
-		t.Fatalf("audit.Write sites = %d, expected 117; review every changed site", len(c.Sites))
+	if len(c.Sites) != 118 {
+		t.Fatalf("audit.Write sites = %d, expected 118; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)
@@ -1219,6 +1231,9 @@ func TestAuditErasureCensusRejectsMutations(t *testing.T) {
 		t.Fatal(strings.Join(p, "\n"))
 	}
 	for _, tc := range []struct{ name, file, writer, old, new string }{
+		{"household erasure actor", "account_erasure_households.go", "eraseHouseholdRecordsIn", "Actor: &actorID", "Actor: &s.ID"},
+		{"household erasure IP", "account_erasure_households.go", "eraseHouseholdRecordsIn", "IP: ip", `IP: ""`},
+		{"household erasure metadata key", "account_erasure_households.go", "eraseHouseholdRecordsIn", `meta["personId"]`, `meta["renamedPersonId"]`},
 		{"unclassified action", "api_household_conversion.go", "transferHouseholdConversion", "Action: audit.HouseholdPersonConverted", `Action: "unclassified.test_action"`},
 		{"conversion identity key rename", "api_household_conversion.go", "transferHouseholdConversion", `"invitationId": inv.ID`, `"renamedInvitationId": inv.ID`},
 		{"signup IP source", "api_teen_guardians.go", "nominateTeenGuardian", `"signup", req.IP`, `"signup", ""`},
