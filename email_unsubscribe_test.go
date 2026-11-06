@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -398,11 +399,21 @@ func consentTestRowsOf(t *testing.T, app *App, userID uint) []models.Consent {
 	return rows
 }
 
-// consentTestWantErased fails unless the erasure answered 200 {}.
+// consentTestWantErased fails unless the erasure answered 200 with exactly the
+// report body {"erasure":{...}} and an all-zero report: the fixture's person has
+// no household, person row or guardian link for the household step to touch
+// (R4-3b-2).
 func consentTestWantErased(t *testing.T, got *httptest.ResponseRecorder) {
 	t.Helper()
-	if got.Code != http.StatusOK || strings.TrimSpace(got.Body.String()) != "{}" {
-		t.Fatalf("erasure answered %d %q, want 200 {}", got.Code, got.Body.String())
+	var body map[string]json.RawMessage
+	if got.Code != http.StatusOK || json.Unmarshal(got.Body.Bytes(), &body) != nil || len(body) != 1 || body["erasure"] == nil {
+		t.Fatalf("erasure answered %d %q, want 200 with only an erasure report", got.Code, got.Body.String())
+	}
+	dec := json.NewDecoder(bytes.NewReader(body["erasure"]))
+	dec.DisallowUnknownFields()
+	var report erasureReportJSON
+	if err := dec.Decode(&report); err != nil || report != (erasureReportJSON{}) {
+		t.Fatalf("erasure report %q (%v), want every count zero", body["erasure"], err)
 	}
 }
 

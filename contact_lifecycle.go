@@ -145,9 +145,10 @@ func ceilMillis(d time.Duration) int64 {
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
-// contactMutation is contactMutationCtx without a deadline.
+// contactMutation is contactMutationCtx without a deadline. It runs on a.DB as
+// it is, keeping any context the handle carries.
 func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) error {
-	return a.contactMutationCtx(context.Background(), change, fn)
+	return a.contactMutationOn(context.Background(), a.DB, change, fn)
 }
 
 // contactMutationCtx retains the caller's transaction boundary, and ends access
@@ -184,6 +185,18 @@ func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) err
 // that ends between the reserve check and COMMIT, is a *contactCommitError.
 // A panic in fn rolls back and panics again.
 func (a *App) contactMutationCtx(ctx context.Context, change contactChange, fn func(*gorm.DB) error) error {
+	// db.Statement is the clone WithContext makes, so the bounded path's
+	// ConnPool binding reaches only this call.
+	return a.contactMutationOn(ctx, a.DB.WithContext(ctx), change, fn)
+}
+
+// contactMutationOn runs contactMutationCtx on db. The deadline and the
+// cancellation checks use ctx; the transaction's statements run on db as it
+// stands, so a handle that already carries its own context (a pinned
+// connection, or a test's per-participant context) keeps it. contactMutation
+// passes a.DB itself with a background ctx: replacing the handle's context
+// there would drop its values and its cancellation (R4-3b-2 test repair).
+func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contactChange, fn func(*gorm.DB) error) error {
 	deadline, bounded := ctx.Deadline()
 	var remaining time.Duration
 	if bounded {
@@ -192,7 +205,6 @@ func (a *App) contactMutationCtx(ctx context.Context, change contactChange, fn f
 			return errCommitReserve
 		}
 	}
-	db := a.DB.WithContext(ctx)
 	if bounded {
 		sqlDB, err := a.DB.DB()
 		if err != nil {
@@ -220,7 +232,7 @@ func (a *App) contactMutationCtx(ctx context.Context, change contactChange, fn f
 			fmt.Sprintf("%dms", ceilMillis(remaining))); err != nil {
 			return err
 		}
-		// db.Statement is the clone WithContext made, so this binds only it.
+		// contactMutationCtx passes a WithContext clone, so this binds only it.
 		db.Statement.ConnPool = conn
 	}
 	tx := db.Begin()
