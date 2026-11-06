@@ -30,6 +30,9 @@ EMAIL_FROM=""
 TARGET_LEVEL=0
 HOST_FLOOR=0
 PIN_SAVE=""
+PIN_SAVE_READY=0
+PIN_ONLY=0
+RECOVERY_NONCE=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/digitalocean/checks.sh
@@ -115,6 +118,7 @@ Deploy:
   --source-dir PATH          Checkout to copy. Default: this repo.
   --smtp-url URL             Written only when .env is first created.
   --email-from ADDR          Written only when .env is first created.
+  --pin-only --recovery-nonce N  Internal restore child, inherited operations lock only.
   --skip-harden              Deploy only.
   --skip-deploy              Harden only.
 
@@ -139,6 +143,8 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift
       ;;
+    --pin-only) PIN_ONLY=1; shift ;;
+    --recovery-nonce) need_value "$@"; RECOVERY_NONCE="$2"; shift 2 ;;
     --allow-onbox-build)
       ALLOW_BUILD=1
       shift
@@ -644,9 +650,9 @@ copy_tree() {
     --exclude .env \
     --exclude backup.env \
     --exclude data \
-    --exclude ops.lock --exclude ops.owner --exclude recovery-policy-floor \
+    --exclude backup.lock --exclude ops.lock --exclude ops.owner --exclude recovery-policy-floor \
     --exclude deploy-tools --exclude recovery-tools --exclude recovery.lock \
-    --exclude '.deploy-tools.*' --exclude '.old-deploy-tools.*' --exclude .deploy-drill \
+    --exclude deploy/digitalocean --exclude '.recovery-tools.*' --exclude '.old-recovery-tools.*' --exclude '.deploy-tools.*' --exclude '.old-deploy-tools.*' --exclude .deploy-drill \
     -cf - . | tar -C "$stage" -xf -; then
     rm -rf "$stage"
     die "copy from $src failed"
@@ -720,6 +726,9 @@ install_runtime_files() {
   else
     mkdir -p "$DEPLOY_DIR"
     chmod 755 "$DEPLOY_DIR"
+    # A running backup reads these tools/config files. Serialize their copy
+    # with it using the same lock order as restore, without replacing the inode.
+    backup_coord_acquire "$DEPLOY_DIR" 120 provision || exit $?
   fi
   if (( ALLOW_BUILD )); then
     copy_tree "$SOURCE_DIR" "$DEPLOY_DIR"
@@ -735,13 +744,14 @@ install_runtime_files() {
     write_image_compose
   fi
   if (( DRY_RUN )); then
-    echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh into $DEPLOY_DIR"
+    echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh restore.sh compose.recovery.yml backup.env.example into $DEPLOY_DIR"
     echo "dry-run: install $SCRIPT_DIR/backup.env.example to $DEPLOY_DIR/backup.env.example mode 644"
+    echo "dry-run: initialize $DEPLOY_DIR/backup.lock mode 600 without replacing its inode"
     echo "dry-run: install $SCRIPT_DIR/deploy-tools-version to $DEPLOY_DIR/deploy-tools-version mode 644"
     return 0
   fi
   local tool mode
-  for tool in backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh backup.env.example deploy-tools-version; do
+  while IFS= read -r tool; do
     mode=755
     [[ "$tool" == *.sh && "$tool" != checks.sh ]] || mode=644
     if [[ "$SCRIPT_DIR/$tool" -ef "$DEPLOY_DIR/$tool" ]]; then
@@ -749,11 +759,12 @@ install_runtime_files() {
     else
       install -m "$mode" "$SCRIPT_DIR/$tool" "$DEPLOY_DIR/$tool"
     fi
-  done
+  done < <(runtime_tools)
   if [[ -f "$DEPLOY_DIR/backup.env" ]]; then
     chmod 600 "$DEPLOY_DIR/backup.env"
     assert_env_mode "$DEPLOY_DIR/backup.env" || exit 1
   fi
+  backup_coord_release || exit 1
 }
 
 # set_env_value FILE KEY VALUE: set KEY=VALUE, replacing the first uncommented
@@ -924,37 +935,81 @@ preflight_recovery_level() {
     TARGET_LEVEL="$(commit_recovery_level "$SOURCE_DIR" HEAD)"
   else
     docker pull "$IMAGE"
-    TARGET_LEVEL="$(image_recovery_level "$IMAGE")"
+    local checked_image
+    checked_image="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+    pin_image_matches_expected "$checked_image"
+    TARGET_LEVEL="$(image_recovery_level "$checked_image")"
   fi
   require_recovery_level "$TARGET_LEVEL" "$HOST_FLOOR" || exit 1
 }
 
+# The restore lock already checked the target immutable id. A tag that moves
+# at either pin pull is a failed pin, never authority to choose another image.
+pin_image_matches_expected() {
+  (( PIN_ONLY )) && [[ -n "$IMAGE" ]] || return 0
+  local expected
+  expected="$(jq -er .pinExpected.imageId "$DEPLOY_DIR/recovery.lock")" || die 'missing checked recovery image id'
+  [[ "$expected" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'invalid checked recovery image id'
+  [[ "$1" == "$expected" ]] || die "pin image $1 differs from checked recovery image $expected; restoring saved pin; no services started"
+}
+
+# shellcheck disable=SC2329 # Invoked by the saved-pin EXIT trap.
+finish_saved_pin() {
+  local rc=$?
+  trap - EXIT
+  if (( PIN_ONLY && PIN_SAVE_READY && rc!=0 )); then
+    if ! restore_release_pin; then
+      echo "provision.sh: saved pin restoration failed; keep the site closed and inspect restore.sh --status" >&2
+      rc=1
+    fi
+  fi
+  [[ -z "$PIN_SAVE" ]] || rm -rf -- "$PIN_SAVE"
+  exit "$rc"
+}
+
 save_release_pin() {
   (( ! DRY_RUN )) || return 0
+  if (( PIN_ONLY )); then remove_stale_pin_saves "$DEPLOY_DIR" || die 'cannot remove stale pin snapshots'; fi
   PIN_SAVE="$(mktemp -d "$DEPLOY_DIR/.pin-save.XXXXXX")"
+  trap finish_saved_pin EXIT
   local file
   for file in .env docker-compose.yml docker-compose.build.yml; do
     [[ ! -f "$DEPLOY_DIR/$file" ]] || cp -p "$DEPLOY_DIR/$file" "$PIN_SAVE/$file"
   done
-  trap '[[ -z "$PIN_SAVE" ]] || rm -rf "$PIN_SAVE"' EXIT
+  if (( PIN_ONLY )); then
+    local ref id
+    ref="$(docker compose --project-directory "$DEPLOY_DIR" config --format json | jq -er .services.app.image)" || die 'cannot read the current image reference; repair the Compose pin and retry'
+    id="$(docker image inspect --format '{{.Id}}' "$ref")" || die "current image $ref is missing locally; pull or build the pinned image and retry"
+    [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'cannot save the current image id before pinning'
+    printf '%s\n' "$ref" >"$PIN_SAVE/image-ref"
+    printf '%s\n' "$id" >"$PIN_SAVE/image-id"
+  fi
+  PIN_SAVE_READY=1
 }
 
 restore_release_pin() {
   local file
   for file in .env docker-compose.yml docker-compose.build.yml; do
     if [[ -f "$PIN_SAVE/$file" ]]; then
-      cp -p "$PIN_SAVE/$file" "$DEPLOY_DIR/$file"
+      cp -p "$PIN_SAVE/$file" "$DEPLOY_DIR/$file" || return 1
     else
-      rm -f "$DEPLOY_DIR/$file"
+      rm -f "$DEPLOY_DIR/$file" || return 1
     fi
   done
+  if (( PIN_ONLY )); then
+    local ref id observed
+    ref="$(cat "$PIN_SAVE/image-ref")" || return 1
+    id="$(cat "$PIN_SAVE/image-id")" || return 1
+    observed="$(docker image inspect --format '{{.Id}}' "$ref")" || return 1
+    if [[ "$observed" != "$id" ]]; then docker image tag "$id" "$ref" || return 1; fi
+  fi
 }
 
 deploy_stack() {
   local -a cmd=(docker compose --project-directory "$DEPLOY_DIR")
   local config image actual
   if [[ -n "$IMAGE" ]]; then
-    step "${cmd[@]}" pull
+    if (( PIN_ONLY )); then step "${cmd[@]}" pull app; else step "${cmd[@]}" pull; fi
   else
     (( ! DRY_RUN )) || echo "dry-run: build app before up (previously up --build)"
     step "${cmd[@]}" build app
@@ -963,14 +1018,17 @@ deploy_stack() {
     config="$("${cmd[@]}" config --format json)" || { restore_release_pin; return 1; }
     image="$(jq -er '.services.app.image' <<<"$config")" || { restore_release_pin; return 1; }
     image="$(docker image inspect --format '{{.Id}}' "$image")" || { restore_release_pin; return 1; }
+    pin_image_matches_expected "$image"
     actual="$(image_recovery_level "$image")" || { restore_release_pin; return 1; }
     if [[ "$actual" != "$TARGET_LEVEL" ]]; then
       restore_release_pin
       die "resulting image recovery level ${actual} differs from checked target ${TARGET_LEVEL}; restored previous pin; no services started"
     fi
     require_recovery_level "$actual" "$HOST_FLOOR" || { restore_release_pin; return 1; }
+    (( ! PIN_ONLY )) || return 0
     deploy_drill_pause "$DEPLOY_DIR" before-up
   fi
+  (( ! PIN_ONLY )) || return 0
   step "${cmd[@]}" up -d
 }
 
@@ -1041,10 +1099,26 @@ main() {
     mkdir -p "$DEPLOY_DIR"
     DEPLOY_DIR="$(cd "$DEPLOY_DIR" && pwd -P)"
   fi
+  local inherited=0
+  if (( ! DRY_RUN )); then
+    if inherited_ops_lock "$DEPLOY_DIR"; then inherited=1; fi
+    # Evaluate recovery authorization under the same lock as the rest of deploy.
+    ops_lock_acquire "$DEPLOY_DIR" provision || exit $?
+  fi
   validate_deploy_drill "$DEPLOY_DIR" || exit 1
   if (( ! DRY_RUN )); then
-    ops_lock_acquire "$DEPLOY_DIR" provision || exit $?
     deploy_drill_pause "$DEPLOY_DIR" after-lock
+  fi
+  if [[ -e "$DEPLOY_DIR/recovery.lock" || -L "$DEPLOY_DIR/recovery.lock" ]]; then
+    (( PIN_ONLY && inherited )) || die "recovery in progress; run $DEPLOY_DIR/restore.sh --status. --pin-only requires an inherited operations lock"
+    [[ "$RECOVERY_NONCE" =~ ^[0-9a-f]{32}$ && ! -L "$DEPLOY_DIR/recovery.lock" ]] || die "invalid recovery nonce or lock"
+    [[ "$(jq -er .nonce "$DEPLOY_DIR/recovery.lock")" == "$RECOVERY_NONCE" ]] || die "recovery nonce does not match"
+    [[ "$(jq -er .phase "$DEPLOY_DIR/recovery.lock")" == pin-intent ]] || die "--pin-only requires pin-intent"
+  elif (( PIN_ONLY )); then
+    die "--pin-only requires recovery.lock and an inherited operations lock"
+  elif [[ -n "$RECOVERY_NONCE" ]]; then die "--recovery-nonce requires --pin-only"; fi
+  if (( PIN_ONLY )); then
+    (( SKIP_HARDEN && ! SKIP_DEPLOY )) || die "--pin-only requires --skip-harden and a deploy target"
   fi
   if [[ "${DEPLOY_DRILL:-}" == 1 ]] && (( ! SKIP_HARDEN )); then
     die "DEPLOY_DRILL requires --skip-harden; it never hardens a development host"
@@ -1068,19 +1142,38 @@ main() {
   fi
   if (( ! SKIP_DEPLOY )); then
     require_deploy_tools_version "$SCRIPT_DIR" "$DEPLOY_DIR" || exit 1
-    install_docker
+    if (( ! PIN_ONLY )); then install_docker; fi
+    # Save before the first pin-only pull, which can retag the current image.
+    if (( PIN_ONLY )); then save_release_pin; fi
     preflight_recovery_level
-    save_release_pin
+    if (( ! PIN_ONLY )); then save_release_pin; fi
     install_runtime_files
     write_env
     ensure_release_pin
+    if (( PIN_ONLY )); then
+      if [[ -n "${RESTORE_DRILL_FAULT:-}${RESTORE_DRILL_PAUSE:-}" ]]; then
+        [[ "${DEPLOY_DRILL:-}" == 1 && "$DEPLOY_DIR" != /opt/fold && "$DEPLOY_DIR" != /opt/fold/* ]] || die "RESTORE_DRILL hooks require the disposable drill"
+        if [[ "${RESTORE_DRILL_PAUSE:-}" == mid-pin ]]; then
+          [[ -p "$DEPLOY_DIR/drill.fifo" ]] || die "missing drill FIFO"
+          exec 8<>"$DEPLOY_DIR/drill.fifo"
+          echo mid-pin >"$DEPLOY_DIR/drill.ready"
+          local token=""
+          IFS= read -r -t 180 token <&8 && [[ "$token" == continue ]] || die "drill mid-pin barrier failed"
+          exec 8>&-
+        fi
+        # The child tells the parent only after .env is changed. Kill both so
+        # the drill sees an actual interruption with the durable pin-intent.
+        if [[ "${RESTORE_DRILL_FAULT:-}" == mid-pin ]]; then kill -KILL "$PPID" "$$"; fi
+      fi
+    fi
     verify_before_up
-    if [[ "${DEPLOY_DRILL:-}" != 1 ]]; then
+    if [[ "${DEPLOY_DRILL:-}" != 1 ]] && (( ! PIN_ONLY )); then
       install_smoke_cron
       install_backup_cron
       run_email_dns
     fi
     deploy_stack
+    if (( PIN_ONLY )); then echo "provision.sh: pinned only; no services started"; return 0; fi
     run_smoke
     if (( ! DRY_RUN )); then
       if ! write_recovery_floor "$DEPLOY_DIR" "$TARGET_LEVEL"; then

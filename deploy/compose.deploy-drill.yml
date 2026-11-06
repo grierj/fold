@@ -1,6 +1,13 @@
 # Disposable drill only. App and Postgres have no published ports. The HTTP
 # proxy, registry and mail inspector bind only to loopback on dynamic ports.
+# The TLS push sink is a peer-only service on the internal push bridge.
 services:
+  # Run the same real probe more frequently on disposable stacks. Preserve
+  # its timeout, retry count and startup grace from the shipped definition.
+  app:
+    healthcheck:
+      interval: 1s
+      start_interval: 1s
   registry:
     image: registry:2.8.3
     restart: "no"
@@ -13,9 +20,18 @@ services:
     restart: "no"
     ports:
       - "127.0.0.1::8025"
-  caddy:
+  push-sink:
     image: nginx:1.27.5-alpine
     restart: "no"
+    volumes:
+      - ./drill-push.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./drill-push-tls:/etc/nginx/certs:ro
+    networks:
+      push:
+        aliases: [push.restore-drill.invalid]
+  caddy:
+    image: nginx:1.27.5-alpine
+    restart: unless-stopped
     ports:
       - "127.0.0.1::80"
     volumes:
@@ -27,3 +43,13 @@ services:
       retries: 60
 volumes:
   registrydata:
+
+# A public-looking address on an INTERNAL bridge lets the real push client's
+# resolved-IP checks run unchanged. This network has no external route. The
+# runner chooses a non-overlapping /24 before creating any service.
+networks:
+  push:
+    internal: true
+    ipam:
+      config:
+        - subnet: 11.254.254.0/24
