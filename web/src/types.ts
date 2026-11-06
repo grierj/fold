@@ -1394,3 +1394,14 @@ export interface MessagePreview {
   subject: string;
   text: string;
 }
+
+// What DELETE /admin/users/:id answers under "erasure" (mirrors
+// erasureReportJSON in account_erasure_report.go). Counts only: no names,
+// ids or addresses. householdsKept is households left as they were because
+// other people, or a record that cannot be told apart, still share them.
+export interface ErasureReport {
+  householdsKept: number;
+  householdsScrubbed: number;
+  peopleAnonymized: number;
+  guardianLinksRevoked: number;
+}

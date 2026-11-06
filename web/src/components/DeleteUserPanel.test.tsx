@@ -41,7 +41,9 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(AdminUsers.soleLeaderGroups).mockResolvedValue({ groups: [] });
   vi.mocked(AdminUsers.soleHostEvents).mockResolvedValue(hosted([], []));
-  vi.mocked(AdminUsers.remove).mockResolvedValue({});
+  vi.mocked(AdminUsers.remove).mockResolvedValue({
+    erasure: { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0 },
+  });
 });
 afterEach(cleanup);
 

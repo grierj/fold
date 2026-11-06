@@ -129,6 +129,12 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 // At eighteen the same operation completes after the age job makes the user an
 // adult. Consent and guardian requirements then end; an admin suspension does not.
 func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, today time.Time, ip string) error {
+	// An erased account never completes: its staged person is anonymized and
+	// soft-deleted by the erasure (R4-3b-2), which would otherwise answer
+	// errConversionPerson below. Nothing is written for it.
+	if user.DeletedAt.Valid {
+		return nil
+	}
 	stage, err := stagedTeenConversionIn(tx, user.ID)
 	if err != nil || stage == nil {
 		return err

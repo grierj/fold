@@ -965,6 +965,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	targetID := u.ID
 	retry := newHouseholdRetry(ctx)
 	var err error
+	// What the household step did, for the response. The callback sets it on
+	// every attempt (a rolled-back attempt's value is overwritten or unused).
+	var householdCounts householdErasureCounts
 	for {
 		u := &models.User{ID: targetID}
 		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
@@ -991,10 +994,16 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			if err := captureErasureSetsIn(tx, &s); err != nil {
 				return err
 			}
+			// PERS must be one clean individual before anything is locked or
+			// written; a contradiction aborts the whole erasure (T15, O-18).
+			if err := validatePersIn(tx, s); err != nil {
+				return err
+			}
 			// Every household the erasure touches, NOWAIT, before its first write
 			// and while no household writer's notice can be waiting on a row this
 			// transaction holds (retryHouseholdBusy runs the whole thing again).
-			if _, err := lockErasureHouseholdsIn(tx, s); err != nil {
+			lockedHouseholds, err := lockErasureHouseholdsIn(tx, s)
+			if err != nil {
 				return err
 			}
 			if err := eraseAccountCredentialsIn(tx, s); err != nil {
@@ -1045,6 +1054,16 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// lets the ages-note blank through only for a deleted subject. The
 			// reason text stays under R4-T07B.
 			if err := eraseContactRequestTextIn(tx, s); err != nil {
+				return err
+			}
+			// The household step: the seat, the individual's household person
+			// rows, a staged person's registrations, guardian links, unused
+			// teen-consent tokens and the sole-subject households (T12, T14-T16,
+			// T28, T36, 9.6). Only the households locked above are touched, and it
+			// runs after the soft delete so the sole-subject test sees the account
+			// as erased.
+			householdCounts, err = a.eraseHouseholdRecordsIn(tx, s, lockedHouseholds, me.ID, c.ClientIP())
+			if err != nil {
 				return err
 			}
 			// The deleted account no longer counts, so its seats and childcare
@@ -1108,7 +1127,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{})
+	c.JSON(http.StatusOK, gin.H{"erasure": newErasureReport(householdCounts)})
 }
 
 func (a *App) apiAdminResetPassword(c *gin.Context) {

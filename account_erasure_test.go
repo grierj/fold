@@ -247,7 +247,8 @@ func TestAccountErasureScrubsTheTombstone(t *testing.T) {
 }
 
 // Everything that lets someone act as the person goes; another person's rows
-// and a living guardian's token naming the person stay.
+// and a living guardian's used token naming the person stay (an unused one
+// naming the erased teen is deleted by the household step, R4-3b-2).
 func TestAccountErasureDeletesEveryCredential(t *testing.T) {
 	s := newCoreErasureScene(t)
 	db := s.app.DB
@@ -262,9 +263,10 @@ func TestAccountErasureDeletesEveryCredential(t *testing.T) {
 	newPushDevice(t, s.app, u, "u-tablet")
 	newPushDevice(t, s.app, v, "v-phone")
 	newPushDevice(t, s.app, v, "v-tablet")
+	guardianUsed := time.Now().Add(-time.Hour)
 	guardianTok := models.AccountToken{
 		Kind: models.TokenTeenConsent, UserID: g.ID, TokenHash: hashToken("guardian-token"),
-		Payload: fmt.Sprintf(`{"teenId":%d}`, u.ID), ExpiresAt: time.Now().Add(time.Hour),
+		Payload: fmt.Sprintf(`{"teenId":%d}`, u.ID), ExpiresAt: time.Now().Add(time.Hour), UsedAt: &guardianUsed,
 	}
 	if err := db.Create(&guardianTok).Error; err != nil {
 		t.Fatal(err)
@@ -650,8 +652,8 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 		t.Fatalf("seed: readers see email opt-outs %v, push on %v, push groups off %v", optOutsBefore, pushOnBefore, pushOffBefore)
 	}
 
-	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK || strings.TrimSpace(r.body) != "{}" {
-		t.Fatalf("delete answered %d %s, want 200 {}", r.code, r.body)
+	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(r.body), `{"erasure":{`) {
+		t.Fatalf("delete answered %d %s, want 200 with the erasure report", r.code, r.body)
 	}
 
 	if n := countRows(t, db, "consents", "user_id = ? AND "+nonEmpty, u.ID); n != 0 {
@@ -6246,6 +6248,10 @@ var scaleSeeds = []scaleSeed{
 	{name: "households", sql: `INSERT INTO households (id, name, created_by) SELECT n, 'Household ' || n, 1 FROM generate_series(1, 1001) n`},
 	{name: "household people of U", sql: `INSERT INTO household_people (id, household_id, first_name, last_name, kind, created_by, converted_user_id)
 		VALUES (1, 1, 'Pat', 'Target', 'adult', 1, 3), (2, 1, 'Sam', 'Target', 'adult', 1, NULL)`},
+	// U is one completed adult conversion: person 1 (converted_user_id = 3), the
+	// approved conversion request and its accepted invitation name person 1.
+	// Person 2 is a sibling who is not U (validatePersIn would abort an
+	// erasure of a user with two different people, R4-3b-2).
 	{name: "household people", sql: `INSERT INTO household_people (id, household_id, first_name, kind, created_by)
 		SELECT 2 + n, 2 + (n - 1) / 2, 'Person ' || n, 'child', 1 FROM generate_series(1, 2000) n`},
 	{name: "invitations", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, created_at)
@@ -6257,7 +6263,7 @@ var scaleSeeds = []scaleSeed{
 			now() + interval '7 days', now() - interval '30 days', now() - interval '31 days'
 		FROM generate_series(4991, 4993) n`},
 	{name: "invitations U household", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, household_person_id, created_at)
-		VALUES (4994, 'conversion@example.com', 'Sam Target', 1, 'member', 'adult', 'scale-inv-4994', now() + interval '7 days', now() - interval '2 days', 2, now()),
+		VALUES (4994, 'conversion@example.com', 'Pat Target', 1, 'member', 'adult', 'scale-inv-4994', now() + interval '7 days', now() - interval '2 days', 1, now()),
 			(4995, 'conversion-open@example.com', 'Pat Target', 1, 'member', 'adult', 'scale-inv-4995', now() + interval '7 days', NULL, 1, now())`},
 	{name: "invitations at A", sql: `INSERT INTO invitations (id, email, phone, name, invited_by, role, account_type, token_hash, expires_at, created_at)
 		SELECT n, $1::text, '555-0111', 'Scale Target', 1 + n % 4000, 'member', 'adult', 'scale-inv-' || n, now() + interval '7 days', now()
@@ -6278,8 +6284,8 @@ var scaleSeeds = []scaleSeed{
 			'203.0.113.7', now() + interval '30 days', 3
 		FROM generate_series(9961, 9969) n`},
 	{name: "request conversion for U", sql: `INSERT INTO account_requests (id, name, email, phone, message, source, status, decided_at, ip, expires_at, household_person_id, invitation_id, approved_user_id)
-		VALUES (9970, 'Sam Target', 'conversion@example.com', '555-0111', 'Convert me', 'household_conversion', 'approved', now(), '203.0.113.8',
-			now() + interval '30 days', 2, 4994, 3)`},
+		VALUES (9970, 'Pat Target', 'conversion@example.com', '555-0111', 'Convert me', 'household_conversion', 'approved', now(), '203.0.113.8',
+			now() + interval '30 days', 1, 4994, 3)`},
 	{name: "requests pending at A", sql: `INSERT INTO account_requests (id, name, email, phone, birth_date, message, source, status, ip, expires_at, password_hash)
 		SELECT n, 'Scale Target', $1::text, '555-0111', date '1990-01-01', 'Let me in', 'self_signup', 'pending', '203.0.113.9',
 			now() + interval '30 days', '$2a$04$scaleseedscaleseedscaleseedscaleseedscaleseedscalese'
@@ -6472,7 +6478,7 @@ func newScaleScene(t *testing.T, base *App) (*App, *apiClient) {
 // checkScaleFixture fails the test when the fixture is not the shape the
 // plan names, so a typo in the seed cannot quietly measure a smaller church.
 // It also reads the three sets through the real capture, so the selectors the
-// erasure uses see exactly REQ 20, PERS 2 and INV 10.
+// erasure uses see exactly REQ 20, PERS 1 and INV 10.
 func checkScaleFixture(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	want := []struct {
@@ -6557,8 +6563,8 @@ func checkScaleFixture(t *testing.T, db *gorm.DB) {
 	if err := captureErasureSetsIn(db, &s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Requests) != 20 || len(s.People) != 2 || len(s.Invitations) != 10 {
-		t.Fatalf("captured REQ %d, PERS %d, INV %d, want 20, 2 and 10", len(s.Requests), len(s.People), len(s.Invitations))
+	if len(s.Requests) != 20 || len(s.People) != 1 || len(s.Invitations) != 10 {
+		t.Fatalf("captured REQ %d, PERS %d, INV %d, want 20, 1 and 10", len(s.Requests), len(s.People), len(s.Invitations))
 	}
 }
 

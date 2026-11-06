@@ -115,6 +115,7 @@ import type {
   HouseholdAttendee,
   RegistrationCommand,
   CalendarFeed,
+  ErasureReport,
   EventDetailResponse,
   EventHostRow,
   CalendarOccurrence,
@@ -716,7 +717,7 @@ export const AdminUsers = {
   // Church-wide events this person hosts alone, with who may host them next (M7.4, R4-H).
   soleHostEvents: (id: number) => api<SoleHostedEventsResponse>(`/admin/users/${id}/sole-host-events`),
   remove: (id: number, successors: Record<string, number> = {}, hostSuccessors: Record<string, number> = {}) =>
-    api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE", body: { successors, hostSuccessors } }),
+    api<{ erasure: ErasureReport }>(`/admin/users/${id}`, { method: "DELETE", body: { successors, hostSuccessors } }),
   resetPassword: (id: number, password: string) =>
     api<Record<string, never>>(`/admin/users/${id}/password`, {
       method: "POST",
