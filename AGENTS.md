@@ -60,6 +60,23 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
   (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
   `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
+- Household erasure (M7.4 R4-3b, staged: local, unmerged, M7.4 not complete): deleting an account also runs
+  `eraseHouseholdRecordsIn` (`account_erasure_households.go`) under household rows taken `FOR UPDATE NOWAIT`.
+  It deletes the account's seat, anonymizes the person row(s) that are the same individual (`PERS`, read
+  unscoped: `converted_user_id = U`, or the person of the approved `household_conversion` request with
+  `approved_user_id = U`) and soft-deletes them, and **never writes `converted_user_id`** or sets a `user_id`
+  on a staged person's registrations (that would record a completion that never happened). `validatePersIn`
+  aborts the whole erasure before any write when the identity links contradict each other; never widen `PERS`
+  by household, kind, birth date or surname. It revokes pending and confirmed guardian links of `PERS`, of
+  the account as teen and as guardian (a guardian's links to surviving children or teens are revoked, those
+  people and their household are not anonymized), one `GuardianLinkRevoked` audit row each, and leaves `check_note`,
+  `teen_consents` and their audit mirrors untouched (O-4). A household's name and address become
+  `Removed household` and `''` only when `householdErasedOwnerIn` proves it sole-subject (no seat of any user,
+  every person in `PERS`, soft-deleted included); any other household is another family's record, retained
+  and counted in the `erasure` report the delete answers (`householdsKept`, `householdsScrubbed`,
+  `peopleAnonymized`, `guardianLinksRevoked`; counts only). Households are locked only by
+  `lockErasureHouseholdsIn`; `TestErasureHouseholdLockCensus` pins the names of the 15 `lockHousehold` callers and fails on
+  a new one; their classifications and lock orders are inventory 9.6.1 and are kept by review, not by the test.
 - Focal points (`AvatarFocalX/Y`, `CoverFocalX/Y`) are stored 0-100 and rendered as CSS
   `object-position`. `AvatarKey` is a blob-store key, not a URL.
 
@@ -81,6 +98,20 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   beats original.
 - Errors (DEC-61): a new error a person can act on gets a code in `api_errors.go` and a line in
   `ERROR_COPY` (what happened, what to do next). DEC-52 decides what is never an error.
+- Account deletion outcomes (R4-CTX, R4-3b-1): `apiAdminDeleteUser` runs the whole erasure in
+  `a.contactMutationCtx(ctx, ...)` with one `adminDeleteBudget` (40 s) context made from
+  `context.Background()`, never the request's, so a disconnect cannot abort a commit. Classify its error only
+  with `classifyContactErr`, **commit phase first**: any COMMIT error (`*contactCommitError`) is unknown, whatever
+  it wraps, and answers 500 `delete_outcome_unknown` ("couldn't confirm", never "nothing was deleted") and is
+  never retried; a spent budget, the commit reserve or SQLSTATE 57014 answers 503 `delete_timed_out`. Retry
+  **only SQLSTATE 55P03 with `rollbackConfirmed(err)` true** (the ROLLBACK was acknowledged, so the server
+  released the gate and the user lock), at most three attempts within `deleteRetryWindow` (2 s), each rebuilt from the
+  target's id alone; a 55P03 inside a `*contactRollbackError` stops with no further BEGIN, and it and exhaustion both answer 409
+  `delete_household_busy`: nothing was deleted because COMMIT was never sent, which is not the same as the locks being
+  released (that is what the acknowledgment proves, and an unacknowledged ROLLBACK lacks). 40P01 is never retried. These three codes go through
+  `jsonErrorCode` and need an `ERROR_COPY` line, not an `api_errors.go` entry. Return is not release: after a client
+  deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
+  `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
 - Membership rules live in `internal/policy` (`CanRemoveMember`, `CanBeSuccessor`, role changes).
   Removal keeps the row with `status=removed` (DEC-35); voluntary departure keeps `status=left`
   (DEC-86); neither counts as active. Adding anyone to a group goes through `changeRole`, which
@@ -409,7 +440,9 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook writer, and matches by Go-computed hash | `TestSuppressionSQLStaysInItsHelpers`, `TestSuppressionSQLGuardCatchesBypasses` (parse-only; it does not see table names built from non-literal pieces, reflection, SQL sent around GORM, dot-imports of `fold/models` or cross-package helpers) |
 | Suppression matching assumes a UTF8 database with a deterministic default collation | `TestSuppressionMatchingBasis` (`migrations/migrations_test.go`) |
 | Throttle keys come from the typed builders in `throttle_keys.go`, and erasure deletes every owned key | `TestThrottleKeysComeFromBuilders`, `TestThrottleSQLStaysInItsHelpers`, `TestOwnedThrottleKeysCoverEveryOwnedBuilder`, `TestThrottleKeyStringsAreUnchanged`, `TestAccountErasureDeletesOnlyOwnedThrottleKeys` (parse-only; it does not see keys built inside SQL text in a listed helper, SQL sent around GORM, reflection, generics or code outside the root package, and it matches identifiers by name) |
-| Contact-request text is written only at the two creation sites, the ages note is blanked only by `eraseContactRequestTextIn`, and nothing bypasses the two request triggers | `TestContactRequestTextChangesStayInTheirHelpers`, `TestContactRequestTextGuardCatchesBypasses`, `TestContactRequestTextGuardReadsTheRealTree` (`guards_test.go`); `TestAgesNoteMigrationFileHasNoTriggerBypass` (`migrations/migrations_test.go`). Parse-only: it binds names lexically within one file and does not see SQL built from non-literal pieces, constants from other files, reflection, generics, type aliases, values that arrive from another function, a parameter or a field, or SQL sent around GORM. It rejects writes whose destination is implied rather than named (`Create`, `Save`, `Updates` and the like), `OnConflict` with `UpdateAll`, raw `UPDATE`, `INSERT ... ON CONFLICT` and `MERGE` that set either column, every row deletion (R-7), and any call of `eraseContactRequestTextIn` other than the one in the `apiAdminDeleteUser` `contactMutation` callback, which must pass the callback's own `tx` after the soft delete (R-6). Its scoped H8: no `DISABLE`, `ENABLE REPLICA` or `ENABLE ALWAYS TRIGGER`, `DROP TRIGGER`, `CREATE OR REPLACE FUNCTION` for either request function or `session_replication_role` in the ages-note migration or a production Go literal, with one allowance, the `SET LOCAL session_replication_role = replica;` literal in `resetStatements` of `internal/testdb/testdb.go`, plus a check on the real tree that no non-test file outside `internal/testdb` imports it (plain, aliased, blank or dot); `set_config` for `statement_timeout` stays allowed |
+| Contact-request text is written only at the two creation sites, the ages note is blanked only by `eraseContactRequestTextIn`, and nothing bypasses the two request triggers | `TestContactRequestTextChangesStayInTheirHelpers`, `TestContactRequestTextGuardCatchesBypasses`, `TestContactRequestTextGuardReadsTheRealTree` (`guards_test.go`); `TestAgesNoteMigrationFileHasNoTriggerBypass` (`migrations/migrations_test.go`). Parse-only: it binds names lexically within one file and does not see SQL built from non-literal pieces, constants from other files, reflection, generics, type aliases, values that arrive from another function, a parameter or a field, or SQL sent around GORM. It rejects writes whose destination is implied rather than named (`Create`, `Save`, `Updates` and the like), `OnConflict` with `UpdateAll`, raw `UPDATE`, `INSERT ... ON CONFLICT` and `MERGE` that set either column, every row deletion (R-7), and any call of `eraseContactRequestTextIn` other than the one in the `apiAdminDeleteUser` callback, which must pass the callback's own `tx` after the soft delete and must be the last argument of `a.contactMutationCtx` on that function's own App receiver, with that call in the function body (a `for` loop is allowed, a func literal is not; the old `a.contactMutation` form fails) (R-6). Its scoped H8: no `DISABLE`, `ENABLE REPLICA` or `ENABLE ALWAYS TRIGGER`, `DROP TRIGGER`, `CREATE OR REPLACE FUNCTION` for either request function or `session_replication_role` in the ages-note migration or a production Go literal, with one allowance, the `SET LOCAL session_replication_role = replica;` literal in `resetStatements` of `internal/testdb/testdb.go`, plus a check on the real tree that no non-test file outside `internal/testdb` imports it (plain, aliased, blank or dot); `set_config` for `statement_timeout` stays allowed |
+| An unknown COMMIT result is never retried and never answered with "nothing was deleted" copy; an unacknowledged ROLLBACK is never retried (no further BEGIN) but, because COMMIT was never sent, still answers its pre-COMMIT code (409 `delete_household_busy` after a 55P03); only a 55P03 whose ROLLBACK was acknowledged retries | `classifyContactErr` and `rollbackConfirmed` (`contact_lifecycle.go`); `TestContactMutationCtx*`, `TestAdminDeleteCommitPhaseAnswersUnknown`, `TestAdminDeleteHouseholdBusyThenCommitUnknown`, `TestAdminDeleteHouseholdBusyRollbackNotAcknowledged`, `TestHouseholdRetryOnlyRepeatsAConfirmedBusy`, the pgproxy tests; `TestWebErrorCopyCoversEveryCode` |
+| The erasure takes `households` rows only in `lockErasureHouseholdsIn` (`NOWAIT`, ascending), before its first write | `TestErasureHouseholdLockCensus` (parse-only: it pins the set of `lockHousehold` caller names, the absence of a `households ... FOR UPDATE` literal outside `account_erasure_households.go`, and the position of three calls in the deletion callback; it does not check the census's classifications or lock orders, does not see SQL sent around GORM or a lock taken inside a helper it does not parse, and does not prove deadlock freedom, which inventory 9.6.1 says it does not have) |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
