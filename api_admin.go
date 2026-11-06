@@ -956,95 +956,117 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// server to it too (R4-CTX).
 	ctx, cancel := context.WithTimeout(context.Background(), adminDeleteBudget)
 	defer cancel()
-	err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
-		// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
-		// admin (plain read) and the facts again; see api_host_handoff.go.
-		picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
-		if err != nil {
-			return err
+	// The whole call retries when a household row is busy (R4-3b-1, inventory
+	// 9.6 requirement 5): each attempt starts from the target's id alone and
+	// reads the account, the actor and every set again under its own locks, so
+	// nothing a rolled-back attempt filled in carries over. body and hostPicks
+	// are only read. The loop is here, not in a wrapper func literal, because
+	// guard R-6 wants the a.contactMutationCtx call in this function itself.
+	targetID := u.ID
+	retry := newHouseholdRetry(ctx)
+	var err error
+	for {
+		u := &models.User{ID: targetID}
+		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+			// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
+			// admin (plain read) and the facts again; see api_host_handoff.go.
+			picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
+			if err != nil {
+				return err
+			}
+			// The last-admin rule again, on the locked target, the re-read actor
+			// and an in-gate count (defense in depth; the pre-gate check above
+			// decides the usual answers).
+			msg := "cannot delete the last admin"
+			if u.ID == me.ID {
+				msg = "you cannot delete your own account"
+			}
+			if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+				return err
+			}
+			// The address the account holds now, read from the row just locked
+			// (memory only), then every credential goes in the slot that revoked
+			// the unused tokens (R4-1-2).
+			s := captureErasureSubject(u)
+			if err := captureErasureSetsIn(tx, &s); err != nil {
+				return err
+			}
+			// Every household the erasure touches, NOWAIT, before its first write
+			// and while no household writer's notice can be waiting on a row this
+			// transaction holds (retryHouseholdBusy runs the whole thing again).
+			if _, err := lockErasureHouseholdsIn(tx, s); err != nil {
+				return err
+			}
+			if err := eraseAccountCredentialsIn(tx, s); err != nil {
+				return err
+			}
+			_, err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
+			if err != nil {
+				return err
+			}
+			if err := handOffHosting(tx, me.ID, u.ID, picks, lockedHosted, c.ClientIP()); err != nil {
+				return err
+			}
+			if err := tombstoneUserIn(tx, u); err != nil {
+				return err
+			}
+			// The photo files go with the person: the cleanup job keeps nothing
+			// for a deleted account. Queued here, under the row lock already held
+			// (R4-5).
+			if err := queueAvatarCleanup(tx, u.ID); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDeleted,
+				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			// Every account_requests statement runs before the person's
+			// notifications are deleted, the order expirePendingRequests also
+			// takes (request, then notifications; L2). Its waiting tasks close
+			// as withdrawn by this admin.
+			if err := eraseAccountRequestsIn(tx, s, me.ID); err != nil {
+				return err
+			}
+			// Notifications go with the person (5.3); the audit log stays. The
+			// exact form of this statement is what the erasure tests' barrier
+			// (erasureTestBeforeNotificationsDelete) matches.
+			if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(u).Error; err != nil {
+				return err
+			}
+			// Right after the soft delete: the consents trigger lets this scrub
+			// through only once the transaction's own deleted_at is set.
+			if err := eraseConsentEvidenceIn(tx, s); err != nil {
+				return err
+			}
+			// Also after the soft delete: the request trigger (migration 00004)
+			// lets the ages-note blank through only for a deleted subject. The
+			// reason text stays under R4-T07B.
+			if err := eraseContactRequestTextIn(tx, s); err != nil {
+				return err
+			}
+			// The deleted account no longer counts, so its seats and childcare
+			// spots are free: promote waiters now (Whittler, PR 109).
+			if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
+				return err
+			}
+			// Invitations, guest signups and the dev outbox at the held address,
+			// reached after the user and occurrence locks above, in the order
+			// guest redemption holds them (holder, occurrence, signup).
+			if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
+				return err
+			}
+			// Last statement of the callback, so the sign-in rows are held for the
+			// shortest time before commit (detected limit D2).
+			return eraseOwnedThrottleKeysIn(tx, s)
+		})
+		var again bool
+		if again, err = retry.after(err); !again {
+			break
 		}
-		// The last-admin rule again, on the locked target, the re-read actor
-		// and an in-gate count (defense in depth; the pre-gate check above
-		// decides the usual answers).
-		msg := "cannot delete the last admin"
-		if u.ID == me.ID {
-			msg = "you cannot delete your own account"
-		}
-		if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
-			return err
-		}
-		// The address the account holds now, read from the row just locked
-		// (memory only), then every credential goes in the slot that revoked
-		// the unused tokens (R4-1-2).
-		s := captureErasureSubject(u)
-		if err := captureErasureSetsIn(tx, &s); err != nil {
-			return err
-		}
-		if err := eraseAccountCredentialsIn(tx, s); err != nil {
-			return err
-		}
-		_, err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
-		if err != nil {
-			return err
-		}
-		if err := handOffHosting(tx, me.ID, u.ID, picks, lockedHosted, c.ClientIP()); err != nil {
-			return err
-		}
-		if err := tombstoneUserIn(tx, u); err != nil {
-			return err
-		}
-		// The photo files go with the person: the cleanup job keeps nothing
-		// for a deleted account. Queued here, under the row lock already held
-		// (R4-5).
-		if err := queueAvatarCleanup(tx, u.ID); err != nil {
-			return err
-		}
-		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDeleted,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-			return err
-		}
-		// Every account_requests statement runs before the person's
-		// notifications are deleted, the order expirePendingRequests also
-		// takes (request, then notifications; L2). Its waiting tasks close
-		// as withdrawn by this admin.
-		if err := eraseAccountRequestsIn(tx, s, me.ID); err != nil {
-			return err
-		}
-		// Notifications go with the person (5.3); the audit log stays. The
-		// exact form of this statement is what the erasure tests' barrier
-		// (erasureTestBeforeNotificationsDelete) matches.
-		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(u).Error; err != nil {
-			return err
-		}
-		// Right after the soft delete: the consents trigger lets this scrub
-		// through only once the transaction's own deleted_at is set.
-		if err := eraseConsentEvidenceIn(tx, s); err != nil {
-			return err
-		}
-		// Also after the soft delete: the request trigger (migration 00004)
-		// lets the ages-note blank through only for a deleted subject. The
-		// reason text stays under R4-T07B.
-		if err := eraseContactRequestTextIn(tx, s); err != nil {
-			return err
-		}
-		// The deleted account no longer counts, so its seats and childcare
-		// spots are free: promote waiters now (Whittler, PR 109).
-		if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
-			return err
-		}
-		// Invitations, guest signups and the dev outbox at the held address,
-		// reached after the user and occurrence locks above, in the order
-		// guest redemption holds them (holder, occurrence, signup).
-		if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
-			return err
-		}
-		// Last statement of the callback, so the sign-in rows are held for the
-		// shortest time before commit (detected limit D2).
-		return eraseOwnedThrottleKeysIn(tx, s)
-	})
+	}
 	if needSuccessors(c, err) || needHostSuccessors(c, err) {
 		return
 	}
@@ -1073,6 +1095,14 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			log.Printf("user deletion timed out (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
 			jsonErrorCode(c, http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted")
 		default:
+			if isHouseholdBusy(err) {
+				// Every attempt found a household row held by someone else (or
+				// the rollback after one was not acknowledged, so no further
+				// attempt began): nothing was deleted, COMMIT was never sent.
+				log.Printf("user deletion found a household busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+				jsonErrorCode(c, http.StatusConflict, "delete_household_busy", "someone was changing this person's household, so nothing was deleted")
+				return
+			}
 			log.Printf("could not delete user (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
 			jsonError(c, http.StatusInternalServerError, "could not delete user")
 		}
