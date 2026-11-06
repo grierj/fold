@@ -378,11 +378,17 @@ Pin every upgrade to an image tag or a git commit. `:latest` is refused.
 Read the release notes first. `README.md` records operator steps (for
 example the `SESSION_SECRET` length).
 
+Run the installed `/opt/fold/upgrade.sh`. It uses its enforcing copy in
+`/opt/fold/deploy-tools`, checks the target before backup or checkout, and
+runs that copy's provisioner. A target checkout supplies build inputs, never
+the provisioner. A script run by hand from an older checkout can bypass these
+checks. Do not use it to recover a deployment.
+
 On a pulled image (this changes `FOLD_VERSION` in `/opt/fold/.env`; there is
 no image to pull until the first release is published):
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh \
+sudo /opt/fold/upgrade.sh \
   --image ghcr.io/grierj/fold:x.y.z \
   --source-dir /root/fold
 ```
@@ -390,7 +396,7 @@ sudo /root/fold/deploy/digitalocean/upgrade.sh \
 On a build-based install, name the commit:
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh \
+sudo /opt/fold/upgrade.sh \
   --commit abcdef1234567 \
   --source-dir /root/fold
 ```
@@ -399,17 +405,96 @@ The script runs `backup.sh`, writes the current tag or commit and the new
 dump path to `/opt/fold/release.prev` (mode 600), then runs `provision.sh`,
 which runs `smoke.sh`. `.env` is left in place.
 
-Roll back to that previous tag or commit and restore the dump it recorded:
+When the previous release meets the host's recovery floor, roll back to that
+tag or commit and restore the dump it recorded:
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh --rollback
+sudo /opt/fold/upgrade.sh --rollback
 ```
 
 Rollback stops the app, runs `pg_restore` of the recorded dump into the
 `fold` database, starts the previous image or commit, and runs `smoke.sh`
 again. Take a Droplet snapshot before a risky upgrade (the paid command
 in section 5). Migrations run when the app starts. A failed migration
-exits non-zero and `smoke.sh` fails; roll back with the command above.
+exits non-zero and `smoke.sh` fails. Inspect the failure before choosing
+recovery. Rollback is subject to the recovery floor even after failed smoke.
+
+### Recovery refusal and interrupted operations
+
+Every scripted deploy, forward upgrade and rollback refuses a target below
+the host's recovery level. Level 1 requires the restore barrier; level 2 also
+requires reason review. Missing release metadata means level 0; malformed
+metadata refuses. The host floor is the greater of `recovery-policy-floor`
+and the level of the image its current Compose pin names. There is no override.
+The floor file is recorded only after smoke passes and never decreases.
+
+If a higher-level image starts but smoke fails, its pin already contributes
+to the floor. `--rollback` to a lower-level previous release is refused even
+if no floor file was written. Keep the current release, inspect service health,
+and repair it or restore data with that release's recovery tooling. Use
+`/opt/fold/restore.sh --dump PATH` once that tool is installed, following its
+recovery instructions. If it is absent, stop and obtain the current release's
+recovery procedure. Do not substitute the older rollback script, edit the
+floor, or change the pin to bypass refusal.
+
+If the floor check cannot resolve Compose configuration, repair
+`/opt/fold/docker-compose.yml` and `/opt/fold/.env` before retrying. If the
+pinned image is missing locally, recover that exact pinned image first.
+For an image release, pull its pinned reference. For a source build, recover
+the recorded source commit and rebuild it with the recorded image label.
+Do not guess a replacement commit or tag. Version inspection uses the local
+image with `--network none --pull never`; the floor check never pulls an image
+or falls back to the floor file alone.
+
+Exit 76 means the new stack deployed and smoke passed, but writing or syncing
+the floor file failed. Keep the pin and local image. Repair storage or file
+permissions, then rerun the installed `provision.sh` with the same release,
+source directory, domain and deployment options. This retries the durable
+floor write even if the file already contains the level. It is not a rollback
+instruction.
+
+Only one operation can hold `/opt/fold/ops.lock`. Another provision, upgrade
+or rollback exits 75 before reading release or database state. `ops.owner`
+shows an informational pid, mode and start time. Never delete, rename or
+replace `ops.lock`. Its inode must stay the same. File descriptor 9 is inherited
+by the enforcing tool and its children. A surviving helper can therefore keep
+the lock held after the recorded pid exits. If exit 75 persists, run
+`sudo fuser -v /opt/fold/ops.lock`, inspect those processes and stop only a
+verified abandoned operation or helper. Retry after it exits. Do not kill
+every process from `fuser` without checking what it is doing.
+
+The enforcing tool set has an integer `deploy-tools-version`. The new tools
+refuse to replace a higher installed version; missing metadata means version
+0. This orders tool protocols, not commits within the same version. Use the
+installed entry point rather than an older checkout to keep the current tools.
+To install a newer tool set, first update the trusted source checkout, then run
+that checkout's `deploy/digitalocean/upgrade.sh` or `provision.sh`. Its tool
+version must be at least the installed version. An installed upgrade otherwise
+continues to use its existing enforcing copy even when the target checkout is newer.
+If that entry point itself reports an older tool version, use the newer
+installed `/opt/fold/deploy-tools/upgrade.sh` named by the diagnostic.
+The tool swap uses two directory renames, so it has an interruption window.
+On the next installed `upgrade.sh` run, one complete saved
+`.old-deploy-tools.*` set is restored if `deploy-tools` is absent. Stale stages
+and saved sets are removed only after a live set is available. Ambiguous or
+incomplete saved sets refuse with recovery instructions; preserve them and
+restore the verified current tool set before retrying. The script does not
+guess which of several saved sets is current.
+
+`--dry-run` writes no files, takes no lock and never pulls or executes an
+image. It reads a build target's recovery metadata and refuses a level below
+the recorded floor. It explicitly marks the full host floor and image target
+as unverified when they require executing an image. A missing checkout in a
+dry-run rollback is also marked unverified. A successful dry run with these
+messages does not prove that a real run will pass recovery checks.
+
+`DEPLOY_DRILL=1` is test only. The disposable `deploy-drill.sh` harness creates
+a root-owned mode-600 `.deploy-drill` marker bound to its scratch deployment
+path. The scripts reject drill mode without that marker, under `/opt/fold`
+including aliases and children, or beside a `backup.env`. Unset `DEPLOY_DRILL`
+and `DEPLOY_DRILL_PAUSE` before operating a real deployment. Drill mode omits
+host hardening, cron installation and email DNS setup; it uses local test
+smoke and backup tools. It is not a production deployment option.
 
 ### Upgrade notes: suppression address hashes (M7.4 R4-S)
 
@@ -434,7 +519,8 @@ upgrade.
   `suppressions`, so each one waits until the migration commits.
 - **If the lock is not free within 5 seconds** the migration fails, applies
   nothing and the app does not start. That is the failed-migration case above:
-  `smoke.sh` fails and you roll back with `upgrade.sh --rollback`.
+  `smoke.sh` fails. Use `upgrade.sh --rollback` only if the previous release
+  meets the recovery floor; otherwise follow the recovery instructions above.
 - **Rolling back.** `upgrade.sh --rollback` restores the dump taken before the
   upgrade (`pg_restore --clean --if-exists`) and starts the previous image or
   commit, as above. The test
