@@ -126,7 +126,7 @@ func TestSuppressionsSurviveAddressReuseAndErasure(t *testing.T) {
 	if err := app.DB.Create(next).Error; err != nil {
 		t.Fatal(err)
 	}
-	rows, err := readEmailRecipients(app.DB, []uint{next.ID})
+	rows, _, err := readEmailRecipients(app.DB, []uint{next.ID}, true)
 	if err != nil || len(rows) != 1 || rows[0].EmailSuppressions != models.SuppressHardBounce {
 		t.Fatalf("reused address: %+v, %v", rows, err)
 	}

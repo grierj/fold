@@ -19,6 +19,7 @@ import (
 	"fold/internal/providers"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -1946,4 +1947,91 @@ func runGatedErasureBarriers(t *testing.T, keyA, keyB int64, setup func(t *testi
 		}
 		settle(t, sc, rec, nil)
 	})
+}
+
+func TestNotificationDeliveryHonorsRetainedAddressChoices(t *testing.T) {
+	// Optional categories with registered notices, plus both required classes.
+	for _, key := range []string{notify.GroupApproved, notify.LeadershipChanged, notify.EventChanged, notify.OccurrenceChanged, notify.GroupPending} {
+		t.Run(key, func(t *testing.T) {
+			app := testApp(t)
+			u := newTestUser(t, app, "notice-choice", "password1234", models.RoleAdmin)
+			sender := &notifyFailSender{}
+			app.Mailer = sender
+			id := sendNotice(t, app, key, u)
+			// The choice arrives after queueing, so delivery must read it again.
+			seedAllEmailAddressOff(t, app, u.Email)
+			k, ok := notify.Lookup(key)
+			if !ok {
+				t.Fatal("unregistered notice")
+			}
+			runNotifyOnce(t, app)
+			d := emailDeliveryOf(t, app, id)
+			if k.Required {
+				if d.Status != models.DeliverySent || sender.n() != 1 {
+					t.Fatalf("required notice stopped: %+v, calls=%d", d, sender.n())
+				}
+			} else if d.Status != models.DeliverySuppressed || d.Reason != "optional email turned off" || sender.n() != 0 {
+				t.Fatalf("optional notice sent: %+v, calls=%d", d, sender.n())
+			}
+		})
+	}
+}
+
+func TestNotificationChoiceReadFailureDoesNotBlockRequired(t *testing.T) {
+	for _, table := range []string{"consents", "email_address_optouts"} {
+		t.Run(table, func(t *testing.T) {
+			app := testApp(t)
+			u := newTestUser(t, app, "notice-choice-fault", "password1234", models.RoleAdmin)
+			sender := &notifyFailSender{}
+			app.Mailer = sender
+			optional := sendNotice(t, app, notify.GroupApproved, u)
+			required := []uint{
+				sendNotice(t, app, notify.OccurrenceChanged, u), // safety
+				sendNotice(t, app, notify.GroupPending, u),      // waiting
+			}
+			name := fmt.Sprintf("test:notification_choice_fault:%d", queryCounterSeq.Add(1))
+			reads, fail := 0, true
+			if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+				statement := tx.Statement.SQL.String()
+				if !fail || !strings.Contains(statement, "FROM "+table) {
+					return
+				}
+				reads++
+				// Let PostgreSQL fail the choice query itself, including aborting
+				// its claim transaction. No schema or other reads are changed.
+				tx.Statement.SQL.Reset()
+				tx.Statement.SQL.WriteString(strings.ReplaceAll(statement, "FROM "+table, "FROM missing_notification_choice_"+table))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Row().Remove(name) })
+
+			// Positive control: the fault reaches the optional choice read and
+			// must leave its delivery retryable without calling the provider.
+			err := app.deliverOneNotification(context.Background(), optional)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "42P01" || reads != 1 || sender.n() != 0 {
+				t.Fatalf("optional choice fault: err=%v, reads=%d, calls=%d", err, reads, sender.n())
+			}
+			if d := emailDeliveryOf(t, app, optional); d.Status != models.DeliveryQueued || d.SentAt != nil {
+				t.Fatalf("choice fault changed optional delivery: %+v", d)
+			}
+			for i, id := range required {
+				if err := app.deliverOneNotification(context.Background(), id); err != nil {
+					t.Fatalf("required notice %d depended on choices: %v", id, err)
+				}
+				if d := emailDeliveryOf(t, app, id); d.Status != models.DeliverySent || d.SentAt == nil || sender.n() != i+1 || reads != 1 {
+					t.Fatalf("required delivery: %+v, reads=%d, calls=%d", d, reads, sender.n())
+				}
+			}
+			// Clearing the fault lets the rolled-back optional claim send once.
+			fail = false
+			if err := app.deliverOneNotification(context.Background(), optional); err != nil {
+				t.Fatal(err)
+			}
+			if d := emailDeliveryOf(t, app, optional); d.Status != models.DeliverySent || sender.n() != len(required)+1 {
+				t.Fatalf("optional retry: %+v, calls=%d", d, sender.n())
+			}
+		})
+	}
 }

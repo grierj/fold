@@ -435,9 +435,21 @@ func eraseOwnedThrottleKeysIn(tx *gorm.DB, s erasureSubject) error {
 // here on consents cannot form a cycle. Nothing else updates consents and
 // readers take no lock. The filter skips rows that are already blank, which
 // keeps a retry idempotent. It returns the error unwrapped and logs nothing.
+//
+// Export the in-force email opt-outs only when the locked account's address
+// is still held. Migration 00003's scrub preserves statuses and choice times,
+// so the export can run before or after it. The user lock prevents a consent
+// append in between. Both statements roll back with the erasure transaction.
+// Tombstones have no held address and issue no export statement.
 func eraseConsentEvidenceIn(tx *gorm.DB, s erasureSubject) error {
-	return tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
-		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error
+	if err := tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
+		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error; err != nil {
+		return err
+	}
+	if s.Address.ok && mail.NormalizeAddress(s.Address.value) != "" {
+		return exportEmailOptOutsIn(tx, s.ID, mail.AddressHash(s.Address.value))
+	}
+	return nil
 }
 
 // eraseContactRequestTextIn blanks add_childcare_ages_note on the erased

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -383,9 +384,11 @@ func TestTombstoneUnavailableAddressNeverBindsAnAddress(t *testing.T) {
 	before := tombstoneDatabase(t, db)
 	var mu sync.Mutex
 	var binds []any
+	var statements []string
 	capture := func(tx *gorm.DB) {
 		mu.Lock()
 		binds = append(binds, tx.Statement.Vars...)
+		statements = append(statements, tx.Statement.SQL.String())
 		mu.Unlock()
 	}
 	const name = "test:tombstone_address_binds"
@@ -413,11 +416,19 @@ func TestTombstoneUnavailableAddressNeverBindsAnAddress(t *testing.T) {
 		if err := eraseDependentRecordsIn(tx, subject, 0, ""); err != nil {
 			return err
 		}
+		if err := eraseConsentEvidenceIn(tx, subject); err != nil {
+			return err
+		}
 		return eraseOwnedThrottleKeysIn(tx, subject)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
+	for _, statement := range statements {
+		if strings.Contains(statement, "email_address_optouts") {
+			t.Error("unavailable address issued an address opt-out statement")
+		}
+	}
 	for _, bind := range binds {
 		if str, ok := bind.(string); ok && (str == "" || strings.Contains(str, "@")) {
 			t.Errorf("unavailable address helper bound %q", str)
@@ -425,6 +436,64 @@ func TestTombstoneUnavailableAddressNeverBindsAnAddress(t *testing.T) {
 	}
 	mu.Unlock()
 	tombstoneSameDatabase(t, before, tombstoneDatabase(t, db))
+}
+
+func TestTombstonePipelineNeverExportsAddressChoices(t *testing.T) {
+	for _, fresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fresh=%v", fresh), func(t *testing.T) {
+			s := newCoreErasureScene(t)
+			s.ac.holdNotices = true
+			u := newTestUser(t, s.app, "no-tombstone-export@example.com", erasurePW, models.RoleMember)
+			erasureSeedConsentEvidence(t, s.app.DB, u.ID, "no-address")
+			if fresh {
+				s.erase(t, u.ID)
+				// A later turn-on by the new holder removes the record. A sweep
+				// must not recreate it from the old holder's retained consents.
+				holder := newTestUser(t, s.app, u.Email, erasurePW, models.RoleMember)
+				c := loginAPI(t, s.app, holder.Email, erasurePW)
+				c.holdNotices = true
+				wantEmailSettingsStatus(t, c.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "groups", "off": false}, true), http.StatusOK)
+			} else {
+				tombstoneLegacy(t, s.app.DB, u.ID)
+			}
+			before := retainedEmailChoices(t, s.app)
+			seen := recordEmailOptOutStatements(t, s.app.DB)
+			var mu sync.Mutex
+			var addressBinds []string
+			capture := func(tx *gorm.DB) {
+				mu.Lock()
+				defer mu.Unlock()
+				for _, bind := range tx.Statement.Vars {
+					if value, ok := bind.(string); ok && strings.Contains(value, "@") {
+						addressBinds = append(addressBinds, value)
+					}
+				}
+			}
+			name := fmt.Sprintf("test:tombstone_pipeline_binds:%d", queryCounterSeq.Add(1))
+			if err := s.app.DB.Callback().Raw().After("gorm:raw").Register(name, capture); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.app.DB.Callback().Raw().Remove(name) })
+			if err := s.app.DB.Callback().Row().After("gorm:row").Register(name, capture); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.app.DB.Callback().Row().Remove(name) })
+			for _, version := range []int{1, 1, 2} {
+				tombstoneRun(t, s.app, u.ID, version)
+			}
+			if statements := seen(); len(statements) != 0 {
+				t.Fatalf("tombstone pipeline issued address opt-out SQL: %+v", statements)
+			}
+			mu.Lock()
+			if len(addressBinds) != 0 {
+				t.Errorf("tombstone pipeline bound an address: %v", addressBinds)
+			}
+			mu.Unlock()
+			if !reflect.DeepEqual(before, retainedEmailChoices(t, s.app)) {
+				t.Fatal("tombstone sweep changed retained address choices")
+			}
+		})
+	}
 }
 
 func TestTombstoneHouseholdMarkersDoNotSuppressOwnershipReevaluation(t *testing.T) {

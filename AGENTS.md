@@ -60,6 +60,21 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
   (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
   `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
+- Optional email uses one effective-choice reader, `readEmailOff` in `email_optouts.go`: the account's
+  latest email choice or the actual destination address's retained opt-out can turn a category off.
+  `email_address_optouts` is written only by `exportEmailOptOutsIn` during erasure with a held address,
+  and deleted only by the current holder's affirmative turn-on under the user lock. Keep the original
+  choice time; never reconstruct a legacy tombstone address. Settings expose only effective choices.
+  Version 2 links bind the destination address for turn-on; legacy and moved-address links still allow
+  turn-off, and erased-account links stay invalid. A session older than an address change cannot turn
+  email on. Batch rows recheck `message_recipients.address` inside each row's claim transaction after
+  its claim and before rendering and dispatch; optional notifications check inside their claim too.
+  At READ COMMITTED, a choice committed before the choice statement starts is honored. A later change
+  may not stop that one in-flight send; every later row and retry rechecks. The composer test checks
+  the session and choice under the author's row lock, releases it at commit, then calls the provider.
+  A change committed after that commit, before or during the call, may not stop the one test send.
+  Required mail bypasses choices; provider suppressions remain separate. R4-2d2 is implemented locally
+  only; C2 and publication remain pending (inventory 7.6 and 15.8).
 - Household erasure (M7.4 R4-3b, staged: local, unmerged, M7.4 not complete): deleting an account also runs
   `eraseHouseholdRecordsIn` (`account_erasure_households.go`) under household rows taken `FOR UPDATE NOWAIT`.
   It deletes the account's seat, anonymizes the person row(s) that are the same individual (`PERS`, read
@@ -201,7 +216,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   old address and cancellation capability, which cannot be reconstructed after verification;
   `App.sendGuestConfirmationEmail` in `api_guest.go` shares its manage capability with the browser,
   so delayed rotation would invalidate the displayed link. The composer's test send in
-  `api_message_preview.go` also remains synchronous by design, separate from those exceptions.
+  `api_message_preview.go` also remains synchronous by design, separate from those exceptions. It
+  checks the author's session and effective email choice under the user row lock before recording
+  the test attempt, then commits before its provider call. An opt-out, erasure or address change
+  committed after that commit may not stop that one test send; the next request rechecks. The call
+  keeps its 30-second context and holds no user lock across provider I/O.
   Both account exceptions use the 20-second `syncMailTimeout`, leaving 40 seconds of the
   server's 60-second write budget for transaction work and the response. Delivery jobs keep
   the 60-second `deliverSendTimeout`. Failure logs use `jobs.CleanError` and never add a
@@ -324,8 +343,8 @@ The migration chain is the generated baseline (M7.7, DEC-138) plus additive numb
 (`00002_suppression_address_hash.sql` is the M7.4 R4-S expand)
 (`00003_consent_erasure_scrub.sql` lets the erasure blank a deleted owner's consent evidence, R4-2d1)
 (`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A)
-(`00005_email_address_optouts.sql` stages the dormant address-level optional-email opt-out table, R4-2d2-1,
-owner decision 8; it implements no opt-out behavior yet)
+(`00005_email_address_optouts.sql` adds the address-level optional-email opt-out table, R4-2d2-1,
+owner decision 8; R4-2d2-2a through -3 activate its local behavior, inventory 7.6 and 15.8)
 (`00006_admin_operation_attempts.sql` stages dormant receipt storage, T07B-1a: a 16-byte nonce and
 timestamp only, with no behavior or cleanup yet; inventory T39 records the planned 24-hour cleanup).
 `TestBaselineFileShape` checks the chain
@@ -460,6 +479,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | Notices use `notify.deliver`; reconstructible direct mail uses ID-based jobs; synchronous mail is limited to the documented methods and composer test | `TestNoticesAreDeliveredBySendNotByCallers`, `TestMailGoesThroughJobs`, `TestNoticeGuardCatchesPostCommitDelivery`, `TestMailGuardCatchesBypasses`, `TestMailGuardScopesSynchronousExceptions`, `TestMailGuardAllowsDeliveryAndReadOnlyOutbox` |
+| Optional email honors the account's choice and the destination address's retained opt-out through one function | `readEmailOff`; `TestEmailChoiceSQLStaysInOneHelper`, `TestEmailChoiceGuardCatchesBypasses`, `TestReadEmailOffCombinesAccountAndDestination`, `TestEmailSettingsHideChoiceSource`, `TestReusedAddressKeepsErasedChoicesUntilHolderTurnsOn` |
+| Every optional or broadcast email checks the effective choice at its send boundary | `TestOptionalMailChecksTheEffectiveChoice`, `TestOptionalMailGuardCatchesBypasses`, `TestBatchRechecksTheChoiceAtEachRow`, `TestTestSendHonorsTheEffectiveChoice`, `TestTestSendInFlightWindow` (parse-only guard checks named calls and lexical order; behavioral tests cover application of the result and the permitted in-flight window) |
 | Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook writer, and matches by Go-computed hash | `TestSuppressionSQLStaysInItsHelpers`, `TestSuppressionSQLGuardCatchesBypasses` (parse-only; it does not see table names built from non-literal pieces, reflection, SQL sent around GORM, dot-imports of `fold/models` or cross-package helpers) |
 | Suppression matching assumes a UTF8 database with a deterministic default collation | `TestSuppressionMatchingBasis` (`migrations/migrations_test.go`) |
 | Throttle keys come from the typed builders in `throttle_keys.go`, and erasure deletes every owned key | `TestThrottleKeysComeFromBuilders`, `TestThrottleSQLStaysInItsHelpers`, `TestOwnedThrottleKeysCoverEveryOwnedBuilder`, `TestThrottleKeyStringsAreUnchanged`, `TestAccountErasureDeletesOnlyOwnedThrottleKeys` (parse-only; it does not see keys built inside SQL text in a listed helper, SQL sent around GORM, reflection, generics or code outside the root package, and it matches identifiers by name) |

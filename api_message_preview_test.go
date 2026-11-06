@@ -3,9 +3,11 @@ package main
 import (
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/models"
 )
 
@@ -143,4 +145,144 @@ func TestMessageTestSendHashedAndLegacySuppressions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTestSendHonorsTheEffectiveChoice(t *testing.T) {
+	for _, source := range []string{"address", "account", "other kind"} {
+		t.Run(source, func(t *testing.T) {
+			f := newComposeFixture(t)
+			path := f.draft(t, f.leader, "Choice", "<p>Hi</p>", groupAudience(f))
+			switch source {
+			case "address":
+				seedEmailAddressOff(t, f.app, f.leaderUser.Email, "messages")
+			case "other kind":
+				seedEmailAddressOff(t, f.app, f.leaderUser.Email, "groups")
+			case "account":
+				if w := f.leader.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true}, true); w.Code != http.StatusOK {
+					t.Fatal(w.Body.String())
+				}
+			}
+			records := dumpRows(t, f.app.DB, "email_address_optouts", "scope", "true")
+			consents := dumpRows(t, f.app.DB, "consents", "id", "true")
+			before := mailCount(t, f.app, f.leaderUser.Email)
+			attempts := 10
+			if source == "other kind" {
+				attempts = 1
+			}
+			for range attempts {
+				w := f.leader.do("POST", path+"/test", nil, true)
+				if source == "other kind" {
+					if w.Code != http.StatusOK {
+						t.Fatalf("unrelated kind: %d %s", w.Code, w.Body.String())
+					}
+				} else if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "message_test_opted_out") {
+					t.Fatalf("refusal: %d %s", w.Code, w.Body.String())
+				}
+			}
+			if records != dumpRows(t, f.app.DB, "email_address_optouts", "scope", "true") || consents != dumpRows(t, f.app.DB, "consents", "id", "true") {
+				t.Fatal("test send changed choice evidence")
+			}
+			if source != "other kind" {
+				if mailCount(t, f.app, f.leaderUser.Email) != before || auditCount(t, f.app, audit.MessageTestSent) != 0 {
+					t.Fatal("refused test sent or consumed a try")
+				}
+				if source == "address" {
+					if err := f.app.DB.Where("address_hash = ?", mail.AddressHash(f.leaderUser.Email)).Delete(&models.EmailAddressOptOut{}).Error; err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if w := f.leader.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": false}, true); w.Code != http.StatusOK {
+						t.Fatal(w.Body.String())
+					}
+				}
+				for range testSendsPerHour {
+					if w := f.leader.do("POST", path+"/test", nil, true); w.Code != http.StatusOK {
+						t.Fatalf("refusal used hourly budget: %d %s", w.Code, w.Body.String())
+					}
+				}
+				if auditCount(t, f.app, audit.MessageTestSent) != testSendsPerHour {
+					t.Fatal("successful tries not audited")
+				}
+			}
+		})
+	}
+}
+
+func TestTestSendRejectsAddressChangeAfterAuthentication(t *testing.T) {
+	f := newComposeFixture(t)
+	f.admin.holdNotices, f.leader.holdNotices = true, true
+	path := f.draft(t, f.leader, "Stale session", "<p>Hi</p>", groupAudience(f))
+	reached, release := erasureTestPause(t, f.app.DB, erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "SELECT id, email, status, session_version, logout_version, deleted_at FROM users", VarAt: map[int]any{0: f.leaderUser.ID}})
+	result := bgDo(f.leader, "POST", path+"/test", nil)
+	awaitDBSignal(t, reached)
+	// Authentication has completed; the real admin change commits before the lock.
+	if w := f.admin.do("PUT", "/api/v1/admin/users/"+itoa(f.leaderUser.ID), map[string]any{"email": "new-author@example.com"}, true); w.Code != http.StatusOK {
+		t.Fatalf("email change: %d %s", w.Code, w.Body.String())
+	}
+	release()
+	got := awaitResult(t, result)
+	if got.code != http.StatusUnauthorized || mailCount(t, f.app, f.leaderUser.Email) != 0 || auditCount(t, f.app, audit.MessageTestSent) != 0 {
+		t.Fatalf("stale test: %+v", got)
+	}
+}
+
+func TestTestSendInFlightWindow(t *testing.T) {
+	t.Run("opt-out waits for the locked check", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.leader.holdNotices = true
+		path := f.draft(t, f.leader, "Locked choice", "<p>Hi</p>", groupAudience(f))
+		choiceClient := loginAPI(t, f.app, "leader", "password1234")
+		choiceClient.holdNotices = true
+		var senderPID atomic.Int64
+		reached, release := erasureTestPause(t, f.app.DB, erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "SELECT c.user_id, '' AS address_hash", VarAt: map[int]any{0: f.leaderUser.ID}, PID: &senderPID})
+		send := bgDo(f.leader, "POST", path+"/test", nil)
+		awaitDBSignal(t, reached)
+		choice := bgDo(choiceClient, "PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true})
+		waiter := waitForLockedUsersQuery(t, f.app, "%users%FOR NO KEY UPDATE%")
+		waitDBBlocked(t, f.app.DB, waiter, int(senderPID.Load()))
+		release()
+		if r := awaitResult(t, send); r.code != http.StatusOK {
+			t.Fatalf("test send: %+v", r)
+		}
+		if r := awaitResult(t, choice); r.code != http.StatusOK {
+			t.Fatalf("opt-out: %+v", r)
+		}
+		if mailCount(t, f.app, f.leaderUser.Email) != 1 || auditCount(t, f.app, audit.MessageTestSent) != 1 {
+			t.Fatal("locked send was not delivered once")
+		}
+		if w := f.leader.do("POST", path+"/test", nil, true); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "message_test_opted_out") {
+			t.Fatalf("next request: %d %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a change after commit does not recall the provider call", func(t *testing.T) {
+		f := newComposeFixture(t)
+		f.leader.holdNotices = true
+		path := f.draft(t, f.leader, "In flight", "<p>Hi</p>", groupAudience(f))
+		choiceClient := loginAPI(t, f.app, "leader", "password1234")
+		choiceClient.holdNotices = true
+		sender := newBlockingChoiceSender(t, f.app.Mailer)
+		f.app.Mailer = sender
+		send := bgDo(f.leader, "POST", path+"/test", nil)
+		awaitDBSignal(t, sender.entered)
+		// A successful response before release proves the transaction's user lock
+		// no longer blocks the opt-out. The address fixture commits separately too.
+		choice := bgDo(choiceClient, "PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true})
+		if r := awaitResult(t, choice); r.code != http.StatusOK {
+			t.Fatalf("post-commit opt-out: %+v", r)
+		}
+		seedEmailAddressOff(t, f.app, f.leaderUser.Email, "messages")
+		sender.resume()
+		if r := awaitResult(t, send); r.code != http.StatusOK {
+			t.Fatalf("in-flight send: %+v", r)
+		}
+		if mailCount(t, f.app, f.leaderUser.Email) != 1 || auditCount(t, f.app, audit.MessageTestSent) != 1 {
+			t.Fatal("in-flight send did not complete once")
+		}
+		if w := f.leader.do("POST", path+"/test", nil, true); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "message_test_opted_out") {
+			t.Fatalf("next request: %d %s", w.Code, w.Body.String())
+		}
+		if len(sender.sent()) != 1 || auditCount(t, f.app, audit.MessageTestSent) != 1 {
+			t.Fatal("next request sent or wrote another audit row")
+		}
+	})
 }
