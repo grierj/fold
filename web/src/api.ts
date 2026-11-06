@@ -629,7 +629,7 @@ export const Push = {
 // The token in the link is the authority.
 export const EmailSettingsLink = {
   get: (token: string) =>
-    api<{ emailSettings: NotificationSettingsData; email: string; fromCategory: string }>(`/email-settings/${encodeURIComponent(token)}`),
+    api<{ emailSettings: NotificationSettingsData; email: string; fromCategory: string; canTurnOn: boolean }>(`/email-settings/${encodeURIComponent(token)}`),
   update: (token: string, change: EmailSettingsChange) =>
     api<{ emailSettings: NotificationSettingsData }>(`/email-settings/${encodeURIComponent(token)}`, { method: "PUT", body: change }),
 };

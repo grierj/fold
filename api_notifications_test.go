@@ -1109,7 +1109,7 @@ func TestReadEmailRecipientsSuppressions(t *testing.T) {
 	for _, u := range users {
 		ids = append(ids, u.ID)
 	}
-	rows, err := readEmailRecipients(app.DB, ids)
+	rows, _, err := readEmailRecipients(app.DB, ids, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1130,7 +1130,7 @@ func TestReadEmailRecipientsSuppressions(t *testing.T) {
 		}
 	}
 	// The single-account read splits the same string.
-	_, _, reasons, _, err := readEmailRecipient(app.DB, users["bouncefirst"].ID)
+	_, _, reasons, _, err := readEmailRecipient(app.DB, users["bouncefirst"].ID, true)
 	if err != nil || strings.Join(reasons, ",") != "hard_bounce,complaint" {
 		t.Fatalf("readEmailRecipient: %v, %v", reasons, err)
 	}

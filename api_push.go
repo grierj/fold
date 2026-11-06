@@ -276,7 +276,7 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		}
 		if _, err := setConsent(tx, models.Consent{UserID: me.ID, Channel: models.ConsentPush, Scope: "all", Status: models.ConsentOptedIn,
 			Source: models.ConsentSourceWebForm, EvidenceText: "Turned on notifications for " + evidence,
-			IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedOut, me); err != nil {
+			IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedOut, me, nil); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.PushDeviceOn, TargetType: "user", TargetID: me.ID,
@@ -335,7 +335,7 @@ func (a *App) apiPushTurnOff(c *gin.Context) {
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if _, err := setConsent(tx, models.Consent{UserID: me.ID, Channel: models.ConsentPush, Scope: "all", Status: models.ConsentOptedOut,
 			Source: models.ConsentSourceWebForm, EvidenceText: "Turned off notifications everywhere",
-			IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedOut, me); err != nil {
+			IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedOut, me, nil); err != nil {
 			return err
 		}
 		return tx.Where("user_id = ?", me.ID).Delete(&models.PushSubscription{}).Error
@@ -487,7 +487,7 @@ func (a *App) applyPushSettings(c *gin.Context, u *models.User, category string,
 	// In a transaction, so setConsent's row lock holds through the write.
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		_, err := setConsent(tx, models.Consent{UserID: u.ID, Channel: models.ConsentPush, Scope: categoryScope(category), Status: status,
-			Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedIn, u)
+			Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedIn, u, nil)
 		return err
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {

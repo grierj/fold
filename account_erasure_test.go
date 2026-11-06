@@ -571,6 +571,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 		for _, table := range tables {
 			out += table + dumpRows(t, db, table, "id", "true")
 		}
+		out += "email_address_optouts" + dumpRows(t, db, "email_address_optouts", "address_hash, r.scope", "true")
 		return out
 	}
 	whole := writeSet()
@@ -585,6 +586,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK {
 		t.Fatalf("delete after removing failure answered %d %s, want 200", r.code, r.body)
 	}
+	wantRetainedEmailChoice(t, s.app, addr, "groups", true)
 	assertAuditErasureRows(t, db, []models.AuditLog{actorAudit, metadataAudit}, map[uint]bool{actorAudit.ID: true}, map[uint][]string{metadataAudit.ID: {"note"}})
 }
 
@@ -648,7 +650,7 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	}
 	otherBefore := dumpRows(t, db, "consents", "id", "user_id = ?", other.ID)
 	teenBefore := dumpRows(t, db, "teen_consents", "id", "true")
-	optOutsBefore, err := emailOptOuts(db, []uint{u.ID})
+	optOutsBefore, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +658,7 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !optOutsBefore[u.ID]["category:groups"] || !pushOnBefore || !pushOffBefore {
+	if !optOutsBefore.Off(u.ID, u.Email, "category:groups") || !pushOnBefore || !pushOffBefore {
 		t.Fatalf("seed: readers see email opt-outs %v, push on %v, push groups off %v", optOutsBefore, pushOnBefore, pushOffBefore)
 	}
 
@@ -686,7 +688,7 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if got := dumpRows(t, db, "teen_consents", "id", "true"); got != teenBefore {
 		t.Errorf("teen_consents changed:\n%s\n%s", teenBefore, got)
 	}
-	optOutsAfter, err := emailOptOuts(db, []uint{u.ID})
+	optOutsAfter, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +696,12 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(optOutsAfter, optOutsBefore) || pushOnAfter != pushOnBefore || pushOffAfter != pushOffBefore {
+	sameEmailChoice := true
+	for _, category := range notify.OptionalEmailCategories() {
+		scope := categoryScope(category)
+		sameEmailChoice = sameEmailChoice && optOutsAfter.Off(u.ID, u.Email, scope) == optOutsBefore.Off(u.ID, u.Email, scope)
+	}
+	if !sameEmailChoice || pushOnAfter != pushOnBefore || pushOffAfter != pushOffBefore {
 		t.Errorf("the readers decide differently after the scrub: email opt-outs %v then %v, push on %v then %v, push groups off %v then %v",
 			optOutsBefore, optOutsAfter, pushOnBefore, pushOnAfter, pushOffBefore, pushOffAfter)
 	}

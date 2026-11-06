@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { EmailSettingsLink } from "../api";
 import type { EmailSettingsChange } from "../api";
-import { errorCode, errorText } from "../lib/errors";
+import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { EmailSettings } from "../components/EmailSettings";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
@@ -26,7 +26,7 @@ const ONE_OF: Record<string, string> = {
 export function EmailSettingsPage() {
   const { token = "" } = useParams<{ token: string }>();
   const { user } = useAuth();
-  const [who, setWho] = useState<{ email: string; from: string } | null>(null);
+  const [who, setWho] = useState<{ email: string; from: string; canTurnOn: boolean } | null>(null);
   const [gone, setGone] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   // The page's own first read is handed to the switches, so one visit is
@@ -38,7 +38,7 @@ export function EmailSettingsPage() {
     EmailSettingsLink.get(token)
       .then((r) => {
         first.current = r.emailSettings;
-        setWho({ email: r.email, from: r.fromCategory });
+        setWho({ email: r.email, from: r.fromCategory, canTurnOn: r.canTurnOn });
       })
       .catch((err) => {
         if (errorCode(err) === "not_found") setGone(true);
@@ -70,6 +70,7 @@ export function EmailSettingsPage() {
           <p className="text-text-muted">For {who.email}</p>
           {ONE_OF[who.from] && <p className="text-text-muted">You came here from {ONE_OF[who.from]}; it's listed first.</p>}
           <div className="mt-6">
+            {who.canTurnOn === false && <p className="mb-4 text-sm text-text-muted">{ERROR_COPY.email_link_turn_on}</p>}
             <EmailSettings load={load} save={save} first={who.from} />
           </div>
           <p className="mt-6 text-sm">{user

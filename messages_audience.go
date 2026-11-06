@@ -344,7 +344,7 @@ type recipientFact struct {
 func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, error) {
 	var users []models.User
 	suppressed := map[string]string{}
-	optedOut := map[uint]map[string]bool{}
+	optedOut := emailOff{account: map[uint]map[string]bool{}, address: map[string]map[string]bool{}}
 	err := eachIDChunk(ids, func(chunk []uint) error {
 		var part []models.User
 		if err := db.Select("id, name, display_name, email, status, account_type").Where("id IN ?", chunk).Order("id").Find(&part).Error; err != nil {
@@ -370,9 +370,16 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 				}
 			}
 		}
-		opts, err := emailOptOuts(db, chunk)
-		for id, scopes := range opts {
-			optedOut[id] = scopes
+		dests := make([]emailDest, 0, len(part))
+		for _, u := range part {
+			dests = append(dests, emailDest{UserID: u.ID, Address: u.Email})
+		}
+		opts, err := readEmailOff(db, dests)
+		for id, scopes := range opts.account {
+			optedOut.account[id] = scopes
+		}
+		for address, scopes := range opts.address {
+			optedOut.address[address] = scopes
 		}
 		return err
 	})
@@ -399,7 +406,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 			f.Skip = skipComplained
 		case suppressed[normalizeEmail(u.Email)] != "":
 			f.Skip = skipNotWorking
-		case optedOut[u.ID][optOut]:
+		case optedOut.Off(u.ID, u.Email, optOut):
 			f.Skip = skipOptedOutOf(category)
 		}
 		out = append(out, f)

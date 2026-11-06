@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,33 +17,66 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/models"
 
 	"gorm.io/gorm"
 )
 
+// legacyUnsubscribeToken reproduces the released v1 wire format.
+func legacyUnsubscribeToken(app *App, userID uint, scope string) string {
+	body := binary.AppendUvarint([]byte{1}, uint64(userID))
+	body = append(body, scope...)
+	mac := hmac.New(sha256.New, app.unsubscribeKey())
+	mac.Write(body)
+	return base64.RawURLEncoding.EncodeToString(append(body, mac.Sum(nil)[:16]...))
+}
+
 func TestUnsubscribeTokens(t *testing.T) {
-	app := testApp(t)
-	tok := app.unsubscribeToken(42, "category:groups")
-	id, scope, err := app.parseUnsubscribeToken(tok)
-	if err != nil || id != 42 || scope != "category:groups" {
-		t.Fatalf("round trip: %d %q %v", id, scope, err)
+	app := &App{Config: Config{SessionSecret: []byte("test-session-secret-at-least-32-bytes")}}
+	const address = "mailbox@example.com"
+	tok := app.unsubscribeToken(42, "category:groups", address)
+	link, err := app.parseUnsubscribeToken(tok)
+	if err != nil || link.UserID != 42 || link.Scope != "category:groups" {
+		t.Fatalf("round trip: %+v %v", link, err)
+	}
+	if !link.boundTo(" MAILBOX@Example.Com ") || link.boundTo("other@example.com") {
+		t.Fatal("v2 binding did not normalize the destination")
+	}
+	v1, err := app.parseUnsubscribeToken(legacyUnsubscribeToken(app, 42, "category:groups"))
+	if err != nil || v1.UserID != 42 || v1.Scope != "category:groups" || v1.boundTo(address) {
+		t.Fatalf("v1: %+v %v", v1, err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		t.Fatal(err)
 	}
 	other := &App{Config: Config{SessionSecret: []byte("a different secret entirely, long enough")}}
-	flipped := []byte(tok)
-	flipped[len(flipped)/2] ^= 1
 	for name, bad := range map[string]string{
-		"tampered":             string(flipped),
-		"another secret":       other.unsubscribeToken(42, "category:groups"),
-		"not base64":           "%%%",
-		"too short":            "AQ",
-		"a scope we don't use": app.unsubscribeToken(42, "category:safety"),
-		"no user":              app.unsubscribeToken(0, "category:groups"),
+		"another secret": other.unsubscribeToken(42, "category:groups", address),
+		"not base64":     "%%%", "too short": "AQ",
+		"short v2":             base64.RawURLEncoding.EncodeToString([]byte{2, 42, 1, 2}),
+		"a scope we don't use": app.unsubscribeToken(42, "category:safety", address),
+		"no user":              app.unsubscribeToken(0, "category:groups", address),
 	} {
-		if _, _, err := app.parseUnsubscribeToken(bad); err == nil {
+		if _, err := app.parseUnsubscribeToken(bad); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	for name, at := range map[string]int{"body": 2, "identity MAC": len(raw) - 32, "address MAC": len(raw) - 1} {
+		t.Run(name, func(t *testing.T) {
+			bad := append([]byte(nil), raw...)
+			bad[at] ^= 1
+			parsed, err := app.parseUnsubscribeToken(base64.RawURLEncoding.EncodeToString(bad))
+			if name == "address MAC" {
+				if err != nil || parsed.boundTo(address) {
+					t.Fatal("address-only tampering must leave identity valid and binding false")
+				}
+			} else if err == nil {
+				t.Fatal("tampered identity accepted")
+			}
+		})
 	}
 }
 
@@ -127,7 +164,7 @@ func TestOneClickUnsubscribe(t *testing.T) {
 	if contactCount(t, app, &models.NotificationDelivery{}, "notification_id = ? AND status = ?", task2.ID, models.DeliverySent) != 1 {
 		t.Fatal("required mail stopped")
 	}
-	if w := postOneClick(app, "/u/unsubscribe/"+app.unsubscribeToken(lee.ID, "category:events"), "x"); w.Code != http.StatusOK ||
+	if w := postOneClick(app, "/u/unsubscribe/"+app.unsubscribeToken(lee.ID, "category:events", lee.Email), "x"); w.Code != http.StatusOK ||
 		contactCount(t, app, &models.Consent{}, "user_id = ?", lee.ID) != 2 {
 		t.Fatal("a second kind is its own row")
 	}
@@ -268,7 +305,7 @@ func consentTestRows(t *testing.T, app *App, userID uint) []string {
 	return rows
 }
 
-// consentTestWriter is one of the five setConsent writers, with the prior
+// consentTestWriter is a setConsent write path, with the prior
 // row it is seeded over and what a gone owner answers.
 type consentTestWriter struct {
 	name      string
@@ -288,15 +325,28 @@ func consentTestWriters() []consentTestWriter {
 		{name: "one-click unsubscribe", channel: models.ConsentEmail, scope: groups, prior: models.ConsentOptedIn,
 			newStatus: models.ConsentOptedOut, gone: http.StatusNotFound, goneBody: "This unsubscribe link isn't valid.",
 			run: func(t *testing.T, app *App, u *models.User, _ *apiClient) *httptest.ResponseRecorder {
-				return postOneClick(app, "/u/unsubscribe/"+app.unsubscribeToken(u.ID, groups), "One-click agent")
+				return postOneClick(app, "/u/unsubscribe/"+app.unsubscribeToken(u.ID, groups, u.Email), "One-click agent")
 			}},
 		{name: "token page switch", channel: models.ConsentEmail, scope: groups, prior: models.ConsentOptedIn,
 			newStatus: models.ConsentOptedOut, gone: http.StatusNotFound, goneBody: "not found",
 			run: func(t *testing.T, app *App, u *models.User, _ *apiClient) *httptest.ResponseRecorder {
 				c := anonClient(t, app, "203.0.113.20")
 				c.holdNotices = true
-				return c.do("PUT", "/api/v1/email-settings/"+app.unsubscribeToken(u.ID, groups),
+				return c.do("PUT", "/api/v1/email-settings/"+app.unsubscribeToken(u.ID, groups, u.Email),
 					map[string]any{"category": "groups", "off": true}, true)
+			}},
+		{name: "token page turn-on", channel: models.ConsentEmail, scope: groups, prior: models.ConsentOptedOut,
+			newStatus: models.ConsentOptedIn, gone: http.StatusNotFound, goneBody: "not found",
+			run: func(t *testing.T, app *App, u *models.User, _ *apiClient) *httptest.ResponseRecorder {
+				c := anonClient(t, app, "203.0.113.20")
+				c.holdNotices = true
+				return c.do("PUT", "/api/v1/email-settings/"+app.unsubscribeToken(u.ID, groups, u.Email),
+					map[string]any{"category": "groups", "off": false}, true)
+			}},
+		{name: "signed-in email turn-on", signedIn: true, channel: models.ConsentEmail, scope: groups, prior: models.ConsentOptedOut,
+			newStatus: models.ConsentOptedIn, gone: http.StatusUnauthorized, goneBody: "unauthorized",
+			run: func(t *testing.T, app *App, u *models.User, c *apiClient) *httptest.ResponseRecorder {
+				return c.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "groups", "off": false}, true)
 			}},
 		{name: "signed-in email switch", signedIn: true, channel: models.ConsentEmail, scope: groups, prior: models.ConsentOptedIn,
 			newStatus: models.ConsentOptedOut, gone: http.StatusUnauthorized, goneBody: "unauthorized",
@@ -342,6 +392,27 @@ func TestConsentWritersRefuseAfterTheOwnerIsSoftDeleted(t *testing.T) {
 			if w.name == "push turn off everywhere" {
 				newPushDevice(t, app, u, "lee-phone")
 			}
+			if w.newStatus == models.ConsentOptedIn && w.channel == models.ConsentEmail {
+				seedEmailAddressOff(t, app, u.Email, notify.CatGroups)
+				name := fmt.Sprintf("test:no_gone_choice_delete:%d", queryCounterSeq.Add(1))
+				var deletes atomic.Int64
+				if err := app.DB.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+					if strings.HasPrefix(tx.Statement.SQL.String(), "DELETE FROM email_address_optouts") {
+						deletes.Add(1)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = app.DB.Callback().Raw().Remove(name) })
+				defer func() {
+					if deletes.Load() != 0 {
+						t.Error("gone-owner turn-on reached the retained-choice delete")
+					}
+					if contactCount(t, app, &models.EmailAddressOptOut{}, "address_hash = ?", mail.AddressHash(u.Email)) != 1 {
+						t.Error("gone-owner turn-on changed retained records")
+					}
+				}()
+			}
 			before := consentTestRows(t, app, u.ID)
 			if len(before) != 1 {
 				t.Fatalf("seed: %d rows", len(before))
@@ -360,7 +431,7 @@ func TestConsentWritersRefuseAfterTheOwnerIsSoftDeleted(t *testing.T) {
 			}
 		})
 	}
-	// R4-2d1b-2: the same five writers against the real erasure, which now
+	// R4-2d1b-2: the same writers against the real erasure, which now
 	// scrubs the owner's consent evidence right after its soft delete.
 	t.Run("real erasure", func(t *testing.T) {
 		for _, w := range consentTestWriters() {
@@ -545,4 +616,46 @@ func TestConsentWritersRefuseAStaleSession(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOptionalEmailLinksBindTheActualDestination(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "current-holder", "password1234", models.RoleMember)
+	const snapshotAddress = "snapshot@example.com"
+	footer := footerFacts{site: "Fold"}
+	kind, ok := notify.Lookup(notify.GroupApproved)
+	if !ok {
+		t.Fatal("missing optional kind")
+	}
+	notification := app.notificationEmailMessage(&models.Notification{EmailTitle: "Approved", Link: "/me"}, u, kind, footer)
+	check := func(url, address, scope string) {
+		t.Helper()
+		token := strings.TrimPrefix(url, app.emailBaseURL()+"/u/unsubscribe/")
+		link, err := app.parseUnsubscribeToken(token)
+		if err != nil || link.UserID != u.ID || link.Scope != scope || !link.boundTo(address) {
+			t.Fatalf("link did not bind the mail destination: user=%d scope=%q err=%v", link.UserID, link.Scope, err)
+		}
+		if address != u.Email && link.boundTo(u.Email) {
+			t.Fatal("snapshot mail link bound to the user's current address")
+		}
+	}
+	check(notification.ListUnsubscribe, notification.To, "category:groups")
+	msg := models.Message{Subject: "Hello", BodyHTML: "<p>Hello</p>", BodyText: "Hello"}
+	teen := newTestUser(t, app, "teen-reader", "password1234", models.RoleMember)
+	for _, copy := range []bool{false, true} {
+		row := models.MessageRecipient{UserID: u.ID, Address: snapshotAddress}
+		if copy {
+			row.CopyOfUserID = &teen.ID
+		}
+		rendered, err := app.messageEmail(&msg, row, u, map[uint]*models.User{u.ID: u, teen.ID: teen}, map[uint]map[string]string{u.ID: {}, teen.ID: {}}, footer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(rendered.ListUnsubscribe, row.Address, "category:messages")
+	}
+	preview, err := app.renderMessage(&msg, u, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(preview.Unsubscribe, u.Email, "category:messages")
 }

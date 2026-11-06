@@ -561,10 +561,6 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	if err != nil {
 		return err
 	}
-	optedOut, err := emailOptOuts(db, keysOf(readers))
-	if err != nil {
-		return err
-	}
 	footer := footerFacts{site: a.siteName(), address: a.churchAddress()}
 	from := a.messageFromName(db, &m, footer.site)
 	replyTo := a.replyToAddress()
@@ -583,10 +579,18 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			// Who the reader is now: someone disabled or opted out since
 			// the snapshot doesn't get it.
-			switch {
-			case reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder):
+			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
-			case optedOut[row.UserID][optOut]:
+			}
+			// D11: check the actual destination after claiming each row, including
+			// guardian copies and rows re-queued by apiRetryMessage or recheckReminderRows.
+			// A choice committed before this statement starts is honored; a later change
+			// may not stop this one in-flight send. Every later row and retry rechecks.
+			off, err := readEmailOff(tx, []emailDest{{UserID: row.UserID, Address: row.Address}})
+			if err != nil {
+				return err
+			}
+			if off.Off(row.UserID, row.Address, optOut) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
 			}
 			msg, err := a.messageEmail(&m, row, reader, readers, values, footer)
@@ -707,7 +711,7 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 		msg.BodyHTML = "<p><em>" + html.EscapeString(note) + "</em></p>" + m.BodyHTML
 		msg.BodyText = note + "\n\n" + m.BodyText
 	}
-	r, err := a.renderMessageWith(&msg, reader, vals, footer)
+	r, err := a.renderMessageWith(&msg, reader, row.Address, vals, footer)
 	if err != nil {
 		return mail.Message{}, err
 	}
