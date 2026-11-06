@@ -569,4 +569,10 @@ var erasureColumns = []erasureColumn{
 	{"email_address_optouts", "address_hash", "T38", "RET", []string{"T38", "7.6", "O-1"}},
 	{"email_address_optouts", "scope", "T38", "RET", []string{"T38", "7.6", "O-1"}},
 	{"email_address_optouts", "opted_out_at", "T38", "RET", []string{"T38", "7.6", "O-1"}},
+
+	// T39 admin_operation_attempts: transient workflow row, random nonce and
+	// timestamp, deleted after 24 hours, no personal data. Dormant in T07B-1a;
+	// the planned cleanup is not implemented by the schema slice.
+	{"admin_operation_attempts", "attempt_id", "T39", "DEL", []string{"T39"}},
+	{"admin_operation_attempts", "created_at", "T39", "DEL", []string{"T39"}},
 }

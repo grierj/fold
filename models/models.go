@@ -1040,7 +1040,7 @@ func All() []any {
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
 		&ContactRequest{}, &ContactGrant{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
-		&PushSubscription{}, &EmailAddressOptOut{},
+		&PushSubscription{}, &EmailAddressOptOut{}, &AdminOperationAttempt{},
 	}
 }
 
@@ -1115,6 +1115,14 @@ const (
 	JobDead      = "dead"
 	JobDismissed = "dismissed"
 )
+
+// AdminOperationAttempt is a transient receipt containing only a random nonce
+// and timestamp (M7.4 T07B-1a). The table is dormant until the attempt lifecycle
+// and its 24-hour cleanup are implemented.
+type AdminOperationAttempt struct {
+	AttemptID []byte    `gorm:"primaryKey;type:bytea;not null"`
+	CreatedAt time.Time `gorm:"not null;default:now();index:admin_operation_attempts_created_at"`
+}
 
 // EmailAddressOptOut retains an address's optional-email choice (M7.4 R4-2d2).
 // Its hash is pseudonymous and guessable, not anonymous. Only the erasure

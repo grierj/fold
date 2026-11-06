@@ -750,8 +750,8 @@ func TestRegistrationAccessSchemaShape(t *testing.T) {
 	}
 	// The partial unique index lets one request ground one registration only.
 	var tables int
-	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 38 {
-		t.Fatalf("tables = %d (%v), models = %d, want 38", tables, err, len(models.All()))
+	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 39 {
+		t.Fatalf("tables = %d (%v), models = %d, want 39", tables, err, len(models.All()))
 	}
 }
 
@@ -1820,6 +1820,106 @@ func TestEmailAddressOptOutsMigration(t *testing.T) {
 		t.Fatalf("version after Up = %d, err=%v, want %d", v, err, version)
 	}
 	if _, err := db.Exec(insert, hash, "category:admin", at); err != nil {
+		t.Fatalf("insert after round trip: %v", err)
+	}
+}
+
+// TestAdminOperationAttemptsMigration checks the dormant receipt shape and
+// proves Down discards only receipts and Up recreates the empty table.
+func TestAdminOperationAttemptsMigration(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const version int64 = 6
+	if _, err := p.UpTo(ctx, version-1); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table before 00006: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	var columns, primaryKey, defaultValue string
+	if err := db.QueryRow(`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
+		FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'admin_operation_attempts'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if want := "attempt_id:bytea:NO,created_at:timestamp with time zone:NO"; columns != want {
+		t.Fatalf("columns = %q, want %q", columns, want)
+	}
+	if err := db.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'admin_operation_attempts'::regclass AND contype = 'p'`).Scan(&primaryKey); err != nil || primaryKey != "PRIMARY KEY (attempt_id)" {
+		t.Fatalf("primary key = %q, err=%v", primaryKey, err)
+	}
+	if err := db.QueryRow(`SELECT column_default FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'admin_operation_attempts' AND column_name = 'created_at'`).Scan(&defaultValue); err != nil || defaultValue != "now()" {
+		t.Fatalf("created_at default = %q, err=%v", defaultValue, err)
+	}
+	var indexes, foreignKeys int
+	var indexDef string
+	if err := db.QueryRow(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'admin_operation_attempts'`).Scan(&indexes); err != nil || indexes != 2 {
+		t.Fatalf("indexes = %d, err=%v, want primary key and created_at", indexes, err)
+	}
+	if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'
+		AND tablename = 'admin_operation_attempts' AND indexname = 'admin_operation_attempts_created_at'`).Scan(&indexDef); err != nil || !strings.HasPrefix(indexDef, "CREATE INDEX ") || !strings.HasSuffix(indexDef, "USING btree (created_at)") {
+		t.Fatalf("created_at index = %q, err=%v", indexDef, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pg_constraint WHERE conrelid = 'admin_operation_attempts'::regclass AND contype = 'f'`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
+		t.Fatalf("foreign keys = %d, err=%v, want none", foreignKeys, err)
+	}
+	const insert = `INSERT INTO admin_operation_attempts (attempt_id) VALUES ($1)`
+	for _, size := range []int{15, 17} {
+		_, err := db.Exec(insert, make([]byte, size))
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != "23514" {
+			t.Fatalf("%d-byte nonce: %v, want CHECK refusal", size, err)
+		}
+	}
+	nonce := make([]byte, 16)
+	var at time.Time
+	if err := db.QueryRow(insert+` RETURNING created_at`, nonce).Scan(&at); err != nil || at.IsZero() {
+		t.Fatalf("16-byte nonce with default time: at=%v, err=%v", at, err)
+	}
+	for _, tc := range []struct {
+		name string
+		q    string
+		arg  any
+		code string
+	}{
+		{"duplicate nonce", insert, nonce, "23505"},
+		{"null nonce", insert, nil, "23502"},
+		{"null time", `INSERT INTO admin_operation_attempts (attempt_id, created_at) VALUES ($1, NULL)`, make([]byte, 16), "23502"},
+	} {
+		_, err := db.Exec(tc.q, tc.arg)
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != tc.code {
+			t.Fatalf("%s: %v, want SQLSTATE %s", tc.name, err, tc.code)
+		}
+	}
+	// Unlike retained opt-outs, receipts may be dropped even when populated.
+	if _, err := p.Down(ctx); err != nil {
+		t.Fatalf("Down with a receipt: %v", err)
+	}
+	if v, err := p.GetDBVersion(ctx); err != nil || v != version-1 {
+		t.Fatalf("version after Down = %d, err=%v, want %d", v, err, version-1)
+	}
+	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table after Down: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	var receipts int
+	if err := db.QueryRow(`SELECT count(*) FROM admin_operation_attempts`).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatalf("receipts after round trip = %d, err=%v, want none", receipts, err)
+	}
+	if _, err := db.Exec(insert, nonce); err != nil {
 		t.Fatalf("insert after round trip: %v", err)
 	}
 }
