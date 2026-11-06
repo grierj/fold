@@ -18,6 +18,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/providers"
 	"fold/models"
 
@@ -955,12 +956,21 @@ func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
 		{"announcement Try again", false, true, false}, {"reminder Try again", true, true, false},
 		{"guardian copy", false, false, true},
 	} {
-		for _, change := range []string{"destination record", "current address record", "account choice", "none"} {
+		for _, change := range []string{"destination record", "erasure at destination", "current address record", "account choice", "none"} {
 			t.Run(mode.name+"/"+change, func(t *testing.T) {
 				f, id, rows, target := prepareChoiceBatch(t, mode.reminder, mode.retry, mode.copyRow)
 				cat := "messages"
 				if mode.reminder {
 					cat = "events"
+				}
+				var erased *models.User
+				if change == "erasure at destination" {
+					// Y's queued r2 still names A after Y moved to C. X now
+					// holds A and makes their own choices, before the batch starts.
+					erased = newTestUser(t, f.app, rows[1].Address, erasurePW, models.RoleMember)
+					for _, category := range []string{notify.CatMessages, notify.CatEvents} {
+						consentTestSeed(t, f.app, erased, models.ConsentEmail, categoryScope(category), models.ConsentOptedOut)
+					}
 				}
 				sender := newBlockingChoiceSender(t, nil)
 				f.app.Mailer = sender
@@ -973,6 +983,14 @@ func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
 				switch change {
 				case "destination record":
 					seedEmailAddressOff(t, f.app, rows[1].Address, cat)
+				case "erasure at destination":
+					// Complete the real erasure while r1's provider call holds
+					// its transaction. X's erasure must leave Y's queued row alone.
+					if r := deleteAccount(f.admin, erased.ID, nil); r.code != http.StatusOK {
+						t.Fatalf("cross-account erasure: %d %s", r.code, r.body)
+					}
+					wantRetainedEmailChoice(t, f.app, rows[1].Address, "messages", true)
+					wantRetainedEmailChoice(t, f.app, rows[1].Address, "events", true)
 				case "current address record":
 					seedEmailAddressOff(t, f.app, "moved-choice@example.com", cat)
 				case "account choice":
@@ -984,7 +1002,7 @@ func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
 				if err := f.app.DB.First(&held, rows[1].ID).Error; err != nil {
 					t.Fatal(err)
 				}
-				if held.Status != models.RecipientQueued {
+				if held.Status != models.RecipientQueued || held.Address != rows[1].Address || held.UserID != target.ID {
 					t.Fatalf("later row changed before release: %+v", held)
 				}
 				sender.resume()
@@ -995,7 +1013,7 @@ func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
 					t.Fatal(err)
 				}
 				sends := sender.sent()
-				if change == "destination record" || change == "account choice" {
+				if change == "destination record" || change == "erasure at destination" || change == "account choice" {
 					if held.Status != models.RecipientSuppressed || held.Reason != skipOptedOutOf(cat) || len(sends) != 1 {
 						t.Fatalf("late choice missed: row %+v, sends %+v", held, sends)
 					}
@@ -1015,7 +1033,7 @@ func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
 						t.Fatal(err)
 					}
 					wantSkipped := 0
-					if change == "destination record" || change == "account choice" {
+					if change == "destination record" || change == "erasure at destination" || change == "account choice" {
 						wantSkipped = 1
 					}
 					if counts.Skipped != wantSkipped || counts.Sent != 2-wantSkipped || counts.Queued != 0 || skipped[skipOptedOutOf(cat)] != wantSkipped {

@@ -571,6 +571,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 		for _, table := range tables {
 			out += table + dumpRows(t, db, table, "id", "true")
 		}
+		out += "email_address_optouts" + dumpRows(t, db, "email_address_optouts", "address_hash, r.scope", "true")
 		return out
 	}
 	whole := writeSet()
@@ -585,6 +586,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK {
 		t.Fatalf("delete after removing failure answered %d %s, want 200", r.code, r.body)
 	}
+	wantRetainedEmailChoice(t, s.app, addr, "groups", true)
 	assertAuditErasureRows(t, db, []models.AuditLog{actorAudit, metadataAudit}, map[uint]bool{actorAudit.ID: true}, map[uint][]string{metadataAudit.ID: {"note"}})
 }
 

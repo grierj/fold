@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// The erasure export lands in 2c. Fixtures insert retained choices directly.
+// Reader and turn-on tests can seed retained choices without erasing an account.
 func seedEmailAddressOff(t *testing.T, app *App, address string, categories ...string) {
 	t.Helper()
 	for _, cat := range categories {
@@ -349,5 +349,247 @@ func TestEmailWebhooksLeaveChoicesUntouched(t *testing.T) {
 		if !reflect.DeepEqual(before, consentTestRows(t, app, u.ID)) || !reflect.DeepEqual(records, retainedEmailChoices(t, app)) {
 			t.Fatalf("%s report changed email choices", kind)
 		}
+	}
+}
+
+type emailOptOutStatement struct {
+	SQL  string
+	Vars []any
+}
+
+// recordEmailOptOutStatements observes both Exec and Raw/Scan, including a
+// forbidden read on the tombstone path, without interpolating bind values.
+func recordEmailOptOutStatements(t *testing.T, db *gorm.DB) func() []emailOptOutStatement {
+	t.Helper()
+	var mu sync.Mutex
+	var statements []emailOptOutStatement
+	capture := func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "email_address_optouts") {
+			mu.Lock()
+			statements = append(statements, emailOptOutStatement{SQL: tx.Statement.SQL.String(), Vars: append([]any(nil), tx.Statement.Vars...)})
+			mu.Unlock()
+		}
+	}
+	name := fmt.Sprintf("test:email_optout_statements:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().After("gorm:raw").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+	if err := db.Callback().Row().After("gorm:row").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Row().Remove(name) })
+	return func() []emailOptOutStatement {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]emailOptOutStatement(nil), statements...)
+	}
+}
+
+func TestErasureExportsOnlyInForceEmailOptOuts(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%v", existing), func(t *testing.T) {
+			s := newCoreErasureScene(t)
+			s.ac.holdNotices = true
+			u := newTestUser(t, s.app, "export-choice@example.com", erasurePW, models.RoleMember)
+			at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+			groupsAt, adminAt := at.Add(time.Hour), at.Add(2*time.Hour)
+			for _, row := range []models.Consent{
+				{Channel: models.ConsentEmail, Scope: "category:groups", Status: models.ConsentOptedIn, At: groupsAt},
+				{Channel: models.ConsentEmail, Scope: "category:groups", Status: models.ConsentOptedOut, At: groupsAt},
+				// A larger id with an older time cannot undo the newer choice.
+				{Channel: models.ConsentEmail, Scope: "category:groups", Status: models.ConsentOptedIn, At: at},
+				{Channel: models.ConsentEmail, Scope: "category:events", Status: models.ConsentOptedOut, At: at},
+				{Channel: models.ConsentEmail, Scope: "category:events", Status: models.ConsentOptedIn, At: at},
+				{Channel: models.ConsentEmail, Scope: "category:admin", Status: models.ConsentOptedOut, At: adminAt},
+				{Channel: models.ConsentPush, Scope: "category:messages", Status: models.ConsentOptedOut, At: at},
+				{Channel: models.ConsentEmail, Scope: "all", Status: models.ConsentOptedOut, At: at},
+				{Channel: models.ConsentEmail, Scope: "group:1", Status: models.ConsentOptedOut, At: at},
+			} {
+				row.UserID, row.Source, row.IP = u.ID, models.ConsentSourceWebForm, "203.0.113.30"
+				erasureMustCreate(t, s.app.DB, &row)
+			}
+			other := newTestUser(t, s.app, "other-export-choice@example.com", erasurePW, models.RoleMember)
+			erasureMustCreate(t, s.app.DB, &models.Consent{UserID: other.ID, Channel: models.ConsentEmail, Scope: "category:messages", Status: models.ConsentOptedOut, Source: models.ConsentSourceWebForm, At: at})
+			if existing {
+				groupsAt = at.Add(-24 * time.Hour)
+				erasureMustCreate(t, s.app.DB, &models.EmailAddressOptOut{AddressHash: mail.AddressHash(u.Email), Scope: "category:groups", OptedOutAt: groupsAt})
+			}
+			statements := recordEmailOptOutStatements(t, s.app.DB)
+			s.erase(t, u.ID)
+			recorded := statements()
+			if len(recorded) != 1 || !strings.HasPrefix(recorded[0].SQL, "INSERT INTO email_address_optouts") {
+				t.Fatalf("erasure did not issue exactly one export: %+v", recorded)
+			}
+			foundHash := false
+			for _, bind := range recorded[0].Vars {
+				if str, ok := bind.(string); ok {
+					if strings.Contains(str, "@") {
+						t.Fatal("export bound a plaintext address")
+					}
+					foundHash = foundHash || str == mail.AddressHash(u.Email)
+				}
+			}
+			if !foundHash || strings.Contains(recorded[0].SQL, u.Email) {
+				t.Fatal("export did not bind only the held address's Go hash")
+			}
+			want := []models.EmailAddressOptOut{
+				{AddressHash: mail.AddressHash(u.Email), Scope: "category:admin", OptedOutAt: adminAt},
+				{AddressHash: mail.AddressHash(u.Email), Scope: "category:groups", OptedOutAt: groupsAt},
+			}
+			before := retainedEmailChoices(t, s.app)
+			if len(before) != len(want) {
+				t.Fatalf("exported choices: got %+v, want %+v", before, want)
+			}
+			for i, got := range before {
+				if got.AddressHash != want[i].AddressHash || got.Scope != want[i].Scope || !got.OptedOutAt.Equal(want[i].OptedOutAt) {
+					t.Fatalf("exported choice or original time differs: got %+v, want %+v", got, want[i])
+				}
+			}
+			wantEmailSettingsStatus(t, s.ac.do("DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil, true), http.StatusNotFound)
+			tombstoneRun(t, s.app, u.ID, 1)
+			if got := retainedEmailChoices(t, s.app); !reflect.DeepEqual(got, before) {
+				t.Fatalf("repeated erasure changed retained choices: %+v", got)
+			}
+		})
+	}
+}
+
+func TestErasureOptOutExportRequiresHeldNonemptyAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		address heldAddress
+	}{
+		{"unavailable", heldAddress{value: "poison@example.com"}},
+		{"empty", heldAddress{ok: true}},
+		{"whitespace", heldAddress{value: " \t\r\n", ok: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newCoreErasureScene(t)
+			u := newTestUser(t, s.app, "unavailable-choice@example.com", erasurePW, models.RoleMember)
+			erasureSeedConsentEvidence(t, s.app.DB, u.ID, "unavailable")
+			tombstoneLegacy(t, s.app.DB, u.ID)
+			seen := recordEmailOptOutStatements(t, s.app.DB)
+			if err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+				var id uint
+				if err := tx.Raw("SELECT id FROM users WHERE id = ? FOR UPDATE", u.ID).Scan(&id).Error; err != nil {
+					return err
+				}
+				return eraseConsentEvidenceIn(tx, erasureSubject{ID: u.ID, Address: tc.address})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if statements := seen(); len(statements) != 0 {
+				t.Fatalf("unavailable or blank held address issued opt-out SQL: %+v", statements)
+			}
+			if rows := retainedEmailChoices(t, s.app); len(rows) != 0 {
+				t.Fatalf("unavailable or blank held address exported records: %+v", rows)
+			}
+		})
+	}
+}
+
+func TestReusedAddressKeepsErasedChoicesUntilHolderTurnsOn(t *testing.T) {
+	f := newComposeFixture(t)
+	f.admin.holdNotices, f.leader.holdNotices = true, true
+	const address, moved = "reused-choice@example.com", "moved-reused-choice@example.com"
+	x := newTestUser(t, f.app, address, erasurePW, models.RoleMember)
+	xc := loginAPI(t, f.app, address, erasurePW)
+	xc.holdNotices = true
+	oldTokens := []string{legacyUnsubscribeToken(f.app, x.ID, "category:events"), f.app.unsubscribeToken(x.ID, "category:events", address)}
+	for _, category := range []string{notify.CatEvents, notify.CatGroups} {
+		wantEmailSettingsStatus(t, xc.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": category, "off": true}, true), http.StatusOK)
+	}
+	wantEmailSettingsStatus(t, f.admin.do("DELETE", "/api/v1/admin/users/"+itoa(x.ID), nil, true), http.StatusOK)
+	y := newTestUser(t, f.app, address, erasurePW, models.RoleMember)
+	addMember(t, f.app, y, f.group, models.MembershipMember)
+	yc := loginAPI(t, f.app, address, erasurePW)
+	yc.holdNotices = true
+	wantSettings := func(client *apiClient, eventsOff, groupsOff bool) {
+		t.Helper()
+		w := client.do("GET", "/api/v1/me/notification-settings", nil, false)
+		wantEmailSettingsStatus(t, w, http.StatusOK)
+		var got struct {
+			Settings notificationSettingsJSON `json:"settings"`
+		}
+		decodeJSON(t, w, &got)
+		for category, want := range map[string]bool{notify.CatEvents: eventsOff, notify.CatGroups: groupsOff, notify.CatMessages: false} {
+			if off, found := kindOff(emailSettingsJSON{Kinds: got.Settings.Kinds}, category); !found || off != want {
+				t.Fatalf("%s setting: found=%v off=%v, want %v", category, found, off, want)
+			}
+		}
+	}
+	wantSettings(yc, true, true)
+	if len(consentTestRowsOf(t, f.app, y.ID)) != 0 {
+		t.Fatal("creating the replacement invented an account choice")
+	}
+	for _, kind := range []string{notify.EventChanged, notify.GroupApproved} {
+		id := sendNotice(t, f.app, kind, y)
+		if err := f.app.deliverOneNotification(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		if got := emailDeliveryOf(t, f.app, id); got.Status != models.DeliverySuppressed || got.Reason != "optional email turned off" {
+			t.Fatalf("replacement's optional notice sent: %+v", got)
+		}
+	}
+	erasureMustCreate(t, f.app.DB, &models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &y.ID, Status: models.RegGoing})
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	var reminder models.MessageRecipient
+	if err := f.app.DB.Joins("JOIN messages m ON m.id = message_recipients.message_id").Where("m.category = ? AND message_recipients.user_id = ?", models.MessageCategoryReminder, y.ID).First(&reminder).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reminder.Status != models.RecipientSuppressed || reminder.Reason != skipEventsOff || mailCount(t, f.app, address) != 0 {
+		t.Fatalf("replacement received optional email: %+v", reminder)
+	}
+	required := sendNotice(t, f.app, notify.OccurrenceChanged, y)
+	if err := f.app.deliverOneNotification(context.Background(), required); err != nil {
+		t.Fatal(err)
+	}
+	if got := emailDeliveryOf(t, f.app, required); got.Status != models.DeliverySent || mailCount(t, f.app, address) != 1 {
+		t.Fatalf("required notice blocked: %+v", got)
+	}
+	queueResetMail(t, f.app, y)
+	runResetMail(t, f.app)
+	if mailCount(t, f.app, address) != 2 {
+		t.Fatal("replacement's account mail blocked")
+	}
+	wantEmailSettingsStatus(t, yc.do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "events", "off": false}, true), http.StatusOK)
+	wantRetainedEmailChoice(t, f.app, address, "events", false)
+	wantRetainedEmailChoice(t, f.app, address, "groups", true)
+	rows := consentTestRowsOf(t, f.app, y.ID)
+	if len(rows) != 1 || rows[0].Scope != "category:events" || rows[0].Status != models.ConsentOptedIn {
+		t.Fatalf("holder's turn-on was not recorded: %+v", rows)
+	}
+	eventNotice := sendNotice(t, f.app, notify.EventChanged, y)
+	if err := f.app.deliverOneNotification(context.Background(), eventNotice); err != nil {
+		t.Fatal(err)
+	}
+	if got := emailDeliveryOf(t, f.app, eventNotice); got.Status != models.DeliverySent || mailCount(t, f.app, address) != 3 {
+		t.Fatalf("affirmative holder's event email blocked: %+v", got)
+	}
+	kept := retainedEmailChoices(t, f.app)
+	for _, next := range []string{moved, address} {
+		wantEmailSettingsStatus(t, f.admin.do("PUT", "/api/v1/admin/users/"+itoa(y.ID), map[string]string{"email": next}, true), http.StatusOK)
+		if !reflect.DeepEqual(kept, retainedEmailChoices(t, f.app)) {
+			t.Fatal("address change moved or cleared a retained choice")
+		}
+		yc = loginAPI(t, f.app, next, erasurePW)
+		yc.holdNotices = true
+		wantSettings(yc, false, next == address)
+	}
+	before := consentTestRows(t, f.app, y.ID)
+	anon := newAPIClient(t, f.app)
+	anon.holdNotices = true
+	anon.fetchCSRF()
+	for _, token := range oldTokens {
+		path := "/api/v1/email-settings/" + token
+		wantEmailSettingsStatus(t, anon.do("GET", path, nil, false), http.StatusNotFound)
+		for _, off := range []bool{false, true} {
+			wantEmailSettingsStatus(t, anon.do("PUT", path, map[string]any{"off": off}, true), http.StatusNotFound)
+		}
+		wantEmailSettingsStatus(t, postOneClick(f.app, "/u/unsubscribe/"+token, "Old mail"), http.StatusNotFound)
+	}
+	if !reflect.DeepEqual(before, consentTestRows(t, f.app, y.ID)) || !reflect.DeepEqual(kept, retainedEmailChoices(t, f.app)) {
+		t.Fatal("erased holder's old links changed the replacement's choices")
 	}
 }

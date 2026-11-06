@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -13,6 +14,23 @@ import (
 type emailDest struct {
 	UserID  uint
 	Address string
+}
+
+// exportEmailOptOutsIn retains only the latest, still-off email categories for
+// the held address. The choice time survives erasure, and an existing record
+// keeps its original time. The caller holds the user row and owns the erasure
+// transaction. Only the Go-computed hash reaches SQL, never the address.
+func exportEmailOptOutsIn(tx *gorm.DB, userID uint, addressHash string) error {
+	var scopes []string
+	for _, category := range notify.OptionalEmailCategories() {
+		scopes = append(scopes, categoryScope(category))
+	}
+	return tx.Exec(`INSERT INTO email_address_optouts (address_hash, scope, opted_out_at)
+		SELECT ?, latest.scope, latest.at FROM (
+			SELECT DISTINCT ON (scope) scope, status, at FROM consents
+			WHERE user_id = ? AND channel = 'email' ORDER BY scope, at DESC, id DESC
+		) latest WHERE latest.status = 'opted_out' AND latest.scope IN ?
+		ON CONFLICT (address_hash, scope) DO NOTHING`, addressHash, userID, scopes).Error
 }
 
 type emailOff struct {
