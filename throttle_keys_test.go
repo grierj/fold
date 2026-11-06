@@ -378,7 +378,7 @@ func throttleKeyViolations(sources map[string]string) []string {
 }
 
 // throttleSQLViolations rejects login_throttles SQL and models.LoginThrottle
-// outside the listed functions.
+// outside the listed functions, apart from literal erasure inventory metadata.
 func throttleSQLViolations(sources map[string]string, allowed map[string]map[string]bool) []string {
 	fset := token.NewFileSet()
 	var names []string
@@ -393,6 +393,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			bad = append(bad, name+": does not parse: "+err.Error())
 			continue
 		}
+		inventoryTables := erasureInventoryTableLiterals(name, f)
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && allowed[name][fn.Name.Name] {
 				continue
@@ -411,7 +412,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			ast.Inspect(d, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.BasicLit:
-					if x.Kind != token.STRING || jobKinds[x] {
+					if x.Kind != token.STRING || jobKinds[x] || inventoryTables[x] {
 						return true
 					}
 					v, err := strconv.Unquote(x.Value)
