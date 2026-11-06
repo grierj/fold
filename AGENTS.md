@@ -285,7 +285,9 @@ unless `APP_ENV=dev`. CLI (C11, PLAN 11.4): `fold` (same as `fold serve`), `fold
 The migration chain is the generated baseline (M7.7, DEC-138) plus additive numbered files after it
 (`00002_suppression_address_hash.sql` is the M7.4 R4-S expand)
 (`00003_consent_erasure_scrub.sql` lets the erasure blank a deleted owner's consent evidence, R4-2d1)
-(`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A). `TestBaselineFileShape` checks both
+(`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A)
+(`00005_email_address_optouts.sql` stages the dormant address-level optional-email opt-out table, R4-2d2-1,
+owner decision 8; it implements no opt-out behavior yet). `TestBaselineFileShape` checks the chain
 through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
 and Down). `scripts/baseline-proof.sh generate`
 made the baseline from the frozen pre-squash chain (commit `be61e582c3011263307e4db4497056f7fd70bfd9`, 63

@@ -564,4 +564,9 @@ var erasureColumns = []erasureColumn{
 	{"users", "administratively_disabled", "T37", "ANON", []string{"T37"}},
 	{"users", "hide_contact_from_leaders", "T37", "ANON", []string{"T37"}},
 	{"users", "logout_version", "T37", "RET", []string{"T37"}},
+
+	// T38 email_address_optouts
+	{"email_address_optouts", "address_hash", "T38", "RET", []string{"T38", "7.6", "O-1"}},
+	{"email_address_optouts", "scope", "T38", "RET", []string{"T38", "7.6", "O-1"}},
+	{"email_address_optouts", "opted_out_at", "T38", "RET", []string{"T38", "7.6", "O-1"}},
 }

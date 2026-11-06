@@ -1040,7 +1040,7 @@ func All() []any {
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
 		&ContactRequest{}, &ContactGrant{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
-		&PushSubscription{},
+		&PushSubscription{}, &EmailAddressOptOut{},
 	}
 }
 
@@ -1115,6 +1115,19 @@ const (
 	JobDead      = "dead"
 	JobDismissed = "dismissed"
 )
+
+// EmailAddressOptOut retains an address's optional-email choice (M7.4 R4-2d2).
+// Its hash is pseudonymous and guessable, not anonymous. Only the erasure
+// export writes it; only the address holder's turn-on deletes it. Never show it.
+type EmailAddressOptOut struct {
+	AddressHash string    `gorm:"primaryKey;type:text"`
+	Scope       string    `gorm:"primaryKey;type:text"`
+	OptedOutAt  time.Time `gorm:"not null"`
+}
+
+// TableName matches the migration; GORM's default is email_address_opt_outs.
+// The exact deadcode allowance keeps this schema hook while R4-2d2-1 is dormant.
+func (EmailAddressOptOut) TableName() string { return "email_address_optouts" }
 
 // Suppression is an address Fold stops mailing (M3.2b, DEC-112). Write it
 // through the email webhook processing or an admin; sending reads it.
