@@ -560,6 +560,10 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// pending and on a terminal row.
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, l.ID, u.ID, groupID, eventID, occ.ID, 1, "rollback pending note")
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, l.ID, u.ID, groupID, eventID, occ.ID, 2, "rollback denied note")
+	// Both rows must change on success, so the late-failure snapshot proves
+	// that the audit scrub participates in the handler's transaction.
+	actorAudit := auditErasureLog(t, db, audit.UserCreated, "user", l.ID, &u.ID, map[string]any{"role": "member"})
+	metadataAudit := auditErasureLog(t, db, audit.RegistrationRemoved, "event", eventID, &l.ID, map[string]any{"userId": u.ID, "note": "rollback sentinel"})
 	tables := []string{"account_requests", "notifications", "invitations", "guest_signups", "mail_outboxes", "messages", "message_recipients",
 		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "contact_requests", "users"}
 	writeSet := func() string {
@@ -578,6 +582,10 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	if got := writeSet(); got != whole {
 		t.Errorf("a failed erasure left a change in the tables R4-2a touches:\n%s\n%s", whole, got)
 	}
+	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK {
+		t.Fatalf("delete after removing failure answered %d %s, want 200", r.code, r.body)
+	}
+	assertAuditErasureRows(t, db, []models.AuditLog{actorAudit, metadataAudit}, map[uint]bool{actorAudit.ID: true}, map[uint][]string{metadataAudit.ID: {"note"}})
 }
 
 // erasureSeedConsentEvidence gives uid six consent rows the way the writers
@@ -3472,7 +3480,10 @@ func TestAccountErasureCancelsScheduledMessages(t *testing.T) {
 	failed := mk(author, models.MessageFailed, "Failed")
 	theirs := mk(other, models.MessageScheduled, "Someone else's")
 	erasureMustCreate(t, db, &models.AuditLog{ActorID: &author.ID, Action: audit.MessageScheduled, TargetType: "message", TargetID: scheduled.ID, IP: "198.51.100.4"})
-	scheduledAudit := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled)
+	var scheduledAudit []models.AuditLog
+	if err := db.Where("action = ?", audit.MessageScheduled).Find(&scheduledAudit).Error; err != nil {
+		t.Fatal(err)
+	}
 	untouched := func() string {
 		return dumpRows(t, db, "messages", "id", "id IN ?", []uint{draft.ID, sent.ID, failed.ID, theirs.ID})
 	}
@@ -3502,9 +3513,7 @@ func TestAccountErasureCancelsScheduledMessages(t *testing.T) {
 	if now := untouched(); now != before {
 		t.Errorf("other messages changed:\nbefore %s\nafter  %s", before, now)
 	}
-	if now := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled); now != scheduledAudit {
-		t.Errorf("the message.scheduled row changed")
-	}
+	assertAuditErasureRows(t, db, scheduledAudit, map[uint]bool{scheduledAudit[0].ID: true}, nil)
 	var rows []models.AuditLog
 	db.Where("action = ?", audit.MessageCancelled).Find(&rows)
 	var deleted models.AuditLog
@@ -4525,13 +4534,39 @@ func checkErasurePairs(t *testing.T, erased, twin uint, twinOf map[uint]uint, be
 	}
 }
 
+// The contact/ages-note ledger fixtures use signed-in actors for these actions.
+// Keep this expectation independent of auditIPAttribution. It is deliberately
+// limited to these fixtures, not a second implementation of the IP selector.
+// With gone = 0 it only normalizes JSON for comparison after key removal.
+func erasureFixtureAuditAfter(t *testing.T, row models.AuditLog, gone uint) models.AuditLog {
+	t.Helper()
+	meta := erasureMetaOf(t, row.MetaJSON)
+	if gone != 0 {
+		if row.ActorID != nil && *row.ActorID == gone {
+			switch row.Action {
+			case audit.AddRequested, audit.AddDecision, audit.AddWithdrawn, audit.AddCompleted, audit.AddRefused, audit.AddEnded,
+				audit.ContactRequested, audit.ContactDecision, audit.ContactWithdrawn, audit.ContactGranted, audit.ContactReveal,
+				audit.ContactRefused, audit.ContactRevoked, audit.ContactEnded, audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded,
+				audit.OccurrenceBlocked, audit.RegistrationAdded, audit.RegistrationRemoved, audit.RegistrationChanged, audit.EventCreated:
+				row.IP = ""
+			}
+		}
+		if row.Action == audit.RegistrationRemoved && meta["userId"] == float64(gone) {
+			delete(meta, "note")
+		}
+	}
+	row.MetaJSON = erasureJSON(t, meta)
+	return row
+}
+
 // checkErasureLedger judges the audit, notification, delivery and job rows of
 // one DELETE against the expected rows stated in full:
 //
 //   - audit: exactly user.deleted, one end row per pending request that named
 //     the person (contact.ended or add.ended, no actor) and one
 //     occurrence_access.ended snapshot of the replacement registration, each
-//     with its complete meta; every earlier row is byte-identical;
+//     with its complete meta; earlier rows keep everything except the erased
+//     actor's IP and the subject's registration removal note (R4-4a);
 //   - the replacement registration changes only its ending columns (reason
 //     "account_disabled", no ender, an end inside the DELETE);
 //   - notices: exactly one contact.updated or add.updated per pending request,
@@ -4571,7 +4606,12 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 
 	// Audit.
 	for id, b := range before.Audit {
-		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+		b = erasureFixtureAuditAfter(t, b, run.Subject)
+		a, ok := after.Audit[id]
+		if ok {
+			a = erasureFixtureAuditAfter(t, a, 0)
+		}
+		if !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
 		}
 	}
@@ -5266,12 +5306,11 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	}
 
 	before := erasureRequestRows(t, db)
-	var maxAudit uint
-	if err := db.Raw(`SELECT coalesce(max(id), 0) FROM audit_logs`).Scan(&maxAudit).Error; err != nil {
+	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
+	var snapshotsBefore []models.AuditLog
+	if err := db.Where("action IN ?", snapshotActions).Order("id").Find(&snapshotsBefore).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
-	snapshotsBefore := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit)
 	state := agesNoteStateOf(t, db, erased.ID, nil)
 	if state.SubjectNotes < int64(len(granted)) {
 		t.Fatalf("only %d subject rows with a note were seeded", state.SubjectNotes)
@@ -5363,9 +5402,11 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	if len(gotShape) == 0 || !reflect.DeepEqual(gotShape, wantShape) {
 		t.Errorf("case (a): the ended snapshot of B is %v, the erasure before T07 writes %v for the twin", gotShape, wantShape)
 	}
-	if got := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit); got != snapshotsBefore {
-		t.Errorf("an access snapshot written before the erasure changed:\n%s\n%s", snapshotsBefore, got)
+	blankedSnapshots := map[uint]bool{}
+	for _, row := range snapshotsBefore {
+		blankedSnapshots[row.ID] = row.ActorID != nil && (*row.ActorID == erased.ID || *row.ActorID == twin.ID)
 	}
+	assertAuditErasureRows(t, db, snapshotsBefore, blankedSnapshots, nil)
 	if st := agesNoteStateOf(t, db, erased.ID, nil); st.SubjectNotes != 0 {
 		t.Errorf("%d subject notes left", st.SubjectNotes)
 	}
@@ -5858,7 +5899,10 @@ func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
 		if n := countRows(t, db, "notifications", "user_id = ? AND kind = ?", f.u.ID, notify.RegistrationRemoved); n != 1 {
 			t.Fatalf("U has %d removal notices before the erasure's notifications delete, want 1", n)
 		}
-		auditBefore := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved)
+		var auditBefore []models.AuditLog
+		if err := db.Where("action = ?", audit.RegistrationRemoved).Find(&auditBefore).Error; err != nil {
+			t.Fatal(err)
+		}
 		releaseErasure()
 		if r := awaitResult(t, del); r.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s", r.code, r.body)
@@ -5877,9 +5921,11 @@ func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
 		if n := countRows(t, db, "notification_deliveries", "user_id = ?", f.u.ID); n != 0 {
 			t.Errorf("%d notification deliveries of U remain", n)
 		}
-		if got := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved); got != auditBefore {
-			t.Errorf("the registration.removed audit row changed:\n%s\n%s", auditBefore, got)
+		removedNotes := map[uint][]string{}
+		for _, row := range auditBefore {
+			removedNotes[row.ID] = []string{"note"}
 		}
+		assertAuditErasureRows(t, db, auditBefore, nil, removedNotes)
 		f.assertWaiterPromotedOnce(t)
 		if n := states.Count("40P01"); n != 0 {
 			t.Errorf("%d deadlocks recorded: %v", n, states.entries)
@@ -10059,8 +10105,9 @@ func agesRaceTask(owner uint, r models.ContactRequest, admin bool, resolution st
 	return agesRaceTaskWant{Owner: owner, Kind: kind, ID: r.ID, Resolution: resolution, By: by}
 }
 
-// agesRaceLedger judges what one step did between two ledgers. Every earlier
-// audit row, delivery and job is byte-identical (Gone's deliveries aside); every
+// agesRaceLedger judges what one step did between two ledgers. Earlier audit
+// rows permit only R4-4a's fixture-specific scrubs; delivery and job rows are
+// byte-identical (Gone's deliveries aside); every
 // earlier notice is byte-identical except the tasks the step closes (resolved
 // inside the step, by the wanted resolver, as the wanted outcome, changing
 // nothing else) and Gone's, which are gone. New rows are exactly the wanted ones,
@@ -10075,7 +10122,12 @@ func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) 
 
 	// Audit.
 	for id, b := range before.Audit {
-		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+		b = erasureFixtureAuditAfter(t, b, st.Gone)
+		a, ok := after.Audit[id]
+		if ok {
+			a = erasureFixtureAuditAfter(t, a, 0)
+		}
+		if !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
 		}
 	}

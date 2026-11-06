@@ -965,9 +965,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	targetID := u.ID
 	retry := newHouseholdRetry(ctx)
 	var err error
-	// What the household step did, for the response. The callback sets it on
-	// every attempt (a rolled-back attempt's value is overwritten or unused).
+	// What the household and audit steps did, for the response. The callback
+	// replaces these on every successful attempt; rolled-back values are unused.
 	var householdCounts householdErasureCounts
+	var auditCounts auditErasureCounts
 	for {
 		u := &models.User{ID: targetID}
 		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
@@ -1077,6 +1078,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
 				return err
 			}
+			auditCounts, err = eraseAuditDetailsIn(tx, s)
+			if err != nil {
+				return err
+			}
 			// Last statement of the callback, so the sign-in rows are held for the
 			// shortest time before commit (detected limit D2).
 			return eraseOwnedThrottleKeysIn(tx, s)
@@ -1127,7 +1132,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"erasure": newErasureReport(householdCounts)})
+	c.JSON(http.StatusOK, gin.H{"erasure": newErasureReport(householdCounts, auditCounts)})
 }
 
 func (a *App) apiAdminResetPassword(c *gin.Context) {

@@ -1404,4 +1404,8 @@ export interface ErasureReport {
   householdsScrubbed: number;
   peopleAnonymized: number;
   guardianLinksRevoked: number;
+  // Subject-linked retained IP rows plus distinct discovered conversion rows,
+  // including conversions whose IP is already empty. Not proof of IP ownership
+  // or a complete count of personal addresses left in the activity log.
+  activityEntriesKept: number;
 }

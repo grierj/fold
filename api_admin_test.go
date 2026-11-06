@@ -186,6 +186,117 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 }
 
+// Exercise the scrub through the real cookie/CSRF DELETE, with one sentinel
+// for each reachable attribution class and living-party counterparts. There
+// are no RETAIN_ESSENTIAL actions after R4-GR-IP; the aggregation case is
+// covered separately without inventing a production retention exception.
+func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
+	s := newCoreErasureScene(t)
+	db, u, living := s.app.DB, s.second, s.admin
+	teen := newTestUser(t, s.app, "audit-report-teen", erasurePW, models.RoleMember)
+	h := models.Household{Name: "Other household", CreatedBy: living.ID}
+	erasureMustCreate(t, db, &h)
+	p := models.HouseholdPerson{HouseholdID: h.ID, FirstName: "Other person", Kind: models.HouseholdAdult,
+		ConvertedUserID: &teen.ID, CreatedBy: living.ID}
+	erasureMustCreate(t, db, &p)
+	inv := erasureInvitation(t, db, living.ID, u.Email, true, nil)
+	conversionInv := erasureInvitation(t, db, living.ID, teen.Email, true, &p.ID)
+	request := func(source string, user uint, by *uint) models.AccountRequest {
+		r := models.AccountRequest{Name: "Request", Email: "audit-report@example.com", Source: source,
+			Status: "approved", ApprovedUserID: &user, RequestedBy: by, DecidedBy: &u.ID,
+			ExpiresAt: time.Now().Add(time.Hour)}
+		if source == "household_conversion" {
+			r.HouseholdPersonID, r.InvitationID = &p.ID, &conversionInv
+		}
+		erasureMustCreate(t, db, &r)
+		return r
+	}
+	self := request("self_signup", u.ID, nil)
+	request("member_invite", teen.ID, &u.ID)
+	request("household_conversion", teen.ID, nil)
+
+	var before []models.AuditLog
+	blank := map[uint]bool{}
+	removed := map[uint][]string{}
+	add := func(action, target string, id uint, actor *uint, meta map[string]any, clear bool, keys ...string) models.AuditLog {
+		row := auditErasureLog(t, db, action, target, id, actor, meta)
+		before = append(before, row)
+		blank[row.ID], removed[row.ID] = clear, keys
+		return row
+	}
+	// ACTOR, META_USER, TARGET_USER, LINKED, REQUESTER and C_APPROVAL.
+	add(audit.UserCreated, "user", teen.ID, &u.ID, nil, true)
+	add(audit.UserCreated, "user", u.ID, &living.ID, nil, false)
+	add(audit.InvitationAccepted, "invitation", inv, &living.ID, map[string]any{"userId": u.ID}, true)
+	add(audit.InvitationAccepted, "invitation", conversionInv, &u.ID, map[string]any{"userId": teen.ID}, false)
+	add(audit.PasswordResetRequested, "user", u.ID, &living.ID, nil, true)
+	add(audit.PasswordResetRequested, "user", teen.ID, &u.ID, nil, false)
+	add(audit.AccountRequested, "account_request", self.ID, nil, map[string]any{"source": "self_signup"}, true)
+	add(audit.GuardianLinkRequested, "guardian_link", 9001, nil, map[string]any{"source": "signup", "teenUserId": teen.ID}, true)
+	add(audit.GuardianLinkRequested, "guardian_link", 9002, &living.ID, map[string]any{"source": "household_conversion", "teenUserId": teen.ID}, true)
+	// The inviter is the actor on CONVERSION rows, but G-8 keeps both IPs.
+	add(audit.HouseholdPersonConverted, "household", h.ID, &u.ID, map[string]any{
+		"personId": p.ID, "householdId": h.ID, "invitationId": conversionInv, "userId": teen.ID,
+		"accountType": "adult", "transferCount": 1}, false)
+	transfer := add(audit.RegistrationChanged, "registration", 9003, &u.ID, map[string]any{
+		"personId": p.ID, "invitationId": conversionInv, "userId": teen.ID,
+		"formerRegisteredBy": living.ID, "clearedChildcareRequested": false}, false)
+	// Conversion.Retained counts entries, including an already-empty IP.
+	if err := db.Model(&models.AuditLog{}).Where("id = ?", transfer.ID).Update("ip", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	before[len(before)-1].IP = ""
+	// Three subject-linked retained IP rows. The malformed nomination also
+	// appears in its diagnostic count; it must contribute only once.
+	add("legacy.unknown", "user", u.ID, &u.ID, nil, false)
+	add(audit.InvitationAccepted, "invitation", inv, &living.ID, map[string]any{"userId": u.ID, "personId": p.ID}, false)
+	add(audit.GuardianLinkRequested, "guardian_link", 9004, nil,
+		map[string]any{"source": "household_conversion", "teenUserId": itoa(teen.ID)}, false)
+	add("legacy.unknown", "user", teen.ID, &living.ID, nil, false)
+	// NONE and already-blank unattributed rows do not add a retained-IP count.
+	for _, action := range []string{audit.UserTurned18, "legacy.unknown"} {
+		row := add(action, "user", u.ID, nil, nil, false)
+		if err := db.Model(&models.AuditLog{}).Where("id = ?", row.ID).Update("ip", "").Error; err != nil {
+			t.Fatal(err)
+		}
+		before[len(before)-1].IP = ""
+	}
+	// Subject keys are removed even when the IP belongs to a living actor.
+	add(audit.UserEmailChanged, "user", u.ID, &living.ID, map[string]any{"oldEmail": "old@example.com", "newEmail": u.Email}, false, "oldEmail", "newEmail")
+	add(audit.InvitationCreated, "invitation", inv, &living.ID, map[string]any{"email": u.Email, "groupId": 12}, false, "email")
+	add(audit.MemberRemoved, "group", 12, &living.ID, map[string]any{"userId": u.ID, "note": "Subject note"}, false, "note")
+	add(audit.RegistrationRemoved, "event", 13, &living.ID, map[string]any{"userId": u.ID, "note": "Subject note"}, false, "note")
+	add(audit.PushDeviceOn, "user", u.ID, &u.ID, map[string]any{"label": "Subject device", "deviceId": 14}, true, "label")
+	add(audit.GuardianLinkConfirmed, "guardian_link", 9005, &u.ID,
+		map[string]any{"teenUserId": teen.ID, "checkNote": "Keep safeguarding evidence"}, true)
+	add(audit.TeenConsentGranted, "user", teen.ID, &u.ID,
+		map[string]any{"evidenceText": "Keep consent evidence"}, true)
+
+	w := s.ac.do("DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	// Pin the complete public shape too: no class/action diagnostics, IDs or
+	// addresses may escape through the report, even when residue remains.
+	var body struct {
+		Erasure erasureReportJSON `json:"erasure"`
+	}
+	dec := json.NewDecoder(w.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	want := erasureReportJSON{ActivityEntriesKept: 5}
+	if body.Erasure != want {
+		t.Fatalf("report %+v, want %+v", body.Erasure, want)
+	}
+	assertAuditErasureRows(t, db, before, blank, removed)
+	var gone models.User
+	if err := db.Unscoped().First(&gone, u.ID).Error; err != nil || !gone.DeletedAt.Valid {
+		t.Fatalf("subject was not deleted: %+v %v", gone, err)
+	}
+}
+
 func TestAdminResetPassword(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")

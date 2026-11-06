@@ -42,7 +42,7 @@ beforeEach(() => {
   vi.mocked(AdminUsers.soleLeaderGroups).mockResolvedValue({ groups: [] });
   vi.mocked(AdminUsers.soleHostEvents).mockResolvedValue(hosted([], []));
   vi.mocked(AdminUsers.remove).mockResolvedValue({
-    erasure: { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0 },
+    erasure: { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0 },
   });
 });
 afterEach(cleanup);

@@ -214,6 +214,28 @@ func removedNonempty(m map[uint][]string) []uint {
 	return ids
 }
 
+func TestAuditErasureReportRetainedTotals(t *testing.T) {
+	h := householdErasureCounts{HouseholdsKept: 1, HouseholdsScrubbed: 2, PeopleAnonymized: 3, GuardianLinksRevoked: 4}
+	a := auditErasureCounts{
+		IPsBlanked: 90, MetadataRowsScrubbed: 80, MalformedConversionLinksRetained: 2,
+		KeptByClassAndAction: map[auditIPClass]map[string]int64{
+			auditIPRetainEssential:    {"fixture.essential": 3},
+			auditIPRetainUnattributed: {audit.GuardianLinkRequested: 2, "fixture.unknown": 4},
+		},
+		Conversion: auditConversionCounts{Retained: 5,
+			// Diagnostics can overlap across groups; only the distinct total
+			// belongs in the report. Already-empty conversion IPs still count.
+			ByReason: map[string]int64{"completion": 5, "malformed_candidate": 5}},
+	}
+	want := erasureReportJSON{HouseholdsKept: 1, HouseholdsScrubbed: 2, PeopleAnonymized: 3, GuardianLinksRevoked: 4, ActivityEntriesKept: 14}
+	if got := newErasureReport(h, a); got != want {
+		t.Fatalf("report %+v, want %+v", got, want)
+	}
+	if got := newErasureReport(householdErasureCounts{}, auditErasureCounts{}); got != (erasureReportJSON{}) {
+		t.Fatalf("empty report %+v", got)
+	}
+}
+
 func TestAuditErasureRetentionReportIsSubjectScoped(t *testing.T) {
 	app := testApp(t)
 	u := newTestUser(t, app, "audit-report-subject", erasurePW, models.RoleMember)

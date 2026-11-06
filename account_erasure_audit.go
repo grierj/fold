@@ -250,7 +250,8 @@ func auditIDArray(ids []uint) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// eraseAuditDetailsIn is staged until R4-4a-V wires it into account deletion.
+// eraseAuditDetailsIn runs within account deletion, after dependent records and
+// before the owned throttle keys (which stay last, detected limit D2).
 // Its caller supplies the transaction and the sets captured before any scrub.
 // It changes neither audit attribution nor authorization/safeguarding evidence.
 func eraseAuditDetailsIn(tx *gorm.DB, s erasureSubject) (auditErasureCounts, error) {
