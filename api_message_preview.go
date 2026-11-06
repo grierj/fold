@@ -27,11 +27,12 @@ import (
 // M3.5's sender renders the same way with each reader's values.
 
 const (
-	errMergeUnknown     = "use only the merge fields the composer offers"
-	errMergeEvent       = "event merge fields only work in a message to one event's people"
-	errMessageTestLimit = "you've sent 10 tests in the last hour"
-	errMessageTestEmail = "your own email address can't get mail right now"
-	errMessageTestFail  = "we couldn't send the test"
+	errMergeUnknown        = "use only the merge fields the composer offers"
+	errMergeEvent          = "event merge fields only work in a message to one event's people"
+	errMessageTestLimit    = "you've sent 10 tests in the last hour"
+	errMessageTestEmail    = "your own email address can't get mail right now"
+	errMessageTestOptedOut = "this kind of email is turned off in your notification settings"
+	errMessageTestFail     = "we couldn't send the test"
 )
 
 // testSendsPerHour bounds "Send a test to me" for one person.
@@ -202,9 +203,28 @@ func (a *App) apiTestMessage(c *gin.Context) {
 		return
 	}
 	errLimit := errors.New("limit")
+	errOptedOut := errors.New(errMessageTestOptedOut)
+	// D12: the locked session check rejects earlier security changes. The
+	// effective choice is read at its statement's start under the lock.
+	// D11: a choice committed before that statement starts is honored; a later
+	// change may not stop this one in-flight send. The user lock is released at
+	// commit, before the provider call. An opt-out, erasure or address change
+	// committed after commit and before or during that call may not stop this
+	// test send. Every later request rechecks; no user lock spans provider I/O.
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", me.ID).Error; err != nil {
+		var fresh models.User
+		if err := tx.Raw("SELECT id, email, status, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
 			return err
+		}
+		if fresh.ID == 0 || fresh.DeletedAt.Valid || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion || fresh.LogoutVersion != me.LogoutVersion || mail.NormalizeAddress(fresh.Email) != mail.NormalizeAddress(me.Email) {
+			return errSecuritySession
+		}
+		off, err := readEmailOff(tx, []emailDest{{UserID: me.ID, Address: fresh.Email}})
+		if err != nil {
+			return err
+		}
+		if off.Off(me.ID, fresh.Email, categoryScope(messageCategory(m))) {
+			return errOptedOut
 		}
 		var tries int64
 		if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ? AND at > ?", me.ID, audit.MessageTestSent, time.Now().Add(-time.Hour)).
@@ -216,6 +236,14 @@ func (a *App) apiTestMessage(c *gin.Context) {
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageTestSent, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()})
 	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if errors.Is(err, errOptedOut) {
+		jsonError(c, http.StatusBadRequest, errMessageTestOptedOut)
+		return
+	}
 	if errors.Is(err, errLimit) {
 		jsonError(c, http.StatusBadRequest, errMessageTestLimit)
 		return

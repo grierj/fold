@@ -28,6 +28,7 @@ var errorCodes = map[string]string{
 	errMessagePushOnly:                             "message_push_only",
 	errMergeUnknown:                                "message_merge_unknown",
 	errMergeEvent:                                  "message_merge_event",
+	errMessageTestOptedOut:                         "message_test_opted_out",
 	errMessageTestLimit:                            "message_test_limit",
 	errMessageTestEmail:                            "message_test_email",
 	errMessageTestFail:                             "message_test_failed",

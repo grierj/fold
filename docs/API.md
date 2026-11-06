@@ -1351,7 +1351,7 @@ Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): adm
 ```
 GET  /api/v1/messages/:id/preview        → 200 {preview: {subject, text}} | 404
 GET  /api/v1/messages/:id/preview.html   → 200 text/html | 404              (for an iframe)
-POST /api/v1/messages/:id/test           → 200 {ok} | 400 | 404 | 502
+POST /api/v1/messages/:id/test           → 200 {ok} | 400 | 401 | 404 | 502
 ```
 
 Merge fields (PLAN 7.3) are `{{first_name}}` and, in a message to one event's people (an `occurrence` or `event_series` audience), `{{event_title}}`, `{{event_time}}`, `{{event_link}}` and `{{manage_link}}`; a link's address can be `{{event_link}}` or `{{manage_link}}` and survives sanitizing. Saving refuses any other field (`message_merge_unknown`) and event fields for any other audience (`message_merge_event`). Values are HTML-escaped in the HTML part.
@@ -1359,6 +1359,8 @@ Merge fields (PLAN 7.3) are `{{first_name}}` and, in a message to one event's pe
 A preview or test first checks again that the viewer may write to the audience (roles and events change after a draft is saved), then renders the saved message as the viewer would get it: merge fields with the viewer's own values (their first name; the event's title, the audience's date, else its next upcoming one, else its latest, in the event's time zone, and its page for both links; M3.5 gives a guest their own manage link), the email layout (`internal/content/email.html`: one 600px column of tables with inline styles, the church name above the body and, below, "You're getting messages from leaders at …", "To stop them or change which emails you get, visit your email settings" (linking the viewer's own settings page, as the plain-text footer does), and the church's mailing address), and the plain-text part with the same footer as optional notices. `preview.html` is served with its own Content-Security-Policy (`default-src 'none'`, inline styles and https images only, `sandbox` with no scripts) and `no-store`; the dev outbox shows each stored email's HTML the same way at `/dev/outbox/<id>/html`.
 
 `test` sends the message to the viewer's own address on the broadcast stream with its one-click unsubscribe header, subject `[Test] …`. It needs a subject and body. It is audited `message.test_sent` before sending, under a lock on the viewer's row, and those rows limit it to 10 tries an hour (a try that fails still counts) (`message_test_limit`, a 400: it is the author's own inbox, so not a DEC-52 429). An address that is suppressed answers `message_test_email`; a provider failure is 502 `message_test_failed`.
+
+An effective opt-out for this kind of email answers 400 `message_test_opted_out` before counting a try or writing an audit row. A stale or erased session answers 401. The locked check honors choices committed before its statement starts. At commit, the user lock is released before the provider call. An opt-out, erasure or address change committed after that commit and before the provider call returns may not stop this one test send. The next request rechecks.
 
 Every email adapter now sends an HTML part when there is one: SMTP as `multipart/alternative` with quoted-printable text and HTML parts, Postmark as `HtmlBody`, devoutbox in `mail_outboxes.html_body` (defined in `migrations/00001_baseline.sql`).
 

@@ -49,12 +49,12 @@ func emailKindsFor(u *models.User) []string {
 
 func (a *App) emailSettingsFor(db *gorm.DB, u *models.User) (emailSettingsJSON, error) {
 	out := emailSettingsJSON{Kinds: []emailKindJSON{}, OptionalEmailOff: true}
-	optOuts, err := emailOptOuts(db, []uint{u.ID})
+	optOuts, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		return out, err
 	}
 	for _, c := range emailKindsFor(u) {
-		off := optOuts[u.ID][categoryScope(c)]
+		off := optOuts.Off(u.ID, u.Email, categoryScope(c))
 		out.Kinds = append(out.Kinds, emailKindJSON{Category: c, Off: off})
 		out.OptionalEmailOff = out.OptionalEmailOff && off
 	}

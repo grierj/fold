@@ -20,6 +20,8 @@ import (
 	"fold/internal/mail"
 	"fold/internal/providers"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // runMessageJobs runs due message jobs until none are left; retries are
@@ -865,4 +867,235 @@ func TestMessageSnapshotRevalidatesRecipientsUnderLock(t *testing.T) {
 			t.Errorf("%d rows still hold the erased address", n)
 		}
 	})
+}
+
+// prepareChoiceBatch uses the real announcement snapshot or reminder pipeline,
+// and the real Try again endpoint, leaving two queued rows in id order.
+func prepareChoiceBatch(t *testing.T, reminder, retry, copyRow bool) (composeFixture, uint, []models.MessageRecipient, *models.User) {
+	t.Helper()
+	f := newComposeFixture(t)
+	f.admin.holdNotices, f.leader.holdNotices = true, true
+	if err := f.app.DB.Model(&models.Membership{}).Where("group_id = ? AND user_id IN ?", f.group.ID, []uint{f.opted.ID, f.bouncing.ID}).Update("status", models.MembershipLeft).Error; err != nil {
+		t.Fatal(err)
+	}
+	target := f.teen
+	if copyRow {
+		target = newTestUser(t, f.app, "batch-guardian", "password1234", models.RoleMember)
+		if err := f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.DB.Create(&models.GuardianLink{GuardianUserID: target.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var id uint
+	if reminder {
+		for _, u := range []*models.User{f.leaderUser, f.teen} {
+			if err := f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The sweep queues the real reminder job, which takes its real snapshot.
+		due := f.groupOcc.StartsAt.Add(-24 * time.Hour)
+		if err := f.app.sweepReminders(context.Background(), due); err != nil {
+			t.Fatal(err)
+		}
+		var job models.Job
+		if err := f.app.DB.Where("kind = ? AND (payload->>'occurrenceId')::bigint = ?", kindReminderSend, f.groupOcc.ID).First(&job).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.sendReminder(context.Background(), reminderJob{OccurrenceID: f.groupOcc.ID, StartsAt: f.groupOcc.StartsAt.Unix(), Minutes: 1440}, due); err != nil {
+			t.Fatal(err)
+		}
+		var m models.Message
+		if err := f.app.DB.Where("category = ? AND occurrence_id = ?", models.MessageCategoryReminder, f.groupOcc.ID).First(&m).Error; err != nil {
+			t.Fatal(err)
+		}
+		id = m.ID
+	} else {
+		id = f.scheduleNow(t, f.leader, "Choice boundary", "<p>Hi {{first_name}}</p>", groupAudience(f))
+		if err := f.app.prepareMessageOnce(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows []models.MessageRecipient
+	if err := f.app.DB.Where("message_id = ? AND channel = ? AND user_id IN ?", id, models.DeliveryEmail, []uint{f.leaderUser.ID, target.ID}).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].UserID != f.leaderUser.ID || rows[1].UserID != target.ID || rows[0].Status != models.RecipientQueued || rows[1].Status != models.RecipientQueued {
+		t.Fatalf("batch seed: %+v", rows)
+	}
+	if copyRow && rows[1].CopyOfUserID == nil {
+		t.Fatal("second row is not a guardian copy")
+	}
+	// This queued row keeps A even after its reader moves to C.
+	if err := f.app.DB.Model(&models.User{}).Where("id = ?", target.ID).Update("email", "moved-choice@example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	if retry {
+		// First provider attempt really fails each row; Try again re-queues them.
+		f.app.Mailer = failingSender{permanent: true}
+		ids := []uint{rows[0].ID, rows[1].ID}
+		if err := f.app.deliverMessageBatchOnce(context.Background(), messageBatchJob{MessageID: id, RecipientIDs: ids}); err != nil {
+			t.Fatal(err)
+		}
+		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+			t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+		}
+	}
+	return f, id, rows, target
+}
+
+func TestBatchRechecksTheChoiceAtEachRow(t *testing.T) {
+	for _, mode := range []struct {
+		name                     string
+		reminder, retry, copyRow bool
+	}{
+		{"announcement", false, false, false}, {"reminder", true, false, false},
+		{"announcement Try again", false, true, false}, {"reminder Try again", true, true, false},
+		{"guardian copy", false, false, true},
+	} {
+		for _, change := range []string{"destination record", "current address record", "account choice", "none"} {
+			t.Run(mode.name+"/"+change, func(t *testing.T) {
+				f, id, rows, target := prepareChoiceBatch(t, mode.reminder, mode.retry, mode.copyRow)
+				cat := "messages"
+				if mode.reminder {
+					cat = "events"
+				}
+				sender := newBlockingChoiceSender(t, nil)
+				f.app.Mailer = sender
+				done := make(chan error, 1)
+				go func() {
+					done <- f.app.deliverMessageBatchOnce(context.Background(), messageBatchJob{MessageID: id, RecipientIDs: []uint{rows[0].ID, rows[1].ID}})
+				}()
+				awaitDBSignal(t, sender.entered)
+				// This connection is independent of the transaction inside Send(r1).
+				switch change {
+				case "destination record":
+					seedEmailAddressOff(t, f.app, rows[1].Address, cat)
+				case "current address record":
+					seedEmailAddressOff(t, f.app, "moved-choice@example.com", cat)
+				case "account choice":
+					if err := f.app.DB.Create(&models.Consent{UserID: target.ID, Channel: models.ConsentEmail, Scope: categoryScope(cat), Status: models.ConsentOptedOut, Source: models.ConsentSourceWebForm}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				var held models.MessageRecipient
+				if err := f.app.DB.First(&held, rows[1].ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if held.Status != models.RecipientQueued {
+					t.Fatalf("later row changed before release: %+v", held)
+				}
+				sender.resume()
+				if err := awaitDBResult(t, done); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.app.DB.First(&held, rows[1].ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				sends := sender.sent()
+				if change == "destination record" || change == "account choice" {
+					if held.Status != models.RecipientSuppressed || held.Reason != skipOptedOutOf(cat) || len(sends) != 1 {
+						t.Fatalf("late choice missed: row %+v, sends %+v", held, sends)
+					}
+				} else if held.Status != models.RecipientSent || len(sends) != 2 || sends[1].To != rows[1].Address {
+					t.Fatalf("wrong destination matched: row %+v, sends %+v", held, sends)
+				}
+				if !mode.copyRow {
+					var m models.Message
+					if err := f.app.DB.First(&m, id).Error; err != nil {
+						t.Fatal(err)
+					}
+					if m.Status != models.MessageSent {
+						t.Fatalf("batch did not settle: %+v", m)
+					}
+					counts, skipped, err := f.app.recipientCounts(id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantSkipped := 0
+					if change == "destination record" || change == "account choice" {
+						wantSkipped = 1
+					}
+					if counts.Skipped != wantSkipped || counts.Sent != 2-wantSkipped || counts.Queued != 0 || skipped[skipOptedOutOf(cat)] != wantSkipped {
+						t.Fatalf("settled counts: %+v, reasons %v", counts, skipped)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRetryUsesTheSnapshotDestinationChoice(t *testing.T) {
+	for _, reminder := range []bool{false, true} {
+		for _, destinationOff := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reminder=%v/destinationOff=%v", reminder, destinationOff), func(t *testing.T) {
+				f, id, rows, _ := prepareChoiceBatch(t, reminder, false, false)
+				cat := "messages"
+				if reminder {
+					cat = "events"
+				}
+				// In the send case, C is the snapshot and A is the former address.
+				address := rows[1].Address
+				if !destinationOff {
+					if err := f.app.DB.Model(&models.MessageRecipient{}).Where("id = ?", rows[1].ID).Update("address", "moved-choice@example.com").Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.app.Mailer = failingSender{permanent: true}
+				if err := f.app.deliverMessageBatchOnce(context.Background(), messageBatchJob{MessageID: id, RecipientIDs: []uint{rows[0].ID, rows[1].ID}}); err != nil {
+					t.Fatal(err)
+				}
+				seedEmailAddressOff(t, f.app, address, cat)
+				// The retained choice already exists when Try again re-queues the row.
+				if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+					t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+				}
+				sender := &notifyFailSender{}
+				f.app.Mailer = sender
+				if err := f.app.deliverMessageBatchOnce(context.Background(), messageBatchJob{MessageID: id, RecipientIDs: []uint{rows[1].ID}}); err != nil {
+					t.Fatal(err)
+				}
+				var got models.MessageRecipient
+				if err := f.app.DB.First(&got, rows[1].ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if destinationOff {
+					if got.Status != models.RecipientSuppressed || got.Reason != skipOptedOutOf(cat) || sender.n() != 0 {
+						t.Fatalf("destination opt-out ignored: %+v", got)
+					}
+				} else if got.Status != models.RecipientSent || sender.n() != 1 {
+					t.Fatalf("former-address opt-out followed account: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestBatchChoiceReadFailureKeepsTheRowQueued(t *testing.T) {
+	f, id, rows, _ := prepareChoiceBatch(t, false, false, false)
+	sender := &notifyFailSender{}
+	f.app.Mailer = sender
+	name := fmt.Sprintf("test:fail_email_choice:%d", queryCounterSeq.Add(1))
+	injected := errors.New("choice read unavailable")
+	if err := f.app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "email_address_optouts") {
+			tx.AddError(injected)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.app.DB.Callback().Row().Remove(name) })
+	err := f.app.deliverMessageBatchOnce(context.Background(), messageBatchJob{MessageID: id, RecipientIDs: []uint{rows[0].ID}})
+	if !errors.Is(err, injected) || sender.n() != 0 {
+		t.Fatalf("read failure: %v, sends=%d", err, sender.n())
+	}
+	var got models.MessageRecipient
+	if err := f.app.DB.First(&got, rows[0].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.RecipientQueued {
+		t.Fatalf("failed read changed row: %+v", got)
+	}
 }
