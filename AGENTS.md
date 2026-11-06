@@ -151,7 +151,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   account under the contact gate and user lock. The numeric `user.erasure_swept` version committed
   with the scrub decides whether work remains, never a retained job. Keep the original church date
   in page payloads and daily keys. No tombstone address is reconstructed; address-only residue is
-  unknown per subject (inventory 12.1 to 12.3). Final integration and review verification remain pending.
+  unknown per subject (inventory 12.1 to 12.3). The local integration and its checks are recorded in inventory 12.3.
 - Background work goes through `internal/jobs` (M3.1, PLAN 5.5): register a `jobs.Kind` and queue with `jobs.Enqueue`, giving a `unique_key` when the work must happen once (daily tasks use `<kind>:<church date>`). Handlers must be safe to run twice and return their error so the worker retries. Never start a goroutine ticker for periodic work.
 - Notifications are stored rows (PLAN 5.12), written by `notify.Send(tx, notify.Msg{...})` in the
   same transaction as the change and its `AuditLog` row. The kind registry
