@@ -72,6 +72,10 @@ const (
 	// "account_deleted" (DEC-36).
 	UserDeleted = "user.deleted"
 
+	// UserErasureSwept records a committed, versioned tombstone scrub. Actor
+	// and IP are empty; metadata contains only version and residue counts.
+	UserErasureSwept = "user.erasure_swept"
+
 	// UserDisabled: an admin disabled an account (handoff rows use reason
 	// "account_disabled").
 	UserDisabled = "user.disabled"

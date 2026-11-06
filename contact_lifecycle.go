@@ -198,6 +198,9 @@ func (a *App) contactMutationCtx(ctx context.Context, change contactChange, fn f
 // there would drop its values and its cancellation (R4-3b-2 test repair).
 func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contactChange, fn func(*gorm.DB) error) error {
 	deadline, bounded := ctx.Deadline()
+	// ErrTxDone can mean database/sql's cancellation rollback is still
+	// releasing the connection. Do not use Raw alongside that release.
+	autoRollback := false
 	var remaining time.Duration
 	if bounded {
 		remaining = time.Until(deadline)
@@ -218,6 +221,14 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 		// database/sql may still be releasing the transaction from its own
 		// goroutine, and closing waits for that, so it must not hold the caller.
 		defer func() {
+			if autoRollback {
+				// Close is safe alongside database/sql's release; Raw can race
+				// its clearing of conn. pgx closes the underlying connection
+				// when its cancellation rollback fails, so Close cannot return
+				// a live session with our timeout setting to the pool.
+				go conn.Close()
+				return
+			}
 			if ctx.Err() != nil {
 				go discardConn(conn)
 				return
@@ -245,13 +256,14 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 			return
 		}
 		if p := recover(); p != nil {
-			_ = tx.Rollback().Error
+			autoRollback = errors.Is(tx.Rollback().Error, sql.ErrTxDone)
 			panic(p)
 		}
 	}()
 	rollback := func(cause error) error {
 		finished = true
 		if rerr := tx.Rollback().Error; rerr != nil {
+			autoRollback = errors.Is(rerr, sql.ErrTxDone)
 			return &contactRollbackError{Cause: cause, Rollback: rerr}
 		}
 		return cause
@@ -284,6 +296,9 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	}
 	finished = true
 	if err := tx.Commit().Error; err != nil {
+		// Commit checks its context before claiming the transaction. These
+		// errors may therefore precede the automatic rollback's completion.
+		autoRollback = errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 		return &contactCommitError{Cause: err}
 	}
 	return nil

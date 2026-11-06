@@ -3166,6 +3166,7 @@ type ctgFile struct {
 type ctgRun struct {
 	bad          []string
 	eraseCalls   int
+	eraseSites   map[string]int
 	agesLiteral  bool
 	resetLiteral bool
 }
@@ -4299,9 +4300,8 @@ func (run *ctgRun) text(f *ctgFile, n ast.Node, raw string, parents []ast.Node) 
 	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowance is the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = ''", writes[0].kind)
 }
 
-// ident is R-6: eraseContactRequestTextIn is only ever called, once, from the
-// a.contactMutationCtx callback in apiAdminDeleteUser (the callback is the
-// last argument).
+// ident is R-6: exactly one direct call in each of the admin and tombstone
+// a.contactMutationCtx callbacks. Each callback must be the last argument.
 func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 	if id.Name != "eraseContactRequestTextIn" || len(parents) < 2 {
 		return
@@ -4314,7 +4314,11 @@ func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 	case *ast.CallExpr:
 		if p.Fun == ast.Expr(id) {
 			run.eraseCalls++
-			if why := ctgEraseCallProblem(f.path, parents, p); why != "" {
+			if run.eraseSites == nil {
+				run.eraseSites = map[string]int{}
+			}
+			run.eraseSites[f.path]++
+			if why := ctgEraseCallProblem(f, parents, p); why != "" {
 				run.add(f, "R-6", id, parents, "%s", why)
 			}
 			return
@@ -4325,7 +4329,8 @@ func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 
 // ctgEraseCallProblem checks one call site against R-6. parents ends with the
 // identifier; the call is its parent.
-func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) string {
+func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr) string {
+	path := f.path
 	ci := len(parents) - 2
 	lit := -1
 	for i := ci - 1; i >= 0 && lit < 0; i-- {
@@ -4337,11 +4342,11 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 		}
 	}
 	if lit < 1 {
-		return "called outside the a.contactMutationCtx callback of apiAdminDeleteUser"
+		return "called outside an allowed a.contactMutationCtx callback"
 	}
 	fl, ok := parents[lit].(*ast.FuncLit)
 	if !ok {
-		return "called outside the a.contactMutationCtx callback of apiAdminDeleteUser"
+		return "called outside an allowed a.contactMutationCtx callback"
 	}
 	outer, ok := parents[lit-1].(*ast.CallExpr)
 	if !ok {
@@ -4361,11 +4366,13 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 			decl = n
 		}
 	}
-	if decl == nil || decl.Name.Name != "apiAdminDeleteUser" || path != "api_admin.go" {
-		return "called from a function other than apiAdminDeleteUser in api_admin.go"
+	admin := decl != nil && decl.Name.Name == "apiAdminDeleteUser" && path == "api_admin.go"
+	tombstone := decl != nil && decl.Name.Name == "eraseTombstoneOnce" && path == "account_erasure_tombstones.go"
+	if !admin && !tombstone {
+		return "called from a function other than apiAdminDeleteUser in api_admin.go or eraseTombstoneOnce in account_erasure_tombstones.go"
 	}
 	if !ctgIsAppReceiver(decl, osel.X) {
-		return "the callback must be passed to contactMutationCtx on apiAdminDeleteUser's own App receiver, not on another value that has a method of that name"
+		return "the callback must be passed to contactMutationCtx on the allowed method's own App receiver, not on another value that has a method of that name"
 	}
 	viaExpr := false
 	stmt := -1
@@ -4400,6 +4407,9 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 	if arg, ok := ctgFirstArg(call).(*ast.Ident); !ok || param == nil || ctgObj(arg) != param {
 		return "the first argument must be the callback's own *gorm.DB parameter, not a local that reuses its name"
 	}
+	if tombstone {
+		return ctgTombstoneLockProblem(f, fl, param, parents[stmt])
+	}
 	callAt, deleteAt := -1, -1
 	for i, s := range fl.Body.List {
 		if ast.Node(s) == parents[stmt] {
@@ -4432,6 +4442,73 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 		return "call must come after the statement containing tx.Delete(u)"
 	}
 	return ""
+}
+
+// The tombstone allowance requires the direct lock assignment and both
+// refusal checks before the scrub. This is a syntactic check of the current
+// production shape, not a claim to prove arbitrary control flow.
+func ctgTombstoneLockProblem(f *ctgFile, fl *ast.FuncLit, param *ctgObject, scrub ast.Node) string {
+	for i, stmt := range fl.Body.List {
+		if ast.Node(stmt) == scrub {
+			break
+		}
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != 2 || len(assign.Rhs) != 1 {
+			continue
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 {
+			continue
+		}
+		tx, txOK := call.Args[0].(*ast.Ident)
+		if !ctgPackageIdent(f, call.Fun, "lockTombstoneIn") || !txOK || ctgObj(tx) != param {
+			continue
+		}
+		found, foundOK := assign.Lhs[0].(*ast.Ident)
+		err, errOK := assign.Lhs[1].(*ast.Ident)
+		if !foundOK || !errOK || ctgObj(found) == nil || ctgObj(err) == nil || i+3 >= len(fl.Body.List) {
+			continue
+		}
+		// Neither a nested check nor an unchecked lock grants this allowance.
+		errCheck, ok := fl.Body.List[i+1].(*ast.IfStmt)
+		if !ok || errCheck.Init != nil || errCheck.Else != nil {
+			continue
+		}
+		cond, ok := errCheck.Cond.(*ast.BinaryExpr)
+		if !ok || cond.Op != token.NEQ || ctgObj(ctgIdent(cond.X)) != ctgObj(err) || ctgIdent(cond.Y) == nil || ctgIdent(cond.Y).Name != "nil" {
+			continue
+		}
+		if len(errCheck.Body.List) != 1 {
+			continue
+		}
+		ret, ok := errCheck.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 || ctgObj(ctgIdent(ret.Results[0])) != ctgObj(err) {
+			continue
+		}
+		foundCheck, ok := fl.Body.List[i+2].(*ast.IfStmt)
+		if !ok || foundCheck.Init != nil || foundCheck.Else != nil || len(foundCheck.Body.List) != 1 {
+			continue
+		}
+		absent, ok := foundCheck.Cond.(*ast.UnaryExpr)
+		if !ok || absent.Op != token.NOT || ctgObj(ctgIdent(absent.X)) != ctgObj(found) {
+			continue
+		}
+		ret, ok = foundCheck.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 || !ctgPackageIdent(f, ret.Results[0], "errTombstoneNoop") {
+			continue
+		}
+		for _, later := range fl.Body.List[i+3:] {
+			if ast.Node(later) == scrub {
+				return ""
+			}
+		}
+	}
+	return "call must follow lockTombstoneIn on the callback's own transaction and checks returning its error or errTombstoneNoop when absent"
+}
+
+func ctgPackageIdent(f *ctgFile, expr ast.Expr, name string) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name && (ctgObj(id) == nil || ctgObj(id) == f.tree.Scope.Lookup(name))
 }
 
 // ctgIsAppReceiver reports whether x is the receiver of decl, a method on App
@@ -4483,8 +4560,8 @@ func ctgViolations(sources map[string]string) []string {
 		run.imports(f)
 		run.file(f)
 	}
-	if run.eraseCalls != 1 {
-		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly one call, in apiAdminDeleteUser's a.contactMutationCtx callback (api_admin.go)", run.eraseCalls))
+	if run.eraseCalls != 2 || run.eraseSites["api_admin.go"] != 1 || run.eraseSites["account_erasure_tombstones.go"] != 1 {
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly two calls, one in apiAdminDeleteUser (api_admin.go) and one in eraseTombstoneOnce (account_erasure_tombstones.go), each in its own a.contactMutationCtx callback", run.eraseCalls))
 	}
 	sort.Strings(run.bad)
 	return run.bad
@@ -4508,7 +4585,7 @@ func TestContactRequestTextChangesStayInTheirHelpers(t *testing.T) {
 }
 
 // The clean fixture tree holds each allowed site once: the creation functions,
-// the one ages-note UPDATE in its plain batch loop, the single callback call,
+// the one ages-note UPDATE in its plain batch loop, the two callback calls,
 // the testdb reset literal, and the statement_timeout set_config calls. Each
 // bypass below changes it in one way.
 
@@ -4575,6 +4652,31 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		return nil
 	}` + tail + `
 	_ = err
+}
+`
+}
+
+const ctgTombstoneLock = `found, err := lockTombstoneIn(tx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errTombstoneNoop
+		}`
+
+func ctgTombstoneFile(before, after string) string {
+	return `package main
+
+import "gorm.io/gorm"
+
+func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tombstoneReport, error) {
+	err := a.contactMutationCtx(ctx, contactChange{UserID: id}, func(tx *gorm.DB) error {
+		` + before + `
+		` + ctgTombstoneLock + `
+		` + after + `
+		return nil
+	})
+	return tombstoneReport{}, err
 }
 `
 }
@@ -4696,14 +4798,15 @@ func All() []any { return []any{&ContactRequest{}} }
 
 func ctgClean() map[string]string {
 	return map[string]string{
-		"account_erasure.go":        ctgErasureFile(ctgErasureLoop),
-		"api_admin.go":              ctgAdminFile("", ctgEraseCall),
-		"api_contact.go":            ctgContactFile,
-		"contact_lifecycle.go":      ctgLifecycleFile,
-		"internal/testdb/testdb.go": ctgTestdbFile(""),
-		"statement_timeout.go":      ctgTimeoutFile,
-		"models/models.go":          ctgModelsFile,
-		"other.go":                  "package main\n\nfunc other() {}\n",
+		"account_erasure.go":            ctgErasureFile(ctgErasureLoop),
+		"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall),
+		"api_admin.go":                  ctgAdminFile("", ctgEraseCall),
+		"api_contact.go":                ctgContactFile,
+		"contact_lifecycle.go":          ctgLifecycleFile,
+		"internal/testdb/testdb.go":     ctgTestdbFile(""),
+		"statement_timeout.go":          ctgTimeoutFile,
+		"models/models.go":              ctgModelsFile,
+		"other.go":                      "package main\n\nfunc other() {}\n",
 	}
 }
 
@@ -5027,7 +5130,7 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		}),
 	)
 
-	// R-6: the one call site.
+	// R-6: each of the two named call sites, with no extra sites.
 	call := func(statement string) string { return ctgAdminFile("", statement) }
 	cases = append(cases,
 		ctgSource("a second call", "R-6", "production tree", map[string]string{"api_admin.go": call(ctgEraseCall + "\n\t\t" + ctgEraseCall)}),
@@ -5102,6 +5205,49 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		}),
 		ctgSource("a tx.Delete(u) on a local that shadows the callback tx", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(admin, "if err := tx.Delete(u).Error; err != nil {", "if tx := a.DB; tx.Delete(u).Error != nil {", 1),
+		}),
+	)
+	tombstone := ctgTombstoneFile("", ctgEraseCall)
+	tombstoneBad := []struct{ name, source string }{
+		{"a tombstone call before its lock", ctgTombstoneFile(ctgEraseCall, "")},
+		{"a tombstone call in another function", strings.Replace(tombstone, "eraseTombstoneOnce(", "other(", 1)},
+		{"a tombstone call in runSweepPage", strings.Replace(tombstone, "eraseTombstoneOnce(", "runSweepPage(", 1)},
+		{"a tombstone call in a nested transaction", ctgTombstoneFile("", "return tx.Transaction(func(tx2 *gorm.DB) error { return eraseContactRequestTextIn(tx2, s) })")},
+		{"a tombstone call passing a.DB", strings.Replace(tombstone, "eraseContactRequestTextIn(tx, s)", "eraseContactRequestTextIn(a.DB, s)", 1)},
+		{"a tombstone method on another type", strings.Replace(tombstone, "(a *App)", "(a *Other)", 1)},
+		{"a tombstone callback not last", strings.Replace(tombstone, "\n\t})", "\n\t}, nil)", 1)},
+		{"a tombstone call on another receiver", strings.Replace(tombstone, "a.contactMutationCtx", "runner.contactMutationCtx", 1)},
+		{"a tombstone call in a job handler", strings.Replace(tombstone, ctgEraseCall, "return func(ctx context.Context) error { "+ctgEraseCall+"; return nil }(ctx)", 1)},
+		{"a tombstone call nested in a block", ctgTombstoneFile("", "if true { "+ctgEraseCall+" }")},
+		{"a tombstone go call", ctgTombstoneFile("", "go eraseContactRequestTextIn(tx, s)")},
+		{"a tombstone deferred call", ctgTombstoneFile("", "defer eraseContactRequestTextIn(tx, s)")},
+		{"a tombstone call with shadowed tx", ctgTombstoneFile("", "if tx := a.DB; eraseContactRequestTextIn(tx, s) != nil { return gorm.ErrInvalidDB }")},
+		{"a tombstone lock on a.DB", strings.Replace(tombstone, "lockTombstoneIn(tx, id)", "lockTombstoneIn(a.DB, id)", 1)},
+		{"a tombstone lock without error check", strings.Replace(tombstone, "if err != nil {\n\t\t\treturn err\n\t\t}", "", 1)},
+		{"a tombstone lock without found check", strings.Replace(tombstone, "if !found {\n\t\t\treturn errTombstoneNoop\n\t\t}", "", 1)},
+		{"a tombstone lock with reversed found check", strings.Replace(tombstone, "if !found", "if found", 1)},
+		{"a tombstone lock with a swallowed error", strings.Replace(tombstone, "return err\n", "return nil\n", 1)},
+		{"a shadowed tombstone lock helper", ctgTombstoneFile("lockTombstoneIn := otherLock", ctgEraseCall)},
+		{"a shadowed tombstone no-op sentinel", ctgTombstoneFile("errTombstoneNoop := otherError", ctgEraseCall)},
+	}
+	for _, tc := range tombstoneBad {
+		cases = append(cases, ctgSource(tc.name, "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": tc.source,
+		}))
+	}
+	cases = append(cases,
+		ctgSource("a second tombstone callback call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall+"\n"+ctgEraseCall),
+		}),
+		ctgSource("no tombstone call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ""),
+		}),
+		ctgSource("two admin calls cannot replace the tombstone call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ""),
+			"api_admin.go":                  call(ctgEraseCall + "\n" + ctgEraseCall),
+		}),
+		ctgSource("a third site in the tombstone file", "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": tombstone + "\nfunc other(tx *gorm.DB, s erasureSubject) error { return eraseContactRequestTextIn(tx, s) }\n",
 		}),
 	)
 
@@ -5239,6 +5385,15 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		cases = append(cases, ctgCase{name: b, files: map[string]string{"other.go": ctgBodyFile(b)}})
 	}
 	cases = append(cases,
+		ctgCase{name: "tombstone package declarations resolve in their own file", files: map[string]string{
+			"account_erasure_tombstones.go": tombstone + "\nfunc lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) { return true, nil }\nvar errTombstoneNoop = errors.New(\"no work\")\n",
+		}},
+		ctgCase{name: "tombstone renamed callback parameter", files: map[string]string{
+			"account_erasure_tombstones.go": strings.NewReplacer("func(tx *gorm.DB)", "func(tombTx *gorm.DB)", "lockTombstoneIn(tx,", "lockTombstoneIn(tombTx,", "eraseContactRequestTextIn(tx,", "eraseContactRequestTextIn(tombTx,").Replace(tombstone),
+		}},
+		ctgCase{name: "tombstone renamed lock results", files: map[string]string{
+			"account_erasure_tombstones.go": strings.NewReplacer("found", "locked", "err :=", "lockErr :=", "err !=", "lockErr !=", "return err\n", "return lockErr\n", "{}, err", "{}, lockErr").Replace(tombstone),
+		}},
 		ctgCase{name: "an assignment call in the callback body", files: map[string]string{
 			"api_admin.go": ctgAdminFile("", "err = eraseContactRequestTextIn(tx, s)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}"),
 		}},
@@ -5289,7 +5444,7 @@ func TestContactRequestTextGuardReadsTheRealTree(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"account_erasure.go", "api_admin.go", "api_contact.go", "internal/testdb/testdb.go"} {
+	for _, path := range []string{"account_erasure.go", "account_erasure_tombstones.go", "api_admin.go", "api_contact.go", "internal/testdb/testdb.go"} {
 		if _, ok := sources[path]; !ok {
 			t.Errorf("walkProductionGo no longer reads %s, which the contact-request text guard binds its allowances to", path)
 		}

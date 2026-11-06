@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,10 +20,15 @@ import (
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/testdb"
+	"fold/internal/txguard"
 	"fold/models"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // Queue on the real PostgreSQL advisory gate, not sleeps or a mock mutex.
@@ -1419,4 +1428,370 @@ func TestContactMutationCtxHelpers(t *testing.T) {
 			t.Errorf("inside %q, after %q, want 20s inside and the session value after", inside, after)
 		}
 	})
+}
+
+// Exercise database/sql's transaction cancellation and connection release with
+// synthetic release barriers and a real PostgreSQL/pgx pool.
+func TestContactMutationConnCancellationCleanup(t *testing.T) {
+	for _, automatic := range []bool{true, false} {
+		name := "explicit rollback cancels context"
+		if automatic {
+			name = "automatic rollback still releasing"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			c := &contactCleanupConn{
+				rollbackStarted: make(chan struct{}), releaseRollback: make(chan struct{}), closed: make(chan struct{}),
+				cancelCloses: automatic,
+			}
+			var release sync.Once
+			unblock := func() { release.Do(func() { close(c.releaseRollback) }) }
+			t.Cleanup(unblock)
+			sqlDB := sql.OpenDB(&contactCleanupConnector{conn: c})
+			t.Cleanup(func() { unblock(); _ = sqlDB.Close() })
+			db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
+				DisableAutomaticPing: true, Logger: logger.Discard,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !automatic {
+				// The caller owns this rollback even though cancellation happens
+				// before it returns. It must still discard the session setting.
+				c.onRollback = cancel
+				unblock()
+			}
+			app := &App{DB: db}
+			cause := errors.New("callback failed")
+			if automatic {
+				cause = context.Canceled
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- app.contactMutationCtx(ctx, contactChange{}, func(*gorm.DB) error {
+					if automatic {
+						cancel()
+						<-c.rollbackStarted
+					}
+					return cause
+				})
+			}()
+			select {
+			case err = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("contact mutation waited for cancellation cleanup")
+			}
+			if !errors.Is(err, cause) || rollbackConfirmed(err) == automatic {
+				t.Fatalf("error %v: cause %v, rollback confirmed %v, automatic %v", err, cause, rollbackConfirmed(err), automatic)
+			}
+			if automatic {
+				if !errors.Is(err, errContactRollback) || classifyContactErr(err) != outcomeTimedOut {
+					t.Fatalf("automatic rollback outcome = %v", err)
+				}
+				select {
+				case <-c.closed:
+					t.Fatal("connection closed before its rollback finished")
+				default:
+				}
+			}
+			unblock()
+			select {
+			case <-c.closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("connection with a session timeout was not discarded")
+			}
+			// Observe physical close before pool cleanup: closing the pool
+			// first would hide returning the session to it on the explicit path.
+		})
+	}
+	t.Run("real pgx pool", testContactMutationConnCancellationCleanupPGX)
+}
+
+// Unlike the synthetic release-race cases above, this uses pgx's actual
+// database/sql driver, PostgreSQL, and the wire proxy. Cancellation of an idle
+// callback never sends a ROLLBACK on the wire: pgx rejects the already-canceled
+// context and closes the connection. Its query tracer provides the barrier
+// before that rejection, after database/sql has claimed automatic rollback.
+func testContactMutationConnCancellationCleanupPGX(t *testing.T) {
+	for _, automatic := range []bool{true, false} {
+		name := "commit canceled with reply held"
+		if automatic {
+			name = "ErrTxDone while automatic rollback is in flight"
+		}
+		t.Run(name, func(t *testing.T) {
+			database := testdb.Fresh(t, true)
+			proxy := testdb.NewProxy(t)
+			dsn, err := testdb.URL(database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			u.Host = proxy.Addr()
+			query := u.Query()
+			query.Set("sslmode", "disable")
+			u.RawQuery = query.Encode()
+			config, err := pgx.ParseConfig(u.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			trace := &contactCleanupPGXTrace{
+				rollbackStarted: make(chan error, 1), releaseRollback: make(chan struct{}),
+			}
+			config.Tracer = trace
+			sqlDB := stdlib.OpenDB(*config)
+			const poolSize = 3
+			sqlDB.SetMaxOpenConns(poolSize)
+			sqlDB.SetMaxIdleConns(poolSize)
+			watch, stop := context.WithTimeout(context.Background(), 30*time.Second)
+			defer stop()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			var release sync.Once
+			unblock := func() { release.Do(func() { close(trace.releaseRollback) }) }
+			t.Cleanup(func() {
+				cancel()
+				unblock()
+				proxy.ReleaseReply()
+				proxy.ReleaseClose()
+				_ = sqlDB.Close()
+			})
+			db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
+				DisableAutomaticPing: true, Logger: logger.Discard,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Use(txguard.Plugin{}); err != nil {
+				t.Fatal(err)
+			}
+			app := &App{DB: db}
+			take := func() *sql.Conn {
+				t.Helper()
+				conn, err := sqlDB.Conn(watch)
+				if err != nil {
+					t.Fatalf("acquire a pool slot after cancellation cleanup: %v", err)
+				}
+				t.Cleanup(func() { _ = conn.Close() })
+				return conn
+			}
+			show := func(conn *sql.Conn) (uint32, string) {
+				t.Helper()
+				var pid uint32
+				var timeout string
+				if err := conn.QueryRowContext(watch, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.QueryRowContext(watch, "SHOW idle_in_transaction_session_timeout").Scan(&timeout); err != nil {
+					t.Fatal(err)
+				}
+				return pid, timeout
+			}
+			// Read the configured server default on pristine sessions, rather
+			// than assuming it is zero. Keep two slots occupied throughout the
+			// mutation so acquiring the third must wait for its release.
+			var held []*sql.Conn
+			var serverDefault string
+			var mutationPID uint32
+			for i := range poolSize {
+				conn := take()
+				held = append(held, conn)
+				pid, timeout := show(conn)
+				if i == 0 {
+					serverDefault = timeout
+				} else if timeout != serverDefault {
+					t.Fatalf("pristine backend %d timeout %q, want server default %q", pid, timeout, serverDefault)
+				}
+				mutationPID = pid
+			}
+			if err := held[poolSize-1].Close(); err != nil {
+				t.Fatal(err)
+			}
+			held = held[:poolSize-1]
+			proxy.Arm(testdb.Faults{
+				Match: "set_config('idle_in_transaction_session_timeout'", Commit: testdb.CommitHoldReply,
+				Cancel: testdb.CancelDrop, Close: testdb.CloseWithholdAll,
+			})
+			entered := make(chan struct{}, 1)
+			done := make(chan error, 1)
+			go func() {
+				done <- app.contactMutationCtx(ctx, contactChange{}, func(tx *gorm.DB) error {
+					var pid uint32
+					var timeout string
+					if err := tx.Raw("SELECT pg_backend_pid(), current_setting('idle_in_transaction_session_timeout')").Row().Scan(&pid, &timeout); err != nil {
+						return err
+					}
+					if pid != mutationPID || timeout == serverDefault {
+						return fmt.Errorf("callback backend %d timeout %q, want backend %d with a non-default timeout", pid, timeout, mutationPID)
+					}
+					entered <- struct{}{}
+					if !automatic {
+						return nil
+					}
+					<-ctx.Done()
+					select {
+					case rollbackContextErr := <-trace.rollbackStarted:
+						if !errors.Is(rollbackContextErr, context.Canceled) {
+							return fmt.Errorf("pgx automatic rollback context: %v", rollbackContextErr)
+						}
+					case <-watch.Done():
+						return errors.New("pgx automatic rollback did not start")
+					}
+					return context.Canceled
+				})
+			}()
+			select {
+			case <-entered:
+			case err := <-done:
+				t.Fatalf("mutation ended before its callback barrier: %v", err)
+			case <-watch.Done():
+				t.Fatal("mutation did not enter its callback")
+			}
+			if !automatic {
+				// pgx uses a simple Query for COMMIT, and database/sql has
+				// already claimed Commit before this proxy event. Hold its
+				// reply until cleanup, so cancellation must end the driver call.
+				// Poll an observed protocol event; elapsed time never orders it.
+				tick := time.NewTicker(time.Millisecond)
+				defer tick.Stop()
+				for len(proxy.Find(testdb.KindCommit, testdb.ActionHeld)) == 0 {
+					select {
+					case err := <-done:
+						t.Fatalf("mutation ended before COMMIT was held: %v", err)
+					case <-watch.Done():
+						t.Fatal("COMMIT never reached the proxy")
+					case <-tick.C:
+					}
+				}
+			}
+			cancel()
+			select {
+			case err = <-done:
+			case <-watch.Done():
+				t.Fatal("mutation waited for cancellation cleanup")
+			}
+			if automatic {
+				var rollbackErr *contactRollbackError
+				if !errors.As(err, &rollbackErr) || !errors.Is(rollbackErr.Rollback, sql.ErrTxDone) || !errors.Is(err, context.Canceled) || classifyContactErr(err) != outcomeTimedOut {
+					t.Fatalf("automatic rollback outcome = %v, want ErrTxDone and canceled callback", err)
+				}
+				if got := sqlDB.Stats().InUse; got != poolSize {
+					t.Fatalf("%d occupied pool slots while pgx rollback is held, want %d", got, poolSize)
+				}
+			} else {
+				var commitErr *contactCommitError
+				if !errors.As(err, &commitErr) || !errors.Is(commitErr.Cause, context.Canceled) || classifyContactErr(err) != outcomeUnknown {
+					t.Fatalf("commit cancellation outcome = %v, want unknown commit wrapping cancellation", err)
+				}
+			}
+			if rollbackConfirmed(err) || len(proxy.Find(testdb.KindRollback, "")) != 0 {
+				t.Fatalf("cancellation claimed a confirmed or wire rollback: %v, events %+v", err, proxy.Events())
+			}
+			unblock()
+			held = append(held, take())
+			// This checkout can complete only after the affected slot was
+			// returned or discarded. Never close the pool to make it pass.
+			idlePIDs := make(map[uint32]bool, poolSize)
+			for _, conn := range held {
+				pid, timeout := show(conn)
+				if timeout != serverDefault {
+					t.Fatalf("backend %d leaked timeout %q, want server default %q", pid, timeout, serverDefault)
+				}
+				idlePIDs[pid] = true
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stats := sqlDB.Stats(); stats.Idle != poolSize || stats.InUse != 0 {
+				t.Fatalf("pool not wholly idle after cleanup: %+v", stats)
+			}
+			// Retain each checkout to defeat LIFO reuse of just one clean
+			// session. Check every idle backend, including the affected slot.
+			for range poolSize {
+				pid, timeout := show(take())
+				if !idlePIDs[pid] || timeout != serverDefault {
+					t.Fatalf("reused backend %d timeout %q, want an unvisited idle backend with server default %q", pid, timeout, serverDefault)
+				}
+				delete(idlePIDs, pid)
+			}
+			if stats := sqlDB.Stats(); len(idlePIDs) != 0 || stats.Idle != 0 || stats.InUse != poolSize {
+				t.Fatalf("did not inspect every reused idle connection: remaining %v, stats %+v", idlePIDs, stats)
+			}
+		})
+	}
+}
+
+// The tracer only delays entry into pgx's real rollback. It does not substitute
+// an error, change the canceled context, or close the connection itself.
+type contactCleanupPGXTrace struct {
+	rollbackStarted chan error
+	releaseRollback chan struct{}
+}
+
+func (c *contactCleanupPGXTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if data.SQL == "rollback" {
+		c.rollbackStarted <- ctx.Err()
+		<-c.releaseRollback
+	}
+	return ctx
+}
+
+func (*contactCleanupPGXTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type contactCleanupConnector struct {
+	conn *contactCleanupConn
+}
+
+func (c *contactCleanupConnector) Connect(context.Context) (driver.Conn, error) {
+	return c.conn, nil
+}
+func (*contactCleanupConnector) Driver() driver.Driver { return contactCleanupDriver{} }
+
+type contactCleanupDriver struct{}
+
+func (contactCleanupDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("use the test connector")
+}
+
+type contactCleanupConn struct {
+	rollbackStarted chan struct{}
+	releaseRollback chan struct{}
+	closed          chan struct{}
+	onRollback      func()
+	cancelCloses    bool
+	closeOnce       sync.Once
+}
+
+func (*contactCleanupConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("unexpected prepare")
+}
+func (c *contactCleanupConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+func (c *contactCleanupConn) Begin() (driver.Tx, error) {
+	return c, nil
+}
+func (c *contactCleanupConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return c, nil
+}
+func (*contactCleanupConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	return driver.RowsAffected(0), nil
+}
+func (*contactCleanupConn) Commit() error { return errors.New("unexpected commit") }
+func (c *contactCleanupConn) Rollback() error {
+	close(c.rollbackStarted)
+	if c.onRollback != nil {
+		c.onRollback()
+	}
+	<-c.releaseRollback
+	if c.cancelCloses {
+		// pgx Rollback on a canceled context fails and closes its connection
+		// before database/sql releases it, even if Conn.Close owns the release.
+		_ = c.Close()
+		return context.Canceled
+	}
+	return nil
 }

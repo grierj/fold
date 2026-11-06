@@ -309,7 +309,7 @@ func TestAccountErasureDeletesOnlyOwnedThrottleKeys(t *testing.T) {
 	v := newTestUser(t, s.app, "throttle-v", erasurePW, models.RoleMember)
 	seedErasureTokens(t, db, u.ID, "u", pendingAddr)
 
-	owned := ownedThrottleKeys(u.ID, addr)
+	owned := ownedThrottleKeys(u.ID, heldAddress{value: addr, ok: true})
 	lockedUntil := time.Now().Add(time.Hour)
 	seedThrottleRows(t, db, owned)
 	if err := db.Model(&models.LoginThrottle{}).Where("key = ?", string(loginEmailKey(addr))).
@@ -516,7 +516,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	seedErasureCalendar(t, db, u.ID, "rollback-calendar")
 	newPushDevice(t, s.app, u, "rollback-phone")
 	newPushDevice(t, s.app, u, "rollback-tablet")
-	owned := ownedThrottleKeys(u.ID, addr)
+	owned := ownedThrottleKeys(u.ID, heldAddress{value: addr, ok: true})
 	seedThrottleRows(t, db, owned)
 	before := erasureSnapshot(t, db, u.ID, owned)
 
@@ -2897,7 +2897,7 @@ func erasureTestRecipientSeed(t *testing.T, app *App) *erasureRecipientSeed {
 		ExpiresAt: expires, IP: "203.0.113.7", Timezone: "UTC"}
 	erasureMustCreate(t, db, &signup)
 	erasureMustCreate(t, db, &models.MailOutbox{ToAddress: e.address, Subject: "seed", Body: "seed"})
-	seedThrottleRows(t, db, ownedThrottleKeys(e.u.ID, e.address))
+	seedThrottleRows(t, db, ownedThrottleKeys(e.u.ID, heldAddress{value: e.address, ok: true}))
 	seedErasureTokens(t, db, e.u.ID, "rs", "rs.pending@example.com")
 	// Credentials and a registration of U, so the comparison covers every
 	// kind of row an erasure deletes or scrubs.

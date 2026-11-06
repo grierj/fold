@@ -844,7 +844,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 				// Disabling keeps registration rows but frees every seat
 				// the account held on future dates, promoting into them.
-				_, err = a.promoteOnDisable(tx, u.ID)
+				_, err = a.promoteOnDisable(tx, u.ID, true)
 				if err != nil {
 					return err
 				}
@@ -1069,7 +1069,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			}
 			// The deleted account no longer counts, so its seats and childcare
 			// spots are free: promote waiters now (Whittler, PR 109).
-			if _, err := a.promoteOnDisable(tx, u.ID); err != nil {
+			if _, err := a.promoteOnDisable(tx, u.ID, true); err != nil {
 				return err
 			}
 			// Invitations, guest signups and the dev outbox at the held address,

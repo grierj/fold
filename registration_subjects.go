@@ -171,6 +171,10 @@ func householdPersonName(tx *gorm.DB, id uint) string {
 // reconcileHouseholdPerson runs while the household is locked, and locks
 // affected dates in ID order before cancelling or clearing invalid requests.
 func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor uint, ip string) ([]uint, error) {
+	var actorID *uint
+	if actor != 0 {
+		actorID = &actor
+	}
 	var regs []models.Registration
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
@@ -222,7 +226,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			mailed = append(mailed, ids...)
 		}
 		if old.Status == models.RegGoing {
-			ids, err := a.promoteLocked(tx, &ev, o, now, &actor)
+			ids, err := a.promoteLocked(tx, &ev, o, now, actorID)
 			if err != nil {
 				return nil, err
 			}
