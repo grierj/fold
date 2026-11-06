@@ -120,20 +120,16 @@ source has no `deploy/recovery-policy` file, so its source level is 0.
 See the [operator procedure](docs/DEPLOY-DIGITALOCEAN.md#recovery-refusal-and-interrupted-operations)
 for refusal, failed smoke, interrupted tools and exit 75 or 76.
 
-Prior evidence is in
+Verification evidence is in
 `/home/grier/.local/state/t3-autoflow/m74-remaining-20261105/`.
-The `r4rp-drill8`, `r4rp-smoke-final`, `r4rp-lintsh-final`,
-`r4rp-nopython-final` and `r4rp-docguard-final` evidence records each name
-`ea5dc75`, report exit 0 and `passed: true`, and have corresponding logs.
-The disposable drill ended with `drill result=0` and `retained_stack=0`.
-The successful `r4rp-dry6` fixture run records base head `de378c4`;
-`r4rp-recheck2.json` confirms that its tested content matches committed
-`ea5dc75`. It is not a separately recorded exact-head run.
-That independent review passed with no findings on security, correctness
-or operator UX. Application UI, schema and queries are unaffected; deployment
+The `r4rpv-full`, `build`, `vet`, `lint`, `deadcode`, `web`, `web-extra`,
+`smoke`, `dry` and `drill` records passed on candidate `036defd`.
+The full record carries the id `r46b1-full`; the dry and drill records retain
+their earlier check ids. The disposable drill ended with `drill result=0` and
+`retained_stack=0`. The independent review of the preceding code commit
+`ea5dc75` passed. Integration landing and review of this status correction
+remain pending. Application UI, schema and queries are unaffected; deployment
 adds read-only level inspection and checks the built or pulled image before startup.
-No checks were rerun for this documentation edit, and full verification is
-not complete.
 
 The [real-droplet follow-ups](docs/FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment)
 remain unchecked, including a second installed upgrade being refused during
