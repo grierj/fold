@@ -105,6 +105,43 @@ Claim a milestone here before starting, as usual.
 | M7.12 Cut execution + maintenance tax (R17.1/R18) | not started; brief ready; DEC-139/140 wording landed in PLAN | | |
 | Audit docs: AUDIT + briefs + DEC-138–145 + PLAN 14.10 | written Nov 1–2, 2026; rebased over #236/#241 | Muse | (docs; lands with this change) |
 
+### M7.4 R4-RP recovery refusal, staged locally
+
+R4-RP is implemented and committed locally at
+`ea5dc75c69541f95bcd68381c1eee8bc9c3b994b` as of Nov 6, 2026.
+R4-RP-V records its behavior and prior evidence in documentation only.
+Integration landing and verification remain pending; nothing is pushed,
+published or deployed by this task. This stage closes no M7.4 gate.
+
+Scripted provision, upgrade and rollback refuse a target below the host's
+recovery floor. Installed upgrades use `deploy-tools`, check before backup or
+checkout, and share the operations lock with their provisioner. The current
+source has no `deploy/recovery-policy` file, so its source level is 0.
+See the [operator procedure](docs/DEPLOY-DIGITALOCEAN.md#recovery-refusal-and-interrupted-operations)
+for refusal, failed smoke, interrupted tools and exit 75 or 76.
+
+Prior evidence is in
+`/home/grier/.local/state/t3-autoflow/m74-remaining-20261105/`.
+The `r4rp-drill8`, `r4rp-smoke-final`, `r4rp-lintsh-final`,
+`r4rp-nopython-final` and `r4rp-docguard-final` evidence records each name
+`ea5dc75`, report exit 0 and `passed: true`, and have corresponding logs.
+The disposable drill ended with `drill result=0` and `retained_stack=0`.
+The successful `r4rp-dry6` fixture run records base head `de378c4`;
+`r4rp-recheck2.json` confirms that its tested content matches committed
+`ea5dc75`. It is not a separately recorded exact-head run.
+That independent review passed with no findings on security, correctness
+or operator UX. Application UI, schema and queries are unaffected; deployment
+adds read-only level inspection and checks the built or pulled image before startup.
+No checks were rerun for this documentation edit, and full verification is
+not complete.
+
+The [real-droplet follow-ups](docs/FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment)
+remain unchecked, including a second installed upgrade being refused during
+an upgrade. Never publish `recoveryPolicy >= 1` before R4-6c-R's
+current-release restore tooling and operator procedure land and are verified.
+The fixture-level refusal evidence does not satisfy that release gate,
+prove real level-1 recovery, or authorize publication. M7.4 remains incomplete.
+
 ### M7.5 S4 direct mail
 
 S1–S3 are merged in [#253](https://github.com/grierj/fold/pull/253),

@@ -28,6 +28,10 @@ Follow the directions page at `/notifications/setup` literally, on each device b
 
 ## Live install (M5.1, M5.3; AGENTS.md "Deployment")
 
+R4-RP's local disposable-stack evidence uses fixture recovery levels. The
+real-droplet checks below remain pending. That evidence does not verify
+R4-6c-R's restore tooling or operator procedure and does not authorize a release.
+
 - [ ] **`docker compose up` on a real domain.** Fill `.env` (set `FOLD_VERSION` to the published release), run `docker compose pull && docker compose up -d`. You should see Caddy get a certificate, `https://<domain>/healthz` answer, and the setup wizard at `/setup`.
 - [ ] **Pull-only install on a machine with no Go and no Node (R1 slice 1, C10).** After the first release is tagged and the `release` workflow is green, make the `ghcr.io/grierj/fold` package public (or `docker login ghcr.io` with a read token), then on a fresh server with only Docker run `docker compose pull && docker compose up -d` with `FOLD_VERSION` set to that exact version. You should see the image pull with no build step (try an `arm64` machine too, if one is around) and the setup page at `/setup`. Also run `gh attestation verify oci://ghcr.io/grierj/fold@<digest> --repo grierj/fold` with the digest from the workflow summary: you should see it verified.
 - [ ] **A 1 GB droplet with swap stays up on the pulled image (R1 slice 1).** Provision an `s-1vcpu-1gb` droplet with `--image ghcr.io/grierj/fold:<version> --swap-mb 1024`. You should see `smoke.sh` pass, the wizard reached, and the app and Postgres still up (`docker compose ps`, `free -m`) after a day of normal use and a week of reminders and push.

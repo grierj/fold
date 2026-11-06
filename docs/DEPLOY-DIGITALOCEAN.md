@@ -423,10 +423,17 @@ recovery. Rollback is subject to the recovery floor even after failed smoke.
 
 Every scripted deploy, forward upgrade and rollback refuses a target below
 the host's recovery level. Level 1 requires the restore barrier; level 2 also
-requires reason review. Missing release metadata means level 0; malformed
-metadata refuses. The host floor is the greater of `recovery-policy-floor`
+requires reason review. The scripts read integer `recoveryPolicy` from an
+image's `/fold version --json` output, or read the one-line
+`deploy/recovery-policy` file at a source commit. Missing release metadata means level 0;
+malformed metadata refuses. The host floor is the greater of `recovery-policy-floor`
 and the level of the image its current Compose pin names. There is no override.
 The floor file is recorded only after smoke passes and never decreases.
+
+R4-RP is staged locally. Never publish a release reporting `recoveryPolicy >= 1`
+before R4-6c-R's current-release restore tooling and operator procedure land
+and are verified. The local refusal drills do not verify that restore procedure
+or complete the [real-droplet checks](FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment).
 
 If a higher-level image starts but smoke fails, its pin already contributes
 to the floor. `--rollback` to a lower-level previous release is refused even

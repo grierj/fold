@@ -401,6 +401,22 @@ After a merge, merge master into the other open branches (never rebase) and repo
   `doctl` and never creates droplets, firewalls, snapshots, backup plans or buckets; the church
   owns the droplet, DNS and email account. `smoke.sh` rechecks health, TLS and that Postgres and
   the app are not published; `upgrade.sh` pins an image tag or commit, dumps first, and can restore.
+- Recovery refusal is staged locally (M7.4 R4-RP, not integrated or published). The level interface
+  is integer `recoveryPolicy` from `/fold version --json` in an image, or the one-line
+  `deploy/recovery-policy` at a source commit. Absent metadata means 0; malformed metadata refuses.
+  Scripted provision, forward upgrade and rollback refuse a target below the greater of
+  `DIR/recovery-policy-floor` and the level of the locally pinned image. The floor file is written
+  only after smoke passes and never decreases; a higher pin enforces refusal even after failed smoke.
+  There is no override. Restore data with the current release instead of starting a lower-level one.
+  Run installed `DIR/upgrade.sh`: it installs its own tool set in `DIR/deploy-tools`, re-execs there,
+  checks the target before backup or checkout, and runs that copy's provisioner. An older checkout's
+  script run by hand can bypass these checks. Installed upgrades keep their frozen tools; install
+  newer tools from a newer trusted checkout, subject to the `deploy-tools-version` check.
+  Mutating provision and upgrade runs share `DIR/ops.lock` through inherited fd 9; a second operation
+  exits 75 naming the holder from informational `ops.owner`. Never delete, rename or replace the lock.
+  Never publish `recoveryPolicy >= 1` before R4-6c-R's current-release restore tooling and operator
+  procedure land and are verified. Local refusal drills do not satisfy that release gate or the
+  real-droplet checks in `docs/FIRST-CHURCH-CHECKS.md`.
 
 ## SMS (messaging Phase 3, not yet)
 
