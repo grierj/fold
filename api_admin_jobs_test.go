@@ -565,3 +565,39 @@ func TestDeadJobAlertRaces(t *testing.T) {
 		})
 	}
 }
+
+func TestEveryRegisteredJobKindHasSystemLabel(t *testing.T) {
+	a := &App{}
+	registered := append(append(a.dailyKinds(), a.hourlyKinds()...), a.backgroundKinds()...)
+	kinds := a.jobKinds()
+	seen := map[string]bool{}
+	for _, k := range registered {
+		if seen[k.Name] {
+			t.Errorf("duplicate registered kind %q", k.Name)
+		}
+		seen[k.Name] = true
+		if got, ok := kinds[k.Name]; !ok || strings.TrimSpace(got.Label) == "" || got.Run == nil {
+			t.Errorf("kind %q missing from System registry or without label/handler", k.Name)
+		}
+	}
+	for _, name := range []string{kindTombstoneSweep, kindTombstonePage, kindTombstone} {
+		if !seen[name] {
+			t.Errorf("erasure kind %q is not registered", name)
+		}
+	}
+}
+
+func TestTombstoneDeadJobShowsItsLabel(t *testing.T) {
+	a := testApp(t)
+	newTestUser(t, a, "tombstone-admin", erasurePW, models.RoleAdmin)
+	admin := loginAPI(t, a, "tombstone-admin", erasurePW)
+	admin.holdNotices = true
+	deadJob(t, a, kindTombstone, "tombstone-dead", "could not finish")
+	var out struct {
+		Jobs []adminJobJSON `json:"jobs"`
+	}
+	decodeJSON(t, admin.do("GET", "/api/v1/admin/jobs", nil, false), &out)
+	if len(out.Jobs) != 1 || out.Jobs[0].Kind != kindTombstone || out.Jobs[0].Label != "Finishing the erasure of a deleted account" {
+		t.Fatalf("dead erasure job: %+v", out.Jobs)
+	}
+}

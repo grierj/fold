@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
+	"time"
 
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -208,4 +212,98 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 		return tombstoneReport{}, err
 	}
 	return report, nil
+}
+
+// Bump the version only when a reviewed erasure slice adds work. Markers,
+// rather than retained jobs, decide whether a subject needs that work.
+const (
+	kindTombstoneSweep    = "erasure.tombstone_sweep"
+	kindTombstonePage     = "erasure.tombstone_page"
+	kindTombstone         = "erasure.tombstone"
+	tombstoneSweepVersion = 1
+	tombstoneSweepPage    = 200
+	tombstonePageTimeout  = 30 * time.Second
+	tombstoneJobTimeout   = 2 * time.Minute
+)
+
+type tombstoneJob struct {
+	UserID uint `json:"userId"`
+}
+type tombstonePageJob struct {
+	AfterID uint   `json:"afterId"`
+	Day     string `json:"day"`
+}
+
+func (a *App) erasureKinds() []jobs.Kind {
+	return []jobs.Kind{
+		{Name: kindTombstonePage, Label: "Finding more deleted accounts to finish erasing", MaxAttempts: jobs.DefaultMaxAttempts, Run: a.runTombstonePageJob},
+		{Name: kindTombstone, Label: "Finishing the erasure of a deleted account", MaxAttempts: jobs.DefaultMaxAttempts,
+			Run: func(ctx context.Context, raw json.RawMessage) error {
+				var p tombstoneJob
+				if err := json.Unmarshal(raw, &p); err != nil || p.UserID == 0 {
+					return errors.New("invalid deleted-account erasure task")
+				}
+				ctx, cancel := context.WithTimeout(ctx, tombstoneJobTimeout)
+				defer cancel()
+				_, err := a.eraseTombstoneOnce(ctx, p.UserID, tombstoneSweepVersion)
+				return err
+			}},
+	}
+}
+
+func (a *App) runTombstonePageJob(ctx context.Context, raw json.RawMessage) error {
+	var p tombstonePageJob
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return errors.New("invalid deleted-account discovery task")
+	}
+	return a.runSweepPage(ctx, p.AfterID, p.Day)
+}
+
+// The CASE deliberately excludes string, null and malformed historical
+// versions without ever casting them. Keep it aligned with eraseTombstoneOnce.
+const tombstoneCandidatesSQL = `SELECT u.id FROM users u
+ WHERE u.deleted_at IS NOT NULL AND u.email = 'deleted-' || u.id || '@deleted.invalid'
+ AND u.id > ? AND NOT EXISTS (SELECT 1 FROM audit_logs l
+ WHERE l.action = ? AND l.target_type = 'user' AND l.target_id = u.id
+ AND CASE WHEN jsonb_typeof(l.meta_json->'version') = 'number'
+ THEN (l.meta_json->>'version')::numeric ELSE 0 END >= ?)
+ ORDER BY u.id LIMIT ?`
+
+func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {
+	return a.runSweepPageSize(ctx, afterID, day, tombstoneSweepPage)
+}
+
+// One page owns one transaction and one INSERT of at most 201 jobs. Discovery
+// never waits for erasure. A poisoned subject dies alone and alerts on System;
+// until fixed it gets another job, and potentially another alert, each day.
+// A dead page is recovered by the next day's chain starting at zero. A crash
+// after commit leaves its continuation durable. Address-only residue remains
+// unknown per subject: neither this query nor the worker reconstructs O-17.
+// After restore, a tombstone missing its marker is rediscovered under the next
+// date key. An active account restored from a backup is outside this sweep.
+func (a *App) runSweepPageSize(ctx context.Context, afterID uint, day string, pageSize int) error {
+	if _, err := time.Parse("2006-01-02", day); err != nil || pageSize < 1 || pageSize > tombstoneSweepPage {
+		return errors.New("invalid deleted-account discovery task")
+	}
+	ctx, cancel := context.WithTimeout(ctx, tombstonePageTimeout)
+	defer cancel()
+	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ids []uint
+		if err := tx.Raw(tombstoneCandidatesSQL, afterID, audit.UserErasureSwept, tombstoneSweepVersion, pageSize).Scan(&ids).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		specs := make([]jobs.Spec, 0, len(ids)+1)
+		for _, id := range ids {
+			specs = append(specs, jobs.Spec{Kind: kindTombstone, Payload: tombstoneJob{UserID: id}, RunAt: now,
+				UniqueKey: fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, id, tombstoneSweepVersion, day), MaxAttempts: jobs.DefaultMaxAttempts})
+		}
+		if len(ids) == pageSize {
+			last := ids[len(ids)-1]
+			specs = append(specs, jobs.Spec{Kind: kindTombstonePage, Payload: tombstonePageJob{AfterID: last, Day: day}, RunAt: now,
+				UniqueKey: fmt.Sprintf("%s:v%d:%s:%d", kindTombstonePage, tombstoneSweepVersion, day, last), MaxAttempts: jobs.DefaultMaxAttempts})
+		}
+		_, err := jobs.EnqueueMany(tx, specs)
+		return err
+	})
 }

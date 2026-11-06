@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/testdb"
@@ -615,12 +616,28 @@ func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 			}
 			var states *erasureTestStateLog
 			r.papp.DB, states = tracedProxyDB(t, r.proxy, database)
+			defer func() {
+				if t.Failed() {
+					for _, statement := range r.statements() {
+						t.Logf("backend %d statement: %s", statement.PID, statement.SQL)
+					}
+				}
+				states.mu.Lock()
+				defer states.mu.Unlock()
+				for _, failure := range states.entries {
+					t.Logf("statement SQLSTATE=%q: %s", failure.Code, failure.SQL)
+					if failure.Code == "40P01" {
+						t.Error("unexpected deadlock during the deadline test")
+					}
+				}
+			}()
 			before := tombstoneDatabase(t, f.app.DB)
-			var blocker *gorm.DB
+			blocker, blockerPID := beginOwnedTx(t, f.app.DB)
 			if gate {
-				blocker = holdContactGate(t, f.app)
+				if err := lockContacts(blocker); err != nil {
+					t.Fatal(err)
+				}
 			} else {
-				blocker, _ = beginOwnedTx(t, f.app.DB)
 				if err := blocker.Exec("SELECT id FROM contact_requests WHERE id = ? FOR UPDATE", req.ID).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -630,24 +647,27 @@ func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 			if gate {
 				needle = "pg_advisory_xact_lock"
 			}
-			pid := r.pidOf(needle)
-			r.awaitBlocked(pid) // PostgreSQL barrier, no guessed sleep
+			// Observe this test's blocker, the exact statement and the gate
+			// separately. A wait earlier in the erasure is not reconciliation.
+			pid := waiterOn(t, f.app.DB, blockerPID)
+			if statement := statementOf(t, f.app.DB, pid); !strings.Contains(statement, needle) {
+				t.Fatalf("backend %d blocked before the intended statement: %s", pid, statement)
+			}
+			if proxyPID := r.pidOf(needle); pid != proxyPID {
+				t.Fatalf("blocked backend %d, proxied backend %d", pid, proxyPID)
+			}
+			requireContactGate(t, f.app.DB, pid, !gate, "tombstone erasure")
 			c := r.await(ch)
-			if classifyContactErr(c.err) != outcomeTimedOut {
+			if classifyContactErr(c.err) != outcomeTimedOut || !errors.Is(c.err, context.DeadlineExceeded) {
 				t.Fatalf("deadline returned %v", c.err)
+			}
+			if elapsed := c.returned.Sub(c.start); elapsed > 1300*time.Millisecond {
+				t.Errorf("returned after %s, want within 1.3s", elapsed)
 			}
 			// Return is not release. Observe this backend separately, within
 			// D + S + I; no assertion makes the response time a release proof.
 			end := r.awaitReleased(pid, time.Until(c.deadline.Add(contactServerCap+300*time.Millisecond))+time.Second)
 			t.Logf("returned %s after D; backend released %s after D", c.returned.Sub(c.deadline), end.Sub(c.deadline))
-			states.mu.Lock()
-			for _, failure := range states.entries {
-				t.Logf("statement SQLSTATE=%q: %s", failure.Code, failure.SQL)
-				if failure.Code == "40P01" {
-					t.Error("unexpected deadlock during the deadline test")
-				}
-			}
-			states.mu.Unlock()
 			if gate {
 				for _, statement := range r.statements() {
 					if strings.Contains(statement.SQL, "FROM users WHERE id") {
@@ -658,6 +678,9 @@ func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 			tombstoneSameDatabase(t, before, tombstoneDatabase(t, f.app.DB))
 			if err := blocker.Rollback().Error; err != nil {
 				t.Fatal(err)
+			}
+			if !r.gateFree() {
+				t.Error("the contact gate remained held after both backends released")
 			}
 		})
 	}
@@ -820,4 +843,525 @@ func TestTombstoneNoopDoesNotHideAnUnacknowledgedRollback(t *testing.T) {
 	}
 	r.awaitReleased(r.pidOf("SELECT id FROM users WHERE id"), contactServerCap+2*time.Minute+time.Second)
 	tombstoneSameDatabase(t, before, tombstoneDatabase(t, s.app.DB))
+}
+
+// The small page exercises the production transaction and INSERT; only the
+// bound changes. Each runner still claims and finishes real persisted jobs.
+func tombstoneRunner(t *testing.T, a *App, pageSize int) *jobs.Runner {
+	t.Helper()
+	kinds := a.erasureKinds()
+	for i := range kinds {
+		if kinds[i].Name == kindTombstonePage {
+			kinds[i].Run = func(ctx context.Context, raw json.RawMessage) error {
+				var p tombstonePageJob
+				if err := json.Unmarshal(raw, &p); err != nil {
+					return err
+				}
+				return a.runSweepPageSize(ctx, p.AfterID, p.Day, pageSize)
+			}
+		}
+	}
+	return a.newRunner(kinds...)
+}
+
+func tombstoneDrain(t *testing.T, a *App, r *jobs.Runner) {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		// Keep unrelated avatar/notice delivery out of these runner assertions.
+		if err := a.DB.Exec(`UPDATE jobs SET run_at = now() + interval '1 day'
+   WHERE kind NOT IN (?, ?) AND status IN ('queued', 'failed')`, kindTombstone, kindTombstonePage).Error; err != nil {
+			t.Fatal(err)
+		}
+		ran, err := r.RunOnce(context.Background(), "tombstone-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ran {
+			return
+		}
+	}
+	t.Fatal("tombstone runner failed to drain within its bound")
+}
+
+func tombstoneSeedUsers(t *testing.T, a *App, n int) []uint {
+	t.Helper()
+	ids := make([]uint, 0, n)
+	for i := 0; i < n; i++ {
+		u := newTestUser(t, a, fmt.Sprintf("legacy-page-%d", i), erasurePW, models.RoleMember)
+		tombstoneLegacy(t, a.DB, u.ID)
+		ids = append(ids, u.ID)
+	}
+	return ids
+}
+
+func TestTombstoneDiscoveryPagesAreBoundedAndAtomic(t *testing.T) {
+	a := testApp(t)
+	ids := tombstoneSeedUsers(t, a, 10)
+	living := newTestUser(t, a, "living-page", erasurePW, models.RoleMember)
+	const day = "2026-11-06"
+	// Failing the continuation must undo every subject job in that INSERT.
+	ddl := `CREATE FUNCTION test_tombstone_page_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF NEW.kind = 'erasure.tombstone_page' THEN RAISE EXCEPTION 'test continuation failure'; END IF; RETURN NEW; END $$;
+ CREATE TRIGGER test_tombstone_page_failure BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION test_tombstone_page_failure()`
+	if err := a.DB.Exec(ddl).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		a.DB.Exec(`DROP TRIGGER IF EXISTS test_tombstone_page_failure ON jobs; DROP FUNCTION IF EXISTS test_tombstone_page_failure()`)
+	})
+	if err := a.runSweepPageSize(context.Background(), 0, day, 3); err == nil {
+		t.Fatal("continuation failure succeeded")
+	}
+	if n := countRows(t, a.DB, "jobs", "kind IN ?", []string{kindTombstone, kindTombstonePage}); n != 0 {
+		t.Fatalf("failed page left %d jobs", n)
+	}
+	if err := a.DB.Exec(`DROP TRIGGER test_tombstone_page_failure ON jobs`).Error; err != nil {
+		t.Fatal(err)
+	}
+	after := uint(0)
+	for page := 0; page < 4; page++ {
+		for retry := 0; retry < 2; retry++ {
+			if err := a.runSweepPageSize(context.Background(), after, day, 3); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := min(3*(page+1), 10)
+		if n := countRows(t, a.DB, "jobs", "kind = ?", kindTombstone); n != int64(want) {
+			t.Fatalf("page %d subjects %d want %d", page, n, want)
+		}
+		if n := countRows(t, a.DB, "jobs", "kind = ?", kindTombstonePage); n != int64(min(page+1, 3)) {
+			t.Fatalf("page %d continuations %d", page, n)
+		}
+		if page < 3 {
+			var j models.Job
+			if err := a.DB.Where("kind = ?", kindTombstonePage).Order("id DESC").First(&j).Error; err != nil {
+				t.Fatal(err)
+			}
+			var p tombstonePageJob
+			if err := json.Unmarshal([]byte(j.Payload), &p); err != nil {
+				t.Fatal(err)
+			}
+			if p.Day != day || p.AfterID != ids[want-1] {
+				t.Fatalf("continuation %+v", p)
+			}
+			after = p.AfterID
+		}
+	}
+	if n := countRows(t, a.DB, "jobs", "kind = ? AND payload->>'userId' = ?", kindTombstone, fmt.Sprint(living.ID)); n != 0 {
+		t.Fatal("selected living account")
+	}
+	var rows []models.Job
+	if err := a.DB.Where("kind = ?", kindTombstone).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range rows {
+		var p tombstoneJob
+		if err := json.Unmarshal([]byte(j.Payload), &p); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, p.UserID, tombstoneSweepVersion, day)
+		if j.UniqueKey == nil || *j.UniqueKey != want || j.MaxAttempts != jobs.DefaultMaxAttempts {
+			t.Fatalf("bad subject job %+v", j)
+		}
+	}
+}
+
+func TestTombstoneDiscoveryProgressesPastDeadSubject(t *testing.T) {
+	a := testApp(t)
+	admin := newTestUser(t, a, "sweep-admin", erasurePW, models.RoleAdmin)
+	ids := tombstoneSeedUsers(t, a, 10)
+	ddl := fmt.Sprintf(`CREATE FUNCTION test_tombstone_subject_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF NEW.id = %d THEN RAISE EXCEPTION 'test poisoned subject'; END IF; RETURN NEW; END $$;
+ CREATE TRIGGER test_tombstone_subject_failure BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION test_tombstone_subject_failure()`, ids[0])
+	if err := a.DB.Exec(ddl).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		a.DB.Exec(`DROP TRIGGER IF EXISTS test_tombstone_subject_failure ON users; DROP FUNCTION IF EXISTS test_tombstone_subject_failure()`)
+	})
+	if err := a.runSweepPageSize(context.Background(), 0, "2026-11-06", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DB.Exec(`UPDATE jobs SET max_attempts = 1 WHERE kind = ? AND payload->>'userId' = ?`, kindTombstone, fmt.Sprint(ids[0])).Error; err != nil {
+		t.Fatal(err)
+	}
+	r := tombstoneRunner(t, a, 3)
+	tombstoneDrain(t, a, r)
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 9 {
+		t.Fatalf("later subjects did not progress: %d markers", n)
+	}
+	var dead models.Job
+	if err := a.DB.Where("kind = ? AND status = ?", kindTombstone, models.JobDead).First(&dead).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, a.DB, "notifications", "user_id = ? AND kind = ? AND subject_id = ?", admin.ID, notify.SystemJobDead, dead.ID); n != 1 {
+		t.Fatalf("dead subject alert count %d", n)
+	}
+	if err := a.DB.Exec(`DROP TRIGGER test_tombstone_subject_failure ON users`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runSweepPageSize(context.Background(), 0, "2026-11-07", 3); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneDrain(t, a, r)
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 10 {
+		t.Fatalf("next day failed to recover: %d markers", n)
+	}
+	if got := reloadJob(t, a, dead.ID); got.Status != models.JobDead {
+		t.Fatal("next day reused yesterday's dead key")
+	}
+}
+
+func TestTombstoneRunnerReclaimsCommittedJobAndRecoversRestore(t *testing.T) {
+	a := testApp(t)
+	id := tombstoneSeedUsers(t, a, 1)[0]
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
+		t.Fatal(err)
+	}
+	r := tombstoneRunner(t, a, tombstoneSweepPage)
+	if ran, err := r.RunOnce(context.Background(), "before-crash"); err != nil || !ran {
+		t.Fatalf("first run %v %v", ran, err)
+	}
+	var j models.Job
+	if err := a.DB.Where("kind = ?", kindTombstone).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Model a process lost between domain COMMIT and runner.finish.
+	if err := a.DB.Model(&j).Updates(map[string]any{"status": models.JobRunning, "locked_by": "lost", "locked_at": time.Now().Add(-2 * jobs.DefaultLease)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := tombstoneDatabase(t, a.DB)
+	if ran, err := r.RunOnce(context.Background(), "reclaimed"); err != nil || !ran {
+		t.Fatalf("reclaim %v %v", ran, err)
+	}
+	tombstoneAcceptRunnerTransition(t, a.DB, before, j.ID)
+	tombstoneSameDatabase(t, before, tombstoneDatabase(t, a.DB))
+	if got := reloadJob(t, a, j.ID); got.Status != models.JobDone || got.Attempts != 2 {
+		t.Fatalf("reclaimed job %+v", got)
+	}
+	// A snapshot may contain today's completed job but no marker. Today's
+	// key stays blocked; tomorrow's chain still recovers the missing work.
+	if err := a.DB.Where("action = ? AND target_id = ?", audit.UserErasureSwept, id).Delete(&models.AuditLog{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneDrain(t, a, r)
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 0 {
+		t.Fatal("reused blocked same-day key")
+	}
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-07"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneDrain(t, a, r)
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 1 {
+		t.Fatal("next-date restore recovery failed")
+	}
+	if n := countRows(t, a.DB, "jobs", "kind = ?", kindTombstone); n != 2 {
+		t.Fatalf("restore job keys: %d", n)
+	}
+	// Cleanup pruning cannot invalidate the marker.
+	if _, err := jobs.PruneDone(a.DB, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	before = tombstoneDatabase(t, a.DB)
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-08"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneSameDatabase(t, before, tombstoneDatabase(t, a.DB))
+}
+
+func TestTombstoneLeaseTakeoverWaitsOnContactGate(t *testing.T) {
+	a := testApp(t)
+	id := tombstoneSeedUsers(t, a, 1)[0]
+	const pauseKey int64 = 7460201
+	release, blocker := holdAdvisory(t, a.DB, pauseKey)
+	defer release()
+	ddl := fmt.Sprintf(`CREATE TABLE test_tombstone_scrubs (user_id bigint);
+ CREATE FUNCTION test_tombstone_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN PERFORM pg_advisory_xact_lock(%d); INSERT INTO test_tombstone_scrubs VALUES (NEW.id); RETURN NEW; END $$;
+ CREATE TRIGGER test_tombstone_pause BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION test_tombstone_pause()`, pauseKey)
+	if err := a.DB.Exec(ddl).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		a.DB.Exec(`DROP TRIGGER IF EXISTS test_tombstone_pause ON users; DROP FUNCTION IF EXISTS test_tombstone_pause(); DROP TABLE IF EXISTS test_tombstone_scrubs`)
+	})
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
+		t.Fatal(err)
+	}
+	r := tombstoneRunner(t, a, tombstoneSweepPage)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	run := func(worker string) <-chan error {
+		ch := make(chan error, 1)
+		go func() {
+			ran, err := r.RunOnce(ctx, worker)
+			if err == nil && !ran {
+				err = errors.New("runner claimed nothing")
+			}
+			ch <- err
+		}()
+		return ch
+	}
+	first := run("first")
+	firstPID := waiterOn(t, a.DB, blocker)
+	requireContactGate(t, a.DB, firstPID, true, "first worker")
+	if err := a.DB.Exec(`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE kind = ? AND status = ?`, kindTombstone, models.JobRunning).Error; err != nil {
+		t.Fatal(err)
+	}
+	second := run("takeover")
+	agesRaceGateWaiter(t, a.DB, firstPID, "takeover worker")
+	release()
+	if err := awaitDBResult(t, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitDBResult(t, second); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, a.DB, "test_tombstone_scrubs", "user_id = ?", id); n != 1 {
+		t.Fatalf("scrubs %d want 1", n)
+	}
+	if n := countRows(t, a.DB, "audit_logs", "action = ? AND target_id = ?", audit.UserErasureSwept, id); n != 1 {
+		t.Fatalf("markers %d want 1", n)
+	}
+	var j models.Job
+	if err := a.DB.Where("kind = ?", kindTombstone).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	if j.Status != models.JobDone || j.Attempts != 2 || j.LockedBy != "takeover" {
+		t.Fatalf("takeover result %+v", j)
+	}
+}
+
+// Normalize exactly the runner-owned row after checking its final state.
+// Every other existing job and all added jobs remain in the database proof.
+func tombstoneAcceptRunnerTransition(t *testing.T, db *gorm.DB, before map[string]string, jobID uint) {
+	t.Helper()
+	var oldJobs []map[string]any
+	if err := json.Unmarshal([]byte(before["jobs"]), &oldJobs); err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	var currentJSON string
+	if err := db.Raw(`SELECT to_jsonb(j)::text FROM jobs j WHERE id = ?`, jobID).Scan(&currentJSON).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(currentJSON), &current); err != nil {
+		t.Fatal(err)
+	}
+	for i, old := range oldJobs {
+		if old["id"] == float64(jobID) {
+			oldJobs[i] = current
+		}
+	}
+	body, err := json.Marshal(oldJobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalized string
+	if err := db.Raw("SELECT ?::jsonb::text", string(body)).Scan(&normalized).Error; err != nil {
+		t.Fatal(err)
+	}
+	before["jobs"] = normalized
+}
+
+func TestTombstoneFreshErasureThroughRunnerChangesOnlyMaintenance(t *testing.T) {
+	s := newCoreErasureScene(t)
+	a := s.app
+	u := newTestUser(t, a, "fresh-runner", erasurePW, models.RoleMember)
+	seedErasureTokens(t, a.DB, u.ID, "fresh-runner", "fresh-runner-new@x.test")
+	erasureSeedConsentEvidence(t, a.DB, u.ID, "fresh-runner-consent")
+	s.ac.holdNotices = true
+	s.erase(t, u.ID)
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
+		t.Fatal(err)
+	}
+	// Move unrelated delivery out of the due queue before the snapshot.
+	if err := a.DB.Exec(`UPDATE jobs SET run_at = now() + interval '1 day' WHERE kind <> ?`, kindTombstone).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := tombstoneDatabase(t, a.DB)
+	r := tombstoneRunner(t, a, tombstoneSweepPage)
+	if ran, err := r.RunOnce(context.Background(), "fresh"); err != nil || !ran {
+		t.Fatalf("fresh run %v %v", ran, err)
+	}
+	// The runner's own state transition is the only existing job-row change.
+	// Inspect it explicitly, then omit only that row from the whole DB proof.
+	var j models.Job
+	if err := a.DB.Where("kind = ?", kindTombstone).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	if j.Status != models.JobDone || j.Attempts != 1 {
+		t.Fatalf("fresh runner job %+v", j)
+	}
+	tombstoneAcceptRunnerTransition(t, a.DB, before, j.ID)
+	tombstoneMaintenanceDelta(t, a.DB, before, u.ID, tombstoneSweepVersion)
+	before = tombstoneDatabase(t, a.DB)
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-07"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneSameDatabase(t, before, tombstoneDatabase(t, a.DB))
+}
+
+func TestTombstoneDiscoveryNumericMarkersAndShape(t *testing.T) {
+	a := testApp(t)
+	ids := tombstoneSeedUsers(t, a, 9)
+	metas := []string{`{"version":"999"}`, `{"version":null}`, `{"version":{}}`, `{"version":[]}`, `{"version":true}`, `{}`, `{"version":0}`, `{"version":1}`, `{"version":2.5}`}
+	for i, meta := range metas {
+		erasureMustCreate(t, a.DB, &models.AuditLog{Action: audit.UserErasureSwept, TargetType: "user", TargetID: ids[i], MetaJSON: meta})
+	}
+	living := newTestUser(t, a, "living-marker", erasurePW, models.RoleMember)
+	// Even the exact placeholder is ineligible without deleted_at.
+	if err := a.DB.Exec(`UPDATE users SET email = 'deleted-' || id || '@deleted.invalid' WHERE id = ?`, living.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	lookalike := newTestUser(t, a, "lookalike-marker", erasurePW, models.RoleMember)
+	if err := a.DB.Exec(`UPDATE users SET deleted_at = now() WHERE id = ?`, lookalike.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
+		t.Fatal(err)
+	}
+	var selected []uint
+	if err := a.DB.Raw(`SELECT (payload->>'userId')::bigint FROM jobs WHERE kind = ? ORDER BY (payload->>'userId')::bigint`, kindTombstone).Scan(&selected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(selected, ids[:7]) {
+		t.Fatalf("numeric/structural discovery = %v want %v", selected, ids[:7])
+	}
+}
+
+func TestTombstoneDailyDatePersistsAndDeadPageRecovers(t *testing.T) {
+	a := testApp(t)
+	tombstoneSeedUsers(t, a, 4)
+	var daily jobs.Kind
+	for _, k := range a.dailyKinds() {
+		if k.Name == kindTombstoneSweep {
+			daily = k
+		}
+	}
+	zone, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 31, 5, 30, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		if err := a.queueDaily([]jobs.Kind{daily}, now, zone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sweep models.Job
+	if err := a.DB.Where("kind = ?", kindTombstoneSweep).First(&sweep).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sweep.UniqueKey == nil || *sweep.UniqueKey != kindTombstoneSweep+":2026-10-30" {
+		t.Fatalf("daily key %+v", sweep)
+	}
+	var p tombstonePageJob
+	if err := json.Unmarshal([]byte(sweep.Payload), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Day != "2026-10-30" || p.AfterID != 0 {
+		t.Fatalf("daily payload %+v", p)
+	}
+	if err := daily.Run(context.Background(), json.RawMessage(sweep.Payload)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, a.DB, "jobs", "kind = ? AND unique_key LIKE ?", kindTombstone, "%:2026-10-30"); n != 4 {
+		t.Fatalf("daily handler lost scheduled date: %d", n)
+	}
+	// A dead continuation leaves later ids for the next daily chain from zero.
+	if err := a.DB.Where("kind = ?", kindTombstone).Delete(&models.Job{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runSweepPageSize(context.Background(), 0, p.Day, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DB.Exec(`UPDATE jobs SET status = 'dead' WHERE kind IN (?, ?)`, kindTombstonePage, kindTombstoneSweep).Error; err != nil {
+		t.Fatal(err)
+	}
+	tombstoneDrain(t, a, tombstoneRunner(t, a, 3))
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 3 {
+		t.Fatalf("dead continuation unexpectedly ran: %d", n)
+	}
+	if err := a.queueDaily([]jobs.Kind{daily}, now.Add(24*time.Hour), zone); err != nil {
+		t.Fatal(err)
+	}
+	var next models.Job
+	if err := a.DB.Where("kind = ? AND status = ?", kindTombstoneSweep, models.JobQueued).First(&next).Error; err != nil {
+		t.Fatal(err)
+	}
+	r := a.newRunner(daily)
+	if ran, err := r.RunOnce(context.Background(), "next-day"); err != nil || !ran {
+		t.Fatalf("next day sweep %v %v", ran, err)
+	}
+	tombstoneDrain(t, a, tombstoneRunner(t, a, 3))
+	if n := countRows(t, a.DB, "audit_logs", "action = ?", audit.UserErasureSwept); n != 4 {
+		t.Fatalf("next day failed dead page recovery: %d", n)
+	}
+}
+
+// Rerunnable performance evidence for review. The plan and elapsed time are
+// logged by this test; no schema/index change is hidden in the measurement.
+func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
+	// Shared resets rows with DELETE, retaining planner statistics and table
+	// storage. This fixture's ANALYZE would otherwise make later 300ms
+	// deadline tests plan against 200,000 audit rows, even after a reset.
+	db, err := testdb.Open(testdb.Fresh(t, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	a := &App{DB: db}
+	if err := db.Exec(`INSERT INTO users (id, email, name, deleted_at, status)
+ SELECT n, 'deleted-' || n || '@deleted.invalid', '', now(), 'disabled' FROM generate_series(100001, 110000) n`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO audit_logs (action, target_type, target_id, meta_json)
+ SELECT ?, 'user', n, jsonb_build_object('version', ?::integer) FROM generate_series(100001, 105000) n`, audit.UserErasureSwept, tombstoneSweepVersion).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO audit_logs (action, target_type, target_id, meta_json)
+ SELECT 'test.unrelated', 'user', 100001 + n % 10000, '{}'::jsonb FROM generate_series(1, 195000) n`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`ANALYZE users; ANALYZE audit_logs`).Error; err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	if err := db.Raw("EXPLAIN (ANALYZE, BUFFERS) "+tombstoneCandidatesSQL, uint(0), audit.UserErasureSwept, tombstoneSweepVersion, tombstoneSweepPage).Scan(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("10,000 tombstones, 5,000 marked, 200,000 audit rows:\n%s", strings.Join(plan, "\n"))
+	var daily jobs.Kind
+	for _, k := range a.dailyKinds() {
+		if k.Name == kindTombstoneSweep {
+			daily = k
+		}
+	}
+	if _, err := jobs.Enqueue(db, kindTombstoneSweep, tombstonePageJob{Day: "2026-11-06"}, time.Now(), "measured-sweep", jobs.DefaultMaxAttempts); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	ran, err := a.newRunner(daily).RunOnce(context.Background(), "measured-page")
+	elapsed := time.Since(start)
+	t.Logf("one real page job wall time: %s", elapsed)
+	if err != nil || !ran {
+		t.Fatalf("measured page %v %v", ran, err)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("page took %s; arbitrate before adding an index or migration", elapsed)
+	}
+	if n := countRows(t, db, "jobs", "kind = ?", kindTombstone); n != tombstoneSweepPage {
+		t.Fatalf("measured page queued %d subjects", n)
+	}
+	if n := countRows(t, db, "jobs", "kind = ?", kindTombstonePage); n != 1 {
+		t.Fatalf("measured continuation count %d", n)
+	}
 }
