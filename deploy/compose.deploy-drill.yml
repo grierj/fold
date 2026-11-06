@@ -1,0 +1,29 @@
+# Disposable drill only. App and Postgres have no published ports. The HTTP
+# proxy, registry and mail inspector bind only to loopback on dynamic ports.
+services:
+  registry:
+    image: registry:2.8.3
+    restart: "no"
+    ports:
+      - "127.0.0.1::5000"
+    volumes:
+      - registrydata:/var/lib/registry
+  smtp:
+    image: axllent/mailpit:v1.20.3
+    restart: "no"
+    ports:
+      - "127.0.0.1::8025"
+  caddy:
+    image: nginx:1.27.5-alpine
+    restart: "no"
+    ports:
+      - "127.0.0.1::80"
+    volumes:
+      - ./drill-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+volumes:
+  registrydata:

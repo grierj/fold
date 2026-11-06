@@ -75,6 +75,15 @@ EOF
 cat >/usr/local/bin/docker <<'EOF'
 #!/bin/bash
 set -euo pipefail
+if [[ "${1:-}" == "run" ]]; then
+  printf '{"version":"fixture"}\n'
+  exit 0
+fi
+if [[ "${1:-}" == "pull" ]]; then exit 0; fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  echo sha256:fixture
+  exit 0
+fi
 if [[ "${1:-}" == "inspect" ]]; then
   printf '%s\n' healthy
   exit 0
@@ -98,7 +107,8 @@ while [[ $# -gt 0 ]]; do
 done
 cmd="${args[0]:-}"
 case "$cmd" in
-  version|pull|up) exit 0 ;;
+  version|pull|build|up) exit 0 ;;
+  config) echo '{"services":{"app":{"image":"fixture:pin"}}}' ;;
   ps)
     if [[ -n "${DOCKER_STUB_PS:-}" ]]; then
       printf '%s\n' "$DOCKER_STUB_PS"

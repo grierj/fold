@@ -27,6 +27,9 @@ TIMEZONE=""
 SWAP_MB=""
 SMTP_URL=""
 EMAIL_FROM=""
+TARGET_LEVEL=0
+HOST_FLOOR=0
+PIN_SAVE=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/digitalocean/checks.sh
@@ -641,6 +644,9 @@ copy_tree() {
     --exclude .env \
     --exclude backup.env \
     --exclude data \
+    --exclude ops.lock --exclude ops.owner --exclude recovery-policy-floor \
+    --exclude deploy-tools --exclude recovery-tools --exclude recovery.lock \
+    --exclude '.deploy-tools.*' --exclude '.old-deploy-tools.*' --exclude .deploy-drill \
     -cf - . | tar -C "$stage" -xf -; then
     rm -rf "$stage"
     die "copy from $src failed"
@@ -729,16 +735,21 @@ install_runtime_files() {
     write_image_compose
   fi
   if (( DRY_RUN )); then
-    echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh checks.sh into $DEPLOY_DIR"
+    echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh into $DEPLOY_DIR"
     echo "dry-run: install $SCRIPT_DIR/backup.env.example to $DEPLOY_DIR/backup.env.example mode 644"
+    echo "dry-run: install $SCRIPT_DIR/deploy-tools-version to $DEPLOY_DIR/deploy-tools-version mode 644"
     return 0
   fi
-  install -m 755 "$SCRIPT_DIR/backup.sh" "$DEPLOY_DIR/backup.sh"
-  install -m 755 "$SCRIPT_DIR/smoke.sh" "$DEPLOY_DIR/smoke.sh"
-  install -m 755 "$SCRIPT_DIR/email-dns.sh" "$DEPLOY_DIR/email-dns.sh"
-  install -m 755 "$SCRIPT_DIR/upgrade.sh" "$DEPLOY_DIR/upgrade.sh"
-  install -m 644 "$SCRIPT_DIR/checks.sh" "$DEPLOY_DIR/checks.sh"
-  install -m 644 "$SCRIPT_DIR/backup.env.example" "$DEPLOY_DIR/backup.env.example"
+  local tool mode
+  for tool in backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh backup.env.example deploy-tools-version; do
+    mode=755
+    [[ "$tool" == *.sh && "$tool" != checks.sh ]] || mode=644
+    if [[ "$SCRIPT_DIR/$tool" -ef "$DEPLOY_DIR/$tool" ]]; then
+      chmod "$mode" "$DEPLOY_DIR/$tool"
+    else
+      install -m "$mode" "$SCRIPT_DIR/$tool" "$DEPLOY_DIR/$tool"
+    fi
+  done
   if [[ -f "$DEPLOY_DIR/backup.env" ]]; then
     chmod 600 "$DEPLOY_DIR/backup.env"
     assert_env_mode "$DEPLOY_DIR/backup.env" || exit 1
@@ -899,15 +910,68 @@ EOF
 EOF
 }
 
+# Refuse before installing files or changing a pin. Reading an image's version
+# runs an ephemeral container only, never a Compose service or a database.
+preflight_recovery_level() {
+  if (( DRY_RUN )); then
+    local mode=image
+    (( ! ALLOW_BUILD )) || mode=build
+    dry_run_recovery_check "$DEPLOY_DIR" "$mode" "$SOURCE_DIR" HEAD || exit 1
+    return 0
+  fi
+  HOST_FLOOR="$(host_recovery_floor "$DEPLOY_DIR")"
+  if (( ALLOW_BUILD )); then
+    TARGET_LEVEL="$(commit_recovery_level "$SOURCE_DIR" HEAD)"
+  else
+    docker pull "$IMAGE"
+    TARGET_LEVEL="$(image_recovery_level "$IMAGE")"
+  fi
+  require_recovery_level "$TARGET_LEVEL" "$HOST_FLOOR" || exit 1
+}
+
+save_release_pin() {
+  (( ! DRY_RUN )) || return 0
+  PIN_SAVE="$(mktemp -d "$DEPLOY_DIR/.pin-save.XXXXXX")"
+  local file
+  for file in .env docker-compose.yml docker-compose.build.yml; do
+    [[ ! -f "$DEPLOY_DIR/$file" ]] || cp -p "$DEPLOY_DIR/$file" "$PIN_SAVE/$file"
+  done
+  trap '[[ -z "$PIN_SAVE" ]] || rm -rf "$PIN_SAVE"' EXIT
+}
+
+restore_release_pin() {
+  local file
+  for file in .env docker-compose.yml docker-compose.build.yml; do
+    if [[ -f "$PIN_SAVE/$file" ]]; then
+      cp -p "$PIN_SAVE/$file" "$DEPLOY_DIR/$file"
+    else
+      rm -f "$DEPLOY_DIR/$file"
+    fi
+  done
+}
+
 deploy_stack() {
-  local -a cmd
-  cmd=(docker compose --project-directory "$DEPLOY_DIR")
+  local -a cmd=(docker compose --project-directory "$DEPLOY_DIR")
+  local config image actual
   if [[ -n "$IMAGE" ]]; then
     step "${cmd[@]}" pull
-    step "${cmd[@]}" up -d
   else
-    step "${cmd[@]}" up --build -d
+    (( ! DRY_RUN )) || echo "dry-run: build app before up (previously up --build)"
+    step "${cmd[@]}" build app
   fi
+  if (( ! DRY_RUN )); then
+    config="$("${cmd[@]}" config --format json)" || { restore_release_pin; return 1; }
+    image="$(jq -er '.services.app.image' <<<"$config")" || { restore_release_pin; return 1; }
+    image="$(docker image inspect --format '{{.Id}}' "$image")" || { restore_release_pin; return 1; }
+    actual="$(image_recovery_level "$image")" || { restore_release_pin; return 1; }
+    if [[ "$actual" != "$TARGET_LEVEL" ]]; then
+      restore_release_pin
+      die "resulting image recovery level ${actual} differs from checked target ${TARGET_LEVEL}; restored previous pin; no services started"
+    fi
+    require_recovery_level "$actual" "$HOST_FLOOR" || { restore_release_pin; return 1; }
+    deploy_drill_pause "$DEPLOY_DIR" before-up
+  fi
+  step "${cmd[@]}" up -d
 }
 
 verify_before_up() {
@@ -970,6 +1034,21 @@ main() {
     usage
     exit 0
   fi
+  # Acquire before validate reads the source tree, .env or any Docker state.
+  [[ "$DEPLOY_DIR" == /* ]] || die "--deploy-dir must be an absolute path"
+  if (( ! DRY_RUN )); then
+    require_root
+    mkdir -p "$DEPLOY_DIR"
+    DEPLOY_DIR="$(cd "$DEPLOY_DIR" && pwd -P)"
+  fi
+  validate_deploy_drill "$DEPLOY_DIR" || exit 1
+  if (( ! DRY_RUN )); then
+    ops_lock_acquire "$DEPLOY_DIR" provision || exit $?
+    deploy_drill_pause "$DEPLOY_DIR" after-lock
+  fi
+  if [[ "${DEPLOY_DRILL:-}" == 1 ]] && (( ! SKIP_HARDEN )); then
+    die "DEPLOY_DRILL requires --skip-harden; it never hardens a development host"
+  fi
   validate
   check_os
   require_root
@@ -988,16 +1067,26 @@ main() {
     configure_swap
   fi
   if (( ! SKIP_DEPLOY )); then
+    require_deploy_tools_version "$SCRIPT_DIR" "$DEPLOY_DIR" || exit 1
     install_docker
+    preflight_recovery_level
+    save_release_pin
     install_runtime_files
     write_env
     ensure_release_pin
     verify_before_up
-    install_smoke_cron
-    install_backup_cron
-    run_email_dns
+    if [[ "${DEPLOY_DRILL:-}" != 1 ]]; then
+      install_smoke_cron
+      install_backup_cron
+      run_email_dns
+    fi
     deploy_stack
     run_smoke
+    if (( ! DRY_RUN )); then
+      if ! write_recovery_floor "$DEPLOY_DIR" "$TARGET_LEVEL"; then
+        die "deployed and smoke passed, but could not record ${DEPLOY_DIR}/recovery-policy-floor. The pinned image still enforces the floor. Keep it locally, repair storage/permissions, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options. Do not roll back for this error" 76
+      fi
+    fi
   fi
   summarize
 }
