@@ -831,8 +831,12 @@ func TestAuditErasureTeenRealLifecycles(t *testing.T) {
 // After an input changes, review its attribution rule before updating its pin.
 // No files are parsed by executing them or by loading application state.
 var auditWriterCensus = map[string]string{
-	"account_erasure.go:eraseMessagesIn":                          "043f753af9b72e0ba8b0415eea19223e5eff000922a19561cae0bf5fc27715cc",
-	"account_erasure_households.go:eraseHouseholdRecordsIn":       "db83661f4610294b4f39178909ac1293e14ff55caab90f4131a196270dd11d09",
+	// System maintenance: no actor or IP, fixed host-removal metadata and a
+	// version/count-only sweep marker. The two existing erasure writers now
+	// accept a nil system actor, preserving their nonzero admin attribution.
+	"account_erasure_tombstones.go:eraseTombstoneOnce":            "330d5e241aaacac7e1006fac835afd5b17c2a60b3a98b20dc872f94801529504",
+	"account_erasure.go:eraseMessagesIn":                          "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
+	"account_erasure_households.go:eraseHouseholdRecordsIn":       "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
 	"api_account_requests.go:apiConfirmAccountSetup":              "f97b48dcb56a3e178e94d2c297f260fa526f176e68252f55b8085d4a774e0acb",
@@ -1234,8 +1238,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 118 {
-		t.Fatalf("audit.Write sites = %d, expected 118; review every changed site", len(c.Sites))
+	if len(c.Sites) != 120 {
+		t.Fatalf("audit.Write sites = %d, expected 120; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)
@@ -1253,7 +1257,7 @@ func TestAuditErasureCensusRejectsMutations(t *testing.T) {
 		t.Fatal(strings.Join(p, "\n"))
 	}
 	for _, tc := range []struct{ name, file, writer, old, new string }{
-		{"household erasure actor", "account_erasure_households.go", "eraseHouseholdRecordsIn", "Actor: &actorID", "Actor: &s.ID"},
+		{"household erasure actor", "account_erasure_households.go", "eraseHouseholdRecordsIn", "Actor: actor", "Actor: &s.ID"},
 		{"household erasure IP", "account_erasure_households.go", "eraseHouseholdRecordsIn", "IP: ip", `IP: ""`},
 		{"household erasure metadata key", "account_erasure_households.go", "eraseHouseholdRecordsIn", `meta["personId"]`, `meta["renamedPersonId"]`},
 		{"unclassified action", "api_household_conversion.go", "transferHouseholdConversion", "Action: audit.HouseholdPersonConverted", `Action: "unclassified.test_action"`},

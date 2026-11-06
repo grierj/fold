@@ -100,6 +100,7 @@ var auditIPAttribution = map[string][]auditIPRule{
 	audit.UserRoleChanged:               auditIPOrdinary,
 	audit.UserEmailChanged:              auditIPOrdinary,
 	audit.UserDeleted:                   auditIPOrdinary,
+	audit.UserErasureSwept:              auditIPSystem,
 	audit.UserDisabled:                  auditIPOrdinary,
 	audit.UserEnabled:                   auditIPOrdinary,
 	audit.MemberRestored:                auditIPOrdinary,

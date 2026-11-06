@@ -520,6 +520,10 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 // note reaches only them.
 func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	reg models.Registration, note string, actor uint) ([]uint, error) {
+	var actorID *uint
+	if actor != 0 {
+		actorID = &actor
+	}
 	userID := registrationHolder(reg)
 	u := userIn(tx, userID)
 	if u == nil || u.Status == models.UserDisabled {
@@ -532,7 +536,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	vars.Note = note
 	end := noticeEnd(o)
 	return notify.Send(tx, notify.Msg{
-		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: &actor,
+		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: actorID,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
@@ -1776,7 +1780,10 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 // promoteOnDisable frees every seat a disabled account held on future
 // scheduled occurrences and promotes into them. The rows stay; they are
 // hidden and uncounted while the account is disabled.
-func (a *App) promoteOnDisable(tx *gorm.DB, userID uint) ([]uint, error) {
+// notifyInsideCutoff is false for tombstone maintenance: deleted accounts
+// already do not count, so revisiting their registrations must not announce
+// another newly opened seat. Admin disable/delete keeps its usual notices.
+func (a *App) promoteOnDisable(tx *gorm.DB, userID uint, notifyInsideCutoff bool) ([]uint, error) {
 	var occIDs []uint
 	if err := tx.Model(&models.Registration{}).
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
@@ -1795,6 +1802,9 @@ func (a *App) promoteOnDisable(tx *gorm.DB, userID uint) ([]uint, error) {
 		var ev models.Event
 		if err := tx.First(&ev, o.EventID).Error; err != nil {
 			return nil, err
+		}
+		if !notifyInsideCutoff && events.InCutoff(now, o.StartsAt) {
+			continue
 		}
 		ids, err := a.promoteLocked(tx, &ev, o, now, nil)
 		if err != nil {

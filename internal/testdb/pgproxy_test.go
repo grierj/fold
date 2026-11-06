@@ -369,11 +369,17 @@ func TestProxyCloseModes(t *testing.T) {
 		pid, ch := r.sleeping("30", 300*time.Millisecond)
 		r.awaitExpiry(ch)
 		r.waitFor("the backend to end on Terminate", 5*time.Second, func() bool { return !r.backendExists(pid) })
+		// Terminate ends the backend before fromClient necessarily reads EOF.
+		// Observe that separate event before checking that FIN stayed held.
+		r.waitFor("the FIN to be held", 5*time.Second, func() bool { return len(r.proxy.Find(KindFIN, ActionHeld)) == 1 })
 		if fwd := r.proxy.Find(KindTerminate, ActionForwarded); len(fwd) != 1 {
 			t.Errorf("forwarded Terminates = %d, want 1", len(fwd))
 		}
 		if h := r.proxy.Find(KindFIN, ActionHeld); len(h) != 1 {
 			t.Errorf("held FINs = %d, want 1", len(h))
+		}
+		if fwd := r.proxy.Find(KindFIN, ActionForwarded); len(fwd) != 0 {
+			t.Errorf("FIN forwarded before release: %+v", fwd)
 		}
 		r.proxy.ReleaseClose()
 		r.waitFor("the FIN to be forwarded", 5*time.Second, func() bool { return len(r.proxy.Find(KindFIN, ActionForwarded)) == 1 })

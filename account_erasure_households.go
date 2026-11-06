@@ -327,6 +327,10 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 //  6. each locked household scrubbed when householdErasedOwnerIn says so.
 func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households []uint, actorID uint, ip string) (householdErasureCounts, error) {
 	var counts householdErasureCounts
+	var actor *uint
+	if actorID != 0 {
+		actor = &actorID
+	}
 	locked := make(map[uint]bool, len(households))
 	for _, h := range households {
 		locked[h] = true
@@ -360,11 +364,12 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 		// (2) PERS, unscoped. converted_user_id stays exactly as stored.
 		res := tx.Exec(`UPDATE household_people SET first_name = '', last_name = '', birth_date = NULL,
 			care_notes = '', photo_consent = false, deleted_at = COALESCE(deleted_at, now())
-			WHERE id IN ?`, s.People)
+			WHERE id IN ? AND (first_name <> '' OR last_name <> '' OR birth_date IS NOT NULL
+			OR care_notes <> '' OR photo_consent OR deleted_at IS NULL)`, s.People)
 		if res.Error != nil {
 			return counts, res.Error
 		}
-		counts.PeopleAnonymized = int(res.RowsAffected)
+		counts.PeopleAnonymized = len(s.People)
 		// (3) A staged person: nobody converted them, so their registrations are
 		// still theirs. Cancel the future ones the way removing a household
 		// person does, then clear what could be used to manage or identify them.
@@ -404,7 +409,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 			continue
 		}
 		if link.Status == models.GuardianPending {
-			if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, &actorID, "withdrawn"); err != nil {
+			if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, actor, "withdrawn"); err != nil {
 				return counts, err
 			}
 		}
@@ -415,7 +420,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 		if link.TeenUserID != nil {
 			meta["teenUserId"] = *link.TeenUserID
 		}
-		if err := audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.GuardianLinkRevoked,
+		if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.GuardianLinkRevoked,
 			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: ip}); err != nil {
 			return counts, err
 		}
