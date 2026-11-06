@@ -12,9 +12,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -f "$SCRIPT_DIR/checks.sh" ]] || {
+  echo "upgrade.sh: missing checks.sh; run the current provision.sh to install the tool set" >&2
+  exit 1
+}
 # shellcheck source=deploy/digitalocean/checks.sh
 source "$SCRIPT_DIR/checks.sh"
 
+ORIGINAL_ARGS=("$@")
 REL_MODE=""
 REL_IMAGE=""
 REL_COMMIT=""
@@ -133,17 +138,126 @@ if [[ -n "$COMMIT" ]]; then
   [[ "$COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || die "--commit must be a git SHA (7 to 40 hex digits)"
 fi
 
-if [[ -z "$SOURCE_DIR" ]]; then
-  if [[ -f "$SCRIPT_DIR/provision.sh" ]]; then
-    SOURCE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  elif [[ -f /root/fold/deploy/digitalocean/provision.sh ]]; then
-    SOURCE_DIR=/root/fold
+# The installed tools, not a target checkout, enforce every later release.
+# Keep fd 9 across this exec and across the nested provisioner.
+if (( ! DRY_RUN )); then
+  [[ "$(id -u)" == 0 ]] || die "run as root: sudo $0 ..."
+  [[ -d "$DEPLOY_DIR" ]] || die "deploy directory does not exist; run provision.sh first"
+  DEPLOY_DIR="$(cd "$DEPLOY_DIR" && pwd -P)"
+fi
+declare -F ops_lock_acquire >/dev/null || die "checks.sh lacks ops_lock_acquire; run the current provision.sh to install the tool set"
+validate_deploy_drill "$DEPLOY_DIR" || exit 1
+if (( ! DRY_RUN )); then
+  if (( DO_ROLLBACK )); then
+    ops_lock_acquire "$DEPLOY_DIR" upgrade-rollback || exit $?
   else
-    die "pass --source-dir (the git checkout that contains provision.sh)"
+    ops_lock_acquire "$DEPLOY_DIR" upgrade-forward || exit $?
+  fi
+  deploy_drill_pause "$DEPLOY_DIR" after-lock
+fi
+
+install_enforcing_tools() (
+  local name stage="" old="" path
+  local -a tools=(provision.sh checks.sh backup.sh smoke.sh email-dns.sh upgrade.sh backup.env.example deploy-tools-version)
+  for name in ops_lock_acquire image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor; do
+    declare -F "$name" >/dev/null || die "checks.sh lacks $name; run the current provision.sh to install the tool set"
+  done
+  # Recovery adds these files in R4-6c-R. Keep the complete set when present.
+  for name in restore.sh compose.recovery.yml; do
+    [[ ! -f "$SCRIPT_DIR/$name" ]] || tools+=("$name")
+  done
+  for name in "${tools[@]}"; do
+    [[ -f "$SCRIPT_DIR/$name" ]] || die "missing $name beside upgrade.sh; run the current provision.sh to install the tool set"
+  done
+  if (( DRY_RUN )); then
+    require_deploy_tools_version "$SCRIPT_DIR" "$DEPLOY_DIR" || exit 1
+    echo "dry-run: replace $DEPLOY_DIR/deploy-tools whole with the enforcing tool set and re-exec under fd 9"
+    return 0
+  fi
+  recover_enforcing_tools "$DEPLOY_DIR" || exit 1
+  require_deploy_tools_version "$SCRIPT_DIR" "$DEPLOY_DIR" || exit 1
+  # A prior invocation may have died during copying or after the second
+  # rename. A complete live set (or a first installation) makes these stale.
+  for path in "$DEPLOY_DIR"/.deploy-tools.* "$DEPLOY_DIR"/.old-deploy-tools.*; do
+    [[ ! -e "$path" ]] || rm -rf -- "$path"
+  done
+  [[ "$SCRIPT_DIR" != "$DEPLOY_DIR/deploy-tools" ]] || return 0
+  # EXIT covers copy/chown/rename failures. SIGKILL is recovered on the next
+  # installed upgrade.sh run, before any backup, checkout or pin change.
+  # shellcheck disable=SC2317,SC2329 # Invoked by EXIT, also after failed commands.
+  finish_tool_swap() {
+    local rc=$?
+    trap - EXIT
+    if [[ -n "$old" && -d "$old" && ! -e "$DEPLOY_DIR/deploy-tools" ]]; then
+      mv "$old" "$DEPLOY_DIR/deploy-tools" || {
+        echo "upgrade.sh: tool swap failed; saved tools remain at $old. Restore that directory to $DEPLOY_DIR/deploy-tools before retrying" >&2
+        rc=1
+      }
+    fi
+    [[ -z "$stage" || ! -d "$stage" ]] || rm -rf -- "$stage"
+    if (( rc != 0 )); then
+      echo "upgrade.sh: enforcing tool swap did not complete; no backup, checkout or release change was attempted. Check deploy-tools and any saved .old-deploy-tools.* before retrying" >&2
+    fi
+    exit "$rc"
+  }
+  trap finish_tool_swap EXIT
+  stage="$(mktemp -d "$DEPLOY_DIR/.deploy-tools.XXXXXX")"
+  chmod 700 "$stage"
+  chown 0:0 "$stage"
+  for name in "${tools[@]}"; do
+    install -m 644 "$SCRIPT_DIR/$name" "$stage/$name"
+    [[ "$name" != *.sh ]] || chmod 755 "$stage/$name"
+  done
+  old="$(mktemp -d "$DEPLOY_DIR/.old-deploy-tools.XXXXXX")"
+  rmdir "$old"
+  [[ ! -e "$DEPLOY_DIR/deploy-tools" ]] || mv "$DEPLOY_DIR/deploy-tools" "$old"
+  mv "$stage" "$DEPLOY_DIR/deploy-tools"
+  [[ ! -d "$old" ]] || rm -rf "$old"
+  trap - EXIT
+)
+install_enforcing_tools
+if [[ -z "$SOURCE_DIR" ]]; then
+  if [[ -f "$SCRIPT_DIR/../../docker-compose.yml" ]]; then
+    SOURCE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  else
+    SOURCE_DIR=/root/fold
   fi
 fi
-PROVISION="$SOURCE_DIR/deploy/digitalocean/provision.sh"
-[[ -f "$PROVISION" ]] || die "missing ${PROVISION}"
+# Replace the original shell, not the tool-swap subshell. Otherwise the
+# caller would resume after the installed upgrade and deploy a second time.
+if (( ! DRY_RUN )) && [[ "$SCRIPT_DIR" != "$DEPLOY_DIR/deploy-tools" ]]; then
+  exec "$DEPLOY_DIR/deploy-tools/upgrade.sh" "${ORIGINAL_ARGS[@]}" --source-dir "$SOURCE_DIR"
+fi
+if [[ "${DEPLOY_DRILL:-}" == 1 && "$DEPLOY_DIR" != /opt/fold ]]; then
+  BACKUP_DIR="$DEPLOY_DIR/dumps"
+fi
+PROVISION="$DEPLOY_DIR/deploy-tools/provision.sh"
+
+check_target_level() {
+  local mode="$1" target="$2" floor level
+  if [[ "$mode" == build ]]; then
+    # Resolve exactly once. No backup, release record or checkout precedes this.
+    if ! RESOLVED_COMMIT="$(git -C "$SOURCE_DIR" rev-parse --verify "${target}^{commit}" 2>/dev/null)"; then
+      if (( DRY_RUN && DO_ROLLBACK )); then
+        RESOLVED_COMMIT="$target"
+      else
+        die "${target} is not a commit in ${SOURCE_DIR}"
+      fi
+    fi
+  fi
+  if (( DRY_RUN )); then
+    dry_run_recovery_check "$DEPLOY_DIR" "$mode" "$SOURCE_DIR" "${RESOLVED_COMMIT:-}" || exit 1
+    return 0
+  fi
+  floor="$(host_recovery_floor "$DEPLOY_DIR")"
+  if [[ "$mode" == image ]]; then
+    docker pull "$target"
+    level="$(image_recovery_level "$target")"
+  else
+    level="$(commit_recovery_level "$SOURCE_DIR" "$RESOLVED_COMMIT")"
+  fi
+  require_recovery_level "$level" "$floor" || exit 1
+}
 
 read_domain() {
   if [[ -n "$DOMAIN" ]]; then
@@ -175,7 +289,7 @@ run_backup() {
     echo "dry-run: ${backup} --deploy-dir ${DEPLOY_DIR}"
     return 0
   fi
-  "$backup" --deploy-dir "$DEPLOY_DIR"
+  "$backup" --deploy-dir "$DEPLOY_DIR" --backup-dir "$BACKUP_DIR"
 }
 
 newest_dump() {
@@ -203,8 +317,12 @@ current_release() {
   if [[ -f "$DEPLOY_DIR/docker-compose.build.yml" ]] \
     || { [[ -f "$compose" ]] && grep -q '^    build: \.$' "$compose"; }; then
     REL_MODE="build"
-    git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-      || die "${SOURCE_DIR} is not a git checkout; cannot record the current commit"
+    if ! git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      (( DRY_RUN )) || die "${SOURCE_DIR} is not a git checkout; cannot record the current commit"
+      REL_COMMIT="unverified"
+      echo "dry-run: current build commit is unverified; restore the git checkout ${SOURCE_DIR} before a real run"
+      return 0
+    fi
     REL_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
     return 0
   fi
@@ -261,7 +379,7 @@ load_release() {
     esac
   done <"$file"
   [[ "$REL_MODE" == "image" || "$REL_MODE" == "build" ]] || die "release.prev mode is invalid"
-  [[ "$REL_DUMP" == /var/backups/fold/fold-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9].dump ]] \
+  [[ "$REL_DUMP" == "$BACKUP_DIR"/fold-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9].dump ]] \
     || die "release.prev dump path is not a backup.sh file"
   [[ "$REL_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "release.prev domain is invalid"
   [[ "$REL_SOURCE" == /* && "$REL_SOURCE" != *..* && "$REL_SOURCE" != *[[:space:]]* ]] \
@@ -275,7 +393,6 @@ load_release() {
     [[ "$REL_COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || die "release.prev commit is invalid"
   fi
   [[ -f "$REL_DUMP" ]] || die "dump not found: ${REL_DUMP}"
-  [[ -f "$REL_SOURCE/deploy/digitalocean/provision.sh" ]] || die "missing provision.sh in ${REL_SOURCE}"
 }
 
 restore_dump() {
@@ -299,6 +416,7 @@ restore_dump() {
 }
 
 run_provision() {
+  local rc=0
   local -a cmd=("$PROVISION" --skip-harden --domain "$DOMAIN" --deploy-dir "$DEPLOY_DIR" --source-dir "$SOURCE_DIR")
   if [[ "$1" == "image" ]]; then
     cmd+=(--image "$2")
@@ -312,8 +430,11 @@ run_provision() {
     echo "dry-run: provision.sh runs smoke.sh when it finishes"
     return 0
   fi
-  if ! "${cmd[@]}"; then
-    die "upgrade failed. Roll back with: $0 --rollback --deploy-dir ${DEPLOY_DIR}"
+  "${cmd[@]}" || rc=$?
+  if (( rc == 76 )); then
+    die "deployment completed and smoke passed, but the recovery floor file was not recorded. Keep the current pin and image. Repair storage/permissions, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options to record the floor; do not roll back for this error" 76
+  elif (( rc != 0 )); then
+    die "provisioning did not complete; inspect its diagnostic and current service health. The deployed pin still contributes to the recovery floor, even after failed smoke. --rollback is refused if the previous release is below that floor. Keep the current release and restore data with its restore.sh --dump once installed, or repair and rerun it. Do not lower the floor or change the pin to bypass refusal"
   fi
 }
 
@@ -321,11 +442,14 @@ forward() {
   read_domain
   require_root
   if [[ -n "$COMMIT" ]]; then
-    git -C "$SOURCE_DIR" cat-file -e "${COMMIT}^{commit}" 2>/dev/null \
-      || die "${COMMIT} is not a commit in ${SOURCE_DIR}"
+    check_target_level build "$COMMIT"
+    COMMIT="$RESOLVED_COMMIT"
     if [[ -n "$(git -C "$SOURCE_DIR" status --porcelain)" ]]; then
       die "${SOURCE_DIR} has uncommitted changes. Commit or stash them before --commit."
     fi
+  fi
+  if [[ -n "$IMAGE" ]]; then
+    check_target_level image "$IMAGE"
   fi
   if (( DRY_RUN )); then
     if [[ ! -f "$DEPLOY_DIR/docker-compose.yml" ]]; then
@@ -366,7 +490,12 @@ rollback() {
   load_release
   DOMAIN="$REL_DOMAIN"
   SOURCE_DIR="$REL_SOURCE"
-  PROVISION="$SOURCE_DIR/deploy/digitalocean/provision.sh"
+  if [[ "$REL_MODE" == image ]]; then
+    check_target_level image "$REL_IMAGE"
+  else
+    check_target_level build "$REL_COMMIT"
+    REL_COMMIT="$RESOLVED_COMMIT"
+  fi
   echo "upgrade.sh: rolling back mode=${REL_MODE} dump=${REL_DUMP}"
   restore_dump "$REL_DUMP"
   if [[ "$REL_MODE" == "image" ]]; then

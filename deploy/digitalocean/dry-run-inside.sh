@@ -218,3 +218,5 @@ rm -rf "$stub_dir"
 
 echo "dry-run ok"
 bash deploy/digitalocean/idempotency-inside.sh
+
+bash deploy/digitalocean/dry-run-test.sh --fixtures
