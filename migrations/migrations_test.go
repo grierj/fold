@@ -1929,6 +1929,43 @@ func TestMigrationFileShapeProblems(t *testing.T) {
 	}
 }
 
+// TestDuplicateVersionNeverBoots pins the fail-closed half of DEC-146: when
+// two pull requests merge the same next number, goose refuses to build a
+// provider over that tree, so `fold serve`, `fold migrate` and the release
+// smoke, which all go through migrations.NewProvider (the same
+// goose.NewProvider call over migrations.Files), exit non-zero before touching
+// a database. The same tree with the later file renumbered builds. No
+// database is contacted.
+func TestDuplicateVersionNeverBoots(t *testing.T) {
+	t.Parallel()
+	db, err := sql.Open("pgx", "postgres://unused@127.0.0.1:1/unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	file := func(body string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(body)} }
+	const ok = "-- +goose Up\nSELECT 1;\n-- +goose Down\nSELECT 2;\n"
+	raced := fstest.MapFS{
+		"00001_baseline.sql": file(ok),
+		"00002_alpha.sql":    file(ok),
+		"00002_beta.sql":     file(ok),
+	}
+	if _, err := goose.NewProvider(goose.DialectPostgres, db, raced); err == nil || !strings.Contains(err.Error(), "duplicate migration version 2") {
+		t.Fatalf("provider over a duplicate version: err = %v, want goose's duplicate version error", err)
+	}
+	renumbered := fstest.MapFS{
+		"00001_baseline.sql": file(ok),
+		"00002_alpha.sql":    file(ok),
+		"00003_beta.sql":     file(ok),
+	}
+	if _, problems := migrationFileShapeProblems(renumbered); len(problems) > 0 {
+		t.Fatalf("the renumbered tree is out of shape: %q", problems)
+	}
+	if _, err := goose.NewProvider(goose.DialectPostgres, db, renumbered); err != nil {
+		t.Fatalf("provider over the renumbered tree: %v", err)
+	}
+}
+
 // TestBaselineFileShape pins what the generator guarantees about the baseline
 // file (R9 section 5.2 and 5.4) and the shape of the whole chain (PLAN 14.1,
 // the AGENTS migration rule, DEC-138): the baseline is the lowest version and

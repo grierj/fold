@@ -793,6 +793,7 @@ func contractGateKey(line string) (string, string, bool) {
 type contractGateStep struct {
 	keys map[string]string // step-level keys (the first line's "- " removed)
 	with map[string]string // keys one level under "with:"
+	env  map[string]string // keys one level under "env:"
 }
 
 // contractGateValue drops a trailing " # comment" from a YAML scalar.
@@ -803,15 +804,20 @@ func contractGateValue(v string) string {
 	return strings.TrimSpace(v)
 }
 
-// contractGateWorkflowProblems reads the test job of a workflow with plain
-// lines (no YAML dependency) and says what keeps the gate from running: the
-// first step must be a checkout with fetch-depth 0, a later step must run
-// exactly `bash scripts/contract-gate.sh` with no `if:` or
-// `continue-on-error:`, and it must come before `make test`.
-func contractGateWorkflowProblems(workflow string) []string {
-	const gateRun = "bash scripts/contract-gate.sh"
+// The two gate steps the test job must run, exactly as written.
+const (
+	contractGateRun = "bash scripts/contract-gate.sh"
+	mergeRulesRun   = "bash scripts/merge-rules-check.sh"
+)
+
+// testJobSteps reads the steps of a workflow's test job with plain lines (no
+// YAML dependency). It reports the shapes it cannot read, a conditional or
+// failure-tolerant test job, and a multiline continuation after a gate step's
+// run or after any `shell: bash`. ok is false when there is no test job to
+// read at all.
+func testJobSteps(workflow string) (steps []*contractGateStep, problems []string, ok bool) {
 	if strings.Contains(workflow, "\r") {
-		return []string{"unsupported carriage return in workflow"}
+		return nil, []string{"unsupported carriage return in workflow"}, false
 	}
 	lines := strings.Split(workflow, "\n")
 	start := -1
@@ -830,7 +836,7 @@ func contractGateWorkflowProblems(workflow string) []string {
 		}
 	}
 	if start < 0 {
-		return []string{"no test job under jobs:"}
+		return nil, []string{"no test job under jobs:"}, false
 	}
 	var block []string
 	for _, l := range lines[start:] {
@@ -842,10 +848,9 @@ func contractGateWorkflowProblems(workflow string) []string {
 		block = append(block, l)
 	}
 
-	var problems []string
-	var steps []*contractGateStep
 	var cur *contractGateStep
-	inSteps, inWith, inProtectedScalar := false, false, false
+	var nested map[string]string // the step's with: or env: map being read
+	inSteps, inProtectedScalar := false, false
 	for _, l := range block {
 		trim := strings.TrimSpace(l)
 		if trim == "" || strings.HasPrefix(trim, "#") {
@@ -854,7 +859,7 @@ func contractGateWorkflowProblems(workflow string) []string {
 		indent := len(l) - len(strings.TrimLeft(l, " "))
 		if indent == 4 {
 			inSteps = trim == "steps:"
-			cur, inWith, inProtectedScalar = nil, false, false
+			cur, nested, inProtectedScalar = nil, nil, false
 			if key, _, ok := contractGateKey(trim); !ok {
 				problems = append(problems, "unsupported test job mapping key: "+trim)
 			} else if key == "if" || key == "continue-on-error" {
@@ -870,60 +875,89 @@ func contractGateWorkflowProblems(workflow string) []string {
 			if strings.HasPrefix(trim, "-  ") || strings.HasPrefix(trim, "- \t") {
 				problems = append(problems, "unsupported spacing after test step dash")
 			}
-			cur = &contractGateStep{keys: map[string]string{}, with: map[string]string{}}
+			cur = &contractGateStep{keys: map[string]string{}, with: map[string]string{}, env: map[string]string{}}
 			steps = append(steps, cur)
-			inWith, inProtectedScalar = false, false
+			nested, inProtectedScalar = nil, false
 			trim = strings.TrimSpace(trim[2:])
 			fallthrough
 		case indent == 8 || indent == 6:
 			if cur == nil {
 				continue
 			}
-			inWith, inProtectedScalar = false, false
+			nested, inProtectedScalar = nil, false
 			if key, value, ok := contractGateKey(trim); ok {
 				cur.keys[key] = value
-				inWith = key == "with"
-				inProtectedScalar = (key == "run" && value == gateRun) || (key == "shell" && value == "bash")
+				switch key {
+				case "with":
+					nested = cur.with
+				case "env":
+					nested = cur.env
+				}
+				inProtectedScalar = (key == "run" && (value == contractGateRun || value == mergeRulesRun)) || (key == "shell" && value == "bash")
 			} else {
 				problems = append(problems, "unsupported test step mapping key: "+trim)
 			}
 		case indent > 8 && inProtectedScalar:
-			problems = append(problems, "the contract gate run or shell must not have a multiline continuation")
-		case indent >= 10 && inWith && cur != nil:
+			problems = append(problems, "a gate step's run or shell must not have a multiline continuation")
+		case indent >= 10 && nested != nil:
 			if key, value, ok := contractGateKey(trim); ok {
-				cur.with[key] = value
+				nested[key] = value
 			}
 		}
 	}
+	return steps, problems, true
+}
 
+// gateStepIndex finds the first step whose run is exactly run, and says what
+// would let it be skipped or pass without running: no such step, a shell
+// other than plain bash, an if: or continue-on-error:, or a place before the
+// checkout. label names the step in the problems.
+func gateStepIndex(steps []*contractGateStep, run, label string) (int, []string) {
+	for i, s := range steps {
+		if s.keys["run"] != run {
+			continue
+		}
+		var problems []string
+		if s.keys["shell"] != "bash" {
+			problems = append(problems, "the "+label+" step must set shell: bash")
+		}
+		for _, k := range []string{"if", "continue-on-error"} {
+			if _, ok := s.keys[k]; ok {
+				problems = append(problems, "the "+label+" step must not have "+k+":")
+			}
+		}
+		if i == 0 {
+			problems = append(problems, "the "+label+" step must come after the checkout step")
+		}
+		return i, problems
+	}
+	return -1, []string{"the test job has no step whose run is exactly `" + run + "`"}
+}
+
+// contractGateWorkflowProblems says what keeps the contract gate from
+// running in the test job: the first step must be a checkout with
+// fetch-depth 0, a later step must run exactly `bash scripts/contract-gate.sh`
+// with shell: bash and no `if:` or `continue-on-error:`, and it must come
+// before `make test`.
+func contractGateWorkflowProblems(workflow string) []string {
+	steps, problems, ok := testJobSteps(workflow)
+	if !ok {
+		return problems
+	}
 	if len(steps) == 0 || !strings.HasPrefix(steps[0].keys["uses"], "actions/checkout@") {
 		problems = append(problems, "the first step of the test job must be actions/checkout")
 	} else if steps[0].with["fetch-depth"] != "0" {
 		problems = append(problems, "the checkout must set fetch-depth: 0 under with: (the gate needs history and tags)")
 	}
-	gate, makeTest := -1, -1
-	for i, s := range steps {
-		if gate < 0 && s.keys["run"] == gateRun {
-			gate = i
-		}
-		if makeTest < 0 && s.keys["run"] == "make test" {
-			makeTest = i
-		}
-	}
-	switch {
-	case gate < 0:
-		problems = append(problems, "the test job has no step whose run is exactly `"+gateRun+"`")
-	default:
-		if steps[gate].keys["shell"] != "bash" {
-			problems = append(problems, "the contract gate step must set shell: bash")
-		}
-		for _, k := range []string{"if", "continue-on-error"} {
-			if _, ok := steps[gate].keys[k]; ok {
-				problems = append(problems, "the contract gate step must not have "+k+":")
+	gate, gateProblems := gateStepIndex(steps, contractGateRun, "contract gate")
+	problems = append(problems, gateProblems...)
+	if gate >= 0 {
+		makeTest := -1
+		for i, s := range steps {
+			if s.keys["run"] == "make test" {
+				makeTest = i
+				break
 			}
-		}
-		if gate == 0 {
-			problems = append(problems, "the contract gate step must come after the checkout step")
 		}
 		if makeTest < 0 {
 			problems = append(problems, "the test job has no `make test` step to order the gate before")
@@ -934,12 +968,40 @@ func contractGateWorkflowProblems(workflow string) []string {
 	return problems
 }
 
+// mergeRulesWorkflowProblems says what keeps the merge rules check (DEC-146)
+// from running in the test job, a required check: a step after the checkout
+// must run exactly `bash scripts/merge-rules-check.sh` with shell: bash, no
+// `if:` or `continue-on-error:`, and GH_TOKEN set to the job's token so the
+// API's anonymous rate limit cannot fail it.
+func mergeRulesWorkflowProblems(workflow string) []string {
+	steps, problems, ok := testJobSteps(workflow)
+	if !ok {
+		return problems
+	}
+	i, stepProblems := gateStepIndex(steps, mergeRulesRun, "merge rules check")
+	problems = append(problems, stepProblems...)
+	if i >= 0 && steps[i].env["GH_TOKEN"] != "${{ github.token }}" {
+		problems = append(problems, "the merge rules check step must set GH_TOKEN: ${{ github.token }} under env:")
+	}
+	return problems
+}
+
 func TestCIRunsTheContractGate(t *testing.T) {
 	b, err := os.ReadFile(".github/workflows/test.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range contractGateWorkflowProblems(string(b)) {
+		t.Error(".github/workflows/test.yml: " + p)
+	}
+}
+
+func TestCIRunsTheMergeRulesCheck(t *testing.T) {
+	b, err := os.ReadFile(".github/workflows/test.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range mergeRulesWorkflowProblems(string(b)) {
 		t.Error(".github/workflows/test.yml: " + p)
 	}
 }
@@ -1006,6 +1068,135 @@ func TestContractGateWorkflowGuardCatchesMistakes(t *testing.T) {
 		w := contractGateWorkflow(contractGateCheckoutStep+contractGateStepText+contractGateMakeTest, webCheckout)
 		if got := contractGateWorkflowProblems(w); len(got) != 0 {
 			t.Fatalf("want none, got %q", got)
+		}
+	})
+}
+
+// --- Merge rules check (DEC-146): CI must ask GitHub whether master still
+// requires up-to-date branches, so two pull requests cannot merge the same
+// migration number ---
+
+const mergeRulesStepText = "      - name: Merge rules check\n        run: bash scripts/merge-rules-check.sh\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n"
+
+func TestMergeRulesWorkflowGuardCatchesMistakes(t *testing.T) {
+	webCheckout := "      - uses: actions/checkout@abc\n"
+	steps := func(merge string) string {
+		return contractGateWorkflow(contractGateCheckoutStep+contractGateStepText+merge+contractGateMakeTest, webCheckout)
+	}
+	cases := []struct {
+		name, workflow, want string
+	}{
+		{"step removed", steps(""), "no step whose run is exactly `bash scripts/merge-rules-check.sh`"},
+		{"step only in the web job", contractGateWorkflow(contractGateCheckoutStep+contractGateStepText+contractGateMakeTest, webCheckout+mergeRulesStepText), "no step whose run is exactly `bash scripts/merge-rules-check.sh`"},
+		{"or true", steps(strings.Replace(mergeRulesStepText, "check.sh\n", "check.sh || true\n", 1)), "no step whose run is exactly `bash scripts/merge-rules-check.sh`"},
+		{"if false", steps(strings.Replace(mergeRulesStepText, "        shell:", "        if: ${{ false }}\n        shell:", 1)), "merge rules check step must not have if:"},
+		{"continue-on-error", steps(strings.Replace(mergeRulesStepText, "        shell:", "        continue-on-error: true\n        shell:", 1)), "merge rules check step must not have continue-on-error:"},
+		{"no explicit shell", steps(strings.Replace(mergeRulesStepText, "        shell: bash\n", "", 1)), "merge rules check step must set shell: bash"},
+		{"continued run", steps(strings.Replace(mergeRulesStepText, "check.sh\n", "check.sh\n          || true\n", 1)), "must not have a multiline continuation"},
+		{"no token", steps(strings.Replace(mergeRulesStepText, "        env:\n          GH_TOKEN: ${{ github.token }}\n", "", 1)), "must set GH_TOKEN"},
+		{"another token", steps(strings.Replace(mergeRulesStepText, "github.token", "secrets.OTHER", 1)), "must set GH_TOKEN"},
+		{"before checkout", contractGateWorkflow(mergeRulesStepText+contractGateCheckoutStep+contractGateStepText+contractGateMakeTest, webCheckout), "merge rules check step must come after the checkout"},
+		{"conditional job", strings.Replace(steps(mergeRulesStepText), "  test:\n", "  test:\n    if: ${{ false }}\n", 1), "test job must not be conditional"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mergeRulesWorkflowProblems(c.workflow)
+			for _, p := range got {
+				if strings.Contains(p, c.want) {
+					return
+				}
+			}
+			t.Fatalf("want a problem containing %q, got %q", c.want, got)
+		})
+	}
+	t.Run("intended snippet passes both guards", func(t *testing.T) {
+		w := steps(mergeRulesStepText)
+		if got := append(mergeRulesWorkflowProblems(w), contractGateWorkflowProblems(w)...); len(got) != 0 {
+			t.Fatalf("want none, got %q", got)
+		}
+	})
+}
+
+// mergeRulesFixture is a GET /repos/grierj/fold/rules/branches/master answer
+// in the shape GitHub returned on Nov 5, 2026, with strict set as given.
+func mergeRulesFixture(strict bool) string {
+	return fmt.Sprintf(`[
+  {"type": "deletion", "ruleset_source_type": "Repository", "ruleset_source": "grierj/fold", "ruleset_id": 25847073},
+  {"type": "non_fast_forward", "ruleset_source_type": "Repository", "ruleset_source": "grierj/fold", "ruleset_id": 25847073},
+  {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": %t, "do_not_enforce_on_create": true,
+    "required_status_checks": [{"context": "test", "integration_id": 15368}, {"context": "web", "integration_id": 15368}, {"context": "provision", "integration_id": 15368}]},
+   "ruleset_source_type": "Repository", "ruleset_source": "grierj/fold", "ruleset_id": 25847073},
+  {"type": "pull_request", "parameters": {"required_approving_review_count": 0, "allowed_merge_methods": ["merge", "squash", "rebase"]},
+   "ruleset_source_type": "Repository", "ruleset_source": "grierj/fold", "ruleset_id": 25847073}
+]`, strict)
+}
+
+// TestMergeRulesCheckScript runs scripts/merge-rules-check.sh on saved
+// answers. It never calls GitHub; CI's step checks the live rules.
+func TestMergeRulesCheckScript(t *testing.T) {
+	for _, tool := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			if os.Getenv("CI") != "" {
+				t.Fatalf("%s is required for the merge rules check tests: %v", tool, err)
+			}
+			t.Skipf("%s is not installed; CI runs this test", tool)
+		}
+	}
+	run := func(t *testing.T, rules string) (int, string) {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "rules.json")
+		if err := os.WriteFile(f, []byte(rules), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", "scripts/merge-rules-check.sh", "--rules-file", f)
+		out, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, string(out)
+		case errors.As(err, &exit):
+			return exit.ExitCode(), string(out)
+		}
+		t.Fatalf("running the script: %v", err)
+		return 0, ""
+	}
+	strict := mergeRulesFixture(true)
+	cases := []struct {
+		name, rules string
+		code        int
+		want        string
+	}{
+		{"strict rules pass", strict, 0, "master requires pull requests, up-to-date branches"},
+		{"the Nov 5 rules fail", mergeRulesFixture(false), 1, "required status checks are not strict"},
+		{"no strict field", strings.Replace(strict, `"strict_required_status_checks_policy": true, `, "", 1), 1, "required status checks are not strict"},
+		{"strict as a string", strings.Replace(strict, `"strict_required_status_checks_policy": true`, `"strict_required_status_checks_policy": "true"`, 1), 1, "required status checks are not strict"},
+		{"no pull request rule", strings.Replace(strict, `"type": "pull_request"`, `"type": "creation"`, 1), 1, "no pull_request rule"},
+		{"no non-fast-forward rule", strings.Replace(strict, `"type": "non_fast_forward"`, `"type": "update"`, 1), 1, "no non_fast_forward rule"},
+		{"a required check dropped", strings.Replace(strict, `{"context": "web", "integration_id": 15368}, `, "", 1), 1, "required status check web is not required"},
+		{"no rules at all", "[]", 1, "required status checks are not strict"},
+		{"an error object", `{"message": "Not Found", "status": "404"}`, 1, "not a list of rules"},
+		{"not JSON", "<html>rate limited</html>", 1, "not JSON"},
+		{"an empty answer", "", 1, "not JSON"},
+		{"a blank answer", " \n", 1, "not JSON"},
+		// GitHub combines the rules of every active ruleset: strict in one
+		// rule makes every PR up to date before the checks of any rule count.
+		{"strict in a second ruleset", strings.Replace(mergeRulesFixture(false), "\n]", `,
+  {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": true, "required_status_checks": []}, "ruleset_id": 2}
+]`, 1), 0, "up-to-date branches"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out := run(t, c.rules)
+			if code != c.code || !strings.Contains(out, c.want) {
+				t.Fatalf("exit %d, output %q; want exit %d and output containing %q", code, out, c.code, c.want)
+			}
+		})
+	}
+	t.Run("bad arguments", func(t *testing.T) {
+		out, err := exec.Command("bash", "scripts/merge-rules-check.sh", "--rules", "x").CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(string(out), "usage:") {
+			t.Fatalf("got %v %q, want exit 2 with usage", err, out)
 		}
 	})
 }
