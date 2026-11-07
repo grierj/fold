@@ -1456,6 +1456,14 @@ export interface ErasureReasonItem {
   reason: string;
 }
 
+// One entry of the DELETE body's reasonReview.items: the item as it was shown
+// (id and hash) and the admin's explicit choice.
+export interface ReasonReviewChoice {
+  requestId: string;
+  reviewHash: string;
+  choice: "keep" | "remove";
+}
+
 // One page of the review. reviewRequired is present only on a page with items:
 // a page without any proves nothing, and the client concludes there are no
 // reasons only when a walk from a null cursor ends (next is null) with none.

@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
-import { expect, test, type Locator, type Page, type Request, type Route } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, email, fromMore, nextFrames, PASSWORD, signInTo } from "./helpers";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
@@ -43,6 +43,14 @@ const OUTSIDE_NOTE = /Copies already sent to mailboxes, mail providers and push 
 const IP_NOTE = /Some network \(IP\) addresses can remain in the activity log/;
 const KEPT_HOUSEHOLDS_NOTE = /Fold left these households as they were/;
 const KEPT_ACTIVITY_NOTE = /Fold counts entries, not addresses/;
+// T07B-2c: the reason review shown before a reasoned account is deleted.
+const REVIEW_INTRO = /Before you delete this account, choose for each contact-request reason below/;
+const REVIEW_LIMIT = /Fold lists only requests this person made or was asked about/;
+const REVIEW_MEMORY = "Your choices stay on this page only until you delete or close it.";
+const NOT_ADULT = "Only an adult admin can review these reasons. Ask another admin to delete this account.";
+const CHANGED = "Some reasons changed since you loaded them. Check the marked ones, then delete again.";
+const MARKED = "Changed since you looked: choose again";
+const CANT_RESTORE = "Blanked text can't be brought back in Fold. Backups made before now still contain it.";
 
 type Admin = Awaited<ReturnType<typeof apiAs>>;
 type Person = { id: number; email: string; name: string };
@@ -63,6 +71,49 @@ async function makePerson(admin: Admin, login: string, name: string): Promise<Pe
   const made = await admin("POST", "/admin/users", { ageBand: "adult", name, email: email(login), password: PASSWORD, role: "member" });
   return { id: numberAt(made, "user", "id"), email: email(login), name };
 }
+
+function stringAt(value: unknown, ...path: string[]): string {
+  let at: unknown = value;
+  for (const key of path) at = recordOf(at)[key];
+  if (typeof at !== "string") throw new Error(`expected a string at ${path.join(".")}`);
+  return at;
+}
+
+type Asker = Person & { login: string; requestId: number; text: string };
+
+// A person with contact-request reasons: `askers` group leaders each ask them
+// for their email, with a reason of their own. A third leader who asks nothing
+// keeps the group led when an asker is deleted. The subject hides their contact
+// details from leaders, which is what makes a leader ask.
+async function makeReasoned(request: APIRequestContext, suffix: string, askers = 2) {
+  const admin = await apiAs(request, adminName);
+  const subject = await makePerson(admin, `rv-subject-${suffix}`, `Sue Subject ${suffix}`);
+  const keeper = await makePerson(admin, `rv-keeper-${suffix}`, `Kit Keeper ${suffix}`);
+  const people: Person[] = [];
+  for (let i = 1; i <= askers; i++) people.push(await makePerson(admin, `rv-ask${i}-${suffix}`, `Lia ${i} Asker ${suffix}`));
+  const { group } = await admin("POST", "/groups", { name: `Review study ${suffix}`, description: "Reason review proof", visibility: "public", tags: [] });
+  for (const p of [keeper, ...people]) await admin("POST", `/admin/groups/${numberAt(group, "id")}/members`, { userId: p.id, role: "leader" });
+  await admin("POST", `/admin/groups/${numberAt(group, "id")}/members`, { userId: subject.id, role: "member" });
+  await (await apiAs(request, `rv-subject-${suffix}`))("PUT", "/me", { hideContactFromLeaders: true });
+  const made: Asker[] = [];
+  for (const [i, p] of people.entries()) {
+    const login = `rv-ask${i + 1}-${suffix}`;
+    const text = `Reason ${i + 1} ${suffix}: please share your email so I can organize rides`;
+    const res = await (await apiAs(request, login))("POST", "/contact-requests", {
+      subjectUserId: subject.id, contextType: "group", contextId: numberAt(group, "id"), fields: "email", reason: text,
+    });
+    made.push({ ...p, login, requestId: numberAt(res, "request", "id"), text });
+  }
+  return { subject, askers: made };
+}
+
+// The reason a contact request holds now, as the admin reads it.
+async function reasonOf(request: APIRequestContext, requestId: number): Promise<string> {
+  const admin = await apiAs(request, adminName);
+  return stringAt(await admin("GET", `/contact-requests/${requestId}`), "request", "reason");
+}
+
+const reasonItem = (row: Locator, text: string) => row.getByRole("list", { name: "Contact-request reasons" }).getByRole("listitem").filter({ hasText: text });
 
 // Opens Delete for `target`. With `expectReady` false it does not wait for the
 // button to turn on (a person whose delete is held off never does).
@@ -531,5 +582,152 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     expect(watch.ids.deleted).toHaveLength(2);
     expect(watch.ids.deleted[0]).not.toBe(watch.ids.deleted[1]);
     expect(watch.ids.settled).toEqual([]);
+  });
+});
+
+test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () => {
+  test.use({ locale: "en-US", timezoneId: "America/Boise" });
+  test.setTimeout(120_000);
+
+  test("a reasoned person is reviewed item by item and deleted with mixed choices: blanked and kept as chosen", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix);
+    const [blankIt, keepIt] = askers;
+    await signInTo(page, adminName, "/admin?tab=users");
+    const watch = watchIds(page, subject.id);
+    const row = await openDelete(page, subject, false);
+
+    // Both reasons are listed, nothing is chosen, nothing offers to choose for all.
+    await expect(reasonItem(row, blankIt.text)).toBeVisible();
+    await expect(reasonItem(row, keepIt.text)).toBeVisible();
+    await expect(row.getByText(REVIEW_INTRO)).toBeVisible();
+    await expect(row.getByText(REVIEW_LIMIT)).toBeVisible();
+    await expect(row.getByText(REVIEW_MEMORY)).toBeVisible();
+    await expect(row.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: /(keep|blank|choose|select) (all|every)/i })).toHaveCount(0);
+    await expect(row.getByText("You're part of this request")).toHaveCount(0);
+    await expect(row.getByText("Choose Keep text or Blank text for 2 more reasons.")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await evidence(page, "reasons-unchosen");
+
+    await reasonItem(row, blankIt.text).getByRole("radio", { name: "Blank text" }).check();
+    await expect(row.getByText("Choose Keep text or Blank text for 1 more reason.")).toBeVisible();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await reasonItem(row, keepIt.text).getByRole("radio", { name: "Keep text" }).check();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    await expect(row.getByText("Delete this account. Keep 1 reason and blank 1.")).toBeVisible();
+    await expect(row.getByText(CANT_RESTORE)).toBeVisible();
+    await evidence(page, "reasons-chosen");
+
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText("The account was deleted. 1 reason was blanked and 1 kept.")).toBeVisible();
+    await evidence(page, "reasons-done");
+    await row.getByRole("button", { name: "Done" }).click();
+    await expect(page.getByRole("row").filter({ hasText: subject.email })).toHaveCount(0);
+
+    watch.stop();
+    expect(watch.ids.minted).toBe(1);
+    expect(watch.ids.deleted).toHaveLength(1);
+    expect(watch.ids.settled).toEqual([]);
+    expect(await reasonOf(request, blankIt.requestId)).toBe("");
+    expect(await reasonOf(request, keepIt.requestId)).toBe(keepIt.text);
+  });
+
+  test("a reason that changes after the page loaded is marked, the other choice stays, and a fresh press deletes", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix);
+    const [stays, changes] = askers;
+    await signInTo(page, adminName, "/admin?tab=users");
+    const watch = watchIds(page, subject.id);
+    const row = await openDelete(page, subject, false);
+    await reasonItem(row, stays.text).getByRole("radio", { name: "Keep text" }).check();
+    await reasonItem(row, changes.text).getByRole("radio", { name: "Blank text" }).check();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+
+    // The asker withdraws their request, which the server sees as a different row.
+    await (await apiAs(request, changes.login))("POST", `/contact-requests/${changes.requestId}/withdraw`, {});
+    await row.getByRole("button", { name: "Delete account" }).click();
+
+    await expect(row.getByRole("alert")).toHaveText(CHANGED);
+    await expect(row.getByText(MARKED)).toHaveCount(1);
+    await expect(reasonItem(row, changes.text).getByText(MARKED)).toBeVisible();
+    await expect(reasonItem(row, stays.text).getByRole("radio", { name: "Keep text" })).toBeChecked();
+    await expect(reasonItem(row, changes.text).getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByText(NOT_DELETED)).toHaveCount(0);
+    await evidence(page, "reasons-changed");
+
+    await reasonItem(row, changes.text).getByRole("radio", { name: "Keep text" }).check();
+    await expect(row.getByText(MARKED)).toHaveCount(0);
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText("The account was deleted. 0 reasons were blanked and 2 kept.")).toBeVisible();
+    await row.getByRole("button", { name: "Done" }).click();
+
+    watch.stop();
+    expect(watch.ids.minted).toBe(2);
+    expect(watch.ids.deleted).toHaveLength(2);
+    expect(watch.ids.deleted[0]).not.toBe(watch.ids.deleted[1]);
+    expect(watch.ids.settled).toEqual([]);
+    expect(await reasonOf(request, stays.requestId)).toBe(stays.text);
+    expect(await reasonOf(request, changes.requestId)).toBe(changes.text);
+  });
+
+  test("a person with no reasons shows 'No reasons to review' and deletes at once", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const admin = await apiAs(request, adminName);
+    const target = await makePerson(admin, `rv-none-${suffix}`, `Nan None ${suffix}`);
+    await signInTo(page, adminName, "/admin?tab=users");
+    const row = await openDelete(page, target);
+    await expect(row.getByText("No reasons to review.")).toBeVisible();
+    await expect(row.getByRole("radio")).toHaveCount(0);
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText(DELETED, { exact: true })).toBeVisible();
+    await expect(row.getByText(/blanked/)).toHaveCount(0);
+    await row.getByRole("button", { name: "Done" }).click();
+  });
+
+  // The server's 403 for an admin who may not review (not an adult) is answered
+  // here by a stub: making a non-adult admin takes an account setup this spec
+  // does not need. The copy and the disabled Delete are what is checked.
+  test("an admin who may not review reasons is told so, sees no reason text, and cannot delete", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix, 1);
+    await page.route(`**/api/v1/admin/users/${subject.id}/erasure-reasons/page`, (route) =>
+      route.fulfill({ status: 403, json: { error: "server text the page must not show", code: "reason_review_not_allowed", reviewRequired: true } }));
+    await signInTo(page, adminName, "/admin?tab=users");
+    const row = await openDelete(page, subject, false);
+    await expect(row.getByRole("alert")).toHaveText(NOT_ADULT);
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByRole("radio")).toHaveCount(0);
+    await expect(row.getByText(askers[0].text)).toHaveCount(0);
+    await expect(row.getByText("server text the page must not show")).toHaveCount(0);
+    await evidence(page, "reasons-not-allowed");
+  });
+
+  test("two deleted askers are told apart by reference, never named", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix);
+    // Delete both askers first (each is the requester of a reason, so each
+    // delete carries a review of its own); their requests about the subject stay.
+    const admin = await apiAs(request, adminName);
+    for (const asker of askers) {
+      const first = await admin("POST", `/admin/users/${asker.id}/erasure-reasons/page`, { after: null });
+      const items = (recordOf(first).items as unknown[]).map((it) => ({
+        requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"), choice: "keep",
+      }));
+      await admin("DELETE", `/admin/users/${asker.id}`, { successors: {}, hostSuccessors: {}, reasonReview: { items } });
+    }
+    await signInTo(page, adminName, "/admin?tab=users");
+    const row = await openDelete(page, subject, false);
+    // The panel is open before its review pages have loaded (expectReady is
+    // false), and allTextContents does not wait: wait for both labels first.
+    const labels = row.getByText(/Deleted account · ref \d+/);
+    await expect(labels).toHaveCount(2);
+    const refs = await labels.allTextContents();
+    const ids = refs.map((t) => /ref (\d+)/.exec(t)?.[1]);
+    expect(ids[0]).toBeDefined();
+    expect(ids[0]).not.toBe(ids[1]);
+    for (const asker of askers) await expect(row.getByText(asker.name)).toHaveCount(0);
+    await evidence(page, "reasons-deleted-counterparts");
   });
 });

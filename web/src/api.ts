@@ -126,6 +126,7 @@ import type {
   AttemptMintResponse,
   AttemptSettleResponse,
   ErasureReasonPage,
+  ReasonReviewChoice,
   ErasureReport,
   EventDetailResponse,
   EventHostRow,
@@ -742,10 +743,19 @@ export const AdminUsers = {
   // body only, never in the path. A 2xx whose body is not a deletion report (a
   // proxy's page, an empty body) is not a success: it throws a plain Error,
   // which the panel treats as "the server may have deleted" and settles the id.
-  remove: async (id: number, successors: Record<string, number> = {}, hostSuccessors: Record<string, number> = {}, attemptId?: string) => {
+  // reasonReview is every contact-request reason the admin was shown, each with
+  // the hash it came with and an explicit choice (T07B-2c). It is sent only
+  // when the review found reasons; the server ignores it for an account without.
+  remove: async (
+    id: number,
+    successors: Record<string, number> = {},
+    hostSuccessors: Record<string, number> = {},
+    attemptId?: string,
+    reasonReview?: ReasonReviewChoice[],
+  ) => {
     const res = await api<{ erasure?: unknown }>(`/admin/users/${id}`, {
       method: "DELETE",
-      body: { successors, hostSuccessors, ...(attemptId ? { attemptId } : {}) },
+      body: { successors, hostSuccessors, ...(attemptId ? { attemptId } : {}), ...(reasonReview ? { reasonReview: { items: reasonReview } } : {}) },
     });
     if (!isErasureReport(res?.erasure)) throw new Error("unexpected answer to a delete");
     return { erasure: res.erasure };
