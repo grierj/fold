@@ -499,6 +499,15 @@ After a merge, merge master into the other open branches (never rebase) and repo
   procedure "recommended" and makes no support promise; it does not restore uploads. Full drills at the exact head, the
   real level-1 crossings, review and landing are pending.
 
+### Full restore drill frequency
+
+Run the full `deploy/digitalocean/restore-drill.sh` only when at least one of these
+conditions holds: changes have a high chance of altering the restore behavior the
+drill checks; work specifically changed the drill; or more than 30 days have passed
+since its last run. Record the reason and the run date with the evidence. For other
+changes, use targeted checks. A recent run does not by itself satisfy a release gate:
+assess whether its candidate and evidence cover the changes being released.
+
 ## SMS (messaging Phase 3, not yet)
 
 Not built, and not required to run Fold. When you build it: provider adapters (Telnyx default,

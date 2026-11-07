@@ -358,6 +358,11 @@ Practice with `backup.sh --restore-test` before you need a real restore; it
 loads the newest dump into a throwaway database and never touches `fold`. It
 does not rehearse `restore.sh`.
 
+The full `restore-drill.sh` is a development verification, not a routine backup
+check. Run it only when changes have a high chance of altering the restore behavior it checks,
+when the drill itself changed, or when its last run was more than 30 days ago.
+Record the reason and date with the evidence; use targeted checks otherwise.
+
 ### Restoring a nightly dump (interim notes)
 
 These notes are interim and the steps are recommended, not a promise. They
