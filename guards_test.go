@@ -277,11 +277,12 @@ func TestDependabotCoversEveryEcosystem(t *testing.T) {
 }
 
 // testLayoutAllowed are the only test files with no same-named source file:
-// shared helpers, these repo-wide guards, and the migration drift check.
+// shared helpers, these repo-wide guards, and migration tests.
 var testLayoutAllowed = map[string]bool{
-	"testhelpers_test.go":      true,
-	"guards_test.go":           true,
-	"migrations/drift_test.go": true,
+	"testhelpers_test.go":              true,
+	"guards_test.go":                   true,
+	"migrations/drift_test.go":         true,
+	"migrations/reason_review_test.go": true,
 }
 
 // milestoneNameRe matches a test file named after when it was written

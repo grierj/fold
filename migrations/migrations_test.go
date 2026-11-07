@@ -3320,10 +3320,9 @@ func TestConsentScrubKeepsThePreviousWriterWorking(t *testing.T) {
 // skips the historical completion recheck for the deferred event of that same
 // UPDATE on a granted row. Everything else runs the baseline body.
 //
-// Every test that claims the 00004 contract opens a fresh unmigrated database and
-// runs UpTo(agesNoteTriggerTestVersion); none uses the latest version, so a later
-// migration cannot change what these tests prove. The latest-schema checks
-// (TestNoDrift, TestBaselineFileShape and the down/up tests) stay separate.
+// The tests pin 00004 rather than the latest version. The behavioral matrices
+// also run at 00007 to prove T07B preserves the ages-note contract. The latest
+// schema checks (TestNoDrift and TestBaselineFileShape) stay separate.
 //
 // Evidence kinds, as the mutation plan records them. A behavioral kill is a test
 // that fails at run time because the database now does something else. A
@@ -3686,7 +3685,15 @@ const agesNoteBlankSQL = `UPDATE contact_requests SET add_childcare_ages_note = 
 // fails with SQLSTATE 23514 from the identity trigger and writes nothing.
 func TestAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerAllowsOnlyTheErasureBlank(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 	before := a.rows(false)
@@ -3776,7 +3783,15 @@ type agesNoteWant struct{ step, msg string }
 // persisted. A statement after a failing one never runs.
 func TestAgesNoteTriggerDeferredCases(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerDeferredCases(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerDeferredCases(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 
@@ -3890,7 +3905,15 @@ func TestAgesNoteTriggerDeferredCases(t *testing.T) {
 // control for the lookup itself. Registrations and audit snapshots are untouched.
 func TestAgesNoteTriggerHistoricalCompletion(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerHistoricalCompletion(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerHistoricalCompletion(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 	for _, c := range []struct {
@@ -3953,19 +3976,21 @@ func TestAgesNoteMigrationFileHasNoTriggerBypass(t *testing.T) {
 	if got := agesNoteBypassWords("ALTER  TABLE x\nDISABLE TRIGGER y; SELECT set_config('session_replication_role','replica',true);"); len(got) != 4 {
 		t.Fatalf("detector found %q in its fixture, want alter table, disable trigger, session_replication_role and set_config", got)
 	}
-	b, err := migrations.Files.ReadFile(agesNoteMigrationFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
-	if found := agesNoteBypassWords(src); len(found) > 0 {
-		t.Errorf("%s contains %q", agesNoteMigrationFile, found)
-	}
-	if strings.Contains(strings.ToLower(src), "-- contracts:") {
-		t.Errorf("%s has a contracts line, but nothing is dropped or renamed (DEC-138)", agesNoteMigrationFile)
-	}
-	if !strings.Contains(src, "DEC-138") || strings.Count(src, "-- +goose StatementBegin") != 4 || strings.Count(src, "-- +goose StatementEnd") != 4 {
-		t.Errorf("%s lacks its DEC-138 note or the four statement blocks (two in Up, two in Down)", agesNoteMigrationFile)
+	for _, file := range []string{agesNoteMigrationFile, reasonReviewMigrationFile} {
+		b, err := migrations.Files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		if found := agesNoteBypassWords(src); len(found) > 0 {
+			t.Errorf("%s contains %q", file, found)
+		}
+		if strings.Contains(strings.ToLower(src), "-- contracts:") {
+			t.Errorf("%s has a contracts line, but nothing is dropped or renamed (DEC-138)", file)
+		}
+		if !strings.Contains(src, "DEC-138") || strings.Count(src, "-- +goose StatementBegin") != 4 || strings.Count(src, "-- +goose StatementEnd") != 4 {
+			t.Errorf("%s lacks its DEC-138 note or the four statement blocks (two in Up, two in Down)", file)
+		}
 	}
 }
 
@@ -4570,7 +4595,15 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 // its own there; it stays covered by the prefix fidelity in TestAgesNoteTriggerShape.
 func TestAgesNoteTriggerCoversAddedColumns(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerCoversAddedColumns(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerCoversAddedColumns(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	for i, id := range []int{300, 301, 302} {
 		a.addRequest(id, 1, 2, 30+i, "pending", "", fmt.Sprintf("%s (%d)", agesNoteText, id))
 	}
