@@ -1,5 +1,5 @@
 import { expect, type APIRequestContext, type Locator, type Page, type Request } from "@playwright/test";
-import { apiAs } from "./helpers";
+import { apiAs, email, fromMore } from "./helpers";
 
 // The pages the UI checks cover (a11y.spec.ts, layout.spec.ts). Each has the
 // person who opens it and a handle that shows the page has loaded.
@@ -63,6 +63,14 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
       prepare: async (p) => { await expect(p.getByText("Room 104")).toBeVisible(); } },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
+    // The delete panel, open and loaded (nothing is pressed). Its outcome states have their own checks in admin-delete-user.spec.ts.
+    { id: "admin-user-delete", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }),
+      prepare: async (p) => {
+        await p.getByRole("searchbox", { name: "Search by name or email" }).fill(email("sam"));
+        const row = p.getByRole("row").filter({ hasText: email("sam") });
+        await fromMore(row, "Delete");
+        await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+      } },
     { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },
     // Both the catalog and the match section (the seed types "Room 201" on its dates) are loaded before it is scanned.
     { id: "admin-rooms", who: "grier", path: "/admin?tab=rooms",

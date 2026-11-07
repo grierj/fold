@@ -21,7 +21,8 @@ shards=${E2E_SHARDS:-$default}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-(cd .. && go build -o "$tmp/fold" .)
+# -tags e2eclock adds the test-only attempt clock (attempt_clock_e2e.go); server.sh turns it on.
+(cd .. && go build -tags e2eclock -o "$tmp/fold" .)
 export FOLD_E2E_BIN="$tmp/fold"
 rm -rf test-results
 

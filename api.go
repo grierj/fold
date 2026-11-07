@@ -818,4 +818,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Notifications (5.12).
 	a.registerNotificationRoutes(v1)
+
+	// Browser-test routes: nil outside -tags e2eclock (e2e_hooks.go).
+	if e2eRoutes != nil {
+		e2eRoutes(a, v1)
+	}
 }
