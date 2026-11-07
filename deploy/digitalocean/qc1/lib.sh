@@ -860,7 +860,7 @@ qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
       # Everything beneath the child scan (and the scan itself): the index nodes. A Bitmap Heap Scan carries NO Index Cond of its own; the id condition is on the Bitmap Index Scan under it.
       | (if $scan == null then [] else [ $scan | .. | objects | select(has("Node Type")) ] end) as $sub
       | ([ $sub[] | select(.["Node Type"] == "Bitmap Index Scan") ] | .[0]) as $bix
-      | ([ $sub[] | select((.["Index Cond"] | type) == "string" and (.["Index Cond"] | contains("(id >"))) ] | .[0]["Index Cond"]) as $idc
+      | ([ $sub[] | select((.["Index Cond"] | type) == "string" and (.["Index Cond"] | test("\\((?:[[:alnum:]_]+\\.)?id >"))) ] | .[0]["Index Cond"]) as $idc
       | $m + { topRows: $p["Actual Rows"],
                hasSort: ($ns | any(.["Node Type"] == "Sort" or .["Node Type"] == "Incremental Sort")),
                scan: (if $scan == null then null else

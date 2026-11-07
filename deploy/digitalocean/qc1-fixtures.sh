@@ -1240,6 +1240,10 @@ cat >"$WORK/bitmap.json" <<'JSON'
 JSON
 bp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":3981}]' <"$WORK/bitmap.json")"
 [[ "$(jq -c '.[0] | [.hasSort, .scan.nodeType, .scan.indexCond, .scan.idIndexCond, .scan.bitmapIndex.nodeType, .scan.bitmapIndex.indexName, .scan.bitmapIndex.indexCond, .scan.schema]' <<<"$bp")" == "[true,\"Bitmap Heap Scan\",null,\"(id > '3981'::bigint)\",\"Bitmap Index Scan\",\"contact_requests_pkey\",\"(id > '3981'::bigint)\",\"qc1_clean\"]" ]]
+# EXPLAIN VERBOSE qualifies the same column with the relation name.
+sed 's/(id >/(contact_requests.id >/g' "$WORK/bitmap.json" >"$WORK/bitmap-qualified.json"
+bp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":3981}]' <"$WORK/bitmap-qualified.json")"
+[[ "$(jq -r '.[0].scan.idIndexCond' <<<"$bp")" == "(contact_requests.id > '3981'::bigint)" ]]
 # A bitmap execution in a probe: no "no Index Cond" finding, but the Sort and the not-an-ordered-Index-Scan findings are kept, in words.
 BPR='if .item == 8 and .size == 100'
 mut bm-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true | .scan += {nodeType:\"Bitmap Heap Scan\", indexName:null, indexCond:null, idIndexCond:\"(id > 1)\", bitmapIndex:{nodeType:\"Bitmap Index Scan\", indexName:\"contact_requests_pkey\", indexCond:\"(id > 1)\"}} else . end) else . end"
