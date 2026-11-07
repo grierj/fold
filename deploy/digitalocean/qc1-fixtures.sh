@@ -356,12 +356,15 @@ QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows
 # The scanner probe of a healthy run: eight executions per mode (one initial unit, seven continuations at cursor positions 0 to 85 per cent), each an index scan in
 # primary-key order with its id predicate as an Index Cond, no Sort, one loop, the unit's rows and a flat number of shared blocks.
 probe_json() { # [schema]
-  jq -nc --arg schema "${1:-public}" '{unit:50000, tableRows:1000, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8,
+  jq -nc --arg schema "${1:-public}" '{unit:50000, tableRows:1000, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, estimates:true,
+    plannerSettings:{jit:"on", jit_above_cost:"100000", jit_inline_above_cost:"500000", jit_optimize_above_cost:"500000", random_page_cost:"4", seq_page_cost:"1", effective_cache_size:"524288", work_mem:"4096", plan_cache_mode:"auto"},
     executions:[("auto","force_generic_plan") as $m
       | ({mode:$m, kind:"initial", percent:null, afterId:null, topRows:50000, hasSort:false,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, idIndexCond:null, bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0}},
+          top:{nodeType:"Limit", startupCost:0.29, totalCost:1850.5, planRows:50000, planWidth:25, actualRows:50000, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, idIndexCond:null, bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:1850.5, planRows:50000, planWidth:25, actualTotalMs:12}},
          ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), topRows:50000, hasSort:false,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", idIndexCond:"(id > $1)", bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0}}))]}'
+          top:{nodeType:"Limit", startupCost:0.29, totalCost:(1850.5 + .key), planRows:50000, planWidth:25, actualRows:50000, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", idIndexCond:"(id > $1)", bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:(1850.5 + .key), planRows:50000, planWidth:25, actualTotalMs:12}}))]}'
 }
 # The two tables behind the plans row (bloated as the matrix left it, clean copy vacuumed and analyzed) and the shapes of the application's own logged executions of a healthy run.
 tables_json() { printf '{"bloated":{"schema":"public","relpages":13500,"actualPages":13500,"reltuples":11000,"heapBytes":110592000,"indexBytes":2000000,"nLiveTup":11000,"nDeadTup":90000,"autovacuumCount":0},"clean":{"schema":"qc1_clean","relpages":560,"actualPages":560,"reltuples":11000,"heapBytes":4587520,"indexBytes":400000,"nLiveTup":11000,"nDeadTup":0,"kind":"a copy of the same rows in a scratch schema, vacuumed and analyzed","vacuumed":true,"analyzed":true}}'; }
@@ -373,6 +376,14 @@ trav() { printf '{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"client
 dele() { printf '{"status":"200","ms":100,%s,"reasonsKept":%s,"reasonsRemoved":%s}' "$(ins "$1")" "$2" "$3"; }                                       # rows kept removed
 outc() { printf '{"dbOk":true,"accountDeleted":"true","reasonsBlank":%s,"reasonsWithText":%s,"decisionAudits":%s}' "$2" "$1" "$(( $1 + $2 ))"; }          # kept removed
 rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0}' "$2"; else printf '{"requester":0,"subject":%s}' "$2"; fi; }          # direction k
+# The audit-retention report statement as the REAL pilot3 server log has it (testdata/qc1-pilot3-audit-retention.log: one deletion of account 46, its plan with a JIT section), turned into
+# the evidence the runner records by the same function. The explained rows below carry it, so the healthy fixtures are of the real statement and not of a typed one.
+PILOT3_AUDIT_LOG="$HERE/testdata/qc1-pilot3-audit-retention.log"
+AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" "$ROOT" 46 true)"
+AUTOEX='{"scope":"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off","settings":{"log_lock_waits":"on"},"caveats":["one execution","log_lock_waits reports only waits longer than deadlock_timeout","no row locks","other sessions in the same log","docker logs --since"]}'
+explained_row() { # which size
+  printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
+}
 gen() { # sizes counts [dense]
   local s k d m c kept removed bc K dlist ci np pre pages digest ph probe probec act k9 name item
   probe="$(probe_json public)"; probec="$(probe_json qc1_clean)"
@@ -388,6 +399,7 @@ gen() { # sizes counts [dense]
     printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"targetReasonLen":1000,"reasons":10,"expect":{"items":10},"traversal":%s}\n' "$s" "$(trav "$((s + 10))" 10)"
     for name in start end; do
       printf '{"status":"measured","item":6,"case":"order-control-delete-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"delete":%s}\n' "$name" "$s" "$(outc 0 0)" "$(dele "$s" 0 0)"
+      explained_row "$name" "$s"
     done
     printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true,"tableRowsBefore":%s},"countMismatch":{"status":"400","unchanged":true,"tableRowsBefore":%s},"changedSet":{"status":"409","unchanged":true,"tableRowsBefore":%s},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true,"tableRowsBefore":%s},"legacyComparison":{"synthetic":true,"capacityEntries":52802,"entriesOver":52803,"overStatus":"413","fitStatus":"409","fitUnchanged":true,"tableRowsBefore":{"fit":%s,"over":%s}},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":%s,"traversal":%s}\n' \
       "$s" "$K" "$(( 400 + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$(outc "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(dele "$(( s + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(trav "$(( s + K ))" "$K")"
@@ -669,8 +681,8 @@ mut failed6 'if .item == 6 and .case == "delete-subject-100-remove" and .size ==
 [[ "$(jq -c '.missing | map(.case + "@" + (.size|tostring))' <<<"$(status_of "$WORK/e2.failed6")")" == '["delete-subject-100-remove@100"]' ]]
 grep -v '"item":3,"case":"discovery-requester-0","size":10,' "$WORK/e2.jsonl" >"$WORK/e4.jsonl"
 [[ "$(jq -r '.missing | length' <<<"$(status_of "$WORK/e4.jsonl")")" == 1 ]]
-# A whole size missing lists all of it: 43 rows (sparse, unrelated, 8 discovery, the discovery order control, the two delete order controls, request size, progress, plans, 2 browser, 24 deletions: 0, 10, 100 and 1,000 reasons in both directions and all three modes) with the observation at the new largest size.
-[[ "$(jq -r '.missing | length' <<<"$(qc1_evidence_status "$WORK/e2.jsonl" 10,100,1000 0,10,100,1000,10000 "$WORK/env.json" "$HEAD_FAKE" 6291456)")" == 43 ]]
+# A whole size missing lists all of it: 45 rows (sparse, unrelated, 8 discovery, the discovery order control, the two delete order controls and the two EXPLAINED ones, request size, progress, plans, 2 browser, 24 deletions: 0, 10, 100 and 1,000 reasons in both directions and all three modes) with the observation at the new largest size.
+[[ "$(jq -r '.missing | length' <<<"$(qc1_evidence_status "$WORK/e2.jsonl" 10,100,1000 0,10,100,1000,10000 "$WORK/env.json" "$HEAD_FAKE" 6291456)")" == 45 ]]
 refused 'not a whole number' status_of "$WORK/e2.jsonl" 10,x 0
 # The judge failing is itself invalid: a row the judge cannot read must not read as clean.
 { cat "$WORK/e2.jsonl"; printf 'this line is not json\n'; } >"$WORK/e2.garbled"
@@ -1232,8 +1244,8 @@ pj="$(qc1_judge "$WORK/pilot-plans.jsonl" 6291456)"
 [[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .belowUnit] | unique' <<<"$pj")" == '[true]' ]]   # recorded as a FACT beside the finding (11,000 rows < the 50,000 unit), never as a reason to drop it
 [[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .tableRows] | unique' <<<"$pj")" == '[11000]' ]]
 [[ "$(jq -sc '[.[] | select(.failure == "plan-continuation") | .why]' <<<"$pj")" == '["of 10 logged continuation executions 9 had the id predicate as an Index Cond (on an Index Scan, or beneath a Bitmap Heap Scan); the others (executions 1) had it only as a Filter on a Seq Scan. 4 had a Sort above the scan."]' ]]
-# nothing else about the pilot row went wrong, except what the pilot predates (a clean probe and the tables)
-[[ "$(jq -sc '[.[] | select(.class == "invalid") | .failure] | unique' <<<"$pj")" == '["clean-table-missing","scanner-probe-missing"]' ]]
+# nothing else about the pilot row went wrong, except what the pilot predates (a clean probe, the tables and the planner estimates, which pilot1 did not record: the old row is judged invalid on exactly those and nothing else)
+[[ "$(jq -sc '[.[] | select(.class == "invalid") | .failure] | unique' <<<"$pj")" == '["clean-table-missing","scanner-probe-estimates-missing","scanner-probe-missing"]' ]]
 # The parser reads the id Index Cond from beneath a Bitmap Heap Scan, and the schema the scan read.
 cat >"$WORK/bitmap.json" <<'JSON'
 [{"Plan":{"Node Type":"Limit","Actual Rows":8810,"Plans":[{"Node Type":"Sort","Plans":[{"Node Type":"Bitmap Heap Scan","Relation Name":"contact_requests","Schema":"qc1_clean","Recheck Cond":"(id > '3981'::bigint)","Actual Rows":8810,"Actual Loops":1,"Shared Hit Blocks":2295,"Shared Read Blocks":0,"Plans":[{"Node Type":"Bitmap Index Scan","Index Name":"contact_requests_pkey","Index Cond":"(id > '3981'::bigint)","Actual Rows":20205,"Shared Hit Blocks":130}]}]}]}}]
@@ -1246,7 +1258,7 @@ bp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":3
 [[ "$(jq -r '.[0].scan.idIndexCond' <<<"$bp")" == "(contact_requests.id > '3981'::bigint)" ]]
 # A bitmap execution in a probe: no "no Index Cond" finding, but the Sort and the not-an-ordered-Index-Scan findings are kept, in words.
 BPR='if .item == 8 and .size == 100'
-mut bm-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true | .scan += {nodeType:\"Bitmap Heap Scan\", indexName:null, indexCond:null, idIndexCond:\"(id > 1)\", bitmapIndex:{nodeType:\"Bitmap Index Scan\", indexName:\"contact_requests_pkey\", indexCond:\"(id > 1)\"}} else . end) else . end"
+mut bm-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true | .scan += {nodeType:\"Bitmap Heap Scan\", indexName:null, indexCond:null, idIndexCond:\"(id > 1)\", bitmapIndex:{nodeType:\"Bitmap Index Scan\", indexName:\"contact_requests_pkey\", indexCond:\"(id > 1)\", startupCost:0.1, totalCost:100, planRows:50}} else . end) else . end"
 st="$(status_of "$WORK/e2.bm-exec")"
 [[ "$(jq -c '[.budgetFailures[] | select(.item == 8) | .failure] | sort' <<<"$st")" == '["scanner-not-indexed","scanner-sort"]' && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]] || { echo "bitmap: $(jq -c '[.budgetFailures, .invalid]' <<<"$st" | cut -c1-600)" >&2; exit 1; }
 mut seq-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 10 then .hasSort = true | .scan += {nodeType:\"Seq Scan\", indexName:null, indexCond:null, idIndexCond:null, bitmapIndex:null, filter:\"(id > '2001'::bigint)\"} else . end) else . end"
@@ -1304,7 +1316,7 @@ l_reset="$(grep -n 'pg_stat_statements_reset' <<<"$ins_body" | cut -d: -f1)"; l_
 grep -qF 'topStatements:$top, topStatementsNote:' "$RUNNER_SRC"; grep -qF 'not attributed to this operation; read after the window, nothing reset' "$RUNNER_SRC"
 # the delete order control: a deletion of an account with no reasons at the START and at the END of each size's run, in the matrix, judged like any deletion (table rows, outcome), compared in the evidence
 os_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER_SRC")"
-l_start="$(grep -n 'order_control_delete "\$n" start' <<<"$os_body" | cut -d: -f1)"; l_unrel="$(grep -n '(2) every reason belongs to someone else' <<<"$os_body" | cut -d: -f1)"; l_oc="$(grep -n 'order-control-requester-10' <<<"$os_body" | head -n 1 | cut -d: -f1)"; l_endc="$(grep -n 'order_control_delete "\$n" end' <<<"$os_body" | cut -d: -f1)"; l_sparse="$(grep -n 'blanking background reasons for the sparse case' <<<"$os_body" | cut -d: -f1)"
+l_start="$(grep -n '^  order_control_delete "\$n" start' <<<"$os_body" | cut -d: -f1)"; l_unrel="$(grep -n '(2) every reason belongs to someone else' <<<"$os_body" | cut -d: -f1)"; l_oc="$(grep -n 'order-control-requester-10' <<<"$os_body" | head -n 1 | cut -d: -f1)"; l_endc="$(grep -n '^  order_control_delete "\$n" end' <<<"$os_body" | cut -d: -f1)"; l_sparse="$(grep -n 'blanking background reasons for the sparse case' <<<"$os_body" | cut -d: -f1)"
 [[ -n "$l_start$l_unrel$l_oc$l_endc$l_sparse" && "$l_start" -lt "$l_unrel" && "$l_oc" -lt "$l_endc" && "$l_endc" -lt "$l_sparse" ]]
 grep -qF 'record 6 "order-control-delete-$which"' "$RUNNER_SRC"
 for w in start end; do
@@ -1808,7 +1820,7 @@ grep -qF 'qc1_outcome_sql "$t" "$ids" "$mark" | psql_stdin' <<<"$vo_body"; grep 
 # Only the watermark and the before/after growth record (rows and bytes of audit_logs around each operation: the confounding the run leaves) read it.
 # (and the by-action growth record audit_actions, and the phase hook's read, which write nothing and are not decision counts)
 if grep -n 'FROM audit_logs' "$RUNNER_SRC" | grep -v 'max(id)' | grep -v "count(\*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs" | grep -v '^[0-9]*:audit_actions()' | grep -v '^[0-9]*:exec docker exec -i $DB_CID psql -X -U church -d fold -At'; then echo 'the runner counts audits outside qc1_audit_count_sql' >&2; exit 1; fi
-[[ "$(grep -c "pg_total_relation_size('audit_logs')" "$RUNNER_SRC")" == 3 ]]   # the two reads around an operation and the phase hook's
+[[ "$(grep -c "pg_total_relation_size('audit_logs')" "$RUNNER_SRC")" == 4 ]]   # the two reads around an operation, the phase hook's and the one before the explained deletion (its growth record)
 grep -qF 'AUDIT_ROWS0 AUDIT_BYTES0' "$RUNNER_SRC"; grep -qF 'AUDIT_ROWS1 AUDIT_BYTES1' "$RUNNER_SRC"
 # the judge still requires the database outcome: the pilot2 rows (accumulated audits) are invalid, bound rows are not
 mut dbbad "$DEL then .outcome = {dbOk:false, accountDeleted:\"true\", reasonsBlank:50, reasonsWithText:50, decisionAudits:1260} else . end"; expect_invalid dbbad outcome-db
@@ -1884,4 +1896,138 @@ LOG
 [[ "$(qc1_plan_counts "$WORK/pg.sample")" == '{"scanner-initial":1,"scanner-continuation":1,"page-items":1,"delete-set":1,"blank-batch":1}' ]] || { echo "plan counts: $(qc1_plan_counts "$WORK/pg.sample")" >&2; exit 1; }
 printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading configuration files' >"$WORK/pg.pilot2"
 [[ "$(qc1_plan_counts "$WORK/pg.pilot2")" == '{"scanner-initial":0,"scanner-continuation":0,"page-items":0,"delete-set":0,"blank-batch":0}' ]]       # what the pilot saw: nothing
+# === the audit-retention report statement: the explained order controls, and the planner estimates of both scanner probes ===============================================
+# (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE, the report statement with its
+# auto_explain plan (a JIT section in it) and the diagnostic count that follows, all in backend 12393. The evidence function is run on it as the runner runs it.
+[[ "$(qc1_go_audit_pieces "$ROOT" | wc -l)" == 4 ]]   # the Go source still has the four fixed pieces around the classification, the subject mention and the malformed-link term
+[[ "$(jq -c '.identity.fixedPieceLengths' <<<"$AUD_EV")" == '[52,47,6,96]' ]] || { echo "the audit report statement in account_erasure_audit.go changed: review the explained-delete evidence and the fixture log: $(jq -c .identity.fixedPieceLengths <<<"$AUD_EV")" >&2; exit 1; }
+[[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339]' ]]
+[[ "$(jq -r '.identity.queryTextSha256' <<<"$AUD_EV")" == 8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869 ]]
+# the plan, parsed: the planner ESTIMATES beside what happened, the Seq Scan that removed 78,521 rows, and the JIT section that is 97% of the statement
+[[ "$(jq -c '.plan.nodes[0] | [.nodeType, .startupCost, .totalCost, .planRows, .width, .actualTotalMs, .actualRows, .sharedHit, .sharedRead]' <<<"$AUD_EV")" == '["GroupAggregate",9615677.90,9658395.74,606,72,2153.337,0,2827,0]' ]]
+[[ "$(jq -c '.plan.nodes | map(select(.relation == "audit_logs")) | .[0] | [.nodeType, .totalCost, .planRows, .actualRows, .rowsRemovedByFilter, .sharedHit, .sharedRead, .actualTotalMs]' <<<"$AUD_EV")" == '["Seq Scan",9615649.14,620,0,78521,2827,0,2153.315]' ]]
+[[ "$(jq -c '.plan.nodes | length' <<<"$AUD_EV")" == 23 ]]
+[[ "$(jq -c '.plan.jit | [.functions, .generationMs, .inliningMs, .optimizationMs, .emissionMs, .totalMs]' <<<"$AUD_EV")" == '[131,21.619,53.640,1118.674,899.524,2093.456]' ]]
+[[ "$(jq -r '(.plan.jit.totalMs / .durationMs * 1000 | round) / 1000' <<<"$AUD_EV")" == 0.972 ]]
+# the caveats travel with the evidence: no row locks (a plain SELECT), lock waits only above deadlock_timeout
+jq -e '.rowLocks == false and (.rowLocksWhy | test("ACCESS SHARE")) and (.lockWaits.note | test("deadlock_timeout")) and (.identity.proof | test("substituted nothing"))' <<<"$AUD_EV" >/dev/null
+# log-level negatives: each changes the REAL log in one way and the evidence must say so
+aud() { qc1_audit_report_evidence "$1" "$ROOT" "${2:-46}" "${3:-true}"; }
+sed '13,105d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.none"; [[ "$(aud "$WORK/aud.none" | jq -c .)" == '{"statementBlocks":0}' ]]             # the statement was never logged
+: >"$WORK/aud.empty"; [[ "$(aud "$WORK/aud.empty" | jq -c .)" == '{"statementBlocks":0}' ]]
+{ cat "$PILOT3_AUDIT_LOG"; sed -n '13,105p' "$PILOT3_AUDIT_LOG"; } >"$WORK/aud.two"; [[ "$(aud "$WORK/aud.two" | jq '.statementBlocks')" == 2 ]]   # two candidate statements
+[[ "$(aud "$PILOT3_AUDIT_LOG" 47 | jq -c '[.identity.parametersAreTarget, .identity.targetUserId]')" == '[false,47]' ]]               # another account's deletion
+sed '13s/\[12393\]/[777]/' "$PILOT3_AUDIT_LOG" >"$WORK/aud.pid"; [[ "$(aud "$WORK/aud.pid" | jq -c '[.identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '["777",0,0]' ]]
+sed '1,12d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.noupd"; [[ "$(aud "$WORK/aud.noupd" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[0,1]' ]]
+sed '106,$d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nocount"; [[ "$(aud "$WORK/aud.nocount" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[1,0]' ]]
+sed "s/GROUP BY class, action/GROUP BY class/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.suffix"; [[ "$(aud "$WORK/aud.suffix" | jq -c '[.identity.prefixOk, .identity.suffixOk]')" == '[true,false]' ]]   # same start, a different end
+sed "s/ AS class FROM audit_logs WHERE ip <> '' AND ((/ AS class FROM audit_logs WHERE ((/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.middle"; [[ "$(aud "$WORK/aud.middle" | jq -c '.identity.piecesInOrder')" == false ]]   # a fixed middle piece gone
+sed '/^\t\(JIT:\|  Functions:\|  Options:\|  Timing:\)/d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nojit"; [[ "$(aud "$WORK/aud.nojit" | jq -c '[.statementBlocks, .plan.jit]')" == '[1,null]' ]]   # a plan without a JIT section is still a plan
+[[ "$(aud "$PILOT3_AUDIT_LOG" 46 false | jq '.lockWaits.logged')" == false ]]                                                      # lock waits not logged: the evidence says so
+{ cat "$PILOT3_AUDIT_LOG"; printf '2026-11-07 21:36:38.100 UTC [12393] LOG:  process 12393 still waiting for ShareLock on transaction 99 after 1000.123 ms\n'; } >"$WORK/aud.lockwait"
+[[ "$(aud "$WORK/aud.lockwait" | jq -c '[.lockWaits.count, (.lockWaits.samples | length)]')" == '[1,1]' ]]
+# the helper never runs, re-runs or types a statement: no psql and no EXPLAIN in it
+aeb="$(sed -n '/^qc1_audit_report_evidence() {/,/^}/p' "$HERE/qc1/lib.sh")"
+! grep -qE 'psql|EXPLAIN|docker' <<<"$aeb"
+# (2) THE JUDGE on the explained rows (size 100): a missing plan, an unproven statement, an incomplete plan and unlabelled caveats are each INVALID; nothing is partial credit.
+EX='if .item == 6 and .case == "order-control-delete-end-explained" and .size == 100'
+exinv() { mut "$1" "$EX then $2 else . end"; expect_invalid "$1" "$3"; }
+exinv ex-gone-plan '.auditRetention = {statementBlocks:0}' audit-plan-missing
+exinv ex-no-field 'del(.auditRetention)' audit-plan-missing
+exinv ex-two '.auditRetention.statementBlocks = 2' audit-statement-ambiguous
+for k in prefixOk suffixOk piecesInOrder variablePartsNonEmpty parametersAreTarget; do exinv "ex-id-$k" ".auditRetention.identity.$k = false" audit-statement-unproven; done
+exinv ex-id-pid '.auditRetention.identity.backendPid = ""' audit-statement-unproven
+exinv ex-id-before '.auditRetention.identity.auditUpdatesBefore = 0' audit-statement-unproven
+exinv ex-id-after '.auditRetention.identity.malformedCountAfter = 0' audit-statement-unproven
+exinv ex-id-sha '.auditRetention.identity.queryTextSha256 = "xyz"' audit-statement-unproven
+exinv ex-id-gone 'del(.auditRetention.identity)' audit-statement-unproven
+exinv ex-nodes-gone '.auditRetention.plan.nodes = []' audit-plan-incomplete
+exinv ex-root-cost '.auditRetention.plan.nodes[0].totalCost = null' audit-plan-incomplete
+exinv ex-root-rows '.auditRetention.plan.nodes[0].planRows = null' audit-plan-incomplete
+exinv ex-root-time '.auditRetention.plan.nodes[0].actualTotalMs = null' audit-plan-incomplete
+exinv ex-no-scan '.auditRetention.plan.nodes |= map(select(.relation != "audit_logs"))' audit-plan-incomplete
+exinv ex-scan-buffers '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .sharedHit = null else . end)' audit-plan-incomplete
+exinv ex-duration '.auditRetention.durationMs = null' audit-plan-incomplete
+exinv ex-lockwaits '.auditRetention.lockWaits.logged = false' audit-caveats-missing
+exinv ex-lockcount '.auditRetention.lockWaits.count = null' audit-caveats-missing
+exinv ex-rowlocks '.auditRetention.rowLocks = true' audit-caveats-missing
+exinv ex-caveats '.autoExplain.caveats = []' audit-caveats-missing
+exinv ex-autoexplain 'del(.autoExplain)' audit-caveats-missing
+exinv ex-status '.explained.status = "500"' explained-delete-unverified
+exinv ex-outcome '.outcome.dbOk = false' explained-delete-unverified
+exinv ex-deleted '.outcome.accountDeleted = "false"' explained-delete-unverified
+exinv ex-kept '.explained.reasonsKept = 1' explained-delete-unverified
+exinv ex-rows '.explained.tableRowsBefore = 5' explained-delete-unverified
+exinv ex-label '.reasons = 5' label-mismatch
+# a JIT-free plan is complete; a start row and an end row are each required
+mut ex-nojit "$EX then .auditRetention.plan.jit = null else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ex-nojit")")" == true ]]
+for w in start end; do
+  grep -v "\"case\":\"order-control-delete-$w-explained\",\"size\":100," "$WORK/e2.jsonl" >"$WORK/e2.no-ex"
+  [[ "$(jq -c --arg c "order-control-delete-$w-explained@100" '[.missing[] | .case + "@" + (.size | tostring)] | index($c) != null' <<<"$(status_of "$WORK/e2.no-ex")")" == true ]] || { echo "order-control-delete-$w-explained is not required" >&2; exit 1; }
+done
+# the explained deletions are EXTRA: they never stand in for the unexplained controls, and the controls still compare only themselves
+grep -v '"case":"order-control-delete-start"' "$WORK/e2.jsonl" | grep -v '"case":"order-control-delete-end"' >"$WORK/e2.only-explained"
+st="$(status_of "$WORK/e2.only-explained")"
+[[ "$(jq -c '[.missing[] | select(.item == 6) | .case] | unique' <<<"$st")" == '["order-control-delete-end","order-control-delete-start"]' && "$(jq -c '.confounding.deleteOrderControls' <<<"$st")" == '[]' ]]
+# the status summary: the statement time, the JIT share, the estimates and what the audit_logs scan really did, recorded and not judged
+st="$(status_of "$WORK/e2.jsonl")"
+[[ "$(jq -c '.confounding.explainedOrderControls | map(select(.size == 100) | [.case, .statementMs, .statementBlocks, .identityProven, .planRoot.estimatedTotalCost, .planRoot.estimatedRows, .auditLogsScan.rowsRemovedByFilter, .jit.functions, .jit.shareOfStatement, .lockWaitsLogged])' <<<"$st")" == '[["order-control-delete-start-explained",2153.339,1,true,9658395.74,606,78521,131,0.972,0],["order-control-delete-end-explained",2153.339,1,true,9658395.74,606,78521,131,0.972,0]]' ]]
+# (3) THE RUNNER: auto_explain is on for the explained deletion only, off and waited for before its log is read, and the matrix itself never turns it on.
+ex_body="$(sed -n '/^explained_order_control_delete() {/,/^}/p' "$RUNNER_SRC")"
+[[ -n "$ex_body" ]]
+l_on="$(grep -n '^  autoexplain_on$' <<<"$ex_body" | cut -d: -f1)"; l_since="$(grep -n '^  since="' <<<"$ex_body" | cut -d: -f1)"; l_del="$(grep -n '^  do_delete "\$t"' <<<"$ex_body" | cut -d: -f1)"
+l_off="$(grep -n '^  autoexplain_off' <<<"$ex_body" | cut -d: -f1)"; l_logs="$(grep -n 'docker logs --since "\$since"' <<<"$ex_body" | cut -d: -f1)"; l_ver="$(grep -n '^  verify_outcome' <<<"$ex_body" | cut -d: -f1)"; l_evd="$(grep -n 'qc1_audit_report_evidence "\$log" "\$ROOT" "\$t" true' <<<"$ex_body" | cut -d: -f1)"
+[[ -n "$l_on$l_since$l_del$l_off$l_logs$l_ver$l_evd" && "$l_on" -lt "$l_since" && "$l_since" -lt "$l_del" && "$l_del" -lt "$l_off" && "$l_off" -lt "$l_logs" && "$l_logs" -lt "$l_ver" && "$l_ver" -lt "$l_evd" ]]
+! grep -qE 'instrumented|delete_with|psql_db -c .EXPLAIN' <<<"$ex_body"        # not inside the instrument window (its samplers are sessions that would fill the log), and no typed EXPLAIN
+grep -qF 'record 6 "order-control-delete-$which-explained"' <<<"$ex_body"
+grep -qF 'NOT comparable with the unexplained controls' <<<"$ex_body"; grep -qF 'log_lock_waits reports only waits longer than deadlock_timeout' <<<"$ex_body"
+oc_body="$(sed -n '/^order_control_delete() {/,/^}/p' "$RUNNER_SRC")"; ! grep -qiE 'autoexplain|auto_explain' <<<"$oc_body"          # the original controls are untouched
+[[ "$(grep -c '^  autoexplain_on$' "$RUNNER_SRC")" == 1 && "$(grep -c 'autoexplain_off' "$RUNNER_SRC")" -ge 2 ]]
+[[ "$(grep -c 'auto_explain.log_min_duration = 0' "$RUNNER_SRC")" == 2 ]]                                                   # capture_plans and autoexplain_on, nowhere else
+! grep -qE -- '-c auto_explain.log_min_duration|-c log_lock_waits' "$RUNNER_SRC"                                          # never on the command line (it would outrank ALTER SYSTEM and be on for the whole matrix)
+ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'await_setting auto_explain.log_min_duration 0' <<<"$ao_body"; grep -qF 'await_setting log_lock_waits on' <<<"$ao_body"
+af_body="$(sed -n '/^autoexplain_off() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'await_setting auto_explain.log_min_duration -1' <<<"$af_body"; grep -qF 'await_setting log_lock_waits off' <<<"$af_body"
+os_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER_SRC")"
+l_a="$(grep -n '^  order_control_delete "\$n" start$' <<<"$os_body" | cut -d: -f1)"; l_b="$(grep -n '^  explained_order_control_delete "\$n" start$' <<<"$os_body" | cut -d: -f1)"; l_c="$(grep -n '^  order_control_delete "\$n" end$' <<<"$os_body" | cut -d: -f1)"; l_d="$(grep -n '^  explained_order_control_delete "\$n" end$' <<<"$os_body" | cut -d: -f1)"
+[[ -n "$l_a$l_b$l_c$l_d" && "$l_b" == "$((l_a + 1))" && "$l_d" == "$((l_c + 1))" ]]                                             # each right after its unexplained control, so the controls are exactly as before
+# the audit statement is found in the log by its text, in the same marker list the plans use; it is not one of the plan kinds the capture requires
+[[ "$(qc1_plan_marker audit-report)" == 'SELECT class, action, count(*) FROM (SELECT action, ' ]]; ! grep -q 'audit-report' <<<"$QC1_PLAN_KINDS"
+grep -qF 'SELECT class, action, count(*) FROM (SELECT action, ' "$ROOT/account_erasure_audit.go"
+# (4) PLANNER ESTIMATES of BOTH scanner probes (the table as the matrix left it and the vacuumed copy). Costs and planned rows are numbers on every execution, the probe names the planner
+# settings, and a probe without them is invalid; the findings carry them beside what was measured. They are estimates: recorded, never judged as time.
+[[ "$(jq -c '[.scannerProbe.estimates, .scannerProbeClean.estimates, .scannerProbe.executions[0].top.totalCost, .scannerProbeClean.executions[10].scan.totalCost, .scannerProbe.plannerSettings.jit_above_cost]' <<<"$(grep '"case":"plans","size":100' "$WORK/e2.jsonl")")" == '[true,true,1850.5,1851.5,"100000"]' ]]
+for v in scannerProbe scannerProbeClean; do
+  mut "est-top-$v" "$BPR then del(.$v.executions[3].top.totalCost) else . end"; expect_invalid "est-top-$v" scanner-probe-estimates-missing
+  mut "est-start-$v" "$BPR then .$v.executions[4].top.startupCost = null else . end"; expect_invalid "est-start-$v" scanner-probe-estimates-missing
+  mut "est-toprows-$v" "$BPR then .$v.executions[5].top.planRows = \"many\" else . end"; expect_invalid "est-toprows-$v" scanner-probe-estimates-missing
+  mut "est-scan-$v" "$BPR then .$v.executions[6].scan.totalCost = null else . end"; expect_invalid "est-scan-$v" scanner-probe-estimates-missing
+  mut "est-scanrows-$v" "$BPR then .$v.executions[7].scan.planRows = null else . end"; expect_invalid "est-scanrows-$v" scanner-probe-estimates-missing
+  mut "est-top-gone-$v" "$BPR then .$v.executions[2].top = null else . end"; expect_invalid "est-top-gone-$v" scanner-probe-estimates-missing
+  mut "est-flag-$v" "$BPR then .$v.estimates = false else . end"; expect_invalid "est-flag-$v" scanner-probe-estimates-missing
+  mut "est-flag-gone-$v" "$BPR then del(.$v.estimates) else . end"; expect_invalid "est-flag-gone-$v" scanner-probe-estimates-missing
+  mut "est-settings-$v" "$BPR then del(.$v.plannerSettings) else . end"; expect_invalid "est-settings-$v" scanner-probe-estimates-missing
+  mut "est-setting-$v" "$BPR then .$v.plannerSettings.work_mem = null else . end"; expect_invalid "est-setting-$v" scanner-probe-estimates-missing
+done
+mut est-bitmap "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true | .scan += {nodeType:\"Bitmap Heap Scan\", indexName:null, indexCond:null, idIndexCond:\"(id > 1)\", bitmapIndex:{nodeType:\"Bitmap Index Scan\", indexName:\"contact_requests_pkey\", indexCond:\"(id > 1)\"}} else . end) else . end"
+expect_invalid est-bitmap scanner-probe-estimates-missing      # a Bitmap Index Scan beneath the scan needs its estimates too
+# the findings carry the estimates beside the measurement
+mut est-miss "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .estimated | [.scanTotalCost, .scanRows, .topTotalCost, .topRows]]' <<<"$(status_of "$WORK/e2.est-miss")")" == '[[1852.5,50000,1852.5,50000]]' ]]
+# the parser: a synthetic EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) document shaped like the probe's gives the top node's and the scan's estimates, the planning and execution times and a JIT section when there is one
+cat >"$WORK/est.json" <<'JSON'
+[{"Plan":{"Node Type":"Limit","Startup Cost":0.29,"Total Cost":733.98,"Plan Rows":367,"Plan Width":25,"Actual Rows":10999,"Actual Total Time":12.5,"Plans":[{"Node Type":"Index Scan","Relation Name":"contact_requests","Schema":"public","Index Name":"contact_requests_pkey","Index Cond":"(contact_requests.id > $1)","Startup Cost":0.29,"Total Cost":7331.24,"Plan Rows":3667,"Plan Width":25,"Actual Rows":10999,"Actual Loops":1,"Actual Total Time":12.0,"Shared Hit Blocks":2579,"Shared Read Blocks":0}]},"Planning Time":0.4,"Execution Time":13.1,"JIT":{"Functions":4,"Timing":{"Total":55.5}}}]
+JSON
+ep="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":1}]' <"$WORK/est.json")"
+[[ "$(jq -c '.[0] | [.top.nodeType, .top.startupCost, .top.totalCost, .top.planRows, .top.planWidth, .top.actualRows, .scan.startupCost, .scan.totalCost, .scan.planRows, .scan.planWidth, .scan.actualTotalMs, .planningMs, .executionMs, .jit.Functions, .scan.idIndexCond]' <<<"$ep")" == '["Limit",0.29,733.98,367,25,10999,0.29,7331.24,3667,25,12.0,0.4,13.1,4,"(contact_requests.id > $1)"]' ]]
+# a bitmap scan keeps the estimates of the Bitmap Index Scan beneath it
+ep="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":3981}]' <"$WORK/bitmap.json")"
+jq -e '.[0].scan.bitmapIndex | has("startupCost") and has("totalCost") and has("planRows")' <<<"$ep" >/dev/null
+# the REAL pilot1 auto_explain plan (testdata/qc1-pilot1-scanner-plans.log): the plan node parser reads the estimates of a real scanner statement, Limit over Sort over Seq Scan
+p1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$(qc1_extract_plans "$HERE/testdata/qc1-pilot1-scanner-plans.log" scanner-initial)" | qc1_plan_nodes)"
+[[ "$(jq -c '.nodes | map([.nodeType, .startupCost, .totalCost, .planRows, .width])' <<<"$p1")" == '[["Limit",14357.89,14385.39,11000,25],["Sort",14357.89,14385.39,11000,25],["Seq Scan",0.00,13619.50,11000,25]]' ]]
+[[ "$(jq -c '.nodes | map([.actualTotalMs, .actualRows, .sharedHit, .sharedRead])' <<<"$p1")" == '[[18.299,11000,11654,1831],[17.704,11000,11654,1831],[15.407,11000,11651,1831]]' ]]
+# the pilot1 plans row, as measured, predates the estimates: judged by this harness it is invalid on exactly that (and on the clean probe and tables it also predates), nothing demoted
+# (the pilot rows' findings are asserted above; this pins that the new requirement is the reason an old row is not clean)
+planner_body="$(sed -n '/^planner_settings() {/,/^}/p' "$RUNNER_SRC")"; grep -qF "'jit', 'jit_above_cost', 'jit_inline_above_cost', 'jit_optimize_above_cost', 'random_page_cost', 'seq_page_cost'" <<<"$planner_body"; grep -qF 'effective_cache_size' <<<"$planner_body"
+sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'plannerSettings:$planner, estimates:true' <<<"$sp_body"; grep -qF 'planner="$(planner_settings)"' <<<"$sp_body"
 echo 'qc1 fixtures: ok'

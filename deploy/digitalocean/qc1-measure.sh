@@ -767,6 +767,10 @@ measure_request_size() { # n
       delete:$fit, traversal:$probeTr}')"
   drop_scenarios
 }
+# The settings the planner (and the JIT decision) read, as the probe's session sees them: what the estimates and the plan shapes depend on. One JSON object, name -> setting.
+planner_settings() {
+  psql_db -q -c "SELECT json_object_agg(name, setting)::text FROM pg_settings WHERE name IN ('jit', 'jit_above_cost', 'jit_inline_above_cost', 'jit_optimize_above_cost', 'random_page_cost', 'seq_page_cost', 'cpu_tuple_cost', 'cpu_index_tuple_cost', 'cpu_operator_cost', 'effective_cache_size', 'work_mem', 'shared_buffers', 'default_statistics_target', 'enable_seqscan', 'enable_bitmapscan', 'enable_sort', 'deadlock_timeout', 'log_lock_waits')"
+}
 
 # The scanner probe (see qc1_scanner_probe_parse): the REAL scanner statements out of the Go source, prepared once and executed eight times per mode in one
 # session (one initial unit and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
@@ -799,9 +803,10 @@ EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($unit);"
     parsed="$(qc1_scanner_probe_parse "$meta" <<<"$out")"
     all="$(jq -c --argjson more "$parsed" '. + $more' <<<"$all")"
   done
-  SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --arg schema "$schema" --argjson ex "$all" \
-    '{unit:$unit, tableRows:$total, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex,
-      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS, VERBOSE); child scan node, the index condition on it or on the Bitmap Index Scan beneath it, filter, rows, loops and shared blocks as the plan reports them"}')"
+  planner="$(planner_settings)"
+  SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --arg schema "$schema" --argjson ex "$all" --argjson planner "$planner" \
+    '{unit:$unit, tableRows:$total, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex, plannerSettings:$planner, estimates:true,
+      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS, VERBOSE); child scan node, the index condition on it or on the Bitmap Index Scan beneath it, filter, rows, loops and shared blocks as the plan reports them; estimates:true says every execution also carries the planner ESTIMATES (startup and total cost, planned rows and width of the top node and of the child scan, and of the Bitmap Index Scan beneath it), recorded beside what happened and never judged as a measurement: they are beliefs of the planner, which depend on the statistics of the table the probe ran against (see tables) and on plannerSettings"}')"
 }
 # The table behind a probe, in numbers: pages the planner believes in (relpages), pages the file really has, tuples, live and dead tuples, heap and index bytes. Prints one JSON object.
 table_stats() { # schema
@@ -981,6 +986,72 @@ order_control_delete() { # n which
     '{delete:$del, reasons:0, bodyBytes:$bytes, expect:$expect, outcome:$outcome, control:{of:"a deletion of an account with no reasons", position:$which, note:"the same deletion at the start and at the end of one size run; the distance between the two is the order effect on a deletion, recorded and not judged"}}')"
 }
 
+# auto_explain (plans WITH actual rows, timing and buffers, as the server is already configured) and log_lock_waits turned on for ONE operation and off again, each change waited
+# for as a new session sees it. Never on for the matrix: log_min_duration 0 logs a plan for every statement of every session, and per-node timing slows each of them.
+autoexplain_on() {
+  psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" -c "ALTER SYSTEM SET log_lock_waits = on" >/dev/null
+  psql_db -c 'SELECT pg_reload_conf()' >/dev/null
+  await_setting auto_explain.log_min_duration 0 || exit 1
+  await_setting log_lock_waits on || exit 1
+}
+autoexplain_off() {
+  psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" -c "ALTER SYSTEM RESET log_lock_waits" >/dev/null
+  psql_db -c 'SELECT pg_reload_conf()' >/dev/null
+  await_setting auto_explain.log_min_duration -1 || exit 1
+  await_setting log_lock_waits off || exit 1
+}
+# The deletion of an account with no reasons again, at the start and at the end of a size run, with auto_explain on for THAT deletion only: the plan, with actual rows, timing and
+# buffers, of the audit-retention report statement the application itself runs once per erasure (account_erasure_audit.go), found in the server log by its text and PROVEN to be the
+# application statement (qc1_audit_report_evidence), never typed or re-run here. Recorded as item 6 "order-control-delete-<start|end>-explained" (reasons 0).
+# It is an EXTRA deletion beside the unexplained controls, which stay exactly as they were: the two are never compared as if they cost the same. This one is not run inside
+# the instrument window (the gate and memory samplers are sessions of their own and would fill the plan log and slow the deletion); it records its own wall time as the client saw it.
+# Overhead, stated: the explained deletion is slower than the control (per-node timing and a log line for each statement it runs), so its time is not a control.
+# Caveats, recorded in the row: one execution of the statement; a plan with ANALYZE and BUFFERS is for that one run (cache state, JIT decision and buffers as they were); the lock
+# waits are only those longer than deadlock_timeout; the cluster has other sessions (the application pool, jobs) whose statements are in the same log.
+explained_order_control_delete() { # n which
+  local n="$1" which="$2" t id audit_mark since log wait ms0 ms1 ev outcome expect tr0 ar0 ab0 body_bytes kept removed
+  drop_scenarios
+  t="$(fresh_user)"
+  echo '[]' >"$WORK/items-order-delete.json"
+  wait="$(qc1_scheduler_wait "$(ms)" 60000 "$APP_STARTED_MS")"
+  if (( wait > 0 )); then sleep "$(awk -v w="$wait" 'BEGIN { printf "%.3f", w / 1000 }')"; fi
+  quiesce
+  read -r ar0 ab0 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
+  tr0="$(table_rows)"
+  id="$(mint_attempt "$t")"
+  qc1_delete_body_n keep "$WORK/items-order-delete.json" 0 "$id" >"$WORK/delete.body"
+  body_bytes="$(wc -c <"$WORK/delete.body")"
+  audit_mark="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
+  [[ "$audit_mark" =~ ^[0-9]+$ ]] || { echo "qc1: cannot read the audit watermark ('$audit_mark')" >&2; exit 1; }
+  autoexplain_on
+  since="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+  ms0="$(ms)"
+  do_delete "$t" "$WORK/delete.body"
+  ms1="$(ms)"
+  autoexplain_off   # off, and waited for, before the log is read and before anything else runs
+  log="$WORK/pglog-audit-$which-$n.txt"
+  docker logs --since "$since" "$DB_CID" >"$log" 2>&1
+  kept="$(jq '.erasure.reasonsKept // null' "$WORK/delete.out" 2>/dev/null || echo null)"; removed="$(jq '.erasure.reasonsRemoved // null' "$WORK/delete.out" 2>/dev/null || echo null)"
+  verify_outcome "$t" "$WORK/items-order-delete.json" 0 0 "$audit_mark"
+  outcome="$OUTCOME_JSON"
+  expect="$(jq -nc '{items:0, kept:0, removed:0}')"
+  ev="$(qc1_audit_report_evidence "$log" "$ROOT" "$t" true)" || ev='{"statementBlocks":0}'
+  { printf '=== audit-report (size %s, %s)\n' "$n" "$which"; qc1_extract_plans "$log" audit-report; } >"$WORK/explain-audit-$which-$n.log"
+  record 6 "order-control-delete-$which-explained" "$n" "$(jq -nc --arg st "$DEL_STATUS" --argjson ms "$(( ms1 - ms0 ))" --argjson reqms "$DEL_MS" --argjson kept "$kept" --argjson removed "$removed" --argjson bytes "$body_bytes" \
+      --argjson expect "$expect" --argjson outcome "$outcome" --argjson ev "$ev" --argjson ar0 "$ar0" --argjson ab0 "$ab0" --argjson tr0 "${tr0:-null}" --arg which "$which" \
+      --argjson planner "$(planner_settings)" '
+    {reasons:0, bodyBytes:$bytes, expect:$expect, outcome:$outcome,
+     explained:{status:$st, ms:$ms, requestMs:$reqms, reasonsKept:$kept, reasonsRemoved:$removed, auditRowsBefore:$ar0, auditBytesBefore:$ab0, tableRowsBefore:$tr0,
+                note:"this deletion ran with auto_explain (log_min_duration 0, ANALYZE, BUFFERS, per-node timing) and log_lock_waits on, so its time includes that overhead and is NOT comparable with the unexplained controls; it is outside the instrument window"},
+     auditRetention:$ev,
+     autoExplain:{scope:"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off",
+       settings:{"auto_explain.log_min_duration":0, "auto_explain.log_analyze":"on", "auto_explain.log_buffers":"on", "auto_explain.log_timing":"on", "auto_explain.log_format":"text", "auto_explain.log_nested_statements":"off", "log_lock_waits":"on"},
+       caveats:["one execution of the statement, one cluster: a plan with ANALYZE and BUFFERS describes that run (cache state, the JIT decision and buffers as they were)", "log_lock_waits reports only waits longer than deadlock_timeout (1 s); no logged wait is not no wait", "the plan shows no row locks because the statement takes none; it holds an ACCESS SHARE lock on audit_logs only", "other sessions (the application pool, jobs) ran statements in the same log; only the application statement proven by identity is read", "docker logs --since is read after the deletion; the server log is the only source, nothing was substituted or re-run"]},
+     plannerSettings:$planner,
+     control:{of:"a deletion of an account with no reasons", position:$which, explained:true, note:"an EXTRA deletion beside order-control-delete-start and order-control-delete-end, which stay unexplained and are the order controls"}}')"
+}
+
+
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
   note "size $n: loading background rows"
@@ -1000,6 +1071,7 @@ measure_size() { # n
   # The delete order control, START: a deletion of an account with no reasons, before any other case of this size has run. The same deletion is repeated at the END of the
   # matrix (order_control_delete end): the distance between the two is what the run itself did to the cost of a deletion (audit rows, dead tuples, cache), recorded and not judged.
   order_control_delete "$n" start
+  explained_order_control_delete "$n" start
 
   # (2) every reason belongs to someone else.
   t="$(fresh_user)"
@@ -1064,6 +1136,7 @@ measure_size() { # n
   drop_scenarios
 
   order_control_delete "$n" end
+  explained_order_control_delete "$n" end
 
   # (1) sparse: the same table with every background reason blanked (many
   # requests, almost no reasons), an account with none.

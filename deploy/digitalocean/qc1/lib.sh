@@ -340,7 +340,7 @@ qc1_judge_defs() { cat <<'JQ'
       elif $m.item == 1 or $m.item == 2 then 0
       elif $m.item == 3 and $m.case == "order-control-requester-10" then 10
       elif $m.item == 3 and ($m.case | startswith("discovery-")) then ($m.case | split("-") | .[2] | tonumber? // null)
-      elif $m.item == 6 and ($m.case == "order-control-delete-start" or $m.case == "order-control-delete-end") then 0
+      elif $m.item == 6 and ($m.case == "order-control-delete-start" or $m.case == "order-control-delete-end" or $m.case == "order-control-delete-start-explained" or $m.case == "order-control-delete-end-explained") then 0
       elif $m.item == 6 and ($m.case | startswith("delete-")) then ($m.case | split("-") | .[2] | tonumber? // null)
       elif $m.item == 10 and ($m.case | startswith("browser-panel-")) then ($m.case | ltrimstr("browser-panel-") | split("-") | .[0] | tonumber? // null)
       elif $m.item == 9 then ($m.reasons | numz)
@@ -377,6 +377,15 @@ qc1_judge_defs() { cat <<'JQ'
                       else empty end
                   end
               end ),
+          # The planner ESTIMATES (startup and total cost, planned rows) of the top node and of the child scan, and the settings the planner and the JIT decision read, are part of the promise
+          # for BOTH probes: absent or non-numeric is invalid (the probe was not captured as designed), never silently empty. They are estimates, recorded beside what happened and never judged as time.
+          ( if ($p | type) == "object" and ($p.executions | type) == "array" then
+              ( [ $p.executions[] | select((.top | type) != "object" or (.top.totalCost | type) != "number" or (.top.startupCost | type) != "number" or (.top.planRows | type) != "number"
+                                           or (.scan | type) != "object" or (.scan.totalCost | type) != "number" or (.scan.startupCost | type) != "number" or (.scan.planRows | type) != "number"
+                                           or ((.scan.bitmapIndex | type) == "object" and ((.scan.bitmapIndex.totalCost | type) != "number" or (.scan.bitmapIndex.planRows | type) != "number"))) ] | length ) as $noest
+              | if $p.estimates != true or $noest > 0 or ($p.plannerSettings | type) != "object" or ([ "jit", "jit_above_cost", "random_page_cost", "seq_page_cost", "effective_cache_size", "work_mem" ] | any(. as $k | ($p.plannerSettings[$k] | type) != "string"))
+                then inv("scanner-probe-estimates-missing"; {why:"every execution of the probe carries the planner estimates (startup and total cost, planned rows) of its top node and of its child scan, and the probe names the planner settings", executionsMissingEstimates:$noest, variant:$variant}) else empty end
+            else empty end ),
           # The two modes are compared position by position: the same data must come back (equal rows at every position, initial unit included). A difference is the state having
           # changed between the modes, or a plan that is not the same query; neither can be read as proof of the index path.
           ( if ($p.executions | type) == "array" and ([ $p.executions[] | .mode ] | unique) == ["auto", "force_generic_plan"] then
@@ -404,6 +413,7 @@ qc1_judge_defs() { cat <<'JQ'
           | { mode:$e.mode, kind:$e.kind, percent:$e.percent, afterId:$e.afterId, variant:$variant, plan:shape($e), requirement:r3,
               tableRows:($m.table.actualRows // null), unitRows:$unitrows, belowUnit:((($m.table.actualRows // 0) <= $unitrows)),
               measured:{ rows:$e.scan.rows, loops:$e.scan.loops, sharedBlocks:(($e.scan.sharedHit // 0) + ($e.scan.sharedRead // 0)) },
+              estimated:{ scanTotalCost:$e.scan.totalCost, scanRows:$e.scan.planRows, topTotalCost:$e.top.totalCost, topRows:$e.top.planRows, note:"the planner estimates for this execution (cost units and planned rows), beside what it measured: estimates, not measurements" },
               disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition" } as $ctx
           | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows, variant:$variant}) else empty end ),
             ( if $e.hasSort then bud("scanner-sort"; $ctx + {why:"a Sort in a scanner unit means the rows are not read in primary-key order from the index: the whole remainder is read and sorted before the first row is returned"}) else empty end ),
@@ -424,8 +434,37 @@ qc1_judge_defs() { cat <<'JQ'
           | [ $p.executions[] | select(.mode == $mode and .kind == "continuation" and (.scan | type) == "object") | (.scan.sharedHit + .scan.sharedRead) ] as $b
           | if ($b | length) > 1 and $b[0] > 0 and (($b | max) > 2 * $b[0]) then bud("scanner-buffer-growth"; {mode:$mode, variant:$variant, firstPosition:$b[0], max:($b | max), blocks:$b, proposal:"more than twice the first position"}) else empty end )
       else empty end;
+    # The EXPLAINED deletion of an account with no reasons (item 6, order-control-delete-<start|end>-explained): a separate extra deletion that ran with auto_explain on for that one
+    # operation only. It holds the report statement the application runs once per erasure, with its plan (actual rows, timing and buffers) read from the server log, and the proof that the
+    # statement is the application own and no other. A missing plan, an unproven identity, two candidate statements, an incomplete plan or unlabelled caveats are each INVALID, never partial credit.
+    def explained_case($m): ($m.case | type) == "string" and ($m.case | endswith("-explained"));
+    def audit_retention($m):
+      ($m.auditRetention) as $a | ($m.explained) as $x
+      | ( if ($x | type) != "object" or $x.status != "200" or ($x.ms | type) != "number" or $x.reasonsKept != 0 or $x.reasonsRemoved != 0
+               or ($m.outcome | type) != "object" or $m.outcome.dbOk != true or $m.outcome.accountDeleted != "true" or $m.outcome.reasonsBlank != 0 or $m.outcome.reasonsWithText != 0 or $m.outcome.decisionAudits != 0
+               or $m.expect.items != 0 or $m.expect.kept != 0 or $m.expect.removed != 0
+               or ($x.tableRowsBefore | type) != "number" or $x.tableRowsBefore != $m.size
+          then inv("explained-delete-unverified"; {why:"the explained deletion answered 200, kept and removed nothing, left the database as the zero-reason deletion implies, and ran against the declared table"}) else empty end ),
+        ( if ($a | type) != "object" or ($a.statementBlocks | type) != "number" or $a.statementBlocks == 0 then
+            inv("audit-plan-missing"; {why:"no plan of the audit-retention report statement was found in the server log for the explained deletion: the capture failed or the statement was not logged"})
+          elif $a.statementBlocks != 1 then
+            inv("audit-statement-ambiguous"; {blocks:$a.statementBlocks, why:"exactly one logged plan of the report statement is expected for one deletion"})
+          else
+            ( $a.identity ) as $i | ( $a.plan.nodes ) as $n
+            | ( if ($i | type) != "object" or $i.prefixOk != true or $i.suffixOk != true or $i.piecesInOrder != true or $i.variablePartsNonEmpty != true or $i.parametersAreTarget != true
+                   or ($i.backendPid | type) != "string" or ($i.backendPid | length) == 0 or ($i.auditUpdatesBefore | type) != "number" or $i.auditUpdatesBefore < 1 or ($i.malformedCountAfter | type) != "number" or $i.malformedCountAfter < 1
+                   or ($i.queryTextSha256 | type) != "string" or ($i.queryTextSha256 | test("^[0-9a-f]{64}$") | not) or ($i.queryTextBytes | type) != "number" or $i.queryTextBytes < 1
+                then inv("audit-statement-unproven"; {why:"the logged statement must begin and end with the fixed pieces of the Go source around non-empty parts, take the deleted account as its parameters, and sit in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it", identity:$i}) else empty end ),
+              ( if ($n | type) != "array" or ($n | length) == 0 or ($n[0].totalCost | type) != "number" or ($n[0].planRows | type) != "number" or ($n[0].actualTotalMs | type) != "number" or ($n[0].actualRows | type) != "number"
+                   or ([ $n[] | select(.relation == "audit_logs") ] | length) == 0 or ([ $n[] | select(.relation == "audit_logs") | select((.sharedHit | type) != "number" or (.sharedRead | type) != "number" or (.actualTotalMs | type) != "number") ] | length) > 0
+                   or ($a.durationMs | type) != "number"
+                then inv("audit-plan-incomplete"; {why:"the plan must give the planner estimates (cost and rows) and the actual time and rows of its top node, the audit_logs scan with its shared buffers and time, and the statement duration"}) else empty end ),
+              ( if $a.rowLocks != false or ($a.lockWaits | type) != "object" or $a.lockWaits.logged != true or ($a.lockWaits.count | type) != "number"
+                   or ($m.autoExplain | type) != "object" or ($m.autoExplain.caveats | type) != "array" or ($m.autoExplain.caveats | length) < 4 or ($m.autoExplain.scope | type) != "string"
+                then inv("audit-caveats-missing"; {why:"the row must say the statement takes no row locks, that log_lock_waits was on with the count it logged, and carry the scan, lock and cluster caveats"}) else empty end )
+          end );
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.loggedShapes |= (if type == "object" then reduce ("initial","continuation") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
@@ -533,7 +572,8 @@ qc1_judge_rules() { cat <<'JQ'
              or $m.request.fitOutcome.decisionAudits != (($m.request.fitExpect.kept // 0) + ($m.request.fitExpect.removed // 0)) or (($m.request.fitExpect.kept // 0) + ($m.request.fitExpect.removed // 0)) != $m.request.largest.reasons
           then inv("outcome-unverified"; {outcome:$m.request.fitOutcome, expect:$m.request.fitExpect, largest:$m.request.largest.reasons}) else empty end
         else empty end ),
-      ( if ([$m.item] | inside([1,2,5,6,9])) and ($m.item != 5 or $m.case == "request-size") and (($m.delete | type) != "object" or ($m.delete.ms | type) != "number") then inv("missing-delete"; {item:$m.item}) else empty end ),
+      ( if ([$m.item] | inside([1,2,5,6,9])) and ($m.item != 5 or $m.case == "request-size") and (explained_case($m) | not) and (($m.delete | type) != "object" or ($m.delete.ms | type) != "number") then inv("missing-delete"; {item:$m.item}) else empty end ),
+      ( if $m.item == 6 and explained_case($m) then audit_retention($m) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and ($m.request | type) != "object" then inv("missing-request"; {item:$m.item}) else empty end ),
       ( if ($m.traversal.slowestUnitMs // 0) > $unit then bud("unit"; {ms:$m.traversal.slowestUnitMs, budget:$unit}) else empty end ),
       ( if ($m.traversal.totalMs // 0) > $trav then bud("traversal"; {ms:$m.traversal.totalMs, budget:$trav}) else empty end ),
@@ -679,6 +719,7 @@ qc1_want_json() { # sizes counts dense(optional, may be empty)
         ($counts[] as $k | select($k <= $s) | ("requester","subject") as $d | {item:3,size:$s,case:("discovery-" + $d + "-" + ($k|tostring))}),
         ($dense[] as $k | select($k <= $s) | ("requester","subject") as $d | {item:3,size:$s,case:("discovery-" + $d + "-" + ($k|tostring))}),
         {item:3,size:$s,case:"order-control-requester-10"}, {item:6,size:$s,case:"order-control-delete-start"}, {item:6,size:$s,case:"order-control-delete-end"},
+        {item:6,size:$s,case:"order-control-delete-start-explained"}, {item:6,size:$s,case:"order-control-delete-end-explained"},
         {item:5,size:$s,case:"request-size"}, {item:7,size:$s,case:"human-progress"}, {item:8,size:$s,case:"plans"},
         (($bc + $dense)[] as $k | select($k <= $s) | {item:10,size:$s,case:("browser-panel-" + ($k|tostring))}),
         (($dc + $dense)[] as $k | select($k <= $s) | ("requester","subject") as $d | ("keep","remove","mixed") as $m
@@ -794,7 +835,19 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                 | ($ms | map(select(.item == 6 and .size == $s.size and .case == "order-control-delete-end")) | .[0]) as $e
                 | {size: $s.size, startSeq: $s.seq, endSeq: $e.seq, startMs: $s.delete.ms, endMs: $e.delete.ms,
                    ratio: (if (($s.delete.ms | type) == "number") and (($e.delete.ms | type) == "number") and $s.delete.ms > 0 then ((($e.delete.ms / $s.delete.ms) * 100 | round) / 100) else null end),
-                   auditRowsStart: $s.delete.auditRowsBefore, auditRowsEnd: $e.delete.auditRowsBefore} ] } ),
+                   auditRowsStart: $s.delete.auditRowsBefore, auditRowsEnd: $e.delete.auditRowsBefore} ],
+              # The audit-retention report statement of the EXPLAINED deletions (the extra zero-reason deletions run with auto_explain on for that one operation): the statement time, how much of it was
+              # JIT, the planner estimate for the plan root and the audit_logs scan with what it really did. Recorded, never judged; these deletions carry the capture overhead, so their time is
+              # not compared with the unexplained controls above.
+              explainedOrderControls: ( [ $ms[] | select(.item == 6 and ((.case | type) == "string") and (.case | endswith("-explained")))
+                  | (.auditRetention // {}) as $a | ($a.plan.nodes // []) as $n | ($a.plan.jit // null) as $j | ([ $n[] | select(.relation == "audit_logs") ] | .[0]) as $sc
+                  | {size: .size, case: .case, seq: .seq, deleteMsWithCapture: .explained.ms, statementMs: $a.durationMs, statementBlocks: $a.statementBlocks,
+                     identityProven: (($a.identity // {}) as $i | ([$i.prefixOk, $i.suffixOk, $i.piecesInOrder, $i.variablePartsNonEmpty, $i.parametersAreTarget] | all)),
+                     planRoot: (if ($n | length) == 0 then null else {node: $n[0].nodeType, estimatedTotalCost: $n[0].totalCost, estimatedRows: $n[0].planRows, actualRows: $n[0].actualRows, actualTotalMs: $n[0].actualTotalMs} end),
+                     auditLogsScan: (if $sc == null then null else {node: $sc.nodeType, estimatedTotalCost: $sc.totalCost, estimatedRows: $sc.planRows, actualRows: $sc.actualRows, rowsRemovedByFilter: $sc.rowsRemovedByFilter, sharedHit: $sc.sharedHit, sharedRead: $sc.sharedRead, actualTotalMs: $sc.actualTotalMs} end),
+                     jit: (if $j == null then null else {functions: $j.functions, totalMs: $j.totalMs, optimizationMs: $j.optimizationMs, emissionMs: $j.emissionMs,
+                                                         shareOfStatement: (if ($a.durationMs | type) == "number" and $a.durationMs > 0 and ($j.totalMs | type) == "number" then ((($j.totalMs / $a.durationMs) * 1000 | round) / 1000) else null end)} end),
+                     lockWaitsLogged: $a.lockWaits.count} ]) } ),
         coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
     | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}' "$1"
@@ -812,6 +865,7 @@ qc1_plan_marker() { # which
     scanner-initial) printf '%s' 'FROM contact_requests ORDER BY id LIMIT $1' ;;
     scanner-continuation) printf '%s' 'FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2' ;;
     page-items) printf '%s' "WHERE id = ANY(\$1::bigint[]) AND reason <> '' AND (requester_id = \$2 OR subject_user_id = \$3) ORDER BY contact_requests.id" ;;
+    audit-report) printf '%s' 'SELECT class, action, count(*) FROM (SELECT action, ' ;;
     blank-batch) printf '%s' "UPDATE contact_requests SET reason = '' WHERE id = ANY(\$1::bigint[]) AND reason <> '' AND (requester_id = \$2 OR subject_user_id = \$3)" ;;
     *) return 1 ;;
   esac
@@ -862,13 +916,17 @@ qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
       | ([ $sub[] | select(.["Node Type"] == "Bitmap Index Scan") ] | .[0]) as $bix
       | ([ $sub[] | select((.["Index Cond"] | type) == "string" and (.["Index Cond"] | test("\\((?:[[:alnum:]_]+\\.)?id >"))) ] | .[0]["Index Cond"]) as $idc
       | $m + { topRows: $p["Actual Rows"],
+               # The planner ESTIMATES beside what happened (estimates: cost units and a row count the planner believed, never a measurement of time or rows).
+               top: { nodeType: $p["Node Type"], startupCost: $p["Startup Cost"], totalCost: $p["Total Cost"], planRows: $p["Plan Rows"], planWidth: $p["Plan Width"], actualRows: $p["Actual Rows"], actualTotalMs: $p["Actual Total Time"] },
+               planningMs: .[$i][0]["Planning Time"], executionMs: .[$i][0]["Execution Time"], jit: (.[$i][0]["JIT"] // null),
                hasSort: ($ns | any(.["Node Type"] == "Sort" or .["Node Type"] == "Incremental Sort")),
                scan: (if $scan == null then null else
                  { nodeType: $scan["Node Type"], indexName: $scan["Index Name"], indexCond: $scan["Index Cond"], filter: $scan["Filter"],
                    rows: $scan["Actual Rows"], loops: $scan["Actual Loops"], sharedHit: $scan["Shared Hit Blocks"], sharedRead: $scan["Shared Read Blocks"],
                    rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0),
                    schema: $scan["Schema"],
-                   bitmapIndex: (if $bix == null then null else { nodeType: $bix["Node Type"], indexName: $bix["Index Name"], indexCond: $bix["Index Cond"], rows: $bix["Actual Rows"], sharedHit: $bix["Shared Hit Blocks"], sharedRead: $bix["Shared Read Blocks"] } end),
+                   startupCost: $scan["Startup Cost"], totalCost: $scan["Total Cost"], planRows: $scan["Plan Rows"], planWidth: $scan["Plan Width"], actualTotalMs: $scan["Actual Total Time"],
+                   bitmapIndex: (if $bix == null then null else { nodeType: $bix["Node Type"], indexName: $bix["Index Name"], indexCond: $bix["Index Cond"], startupCost: $bix["Startup Cost"], totalCost: $bix["Total Cost"], planRows: $bix["Plan Rows"], rows: $bix["Actual Rows"], sharedHit: $bix["Shared Hit Blocks"], sharedRead: $bix["Shared Read Blocks"] } end),
                    idIndexCond: $idc } end) } ]'
 }
 
@@ -926,6 +984,148 @@ qc1_plan_shapes() { # log which
     inb && /Filter: \(id >/ { seqf = 1 }
     inb && /^[ \t]*(->[ \t]+)?(Incremental )?Sort[ \t]+\(cost/ { srt = 1 }
     END { flush(); printf "{\"executions\":%d,\"withIdIndexCond\":%d,\"indexScan\":%d,\"bitmapIndexScan\":%d,\"seqScan\":%d,\"seqScanFilterOnId\":%d,\"withSort\":%d,\"withoutIdIndexCond\":[%s]}\n", n, c, ix, bm, sq, sf, st, nocond }' <<<"$out"
+}
+
+# --- the application's audit-retention report, as the application ran it ------------------------------------------------------------------------------------
+# The statement account erasure runs over audit_logs (account_erasure_audit.go: SELECT class, action, count(*) FROM (SELECT action, <classification> AS class FROM audit_logs WHERE ip <> ''
+# AND ((<subjectMention>) OR (<malformed conversion link>))) classified WHERE class IN (...) GROUP BY class, action). Pilots 1 to 3 found it to be the dominant, almost constant cost of every
+# deletion once the audit table had grown, and pilot3's own plan-stage log held one execution of it (a Seq Scan whose plan cost was 9.6 million and whose 2,153 ms was 2,093 ms of JIT compilation).
+# What follows reads an auto_explain log written while the application ran a deletion and PROVES the statement it reports is the application's own and no other: the fixed pieces of the Go
+# statement, in order, around three non-empty variable parts; its parameters are the deleted account's id; it ran in the backend of the erasure's own audit statements, after the UPDATEs that blank
+# addresses and before the diagnostic count that follows it. Nothing is substituted, re-run or reconstructed by the harness.
+
+# The four fixed pieces of the statement, one per line, read out of the Go source.
+qc1_go_audit_pieces() { # repo-root
+  awk '/tx\.Raw\("SELECT class, action, count\(\*\) FROM \(SELECT action, "\+classification\+"/ {
+    s = $0; sub(/^.*tx\.Raw\("/, "", s); sub(/", args\.\.\.\)\.Scan\(&kept\).*$/, "", s)
+    n = split(s, p, /"\+[A-Za-z]+\+"/)
+    for (i = 1; i <= n; i++) print p[i] }' "$1/account_erasure_audit.go"
+}
+
+# Every auto_explain block in a log as one TSV line: log line, backend pid, duration in ms, the first 90 characters of its query text.
+qc1_log_blocks() { # log
+  awk '
+    /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9:.]+ [A-Z]+ \[[0-9]+\] / {
+      want = 0
+      if (match($0, /\[[0-9]+\]/)) pid = substr($0, RSTART + 1, RLENGTH - 2)
+      if ($0 ~ /duration: .* plan:/) { d = $0; sub(/^.*duration: /, "", d); sub(/ ms.*$/, "", d); ln = NR; want = 1 }
+      next }
+    want == 1 && /^\tQuery Text: / { q = $0; sub(/^\tQuery Text: /, "", q); printf "%d\t%s\t%s\t%s\n", ln, pid, d, substr(q, 1, 90); want = 0 }' "$1"
+}
+
+# One auto_explain block (stdin) as {nodes, jit}: every plan node with its planner estimates (startup and total cost, rows, width), its actual time, rows and loops (or neverExecuted), and the
+# attributes under it (Filter, Rows Removed by Filter, shared buffers, Index Cond, Sort Method), and the JIT section (functions, and the time spent generating, inlining, optimizing and emitting).
+# The planner's figures are ESTIMATES. Text format, as auto_explain writes it here.
+qc1_plan_nodes() {
+  awk '
+    function js(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); gsub(/[\t\r]/, " ", s); return "\"" s "\"" }
+    function nz(v) { return (v == "" ? "null" : v) }
+    function emit() {
+      if (!have) return
+      printf "%s{\"depth\":%d,\"label\":%s,\"nodeType\":%s,\"relation\":%s,\"startupCost\":%s,\"totalCost\":%s,\"planRows\":%s,\"width\":%s,\"neverExecuted\":%s,\"actualStartMs\":%s,\"actualTotalMs\":%s,\"actualRows\":%s,\"loops\":%s,\"filter\":%s,\"rowsRemovedByFilter\":%s,\"sharedHit\":%s,\"sharedRead\":%s,\"indexCond\":%s,\"sortMethod\":%s}",
+        (nodes++ ? "," : ""), depth, js(label), js(ntype), (rel == "" ? "null" : js(rel)), nz(sc), nz(tc), nz(pr), nz(wd), never, nz(as), nz(at), nz(ar), nz(lp), (flt == "" ? "null" : js(flt)), nz(rrf), nz(sh), nz(sr), (ic == "" ? "null" : js(ic)), (sm == "" ? "null" : js(sm))
+      have = 0 }
+    BEGIN { printf "{\"nodes\":[" }
+    {
+      line = $0; sub(/^\t/, "", line)
+      if (line ~ /\(cost=[0-9.]+\.\.[0-9.]+ rows=[0-9]+ width=[0-9]+\)/) {
+        emit(); inplan = 1; have = 1
+        match(line, /^ */); depth = RLENGTH; r = substr(line, depth + 1); sub(/^->  /, "", r)
+        match(r, /  \(cost=[0-9.]+\.\.[0-9.]+ rows=[0-9]+ width=[0-9]+\)/); m_s = RSTART; m_l = RLENGTH
+        label = substr(r, 1, m_s - 1); c = substr(r, m_s + 8, m_l - 9)
+        split(c, a, /[ .=]+/); sc = ""; tc = ""; pr = ""; wd = ""
+        if (match(c, /^[0-9.]+\.\.[0-9.]+/)) { cc = substr(c, 1, RLENGTH); n2 = index(cc, ".."); sc = substr(cc, 1, n2 - 1); tc = substr(cc, n2 + 2) }
+        if (match(c, /rows=[0-9]+/)) pr = substr(c, RSTART + 5, RLENGTH - 5)
+        if (match(c, /width=[0-9]+/)) wd = substr(c, RSTART + 6, RLENGTH - 6)
+        ntype = label; sub(/ (on|using) .*$/, "", ntype); rel = ""
+        if (match(label, / on [^ ]+/)) rel = substr(label, RSTART + 4, RLENGTH - 4)
+        rest = substr(r, m_s + m_l)
+        never = "false"; as = ""; at = ""; ar = ""; lp = ""; flt = ""; rrf = ""; sh = ""; sr = ""; ic = ""; sm = ""
+        if (rest ~ /never executed/) never = "true"
+        else if (match(rest, /actual time=[0-9.]+\.\.[0-9.]+ rows=[0-9]+ loops=[0-9]+/)) {
+          t = substr(rest, RSTART, RLENGTH); match(t, /time=[0-9.]+\.\./); as = substr(t, RSTART + 5, RLENGTH - 7)
+          match(t, /\.\.[0-9.]+ rows/); at = substr(t, RSTART + 2, RLENGTH - 7)
+          match(t, /rows=[0-9]+/); ar = substr(t, RSTART + 5, RLENGTH - 5)
+          match(t, /loops=[0-9]+/); lp = substr(t, RSTART + 6, RLENGTH - 6) }
+        next }
+      t = line; sub(/^ +/, "", t)
+      if (!inplan) next
+      if (t ~ /^JIT:/) { injit = 1; next }
+      if (injit) {
+        if (t ~ /^Functions: /) { jf = substr(t, 12) + 0 }
+        else if (t ~ /^Options: /) { jo = substr(t, 10) }
+        else if (t ~ /^Timing: /) {
+          if (match(t, /Generation [0-9.]+ ms/)) jg = substr(t, RSTART + 11, RLENGTH - 14)
+          if (match(t, /Inlining [0-9.]+ ms/)) ji = substr(t, RSTART + 9, RLENGTH - 12)
+          if (match(t, /Optimization [0-9.]+ ms/)) jopt = substr(t, RSTART + 13, RLENGTH - 16)
+          if (match(t, /Emission [0-9.]+ ms/)) je = substr(t, RSTART + 9, RLENGTH - 12)
+          if (match(t, /Total [0-9.]+ ms/)) jt = substr(t, RSTART + 6, RLENGTH - 9) }
+        next }
+      if (!have) next
+      if (t ~ /^Filter: /) { if (flt == "") flt = substr(t, 9, 400) }
+      else if (t ~ /^Rows Removed by Filter: /) { if (rrf == "") rrf = substr(t, 25) + 0 }
+      else if (t ~ /^Index Cond: /) { if (ic == "") ic = substr(t, 13, 300) }
+      else if (t ~ /^Sort Method: /) { if (sm == "") { sm = substr(t, 14); sub(/ .*$/, "", sm) } }
+      else if (t ~ /^Buffers: shared /) { if (sh == "" && sr == "") { sh = 0; sr = 0; if (match(t, /hit=[0-9]+/)) sh = substr(t, RSTART + 4, RLENGTH - 4) + 0; if (match(t, /read=[0-9]+/)) sr = substr(t, RSTART + 5, RLENGTH - 5) + 0 } }
+    }
+    END { emit(); printf "],\"jit\":"
+      if (injit) printf "{\"functions\":%s,\"options\":%s,\"generationMs\":%s,\"inliningMs\":%s,\"optimizationMs\":%s,\"emissionMs\":%s,\"totalMs\":%s}", nz(jf), js(jo), nz(jg), nz(ji), nz(jopt), nz(je), nz(jt)
+      else printf "null"
+      printf "}\n" }'
+}
+
+# The audit-retention report statement in an auto_explain log, proven to be the application'"'"'s and no other, with its plan. Arguments: the log, the repo root (for the Go source), the id of the
+# account the deletion deleted, whether log_lock_waits was on while the log was written. Prints one JSON object; statementBlocks is 0 when the log holds none (the caller marks that INVALID).
+qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(true|false)
+  local log="$1" root="$2" target="$3" lw="$4" blocks n block1 qtext params rest pid line dur sha i p
+  local -a pieces=()
+  local prefix_ok=false suffix_ok=false order_ok=false param_ok=false before=0 after=0 parts_ok=true lockw samples bytes
+  blocks="$(qc1_extract_plans "$log" audit-report)" || return 2
+  n="$(grep -c 'duration: .* plan:' <<<"$blocks" || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if (( n == 0 )); then printf '%s\n' '{"statementBlocks":0}'; return 0; fi
+  block1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$blocks")"
+  mapfile -t pieces < <(qc1_go_audit_pieces "$root")
+  qtext="$(awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }' <<<"$block1")"
+  params="$(awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }' <<<"$block1")"
+  if (( ${#pieces[@]} == 4 )); then
+    [[ "$qtext" == "${pieces[0]}"* ]] && prefix_ok=true
+    [[ "$qtext" == *"${pieces[3]}" ]] && suffix_ok=true
+    rest="${qtext#"${pieces[0]}"}"
+    order_ok=true
+    for i in 1 2; do
+      p="${pieces[$i]}"
+      if [[ "$rest" == *"$p"* ]]; then
+        [[ -n "${rest%%"$p"*}" ]] || parts_ok=false   # a variable part between two fixed pieces is never empty
+        rest="${rest#*"$p"}"
+      else order_ok=false; fi
+    done
+    [[ "$rest" == *"${pieces[3]}" && -n "${rest%"${pieces[3]}"}" ]] || parts_ok=false
+  fi
+  [[ "$params" == "\$1 = '$target', \$2 = '$target'"* ]] && param_ok=true
+  # where it sits in the log: its backend, and the application's own audit statements around it
+  read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }')
+  if [[ -n "${line:-}" ]]; then
+    before="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 < l && $2 == p && index($4, "UPDATE audit_logs SET ip = ") == 1 { c++ } END { print c + 0 }')"
+    after="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 > l && $2 == p && index($4, "SELECT count(*) FROM audit_logs WHERE ip <> ") == 1 { c++ } END { print c + 0 }')"
+  fi
+  sha="$(printf '%s' "$qtext" | sha256sum | cut -d' ' -f1)"
+  bytes="$(printf '%s' "$qtext" | wc -c)"
+  lockw="$(grep -cE 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true)"; [[ "$lockw" =~ ^[0-9]+$ ]] || lockw=0
+  samples="$({ grep -E 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true; } | head -n 3 | cut -c1-200 | jq -Rsc 'split("\n") | map(select(length > 0))')"
+  jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
+    --argjson before "${before:-0}" --argjson after "${after:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson target "$target" --arg params "$params" \
+    --argjson pieces "$(printf '%s\n' "${pieces[@]}" | jq -Rsc 'split("\n")[:-1] | map(length)')" --argjson dur "${dur:-null}" --argjson lw "$lw" --argjson lockw "$lockw" --argjson samples "$samples" \
+    --argjson plan "$(printf '%s\n' "$block1" | qc1_plan_nodes)" '
+    { statementBlocks: $blocks,
+      identity: { prefixOk: $prefix, suffixOk: $suffix, piecesInOrder: $order, variablePartsNonEmpty: $parts, parametersAreTarget: $param, parameters: $params, targetUserId: $target,
+                  backendPid: $pid, auditUpdatesBefore: $before, malformedCountAfter: $after, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces,
+                  proof: "the statement text begins and ends with the Go source'"'"'s fixed pieces around non-empty variable parts, takes the deleted account as its parameters, and ran in the backend of the erasure'"'"'s own audit UPDATEs before it and its diagnostic count after it; the harness ran, re-ran and substituted nothing" },
+      durationMs: $dur,
+      plan: $plan,
+      rowLocks: false,
+      rowLocksWhy: "a plain SELECT (no FOR UPDATE / FOR SHARE in its text): it takes an ACCESS SHARE lock on audit_logs only and locks no rows",
+      lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }'
 }
 
 # The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a
