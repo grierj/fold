@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -929,15 +931,34 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// event this person hosts alone (M7.4 owner decision 3; see GET
 		// /admin/users/:id/sole-host-events).
 		HostSuccessors map[string]uint `json:"hostSuccessors"`
-		// ReasonReview carries every contact-request reason the admin was shown
-		// with the hash it came with and a choice (keep or remove). It is read
-		// only when the account has reasons; an account without any ignores it
-		// (T07B-2b).
-		ReasonReview *reasonReviewBody `json:"reasonReview"`
+		// ReasonReview is the admin's review of every contact-request reason
+		// they were shown: the set-v1 envelope (format, count, digest, choices)
+		// of account_erasure_reasons_envelope.go. It is kept raw and read by the
+		// strict token scan after the submission check; it matters only when
+		// the account has reasons (T07B-2b).
+		ReasonReview json.RawMessage `json:"reasonReview"`
 	}
 	// An empty body is fine (old clients, and people who lead and host
-	// nothing alone); a body that does not parse is not.
-	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+	// nothing alone); a body that does not parse is not. The body is read once
+	// and decoded the way gin's binder does (the first JSON value; anything
+	// after it is ignored), so the strict key scan below sees the same object.
+	raw, rerr := io.ReadAll(c.Request.Body)
+	if rerr != nil {
+		jsonError(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	var keys topKeys
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			jsonError(c, http.StatusBadRequest, "invalid body")
+			return
+		}
+	} else {
+		keys = scanTopKeys(raw)
+	}
+	// An attemptId named twice or in another case leaves no single id to claim:
+	// refused here like a body that does not parse, recording nothing.
+	if keys.attemptAmbiguous {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -975,8 +996,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		return
 	}
 	// The review's shape is checked after the submission check, so a bad one
-	// ends the id rolled back like every other refusal (R4-C08).
-	reasonChoices, ok := parseReasonReview(body.ReasonReview)
+	// ends the id rolled back like every other refusal (R4-C08). What a well-formed
+	// one means (ignored, outdated, changed) only the transaction decides.
+	reasonEnv, ok := parseReasonEnvelope(body.ReasonReview, keys.reviewAmbiguous)
 	if !ok {
 		claim.end(attemptRolledBack)
 		jsonError(c, http.StatusBadRequest, "invalid reason review")
@@ -1053,7 +1075,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// The contact-request reasons: locked and hashed here, decided at
 			// the statement after eraseContactRequestTextIn. An account without
 			// any ignores the review.
-			plan, sealPred, err = a.planReasonReviewIn(tx, actor, u, reasonChoices, body.ReasonReview != nil, c.ClientIP())
+			plan, sealPred, err = a.planReasonReviewIn(tx, actor, u, reasonEnv, c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -1192,6 +1214,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	}
 	if errors.Is(err, errReasonReviewChanged) {
 		jsonErrorCode(c, http.StatusConflict, "reason_review_changed", "the contact-request reasons changed since they were reviewed")
+		return
+	}
+	if errors.Is(err, errReasonReviewOutdated) {
+		jsonErrorCode(c, http.StatusConflict, "reason_review_outdated", "the page that made this review is out of date")
 		return
 	}
 	if errors.Is(err, errReasonReviewForbidden) || (errors.Is(err, errActorForbidden) && sealPred != nil) {

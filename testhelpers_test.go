@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +26,8 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -234,6 +240,12 @@ var deleteUserPath = regexp.MustCompile(`^/api/v1/admin/users/\d+$`)
 // failure to read the pages leaves the body alone, so the DELETE answers as it
 // would have.
 func (c *apiClient) withKeptReasons(path string, body any) any {
+	return c.withChosenReasons(path, body, "keep")
+}
+
+// withChosenReasons is withKeptReasons with one choice ("keep" or "remove")
+// for every reason.
+func (c *apiClient) withChosenReasons(path string, body any, choice string) any {
 	m := map[string]any{}
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -244,7 +256,7 @@ func (c *apiClient) withKeptReasons(path string, body any) any {
 	if _, has := m["reasonReview"]; has {
 		return body
 	}
-	var items []map[string]string
+	var items []reviewEntry
 	var after any
 	for i := 0; i < 1000; i++ {
 		w := c.do("POST", path+"/erasure-reasons/page", map[string]any{"after": after}, true)
@@ -256,7 +268,8 @@ func (c *apiClient) withKeptReasons(path string, body any) any {
 			return body
 		}
 		for _, it := range page.Items {
-			items = append(items, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": "keep"})
+			id, _ := parseRequestID(it.RequestID)
+			items = append(items, reviewEntry{ID: id, Hash: it.ReviewHash, Choice: choice})
 		}
 		if page.Next == nil {
 			break
@@ -266,8 +279,63 @@ func (c *apiClient) withKeptReasons(path string, body any) any {
 	if len(items) == 0 {
 		return body
 	}
-	m["reasonReview"] = map[string]any{"items": items}
+	m["reasonReview"] = envelopeOf(items)
 	return m
+}
+
+// reviewEntry is one item of a review a test builds: the id and hash a page
+// served, and the choice ("keep", "remove", or anything else for a code the
+// server refuses).
+type reviewEntry struct {
+	ID     int64
+	Hash   string
+	Choice string
+}
+
+// envelopeOf builds the set-v1 envelope of entries the way the browser does,
+// from the wire spec and not from production code: entries sorted by ascending
+// signed id, the digest over prefix, 0x00, the count, then each id and raw hash,
+// and a two-bit code per item (1 keep, 2 remove, 0 otherwise).
+func envelopeOf(entries []reviewEntry) map[string]any {
+	sorted := append([]reviewEntry(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	return envelopeInOrder(sorted)
+}
+
+// envelopeInOrder is envelopeOf without the sort, so a test can make the
+// ordering mistake on purpose.
+func envelopeInOrder(sorted []reviewEntry) map[string]any {
+	var pre bytes.Buffer
+	pre.WriteString("fold:erasure-reason-set:v1")
+	pre.WriteByte(0)
+	var u8 [8]byte
+	binary.BigEndian.PutUint64(u8[:], uint64(len(sorted)))
+	pre.Write(u8[:])
+	choices := make([]byte, (len(sorted)+3)/4)
+	for i, e := range sorted {
+		binary.BigEndian.PutUint64(u8[:], uint64(e.ID))
+		pre.Write(u8[:])
+		raw, err := hex.DecodeString(e.Hash)
+		if err != nil || len(raw) != 32 {
+			panic("envelopeOf: not a review hash: " + e.Hash)
+		}
+		pre.Write(raw)
+		code := byte(0)
+		switch e.Choice {
+		case "keep":
+			code = 1
+		case "remove":
+			code = 2
+		}
+		choices[i/4] |= code << (2 * uint(i%4))
+	}
+	sum := sha256.Sum256(pre.Bytes())
+	return map[string]any{
+		"format":  "set-v1",
+		"count":   strconv.Itoa(len(sorted)),
+		"digest":  hex.EncodeToString(sum[:]),
+		"choices": base64.StdEncoding.EncodeToString(choices),
+	}
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -297,12 +365,19 @@ func (c *apiClient) fetchCSRF() {
 	c.token = body.CSRFToken
 }
 
+// rawJSON is a request body sent byte for byte: json.Marshal would refuse (or
+// rewrite) a body that is not valid JSON, and a test of the server's refusal of
+// one needs it exactly as written.
+type rawJSON []byte
+
 func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.ResponseRecorder {
 	if c.autoReview && method == "DELETE" && deleteUserPath.MatchString(path) {
 		jsonBody = c.withKeptReasons(path, jsonBody)
 	}
 	var rdr *bytes.Reader
-	if jsonBody != nil {
+	if raw, ok := jsonBody.(rawJSON); ok {
+		rdr = bytes.NewReader(raw)
+	} else if jsonBody != nil {
 		b, err := json.Marshal(jsonBody)
 		if err != nil {
 			c.t.Fatalf("marshal: %v", err)

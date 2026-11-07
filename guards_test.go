@@ -6794,3 +6794,171 @@ func TestReasonPageSealIsLast(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Signed request-id order (T07B-2 scaling, F1).
+// ---------------------------------------------------------------------------
+
+// reasonSQLOrderProblems parses src and checks every SQL string built from
+// reasonSelect or reasonProjection() that orders its rows. reasonProjection
+// casts the bigint id with id::text and no alias, so the output column is also
+// called id and a bare ORDER BY id binds to that text: -1 sorts before -2 and
+// 10 before 2, while the scanner's cursor (which selects the real bigint)
+// follows signed order. The statement must say ORDER BY contact_requests.id,
+// which binds to the table's bigint column. Parse-only: it joins the string
+// literals of a + chain that names one of the two identifiers; it does not see
+// a statement assembled from variables, a constant in another file or SQL sent
+// around GORM.
+func reasonSQLOrderProblems(path, src string) []string {
+	fset := token.NewFileSet()
+	tree, err := parser.ParseFile(fset, path, src, 0)
+	if err != nil {
+		return []string{path + ": cannot parse: " + err.Error()}
+	}
+	var bad []string
+	inner := map[ast.Node]bool{}
+	ast.Inspect(tree, func(n ast.Node) bool {
+		be, ok := n.(*ast.BinaryExpr)
+		if !ok || be.Op != token.ADD || inner[be] {
+			return true
+		}
+		var parts []ast.Expr
+		var flatten func(e ast.Expr)
+		flatten = func(e ast.Expr) {
+			if b, ok := e.(*ast.BinaryExpr); ok && b.Op == token.ADD {
+				inner[b] = true
+				flatten(b.X)
+				flatten(b.Y)
+				return
+			}
+			parts = append(parts, e)
+		}
+		flatten(be)
+		var sql strings.Builder
+		names := false
+		for _, p := range parts {
+			switch v := p.(type) {
+			case *ast.BasicLit:
+				if v.Kind == token.STRING {
+					if s, err := strconv.Unquote(v.Value); err == nil {
+						sql.WriteString(s)
+					}
+				}
+			case *ast.Ident:
+				if v.Name == "reasonSelect" {
+					names = true
+					sql.WriteString(" ")
+				}
+			case *ast.CallExpr:
+				if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "reasonProjection" {
+					names = true
+					sql.WriteString(" ")
+				}
+			}
+		}
+		text := sql.String()
+		if names && strings.Contains(strings.ToUpper(text), "ORDER BY") && !strings.Contains(text, "ORDER BY contact_requests.id") {
+			bad = append(bad, fmt.Sprintf("%s:%d: a statement that selects the review projection orders by something other than contact_requests.id: %q", path, fset.Position(be.Pos()).Line, strings.TrimSpace(text)))
+		}
+		return true
+	})
+	return bad
+}
+
+func TestReasonSQLOrderGuard(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "reasonSelect") || strings.Contains(string(b), "reasonProjection") {
+			found++
+		}
+		for _, v := range reasonSQLOrderProblems(name, string(b)) {
+			t.Error(v)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no production file names reasonSelect: the guard reads nothing")
+	}
+	wrap := func(clause string) string {
+		return "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT \"+reasonSelect+\" FROM contact_requests WHERE reason <> '' " + clause + "\")\n}\n"
+	}
+	for name, src := range map[string]string{
+		"ORDER BY id":                     wrap("ORDER BY id"),
+		"ORDER BY id FOR UPDATE":          wrap("ORDER BY id FOR UPDATE"),
+		"ORDER BY 1":                      wrap("ORDER BY 1"),
+		"lower case":                      wrap("order by id"),
+		"a projection call, not a select": "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT \" + reasonProjection() + \" FROM contact_requests ORDER BY id\")\n}\n",
+	} {
+		if len(reasonSQLOrderProblems("fixture.go", src)) == 0 {
+			t.Errorf("%s: the guard accepted it", name)
+		}
+	}
+	for name, src := range map[string]string{
+		"qualified":           wrap("ORDER BY contact_requests.id"),
+		"qualified, locked":   wrap("ORDER BY contact_requests.id FOR UPDATE"),
+		"no ordering":         wrap(""),
+		"another select list": "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT id FROM contact_requests ORDER BY id\")\n}\n",
+	} {
+		if bad := reasonSQLOrderProblems("fixture.go", src); len(bad) != 0 {
+			t.Errorf("%s: the guard refused it: %v", name, bad)
+		}
+	}
+}
+
+// The scanner's statements carry no NULL-or-condition: a generic plan cannot
+// serve "$1 IS NULL OR id > $1" from the primary key, so a continuation would
+// rescan from the start (F5). Source-level check; TestReasonScanSQLShape
+// proves the plans.
+func TestReasonScanSQLHasNoNullOrCondition(t *testing.T) {
+	for name, sql := range map[string]string{"initial": reasonScanInitialSQL, "continuation": reasonScanContinuationSQL} {
+		up := strings.ToUpper(sql)
+		if strings.Contains(up, " IS NULL") || strings.Contains(up, " OR ") {
+			t.Errorf("the %s scanner statement has a NULL-or condition: %s", name, sql)
+		}
+		if !strings.Contains(up, "ORDER BY ID LIMIT") {
+			t.Errorf("the %s scanner statement must order by id and limit: %s", name, sql)
+		}
+	}
+	if strings.Contains(strings.ToUpper(reasonScanInitialSQL), "WHERE") {
+		t.Error("the initial scanner statement must have no id predicate")
+	}
+	if !strings.Contains(reasonScanContinuationSQL, "WHERE id > ?::bigint") {
+		t.Error("the continuation must filter on id > the cursor")
+	}
+}
+
+// The probe for "is there any reason" asks the server for one row. LIMIT 1
+// bounds what comes back and what is locked, not what is read to find it; this
+// pins that the probe is not a Go-side early break over a full read.
+func TestReasonProbeUsesLimitOne(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(reasonProbeSQL), "LIMIT 1") || strings.Contains(strings.ToUpper(reasonProbeSQL), "FOR UPDATE") {
+		t.Errorf("the probe must be a plain LIMIT 1 statement: %s", reasonProbeSQL)
+	}
+	b, err := os.ReadFile("account_erasure_reasons.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "func reasonSetExistsIn(")
+	if i < 0 {
+		t.Fatal("reasonSetExistsIn is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, "reasonProbeSQL") || strings.Count(body, "rows.Next()") != 1 {
+		t.Errorf("the probe must run reasonProbeSQL and read at most one row:\n%s", body)
+	}
+}

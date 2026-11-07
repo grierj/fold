@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, email, fromMore, nextFrames, PASSWORD, signInTo } from "./helpers";
@@ -105,6 +106,57 @@ async function makeReasoned(request: APIRequestContext, suffix: string, askers =
     made.push({ ...p, login, requestId: numberAt(res, "request", "id"), text });
   }
   return { subject, askers: made };
+}
+
+// A person with many reasons: `askers` leaders each ask them for their email in
+// each of `groups` groups (a requester may have 10 open requests, so 12 askers in
+// 10 groups give 120 reasons). Returned in the order the review lists them:
+// ascending request id.
+async function makeManyReasoned(request: APIRequestContext, suffix: string, askers = 12, groups = 10) {
+  const admin = await apiAs(request, adminName);
+  const subject = await makePerson(admin, `rv-many-subject-${suffix}`, `Mia Many ${suffix}`);
+  const people: Person[] = [];
+  for (let i = 1; i <= askers; i++) people.push(await makePerson(admin, `rv-many-ask${i}-${suffix}`, `Ash ${i} Many ${suffix}`));
+  const groupIds: number[] = [];
+  for (let g = 1; g <= groups; g++) {
+    const { group } = await admin("POST", "/groups", { name: `Many study ${g} ${suffix}`, description: "Many reasons proof", visibility: "public", tags: [] });
+    const id = numberAt(group, "id");
+    groupIds.push(id);
+    for (const p of people) await admin("POST", `/admin/groups/${id}/members`, { userId: p.id, role: "leader" });
+    await admin("POST", `/admin/groups/${id}/members`, { userId: subject.id, role: "member" });
+  }
+  await (await apiAs(request, `rv-many-subject-${suffix}`))("PUT", "/me", { hideContactFromLeaders: true });
+  const made: Asker[] = [];
+  for (const [i, p] of people.entries()) {
+    const login = `rv-many-ask${i + 1}-${suffix}`;
+    const as = await apiAs(request, login);
+    for (const [g, groupId] of groupIds.entries()) {
+      const text = `Many ${i + 1}-${g + 1} ${suffix}: please share your email so I can organize rides`;
+      const res = await as("POST", "/contact-requests", { subjectUserId: subject.id, contextType: "group", contextId: groupId, fields: "email", reason: text });
+      made.push({ ...p, login, requestId: numberAt(res, "request", "id"), text });
+    }
+  }
+  made.sort((a, b) => a.requestId - b.requestId);
+  return { subject, reasons: made };
+}
+
+// The DELETE body's reasonReview (set-v1) for items an admin read, keeping every
+// one: the count, the SHA-256 over the set in ascending signed id order, and a
+// two-bit choice per item. Built from the wire spec in lib/reasonSetDigest.ts.
+function keepAllReview(items: Array<{ requestId: string; reviewHash: string }>) {
+  const sorted = [...items].sort((a, b) => (BigInt(a.requestId) < BigInt(b.requestId) ? -1 : 1));
+  const head = Buffer.alloc(35);
+  head.write("fold:erasure-reason-set:v1", 0, "latin1");
+  head.writeBigUInt64BE(BigInt(sorted.length), 27);
+  const parts = [head];
+  const choices = Buffer.alloc(Math.ceil(sorted.length / 4));
+  sorted.forEach((it, i) => {
+    const id = Buffer.alloc(8);
+    id.writeBigInt64BE(BigInt(it.requestId));
+    parts.push(id, Buffer.from(it.reviewHash, "hex"));
+    choices[i >> 2] |= 1 << ((i & 3) * 2);
+  });
+  return { format: "set-v1", count: String(sorted.length), digest: createHash("sha256").update(Buffer.concat(parts)).digest("hex"), choices: choices.toString("base64") };
 }
 
 // The reason a contact request holds now, as the admin reads it.
@@ -704,6 +756,165 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     await evidence(page, "reasons-not-allowed");
   });
 
+  // 120 reasons across three display pages, chosen by pointer and by keyboard,
+  // moved through with every pager control, changed behind the page's back, and
+  // deleted: the real server accepts the browser's count, digest and choices.
+  test("120 reasons are chosen by pointer and keyboard over three display pages, survive a concurrent change, and delete", async ({ page, request }) => {
+    test.setTimeout(300_000);
+    const suffix = Date.now().toString(36);
+    const { subject, reasons } = await makeManyReasoned(request, suffix);
+    expect(reasons).toHaveLength(120);
+    await signInTo(page, adminName, "/admin?tab=users");
+    const watch = watchIds(page, subject.id);
+    const row = await openDelete(page, subject, false);
+    const group = (n: number) => row.getByRole("group", { name: `Reason ${n} of 120` });
+    const shown = row.locator("li[data-reason-id]");
+
+    // The whole review is read, but only 50 reasons are on the page.
+    await expect(row.getByText("Reasons 1 to 50 of 120", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(shown).toHaveCount(50);
+    await expect(row.getByText("Not chosen yet")).toHaveCount(50);
+    await expect(row.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: /(keep|blank|choose|select) (all|every)/i })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByText("Choose Keep text or Blank text for 120 more reasons.")).toBeVisible();
+    await evidence(page, "reasons-many-unchosen");
+
+    // Blank every third reason, keep the rest; even positions by pointer, odd by keyboard.
+    const blank = (i: number) => i % 3 === 0;
+    const choose = async (i: number) => {
+      const radio = group(i + 1).getByRole("radio", { name: blank(i) ? "Blank text" : "Keep text" });
+      if (i % 2 === 0) await radio.check();
+      else await radio.press("Space");
+      await expect(radio).toBeChecked();
+    };
+    for (let i = 0; i < 50; i++) await choose(i);
+    await expect(row.getByText("Choose Keep text or Blank text for 70 more reasons.")).toBeVisible();
+
+    // Next 50, then Next reason without a choice (already on page 2), then jump.
+    await row.getByRole("button", { name: "Next 50" }).click();
+    await expect(row.getByText("Reasons 51 to 100 of 120", { exact: true })).toBeVisible();
+    await expect(shown).toHaveCount(50);
+    for (let i = 50; i < 100; i++) await choose(i);
+    await row.getByRole("button", { name: "Previous 50" }).click();
+    await expect(row.getByText("Reasons 1 to 50 of 120", { exact: true })).toBeVisible();
+    await expect(group(8).getByRole("radio", { name: "Keep text" })).toBeChecked(); // position 7 is not a multiple of 3
+    await expect(group(4).getByRole("radio", { name: "Blank text" })).toBeChecked(); // position 3 is
+    await row.getByRole("button", { name: "Next reason without a choice" }).click();
+    await expect(row.getByText("Reasons 101 to 120 of 120", { exact: true })).toBeVisible();
+    await expect(page.locator('[data-reason-heading="100"]')).toBeFocused();
+    await row.getByLabel("Go to reason number").fill("1");
+    await row.getByRole("button", { name: "Go" }).click();
+    await expect(page.locator('[data-reason-heading="0"]')).toBeFocused();
+    await row.getByLabel("Go to reason number").fill("120");
+    await row.getByRole("button", { name: "Go" }).click();
+    await expect(shown).toHaveCount(20);
+    await expect(page.locator('[data-reason-heading="119"]')).toBeFocused();
+    for (let i = 100; i < 119; i++) await choose(i);
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByText("Choose Keep text or Blank text for 1 more reason.")).toBeVisible();
+    await choose(119);
+    await expect(row.getByRole("button", { name: "Next reason without a choice" })).toBeDisabled();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    await expect(row.getByText("Delete this account. Keep 80 reasons and blank 40.")).toBeVisible();
+    await evidence(page, "reasons-many-chosen");
+
+    // A reason changes behind the page: the asker of reason 6 withdraws.
+    const changed = reasons[5];
+    await (await apiAs(request, changed.login))("POST", `/contact-requests/${changed.requestId}/withdraw`, {});
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByRole("alert")).toHaveText(CHANGED);
+    // Everything else stays chosen; the changed one needs a choice, and the pager finds it.
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByText("Choose Keep text or Blank text for 1 more reason.")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-reason-heading="5"]')).toBeFocused();
+    await expect(row.getByText(MARKED)).toHaveCount(1);
+    await expect(group(6).getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(group(8).getByRole("radio", { name: "Keep text" })).toBeChecked();
+    await row.getByRole("button", { name: "Next 50" }).click();
+    await expect(group(51).getByRole("radio", { name: blank(50) ? "Blank text" : "Keep text" })).toBeChecked();
+    await row.getByRole("button", { name: "Next changed reason" }).click();
+    await expect(page.locator('[data-reason-heading="5"]')).toBeFocused();
+    await choose(5);
+    await expect(row.getByRole("button", { name: "Next changed reason" })).toHaveCount(0);
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText("The account was deleted. 40 reasons were blanked and 80 kept.")).toBeVisible();
+    await row.getByRole("button", { name: "Done" }).click();
+
+    watch.stop();
+    expect(watch.ids.minted).toBe(2);
+    expect(watch.ids.deleted).toHaveLength(2);
+    expect(watch.ids.settled).toEqual([]);
+    for (const i of [0, 1, 2, 3, 50, 60, 99, 100, 118, 119]) {
+      expect(await reasonOf(request, reasons[i].requestId), `reason ${i + 1}`).toBe(blank(i) ? "" : reasons[i].text);
+    }
+  });
+
+  // The browser has no crypto.subtle on a plain-http address (the init script
+  // removes it, as such a page lacks it): the bundled SHA-256 makes the digest,
+  // and the real server accepts it and deletes.
+  test("with no crypto.subtle the bundled SHA-256 makes a digest the server accepts", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix);
+    const [blankIt, keepIt] = askers;
+    await page.addInitScript(() => {
+      Object.defineProperty(window.crypto, "subtle", { value: undefined, configurable: true });
+    });
+    await signInTo(page, adminName, "/admin?tab=users");
+    expect(await page.evaluate(() => window.crypto.subtle === undefined)).toBe(true);
+    const row = await openDelete(page, subject, false);
+    await reasonItem(row, blankIt.text).getByRole("radio", { name: "Blank text" }).check();
+    await reasonItem(row, keepIt.text).getByRole("radio", { name: "Keep text" }).check();
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText("The account was deleted. 1 reason was blanked and 1 kept.")).toBeVisible();
+    expect(await reasonOf(request, blankIt.requestId)).toBe("");
+    expect(await reasonOf(request, keepIt.requestId)).toBe(keepIt.text);
+  });
+
+  // The same refusal the page route gives, met at the DELETE instead (an admin
+  // who stopped being allowed to review after the pages were read). A real
+  // under-18 admin cannot be made through the API (a teen account cannot be an
+  // admin and the adult band needs an adult birth date), so the answer is
+  // stubbed; the server's own order of refusals is pinned by the Go matrix.
+  test("a delete refused as not allowed after the choices were made says so, stays off and settles nothing", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix, 1);
+    await page.route(deletePath(subject), async (route: Route) => {
+      if (route.request().method() !== "DELETE") return route.fallback();
+      await route.fulfill({ status: 403, json: { error: "server text the page must not show", code: "reason_review_not_allowed", reviewRequired: true } });
+    });
+    await signInTo(page, adminName, "/admin?tab=users");
+    const watch = watchIds(page, subject.id);
+    const row = await openDelete(page, subject, false);
+    await reasonItem(row, askers[0].text).getByRole("radio", { name: "Keep text" }).check();
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByRole("alert")).toHaveText(NOT_ADULT);
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    await expect(row.getByText("server text the page must not show")).toHaveCount(0);
+    await expect(row.getByText(NOT_DELETED)).toHaveCount(0);
+    watch.stop();
+    expect(watch.ids.minted).toBe(1);
+    expect(watch.ids.settled).toEqual([]);
+    expect(await reasonOf(request, askers[0].requestId)).toBe(askers[0].text);
+  });
+
+  // A page from before this version sends {items: [...]}: the server refuses it
+  // with reason_review_outdated and applies nothing, whatever the hashes say.
+  test("an old-shape review is refused as outdated and deletes nothing", async ({ request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix, 1);
+    const admin = await apiAs(request, adminName);
+    const first = await admin("POST", `/admin/users/${subject.id}/erasure-reasons/page`, { after: null });
+    const items = (recordOf(first).items as unknown[]).map((it) => ({ requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"), choice: "remove" }));
+    const csrf = ((await (await request.get("/api/v1/auth/csrf")).json()) as { csrfToken: string }).csrfToken;
+    const res = await request.fetch(`/api/v1/admin/users/${subject.id}`, {
+      method: "DELETE", data: { successors: {}, hostSuccessors: {}, reasonReview: { items } }, headers: { "X-CSRF-Token": csrf },
+    });
+    expect(res.status()).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("reason_review_outdated");
+    expect(await reasonOf(request, askers[0].requestId)).toBe(askers[0].text);
+  });
+
   test("two deleted askers are told apart by reference, never named", async ({ page, request }) => {
     const suffix = Date.now().toString(36);
     const { subject, askers } = await makeReasoned(request, suffix);
@@ -713,9 +924,9 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     for (const asker of askers) {
       const first = await admin("POST", `/admin/users/${asker.id}/erasure-reasons/page`, { after: null });
       const items = (recordOf(first).items as unknown[]).map((it) => ({
-        requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"), choice: "keep",
+        requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"),
       }));
-      await admin("DELETE", `/admin/users/${asker.id}`, { successors: {}, hostSuccessors: {}, reasonReview: { items } });
+      await admin("DELETE", `/admin/users/${asker.id}`, { successors: {}, hostSuccessors: {}, reasonReview: keepAllReview(items) });
     }
     await signInTo(page, adminName, "/admin?tab=users");
     const row = await openDelete(page, subject, false);

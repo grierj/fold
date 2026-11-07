@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { AdminUsers, ApiError } from "../api";
 import { useAuth } from "../auth";
-import type { ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, ReasonReviewChoice, SoleHostedEvent, SoleLedGroup, User } from "../types";
+import type { ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { needsReload, needsRestoreReload, requireReload, requireRestoreReload } from "../lib/deleteReload";
 import { formatEventDay } from "../lib/when";
 import { Button } from "./ui/Button";
 import { Field, FormError, Select } from "./ui/Field";
-import { ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
+import { ReasonProgress, ReasonReviewSection, ReasonSummary } from "./ReasonReviewSection";
+import { ReasonReviewStore } from "../lib/reasonReviewStore";
+import { DigestUnavailableError, reasonReviewBody, type ReasonReviewBody } from "../lib/reasonSetDigest";
 
 // Confirms deleting or disabling an account. For every group the person
 // leads alone, the admin picks a new leader first: a member of that group or any admin, with
@@ -23,13 +25,16 @@ import { ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
 // settles the same id and says what the server answers. Only a definitive
 // refusal, or a settle answer of not_applied, lets the next press mint a fresh id.
 //
-// Contact-request reasons (T07B-2c): before Delete turns on, the panel walks the
-// server's review pages to the end and the admin chooses Keep or Blank for every
-// reason, one by one (nothing is preselected and there is no choose-all). The
-// choices live in this component's memory only. The DELETE carries each item's
-// id, hash and choice; the server recomputes the set under its own locks and
-// answers 409 when it differs, and the panel then reloads the review and keeps
-// only the choices whose item is unchanged.
+// Contact-request reasons (T07B-2c, scaled in T07B-2): before Delete turns on,
+// the panel walks the server's review pages to the end into a store
+// (lib/reasonReviewStore.ts) and the admin chooses Keep or Blank for every
+// reason, one by one (nothing is preselected and there is no choose-all), 50 to
+// a display page. The choices live in that store, in this page's memory only.
+// A press freezes the store, hashes the reviewed set (lib/reasonSetDigest.ts)
+// and sends the count, the digest and the two-bit choices; the server
+// recomputes the set under its own locks and answers 409 when it differs, and
+// the panel then reloads the review and keeps only the choices whose item is
+// unchanged.
 
 type HostPicks = Record<string, number>;
 
@@ -53,6 +58,10 @@ const REVIEW_MEMORY = "Your choices stay on this page only until you delete or c
 const REVIEW_NONE = "No reasons to review.";
 const REVIEW_CHECKING = "Checking their contact-request reasons…";
 const REVIEW_STOPPED = "You stopped checking their contact-request reasons. Delete stays off until Fold has checked all of them.";
+const HASH_PREPARING = "Preparing your choices…";
+const HASH_TRANSIENT = "Fold couldn't prepare your choices just now. Try again.";
+const HASH_PERMANENT = "This browser can't prepare the review safely. Open this page in a current browser.";
+const STORE_CHANGED = "The reasons changed while Fold was preparing your choices. Check them and try again.";
 const REVIEW_IRREVERSIBLE = "Blanked text can't be brought back in Fold. Backups made before now still contain it.";
 // Shown when a DELETE answers needs_reason_review: the panel has already
 // reloaded the review, so ERROR_COPY's "reload this page" would be wrong here.
@@ -85,6 +94,9 @@ type Phase =
   // A definitive refusal that no press can fix (signed out, not allowed, the
   // account is gone, a restore was seen). `reload` closes with a list reload.
   | { kind: "locked"; reload: boolean }
+  // This page was made by an older version of Fold (reason_review_outdated):
+  // nothing can be sent from it; reloading the page is the way forward.
+  | { kind: "outdated" }
   | { kind: "done"; erasure: ErasureReport | null };
 
 // What a failed DELETE means. "uncertain" settles the same id; the rest are
@@ -94,19 +106,18 @@ type Failure =
   | { kind: "retry"; text: string }
   // The reasons changed or were never reviewed: reload the review, keep what still matches.
   | { kind: "review"; text: string }
+  | { kind: "outdated"; text: string }
   | { kind: "locked"; text: string; reload: boolean };
 
 // Where the walk through the review pages stands. "idle" is a panel that
 // never asks (a disable, or Delete held off until a reload).
 type ReviewState = {
   phase: "idle" | "loading" | "stopped" | "failed" | "done" | "blocked";
-  items: ErasureReasonItem[];
   failure: string | null;
   // Walks that reached their end. A counter, not the phase, so a reload that
   // ends in "done" again (the renders can coalesce) is still seen.
   finished: number;
 };
-type ReviewPick = { hash: string; choice: ReasonChoice };
 
 const UNCERTAIN: Failure = { kind: "uncertain", text: CHECKING_COPY };
 const BUSY_CODES = ["delete_timed_out", "delete_household_busy", "delete_reason_busy", "admin_account_busy", "attempt_busy"] as const;
@@ -137,6 +148,7 @@ function failureOf(e: unknown): Failure {
   // The reason review's three refusals are definitive (the server ended the id first).
   if (code === "needs_reason_review") return { kind: "review", text: REVIEW_NEEDED };
   if (code === "reason_review_changed") return { kind: "review", text: ERROR_COPY.reason_review_changed };
+  if (code === "reason_review_outdated") return { kind: "outdated", text: ERROR_COPY.reason_review_outdated };
   if (code === "reason_review_not_allowed") return { kind: "locked", text: ERROR_COPY.reason_review_not_allowed, reload: false };
   const ending = endingCopy(e);
   if (ending !== null) return { kind: "locked", text: ending, reload: code === "restore_detected" };
@@ -178,7 +190,8 @@ function pageFailureOf(e: unknown): Failure {
   return { kind: "retry", text: ERROR_COPY.reason_review_busy };
 }
 
-const reasonsWord = (n: number) => `${n} ${n === 1 ? "reason" : "reasons"}`;
+const numbers = new Intl.NumberFormat("en-US");
+const reasonsWord = (n: number) => `${numbers.format(n)} ${n === 1 ? "reason" : "reasons"}`;
 
 // The sentence under the success line, from the 200 body only.
 function reasonCounts(erasure: ErasureReport | null): string | null {
@@ -255,17 +268,24 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   // The reason review. `choices` and `changed` are keyed by request id. They
   // are memory only: closing the panel drops them (REVIEW_MEMORY says so).
   const [review, setReview] = useState<ReviewState>({
-    phase: deleting && heldFor === null ? "loading" : "idle", items: [], failure: null, finished: 0,
+    phase: deleting && heldFor === null ? "loading" : "idle", failure: null, finished: 0,
   });
-  const [choices, setChoices] = useState<Record<string, ReviewPick>>({});
-  const [changed, setChanged] = useState<ReadonlySet<string>>(new Set());
-  // The cursor to continue from (null: from the start), the walk that may still
-  // write, the choices a reload may keep, and whether focus should move to the
-  // first changed item when the reload ends.
+  // The walk's result and every choice: a store, not React state, so a click
+  // re-renders one row (lib/reasonReviewStore.ts). The panel reads only the few
+  // facts it needs, as primitives, so it re-renders when they change.
+  const [store] = useState(() => new ReasonReviewStore());
+  const reasonTotal = useSyncExternalStore(store.subscribe, () => store.total);
+  const allChosen = useSyncExternalStore(store.subscribe, () => store.getSnapshot().unchosen === 0);
+  // Where the display should jump (after a reload), and the cursor to continue
+  // from (null: from the start), the walk that may still write, and whether
+  // focus should move to the first changed item when a reload ends.
+  const [jump, setJump] = useState<{ ordinal: number; tick: number } | null>(null);
   const cursor = useRef<string | null>(null);
   const walkRun = useRef(0);
-  const prior = useRef<Map<string, ReviewPick> | null>(null);
   const refocus = useRef(false);
+  // Preparing the digest of a press, and a browser that cannot (permanent).
+  const [preparing, setPreparing] = useState(false);
+  const [hashBroken, setHashBroken] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
   const alertBox = useRef<HTMLDivElement>(null);
   const statusBox = useRef<HTMLDivElement>(null);
@@ -294,17 +314,12 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   async function walk(from: string | null, fresh = false) {
     const run = ++walkRun.current;
     const live = () => mounted.current && walkRun.current === run;
-    if (fresh) {
-      prior.current = new Map(Object.entries(choices));
-      setChoices({});
-      setChanged(new Set());
-    }
     if (from === null) {
+      // A reload sets the choices aside; an item keeps its one only when its hash is unchanged.
+      store.reset(fresh ? store.carry() : null);
       cursor.current = null;
-      setReview((r) => ({ phase: "loading", items: [], failure: null, finished: r.finished }));
-    } else {
-      setReview((r) => ({ ...r, phase: "loading", failure: null }));
     }
+    setReview((r) => ({ ...r, phase: "loading", failure: null }));
     const seen = new Set<string>();
     let at = from;
     for (;;) {
@@ -320,7 +335,14 @@ function PanelBody({ target, action, onDone }: PanelProps) {
         reviewFailed(new Error("unexpected answer to a reason page"));
         return;
       }
-      takePage(page.items);
+      try {
+        store.appendPage(page.items);
+      } catch (e) {
+        // A page out of order, with a repeated id or a malformed hash cannot be
+        // trusted: it fails like any unexpected answer and Delete stays off.
+        reviewFailed(e);
+        return;
+      }
       cursor.current = page.next;
       if (page.next === null) {
         setReview((r) => ({ ...r, phase: "done", finished: r.finished + 1 }));
@@ -334,26 +356,6 @@ function PanelBody({ target, action, onDone }: PanelProps) {
       seen.add(page.next);
       at = page.next;
     }
-  }
-
-  function takePage(items: ErasureReasonItem[]) {
-    if (items.length === 0) return;
-    setReview((r) => {
-      const byId = new Map(r.items.map((it) => [it.requestId, it]));
-      for (const it of items) byId.set(it.requestId, it);
-      return { ...r, items: [...byId.values()] };
-    });
-    const before = prior.current;
-    if (!before) return;
-    const kept: Record<string, ReviewPick> = {};
-    const marked: string[] = [];
-    for (const it of items) {
-      const old = before.get(it.requestId);
-      if (old && old.hash === it.reviewHash) kept[it.requestId] = old;
-      else marked.push(it.requestId);
-    }
-    setChoices((c) => ({ ...c, ...kept }));
-    setChanged((c) => new Set([...c, ...marked]));
   }
 
   function reviewFailed(e: unknown) {
@@ -384,8 +386,9 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   useEffect(() => {
     if (review.finished === 0 || !refocus.current) return;
     refocus.current = false;
-    const first = panel.current?.querySelector<HTMLElement>('[data-changed="true"] input');
-    (first ?? alertBox.current)?.focus();
+    const first = store.nextChanged(-1);
+    if (first >= 0) setJump((j) => ({ ordinal: first, tick: (j?.tick ?? 0) + 1 }));
+    else alertBox.current?.focus();
   }, [review.finished]);
 
   useEffect(() => {
@@ -536,43 +539,41 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     }
   }
 
-  function choose(item: ErasureReasonItem, choice: ReasonChoice) {
-    setChoices((c) => ({ ...c, [item.requestId]: { hash: item.reviewHash, choice } }));
-    setChanged((c) => {
-      if (!c.has(item.requestId)) return c;
-      const next = new Set(c);
-      next.delete(item.requestId);
-      return next;
-    });
-  }
-
-  // The choice for an item, only while it was made for the item as loaded now.
-  const choiceOf = (item: ErasureReasonItem): ReasonChoice | undefined =>
-    choices[item.requestId]?.hash === item.reviewHash ? choices[item.requestId].choice : undefined;
-
-  // The DELETE's reasonReview.items: exactly the loaded items, in order. Empty
-  // when there are none. Null while any item has no choice (Delete is off then,
-  // so a press never gets here).
-  function reviewBody(): ReasonReviewChoice[] | null {
-    const body: ReasonReviewChoice[] = [];
-    for (const it of review.items) {
-      const choice = choiceOf(it);
-      if (choice === undefined) return null;
-      body.push({ requestId: it.requestId, reviewHash: it.reviewHash, choice });
-    }
-    return body;
-  }
-
   async function remove() {
     if (!deleting) return disable();
     // Nothing is minted or sent while a reason still has no choice.
-    const reasons = reviewBody();
-    if (reasons === null || review.phase !== "done") return;
+    if (review.phase !== "done" || store.getSnapshot().unchosen !== 0 || hashBroken) return;
     const press = ++presses.current;
     attempt.current = null;
+    // 1. Freeze: every radio is disabled (busy) and the store is read once.
     setBusy(true);
     setError(null);
     setPhase({ kind: "idle" });
+    const frozen = store.freeze();
+    let reasonReview: ReasonReviewBody | undefined;
+    if (frozen.count > 0) {
+      // 2. Hash the reviewed set. This runs before any id is minted: a failure
+      // here sends nothing and leaves the choices as they are.
+      setPreparing(true);
+      try {
+        reasonReview = await reasonReviewBody(frozen.ids, frozen.hashes, frozen.choices, frozen.count);
+      } catch (e) {
+        if (!isCurrent(press)) return;
+        setPreparing(false);
+        setBusy(false);
+        if (e instanceof DigestUnavailableError) setHashBroken(true);
+        setError(e instanceof DigestUnavailableError ? HASH_PERMANENT : HASH_TRANSIENT);
+        return;
+      }
+      if (!isCurrent(press)) return;
+      setPreparing(false);
+      // 3. Nothing may have changed while the digest was made.
+      if (store.getVersion() !== frozen.version) {
+        setBusy(false);
+        setError(STORE_CHANGED);
+        return;
+      }
+    }
     try {
       // One fresh id per press. The mint reads no database; if it fails, no
       // DELETE has been sent, so nothing can have happened.
@@ -592,10 +593,10 @@ function PanelBody({ target, action, onDone }: PanelProps) {
       }
       if (!isCurrent(press)) return;
       attempt.current = id;
-      // Every loaded reason travels with its hash and its choice. No reasons
-      // loaded: no review in the body, and the server ignores one anyway.
-      const res = reasons.length > 0
-        ? await AdminUsers.remove(target.id, picks, hostPicks, id, reasons)
+      // The count, the set digest and every choice travel in the review. No
+      // reasons loaded: no review in the body, and the server ignores one anyway.
+      const res = reasonReview
+        ? await AdminUsers.remove(target.id, picks, hostPicks, id, reasonReview)
         : await AdminUsers.remove(target.id, picks, hostPicks, id);
       if (!isCurrent(press)) return;
       attempt.current = null;
@@ -613,6 +614,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
       applyStale(e);
       setError(failure.text);
       if (failure.kind === "locked") setPhase({ kind: "locked", reload: failure.reload });
+      if (failure.kind === "outdated") setPhase({ kind: "outdated" });
       // The server ended the id before it answered, so the next press mints a
       // fresh one; first the review is read again and the admin chooses again
       // where it changed.
@@ -627,7 +629,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 
   const name = target.displayName || target.name;
   // Delete stays off while an answer is unresolved or the attempt has ended it.
-  const canPress = phase.kind === "idle" || phase.kind === "notApplied";
+  const canPress = (phase.kind === "idle" || phase.kind === "notApplied") && !hashBroken;
   // Closing reloads the list when the account is gone or may be.
   // The answer is in: the questions above it no longer apply.
   const finished = phase.kind === "done" || phase.kind === "already";
@@ -638,12 +640,8 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   const hostsDone = hosted.length === 0 || (candidates.length > 0 && missing === 0);
   // Delete needs the whole review read and every reason chosen. `unchosen`
   // counts what is left; `kept` and `removed` are what the press would do.
-  const chosenAll = review.items.map(choiceOf);
-  const unchosen = chosenAll.filter((c) => c === undefined).length;
-  const removed = chosenAll.filter((c) => c === "remove").length;
-  const kept = chosenAll.filter((c) => c === "keep").length;
-  const reviewDone = !deleting || (review.phase === "done" && unchosen === 0);
-  const choiceMap = Object.fromEntries(review.items.map((it, i) => [it.requestId, chosenAll[i]]));
+  const reviewDone = !deleting || (review.phase === "done" && allChosen);
+  const hasReasons = reasonTotal > 0;
   return (
     <div ref={panel} className="mt-3 rounded-md border border-danger-border bg-danger-subtle p-4 text-sm space-y-3">
       {!finished && (
@@ -743,7 +741,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
             <div className="space-y-2">
               <p aria-live="polite" className="text-text-muted">
                 {REVIEW_CHECKING}
-                {review.items.length > 0 ? ` ${reasonsWord(review.items.length)} so far.` : ""}
+                {hasReasons ? ` ${reasonsWord(reasonTotal)} so far.` : ""}
               </p>
               <Button variant="secondary" onClick={stopReview}>
                 Stop
@@ -766,20 +764,16 @@ function PanelBody({ target, action, onDone }: PanelProps) {
               </Button>
             </div>
           )}
-          {review.phase === "done" && review.items.length === 0 && <p className="text-text-muted">{REVIEW_NONE}</p>}
-          {review.items.length > 0 && (
+          {review.phase === "done" && !hasReasons && <p className="text-text-muted">{REVIEW_NONE}</p>}
+          {hasReasons && (
             <>
               <div className="space-y-1 text-text-muted">
                 <p>{REVIEW_INTRO}</p>
                 <p>{REVIEW_LIMIT}</p>
                 <p>{REVIEW_MEMORY}</p>
               </div>
-              <ReasonReviewList items={review.items} choices={choiceMap} changed={changed} onChoose={choose} disabled={busy || phase.kind === "locked"} />
-              {review.phase === "done" && (
-                <p aria-live="polite" className="text-text-muted">
-                  {unchosen === 0 ? `All ${reasonsWord(review.items.length)} chosen.` : `Choose Keep text or Blank text for ${unchosen === 1 ? "1 more reason" : `${unchosen} more reasons`}.`}
-                </p>
-              )}
+              <ReasonProgress store={store} done={review.phase === "done"} />
+              <ReasonReviewSection store={store} disabled={busy || phase.kind === "locked" || phase.kind === "outdated"} loading={review.phase !== "done"} jump={jump} />
             </>
           )}
         </section>
@@ -789,11 +783,16 @@ function PanelBody({ target, action, onDone }: PanelProps) {
           <FormError>{error}</FormError>
         </div>
       )}
-      {!finished && deleting && review.items.length > 0 && reviewDone && canPress && (
+      {!finished && deleting && hasReasons && reviewDone && canPress && (
         <div className="space-y-1">
-          <p className="font-semibold">{`Delete this account. Keep ${reasonsWord(kept)} and blank ${removed}.`}</p>
-          {removed > 0 && <p className="text-text-muted">{REVIEW_IRREVERSIBLE}</p>}
+          <ReasonSummary store={store} />
+          <Irreversible store={store} />
         </div>
+      )}
+      {preparing && (
+        <p role="status" className="text-text-muted">
+          {HASH_PREPARING}
+        </p>
       )}
       <Outcome phase={phase} statusBox={statusBox} />
       {phase.kind === "done" && phase.erasure && <KeptNotes />}
@@ -810,6 +809,11 @@ function PanelBody({ target, action, onDone }: PanelProps) {
                 Check again
               </Button>
             )}
+            {phase.kind === "outdated" && (
+              <Button variant="secondary" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
+            )}
             {phase.kind !== "already" && (
               <Button variant="danger" onClick={remove} disabled={busy || !ready || (deleting && !hostsDone) || !reviewDone || !canPress}>
                 {busy ? "Working…" : deleting ? "Delete account" : "Disable account"}
@@ -823,6 +827,12 @@ function PanelBody({ target, action, onDone }: PanelProps) {
       </div>
     </div>
   );
+}
+
+// The note that blanked text cannot come back, only when a reason is to be blanked.
+function Irreversible({ store }: { store: ReasonReviewStore }) {
+  const remove = useSyncExternalStore(store.subscribe, () => store.getSnapshot().remove);
+  return remove > 0 ? <p className="text-text-muted">{REVIEW_IRREVERSIBLE}</p> : null;
 }
 
 // What the server said about the attempt, in words (never color alone). The
