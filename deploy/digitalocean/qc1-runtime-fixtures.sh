@@ -709,7 +709,11 @@ if grep '^exec ' "$WORK/ae-stub.log" | grep -v '^exec -i dbcid psql -X -U church
 cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
 l_k="$(grep -n 'kill "\$p"' <<<"$cl_body" | cut -d: -f1)"; l_r="$(grep -n 'autoexplain_reset' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"
 [[ -n "$l_k$l_r$l_d" && "$l_k" -lt "$l_r" && "$l_r" -lt "$l_d" ]]
-grep -qF "trap '' INT TERM HUP" <<<"$cl_body"; grep -qF 'exit "$rc"' <<<"$cl_body"; ! grep -qE 'rc=\$\(\(|rc=1' <<<"$cl_body"     # the status is the original
+grep -qF "trap '' INT TERM HUP" <<<"$cl_body"; grep -qF 'exit "$rc"' <<<"$cl_body"
+if ! grep -qF '(( rc != 0 )) || rc=1' <<<"$cl_body"; then
+  echo 'cleanup must fail a successful run if the reset fails' >&2
+  exit 1
+fi
 grep -qx "trap 'exit 129' HUP" "$RUNNER"
 ar_body="$(sed -n '/^autoexplain_reset() {/,/^}/p' "$RUNNER")"; [[ "$(grep -c 'timeout 20 docker exec -i "\$DB_CID"' <<<"$ar_body")" -ge 3 ]]; ! grep -qE 'docker (rm|volume|network)|DROP|DELETE|TRUNCATE' <<<"$ar_body"
 ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER")"; [[ "$(sed -n 2p <<<"$ao_body")" == "  AUTOEXPLAIN_DIRTY=1"* ]]                  # the first statement of the enable
