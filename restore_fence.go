@@ -46,11 +46,14 @@ import (
 // (TestRestoreFenceHasTwoWriters parses the source for writers).
 
 // recoveryPolicyLevel is the recovery level this release reports (R4-RP):
-// 0 = no restore barrier, 1 = this barrier. deploy/recovery-policy holds the
-// same integer and TestRecoveryPolicyFileMatchesConstant keeps them equal.
+// 0 = no restore barrier, 1 = the restore barrier (T07B-1b), 2 = reason review
+// (T07B-2b). deploy/recovery-policy holds the same integer and
+// TestRecoveryPolicyFileMatchesConstant keeps them equal. R4-RP's tooling
+// refuses a scripted rollback, forward upgrade or deploy to a lower level, so a
+// release at level 2 cannot be rolled back to one without the review.
 // Never publish a release at level 1 or above before R4-6c-R's current-release
 // restore tooling and operator procedure land and are verified.
-const recoveryPolicyLevel = 1
+const recoveryPolicyLevel = 2
 
 // restoreFenceKey is the settings row that holds the counter.
 const restoreFenceKey = "restore_fence"

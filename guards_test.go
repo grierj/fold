@@ -130,6 +130,8 @@ var tsContracts = []struct {
 	{householdAccountJSON{}, "HouseholdAccount"},
 	{guardianLinkJSON{}, "GuardianLink"},
 	{erasureReportJSON{}, "ErasureReport"},
+	{reasonItemJSON{}, "ErasureReasonItem"},
+	{reasonPageJSON{}, "ErasureReasonPage"},
 	{guardianNominationJSON{}, "GuardianNomination"},
 	{guardianTeenJSON{}, "GuardianTeen"},
 	{guardianEmailPreviewJSON{}, "GuardianEmailPreview"},
@@ -3168,11 +3170,16 @@ type ctgFile struct {
 }
 
 type ctgRun struct {
-	bad          []string
-	eraseCalls   int
-	eraseSites   map[string]int
-	agesLiteral  bool
-	resetLiteral bool
+	bad         []string
+	eraseCalls  int
+	eraseSites  map[string]int
+	agesLiteral bool
+	// reasonLiteral, reasonCalls and reasonSites are the same for the reason
+	// helper, eraseContactRequestReasonsIn (T07B-2b).
+	reasonLiteral bool
+	reasonCalls   int
+	reasonSites   map[string]int
+	resetLiteral  bool
 }
 
 // ctgObject is the parser's own resolution of a name to its declaration. It
@@ -4295,19 +4302,26 @@ func (run *ctgRun) text(f *ctgFile, n ast.Node, raw string, parents []ast.Node) 
 		return
 	}
 	only := len(writes) == 1 && writes[0].kind == "UPDATE" && ctgSetPart(writes[0].list) == "add_childcare_ages_note = ''"
+	onlyReason := len(writes) == 1 && writes[0].kind == "UPDATE" && ctgSetPart(writes[0].list) == "reason = ''"
 	decl, inLit := ctgEnclosing(parents)
 	site := f.path == "account_erasure.go" && decl != nil && decl.Recv == nil && decl.Name.Name == "eraseContactRequestTextIn" && !inLit && !run.agesLiteral
 	if only && site {
 		run.agesLiteral = true
 		return
 	}
-	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowance is the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = ''", writes[0].kind)
+	reasonSite := f.path == "account_erasure_reasons.go" && decl != nil && decl.Recv == nil && decl.Name.Name == "eraseContactRequestReasonsIn" && !inLit && !run.reasonLiteral
+	if onlyReason && reasonSite {
+		run.reasonLiteral = true
+		return
+	}
+	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowances are the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = '' and the single one in eraseContactRequestReasonsIn (account_erasure_reasons.go) whose SET list is reason = ''", writes[0].kind)
 }
 
 // ident is R-6: exactly one direct call in each of the admin and tombstone
 // a.contactMutationCtx callbacks. Each callback must be the last argument.
 func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
-	if id.Name != "eraseContactRequestTextIn" || len(parents) < 2 {
+	reasons := id.Name == "eraseContactRequestReasonsIn"
+	if (id.Name != "eraseContactRequestTextIn" && !reasons) || len(parents) < 2 {
 		return
 	}
 	switch p := parents[len(parents)-2].(type) {
@@ -4317,23 +4331,31 @@ func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 		}
 	case *ast.CallExpr:
 		if p.Fun == ast.Expr(id) {
-			run.eraseCalls++
-			if run.eraseSites == nil {
-				run.eraseSites = map[string]int{}
+			if reasons {
+				run.reasonCalls++
+				if run.reasonSites == nil {
+					run.reasonSites = map[string]int{}
+				}
+				run.reasonSites[f.path]++
+			} else {
+				run.eraseCalls++
+				if run.eraseSites == nil {
+					run.eraseSites = map[string]int{}
+				}
+				run.eraseSites[f.path]++
 			}
-			run.eraseSites[f.path]++
-			if why := ctgEraseCallProblem(f, parents, p); why != "" {
+			if why := ctgEraseCallProblem(f, parents, p, reasons); why != "" {
 				run.add(f, "R-6", id, parents, "%s", why)
 			}
 			return
 		}
 	}
-	run.add(f, "R-6", id, parents, "eraseContactRequestTextIn used as a value (assigned, passed, returned, stored or turned into a method value); only a direct call is allowed")
+	run.add(f, "R-6", id, parents, "%s used as a value (assigned, passed, returned, stored or turned into a method value); only a direct call is allowed", id.Name)
 }
 
 // ctgEraseCallProblem checks one call site against R-6. parents ends with the
 // identifier; the call is its parent.
-func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr) string {
+func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr, reasons bool) string {
 	path := f.path
 	ci := len(parents) - 2
 	lit := -1
@@ -4372,6 +4394,9 @@ func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr) str
 	}
 	admin := decl != nil && decl.Name.Name == "apiAdminDeleteUser" && path == "api_admin.go"
 	tombstone := decl != nil && decl.Name.Name == "eraseTombstoneOnce" && path == "account_erasure_tombstones.go"
+	if reasons && !admin {
+		return "eraseContactRequestReasonsIn may be called only from apiAdminDeleteUser in api_admin.go (the legacy review adds its own site in T07B-3a)"
+	}
 	if !admin && !tombstone {
 		return "called from a function other than apiAdminDeleteUser in api_admin.go or eraseTombstoneOnce in account_erasure_tombstones.go"
 	}
@@ -4445,7 +4470,35 @@ func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr) str
 	if callAt <= deleteAt {
 		return "call must come after the statement containing tx.Delete(u)"
 	}
+	if reasons {
+		// Directly after the ages-note scrub: the statement before it holds the
+		// eraseContactRequestTextIn call.
+		prev := callAt - 1
+		// An error check on a separately assigned result sits between them.
+		if prev > 0 && !ctgHasCall(fl.Body.List[prev], "eraseContactRequestTextIn") {
+			if is, ok := fl.Body.List[prev].(*ast.IfStmt); ok && is.Init == nil {
+				prev--
+			}
+		}
+		if prev < 0 || !ctgHasCall(fl.Body.List[prev], "eraseContactRequestTextIn") {
+			return "call must be the statement directly after the eraseContactRequestTextIn call"
+		}
+	}
 	return ""
+}
+
+// ctgHasCall reports whether n contains a call of the package function name.
+func ctgHasCall(n ast.Node, name string) bool {
+	found := false
+	ast.Inspect(n, func(m ast.Node) bool {
+		if c, ok := m.(*ast.CallExpr); ok {
+			if id, ok := c.Fun.(*ast.Ident); ok && id.Name == name {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // The tombstone allowance requires the direct lock assignment and both
@@ -4567,6 +4620,9 @@ func ctgViolations(sources map[string]string) []string {
 	if run.eraseCalls != 2 || run.eraseSites["api_admin.go"] != 1 || run.eraseSites["account_erasure_tombstones.go"] != 1 {
 		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly two calls, one in apiAdminDeleteUser (api_admin.go) and one in eraseTombstoneOnce (account_erasure_tombstones.go), each in its own a.contactMutationCtx callback", run.eraseCalls))
 	}
+	if run.reasonCalls != 1 || run.reasonSites["api_admin.go"] != 1 {
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestReasonsIn is called %d times, want exactly one call, in apiAdminDeleteUser (api_admin.go), in its a.contactMutationCtx callback directly after eraseContactRequestTextIn", run.reasonCalls))
+	}
 	sort.Strings(run.bad)
 	return run.bad
 }
@@ -4601,6 +4657,30 @@ const ctgEraseCall = "if err := eraseContactRequestTextIn(tx, s); err != nil {\n
 
 const ctgResetCall = `b.WriteString("SET LOCAL session_replication_role = replica;")`
 
+// The reason helper's one UPDATE literal, its one call (directly after the
+// ages-note call, in the admin callback) and its file (T07B-2b).
+const ctgReasonUpdate = `"UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)"`
+
+const ctgReasonLoop = "res := tx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID)\n\t\ttotal += res.RowsAffected"
+
+const ctgReasonCall = "if err := eraseContactRequestReasonsIn(tx, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"
+
+func ctgReasonsFile(loop string) string {
+	return `package main
+
+import "gorm.io/gorm"
+
+func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan) error {
+	var total int64
+	for _, batch := range plan.batches {
+		` + loop + `
+	}
+	_ = total
+	return nil
+}
+`
+}
+
 func ctgErasureFile(loop string) string {
 	return `package main
 
@@ -4633,6 +4713,11 @@ func ctgAdminFile(before, after string) string {
 // ctgAdminFileShape builds the admin fixture with the call's head (up to the
 // callback) and the text after the callback's closing brace.
 func ctgAdminFileShape(head, tail, before, after string) string {
+	// Every fixture that calls the ages-note helper gets the reason helper's call
+	// directly after it, as the production callback has, unless it brings its own.
+	if strings.Contains(after, "eraseContactRequestTextIn") && !strings.Contains(after, "eraseContactRequestReasonsIn") && !strings.Contains(after, "// no reasons call") {
+		after += "\n\t\t" + ctgReasonCall
+	}
 	return `package main
 
 import (
@@ -4803,6 +4888,7 @@ func All() []any { return []any{&ContactRequest{}} }
 func ctgClean() map[string]string {
 	return map[string]string{
 		"account_erasure.go":            ctgErasureFile(ctgErasureLoop),
+		"account_erasure_reasons.go":    ctgReasonsFile(ctgReasonLoop),
 		"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall),
 		"api_admin.go":                  ctgAdminFile("", ctgEraseCall),
 		"api_contact.go":                ctgContactFile,
@@ -5131,6 +5217,75 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		ctgSource("the ages literal in a copy of the helper in another file", "R-5", "api_other.go", map[string]string{
 			"account_erasure.go": ctgErasureFile("total++"),
 			"api_other.go":       "package main\n\nfunc eraseContactRequestTextInCopy(tx *gorm.DB) { tx.Exec(" + ctgAgesUpdate + ", 1, 2) }\n",
+		}),
+	)
+
+	// T07B-2b: the reason column is blanked by one literal in
+	// eraseContactRequestReasonsIn and nowhere else.
+	reasons := ctgAdminFile("", ctgEraseCall)
+	cases = append(cases,
+		ctgSource("a second reason literal in the helper", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile(ctgReasonLoop + "\n\t\ttx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID)"),
+		}),
+		ctgSource("the reason literal in a func literal", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("func() { tx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID) }()"),
+		}),
+		ctgSource("the reason literal in another function of the file", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile(ctgReasonLoop) + "\nfunc blankElsewhere(tx *gorm.DB) { tx.Exec(" + ctgReasonUpdate + ", 1, 2, 3) }\n",
+		}),
+		ctgSource("the reason literal in another file", "R-5", "api_other.go", map[string]string{
+			"api_other.go": "package main\n\nfunc blank(tx *gorm.DB) { tx.Exec(" + ctgReasonUpdate + ", 1, 2, 3) }\n",
+		}),
+		ctgSource("the reason literal with the ages note in its SET list", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("res := tx.Exec(\"UPDATE contact_requests SET reason = '', add_childcare_ages_note = '' WHERE id = ANY(?::bigint[])\", batch)\n\t\ttotal += res.RowsAffected"),
+		}),
+		ctgSource("the reason literal setting another column too", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("res := tx.Exec(\"UPDATE contact_requests SET reason = '', status = 'x' WHERE id = ANY(?::bigint[])\", batch)\n\t\ttotal += res.RowsAffected"),
+		}),
+		ctgSource("the reason helper's call twice", "R-6", "production tree", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t"+ctgReasonCall+"\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("no call of the reason helper", "R-6", "production tree", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t// no reasons call"),
+		}),
+		ctgSource("the reason call before the ages-note call", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgReasonCall+"\n\t\t"+ctgEraseCall),
+		}),
+		ctgSource("a statement between the two calls", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t_ = plan\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("the reason call before tx.Delete(u)", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile(ctgReasonCall, ctgEraseCall),
+		}),
+		ctgSource("the reason call passing a.DB", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tif err := eraseContactRequestReasonsIn(a.DB, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"),
+		}),
+		ctgSource("the reason call nested in a block", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tif true {\n\t\t\t_ = eraseContactRequestReasonsIn(tx, s, plan)\n\t\t}"),
+		}),
+		ctgSource("the reason call in a go statement", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tgo eraseContactRequestReasonsIn(tx, s, plan)"),
+		}),
+		ctgSource("the reason call from another function", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": strings.Replace(reasons, "apiAdminDeleteUser", "apiAdminOtherThing", 1),
+		}),
+		ctgSource("the reason call from the tombstone callback", "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall+"\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("the reason helper declared as a method", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": strings.Replace(ctgReasonsFile(ctgReasonLoop), "func eraseContactRequestReasonsIn(", "func (a *App) eraseContactRequestReasonsIn(", 1),
+		}),
+		ctgSource("the reason call on a copy of the callback's tx", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\ttx2 := tx\n\t\tif err := eraseContactRequestReasonsIn(tx2, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"),
+		}),
+		ctgSource("the reason call inside a closure of the callback", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tfunc() { _ = eraseContactRequestReasonsIn(tx, s, plan) }()"),
+		}),
+		ctgSource("the reason call in a defer statement", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tdefer eraseContactRequestReasonsIn(tx, s, plan)"),
+		}),
+		ctgSource("the reason helper used as a value", "R-6", "other.go", map[string]string{
+			"other.go": "package main\n\nfunc other() {\n\tf := eraseContactRequestReasonsIn\n\t_ = f\n}\n",
 		}),
 	)
 
@@ -6537,12 +6692,104 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a sign-in check other than CanSignIn", with(aops, "!actor.CanSignIn()", "actor.Status != models.UserActive")},
 		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
 		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
-		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, nil)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, nil)\n\t}}")},
+		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, *pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, *pred)\n\t}}")},
 		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
 		{"a Locking clause on deletionHostPlan's actor read", with("api_host_handoff.go", "tx.First(&actor, me.ID)", "tx.Clauses(clause.Locking{Strength: \"SHARE\"}).First(&actor, me.ID)")},
 	}
 	for _, tc := range cases {
 		if bad := sealProblems(tc.sources); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T07B-2b: the reason-review page is an ungated read that ends with the actor
+// seal, like the settle and deletion transactions (R5-C01).
+// ---------------------------------------------------------------------------
+
+// reasonPageSealProblems checks account_erasure_reasons.go: currentAdminIn is
+// called once, as the return of the reasonPageTx callback in reasonPageAttempt,
+// right after the readBeforeSeal seam, so nothing locks after it.
+func reasonPageSealProblems(src string) []string {
+	fset := token.NewFileSet()
+	tree, err := parser.ParseFile(fset, "account_erasure_reasons.go", src, 0)
+	if err != nil {
+		return []string{"account_erasure_reasons.go: cannot parse: " + err.Error()}
+	}
+	var bad []string
+	calls := 0
+	ast.Inspect(tree, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "currentAdminIn" {
+			calls++
+		}
+		return true
+	})
+	if calls != 1 {
+		bad = append(bad, fmt.Sprintf("account_erasure_reasons.go: currentAdminIn must be called exactly once, found %d", calls))
+	}
+	fd := sealFuncDecl(tree, "reasonPageAttempt")
+	if fd == nil {
+		return append(bad, "account_erasure_reasons.go: reasonPageAttempt is gone")
+	}
+	var lit *ast.FuncLit
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "reasonPageTx" && len(c.Args) == 2 {
+			lit, _ = c.Args[1].(*ast.FuncLit)
+		}
+		return true
+	})
+	if lit == nil || len(lit.Body.List) < 2 {
+		return append(bad, "account_erasure_reasons.go: reasonPageAttempt must pass a function literal to a.reasonPageTx")
+	}
+	last := lit.Body.List[len(lit.Body.List)-1]
+	ret, ok := last.(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return append(bad, "account_erasure_reasons.go: the page transaction must end with return currentAdminIn(tx, me, pred)")
+	}
+	if c, ok := ret.Results[0].(*ast.CallExpr); !ok || sealCallName(c) != "currentAdminIn" || len(c.Args) != 3 {
+		bad = append(bad, "account_erasure_reasons.go: the page transaction's last statement must be return currentAdminIn(tx, me, pred)")
+	}
+	seam, ok := lit.Body.List[len(lit.Body.List)-2].(*ast.IfStmt)
+	seamCalled := false
+	if ok {
+		ast.Inspect(seam, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "readBeforeSeal" {
+				seamCalled = true
+			}
+			return true
+		})
+	}
+	if !seamCalled {
+		bad = append(bad, "account_erasure_reasons.go: the readBeforeSeal seam must be the statement just before the seal")
+	}
+	return bad
+}
+
+func TestReasonPageSealIsLast(t *testing.T) {
+	b, err := os.ReadFile("account_erasure_reasons.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := string(b)
+	for _, v := range reasonPageSealProblems(real) {
+		t.Error(v)
+	}
+	with := func(old, replacement string) string {
+		if strings.Count(real, old) != 1 {
+			t.Fatalf("fixture anchor %q must occur once, found %d", old, strings.Count(real, old))
+		}
+		return strings.Replace(real, old, replacement, 1)
+	}
+	seal := "\t\t// Last statement: nothing locks after it.\n\t\treturn currentAdminIn(tx, me, pred)"
+	for _, tc := range []struct{ name, src string }{
+		{"no seal", with(seal, "\t\treturn nil")},
+		{"a statement after the seal", with(seal, "\t\tif err := currentAdminIn(tx, me, pred); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn tx.Exec(\"SELECT 1\").Error")},
+		{"a locking statement after the seam", with(seal, "\t\ttx.Exec(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+		{"a second seal call", with("// --- the scanner -", "func (a *App) otherPage(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- the scanner -")},
+		{"the seam moved", with("\t\tif a.readBeforeSeal != nil {\n\t\t\ta.readBeforeSeal(tx)\n\t\t}\n", "")},
+	} {
+		if bad := reasonPageSealProblems(tc.src); len(bad) == 0 {
 			t.Errorf("%s: the guard accepted it", tc.name)
 		}
 	}

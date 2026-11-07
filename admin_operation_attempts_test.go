@@ -968,6 +968,14 @@ func TestCurrentAdminInOnTheRoutes(t *testing.T) {
 
 // TestActorSealBusy: a raw connection holds the admin's row FOR NO KEY UPDATE.
 func TestActorSealBusy(t *testing.T) {
+	// Three attempts need the first to start within deleteRetryWindow of the
+	// last; a deletion slowed by a loaded database would otherwise end the loop
+	// after one. The window's own bound is judged by S1 at the production window.
+	oldWindow := deleteRetryWindow
+	deleteRetryWindow = 30 * time.Second
+	oldSettle := attemptSettleBusyWindow
+	attemptSettleBusyWindow = 30 * time.Second
+	defer func() { deleteRetryWindow, attemptSettleBusyWindow = oldWindow, oldSettle }()
 	s := newAttemptScene(t)
 	a := s.target("a")
 	s.app.sealAttempts = &atomic.Int64{}

@@ -46,7 +46,7 @@ const eventSelect = (title: string) => screen.getByRole("combobox", { name: `New
 const deleteButton = () => screen.getByRole("button", { name: "Delete account" });
 const staleError = (data: Record<string, unknown>, code: string) => new ApiError(400, "stale", { code, ...data });
 
-const noErasure: ErasureReport = { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0 };
+const noErasure: ErasureReport = { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0, reasonsKept: 0, reasonsRemoved: 0 };
 let minted = 0;
 
 beforeEach(() => {
@@ -531,6 +531,7 @@ describe("DeleteUserPanel definitive answers", () => {
   const rows: [string, () => ApiError, string, boolean][] = [
     ["delete_timed_out", () => coded(503, "delete_timed_out"), ERROR_COPY.delete_timed_out, true],
     ["delete_household_busy", () => coded(409, "delete_household_busy"), ERROR_COPY.delete_household_busy, true],
+    ["delete_reason_busy", () => coded(409, "delete_reason_busy"), ERROR_COPY.delete_reason_busy, true],
     ["admin_account_busy", () => coded(409, "admin_account_busy"), ERROR_COPY.admin_account_busy, true],
     ["attempt_busy", () => coded(503, "attempt_busy"), ERROR_COPY.attempt_busy, true],
     ["last admin", () => coded(400, "last_admin"), ERROR_COPY.last_admin, true],

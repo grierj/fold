@@ -43,8 +43,9 @@ func TestVersionNeedsNoEnvironment(t *testing.T) {
 }
 
 // fold version --json reports the recovery level as an integer (R4-RP), and
-// needs no environment to do it. The level is 1 with the restore barrier
-// (T07B-1b); an older binary has no such field, which the tooling reads as 0.
+// needs no environment to do it. The level is 2 with the reason review
+// (T07B-2b; 1 was the restore barrier alone, T07B-1b); an older binary has
+// no such field, which the tooling reads as 0.
 func TestVersionJSONReportsRecoveryPolicy(t *testing.T) {
 	for _, k := range []string{"APP_ENV", "SESSION_SECRET", "DATABASE_URL"} {
 		t.Setenv(k, "")
@@ -58,8 +59,8 @@ func TestVersionJSONReportsRecoveryPolicy(t *testing.T) {
 		t.Fatalf("version --json is not JSON: %v", err)
 	}
 	level, ok := got["recoveryPolicy"].(float64)
-	if !ok || level != 1 || int(level) != recoveryPolicyLevel {
-		t.Fatalf("recoveryPolicy = %v, want the integer 1", got["recoveryPolicy"])
+	if !ok || level != 2 || int(level) != recoveryPolicyLevel {
+		t.Fatalf("recoveryPolicy = %v, want the integer 2", got["recoveryPolicy"])
 	}
 	if _, ok := got["version"].(string); !ok {
 		t.Fatalf("version --json lost its version field: %v", got)

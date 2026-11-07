@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Auth, Groups, setOnUnauthorized } from "./api";
+import type { ErasureReasonItem } from "./types";
 
 describe("api 401 handling", () => {
   afterEach(() => {
@@ -103,7 +104,7 @@ describe("AdminUsers attempt calls", () => {
 
   it("returns a delete's erasure report and sends the id in the body, not the path", async () => {
     const { AdminUsers } = await import("./api");
-    const report = { householdsKept: 1, householdsScrubbed: 0, peopleAnonymized: 2, guardianLinksRevoked: 0, activityEntriesKept: 3 };
+    const report = { householdsKept: 1, householdsScrubbed: 0, peopleAnonymized: 2, guardianLinksRevoked: 0, activityEntriesKept: 3, reasonsKept: 1, reasonsRemoved: 2 };
     const fetcher = stub(() => new Response(JSON.stringify({ erasure: report }), { status: 200 }));
     await expect(AdminUsers.remove(9, {}, {}, ID)).resolves.toEqual({ erasure: report });
     const del = fetcher.mock.calls.find(([, opts]) => opts?.method === "DELETE");
@@ -145,5 +146,27 @@ describe("api failure bodies", () => {
     expect(refused).toMatchObject({ status: 400, code: "last_admin", unreadable: false });
     const noMessage = await failWith(new Response(JSON.stringify({ code: "needs_successor", groups: [] }), { status: 400 }));
     expect(noMessage).toMatchObject({ status: 400, unreadable: false });
+  });
+});
+
+describe("AdminUsers.erasureReasonsPage", () => {
+  const csrf = () => new Response(JSON.stringify({ csrfToken: "csrf" }), { status: 200 });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the cursor in the body, null for the first page", async () => {
+    const { AdminUsers } = await import("./api");
+    const item: ErasureReasonItem = {
+      requestId: "-9223372036854775808", reviewHash: "a".repeat(64), role: "subject", purpose: "contact", status: "granted",
+      createdAt: "2026-11-01T12:00:00Z", counterpartName: "Deleted account", counterpartDeleted: true, counterpartRef: "41",
+      reviewerIsParty: false, reason: "Needs a ride.",
+    };
+    const page = { reviewRequired: true, items: [item], next: "-9223372036854775808" };
+    const fetcher = vi.fn(async (url: RequestInfo | URL, _opts?: RequestInit) => (String(url).endsWith("/auth/csrf") ? csrf() : new Response(JSON.stringify(page), { status: 200 })));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(AdminUsers.erasureReasonsPage(9, null)).resolves.toEqual(page);
+    await AdminUsers.erasureReasonsPage(9, "-5");
+    const posts = fetcher.mock.calls.filter(([url]) => String(url) === "/api/v1/admin/users/9/erasure-reasons/page");
+    expect(posts.map(([, opts]) => JSON.parse((opts as RequestInit).body as string))).toEqual([{ after: null }, { after: "-5" }]);
+    expect((posts[0][1] as RequestInit).method).toBe("POST");
   });
 });

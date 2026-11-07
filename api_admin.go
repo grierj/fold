@@ -929,6 +929,11 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		// event this person hosts alone (M7.4 owner decision 3; see GET
 		// /admin/users/:id/sole-host-events).
 		HostSuccessors map[string]uint `json:"hostSuccessors"`
+		// ReasonReview carries every contact-request reason the admin was shown
+		// with the hash it came with and a choice (keep or remove). It is read
+		// only when the account has reasons; an account without any ignores it
+		// (T07B-2b).
+		ReasonReview *reasonReviewBody `json:"reasonReview"`
 	}
 	// An empty body is fine (old clients, and people who lead and host
 	// nothing alone); a body that does not parse is not.
@@ -969,6 +974,14 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid host successors")
 		return
 	}
+	// The review's shape is checked after the submission check, so a bad one
+	// ends the id rolled back like every other refusal (R4-C08).
+	reasonChoices, ok := parseReasonReview(body.ReasonReview)
+	if !ok {
+		claim.end(attemptRolledBack)
+		jsonError(c, http.StatusBadRequest, "invalid reason review")
+		return
+	}
 	// Soft delete (DeletedAt), after handing off every group they lead alone
 	// and every church-wide event they host alone, and ending their
 	// memberships. The email is replaced so the address is free for a new
@@ -993,9 +1006,15 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// replaces these on every successful attempt; rolled-back values are unused.
 	var householdCounts householdErasureCounts
 	var auditCounts auditErasureCounts
+	// What the reason review decided, for the response and the audit rows.
+	var plan reasonPlan
 	// The actor is decided again on their locked row as the last locking
-	// statement before COMMIT (R5-C01), with or without an attempt id.
-	seal := a.deletionSeal(me)
+	// statement before COMMIT (R5-C01), with or without an attempt id. When the
+	// account has reasons to review, the same locked row must also be allowed
+	// to review them: the callback sets sealPred then, and clears it on every
+	// attempt.
+	var sealPred func(*models.User) bool
+	seal := a.deletionSeal(me, &sealPred)
 	for {
 		u := &models.User{ID: targetID}
 		// A fresh restore ticket per attempt (T07B-1b): taken first in the
@@ -1029,6 +1048,13 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 				msg = "you cannot delete your own account"
 			}
 			if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+				return err
+			}
+			// The contact-request reasons: locked and hashed here, decided at
+			// the statement after eraseContactRequestTextIn. An account without
+			// any ignores the review.
+			plan, sealPred, err = a.planReasonReviewIn(tx, actor, u, reasonChoices, body.ReasonReview != nil, c.ClientIP())
+			if err != nil {
 				return err
 			}
 			// The address the account holds now, read from the row just locked
@@ -1100,6 +1126,11 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			if err := eraseContactRequestTextIn(tx, s); err != nil {
 				return err
 			}
+			// The admin's decisions about the reasons: one audit row each, and
+			// the removed text blanked (T07B-2b). Directly after the line above.
+			if err := eraseContactRequestReasonsIn(tx, s, plan); err != nil {
+				return err
+			}
 			// The household step: the seat, the individual's household person
 			// rows, a staged person's registrations, guardian links, unused
 			// teen-consent tokens and the sole-subject households (T12, T14-T16,
@@ -1153,6 +1184,20 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	// The reason review (T07B-2b). Each is a refusal before COMMIT: the id above
+	// already ended rolled back and nothing was deleted.
+	if errors.Is(err, errNeedsReasonReview) {
+		jsonErrorCode(c, http.StatusConflict, "needs_reason_review", "the account has contact-request reasons to review")
+		return
+	}
+	if errors.Is(err, errReasonReviewChanged) {
+		jsonErrorCode(c, http.StatusConflict, "reason_review_changed", "the contact-request reasons changed since they were reviewed")
+		return
+	}
+	if errors.Is(err, errReasonReviewForbidden) || (errors.Is(err, errActorForbidden) && sealPred != nil) {
+		jsonErrorCode(c, http.StatusForbidden, "reason_review_not_allowed", "only an adult admin can review these reasons")
+		return
+	}
 	if errors.Is(err, errActorForbidden) {
 		jsonError(c, http.StatusForbidden, "forbidden")
 		return
@@ -1186,6 +1231,15 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 				jsonErrorCode(c, http.StatusConflict, "admin_account_busy", "your own account was being updated, so nothing was changed")
 				return
 			}
+			if errors.Is(err, errReasonCounterpartBusy) {
+				// Blanking a reason needed a deleted party's users row and every
+				// attempt found it held (or the rollback after one was not
+				// acknowledged): nothing was deleted, COMMIT was never sent.
+				// Named apart from a busy household, which it is not.
+				log.Printf("user deletion found a reviewed request's deleted party busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+				jsonErrorCode(c, http.StatusConflict, "delete_reason_busy", "someone was changing a request that involves this person, so nothing was deleted")
+				return
+			}
 			if isHouseholdBusy(err) {
 				// Every attempt found a household row held by someone else (or
 				// the rollback after one was not acknowledged, so no further
@@ -1199,7 +1253,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"erasure": newErasureReport(householdCounts, auditCounts)})
+	report := newErasureReport(householdCounts, auditCounts)
+	report.ReasonsKept, report.ReasonsRemoved = plan.counts()
+	c.JSON(http.StatusOK, gin.H{"erasure": report})
 }
 
 func (a *App) apiAdminResetPassword(c *gin.Context) {

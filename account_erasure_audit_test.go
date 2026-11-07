@@ -834,9 +834,12 @@ var auditWriterCensus = map[string]string{
 	// System maintenance: no actor or IP, fixed host-removal metadata and a
 	// version/count-only sweep marker. The two existing erasure writers now
 	// accept a nil system actor, preserving their nonzero admin attribution.
-	"account_erasure_tombstones.go:eraseTombstoneOnce":            "330d5e241aaacac7e1006fac835afd5b17c2a60b3a98b20dc872f94801529504",
-	"account_erasure.go:eraseMessagesIn":                          "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
-	"account_erasure_households.go:eraseHouseholdRecordsIn":       "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
+	"account_erasure_tombstones.go:eraseTombstoneOnce":      "330d5e241aaacac7e1006fac835afd5b17c2a60b3a98b20dc872f94801529504",
+	"account_erasure.go:eraseMessagesIn":                    "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
+	"account_erasure_households.go:eraseHouseholdRecordsIn": "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
+	// T07B-2b: the page-view row of the reason review (no IP, actor the admin;
+	// meta keys count and source). Decision rows go through audit.WriteAll.
+	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
 	"api_account_requests.go:apiConfirmAccountSetup":              "f97b48dcb56a3e178e94d2c297f260fa526f176e68252f55b8085d4a774e0acb",
@@ -1238,8 +1241,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 120 {
-		t.Fatalf("audit.Write sites = %d, expected 120; review every changed site", len(c.Sites))
+	if len(c.Sites) != 121 {
+		t.Fatalf("audit.Write sites = %d, expected 121; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)

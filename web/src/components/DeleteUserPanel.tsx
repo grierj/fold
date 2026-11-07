@@ -71,7 +71,7 @@ type Failure =
   | { kind: "locked"; text: string; reload: boolean };
 
 const UNCERTAIN: Failure = { kind: "uncertain", text: CHECKING_COPY };
-const BUSY_CODES = ["delete_timed_out", "delete_household_busy", "admin_account_busy", "attempt_busy"] as const;
+const BUSY_CODES = ["delete_timed_out", "delete_household_busy", "delete_reason_busy", "admin_account_busy", "attempt_busy"] as const;
 
 // Answers that end the attempt on any of the three calls: a restore was seen,
 // the session ended, or this admin may not do it.

@@ -91,6 +91,8 @@ type App struct {
 	// transaction; deleteBeforeRetry runs between a busy attempt's rollback and
 	// the next attempt, with no transaction open. conversionAfterUserLocks runs
 	// in acceptHouseholdConversion right after its users statement.
+	// readBeforeSeal runs in a reason-review page transaction between its view
+	// audit and the actor seal, given the open transaction (T07B-2b).
 	// sealAttempts counts seal entries of the deletion and settle.
 	restoreAckPause          func()
 	attemptClock             func() time.Duration
@@ -99,6 +101,7 @@ type App struct {
 	settleAfterFence         func(*gorm.DB)
 	deleteBeforeSeal         func(*gorm.DB)
 	deleteBeforeRetry        func()
+	readBeforeSeal           func(*gorm.DB)
 	conversionAfterUserLocks func(*gorm.DB)
 	sealAttempts             *atomic.Int64
 }
