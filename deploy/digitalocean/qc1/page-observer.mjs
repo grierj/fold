@@ -43,7 +43,9 @@ export function pageObserver({ origin, append = () => {}, sleep = (ms) => new Pr
       rec.requestMs = t && t.responseEnd >= 0 && t.startTime >= 0 ? Math.round(t.responseEnd * 100) / 100 : null;
       rec.bytes = body.length;
     } catch {
-      /* the body could not be read: the fields stay null (absent) */
+      // Keep the elapsed lower bound even if the body fails after a timeout.
+      rec.completed = false;
+      rec.ageMs = Math.round(clock() - inflight.get(rec.seq).startedAt);
     }
     inflight.delete(rec.seq);
     done.push(rec);

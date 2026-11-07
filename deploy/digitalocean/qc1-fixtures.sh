@@ -459,7 +459,7 @@ legacy_rows() { # sizes
     printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
     # the legacy PUT: the accepted 100-decision subset of 120 seeded pairs (50 Keep, 50 Blank), its measured body, the verified effects, and the 101st decision refused by count validation
     (( s >= 100 )) || continue
-    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","decisions":100,"accepted":100,"bodyBytes":17500,"workload":{"backgroundRows":%s,"loadedPairs":120,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"}},"countRefusal":{"decisions":101,"status":"400","unchanged":true},%s}}\n' "$s" "$s" "$(ins "$(( s + 120 ))")"
+    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","decisions":100,"accepted":100,"bodyBytes":17500,"workload":{"backgroundRows":%s,"loadedPairs":120,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"}},"countRefusal":{"decisions":101,"status":"400","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true},%s}}\n' "$s" "$s" "$(ins "$(( s + 120 ))")"
   done
 }
 { cat "$WORK/e.jsonl"
@@ -844,15 +844,16 @@ lp leg-put-audits '.put.effects.audits.count = 99'
 lp leg-put-audit-source '.put.effects.audits.source = "forward"'
 lp leg-put-nomarkers 'del(.put.effects.markers)'
 lp leg-put-noaudits 'del(.put.effects.audits)'
-# the 101st decision is count validation, shown as a refusal that changes nothing; ANY client error will do
+# The refusal must be tied to the count check under valid authentication.
 lp leg-put-norefusal 'del(.put.countRefusal)'
 lp leg-put-refusal-200 '.put.countRefusal.status = "200"'
 lp leg-put-refusal-500 '.put.countRefusal.status = "500"'
 lp leg-put-refusal-n '.put.countRefusal.decisions = 100'
 lp leg-put-refusal-changed '.put.countRefusal.unchanged = false'
-# a 413 is NOT required, and is not the only refusal that satisfies it
-mut leg-put-400 'if .item == 5 and .size == 100 then .put.countRefusal.status = "422" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-400")" == 0 ]]
-mut leg-put-413 'if .item == 5 and .size == 100 then .put.countRefusal.status = "413" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-413")" == 0 ]]
+lp leg-put-refusal-413 '.put.countRefusal.status = "413"'
+lp leg-put-refusal-unauthenticated '.put.countRefusal.authenticated = false'
+lp leg-put-refusal-wrong-reason '.put.countRefusal.reason = "unauthorized"'
+lp leg-put-refusal-oversize '.put.countRefusal.bodyBytes = 999999999'
 if jq -e '.put | has("boundary")' "$WORK/e2.jsonl" >/dev/null 2>&1; then echo 'qc1: the legacy PUT row still carries a byte-cap boundary' >&2; exit 1; fi
 if grep -nE 'nextStatus|fitStatus.*413|boundary' <(sed -n '/Legacy rows (T07B-3a/,/The labels are bound to the data/p' "$HERE/qc1/lib.sh"); then echo 'qc1: the legacy PUT judge still asks for a byte-cap boundary' >&2; exit 1; fi
 # The marker lookup and the legacy discovery likewise need their route, their source and count, the table they ran against and their instruments.
@@ -1162,10 +1163,11 @@ cat >"$WORK/pages2.jsonl" <<'JSONL'
 {"seq":1,"walk":2,"status":200,"foreignOrigin":false,"bytes":30100,"requestMs":10400,"nodeParseMs":2.5,"event":"done"}
 {"seq":2,"walk":2,"event":"start","status":200,"foreignOrigin":false}
 {"seq":2,"walk":2,"event":"timeout","ageMs":10250}
+{"seq":2,"walk":2,"event":"done","status":200,"foreignOrigin":false,"bytes":null,"requestMs":null,"nodeParseMs":null,"completed":false,"ageMs":10300}
 {"seq":3,"walk":2,"event":"start","status":200,"foreignOrigin":false}
 JSONL
 pj="$(qc1_pages_from_jsonl "$WORK/pages2.jsonl")"
-[[ "$(jq -c '[.count, .started, .completed, .incomplete, .pendingAgeMsMax, .requestMsMax, .absent.requestMs, .absent.bytes, (.walks | map([.walk, .started, .completed, .incomplete]))]' <<<"$pj")" == '[4,4,2,2,10250,10400,2,2,[[1,1,1,0],[2,3,1,2]]]' ]] || { echo "rebuilt summary: $(jq -c . <<<"$pj")" >&2; exit 1; }
+[[ "$(jq -c '[.count, .started, .completed, .incomplete, .pendingAgeMsMax, .requestMsMax, .absent.requestMs, .absent.bytes, (.walks | map([.walk, .started, .completed, .incomplete]))]' <<<"$pj")" == '[4,4,2,2,10300,10400,2,2,[[1,1,1,0],[2,3,1,2]]]' ]] || { echo "rebuilt summary: $(jq -c . <<<"$pj")" >&2; exit 1; }
 jq -nc --argjson pages "$pj" '{status:"partial", item:10, case:"browser-panel-100", size:100, workers:0, reasons:100, browser:{pages:$pages}, failed:{phase:"unknown", error:"x"}}' >"$WORK/crash2.jsonl"
 st="$(qc1_evidence_status "$WORK/crash2.jsonl" 100 100 "$WORK/env.json" "$HEAD_FAKE" 6291456 | jq -c '[.budgetFailures[] | .failure] | sort')"
 [[ "$st" == '["page-request","page-request-unfinished"]' ]] || { echo "a crashed run with unfinished pages: $st" >&2; exit 1; }

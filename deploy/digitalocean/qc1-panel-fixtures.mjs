@@ -405,7 +405,9 @@ const parsed = (lines, event) => lines.map((l) => JSON.parse(l)).filter((x) => x
   await obs.onResponse(resp(PAGE, { fail: true }));
   await obs.onResponse(resp(PAGE, { body: "not json" }));
   const dones = parsed(lines, "done");
-  assert.deepEqual(dones[3], { seq: 3, walk: 2, status: 200, foreignOrigin: false, bytes: null, requestMs: null, nodeParseMs: null, event: "done" });
+  assert.equal(dones[3].completed, false);
+  assert.equal(dones[3].requestMs, null);
+  assert.equal(typeof dones[3].ageMs, "number");
   assert.equal(dones[4].nodeParseMs, null);
   assert.equal(dones[4].bytes, 8);
   // a foreign origin and a non-200 make the origin unverified
@@ -420,6 +422,19 @@ const parsed = (lines, event) => lines.map((l) => JSON.parse(l)).filter((x) => x
   void o4.onResponse(resp(PAGE, { gate: new Promise(() => {}) }));
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(await o4.walkStats(1, 100), { pageRequests: 1, pageResponseBytes: null, apiOrigin: "unverified" });
+}
+{
+  // A body that rejects after a timeout must retain its observed lower bound.
+  let t = 0, rejectBody;
+  const lines = [];
+  const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async (ms) => { t += ms; }, clock: () => t });
+  const pending = obs.onResponse(resp(PAGE, { gate: new Promise((_, reject) => { rejectBody = reject; }) }));
+  await obs.drain(10500);
+  rejectBody(new Error("body failed"));
+  await pending;
+  assert.equal(obs.observationsWithMissing()[0].completed, false);
+  assert.ok(summarizePages(obs.observationsWithMissing()).pendingAgeMsMax >= 10000);
+  assert.ok(parsed(lines, "done")[0].ageMs >= 10000);
 }
 {
   // DRAIN: the final collection waits (bounded) for everything in flight, in every walk. What does not complete is marked timed out ONCE, persisted, and stays as an explicit entry with the age it reached.
