@@ -2,7 +2,8 @@
 // VIRTUAL clock (no browser, no sleeping), so the sequence, the readiness rule, the click and navigation bookkeeping and the finding the judge
 // reads are tested here. Run by qc1-fixtures.sh; exits non-zero with a line on stderr on the first failure.
 import assert from "node:assert/strict";
-import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, DISPLAY_PAGE, FIRST_CLICK_MS } from "./qc1/panel-core.mjs";
+import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, summarizePages, DISPLAY_PAGE, FIRST_CLICK_MS } from "./qc1/panel-core.mjs";
+import { pageObserver } from "./qc1/page-observer.mjs";
 
 let clock = 0;
 const now = () => clock;
@@ -12,7 +13,7 @@ const sleep = async (ms) => {
 
 // A model of the panel: the first page is on screen at firstPageAt, the walk ends at walkEndAt; a refused press starts a second walk only after
 // restartDelay (the old walk's "ended" state is still on screen until then, as it is in the real panel), and the page responses it receives are counted.
-function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = () => 12, navMs = () => 20, canChange = true, neverEnds = false, restartDelay = 800, walk2Ms = 2500, failAt = null, hook = true, subtleBytes = null }) {
+function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = () => 12, navMs = () => 20, canChange = true, neverEnds = false, restartDelay = 800, walk2Ms = 2500, failAt = null, hook = true, subtleBytes = null, slowPages = {}, nullFields = {} }) {
   const s = { start: 0, chosen: new Set(), chooseCalls: 0, navCalls: [], restartAt: null, walk2End: null, changed: null, pressed: false, tOpen: 0, wal: 1000, marks: [] };
   const pages = Math.ceil(expected / 100);
   const walking = () => {
@@ -122,12 +123,16 @@ function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = ()
       return { subtleCalls: subtleBytes === 0 ? 0 : 2, subtleBytes: subtleBytes ?? pre + 4, subtleMs: 3 };
     },
     async walkStats() {
-      return {
-        pageRequests: pages,
-        pageResponseBytes: expected * 310,
-        apiOrigin: "real",
-        pageList: Array.from({ length: pages }, (_, i) => ({ bytes: 30000 + i, requestMs: 10 + (i % 7), nodeParseMs: 1.5, pageReadMs: 2, pageParseMs: 3 + (i % 3) })),
-      };
+      return { pageRequests: pages, pageResponseBytes: expected * 310, apiOrigin: "real" };
+    },
+    // Every review page observation that has COMPLETED by now, in every walk (what the real collector persists as each page finishes).
+    async pageObservations() {
+      const first = Math.min(pages, Math.floor((pages * Math.max(0, clock - s.tOpen)) / walkEndAt));
+      const second = s.restartAt === null || clock < s.restartAt ? 0 : Math.min(pages, Math.floor((pages * (clock - s.restartAt)) / walk2Ms));
+      const mk = (walk, i, seq) => ({
+        seq, walk, status: 200, bytes: 30000 + i, requestMs: slowPages[`${walk}:${i}`] ?? 10 + (i % 7), nodeParseMs: 1.5, pageReadMs: 2, pageParseMs: 3 + (i % 3), ...(nullFields[`${walk}:${i}`] ?? {}),
+      });
+      return [...Array.from({ length: first }, (_, i) => mk(1, i, i)), ...Array.from({ length: second }, (_, i) => mk(2, i, pages + i))];
     },
     async metrics() {
       return { heapUsedBytes: 9e6, heapAfterGcBytes: 6e6, domNodes: 4200, longTaskMs: 120, longTaskCount: 3 };
@@ -200,13 +205,15 @@ assert.equal(parseUnchosen("All 10 reasons chosen."), null);
   assert.equal(r.domNodes, 4200);
   assert.equal(r.afterInteractions.domNodes, 4200);
   // F7: per-page figures, the digest path that ran, the press response and the per-phase WAL and audit-by-action figures.
-  assert.equal(r.pages.count, 10);
+  assert.equal(r.pages.count, 20, "both walks: the first read and the read again after the refused press");
+  assert.deepEqual(r.pages.walks.map((w) => [w.walk, w.count]), [[1, 10], [2, 10]]);
+  assert.deepEqual(r.pages.absent, { bytes: 0, requestMs: 0, readMs: 0, parseMs: 0, nodeParseMs: 0 });
   assert.equal(r.pages.responseBytesMax, 30009);
   assert.equal(r.pages.requestMsMax, 16);
   assert.equal(r.pages.readMsMax, 2);
   assert.equal(r.pages.parseMsMax, 5);
-  assert.equal(r.pages.parseMsTotal, 39);
-  assert.equal(r.pages.readMsTotal, 20);
+  assert.equal(r.pages.parseMsTotal, 78);
+  assert.equal(r.pages.readMsTotal, 40);
   assert.equal(r.pages.nodeParseMsMax, 1.5);
   assert.equal(r.digest.path, "webcrypto");
   assert.equal(r.digest.preimageBytes, 35 + 40 * 1000);
@@ -251,7 +258,7 @@ assert.equal(parseUnchosen("All 10 reasons chosen."), null);
   assert.ok(r.clicks.beforeWalkEnd >= 1, "the clicks made before the failure are kept");
   assert.equal(r.walkEndMs, null);
   assert.equal(r.renderReadyMs, null);
-  assert.equal(r.pages, null);
+  assert.ok(r.pages !== null && r.pages.walks.length === 1, "the pages that completed before the failure are kept");
   assert.equal(r.press, null, "the press phase was never reached");
 }
 // A failure LATE in the flow keeps the earlier phases, including a figure that already crossed a budget (here a 130 s walk).
@@ -295,6 +302,116 @@ assert.equal(parseUnchosen("All 10 reasons chosen."), null);
   assert.equal(r.failed, null);
   assert.equal(r.phases.walk, null);
   assert.equal(r.phases.press, null);
+}
+
+// --- every page observation, in every walk, even when the run stops ------------------------------------------------------------------------------------
+{
+  // A slow request in the RELOAD (walk 2) is seen as the reload's, and is the overall maximum.
+  const { r } = await run({ expected: 1000, slowPages: { "2:3": 11000 } });
+  assert.equal(r.failed, null);
+  assert.equal(r.pages.requestMsMax, 11000);
+  assert.equal(r.pages.walks[0].requestMsMax, 16);
+  assert.equal(r.pages.walks[1].requestMsMax, 11000);
+}
+{
+  // A run that stops MID-WALK (the walk never ends) keeps the pages that had completed, including a slow one, though the first walk's totals were never pulled.
+  const { r } = await run({ expected: 1000, neverEnds: true, slowPages: { "1:2": 12500 } }, { timeoutMs: 20000 });
+  assert.equal(r.failed.phase, "walk");
+  assert.equal(r.walkEndMs, null);
+  assert.equal(r.pageRequests, null, "the first walk's totals were never taken");
+  assert.ok(r.pages !== null && r.pages.count >= 3, `completed pages are kept: ${r.pages && r.pages.count}`);
+  assert.equal(r.pages.requestMsMax, 12500);
+  assert.deepEqual(r.pages.walks.map((w) => w.walk), [1]);
+}
+{
+  // Absent fields are counted, never zero, and never hide the maximum of the pages that have them.
+  const { r } = await run({ expected: 1000, nullFields: { "1:1": { requestMs: null, pageParseMs: null }, "2:4": { bytes: null, pageReadMs: null } }, slowPages: { "1:5": 9000 } });
+  assert.deepEqual(r.pages.absent, { bytes: 1, requestMs: 1, readMs: 1, parseMs: 1, nodeParseMs: 0 });
+  assert.equal(r.pages.requestMsMax, 9000);
+  assert.equal(r.pages.count, 20);
+}
+{
+  // If the page is gone at the end, the pages collected when the walk ended are still used.
+  const p = fakePanel({ expected: 1000, slowPages: { "1:1": 15000 } });
+  let calls = 0;
+  const original = p.pageObservations;
+  p.pageObservations = async () => {
+    calls++;
+    if (calls > 1) throw new Error("the page is gone");
+    return original();
+  };
+  clock = 0;
+  const r = await measurePanel(p, { expected: 1000, now, sleep });
+  assert.equal(r.pages.requestMsMax, 15000);
+}
+// summarizePages on its own: nothing observed is null, not zero.
+assert.equal(summarizePages([]), null);
+assert.equal(summarizePages(null), null);
+{
+  const s = summarizePages([{ walk: 1, bytes: 10, requestMs: 5, nodeParseMs: 1, pageReadMs: 2, pageParseMs: 3 }, { walk: 1, bytes: null, requestMs: 7, nodeParseMs: null, pageReadMs: null, pageParseMs: null }]);
+  assert.equal(s.requestMsMax, 7);
+  assert.equal(s.responseBytesMax, 10);
+  assert.deepEqual(s.absent, { bytes: 1, requestMs: 0, readMs: 1, parseMs: 1, nodeParseMs: 1 });
+}
+
+// --- the page observer: each page is persisted AS IT COMPLETES, through every walk ------------------------------------------------------------------------
+{
+  const lines = [];
+  const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async () => {}, clock: () => 0 });
+  const resp = (path, { status = 200, body = '{"items":[]}', timing = { startTime: 1, responseEnd: 20 }, origin = "http://127.0.0.1:8080", fail = false, gate = null } = {}) => ({
+    url: () => `${origin}${path}`,
+    status: () => status,
+    body: async () => {
+      if (gate) await gate;
+      if (fail) throw new Error("no body");
+      return Buffer.from(body);
+    },
+    request: () => ({ timing: () => timing }),
+  });
+  const page = "/api/v1/admin/users/7/erasure-reasons/page";
+  await obs.onResponse(resp("/api/v1/auth/me"));
+  assert.equal(obs.responses(), 0, "only review pages are observed");
+  await obs.onResponse(resp(page));
+  assert.equal(lines.length, 1, "the first page is already persisted");
+  assert.deepEqual(JSON.parse(lines[0]), { seq: 0, walk: 1, status: 200, foreignOrigin: false, bytes: 12, requestMs: 20, nodeParseMs: 0, });
+  // A slow page still being read is NOT lost to a later failure once it completes, and a pending one is not reported as done.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const pending = obs.onResponse(resp(page, { gate, timing: { startTime: 1, responseEnd: 14000 } }));
+  assert.equal(lines.length, 1);
+  assert.equal(obs.responses(), 2, "a request that has arrived counts for a fresh-traversal proof before it completes");
+  assert.equal(obs.observations().length, 1);
+  release();
+  await pending;
+  assert.equal(lines.length, 2);
+  assert.equal(obs.observations()[1].requestMs, 14000);
+  // walk 1's totals, then the reload is walk 2 and is persisted and kept apart
+  const ws = await obs.walkStats(1);
+  assert.deepEqual(ws, { pageRequests: 2, pageResponseBytes: 24, apiOrigin: "real" });
+  obs.startWalk(2);
+  await obs.onResponse(resp(page, { timing: { startTime: 1, responseEnd: 11000 } }));
+  assert.deepEqual(obs.observations().map((o) => [o.seq, o.walk]), [[0, 1], [1, 1], [2, 2]]);
+  assert.equal(JSON.parse(lines[2]).walk, 2);
+  assert.equal(JSON.parse(lines[2]).requestMs, 11000);
+  const w1 = await obs.walkStats(1);
+  assert.equal(w1.pageRequests, 2, "the reload does not change the first walk's totals");
+  // an unreadable body is recorded with null fields (absent), a non-JSON body has no parse time, a foreign origin and a non-200 make the origin unverified
+  await obs.onResponse(resp(page, { fail: true }));
+  await obs.onResponse(resp(page, { body: "not json" }));
+  assert.deepEqual(JSON.parse(lines[3]), { seq: 3, walk: 2, status: 200, foreignOrigin: false, bytes: null, requestMs: null, nodeParseMs: null });
+  assert.equal(JSON.parse(lines[4]).nodeParseMs, null);
+  assert.equal(JSON.parse(lines[4]).bytes, 8);
+  const o2 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
+  await o2.onResponse(resp(page, { origin: "http://evil.example" }));
+  assert.equal((await o2.walkStats(1)).apiOrigin, "unverified");
+  const o3 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
+  await o3.onResponse(resp(page, { status: 503 }));
+  assert.equal((await o3.walkStats(1)).apiOrigin, "unverified");
+  // a walk with a request that never completes gets no totals (null, unverified), after waiting for it
+  const o4 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
+  void o4.onResponse(resp(page, { gate: new Promise(() => {}) }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(await o4.walkStats(1, 100), { pageRequests: 1, pageResponseBytes: null, apiOrigin: "unverified" });
 }
 
 // --- small and boundary reviews -----------------------------------------------------------------------------------------------------------------------

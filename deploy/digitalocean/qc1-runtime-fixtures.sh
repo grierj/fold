@@ -70,7 +70,7 @@ RDS="$HERE/restore-drill.sh"
 grep -q 'RESTORE_BROWSER_LAUNCH="\$ROOT/deploy/digitalocean/qc1/browser-launch.cjs"' "$RDS"
 grep -q 'restoreLaunchOptions(process.env)' "$HERE/testdata/restore-browser.cjs"
 if command -v node >/dev/null; then
-  for m in browser.mjs browser-preflight.mjs response-accounting.mjs panel-measure.mjs panel-core.mjs panel-driver.mjs set-v1.mjs; do node --check "$HERE/qc1/$m"; done
+  for m in browser.mjs browser-preflight.mjs response-accounting.mjs panel-measure.mjs panel-core.mjs panel-driver.mjs page-observer.mjs set-v1.mjs; do node --check "$HERE/qc1/$m"; done
   node --check "$HERE/qc1/browser-launch.cjs"; node --check "$HERE/testdata/restore-browser.cjs"
   nodet() { node --input-type=module -e "$1"; }
   imp="import * as b from '$HERE/qc1/browser.mjs'; import * as r from '$HERE/qc1/response-accounting.mjs'; import { createRequire } from 'node:module'; import assert from 'node:assert/strict'; const cjs = createRequire('$HERE/qc1/x.mjs')('./browser-launch.cjs');"
@@ -117,10 +117,9 @@ if command -v node >/dev/null; then
   assert.equal(r.walkOrigin({ ...ok, requests: 0 }, 0, 0), 'unverified');
   " >/dev/null
 
-  if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-driver.mjs" "$HERE/qc1/panel-core.mjs"; then echo 'the panel measurement reads Content-Length' >&2; exit 1; fi
-  grep -qF 'r.body().then(' "$HERE/qc1/panel-measure.mjs"; grep -qF 'bytes: body.length' "$HERE/qc1/panel-measure.mjs"; grep -qF 'bytes: null, requestMs: null' "$HERE/qc1/panel-measure.mjs"   # an unreadable body is null, never zero
-  grep -q 'walk = { requests: 0, bad: 0, foreignOrigin: 0, bytes: null }' "$HERE/qc1/panel-measure.mjs"
-
+  if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-driver.mjs" "$HERE/qc1/panel-core.mjs" "$HERE/qc1/page-observer.mjs"; then echo 'the panel measurement reads Content-Length' >&2; exit 1; fi
+  # The decoded body size is the observer's: read from the body, null (absent) when the body cannot be read, never zero.
+  grep -qF 'const body = await r.body();' "$HERE/qc1/page-observer.mjs"; grep -qF 'rec.bytes = body.length;' "$HERE/qc1/page-observer.mjs"; grep -qF 'bytes: null, requestMs: null, nodeParseMs: null' "$HERE/qc1/page-observer.mjs"
   # --- the preflight against a fake Playwright: module resolution is real, the browser is not ------------------------------
   # Two fake packages, as the repository has them: @playwright/test (the measurement) and playwright (the restore proof), over one playwright-core.
   fakepkg() { # dir name version
@@ -504,7 +503,7 @@ fi
 # --- the runner: browser preflight before anything is created -------------------------------------------------------------
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web/src/lib"
 cp "$HERE/qc1-measure.sh" "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
+cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
 cp "$ROOT/api_profile.go" "$ROOT/main.go" "$CLONE/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null

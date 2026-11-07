@@ -113,7 +113,7 @@ export const NO_SUBTLE_SCRIPT = 'Object.defineProperty(window.crypto, "subtle", 
 
 const round1 = (v) => Math.round(v * 10) / 10;
 
-export function playwrightDriver({ page, context, url, targetEmail, expected, changeCmd = "", phaseCmd = "", walk, pageResponses = () => 0 }) {
+export function playwrightDriver({ page, context, url, targetEmail, expected, changeCmd = "", phaseCmd = "", observer }) {
   const rows = page.locator(ROWS);
   let rowEl = null;
   const deletes = [];
@@ -149,7 +149,7 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
     },
     // Every review page response this page has received, from the first request on (never reset): a fresh traversal is proven by this count growing.
     async pageResponseCount() {
-      return pageResponses();
+      return observer.responses();
     },
     // The page-clock stamps of the first load and of the second walk (see INIT_SCRIPT), each null until it happened. All are on the same clock, so any difference is exact.
     async timeline() {
@@ -251,18 +251,26 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
       mints.length = 0;
       lastDelete = null;
       const clickedAt = Date.now();
+      observer.startWalk(2); // the review pages that arrive from here on are the reload's
       await rowEl.getByRole("button", { name: "Delete account" }).click();
       await page.waitForFunction(() => true);
       for (let i = 0; i < 6000 && (deletes.length === 0 || lastDelete === null); i++) await new Promise((r) => setTimeout(r, 10));
       if (deletes.length === 0 || lastDelete === null) throw new Error("the press sent no DELETE");
       return { status: lastDelete.status, bodyBytes: deletes[0].bytes, pressToRequestMs: deletes[0].at - clickedAt, responseMs: lastDelete.at - deletes[0].at };
     },
+    // The first walk's totals, once its responses have all completed.
     async walkStats() {
-      const stats = await walk();
-      // The page's own read+parse figure for each of the first walk's responses, in arrival order (the same order as the Node-side list).
-      const inPage = await page.evaluate(() => window.__qc.pages.map((p) => ({ r: p.readMs, p: p.parseMs })));
+      return observer.walkStats(1);
+    },
+    // EVERY review page observation that has completed, in every walk, with the page's own read and parse time merged in by arrival order. If the page is gone (a failed run)
+    // the in-page figures are null (absent) and the Node-side observations, which were persisted as they completed, are still returned.
+    async pageObservations() {
+      let inPage = [];
+      try {
+        inPage = await page.evaluate(() => window.__qc.pages.map((p) => ({ r: p.readMs, p: p.parseMs })));
+      } catch { /* the page is gone */ }
       const r2 = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : null);
-      return { ...stats, pageList: stats.pageList.map((p, i) => ({ ...p, pageReadMs: r2(inPage[i]?.r), pageParseMs: r2(inPage[i]?.p) })) };
+      return observer.observations().map((o) => ({ ...o, pageReadMs: r2(inPage[o.seq]?.r), pageParseMs: r2(inPage[o.seq]?.p) }));
     },
     async metrics() {
       const cdp = await context.newCDPSession(page);

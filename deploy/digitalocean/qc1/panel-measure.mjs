@@ -18,14 +18,17 @@
 // QC1_NO_SUBTLE=1 (remove crypto.subtle before the page loads, as a plain-http LAN address lacks it, so the bundled SHA-256 runs), QC1_CLICKS
 // (default 30), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
 // interactions-end, press-start, press-end). Exit 3 when the browser tooling is not usable, 4 when sign-in fails, 5 when the run breaks before any
-// measurement; nothing is written then, and the runner leaves the row missing (the run stays incomplete). Exit 6 when a PHASE failed after the run
+// result is written; the pages seen so far are still in QC1_OUT.pages.jsonl, and the runner records them as a partial row. Exit 6 when a PHASE failed after the run
 // started: the file is written with `failed` naming the phase and every figure measured before it (including any budget already crossed); the runner
 // records it as a PARTIAL row, which the judge keeps for its budget findings and calls invalid as incomplete. browser-preflight.mjs proves the tooling with the same launch.
 //
-// Timing is the Node clock around Playwright calls for readiness, and the page's own clock for clicks and navigation (panel-driver.mjs).
-import { writeFileSync } from "node:fs";
+// Timing is the PAGE's own clock throughout (panel-driver.mjs): the first page, the end of the walk, the first interactive click and the end of the second walk are
+// stamped in the page, from the pointerdown on the Delete menu item, where each happens; clicks and navigation are timed from their pointerdown to the frame after
+// the commit; only a page request's time is Playwright's (its request timing). The phase hook's and the Node loop's clocks measure nothing. Every review page
+// response is persisted as it completes to QC1_OUT.pages.jsonl (page-observer.mjs), so a run that stops part-way keeps every page it saw, slow ones included.
+import { appendFileSync, writeFileSync } from "node:fs";
 import { launchOptions, resolvePlaywright } from "./browser.mjs";
-import { totalBodyBytes, walkOrigin } from "./response-accounting.mjs";
+import { pageObserver } from "./page-observer.mjs";
 import { measurePanel, CLICKS_DEFAULT } from "./panel-core.mjs";
 import { playwrightDriver, INIT_SCRIPT, NO_SUBTLE_SCRIPT } from "./panel-driver.mjs";
 
@@ -65,43 +68,14 @@ try {
   });
   if (!login.ok()) { process.stderr.write(`panel-measure: sign-in answered ${login.status()}\n`); process.exit(4); }
 
-  // What the first walk's responses add up to; read when the walk has ended (a later walk, after the refused press, is not part of it).
-  const walk = { requests: 0, bad: 0, foreignOrigin: 0, bytes: null };
-  const bodies = [];
-  let counting = true;
-  let allPageResponses = 0; // every review page response this page receives, from the start and never reset: a fresh traversal shows as this growing
-  page.on("response", (r) => {
-    if (!new URL(r.url()).pathname.endsWith("/erasure-reasons/page")) return;
-    allPageResponses++;
-    if (!counting) return;
-    walk.requests++;
-    if (r.status() !== 200) walk.bad++;
-    if (new URL(r.url()).origin !== origin) walk.foreignOrigin++;
-    // Per page: the decoded body size, the request time (Playwright's own timing) and JSON.parse of that body alone in Node.
-    bodies.push(
-      r.body().then(
-        (body) => {
-          const t = r.request().timing();
-          const p0 = performance.now();
-          let ok = true;
-          try { JSON.parse(body.toString("utf8")); } catch { ok = false; }
-          const nodeParseMs = ok ? Math.round((performance.now() - p0) * 100) / 100 : null;
-          const requestMs = t && t.responseEnd >= 0 && t.startTime >= 0 ? Math.round((t.responseEnd) * 100) / 100 : null;
-          return { bytes: body.length, requestMs, nodeParseMs };
-        },
-        () => ({ bytes: null, requestMs: null, nodeParseMs: null }),
-      ),
-    );
-  });
-  const walkStats = async () => {
-    counting = false;
-    const list = await Promise.all(bodies);
-    const sizes = list.map((p) => p.bytes);
-    walk.bytes = totalBodyBytes(sizes);
-    return { pageRequests: walk.requests, pageResponseBytes: walk.bytes, apiOrigin: walkOrigin(walk, walk.bytes, sizes.length), pageList: list };
-  };
+  // Every review page response, observed as it completes and appended to QC1_OUT.pages.jsonl at once (page-observer.mjs): the first walk's figures are read when it has
+  // ended, but the observations of every walk, and of a run that stops part-way, are in the file and in memory.
+  const pagesFile = `${env.QC1_OUT}.pages.jsonl`;
+  writeFileSync(pagesFile, "");
+  const observer = pageObserver({ origin, append: (line) => appendFileSync(pagesFile, line) });
+  page.on("response", (r) => { observer.onResponse(r); });
 
-  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", walk: walkStats, pageResponses: () => allPageResponses });
+  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", observer });
   const result = await measurePanel(driver, {
     expected,
     now: () => performance.now(),
@@ -115,7 +89,7 @@ try {
     ...result,
     browser: `chromium ${browser.version()}`,
     noSubtle: env.QC1_NO_SUBTLE === "1",
-    note: "readiness and walk times are the Node clock around Playwright calls; click and navigation latencies are the page's own clock from the pointerdown to the frame after the commit; headless Chromium, 1280x900, the app's own embedded bundle, a runner where the browser shares the machine with the stack",
+    note: "every interval of the first load and of the second walk is the PAGE's own clock, from the pointerdown on the Delete menu item to the moment the page saw the thing happen (timeline); click and navigation latencies are the page's own clock from the pointerdown to the frame after the commit; page request times are Playwright's request timing; headless Chromium, 1280x900, the app's own embedded bundle, a runner where the browser shares the machine with the stack",
   }) + "\n");
   if (result.failed) {
     process.stderr.write(`panel-measure: stopped in ${result.failed.phase}: ${result.failed.error}\n`);

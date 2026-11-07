@@ -531,6 +531,10 @@ traverse() { # target items-out
     TR_TOTAL_MS=$((ended-started)) TR_REQUEST_MS=$total TR_CLIENT_MS=-1
   fi
 }
+# How many of an account's listed reasons are of each role: a case named requester or subject must list ONLY that role (the judge holds the label to it).
+roles_json() { # items-file
+  jq -c '{requester: ([.[] | select(.role == "requester")] | length), subject: ([.[] | select(.role == "subject")] | length)}' "$1"
+}
 traversal_json() {
   jq -nc --argjson u "$TR_UNITS" --argjson s "$TR_SLOW_MS" --argjson t "$TR_TOTAL_MS" --argjson req "$TR_REQUEST_MS" --argjson client "$TR_CLIENT_MS" --argjson i "$TR_ITEMS" --arg st "$TR_STATUS" \
     --argjson instr "$(instr_json)" \
@@ -907,13 +911,20 @@ set -eu
 exec docker exec -i $DB_CID psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -c "SELECT json_build_object('wal', pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint, 'tableRows', (SELECT count(*) FROM contact_requests), 'auditRows', (SELECT count(*) FROM audit_logs), 'auditBytes', pg_total_relation_size('audit_logs'), 'auditActions', (SELECT coalesce(json_object_agg(action, c), '{}'::json) FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s))::text"
 SH
   chmod 755 "$PANEL_HOOK" "$PANEL_PHASE"
-  rm -f "$PANEL_OUT"
+  rm -f "$PANEL_OUT" "$PANEL_OUT.pages.jsonl"
   # The whole run is one window; the scheduler's edges are waited past for as long as the dense walk and the second walk can take.
   QC1_NEED_MS=$(( k >= 100000 ? 1500000 : 600000 )) instrumented run_panel_measure
   window="$(instr_json | jq -c --argjson ms "$((OP_END - OP_START))" '. + {ms:$ms, what:"the whole rendered-panel run: walk, clicks, navigation, the refused press and the second walk. The gate figures are SAMPLED, not a hold time"}')"
   drop_scenarios
   if [[ ! -s "$PANEL_OUT" ]]; then
-    note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
+    # No result was written (the process broke), but every review page it saw was persisted as it completed: keep them as a PARTIAL row, so a slow page is not lost with the crash.
+    if [[ -s "$PANEL_OUT.pages.jsonl" ]]; then
+      note "the browser measurement for $k reasons at size $n$suffix wrote no result (exit $PANEL_RC); the review pages it saw are kept as a PARTIAL row"
+      RECORD_STATUS=partial record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --argjson pages "$(qc1_pages_from_jsonl "$PANEL_OUT.pages.jsonl")" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" --argjson rc "$PANEL_RC" \
+        '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:{pages:$pages}, failed:{phase:"unknown", error:("the measurement process stopped before it wrote its result (exit " + ($rc | tostring) + ")")}, window:$window}')"
+    else
+      note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
+    fi
     return 0
   fi
   if (( PANEL_RC == 0 )); then
@@ -964,14 +975,14 @@ measure_size() { # n
         if [[ "$mode" == keep ]]; then
           # A dense walk (100,000 reasons is a thousand pages) is measured against the 2-minute line, so its window must clear the scheduler's edges for longer.
           QC1_NEED_MS=$(( k >= 100000 ? 600000 : 60000 )) instrumented traverse "$t" "$WORK/items-$d-$k.json"
-          record 3 "discovery-$d-$k" "$n" "$(jq -nc --argjson tr "$(traversal_json)" --argjson k "$k" '{traversal:$tr, reasons:$k, expect:{items:$k}}')"
+          record 3 "discovery-$d-$k" "$n" "$(jq -nc --argjson tr "$(traversal_json)" --argjson k "$k" --argjson roles "$(roles_json "$WORK/items-$d-$k.json")" '{traversal:$tr, reasons:$k, expect:{items:$k}, roles:$roles}')"
         else
           traverse "$t" "$WORK/items-$d-$k.json"
         fi
         if ! printf '%s\n' "${ALL_DELETE_LIST[@]}" | grep -qx "$k"; then continue; fi
         delete_with "$t" "$mode" "$WORK/items-$d-$k.json"
-        record 6 "delete-$d-$k-$mode" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson k "$k" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" \
-          '{delete:$del, reasons:$k, bodyBytes:$bytes, expect:$expect, outcome:$outcome}')"
+        record 6 "delete-$d-$k-$mode" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson k "$k" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --argjson roles "$(roles_json "$WORK/items-$d-$k.json")" \
+          '{delete:$del, reasons:$k, bodyBytes:$bytes, expect:$expect, outcome:$outcome, roles:$roles}')"
       done
     done
   done

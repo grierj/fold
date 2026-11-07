@@ -127,8 +127,8 @@ ended_line="$(grep -n '^  ended="\$(ms)"$' "$HERE/qc1-measure.sh" | head -n 1 | 
 [[ -n "$slurp_line" && -n "$ended_line" && "$slurp_line" -lt "$ended_line" ]]
 # Every instrument a row can carry, healthy. A row is built from these and then broken one field at a time.
 INSTR='"tableRowsBefore":1010,"tableRowsAfter":1010,"auditRowsBefore":10,"auditRowsAfter":20,"auditBytesBefore":1000,"auditBytesAfter":2000,"auditActionsBefore":{"x.view":5},"auditActionsAfter":{"x.view":15,"add.reason_kept":5},"auditActionsDelta":{"x.view":10,"add.reason_kept":5},"walBytes":100,"walControlBytes":10,"appPeakKb":5,"appHwmReset":true,"dbPeakKb":7,"dbMemSamples":50,"gateSpanMs":0,"gateGrantTicks":0,"gateTicks":50,"gateHolders":0,"gateMaxGapMs":25,"gateMeanGapMs":22,"gateHoles":0,"autovacuumWorkers":0,"maxActiveClients":1,"commitCalls":1,"commitMsMax":1,"commitMsTotal":1,"schedulerOverlap":false,"schedulerRows":0'
-good_tr="{\"units\":5,\"slowestUnitMs\":200,\"totalMs\":1000,\"requestMs\":800,\"clientMs\":200,\"items\":3,\"lastStatus\":\"200\",$INSTR}"
-row() { jq -nc --argjson t "$1" '{status:"measured",item:3,case:"discovery-requester-10",size:100,workers:0,reasons:3,expect:{items:3},traversal:$t}'; }
+good_tr="{\"units\":5,\"slowestUnitMs\":200,\"totalMs\":1000,\"requestMs\":800,\"clientMs\":200,\"items\":3,\"lastStatus\":\"200\",${INSTR//\"tableRowsBefore\":1010,\"tableRowsAfter\":1010/\"tableRowsBefore\":103,\"tableRowsAfter\":103}}"
+row() { jq -nc --argjson t "$1" '{status:"measured",item:3,case:"discovery-requester-3",size:100,workers:0,reasons:3,expect:{items:3},roles:{requester:3,subject:0},traversal:$t}'; }
 row "$good_tr" >"$WORK/acc.jsonl"; [[ -z "$(qc1_judge "$WORK/acc.jsonl" 6291456)" ]] || { qc1_judge "$WORK/acc.jsonl" 6291456 >&2; exit 1; }
 # A traversal whose pieces do not add up is invalid; one that does is not.
 acc() { row "$1" >"$WORK/acc.jsonl"; qc1_judge "$WORK/acc.jsonl" 6291456 | jq -r 'select(.failure == "accounting") | .class'; }
@@ -348,8 +348,6 @@ env_bad commit '.calibration.commit.ok = false' 'commit statistics'
 refused '' qc1_environment_problems "$WORK/no-such-env.json" "$HEAD_FAKE"
 env_bad memsparse '.calibration.dbMemory.samples = 2' 'too sparse'
 
-HDEL="\"status\":\"200\",\"ms\":100,$INSTR"
-okout='{"dbOk":true}'
 [[ "$QC1_BROWSER_COUNTS" == 1000,10000 ]]
 QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows are at counts the table holds
 # A complete set of rows for sizes S, counts C and dense counts D: every kind holds its instruments, its expectation and its outcome. Dense counts are
@@ -365,45 +363,55 @@ probe_json() {
          ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), topRows:50000, hasSort:false,
           scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0}}))]}'
 }
+# --- rows that PROVE their labels: every number below follows from the case name, the size and the mode, the way a real run's would ---------------------
+# ins ROWS: the instrument fragment with the table size the operation saw (background plus the reasons the case loaded: size + k, immediately before it ran).
+ins() { printf '%s' "${INSTR//\"tableRowsBefore\":1010,\"tableRowsAfter\":1010/\"tableRowsBefore\":$1,\"tableRowsAfter\":$1}"; }
+trav() { printf '{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}' "$2" "$(ins "$1")"; } # rows items
+dele() { printf '{"status":"200","ms":100,%s,"reasonsKept":%s,"reasonsRemoved":%s}' "$(ins "$1")" "$2" "$3"; }                                       # rows kept removed
+outc() { printf '{"dbOk":true,"accountDeleted":"true","reasonsBlank":%s,"reasonsWithText":%s,"decisionAudits":%s}' "$2" "$1" "$(( $1 + $2 ))"; }          # kept removed
+rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0}' "$2"; else printf '{"requester":0,"subject":%s}' "$2"; fi; }          # direction k
 gen() { # sizes counts [dense]
-  local s k d m c kept removed bc K dlist ci np pre pages digest ph probe
+  local s k d m c kept removed bc K dlist ci np pre pages digest ph probe act k9 name item
   probe="$(probe_json)"
   for s in $(qc1_list "$1"); do
     dlist=""; [[ -z "${3:-}" ]] || dlist="$(qc1_list "$3")"
     K=0; for k in $(qc1_list "$QC1_DELETE_COUNTS") $dlist; do (( k <= s && k > K )) && K=$k; done
-    ci=null; (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && ci=true
+    act=$(( s + (s < 1000 ? s : 1000) ))
+    ci=null; (( act > QC1_SCANNER_UNIT_ROWS )) && ci=true
     for c in "sparse 1" "unrelated 2"; do
       read -r name item <<<"$c"
-      printf '{"status":"measured","item":%s,"case":"%s","size":%s,"workers":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":0,"lastStatus":"200",%s},"delete":{%s,"reasonsKept":0,"reasonsRemoved":0}}\n' "$item" "$name" "$s" "$okout" "$INSTR" "$HDEL"
+      printf '{"status":"measured","item":%s,"case":"%s","size":%s,"workers":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"traversal":%s,"delete":%s}\n' "$item" "$name" "$s" "$(outc 0 0)" "$(trav "$s" 0)" "$(dele "$s" 0 0)"
     done
-    printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"targetReasonLen":1000,"reasons":10,"expect":{"items":10},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":10,"lastStatus":"200",%s}}\n' "$s" "$INSTR"
-    printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true},"countMismatch":{"status":"400","unchanged":true},"changedSet":{"status":"409","unchanged":true},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true},"legacyComparison":{"synthetic":true,"capacityEntries":52868,"entriesOver":52869,"overStatus":"413","fitStatus":"409","fitUnchanged":true},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":{%s,"reasonsKept":%s,"reasonsRemoved":%s},"traversal":{"units":1,"slowestUnitMs":50,"totalMs":100,"requestMs":90,"clientMs":10,"items":%s,"lastStatus":"200",%s}}\n' \
-      "$s" "$K" "$(( 400 + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$okout" "$HDEL" "$(( K / 2 ))" "$(( K - K / 2 ))" "$K" "$INSTR"
+    printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"targetReasonLen":1000,"reasons":10,"expect":{"items":10},"traversal":%s}\n' "$s" "$(trav "$((s + 10))" 10)"
+    printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true,"tableRowsBefore":%s},"countMismatch":{"status":"400","unchanged":true,"tableRowsBefore":%s},"changedSet":{"status":"409","unchanged":true,"tableRowsBefore":%s},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true,"tableRowsBefore":%s},"legacyComparison":{"synthetic":true,"capacityEntries":52802,"entriesOver":52803,"overStatus":"413","fitStatus":"409","fitUnchanged":true,"tableRowsBefore":{"fit":%s,"over":%s}},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":%s,"traversal":%s}\n' \
+      "$s" "$K" "$(( 400 + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$(outc "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(dele "$(( s + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(trav "$(( s + K ))" "$K")"
     printf '{"status":"measured","item":7,"case":"human-progress","size":%s,"workers":0,"assessment":{"perCount":[{"reasons":10}]}}\n' "$s"
     printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s}\n' \
-      "$s" "$s" "$(( s + 1000 ))" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe"
+      "$s" "$s" "$act" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe"
     for bc in $(qc1_list "$QC1_BROWSER_COUNTS") $dlist; do
       (( bc <= s )) || continue
       np=$(( (bc + 99) / 100 )); pre=$(( 35 + 40 * bc ))
-      pages="{\"count\":$np,\"responseBytesMax\":30000,\"responseBytesTotal\":$(( bc * 300 )),\"requestMsMax\":20,\"requestMsP95\":15,\"readMsMax\":3,\"readMsTotal\":$(( np * 2 )),\"parseMsMax\":5,\"parseMsTotal\":$(( np * 3 )),\"nodeParseMsMax\":4}"
+      pages="{\"count\":$(( np * 2 )),\"responseBytesMax\":30000,\"responseBytesTotal\":$(( bc * 600 )),\"requestMsMax\":20,\"requestMsP95\":15,\"readMsMax\":3,\"readMsTotal\":$(( np * 4 )),\"parseMsMax\":5,\"parseMsTotal\":$(( np * 6 )),\"nodeParseMsMax\":4,\"absent\":{\"bytes\":0,\"requestMs\":0,\"readMs\":0,\"parseMs\":0,\"nodeParseMs\":0},\"walks\":[{\"walk\":1,\"count\":$np,\"requestMsMax\":20},{\"walk\":2,\"count\":$np,\"requestMsMax\":18}]}"
       digest="{\"path\":\"webcrypto\",\"expectedPath\":\"webcrypto\",\"matchesExpectation\":true,\"subtleCalls\":2,\"subtleBytes\":$(( pre + 4 )),\"subtleMs\":3,\"preimageBytes\":$pre,\"buildMs\":40}"
-      ph="{\"walBytes\":5000,\"auditActionsDelta\":{\"x.view\":$np},\"auditRows\":{\"before\":1,\"after\":2},\"tableRows\":{\"before\":1010,\"after\":1010},\"auditBytes\":{\"before\":100,\"after\":200,\"delta\":100}}"
+      ph="{\"walBytes\":5000,\"auditActionsDelta\":{\"x.view\":$np},\"auditRows\":{\"before\":1,\"after\":2},\"tableRows\":{\"before\":$(( s + bc )),\"after\":$(( s + bc ))},\"auditBytes\":{\"before\":100,\"after\":200,\"delta\":100}}"
       printf '{"status":"measured","item":10,"case":"browser-panel-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"window":{"ms":100,%s},"browser":{"walkTotal":%s,"renderReadyMs":4000,"walkEndMs":3900,"firstPage":{"firstInteractiveMs":600,"itemsRendered":%s},"itemsRendered":%s,"heapAfterGcBytes":5000000,"domNodes":9000,"longTaskMs":900,"secureContext":true,"noSubtle":false,"clicks":{"count":30,"p95Ms":40,"maxMs":60},"navigation":{"nextPage":{"maxMs":50},"jump":{"maxMs":60},"nextUnchosen":{"maxMs":70},"nextChanged":{"maxMs":80}},"pageRequests":%s,"pageResponseBytes":%s,"apiOrigin":"real","press":{"observed":true,"status":"409","bodyBytes":1200,"responseMs":900},"reload":{"unchosenAfterReload":1},"pages":%s,"digest":%s,"phases":{"walk":%s,"interactions":%s,"press":%s}}}\n' \
-        "$bc" "$s" "$bc" "$INSTR" "$bc" "$(( bc < 50 ? bc : 50 ))" "$(( bc < 50 ? bc : 50 ))" "$np" "$(( bc * 300 ))" "$pages" "$digest" "$ph" "$ph" "$ph"
+        "$bc" "$s" "$bc" "$(ins "$(( s + bc ))")" "$bc" "$(( bc < 50 ? bc : 50 ))" "$(( bc < 50 ? bc : 50 ))" "$np" "$(( bc * 300 ))" "$pages" "$digest" "$ph" "$ph" "$ph"
     done
     for k in $(qc1_list "$2") $dlist; do
       (( k <= s )) || continue
-      for d in requester subject; do printf '{"status":"measured","item":3,"case":"discovery-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}}\n' "$d" "$k" "$s" "$k" "$k" "$k" "$INSTR"; done
+      for d in requester subject; do printf '{"status":"measured","item":3,"case":"discovery-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s},"roles":%s,"traversal":%s}\n' "$d" "$k" "$s" "$k" "$k" "$(rolesof "$d" "$k")" "$(trav "$(( s + k ))" "$k")"; done
     done
     for k in $(qc1_list "$QC1_DELETE_COUNTS") $dlist; do
       (( k <= s )) || continue
       for d in requester subject; do for m in keep remove mixed; do
         read -r kept removed <<<"$(qc1_expected_split "$m" "$k")"
-        printf '{"status":"measured","item":6,"case":"delete-%s-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":{%s,"reasonsKept":%s,"reasonsRemoved":%s}}\n' "$d" "$k" "$m" "$s" "$k" "$k" "$kept" "$removed" "$okout" "$HDEL" "$kept" "$removed"
+        printf '{"status":"measured","item":6,"case":"delete-%s-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"roles":%s,"outcome":%s,"delete":%s}\n' "$d" "$k" "$m" "$s" "$k" "$k" "$kept" "$removed" "$(rolesof "$d" "$k")" "$(outc "$kept" "$removed")" "$(dele "$(( s + k ))" "$kept" "$removed")"
       done; done
     done
   done
-  printf '{"status":"observation","item":9,"case":"workers-on-delete","size":%s,"workers":2,"reasons":1000,"expect":{"items":1000,"kept":500,"removed":500},"outcome":%s,"delete":{%s,"reasonsKept":500,"reasonsRemoved":500}}\n' "$(qc1_list "$1" | sort -n | tail -n 1)" "$okout" "$HDEL"
+  # The workers-on observation: min(1,000, largest size) reasons, deleted half and half, on the largest size.
+  s="$(qc1_list "$1" | sort -n | tail -n 1)"; k9=$(( s < 1000 ? s : 1000 ))
+  printf '{"status":"observation","item":9,"case":"workers-on-delete","size":%s,"workers":2,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":%s}\n' "$s" "$k9" "$k9" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))" "$(outc "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")" "$(dele "$(( s + k9 ))" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")"
 }
 PEND='{"status":"pending","item":4,"case":"legacy-discovery","size":null,"reason":"T07B-3a"}
 {"status":"pending","item":5,"case":"legacy-put","size":null,"reason":"T07B-3a"}'
@@ -411,10 +419,10 @@ status_of() { qc1_evidence_status "$1" "${2:-10,100}" "${3:-0,10,100,1000,10000}
 
 # --- judging measurements ------------------------------------------------------------
 cat >"$WORK/m.jsonl" <<M
-{"status":"measured","item":3,"case":"discovery-subject-10000","size":1000000,"workers":0,"reasons":10000,"expect":{"items":10000},"traversal":{"slowestUnitMs":9000,"totalMs":20000,"requestMs":19000,"clientMs":1000,"units":100,"items":10000,"lastStatus":"200",$INSTR,"gateTicks":200,"dbMemSamples":200}}
-{"status":"measured","item":3,"case":"discovery-requester-10000","size":1000000,"workers":0,"reasons":10000,"expect":{"items":10000},"traversal":{"slowestUnitMs":12000,"totalMs":130000,"requestMs":120000,"clientMs":10000,"units":100,"items":10000,"lastStatus":"200",$INSTR,"gateTicks":1300,"dbMemSamples":1300,"gateMaxGapMs":30}}
-{"status":"measured","item":6,"case":"delete-subject-10000-mixed","size":1000000,"workers":0,"expect":{"items":10000,"kept":5000,"removed":5000},"outcome":{"dbOk":true},"delete":{"status":"200","ms":41000,"reasonsKept":5000,"reasonsRemoved":5000,$INSTR,"gateTicks":410,"dbMemSamples":410,"gateHolders":1}}
-{"status":"measured","item":6,"case":"delete-subject-1000-keep","size":1000000,"workers":0,"expect":{"items":1000,"kept":1000,"removed":0},"outcome":{"dbOk":true},"delete":{"status":"409","ms":3000,"reasonsKept":null,"reasonsRemoved":null,$INSTR,"gateTicks":30,"dbMemSamples":30,"gateHolders":1}}
+{"status":"measured","item":3,"case":"discovery-subject-10000","size":1000000,"workers":0,"reasons":10000,"expect":{"items":10000},"roles":{"requester":0,"subject":10000},"traversal":{"slowestUnitMs":9000,"totalMs":20000,"requestMs":19000,"clientMs":1000,"units":100,"items":10000,"lastStatus":"200",$(ins 1010000),"gateTicks":200,"dbMemSamples":200}}
+{"status":"measured","item":3,"case":"discovery-requester-10000","size":1000000,"workers":0,"reasons":10000,"expect":{"items":10000},"roles":{"requester":10000,"subject":0},"traversal":{"slowestUnitMs":12000,"totalMs":130000,"requestMs":120000,"clientMs":10000,"units":100,"items":10000,"lastStatus":"200",$(ins 1010000),"gateTicks":1300,"dbMemSamples":1300,"gateMaxGapMs":30}}
+{"status":"measured","item":6,"case":"delete-subject-10000-mixed","size":1000000,"workers":0,"reasons":10000,"expect":{"items":10000,"kept":5000,"removed":5000},"roles":{"requester":0,"subject":10000},"outcome":$(outc 5000 5000),"delete":{"status":"200","ms":41000,"reasonsKept":5000,"reasonsRemoved":5000,$(ins 1010000),"gateTicks":410,"dbMemSamples":410,"gateHolders":1}}
+{"status":"measured","item":6,"case":"delete-subject-1000-keep","size":1000000,"workers":0,"reasons":1000,"expect":{"items":1000,"kept":1000,"removed":0},"roles":{"requester":0,"subject":1000},"outcome":$(outc 1000 0),"delete":{"status":"409","ms":3000,"reasonsKept":null,"reasonsRemoved":null,$(ins 1001000),"gateTicks":30,"dbMemSamples":30,"gateHolders":1}}
 {"status":"pending","item":4,"case":"legacy-discovery","size":null,"reason":"x"}
 M
 qc1_judge "$WORK/m.jsonl" 6291456 >"$WORK/failures.jsonl"
@@ -441,14 +449,14 @@ status="$(status_of "$WORK/ec.jsonl")"
 # Item 4 and the legacy PUT measured (T07B-3a landed): complete.
 # One legacy row set per size, as T07B-3a will produce it: discovery with each count that fits, the marker lookup, and a real PUT. Every row carries real metrics.
 legacy_rows() { # sizes
-  local s k
+  local s k fit=6291400
   for s in $(qc1_list "$1"); do
     for k in $(qc1_list "$QC1_LEGACY_COUNTS"); do
       (( k <= s )) || continue
-      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}}\n' "$k" "$s" "$k" "$k" "$k" "$INSTR"
+      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a"},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
     done
-    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true}}\n' "$s"
-    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"bodyBytes":1000,"ms":50,"status":"200","validated":true,"appPeakKb":2048}}\n' "$s"
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"marker":"legacy-marker","route":"/api/v1/admin/users/ID/legacy-reasons/marker",%s}}\n' "$s" "$(ins "$(( s + 10 ))")"
+    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"bodyBytes":%s,"ms":50,"status":"200","appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","boundary":{"fitBytes":%s,"nextBytes":%s,"fitStatus":"200","nextStatus":"413"},"outcome":{"dbOk":true,"rowsBefore":%s,"rowsAfter":%s},%s}}\n' "$s" "$fit" "$fit" "$(( fit + 120 ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(ins "$(( s + 10 ))")"
   done
 }
 { cat "$WORK/e.jsonl"
@@ -595,8 +603,15 @@ mut plans-zero 'if .item == 8 then .plans["blank-batch"] = 0 else . end'; expect
 mut plans-str 'if .item == 8 then .plans["scanner-initial"] = "1" else . end'; expect_invalid plans-str plans-missing
 mut plans-nocont-small 'if .item == 8 and .size == 100 then .plans["scanner-continuation"] = 0 else . end'
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.plans-nocont-small")")" == true ]]   # a table within one scanner unit has no continuation
-mut plans-nocont-big 'if .item == 8 then .table.actualRows = 60000 | .plans["scanner-continuation"] = 0 else . end'
-[[ "$(qc1_judge "$WORK/e2.plans-nocont-big" 6291456 | jq -sc '[.[] | select(.failure == "plans-missing")] | length > 0')" == true ]]
+# The continuation is required when the table the statements really ran against (background plus the scenario rows) holds more rows than one scanner unit. The plans case loads
+# min(size, 1,000) reasons, so 49,000 + 1,000 = 50,000 rows is within one unit and 49,001 + 1,000 = 50,001 is not.
+plans_one() { # size continuation-count   (a single plans row whose label, size and table agree)
+  jq -c --argjson s "$1" --argjson c "$2" 'select(.item == 8 and .size == 100) | .size = $s | .table = {backgroundRows:$s, actualRows:($s + (if $s < 1000 then $s else 1000 end))} | .plans["scanner-continuation"] = $c | .continuationPlanIndexCond = (if $c > 0 then true else null end)
+    | .executions.scannerContinuation = (if $c > 0 then {count:$c, rows:[range(0; $c) | 50000], sharedBlocks:[range(0; $c) | 880]} else {count:0, rows:[], sharedBlocks:[]} end)' "$WORK/e2.jsonl"
+}
+plans_one 49000 0 >"$WORK/plans.small"; [[ -z "$(qc1_judge "$WORK/plans.small" 6291456)" ]] || { qc1_judge "$WORK/plans.small" 6291456 >&2; exit 1; }
+plans_one 49001 0 >"$WORK/plans.big"; [[ "$(qc1_judge "$WORK/plans.big" 6291456 | jq -r '.failure' | paste -sd,)" == plans-missing ]]
+plans_one 49001 2 >"$WORK/plans.bigok"; [[ -z "$(qc1_judge "$WORK/plans.bigok" 6291456)" ]]
 mut gen-gone 'if .item == 8 then del(.generic) else . end'; expect_invalid gen-gone generic-plan-missing
 mut gen-init-gone 'if .item == 8 then del(.generic.scannerInitial) else . end'; expect_invalid gen-init-gone generic-plan-missing
 # The continuation must be bounded by an id Index Cond: the generic plan, or the application's own logged plan, without one is a budget finding.
@@ -722,9 +737,6 @@ mut ex-cont 'if .item == 8 and .size == 100 then .executions.scannerContinuation
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ex-cont")")" == true ]]
 mut ex-overrun 'if .item == 8 then .executions.scannerInitial.rows = [50001] else . end'; expect_invalid ex-overrun scanner-unit-overrun
 # The continuation is judged on the rows the table really held (n + k), not only on the size asked for.
-mut act-big 'if .item == 8 then .table.actualRows = 50001 | .plans["scanner-continuation"] = 0 else . end'; expect_invalid act-big plans-missing
-mut act-small 'if .item == 8 then .table.actualRows = 50000 | .plans["scanner-continuation"] = 0 else . end'
-[[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.act-small")")" == true ]]
 # Counts of the table: taken immediately BEFORE each operation (instrumented and the request-size operations), never at record time (when the scenario is often gone).
 rec_body="$(sed -n '/^record() {/,/^}/p' "$RUNNER_SRC")"
 if grep -q 'SELECT count(\*) FROM contact_requests' <<<"$rec_body"; then echo 'qc1: record() counts rows after the operation' >&2; exit 1; fi
@@ -786,11 +798,40 @@ done
 mut leg-failed 'if .item == 4 and .case == "legacy-discovery-0" and .size == 10 then .status = "failed" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-failed")" == 1 ]]
 mut leg-placeholder 'if .item == 5 then {status:"measured", item:5, case:"legacy-put", size:.size, workers:0} else . end'; [[ "$(legacy_pending "$WORK/e2.leg-placeholder")" == 2 ]]
 mut leg-wrong-count 'if .item == 4 and .case == "legacy-discovery-100" then .expect.items = 99 else . end'; [[ "$(legacy_pending "$WORK/e2.leg-wrong-count")" == 1 ]]
-mut leg-put-unvalidated 'if .item == 5 and .size == 10 then .put.validated = false else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-unvalidated")" == 1 ]]
-mut leg-put-refused 'if .item == 5 and .size == 100 then .put.status = "413" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-refused")" == 1 ]]
-mut leg-put-nomem 'if .item == 5 and .size == 10 then del(.put.appPeakKb) else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-nomem")" == 1 ]]
-mut leg-probe-nofound 'if .item == 4 and .case == "legacy-discovery-probe" and .size == 100 then .probe.found = false else . end'; [[ "$(legacy_pending "$WORK/e2.leg-probe-nofound")" == 1 ]]
-mut leg-name 'if .item == 4 and .case == "legacy-discovery-100" then .reasons = 99 else . end'; [[ "$(legacy_pending "$WORK/e2.leg-name")" == 1 ]]
+# The PUT clears pending only as the EXACT maximum body: 200 at the largest body within maxRequestBytes and 413 at the next, the database state it left, the route and the
+# full instrument set. A tiny sample with a flag, a body that is not the boundary, a boundary that does not straddle the cap, or a PUT without its state or instruments does not.
+lp() { mut "$1" "if .item == 5 and .size == $2 then $3 else . end"; [[ "$(legacy_pending "$WORK/e2.$1")" == 1 ]] || { echo "legacy PUT mutation $1 cleared pending" >&2; exit 1; }; }
+lp leg-put-db 10 '.put.outcome.dbOk = false'
+lp leg-put-nostate 100 'del(.put.outcome.rowsAfter)'
+lp leg-put-refused 100 '.put.status = "413"'
+lp leg-put-nomem 10 'del(.put.appPeakKb)'
+lp leg-put-sample 10 '.put.bodyBytes = 1000 | .put.boundary.fitBytes = 1000 | .put.boundary.nextBytes = 1120'
+lp leg-put-sample-flag 100 '.put.bodyBytes = 1000 | .put.validated = true | del(.put.boundary)'
+lp leg-put-notboundary 10 '.put.bodyBytes = 6000000'
+lp leg-put-gap 100 '.put.boundary.nextBytes = .put.boundary.fitBytes + 5000'
+lp leg-put-nostraddle 10 '.put.boundary.nextBytes = 6291456'
+lp leg-put-overcap 100 '.put.bodyBytes = 6291457 | .put.boundary.fitBytes = 6291457 | .put.boundary.nextBytes = 6291500'
+lp leg-put-fit-refused 10 '.put.boundary.fitStatus = "409"'
+lp leg-put-next-accepted 10 '.put.boundary.nextStatus = "200"'
+lp leg-put-noroute 100 'del(.put.route)'
+lp leg-put-noinstr 10 'del(.put.walBytes)'
+lp leg-put-noaudit 100 'del(.put.auditActionsDelta)'
+lp leg-put-notable 10 'del(.put.tableRowsBefore)'
+lp leg-put-ms-str 100 '.put.ms = "50"'
+# The marker lookup and the legacy discovery likewise need their route, their source and count, the table they ran against and their instruments.
+lq() { mut "$1" "if $2 then $3 else . end"; [[ "$(legacy_pending "$WORK/e2.$1")" == 1 ]] || { echo "legacy mutation $1 cleared pending" >&2; exit 1; }; }
+lq leg-probe-nofound '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' '.probe.found = false'
+lq leg-probe-nomarker '.item == 4 and .case == "legacy-discovery-probe" and .size == 10' 'del(.probe.marker)'
+lq leg-probe-noroute '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' 'del(.probe.route)'
+lq leg-probe-noinstr '.item == 4 and .case == "legacy-discovery-probe" and .size == 10' 'del(.probe.walBytes)'
+lq leg-probe-lone-timing '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' '.probe = {ms: 3, status: "200", found: true}'
+lq leg-name '.item == 4 and .case == "legacy-discovery-100"' '.reasons = 99'
+lq leg-loaded '.item == 4 and .case == "legacy-discovery-100"' '.legacy.loadedPairs = 99'
+lq leg-noroute '.item == 4 and .case == "legacy-discovery-0" and .size == 10' 'del(.legacy.route)'
+lq leg-nosource '.item == 4 and .case == "legacy-discovery-0" and .size == 100' '.legacy.source = "harness"'
+lq leg-listed '.item == 4 and .case == "legacy-discovery-100"' '.traversal.items = 99'
+lq leg-table '.item == 4 and .case == "legacy-discovery-100"' '.traversal.tableRowsBefore = 110'
+lq leg-noinstr '.item == 4 and .case == "legacy-discovery-0" and .size == 10' 'del(.traversal.walBytes)'
 [[ "$QC1_LEGACY_COUNTS" == 0,100,10000 ]]
 # The target reasons are the 1,000-rune maximum by default, separate from the background rows, and the loader can make them.
 grep -qF 'TARGET_REASON_LEN=1000' "$RUNNER_SRC"; grep -qF -- '--target-reason-len' "$RUNNER_SRC"
@@ -924,6 +965,119 @@ done
 if grep -nE 'Math.round\(now\(\) - t0\)|const t0 = now\(\)' "$PC"; then echo 'qc1: the panel core times from its own loop clock' >&2; exit 1; fi
 grep -qF 'since(timeline && timeline.walkDoneAt)' "$PC"; grep -qF 'since(timeline && timeline.firstPageAt)' "$PC"; grep -qF 'since(R.firstInteractiveEnd)' "$PC"
 
+# --- the second recheck's findings: mislabelled, missing or duplicated data cannot clear a gate ---------------------------------------------------------------
+DS='if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100'
+DR='if .item == 3 and .case == "discovery-requester-100" and .size == 100'
+# (1) A row's table counts, reasons, direction, mode and outcome must follow from its label. THE REVIEW'S CASE first: 1,010 rows labelled as a 1,000,000-row table.
+mut mis-size "if .item == 6 and .case == \"delete-subject-100-mixed\" then .size = 1000000 else . end"; expect_invalid mis-size table-rows-mismatch
+mut mis-rows "$DS then .delete.tableRowsBefore = 1010 else . end"; expect_invalid mis-rows table-rows-mismatch
+mut mis-rows-trav "$DR then .traversal.tableRowsBefore = 100 else . end"; expect_invalid mis-rows-trav table-rows-mismatch      # background only: the scenario rows are not in the count
+mut mis-rows-extra "$DR then .traversal.tableRowsBefore = 201 else . end"; expect_invalid mis-rows-extra table-rows-mismatch
+mut mis-win "$BP then .window.tableRowsBefore = 1010 else . end"; expect_invalid mis-win table-rows-mismatch
+for ph in walk interactions press; do mut "mis-phase-$ph" "$BP then .browser.phases.$ph.tableRows.before = 1010 else . end"; expect_invalid "mis-phase-$ph" table-rows-mismatch; done
+mut mis-plans 'if .item == 8 and .size == 100 then .table.actualRows = 1010 else . end'; expect_invalid mis-plans table-rows-mismatch
+for op in parseRefusal countMismatch changedSet overCap; do mut "mis-req-$op" "if .item == 5 and .size == 100 then .request.$op.tableRowsBefore = 1010 else . end"; expect_invalid "mis-req-$op" table-rows-mismatch; done
+mut mis-req-gone 'if .item == 5 and .size == 100 then del(.request.overCap.tableRowsBefore) else . end'; expect_invalid mis-req-gone table-rows-mismatch
+mut mis-req-legacy 'if .item == 5 and .size == 100 then .request.legacyComparison.tableRowsBefore.over = 1010 else . end'; expect_invalid mis-req-legacy table-rows-mismatch
+mut mis-reasons "$DR then .reasons = 99 else . end"; expect_invalid mis-reasons label-mismatch
+mut mis-expect "$DR then .expect.items = 99 | .traversal.items = 99 else . end"; expect_invalid mis-expect label-mismatch
+mut mis-bad-case 'if .item == 3 and .case == "discovery-requester-100" and .size == 100 then .case = "discovery-requester-x" else . end'; expect_invalid mis-bad-case label-mismatch
+mut mis-browser-reasons "$BP then .reasons = 10 else . end"; expect_invalid mis-browser-reasons label-mismatch
+# direction: a case named subject that listed requester reasons (or any mix) is mislabelled; the roles must be there
+mut mis-dir "$DR then .roles = {requester:0, subject:100} else . end"; expect_invalid mis-dir label-mismatch
+mut mis-dir-mix "$DR then .roles = {requester:60, subject:40} else . end"; expect_invalid mis-dir-mix label-mismatch
+mut mis-dir-gone "$DR then del(.roles) else . end"; expect_invalid mis-dir-gone label-mismatch
+mut mis-dir-del "$DS then .roles = {requester:100, subject:0} else . end"; expect_invalid mis-dir-del label-mismatch
+# mode: the split must be the mode's, and the database outcome must show it
+mut mis-mode-keep "$DS then .expect.kept = 100 | .expect.removed = 0 | .delete.reasonsKept = 100 | .delete.reasonsRemoved = 0 | .outcome.reasonsBlank = 0 | .outcome.reasonsWithText = 100 else . end"; expect_invalid mis-mode-keep label-mismatch
+mut mis-mode-name "if .item == 6 and .case == \"delete-subject-100-mixed\" then .case = \"delete-subject-100-purge\" else . end"; expect_invalid mis-mode-name label-mismatch
+for spec in 'reasonsBlank = 49' 'reasonsWithText = 49' 'decisionAudits = 99' 'accountDeleted = "false"' 'dbOk = false'; do
+  mut "mis-out-${spec%% *}" "$DS then .outcome.$spec else . end"; expect_invalid "mis-out-${spec%% *}" outcome-unverified
+done
+mut mis-out-gone "$DS then del(.outcome) else . end"; expect_invalid mis-out-gone outcome-unverified
+mut mis-out-sparse 'if .item == 1 then .outcome.reasonsBlank = 3 else . end'; expect_invalid mis-out-sparse outcome-unverified
+mut mis-fit-out 'if .item == 5 and .size == 100 then .request.fitOutcome.reasonsBlank = 1 else . end'; expect_invalid mis-fit-out outcome-unverified
+mut mis-fit-n 'if .item == 5 and .size == 100 then .request.fitExpect.kept = 1 else . end'; expect_invalid mis-fit-n outcome-unverified
+# ...and a run built on mislabelled data is never release evidence: a full matrix whose 1,000,000-row browser case carries 1,010 rows
+jq -c 'if .item == 10 and .case == "browser-panel-100000" and .size == 1000000 then .window.tableRowsBefore = 1010 else . end' "$WORK/full.jsonl" >"$WORK/full.mislabel"
+fs="$(full_status "$WORK/full.mislabel")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false && "$(jq -r '[.invalid[] | select(.failure == "table-rows-mismatch")] | length' <<<"$fs")" == 1 ]]
+jq -c 'if .item == 6 and .size == 1000000 then .delete.tableRowsBefore = 1010 else . end' "$WORK/full.jsonl" >"$WORK/full.mislabel2"
+fs="$(full_status "$WORK/full.mislabel2")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r '[.invalid[] | select(.failure == "table-rows-mismatch")] | length' <<<"$fs")" -ge 20 ]]
+jq -c 'if .item == 3 and .size == 100000 and (.case | startswith("discovery-subject-")) then .roles = {requester: .reasons, subject: 0} else . end' "$WORK/full.jsonl" >"$WORK/full.mislabel3"
+fs="$(full_status "$WORK/full.mislabel3")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false ]]
+# DUPLICATES: the same (item, size, case) twice is invalid, clears nothing, and cannot stand in for a missing row.
+{ cat "$WORK/e2.jsonl"; grep -F '"case":"delete-subject-100-mixed","size":100,' "$WORK/e2.jsonl"; } >"$WORK/e2.dup"
+st="$(status_of "$WORK/e2.dup")"; [[ "$(jq -c '[.invalid[] | select(.failure == "duplicate-row") | [.item, .size, .case, .count]]' <<<"$st")" == '[[6,100,"delete-subject-100-mixed",2]]' && "$(jq -r .complete <<<"$st")" == false ]]
+{ cat "$WORK/e2.jsonl"; grep -F '"case":"legacy-put","size":10,' "$WORK/e2.jsonl"; } >"$WORK/e2.dup-legacy"
+st="$(status_of "$WORK/e2.dup-legacy")"; [[ "$(jq -r '.pending | map(select(.case == "legacy-put" and .size == 10)) | length' <<<"$st")" == 1 && "$(jq -r .complete <<<"$st")" == false ]]
+{ cat "$WORK/full.jsonl"; grep -F '"case":"browser-panel-100000","size":1000000,' "$WORK/full.jsonl"; } >"$WORK/full.dup"
+fs="$(full_status "$WORK/full.dup")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false ]]
+# a duplicate under a different STATUS (a failed row beside a measured one) is not a duplicate of a measurement, but it does not make the missing one present either
+grep -v '"item":10,"case":"browser-panel-100000","size":1000000,' "$WORK/full.jsonl" | cat - <(jq -c 'select(.item == 10 and .case == "browser-panel-100000" and .size == 1000000) | .status = "failed"' "$WORK/full.jsonl") >"$WORK/full.failed"
+fs="$(full_status "$WORK/full.failed")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '.missing | length' <<<"$fs")" == 1 ]]
+# (2) Legacy rows with a tiny sample, a flag, a lone timing, no state or no instruments clear NOTHING (the mutations above); the complete schema does, and only it.
+[[ "$(legacy_pending "$WORK/e2.jsonl")" == 0 ]]
+grep -v '"item":[45],"case":"legacy' "$WORK/e2.jsonl" | cat - <(jq -c 'select(.item == 5) | .put = {bodyBytes: 1000, ms: 50, status: "200", validated: true, appPeakKb: 2048}' "$WORK/e2.jsonl") >"$WORK/e2.oldsample"
+[[ "$(legacy_pending "$WORK/e2.oldsample")" == 7 ]]
+# (3) The scanner probe is held to exactly what the collector promises.
+PBS='if .item == 8 and .size == 100'
+sp() { mut "$1" "$PBS then .scannerProbe.executions |= ($2) else . end"; expect_invalid "$1" "${3:-scanner-probe-missing}"; }
+sp sp-seven 'map(select(.mode != "auto" or .percent != 85))'
+sp sp-nine '. + [.[3]]'
+sp sp-no-initial 'map(select(.mode != "auto" or .kind != "initial"))'
+sp sp-two-initial '. + [(.[0] | .mode = "auto")]'
+sp sp-order '(.[0:1] + .[2:3] + .[1:2] + .[3:])'
+sp sp-percents 'map(if .mode == "auto" and .percent == 40 then .percent = 41 else . end)'
+sp sp-percents-dupe 'map(if .mode == "force_generic_plan" and .percent == 85 then .percent = 70 else . end)'
+sp sp-one-mode 'map(select(.mode == "auto"))'
+sp sp-extra-mode 'map(if .mode == "force_generic_plan" then .mode = "custom" else . end)'
+sp sp-initial-cursor 'map(if .kind == "initial" and .mode == "auto" then .afterId = 5 else . end)'
+sp sp-ids-dupe 'map(if .mode == "auto" and .percent == 25 then .afterId = 1 else . end)' scanner-probe-positions
+sp sp-ids-order 'map(if .mode == "auto" and .percent == 85 then .afterId = 2 else . end)' scanner-probe-positions
+sp sp-ids-differ 'map(if .mode == "force_generic_plan" then .afterId = (if .afterId == null then null else .afterId + 1 end) else . end)' scanner-probe-positions
+sp sp-ids-null 'map(if .mode == "auto" and .percent == 10 then .afterId = null else . end)' scanner-probe-positions
+sp sp-rows-differ 'map(if .mode == "force_generic_plan" and .percent == 55 then .scan.rows = 49999 else . end)' scanner-mode-disagreement
+sp sp-nodata 'map(if .mode == "auto" and .percent == 40 then del(.topRows) else . end)'
+sp sp-nosort 'map(if .mode == "auto" and .percent == 40 then del(.hasSort) else . end)'
+sp sp-noloops 'map(if .mode == "auto" and .percent == 40 then .scan.loops = null else . end)'
+mut sp-per-mode "$PBS then .scannerProbe.executionsPerMode = 7 else . end"; expect_invalid sp-per-mode scanner-probe-missing
+mut sp-string "$PBS then .scannerProbe.executions = \"x\" else . end"; expect_invalid sp-string scanner-probe-missing
+# the healthy probe is exact, and the judge says nothing about it
+[[ -z "$(jq -c "select(.item == 8 and .size == 100)" "$WORK/e2.jsonl" | qc1_judge /dev/stdin 6291456)" ]]
+# (4) Reload and mid-walk figures reach the judge: a slow request in the reload is the page-request budget; a partial row keeps the pages seen before the failure.
+mut reload-slow "$BP then .browser.pages.walks[1].requestMsMax = 11000 | .browser.pages.requestMsMax = 11000 else . end"
+st="$(status_of "$WORK/e2.reload-slow")"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request") | .ms]' <<<"$st")" == '[11000]' ]]
+mut pages-absent "$BP then .browser.pages.absent.requestMs = 1 else . end"; expect_invalid pages-absent browser-missing
+mut pages-onewalk "$BP then .browser.pages.walks = [.browser.pages.walks[0]] else . end"; expect_invalid pages-onewalk browser-missing
+mut pages-nowalks "$BP then del(.browser.pages.walks) else . end"; expect_invalid pages-nowalks browser-missing
+mut midwalk "$BP then .status = \"partial\" | .failed = {phase:\"walk\", error:\"timed out waiting for the walk to end\"} | .browser = {pages:{count:3, requestMsMax:12500, absent:{bytes:0, requestMs:0, readMs:3, parseMs:3, nodeParseMs:0}, walks:[{walk:1, count:3, requestMsMax:12500}]}} | del(.window) else . end"
+st="$(status_of "$WORK/e2.midwalk")"
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request") | .ms]' <<<"$st")" == '[12500]' && "$(jq -r '[.invalid[] | select(.failure == "browser-incomplete")] | length' <<<"$st")" == 1 && "$(jq -r .complete <<<"$st")" == false ]]
+# a partial row with NO fields still counts as incomplete and invents no budget
+mut midwalk-empty "$BP then .status = \"partial\" | .failed = {phase:\"open\", error:\"x\"} | .browser = {} | del(.window) else . end"
+st="$(status_of "$WORK/e2.midwalk-empty")"; [[ "$(jq -r '.budgetFailures | length' <<<"$st")" == 0 && "$(jq -r '[.invalid[] | select(.failure == "browser-incomplete")] | length' <<<"$st")" == 1 ]]
+# The persisted observations rebuild the summary when the process died before it could write a result (the runner records them as a partial row).
+cat >"$WORK/pages.jsonl" <<'JSONL'
+{"seq":0,"walk":1,"status":200,"foreignOrigin":false,"bytes":30000,"requestMs":12,"nodeParseMs":2}
+{"seq":1,"walk":1,"status":200,"foreignOrigin":false,"bytes":30100,"requestMs":10400,"nodeParseMs":2.5}
+{"seq":2,"walk":1,"status":200,"foreignOrigin":false,"bytes":null,"requestMs":null,"nodeParseMs":null}
+JSONL
+pj="$(qc1_pages_from_jsonl "$WORK/pages.jsonl")"
+[[ "$(jq -c '[.count, .requestMsMax, .responseBytesMax, .absent.requestMs, .absent.bytes, .absent.readMs, (.walks | length), .walks[0].requestMsMax]' <<<"$pj")" == '[3,10400,30100,1,1,3,1,10400]' ]]
+[[ "$(qc1_pages_from_jsonl /dev/null)" == null ]]
+jq -nc --argjson pages "$pj" '{status:"partial", item:10, case:"browser-panel-100", size:100, workers:0, reasons:100, browser:{pages:$pages}, failed:{phase:"unknown", error:"the measurement process stopped before it wrote its result (exit 1)"}}' >"$WORK/crash.jsonl"
+st="$(qc1_evidence_status "$WORK/crash.jsonl" 100 100 "$WORK/env.json" "$HEAD_FAKE" 6291456 | jq -c '{b:[.budgetFailures[] | .failure], i:[.invalid[] | select(.failure == "browser-incomplete") | .phase]}')"
+[[ "$st" == '{"b":["page-request"],"i":["unknown"]}' ]] || { echo "a crashed run lost its slow page: $st" >&2; exit 1; }
+# the runner: pages are persisted as they complete, the file is removed before a run, and a run with no result is recorded from it
+mbp2="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER_SRC")"
+for pat in 'rm -f "$PANEL_OUT" "$PANEL_OUT.pages.jsonl"' 'qc1_pages_from_jsonl "$PANEL_OUT.pages.jsonl"' 'RECORD_STATUS=partial record 10' 'phase:"unknown"'; do grep -qF -- "$pat" <<<"$mbp2" || { echo "qc1: measure_browser_panel lost: $pat" >&2; exit 1; }; done
+grep -qF 'appendFileSync(pagesFile, line)' "$HERE/qc1/panel-measure.mjs"; grep -qF 'observer.startWalk(2)' "$HERE/qc1/panel-driver.mjs"
+grep -qF 'append(JSON.stringify(rec) + "\n")' "$HERE/qc1/page-observer.mjs"
+# (P3) The generated note says what the clocks are: the page's timestamps, not the Node loop's.
+if grep -n 'Node clock' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-core.mjs" "$HERE/qc1/panel-driver.mjs"; then echo 'qc1: generated text still says Node clock' >&2; exit 1; fi
+grep -qF "every interval of the first load and of the second walk is the PAGE's own clock" "$HERE/qc1/panel-measure.mjs"
+grep -qF 'only a page request' "$HERE/qc1/panel-measure.mjs"
+
 # --- statements: the markers are still the Go source's ------------------------------------
 for which in "${QC1_PLAN_KINDS[@]}"; do
   marker="$(qc1_source_marker "$which")"
@@ -1047,7 +1201,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # another revision is refused. The runner runs from a clean copy of its own files
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
+cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
 cp "$ROOT/api_profile.go" "$ROOT/main.go" "$CLONE/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
@@ -1121,12 +1275,12 @@ grep -q '"pending", item:4\|status:"pending", item:4' "$RUNNER"
 # --- the rendered panel (V-07): a real browser against the real API -------------------------------------------
 PM="$HERE/qc1/panel-measure.mjs"; PC="$HERE/qc1/panel-core.mjs"; PD="$HERE/qc1/panel-driver.mjs"
 if command -v node >/dev/null; then
-  for m in "$PM" "$PC" "$PD"; do node --check "$m"; done
+  for m in "$PM" "$PC" "$PD" "$HERE/qc1/page-observer.mjs"; do node --check "$m"; done
   # The sequence, readiness, click and navigation bookkeeping run against a fake paginated panel on a virtual clock (no browser).
   node "$HERE/qc1-panel-fixtures.mjs" >"$WORK/panel-fixtures.out" 2>&1 || { cat "$WORK/panel-fixtures.out" >&2; echo 'qc1: the panel fixtures failed' >&2; exit 1; }
   grep -q 'qc1 panel fixtures: ok' "$WORK/panel-fixtures.out"
 fi
-for pat in 'pw.chromium.launch(launchOptions(env))' 'resolvePlaywright(env.QC1_WEB_DIR)' 'totalBodyBytes(sizes)' 'walkOrigin(walk, walk.bytes, sizes.length)' 'measurePanel(driver' 'process.exit(3)' '/erasure-reasons/page' 'QC1_CHANGE_CMD' 'QC1_NO_SUBTLE' 'QC1_CLICKS'; do
+for pat in 'pw.chromium.launch(launchOptions(env))' 'resolvePlaywright(env.QC1_WEB_DIR)' 'pageObserver({ origin' 'appendFileSync(pagesFile, line)' 'page.on("response", (r) => { observer.onResponse(r); })' 'measurePanel(driver' 'process.exit(3)' 'QC1_CHANGE_CMD' 'QC1_NO_SUBTLE' 'QC1_CLICKS'; do
   grep -qF -- "$pat" "$PM" || { echo "qc1: panel-measure.mjs lost: $pat" >&2; exit 1; }
 done
 for pat in 'ul[aria-label="Contact-request reasons"] > li[data-reason-id]' 'nav[aria-label="Reasons pages"] p' 'Checking their contact-request reasons…' 'Performance.getMetrics' 'HeapProfiler.collectGarbage' 'PerformanceObserver' \

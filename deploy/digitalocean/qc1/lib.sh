@@ -43,7 +43,7 @@ QC1_PENDING_5='the legacy PUT body is T07B-3a; its route is not in this tree'
 # Files whose bytes decide what is measured; each must equal HEAD's blob.
 QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/scenario.sql
   deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
-  deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs web/src/lib/reasonSetVectors.json)
+  deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json)
 # The statements whose plans must be present for every size.
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
 
@@ -331,12 +331,25 @@ qc1_judge_defs() { cat <<'JQ'
     def inv($why; $x): {class:"invalid", failure:$why} + $x;
     def bud($why; $x): {class:"budget", failure:$why} + $x;
     def numz: if type == "number" then . else null end;
-    def ran($r): [$r.traversal, $r.delete, $r.window] | map(select(type == "object"));
+    def ran($r): [$r.traversal, $r.delete, $r.window, $r.put, $r.probe] | map(select(type == "object"));
+    # The reasons a case says its account was loaded with, from its label (null when the label does not say). Items 1 and 2 load none; the plans case loads min(size, 1,000).
+    def lblk($m):
+      if ($m.case | type) != "string" then null
+      elif $m.item == 1 or $m.item == 2 then 0
+      elif $m.item == 3 and $m.case == "order-control-requester-10" then 10
+      elif $m.item == 3 and ($m.case | startswith("discovery-")) then ($m.case | split("-") | .[2] | tonumber? // null)
+      elif $m.item == 6 and ($m.case | startswith("delete-")) then ($m.case | split("-") | .[2] | tonumber? // null)
+      elif $m.item == 10 and ($m.case | startswith("browser-panel-")) then ($m.case | ltrimstr("browser-panel-") | split("-") | .[0] | tonumber? // null)
+      elif $m.item == 9 then ($m.reasons | numz)
+      elif $m.item == 5 and $m.case == "request-size" then ($m.request.largest.reasons | numz)
+      elif $m.item == 8 and $m.case == "plans" then (if ($m.size | type) == "number" then ([$m.size, 1000] | min) else null end)
+      else null end;
     def norm_row:
       (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","probe") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.browser |= (if type == "object" then reduce ("pages","digest","phases","press","reload","clicks","navigation","firstPage","gate") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
+       | (if .put != null then .put |= (.ms |= numz) else . end) | (if .probe != null then .probe |= (.ms |= numz) else . end) | (if .window != null then .window |= (.ms |= numz) else . end)
        | (.browser.phases |= (if type == "object" then reduce ("walk","interactions","press") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end)));
     # The interaction budgets are engineering proposals (design R2); the 120 s traversal line is the existing one. Shared by whole rows and by the partial rows a failed browser run leaves.
     def browser_budgets($m):
@@ -352,10 +365,70 @@ JQ
 qc1_judge_rules() { cat <<'JQ'
     select(.status == "measured" or .status == "observation") | norm_row as $m
     | ( if ([$m.item] | inside([1,2,3,4,5])) and ($m.item != 5 or $m.case == "request-size") and ($m.case != "legacy-discovery-probe") and (($m.traversal | type) != "object" or ($m.traversal.totalMs | type) != "number" or ($m.traversal.slowestUnitMs | type) != "number") then inv("missing-traversal"; {item:$m.item}) else empty end ),
-      ( if $m.item == 5 and $m.case == "legacy-put" and (($m.put.bodyBytes | type) != "number" or ($m.put.ms | type) != "number" or $m.put.status != "200" or $m.put.validated != true or ($m.put.appPeakKb | type) != "number") then inv("legacy-no-metrics"; {case:$m.case, why:"a measured legacy PUT row is a REAL PUT: the body bytes, the time, the memory peak, status 200 and validated true (the largest valid body, accepted)"}) else empty end ),
-      ( if $m.item == 4 and $m.case == "legacy-discovery-probe" and (($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.status != "200" or $m.probe.found != true) then inv("legacy-no-metrics"; {case:$m.case, why:"the marker lookup row carries the time of a real lookup that found its marker (status 200, found true)"}) else empty end ),
-      ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe" and ($m.reasons | type) != "number" then inv("legacy-no-metrics"; {case:$m.case, why:"a legacy discovery row names the unreviewed pairs it was loaded with (reasons)"}) else empty end ),
-      ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe" and ($m.reasons | type) == "number" and ($m.case != ("legacy-discovery-" + ($m.reasons | tostring)) or $m.expect.items != $m.reasons) then inv("legacy-no-metrics"; {case:$m.case, reasons:$m.reasons, expected:$m.expect.items, why:"the case name, the pairs loaded and the pairs expected must agree"}) else empty end ),
+      # Legacy rows (T07B-3a's routes are not in this tree). They stay PENDING until a row proves a real measurement: where the pairs came from and how many were loaded, the
+      # table the operation ran against, the full instrument set of the operation, and for the PUT the exact maximum body (a 200 at the largest body that fits maxRequestBytes and a
+      # 413 at the next) and the database state it left. A sample body, a validated flag or a lone timing proves none of that.
+      ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe"
+            and (($m.reasons | type) != "number" or ($m.case != ("legacy-discovery-" + ($m.reasons | tostring))) or $m.expect.items != $m.reasons or $m.legacy.loadedPairs != $m.reasons or $m.traversal.items != $m.reasons or $m.traversal.tableRowsBefore != ($m.size + $m.legacy.loadedPairs)
+                 or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0 or $m.legacy.source != "T07B-3a")
+        then inv("legacy-no-metrics"; {case:$m.case, why:"a legacy discovery row names its route and source, and the pairs loaded, expected and listed all equal the pairs in its case name"}) else empty end ),
+      ( if $m.item == 4 and $m.case == "legacy-discovery-probe"
+            and (($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.status != "200" or $m.probe.found != true or ($m.probe.marker | type) != "string" or ($m.probe.marker | length) == 0
+                 or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0 or ($m.probe.tableRowsBefore | type) != "number")
+        then inv("legacy-no-metrics"; {case:$m.case, why:"the marker lookup row carries a real lookup: its route, the marker it found, its time and the instrument set of the operation"}) else empty end ),
+      ( if $m.item == 5 and $m.case == "legacy-put"
+            and (($m.put | type) != "object" or ($m.put.bodyBytes | type) != "number" or ($m.put.ms | type) != "number" or $m.put.status != "200" or ($m.put.appPeakKb | type) != "number"
+                 or ($m.put.route | type) != "string" or ($m.put.route | length) == 0
+                 or ($m.put.boundary | type) != "object" or $m.put.boundary.fitStatus != "200" or $m.put.boundary.nextStatus != "413" or ($m.put.boundary.fitBytes | type) != "number" or ($m.put.boundary.nextBytes | type) != "number"
+                 or $m.put.bodyBytes != $m.put.boundary.fitBytes or $m.put.boundary.fitBytes > $cap or $m.put.boundary.nextBytes <= $cap
+                 or ($m.put.boundary.nextBytes - $m.put.boundary.fitBytes) <= 0 or ($m.put.boundary.nextBytes - $m.put.boundary.fitBytes) > 256
+                 or ($m.put.outcome | type) != "object" or $m.put.outcome.dbOk != true or ($m.put.outcome.rowsBefore | type) != "number" or ($m.put.outcome.rowsAfter | type) != "number")
+        then inv("legacy-no-metrics"; {case:$m.case, cap:$cap, why:"the legacy PUT row is the exact maximum body: 200 at the largest body within maxRequestBytes, 413 at the next (one old-form entry larger, at most 256 bytes more: an entry is a id of at most 20 digits, a 64-hex hash and a choice), the database state before and after, and the instrument set"}) else empty end ),
+      # The labels are bound to the data: a row proves what its case name, size and mode claim. The reasons it was loaded with, the table it ran against (background size plus
+      # those reasons, immediately before each operation), the direction of the reasons it listed, and the outcome the database shows after a deletion must all agree with the label.
+      ( lblk($m) as $k
+        | if ($m.item == 3 or $m.item == 6 or $m.item == 10) and $k == null then inv("label-mismatch"; {what:"the case name does not name a reason count"})
+          elif ($m.item == 3 or $m.item == 6 or $m.item == 10) and ($m.reasons != $k or ($m.item != 10 and $m.expect.items != $k)) then inv("label-mismatch"; {what:"reasons", label:$k, reasons:$m.reasons, expected:$m.expect.items})
+          else empty end ),
+      ( lblk($m) as $k | ($m.size | numz) as $sz
+        | if $k != null and $sz != null then
+            ( ran($m)[] | select(type == "object") | . as $o
+              | if ($o.tableRowsBefore | type) == "number" and $o.tableRowsBefore != ($sz + $k) then inv("table-rows-mismatch"; {rows:$o.tableRowsBefore, expected:($sz + $k), size:$sz, reasons:$k}) else empty end ),
+            ( if $m.item == 8 and $m.table.actualRows != ($sz + $k) then inv("table-rows-mismatch"; {rows:$m.table.actualRows, expected:($sz + $k), size:$sz, reasons:$k}) else empty end ),
+            ( if $m.item == 10 then [ $m.browser.phases.walk, $m.browser.phases.interactions, $m.browser.phases.press ][] | select(type == "object" and (.tableRows.before | type) == "number" and .tableRows.before != ($sz + $k)) | inv("table-rows-mismatch"; {rows:.tableRows.before, expected:($sz + $k), size:$sz, reasons:$k, phase:true}) else empty end ),
+            ( if $m.item == 5 and $m.request != null then
+                [ ["parseRefusal", $m.request.parseRefusal.tableRowsBefore], ["countMismatch", $m.request.countMismatch.tableRowsBefore], ["changedSet", $m.request.changedSet.tableRowsBefore], ["overCap", $m.request.overCap.tableRowsBefore] ][]
+                | select((.[1] | type) != "number" or .[1] != ($sz + $k)) | inv("table-rows-mismatch"; {operation:.[0], rows:.[1], expected:($sz + $k), size:$sz, reasons:$k})
+              else empty end ),
+            ( if $m.item == 5 and $m.request != null then
+                [ ["legacyFit", $m.request.legacyComparison.tableRowsBefore.fit], ["legacyOver", $m.request.legacyComparison.tableRowsBefore.over] ][]
+                | select((.[1] | type) != "number" or .[1] != ($sz + 10)) | inv("table-rows-mismatch"; {operation:.[0], rows:.[1], expected:($sz + 10), size:$sz})
+              else empty end )
+          else empty end ),
+      # Direction and mode: a discovery or deletion case named requester or subject listed ONLY reasons of that role; a deletion named keep, remove or mixed shows the matching split and the
+      # database outcome that split implies (the account deleted, that many reasons blanked, that many kept, one decision audit per reason).
+      ( if ($m.item == 3 or $m.item == 6) and (($m.case | type) == "string") and ($m.case | startswith("discovery-") or startswith("delete-")) then
+          ( $m.case | split("-") | .[1] ) as $dir | ( if $dir == "requester" then "subject" else "requester" end ) as $other
+          | if ($dir != "requester" and $dir != "subject") then inv("label-mismatch"; {what:"direction", label:$dir})
+            elif ($m.roles | type) != "object" or $m.roles[$dir] != $m.reasons or $m.roles[$other] != 0 then inv("label-mismatch"; {what:"direction", label:$dir, roles:$m.roles, reasons:$m.reasons})
+            else empty end
+        else empty end ),
+      ( if $m.item == 6 and (($m.case | type) == "string") and ($m.case | startswith("delete-")) and ($m.reasons | type) == "number" then
+          ( $m.case | split("-") | .[3] ) as $mode | $m.reasons as $r
+          | ( if $mode == "keep" then {kept:$r, removed:0} elif $mode == "remove" then {kept:0, removed:$r} elif $mode == "mixed" then {kept:($r / 2 | floor), removed:($r - ($r / 2 | floor))} else null end ) as $want
+          | if $want == null then inv("label-mismatch"; {what:"mode", label:$mode})
+            elif $m.expect.kept != $want.kept or $m.expect.removed != $want.removed then inv("label-mismatch"; {what:"mode", label:$mode, expect:$m.expect, wanted:$want})
+            else empty end
+        else empty end ),
+      ( if $m.expect != null and $m.delete != null and $m.item != 5
+            and (($m.outcome | type) != "object" or $m.outcome.dbOk != true or $m.outcome.accountDeleted != "true" or $m.outcome.reasonsBlank != ($m.expect.removed // -1) or $m.outcome.reasonsWithText != ($m.expect.kept // -1)
+                 or $m.outcome.decisionAudits != (($m.expect.kept // 0) + ($m.expect.removed // 0)))
+        then inv("outcome-unverified"; {outcome:$m.outcome, expect:$m.expect}) else empty end ),
+      ( if $m.item == 5 and $m.case == "request-size" and $m.request != null then
+          if ($m.request.fitOutcome | type) != "object" or $m.request.fitOutcome.dbOk != true or $m.request.fitOutcome.accountDeleted != "true" or $m.request.fitOutcome.reasonsBlank != ($m.request.fitExpect.removed // -1) or $m.request.fitOutcome.reasonsWithText != ($m.request.fitExpect.kept // -1)
+             or $m.request.fitOutcome.decisionAudits != (($m.request.fitExpect.kept // 0) + ($m.request.fitExpect.removed // 0)) or (($m.request.fitExpect.kept // 0) + ($m.request.fitExpect.removed // 0)) != $m.request.largest.reasons
+          then inv("outcome-unverified"; {outcome:$m.request.fitOutcome, expect:$m.request.fitExpect, largest:$m.request.largest.reasons}) else empty end
+        else empty end ),
       ( if ([$m.item] | inside([1,2,5,6,9])) and ($m.item != 5 or $m.case == "request-size") and (($m.delete | type) != "object" or ($m.delete.ms | type) != "number") then inv("missing-delete"; {item:$m.item}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and ($m.request | type) != "object" then inv("missing-request"; {item:$m.item}) else empty end ),
       ( if ($m.traversal.slowestUnitMs // 0) > $unit then bud("unit"; {ms:$m.traversal.slowestUnitMs, budget:$unit}) else empty end ),
@@ -412,12 +485,42 @@ qc1_judge_rules() { cat <<'JQ'
             or ($m.executions.scannerContinuation.rows | length) != $m.executions.scannerContinuation.count or ($m.executions.scannerContinuation.sharedBlocks | length) != $m.executions.scannerContinuation.count
             or ([$m.executions.scannerInitial.rows[], $m.executions.scannerInitial.sharedBlocks[], $m.executions.scannerContinuation.rows[], $m.executions.scannerContinuation.sharedBlocks[]] | any(type != "number"))) then inv("plan-executions-missing"; {why:"rows and buffers of every scanner execution must be read from the logged plans"}) else empty end ),
       ( if $m.item == 8 and ([$m.executions.scannerInitial.rows[]?, $m.executions.scannerContinuation.rows[]?] | any(type == "number" and . > $unitrows)) then inv("scanner-unit-overrun"; {unitRows:$unitrows}) else empty end ),
-      # The scanner probe (the REAL statements, prepared and run more than six times in one session at controlled cursor positions, in the application's plan_cache_mode
-      # and forced generic): without it the index path is not proven and the evidence stays incomplete.
-      ( if $m.item == 8 and (($m.scannerProbe | type) != "object" or ($m.scannerProbe.executions | type) != "array" or ($m.scannerProbe.sameSession != true)
-            or ([ "auto", "force_generic_plan" ] | any(. as $mode | ([ $m.scannerProbe.executions[] | select(.mode == $mode) ] | length) < 7))
-            or ([ $m.scannerProbe.executions[] | select((.scan | type) != "object" or (.scan.rows | type) != "number" or (.scan.loops | type) != "number" or (.scan.sharedHit | type) != "number" or (.scan.sharedRead | type) != "number" or (.hasSort | type) != "boolean") ] | length) > 0)
-        then inv("scanner-probe-missing"; {why:"the real scanner statements must be executed more than six times per mode in one session, each with its child scan rows, loops, buffers and sort/filter facts"}) else empty end ),
+      # The scanner probe (the REAL statements, one session, eight executions per plan cache mode, at the prescribed cursor positions). The collector promises exactly this
+      # shape and the judge holds it to it: both modes, each with exactly one initial unit and seven continuations at 0, 10, 25, 40, 55, 70 and 85 per cent of the table, at
+      # strictly increasing cursor ids, the same ids in both modes, every execution with its child scan's rows, loops and buffers. Anything else is invalid, never partial credit.
+      ( if $m.item == 8 then
+          ( [0, 10, 25, 40, 55, 70, 85] ) as $pcts
+          | ( if ($m.scannerProbe | type) != "object" or ($m.scannerProbe.executions | type) != "array" or $m.scannerProbe.sameSession != true or $m.scannerProbe.executionsPerMode != 8 then
+                inv("scanner-probe-missing"; {why:"the scanner probe is absent, not a single session, or does not promise eight executions per mode"})
+              else
+                ( [ $m.scannerProbe.executions[] | .mode ] | unique ) as $modes
+                | ( [ $m.scannerProbe.executions[] | select((.scan | type) != "object" or (.scan.rows | type) != "number" or (.scan.loops | type) != "number" or (.scan.sharedHit | type) != "number" or (.scan.sharedRead | type) != "number" or (.hasSort | type) != "boolean" or (.topRows | type) != "number") ] | length) as $bare
+                | if $modes != ["auto", "force_generic_plan"] or ($m.scannerProbe.executions | length) != 16 then inv("scanner-probe-missing"; {why:"exactly the two plan cache modes auto and force_generic_plan, eight executions each (sixteen)", modes:$modes, executions:($m.scannerProbe.executions | length)})
+                  elif $bare > 0 then inv("scanner-probe-missing"; {why:"every execution carries its child scan rows, loops and shared blocks, its top node rows and whether a Sort is in the plan", executionsMissingData:$bare})
+                  else
+                    ( [ $modes[] as $mode | [ $m.scannerProbe.executions[] | select(.mode == $mode) ] as $ex
+                        | { mode: $mode,
+                            mix: ([ $ex[] | .kind ] == ["initial","continuation","continuation","continuation","continuation","continuation","continuation","continuation"]),
+                            percents: ([ $ex[] | select(.kind == "continuation") | .percent ] == $pcts),
+                            ids: [ $ex[] | select(.kind == "continuation") | .afterId ],
+                            initialId: ($ex[0].afterId) } ] ) as $per
+                    | if ($per | any(.mix | not)) then inv("scanner-probe-missing"; {why:"each mode is one initial unit followed by seven continuations, in that order", per:$per})
+                      elif ($per | any(.percents | not)) then inv("scanner-probe-missing"; {why:"the continuations are at the prescribed cursor positions 0, 10, 25, 40, 55, 70 and 85 per cent", per:$per})
+                      elif ($per | any(.initialId != null)) then inv("scanner-probe-missing"; {why:"the initial unit has no cursor"})
+                      elif ($per | any([.ids[] | numbers] | length != 7)) or ($per | any(.ids != (.ids | sort) or (.ids | unique | length) != 7)) then inv("scanner-probe-positions"; {why:"the seven cursor ids of a mode are distinct and strictly increasing (a table that cannot give seven distinct positions is not measured)", per:$per})
+                      elif $per[0].ids != $per[1].ids then inv("scanner-probe-positions"; {why:"both modes are probed at the same cursor ids", per:$per})
+                      else empty end
+                  end
+              end ),
+          # The two modes are compared position by position: the same data must come back (equal rows at every position, initial unit included). A difference is the state having
+          # changed between the modes, or a plan that is not the same query; neither can be read as proof of the index path.
+          ( if ($m.scannerProbe.executions | type) == "array" and ([ $m.scannerProbe.executions[] | .mode ] | unique) == ["auto", "force_generic_plan"] then
+              ( [ $m.scannerProbe.executions[] | select(.mode == "auto") ] ) as $a
+              | ( [ $m.scannerProbe.executions[] | select(.mode == "force_generic_plan") ] ) as $g
+              | if ($a | length) == ($g | length) and ([ range(0; $a | length) | select(($a[.].scan.rows) != ($g[.].scan.rows) or ($a[.].kind) != ($g[.].kind) or ($a[.].afterId) != ($g[.].afterId)) ] | length) > 0
+                then inv("scanner-mode-disagreement"; {why:"the same cursor must read the same rows in both plan cache modes"}) else empty end
+            else empty end )
+        else empty end ),
       ( if $m.item == 8 and ($m.scannerProbe.executions | type) == "array" then
           ( $m.scannerProbe.executions[] | select((.scan | type) == "object") as $e
             | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows}) else empty end ),
@@ -439,7 +542,8 @@ qc1_judge_rules() { cat <<'JQ'
               ["heapAfterGcBytes", $m.browser.heapAfterGcBytes], ["domNodes", $m.browser.domNodes], ["longTaskMs", $m.browser.longTaskMs], ["secureContext", $m.browser.secureContext],
               ["clickP95Ms", $m.browser.clicks.p95Ms], ["clickMaxMs", $m.browser.clicks.maxMs], ["navNextPageMax", $m.browser.navigation.nextPage.maxMs],
               ["navJumpMax", $m.browser.navigation.jump.maxMs], ["navNextUnchosenMax", $m.browser.navigation.nextUnchosen.maxMs], ["navNextChangedMax", $m.browser.navigation.nextChanged.maxMs],
-              ["pagesCount", $m.browser.pages.count], ["pageResponseBytesMax", $m.browser.pages.responseBytesMax], ["pageRequestMsMax", $m.browser.pages.requestMsMax], ["pageReadMsMax", $m.browser.pages.readMsMax], ["pageParseMsMax", $m.browser.pages.parseMsMax], ["pageParseMsTotal", $m.browser.pages.parseMsTotal],
+              ["pagesCount", $m.browser.pages.count], ["pageResponseBytesMax", $m.browser.pages.responseBytesMax], ["pageRequestMsMax", $m.browser.pages.requestMsMax], ["pageReadMsMax", $m.browser.pages.readMsMax], ["pagesAbsentFields", (if ($m.browser.pages.absent | type) == "object" and ([$m.browser.pages.absent[]] | add) == 0 then 0 else null end)],
+              ["pagesWalks", (if ($m.browser.pages.walks | type) == "array" and ($m.browser.pages.walks | length) >= 2 then ($m.browser.pages.walks | length) else null end)], ["pageParseMsMax", $m.browser.pages.parseMsMax], ["pageParseMsTotal", $m.browser.pages.parseMsTotal],
               ["digestPath", $m.browser.digest.path], ["digestBuildMs", $m.browser.digest.buildMs], ["digestPreimageBytes", $m.browser.digest.preimageBytes], ["pressResponseMs", $m.browser.press.responseMs],
               ["phaseWalkWalBytes", $m.browser.phases.walk.walBytes], ["phaseInteractionsWalBytes", $m.browser.phases.interactions.walBytes], ["phasePressWalBytes", $m.browser.phases.press.walBytes],
               ["phaseWalkAuditActions", $m.browser.phases.walk.auditActionsDelta], ["phasePressAuditActions", $m.browser.phases.press.auditActionsDelta],
@@ -477,7 +581,7 @@ JQ
 }
 qc1_judge() { # measurements.jsonl max_request_bytes
   local -a a=(-c --argjson unit "$QC1_UNIT_BUDGET_MS" --argjson del "$QC1_DELETE_BUDGET_MS" --argjson trav "$QC1_TRAVERSAL_BUDGET_MS" --argjson clickp95 "$QC1_CLICK_P95_BUDGET_MS"
-    --argjson clickmax "$QC1_CLICK_MAX_BUDGET_MS" --argjson nav "$QC1_NAV_BUDGET_MS" --argjson unitrows "$QC1_SCANNER_UNIT_ROWS")
+    --argjson clickmax "$QC1_CLICK_MAX_BUDGET_MS" --argjson nav "$QC1_NAV_BUDGET_MS" --argjson unitrows "$QC1_SCANNER_UNIT_ROWS" --argjson cap "${2:-0}")
   jq "${a[@]}" -f <(qc1_judge_defs; qc1_judge_rules) "$1" || return $?
   jq "${a[@]}" -f <(qc1_judge_defs; qc1_judge_partial) "$1"
 }
@@ -558,8 +662,10 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
     def same($a; $b): ($a | unique) == ($b | unique);
     . as $rows
     | ($rows | map({item, size, case, status})) as $have
+    # The same (item, size, case) measured twice is not evidence of either: both rows are suspect and neither clears anything.
+    | ([ $have[] | select(.status == "measured" or .status == "observation") ] | group_by([.item, .size, .case]) | map(select(length > 1) | {item: .[0].item, size: .[0].size, case: .[0].case, count: length})) as $dups
     | def present($w): any($have[]; .item == $w.item and .size == $w.size and .case == $w.case and (.status == "measured" or (.status == "observation" and $w.item == 9)));
-      def clean($w): present($w) and ($judged | all(.class != "invalid" or .item != $w.item or .size != $w.size or .case != $w.case));
+      def clean($w): present($w) and ($judged | all(.class != "invalid" or .item != $w.item or .size != $w.size or .case != $w.case)) and (($dups | map(select(.item == $w.item and .size == $w.size and .case == $w.case)) | length) == 0);
       ($env.settings // {}) as $s
     | ([ if $s.sizes != null and (same(nums($s.sizes); $argSizes) | not) then {what:"sizes", settings:$s.sizes, argument:$argSizes} else empty end,
          if $s.counts != null and (same(nums($s.counts); $argCounts) | not) then {what:"counts", settings:$s.counts, argument:$argCounts} else empty end,
@@ -584,6 +690,7 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
         invalid: ( [ $judged[] | select(.class == "invalid") ]
                    + [ $envProblems[] | {class:"invalid", failure:"environment", problem:.} ]
                    + [ $disagree[] | {class:"invalid", failure:"settings-disagreement"} + . ]
+                   + [ $dups[] | {class:"invalid", failure:"duplicate-row"} + . ]
                    + (if $judgeOk then [] else [{class:"invalid", failure:"judge-failed"}] end) ),
         budgetFailures: [ $judged[] | select(.class == "budget") ],
         confounding: (
@@ -666,6 +773,24 @@ qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
                  { nodeType: $scan["Node Type"], indexName: $scan["Index Name"], indexCond: $scan["Index Cond"], filter: $scan["Filter"],
                    rows: $scan["Actual Rows"], loops: $scan["Actual Loops"], sharedHit: $scan["Shared Hit Blocks"], sharedRead: $scan["Shared Read Blocks"],
                    rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0) } end) } ]'
+}
+
+# The page summary rebuilt from the observations the measurement process persisted as each review page completed (QC1_OUT.pages.jsonl, one JSON object a line): what a run
+# that died before it could write its result still has. The page's own read and parse times are not in the file (they live in the page), so they are ABSENT for every page and
+# the row can never pass as complete; the bytes, the request time and the Node-side parse are, and a slow request is judged from them. Same shape as summarizePages.
+qc1_pages_from_jsonl() { # file
+  jq -sc '
+    def col(k): map(.[k]) | map(select(type == "number"));
+    def mx(k): col(k) as $c | if ($c | length) > 0 then ($c | max) else null end;
+    def sm(k): col(k) as $c | if ($c | length) > 0 then ($c | add) else null end;
+    def p95(k): col(k) | sort as $c | if ($c | length) > 0 then $c[([(($c | length) * 0.95 | ceil), 1] | max) - 1] else null end;
+    def absent(k): length - (col(k) | length);
+    def summary: { count: length, responseBytesMax: mx("bytes"), responseBytesTotal: sm("bytes"), requestMsMax: mx("requestMs"), requestMsP95: p95("requestMs"),
+                   readMsMax: null, readMsTotal: null, parseMsMax: null, parseMsTotal: null, nodeParseMsMax: mx("nodeParseMs"),
+                   absent: { bytes: absent("bytes"), requestMs: absent("requestMs"), readMs: length, parseMs: length, nodeParseMs: absent("nodeParseMs") } };
+    if length == 0 then null else
+      summary + { walks: (group_by(.walk // 1) | map({walk: (.[0].walk // 1)} + summary)), parseKind: "rebuilt from the persisted observations: the page-side read and parse times are not in them" }
+    end' "$1"
 }
 
 # The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a

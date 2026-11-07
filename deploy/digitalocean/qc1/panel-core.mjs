@@ -68,28 +68,37 @@ const never = () => {
 };
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-const maxOf = (xs) => (xs.length > 0 && xs.every((v) => num(v) !== null) ? Math.max(...xs) : null);
-const sumOf = (xs) => (xs.length > 0 && xs.every((v) => num(v) !== null) ? xs.reduce((a, b) => a + b, 0) : null);
 
 /**
- * The F7 per-page figures of the first walk: response bytes, the request time, and the time the page spent reading and parsing each response
- * (Response.json(), measured in the page) beside JSON.parse alone in Node. Any page without a figure makes that figure null (missing), never zero.
+ * The F7 per-page figures over EVERY review page response the page received, in every walk (the first read, and the second read after a refused press), summarised from the
+ * observations that COMPLETED. Each observation is persisted by the measurement process as it completes, so a run that stops part-way still has every page it saw, slow ones
+ * included. A maximum is taken over the observations that have the figure; a figure that some observation lacks is COUNTED (absent), never replaced by zero and never allowed to
+ * hide the maximum of the rest. `walks` repeats the summary per walk, so a slow request in the reload is seen as the reload's.
  */
 export function summarizePages(list) {
   if (!Array.isArray(list) || list.length === 0) return null;
-  const col = (k) => list.map((p) => p?.[k]);
+  const nums = (rows, k) => rows.map((p) => p?.[k]).filter((v) => num(v) !== null);
+  const maxIf = (rows, k) => (nums(rows, k).length > 0 ? Math.max(...nums(rows, k)) : null);
+  const sumIf = (rows, k) => (nums(rows, k).length > 0 ? nums(rows, k).reduce((a, b) => a + b, 0) : null);
+  const absent = (rows, k) => rows.length - nums(rows, k).length;
+  const summary = (rows) => ({
+    count: rows.length,
+    responseBytesMax: maxIf(rows, "bytes"),
+    responseBytesTotal: sumIf(rows, "bytes"),
+    requestMsMax: maxIf(rows, "requestMs"),
+    requestMsP95: nums(rows, "requestMs").length > 0 ? percentile(nums(rows, "requestMs"), 95) : null,
+    readMsMax: maxIf(rows, "pageReadMs"),
+    readMsTotal: sumIf(rows, "pageReadMs"),
+    parseMsMax: maxIf(rows, "pageParseMs"),
+    parseMsTotal: sumIf(rows, "pageParseMs"),
+    nodeParseMsMax: maxIf(rows, "nodeParseMs"),
+    absent: { bytes: absent(rows, "bytes"), requestMs: absent(rows, "requestMs"), readMs: absent(rows, "pageReadMs"), parseMs: absent(rows, "pageParseMs"), nodeParseMs: absent(rows, "nodeParseMs") },
+  });
+  const walkNumbers = [...new Set(list.map((p) => p?.walk ?? 1))].sort((a, b) => a - b);
   return {
-    count: list.length,
-    responseBytesMax: maxOf(col("bytes")),
-    responseBytesTotal: sumOf(col("bytes")),
-    requestMsMax: maxOf(col("requestMs")),
-    requestMsP95: col("requestMs").every((v) => num(v) !== null) ? percentile(col("requestMs"), 95) : null,
-    readMsMax: maxOf(col("pageReadMs")),
-    readMsTotal: sumOf(col("pageReadMs")),
-    parseMsMax: maxOf(col("pageParseMs")),
-    parseMsTotal: sumOf(col("pageParseMs")),
-    nodeParseMsMax: maxOf(col("nodeParseMs")),
-    parseKind: "readMs is the page's own Response.text() and parseMs its own JSON.parse of that text, per page response, as web/src/api.ts does them; nodeParseMs is JSON.parse of the decoded body alone, in Node",
+    ...summary(list),
+    walks: walkNumbers.map((w) => ({ walk: w, ...summary(list.filter((p) => (p?.walk ?? 1) === w)) })),
+    parseKind: "readMs is the page's own Response.text() and parseMs its own JSON.parse of that text, per page response, as web/src/api.ts does them; nodeParseMs is JSON.parse of the decoded body alone, in Node; requestMs is Playwright's own request timing",
   };
 }
 
@@ -116,7 +125,7 @@ export async function measurePanel(d, opts) {
   const clicks = { beforeWalkEnd: [], midList: [], lastPage: [], afterWalk: [] };
   const nav = { nextPage: [], jump: [], nextUnchosen: [], nextChanged: [] };
   const marks = {};
-  const R = { firstRows: null, firstPageMs: null, env: null, firstInteractiveMs: null, walkEndMs: null, walkTotal: null, walkStats: null, metrics: null, afterInteractions: null, press: null, reload: null, digest: null };
+  const R = { pageObs: null, firstRows: null, firstPageMs: null, env: null, firstInteractiveMs: null, walkEndMs: null, walkTotal: null, walkStats: null, metrics: null, afterInteractions: null, press: null, reload: null, digest: null };
   let phase = "open";
   let failed = null;
   const mark = async (name) => {
@@ -175,6 +184,7 @@ export async function measurePanel(d, opts) {
     R.walkTotal = parseNavLine((await d.snapshot()).navLine)?.total ?? null;
     await mark("walk-end");
     R.walkStats = await d.walkStats();
+    try { R.pageObs = await d.pageObservations(); } catch { /* the final collection below tries again */ }
     // Heap, DOM and long tasks as they stand when the walk has ended: what the walk cost the page.
     R.metrics = await d.metrics();
 
@@ -291,6 +301,12 @@ export async function measurePanel(d, opts) {
   if (timeline === null) {
     try { timeline = await d.timeline(); } catch { /* the page is gone: every interval stays null */ }
   }
+  // Every review page observation that COMPLETED, in every walk, whatever stopped the run: the measurement process persists each one as it finishes, so a slow page seen
+  // before a failure (or in the reload) is still here. If the page is gone, what was already collected is used.
+  let finalObs = R.pageObs ?? null;
+  try {
+    if (typeof d.pageObservations === "function") finalObs = await d.pageObservations();
+  } catch { /* keep what the walk end collected */ }
   // The page-clock intervals, all from the Delete-menu action. A missing stamp is null (missing), never a guess from this loop's clock.
   const since = (stamp) => (timeline && num(timeline.menuAt) !== null && num(stamp) !== null ? Math.round((stamp - timeline.menuAt) * 10) / 10 : null);
   R.firstPageMs = since(timeline && timeline.firstPageAt);
@@ -338,7 +354,7 @@ export async function measurePanel(d, opts) {
     pageRequests: R.walkStats ? R.walkStats.pageRequests : null,
     pageResponseBytes: R.walkStats ? R.walkStats.pageResponseBytes : null,
     pageResponseBytesKind: "decoded response body bytes",
-    pages: R.walkStats ? summarizePages(R.walkStats.pageList) : null,
+    pages: summarizePages(finalObs),
     apiOrigin: R.walkStats ? R.walkStats.apiOrigin : null,
     renderReadyMs: readyCandidates.some((v) => v === null) ? null : Math.max(...readyCandidates),
     ...(R.metrics ?? { heapUsedBytes: null, heapAfterGcBytes: null, domNodes: null, longTaskMs: null, longTaskCount: null }),
