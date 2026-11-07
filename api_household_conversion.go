@@ -510,6 +510,11 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			for i := range users {
 				locked[users[i].ID] = &users[i]
 			}
+			// Test seam (nil in production): the users statement above holds
+			// every participant until this transaction commits.
+			if a.conversionAfterUserLocks != nil {
+				a.conversionAfterUserLocks(tx)
+			}
 			if err := lockHousehold(tx, person.HouseholdID); err != nil {
 				return err
 			}

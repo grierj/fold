@@ -77,6 +77,46 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   A change committed after that commit, before or during the call, may not stop the one test send.
   Required mail bypasses choices; provider suppressions remain separate. R4-2d2 is implemented locally
   only; C2 and publication remain pending (inventory 7.6 and 15.8).
+- Deletion outcomes and the restore barrier (M7.4 T07B-1b and T07B-1c, staged: committed locally as `cd3ad9a` (1b), `99fd0b3`
+  (merge of the reason schema) and `5f941e6` (1c); unmerged, unpushed, unpublished; final checks at the landing head, the
+  four-concern integration review, the deployment-level drill and the first-church hand checks are pending; C4 is not met and M7.4
+  is not complete; inventory 15.9). It is two halves that land together, and a release carrying them reports
+  `recoveryPolicy` 1, which must never be published before R4-6c-R's current-release restore tooling and operator procedure land
+  and are verified.
+  - Boot step: `bootRestoreFence` (`restore_fence.go`) runs in `serve` after migrations and before anything serves. One
+    transaction under the migrations advisory lock creates and advances the `settings` row `restore_fence`; only an acknowledged
+    COMMIT sets the in-memory floor, and any failure exits non-zero. A restart is the restart boundary: ids and the floor belong
+    to one process.
+  - Commit-aware fence: every fenced `a.contactMutationCtx` (`apiAdminDeleteUser`, the settle route) takes
+    `a.takeRestoreTicket(tx)` first (the one-slot turn under the contact gate, then the counter), defers
+    `a.abandonRestoreTicket(&tk)` before the call and runs `a.acknowledgeRestoreTicket(&tk, err)` as the next statement. The floor
+    is raised only when the call returned nil (an acknowledged COMMIT), and only then is the turn released, so a later ticket never
+    reads the counter between a COMMIT and its acknowledgment (`TestFencedTransactionsTakeTheTicketFirst`). A ticket at or below
+    the floor, or a missing row, is 503 `restore_detected`, and `requestRestart` makes `serve` exit 1 for the supervisor. Only the
+    boot step and the ticket write the row (`TestRestoreFenceHasTwoWriters`); a settings writer with a non-literal key calls
+    `refuseRestoreFenceKey`. Detection limit, stated: a stored counter or boot value alone detects nothing; only the in-memory
+    floor does, and only when a restore loses a commit this process saw acknowledged. A restore of a dump taken after the last
+    acknowledged fenced commit, one that loses only an unknown commit, and one made while the process was stopped are not detected;
+    `TestRestoreFenceUndetectedCases` pins that the first two never answer "not applied" for a deletion that ran.
+  - Attempt ids (`admin_operation_attempts.go`): `POST /api/v1/admin/operation-attempts` mints an id under a per-process key; only
+    that process mints or verifies it, and it runs at most once, in that process, if first submitted within 10 minutes. The
+    ledger is memory only (its mutex never waits: `TestLedgerMutexHoldsNoWait`) and is checked before an id's age; the receipt row (`admin_operation_attempts`, T39) is inserted right after the ticket in the deletion's own transaction
+    and a daily `admin_attempts.sweep` job deletes receipts older than 24 hours. `POST .../settle` answers `applied`,
+    `not_applied` (`subjectDeleted: true` only when the account is already gone), `history_unavailable` or `checking`;
+    `not_applied` comes only from the ledger in memory. `attempt_expired` means only that this submission ran nothing; its copy
+    never says "nothing was deleted". After a restart or 60 minutes an id settles `history_unavailable`.
+  - Actor seal: `contactChange.Seal` runs `currentAdminIn` (`FOR SHARE NOWAIT` on the actor's own row, decided with `CanSignIn`
+    and both session versions) as the last locking statement before COMMIT, with or without an attempt id
+    (`TestActorSealIsLast`, `TestCurrentAdminInFacts`); a busy seal retries at most three times and answers 409
+    `admin_account_busy`, and settle makes at most three sealed tries in two seconds and then answers `checking`.
+  - Panel (1c): `DeleteUserPanel` mints an id per press and keeps it in memory. A lost, unreadable or ambiguous answer settles
+    the same id with Delete off and shows no "nothing was deleted" copy first; definitive refusals discard the id; a
+    `restore_detected` or `history_unavailable` answer keeps Delete off until the users list reloads successfully
+    (`lib/deleteReload.ts`).
+  - Test-only clock: `attempt_clock_e2e.go` (build tag `e2eclock`, with `e2e_hooks.go`) adds an offset to the attempt clock and an
+    admin-only, CSRF-protected `POST /api/v1/e2e/attempt-clock`, and only when `FOLD_E2E_CLOCK=1`. `web/e2e/run.sh` and
+    `server.sh` build with the tag and set the variable; the Dockerfile, release build, `make test` and `go build` never set the
+    tag, which is checked by review, not by a test.
 - Household erasure (M7.4 R4-3b, staged: local, unmerged, M7.4 not complete): deleting an account also runs
   `eraseHouseholdRecordsIn` (`account_erasure_households.go`) under household rows taken `FOR UPDATE NOWAIT`.
   It deletes the account's seat, anonymizes the person row(s) that are the same individual (`PERS`, read
@@ -161,7 +201,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   layout checks run in parts (`UI_PARTS`, `partSelected`); `UPDATE_UI_BASELINE=1` needs
   `E2E_SHARDS=1`. Prefer `gotoSettled` to `waitForLoadState("networkidle")`. `signIn` clears
   cookies first. Assert on roles and visible text; accept `confirm()` with `page.on("dialog")`.
-  Traces: `web/test-results/shard-<n>/`.
+  Traces: `web/test-results/shard-<n>/`. The e2e binary is built with `-tags e2eclock` (`run.sh`, `server.sh`) and the server
+  gets `FOLD_E2E_CLOCK=1`, which adds the test-only attempt clock; no shipped build has either.
 - Legacy erasure is staged locally (R4-6b, not merged): `erasure.tombstone_sweep` starts a daily
   keyset page chain; `erasure.tombstone_page` continues it, at most 200 subjects plus one continuation
   per transaction; `erasure.tombstone` scrubs one exact soft-deleted `deleted-<id>@deleted.invalid`
@@ -347,8 +388,8 @@ The migration chain is the generated baseline (M7.7, DEC-138) plus additive numb
 (`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A)
 (`00005_email_address_optouts.sql` adds the address-level optional-email opt-out table, R4-2d2-1,
 owner decision 8; R4-2d2-2a through -3 activate its local behavior, inventory 7.6 and 15.8)
-(`00006_admin_operation_attempts.sql` stages dormant receipt storage, T07B-1a: a 16-byte nonce and
-timestamp only, with no behavior or cleanup yet; inventory T39 records the planned 24-hour cleanup)
+(`00006_admin_operation_attempts.sql` originally staged receipt storage in T07B-1a: a 16-byte nonce and
+timestamp only. T07B-1b now uses it locally and runs the 24-hour cleanup; inventory T39 and 15.9 record the staged behavior)
 (`00007_reason_review_erasure_scrub.sql` adds a dormant reason-blank branch to both `contact_requests` trigger
 functions, T07B-2a: non-contact, non-pending rows with a soft-deleted party only, ages-note branches intact,
 no caller; local, verification and landing pending, inventory 15.4).
@@ -440,7 +481,11 @@ After a merge, merge master into the other open branches (never rebase) and repo
   exits 75 naming the holder from informational `ops.owner`. Never delete, rename or replace the lock.
   Never publish `recoveryPolicy >= 1` before R4-6c-R's current-release restore tooling and operator
   procedure land and are verified. Local refusal drills do not satisfy that release gate or the
-  real-droplet checks in `docs/FIRST-CHURCH-CHECKS.md`.
+  real-droplet checks in `docs/FIRST-CHURCH-CHECKS.md`. The T07B-1b tree is itself level 1
+  (`const recoveryPolicyLevel` in `restore_fence.go` equals `deploy/recovery-policy`, checked by
+  `TestRecoveryPolicyFileMatchesConstant`; `fold version --json` reports it), so a release cut from it is
+  unpublishable until that tooling lands. Its deployment-level drill (`deploy-drill.sh`, the level-0 rollback
+  and forward refusals) is pending.
 
 ## SMS (messaging Phase 3, not yet)
 
@@ -520,4 +565,10 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, in CI after the build) |
 | Secrets in URLs (calendar and room feed tokens, guest manage links, unsubscribe and email settings links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`); `TestAccessLogKeepsSecretsOut` |
 | Push payloads never carry contact details, signed links or a hidden group's name; endpoints are never logged | `TestEveryKindsPushTextIsLockScreenSafe` (`internal/notify`), `TestPushLogsKeepSecretsOut` |
+| The restore barrier's boot step runs in `serve` after migrations and before anything serves, and a failure exits non-zero | `TestRestoreFenceBoot` (`restore_fence_test.go`); the call's position in `serve` is checked by review |
+| Every fenced transaction takes the restore ticket first, and the floor is raised only on an acknowledged COMMIT before the turn is released; only the boot step and the ticket write `restore_fence` | `TestFencedTransactionsTakeTheTicketFirst`, `TestFencedTransactionsGuardCatchesBypasses` (parse-only, over `apiAdminDeleteUser` and the settle route), `TestRestoreFenceHasTwoWriters`, `TestSettingsWritersRefuseTheFenceKey`, `TestRestoreFenceDelayedAcknowledgment`, `TestRestoreFenceNoFalseDetection`, `TestRestoreFenceSameLifetime`; `TestRestoreFenceUndetectedCases` pins the stated detection limit |
+| Attempt ids are minted and checked only by the process that holds the key, run at most once, and are in the ledger before their age is judged; `attempt_expired` means only that the submission ran nothing; `not_applied` is answered only from memory | `TestAttemptIDCapability`, `TestAttemptLedgerRules`, `TestAttemptLifecycle`, `TestDefinitiveResponsesEndTheAttempt`, `TestOutcomeClassification`, `TestLedgerMutexHoldsNoWait`, `TestSettleAuthorization`, `TestSettleUnknownCommit`, `TestRestoreFenceFencedIdAcrossARestart` |
+| The signed-in admin is decided on their own row `FOR SHARE NOWAIT` as the last locking statement before COMMIT | `TestActorSealIsLast`, `TestCurrentAdminInFacts`, `TestActorSealBusy`, `TestActorSealVsConversion` |
+| The recovery level the binary reports equals `deploy/recovery-policy`, and R4-RP's tooling refuses a lower level on every scripted path; no release at level 1 or above before R4-6c-R's tooling and procedure land | `TestRecoveryPolicyFileMatchesConstant`, `TestVersionJSONReportsRecoveryPolicy`; the tooling refusal is R4-RP's; the publication gate is review only |
+| The test-only attempt clock exists only in a binary built with `-tags e2eclock` and run with `FOLD_E2E_CLOCK=1` | The build tag and `attempt_clock_e2e.go`'s admin-and-CSRF route; that no shipped build sets the tag is review only (no test) |
 | Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |

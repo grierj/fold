@@ -59,7 +59,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPush(args, asJSON, stdout, stderr)
 	case "version":
 		if asJSON {
-			_ = json.NewEncoder(stdout).Encode(map[string]string{"version": version})
+			// recoveryPolicy is the restore tooling's compatibility level
+			// (R4-RP); an older binary has no such field, which reads as 0.
+			_ = json.NewEncoder(stdout).Encode(map[string]any{"version": version, "recoveryPolicy": recoveryPolicyLevel})
 		} else {
 			fmt.Fprintln(stdout, "fold", version)
 		}

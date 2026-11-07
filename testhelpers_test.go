@@ -118,12 +118,29 @@ func testApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("upload store: %v", err)
 	}
-	return &App{
+	app := &App{
 		DB:      db,
 		Store:   store,
 		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes"), SetupToken: strings.Repeat("a", 64)},
 		Uploads: uploads,
 		Mailer:  mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>")),
+	}
+	// The same start-up steps serve runs: the per-process attempt key and the
+	// restore barrier's boot (the database was just emptied, so the counter row
+	// is made here). A test that restarts passes through bootFence itself.
+	bootFence(t, app)
+	return app
+}
+
+// bootFence runs serve's start-up steps for the barrier and the attempt key on
+// app, the way a new process would, and records any restart request.
+func bootFence(t *testing.T, app *App) {
+	t.Helper()
+	if err := app.initAttempts(); err != nil {
+		t.Fatalf("attempt key: %v", err)
+	}
+	if err := app.bootRestoreFence(); err != nil {
+		t.Fatalf("restore barrier boot: %v", err)
 	}
 }
 

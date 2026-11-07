@@ -92,6 +92,9 @@ func (a *App) createFirstAdmin(ctx context.Context, admin *models.User, in setup
 			return err
 		}
 		for _, setting := range []models.Setting{{Key: "site_name", Value: in.SiteName}, {Key: settingTimezone, Value: in.Timezone}} {
+			if err := refuseRestoreFenceKey(setting.Key); err != nil {
+				return err
+			}
 			if err := tx.Where(models.Setting{Key: setting.Key}).Assign(models.Setting{Value: setting.Value}).FirstOrCreate(&models.Setting{}).Error; err != nil {
 				return err
 			}

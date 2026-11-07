@@ -55,6 +55,11 @@ export const ERROR_COPY = {
   delete_outcome_unknown: "Fold couldn't confirm whether the account was deleted. Reload this person's page to see whether they are gone before trying again.",
   delete_timed_out: "Deleting took too long, so nothing was deleted. Try again in a few minutes.",
   delete_household_busy: "Someone was changing this person's household at the same moment, so nothing was deleted. Try again in a moment.",
+  admin_account_busy: "Your own account was being updated at the same moment, so nothing was changed. Try again in a moment.",
+  attempt_expired: "This delete request was too old to run, so Fold didn't run it. Fold is checking what happened.",
+  attempt_closed: "Fold is checking what happened to this request.",
+  attempt_busy: "Fold is busy. Wait a minute, then try again.",
+  restore_detected: "Fold noticed its database was restored while it was running, so nothing was changed. It is restarting; try again in a minute.",
   // Signing in and passwords
   bad_credentials: "That email and password don't match. Check them and try again.",
   locked_out: "Too many sign-in attempts. Please wait 15 minutes, then try again.",

@@ -810,8 +810,17 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/users/:id/sole-leader-groups", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleLedGroups)
 	v1.GET("/admin/users/:id/sole-host-events", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleHostEvents)
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
+	// Attempt ids for the deletion and settling a lost reply (T07B-1b). Both
+	// are CSRF-protected POSTs; the id travels in the body, never the path.
+	v1.POST("/admin/operation-attempts", a.apiAuth(), a.apiAdmin(), a.apiAdminMintOperationAttempt)
+	v1.POST("/admin/operation-attempts/settle", a.apiAuth(), a.apiAdmin(), a.apiAdminSettleOperationAttempt)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 
 	// Notifications (5.12).
 	a.registerNotificationRoutes(v1)
+
+	// Browser-test routes: nil outside -tags e2eclock (e2e_hooks.go).
+	if e2eRoutes != nil {
+		e2eRoutes(a, v1)
+	}
 }
