@@ -173,6 +173,59 @@ trace '+ check_target_level build x' '+ require_recovery_level 0 1' "$MSG" '+ /s
 trace '+ stage_tools' '+ docker compose --project-directory /d exec -T db pg_restore -l' '+ require_recovery_level 0 1' "$MSG"
 [[ -z "$(crossing_problems restore-image 1 "$WORK/trace" "$WORK/before" "$WORK/after")" ]]
 
+# --- which tool set a dump restore ran from ---------------------------------------
+# Lines copied in order from a real upgrade.sh --rollback trace (nested xtrace
+# markers kept). restore.sh --dump execs a staged copy, renames that directory
+# to recovery-tools and keeps running; it never execs recovery-tools/restore.sh.
+T=/drill/restore-run/site
+S=/drill/restore-run/source
+real_tools_trace() {
+  printf '%s\n' \
+    "+ exec $T/deploy-tools/upgrade.sh --deploy-dir $T --source-dir $S --rollback --source-dir $S" \
+    "+ exec $T/deploy-tools/restore.sh --dump $T/dumps/fold-20261107-0528.dump --reopen-if-none --deploy-dir $T --source-dir $S --image 127.0.0.1:32769/fold:real-landing-d400b7755f45 --drill" \
+    "+ install -m 644 $T/deploy-tools/restore.sh $T/.recovery-tools.o21EaG/restore.sh" \
+    "+ exec $T/.recovery-tools.o21EaG/restore.sh --dump $T/dumps/fold-20261107-0528.dump --reopen-if-none --deploy-dir $T --source-dir $S" \
+    "+ publish_tools" \
+    "+ mv $T/recovery-tools $T/.old-recovery-tools.rdF5rE" \
+    "+ mv $T/.recovery-tools.o21EaG $T/recovery-tools" \
+    "+ pin" \
+    "+ $T/recovery-tools/provision.sh --pin-only --recovery-nonce 5eecf9d3a2a8afcfb16a9c6008a20c69 --skip-harden --deploy-dir $T" \
+    "+ finish_reopen" \
+    "+ smoke" \
+    "+ $T/recovery-tools/smoke.sh --deploy-dir $T --source-dir $S" \
+    "+ exit 0"
+}
+real_tools_trace >"$WORK/tools.trace"
+[[ -z "$(crossing_recovery_tools_problems "$WORK/tools.trace" "$T" "$S/deploy/digitalocean/")" ]]
+# The retired assertion looked for an exec of recovery-tools/restore.sh. The real
+# flow never contains one, which is why it failed a correct rollback.
+if grep -Eq '^\++ exec .*/recovery-tools/restore\.sh ' "$WORK/tools.trace"; then exit 1; fi
+tools_problem() { # message-needle, from stdin trace
+  cat >"$WORK/tools.mutated"
+  got="$(crossing_recovery_tools_problems "$WORK/tools.mutated" "$T" "$S/deploy/digitalocean/")"
+  [[ "$got" == *"$1"* ]]
+}
+# Never staged: only the old-style exec of the published copy.
+real_tools_trace | grep -v '\.recovery-tools\.o21EaG/restore\.sh --dump' | tools_problem "no staged recovery-tools copy"
+# A different directory was published than the one that ran.
+real_tools_trace | sed 's|mv .*/\.recovery-tools\.o21EaG |mv '"$T"'/.recovery-tools.zzzz |' | tools_problem "was not published"
+# Published before it ran (order matters).
+{ real_tools_trace | sed -n '7p'; real_tools_trace | sed -n '1,6p;8,$p'; } | tools_problem "was not published"
+# Pin or smoke from the old tool set, or before the publication.
+real_tools_trace | sed "s|^+ $T/recovery-tools/provision.sh|+ $T/deploy-tools/provision.sh|" | tools_problem "pin did not run from the published"
+real_tools_trace | sed "s|^+ $T/recovery-tools/smoke.sh|+ $T/deploy-tools/smoke.sh|" | tools_problem "smoke did not run from the published"
+{ real_tools_trace | sed -n '1,4p'; real_tools_trace | sed -n '9p'; real_tools_trace | sed -n '5,8p;10,$p'; } | tools_problem "pin did not run from the published"
+# A deploy-tools command after the hand-off, or a checkout's tools at any point.
+{ real_tools_trace; echo "+ $T/deploy-tools/restore.sh --status"; } | tools_problem "ran from $T/deploy-tools after the hand-off"
+{ real_tools_trace; echo "++ exec $T/deploy-tools/smoke.sh --deploy-dir $T"; } | tools_problem "ran from $T/deploy-tools after the hand-off"
+{ real_tools_trace; echo "+ $S/deploy/digitalocean/provision.sh --skip-harden"; } | tools_problem "ran from $S/deploy/digitalocean/"
+# Lines that merely mention deploy-tools (tests, installs, assignments) are not commands run from it.
+{ real_tools_trace; echo "+ [[ -f $T/deploy-tools/provision.sh ]]"; echo "+ install -m 644 $T/deploy-tools/smoke.sh $T/x"; echo "+ PROVISION=$T/deploy-tools/provision.sh"; } >"$WORK/tools.noise"
+[[ -z "$(crossing_recovery_tools_problems "$WORK/tools.noise" "$T" "$S/deploy/digitalocean/")" ]]
+# The case uses this function, not a loose grep.
+grep -q 'crossing_recovery_tools_problems "\$trace" "\$DIR"' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
+if grep -Eq "grep -Eq '\^.*recovery-tools.*restore" "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"; then exit 1; fi
+
 # --- evidence completeness -------------------------------------------------------
 gen_cases() {
   local acc i

@@ -200,6 +200,56 @@ crossing_problems() {
   return 0
 }
 
+# First line number of a trace whose command (leading `+` markers removed)
+# starts with, or equals, the given text. Fixed-string comparison, so a path
+# never has to be escaped.
+crossing_trace_line() { # mode(starts|equals) text trace
+  awk -v mode="$1" -v want="$2" '{
+    line = $0; sub(/^\++ /, "", line)
+    if ((mode == "equals" && line == want) || (mode == "starts" && index(line, want) == 1)) { print NR; exit }
+  }' "$3"
+}
+
+# Which tool set a dump restore ran from. `restore.sh --dump` does not re-exec
+# DIR/recovery-tools/restore.sh: it execs a staged copy (DIR/.recovery-tools.X),
+# which publishes itself by renaming that directory to DIR/recovery-tools and
+# keeps running; every later tool call (pin, smoke) goes through the published
+# path. So the proof is: the staged copy ran, the very directory that ran was
+# renamed to DIR/recovery-tools, the pin and the smoke came from there, in that
+# order, and nothing ran from deploy-tools or a checkout afterwards. Extra
+# arguments are directories no command may be run from (a checkout's tools).
+crossing_recovery_tools_problems() {
+  local trace="$1" dir="$2" exec_line text token mv_line pin_line smoke_line late path; shift 2
+  exec_line="$(crossing_trace_line starts "exec $dir/.recovery-tools." "$trace")"
+  if [[ -z "$exec_line" ]]; then
+    echo "no staged recovery-tools copy was exec'd from $dir/.recovery-tools.*"
+    return 0
+  fi
+  text="$(sed -n "${exec_line}p" "$trace")"
+  token="${text#*/.recovery-tools.}"; token="${token%%/*}"
+  if [[ ! "$token" =~ ^[A-Za-z0-9]+$ || "$text" != *"/.recovery-tools.$token/restore.sh "* ]]; then
+    echo "the staged exec is not DIR/.recovery-tools.<id>/restore.sh: $text"
+    return 0
+  fi
+  mv_line="$(crossing_trace_line equals "mv $dir/.recovery-tools.$token $dir/recovery-tools" "$trace")"
+  if [[ -z "$mv_line" || "$mv_line" -lt "$exec_line" ]]; then
+    echo "the staged copy that ran (.recovery-tools.$token) was not published as $dir/recovery-tools"
+    return 0
+  fi
+  pin_line="$(crossing_trace_line starts "$dir/recovery-tools/provision.sh --pin-only " "$trace")"
+  if [[ -z "$pin_line" || "$pin_line" -lt "$mv_line" ]]; then echo "the pin did not run from the published $dir/recovery-tools/provision.sh"; fi
+  smoke_line="$(crossing_trace_line starts "$dir/recovery-tools/smoke.sh --deploy-dir " "$trace")"
+  if [[ -z "$smoke_line" || "$smoke_line" -lt "$mv_line" ]]; then echo "the smoke did not run from the published $dir/recovery-tools/smoke.sh"; fi
+  late="$(awk -v start="$exec_line" -v d="$dir/deploy-tools/" '
+    NR > start { line = $0; sub(/^\++ /, "", line); sub(/^exec /, "", line); if (index(line, d) == 1) { print NR; exit } }' "$trace")"
+  if [[ -n "$late" ]]; then echo "a command ran from $dir/deploy-tools after the hand-off to the staged copy (trace line $late)"; fi
+  for path in "$@"; do
+    late="$(awk -v d="$path" '{ line = $0; sub(/^\++ /, "", line); sub(/^exec /, "", line); if (index(line, d) == 1) { print NR; exit } }' "$trace")"
+    if [[ -n "$late" ]]; then echo "a command ran from $path (trace line $late)"; fi
+  done
+  return 0
+}
+
 # Complete, all-passing evidence. cases.jsonl and images.jsonl are inputs.
 # Acceptance rows (R-, A-) are never fixtures; S- rows always are.
 crossing_evidence_complete() {
@@ -726,7 +776,7 @@ crossing_wait_ready() {
 }
 
 real_same_level_rollback() {
-  local cdir trace log recovery_image rid rjson ajson aid f
+  local cdir trace log recovery_image rid rjson ajson aid f problems
   crossing_prepare
   crossing_use_main
   cdir="$(crossing_dir)"
@@ -773,7 +823,8 @@ real_same_level_rollback() {
     || { echo "crossing: the reopened app is not the landing image at level 1: $ajson" >&2; return 1; }
   [[ "$(cat "$DIR/recovery-policy-floor")" == 1 ]]
   grep -q 'Accounts this archive would revive: 0' "$trace"
-  grep -Eq '^\++ exec .*/recovery-tools/restore\.sh ' "$trace" || { echo 'crossing: restore.sh did not run from DIR/recovery-tools' >&2; return 1; }
+  problems="$(crossing_recovery_tools_problems "$trace" "$DIR" "$SOURCE/deploy/digitalocean/")"
+  if [[ -n "$problems" ]]; then printf 'crossing: restore.sh did not run from DIR/recovery-tools:\n%s\n' "$problems" >&2; return 1; fi
   [[ ! -e "$WORK/bypass-marker" ]]
   crossing_tool_hashes >"$cdir/tools.after"
   cmp "$cdir/tools.before" "$cdir/tools.after"
