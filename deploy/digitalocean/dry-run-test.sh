@@ -623,6 +623,7 @@ if [[ "${1:-}" == --fixtures ]]; then
   run_fixture_script qc1-fixtures.sh
   run_fixture_script isolation-fixtures.sh
   run_fixture_script qc1-runtime-fixtures.sh
+  run_fixture_script runner-compat-fixtures.sh
   exit 0
 fi
 
