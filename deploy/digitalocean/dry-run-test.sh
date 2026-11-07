@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run the provisioner --dry-run inside a container and prove it changes nothing.
+# Each fixture subshell intentionally has its own PATH and DEPLOY_DRILL.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -10,29 +12,34 @@ container_image="${FOLD_DRY_RUN_IMAGE:-ubuntu:24.04}"
 # smoke/backup stand-ins in the fixture tool set.
 recovery_fixtures() (
   set -Eeuo pipefail
+  # Keep failure evidence visible even when a traced function redirects stderr
+  # into the scratch directory that EXIT will remove.
+  exec 7>&2
   local_root="$(mktemp -d /tmp/fold-policy.XXXXXX)"
   fixture_case='setup'
   # shellcheck disable=SC2329 # Invoked by the EXIT trap.
   fixture_cleanup() {
     local rc="$?" file
     if (( rc != 0 )); then
-      printf 'recovery policy fixtures: FAILED (%s), exit %s\n' "$fixture_case" "$rc" >&2
-      for file in out trace calls; do
-        if [[ -s "$local_root/$file" ]]; then
-          printf '%s\n' "last captured $file (up to 60 lines):" >&2
-          tail -n 60 "$local_root/$file" >&2
-        fi
-      done
+      {
+        printf 'recovery policy fixtures: FAILED (%s), exit %s\n' "$fixture_case" "$rc"
+        for file in out trace calls; do
+          if [[ -s "$local_root/$file" ]]; then
+            printf '%s\n' "last captured $file (up to 60 lines):"
+            tail -n 60 "$local_root/$file"
+          fi
+        done
+      } >&7
     fi
     rm -rf "$local_root"
     exit "$rc"
   }
   trap fixture_cleanup EXIT
-  trap 'printf "recovery policy fixtures: line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
+  trap 'printf "recovery policy fixtures: line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$?" >&7' ERR
   export FIXTURE_LOG="$local_root/calls"
   : >"$FIXTURE_LOG"
   mkdir -p "$local_root/bin" "$local_root/src/deploy" "$local_root/tools" "$local_root/dir"
-  cp "$root"/deploy/digitalocean/{provision.sh,upgrade.sh,checks.sh,backup.sh,smoke.sh,email-dns.sh,backup.env.example,deploy-tools-version} "$local_root/tools/"
+  cp "$root"/deploy/digitalocean/{provision.sh,upgrade.sh,checks.sh,backup.sh,smoke.sh,email-dns.sh,backup.env.example,restore.sh,compose.recovery.yml,deploy-tools-version} "$local_root/tools/"
   cp "$root"/{docker-compose.yml,docker-compose.build.yml,Caddyfile,.env.example} "$local_root/src/"
   cat >"$local_root/tools/smoke.sh" <<'STUB'
 #!/bin/bash
@@ -310,10 +317,31 @@ STUB
   # whose absence must produce the install-current-tools diagnostic.
   printf '\nunset -f image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor\n' >>"$local_root/old-tools/checks.sh"
   expect_failure 'run the current provision.sh' "$local_root/old-tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
+  # A real FIFO must not make an unauthorized hook usable. Bound this call
+  # so a regression that waits on it fails promptly instead of hanging CI.
+  mkfifo "$local_root/dir/drill.fifo"
+  before="$(snapshot)"; : >"$FIXTURE_LOG"
+  # shellcheck disable=SC2016 # Source and directory are child arguments.
+  expect_failure DEPLOY_DRILL_PAUSE timeout 5 env DEPLOY_DRILL=0 DEPLOY_DRILL_PAUSE=after-lock \
+    bash -c 'source "$1"; deploy_drill_pause "$2" after-lock' _ "$local_root/tools/checks.sh" "$local_root/dir"
+  [[ "$before" == "$(snapshot)" && ! -s "$FIXTURE_LOG" && ! -e "$local_root/dir/drill.ready" ]]
+  # The same hook remains usable with the private marker and explicit drill
+  # opt-in. Drive the FIFO, then reap its bounded holder before continuing.
+  # shellcheck disable=SC2016 # Child arguments identify this fixture only.
+  timeout 5 env DEPLOY_DRILL=1 DEPLOY_DRILL_PAUSE=after-lock \
+    bash -c 'source "$1"; deploy_drill_pause "$2" after-lock' _ "$local_root/tools/checks.sh" "$local_root/dir" &
+  pause_holder=$!
+  # shellcheck disable=SC2016 # Wait for the child's atomic readiness record.
+  timeout 5 bash -c 'until [[ -f "$1/drill.ready" ]]; do sleep .01; done; printf "continue\n" >"$1/drill.fifo"' _ "$local_root/dir"
+  wait "$pause_holder"
+  [[ "$(cat "$local_root/dir/drill.ready")" == after-lock && ! -s "$FIXTURE_LOG" ]]
+  unlink "$local_root/dir/drill.ready"
   for entry in "${provision[0]}" "$local_root/tools/upgrade.sh"; do
     args=("${provision[@]:1}" --image fixture:one)
     [[ "$entry" == "${provision[0]}" ]] || args=("${upgrade_args[@]}" --image fixture:one)
-    expect_failure DEPLOY_DRILL_PAUSE env DEPLOY_DRILL=0 DEPLOY_DRILL_PAUSE=after-lock "$entry" "${args[@]}"
+    before="$(snapshot)"; : >"$FIXTURE_LOG"
+    expect_failure DEPLOY_DRILL_PAUSE timeout 5 env DEPLOY_DRILL=0 DEPLOY_DRILL_PAUSE=after-lock "$entry" "${args[@]}"
+    [[ "$before" == "$(snapshot)" && ! -s "$FIXTURE_LOG" && ! -e "$local_root/dir/drill.ready" ]]
     expect_failure /opt/fold env DEPLOY_DRILL_PAUSE=after-lock "$entry" "${args[@]}" --deploy-dir /opt/fold
     fixture_case="drill marker guards ($entry)"
     mv "$local_root/dir/.deploy-drill" "$local_root/marker-saved"
@@ -362,10 +390,10 @@ STUB
   expect_failure 'below host level 1' "$local_root/dir/upgrade.sh" "${upgrade_args[@]}" --image fixture:zero
   diff -r "$local_root/tools" "$local_root/dir/deploy-tools"
   [[ -z "$(find "$local_root/dir" -maxdepth 1 -name '.*deploy-tools.*' -print)" ]]
-  printf '2\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
+  printf '5\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
   before="$(snapshot)"; : >"$FIXTURE_LOG"
-  expect_failure 'older than installed version 2' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
-  expect_failure 'older than installed version 2' "${provision[@]}" --image fixture:one
+  expect_failure 'older than installed version 5' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
+  expect_failure 'older than installed version 5' "${provision[@]}" --image fixture:one
   [[ "$before" == "$(snapshot)" && ! -s "$FIXTURE_LOG" ]]
   cp "$local_root/tools/deploy-tools-version" "$local_root/dir/deploy-tools/"
   fixture_case='truthful dry runs'
@@ -434,8 +462,164 @@ STUB
   echo 'recovery policy fixtures: ok'
 )
 
+# The identity table is the approved recovery protocol, including durable
+# cleanup and abort drop intents. Exercise every cell rather than just the
+# successful restore path. These are fixtures, not Docker containers.
+restore_fixtures() (
+  set -Eeuo pipefail
+  # shellcheck source=deploy/digitalocean/checks.sh
+  source "$root/deploy/digitalocean/checks.sh"
+  local work phase observation cleanup want got at no_original intent row
+  work="$(mktemp -d /tmp/fold-restore-fixture.XXXXXX)"
+  trap 'rm -rf "$work"' EXIT
+  mkdir -p "$work/pins/.pin-save.one" "$work/outside"
+  touch "$work/pins/.pin-save.one/.env" "$work/outside/keep"
+  ln -s "$work/outside" "$work/pins/.pin-save.link"
+  remove_stale_pin_saves "$work/pins"
+  [[ -f "$work/outside/keep" && ! -e "$work/pins/.pin-save.one" && ! -L "$work/pins/.pin-save.link" ]]
+  while IFS='|' read -r phase cleanup at intent observations; do
+    [[ -n "$phase" ]] || continue
+    for observation in Q Q+ B H A C invalid; do
+      got=0; recovery_accepts "$phase" "$observation" "$cleanup" "$at" 0 "$intent" || got=$?
+      want=1; [[ " $observations " != *" $observation "* ]] || want=0
+      [[ "$got" == "$want" ]] || { echo "recovery table mismatch: $phase/$cleanup/$at/$intent/$observation" >&2; exit 1; }
+    done
+  done <<'TABLE'
+quiesce|none||0|Q Q+
+create-intent|none||0|Q Q+
+created|none||0|B
+collect-drop-intent|none||0|B Q
+collect-failed|none||0|Q
+collected|none||0|B
+pin-intent|none||0|B
+pinned|none||0|B
+pin-failed|none||0|B
+swap-failed|none||0|B
+swap-intent|none||0|B H A
+swap-1|none||0|B H A
+pre-drop-intent|drop-intent||0|A C
+pre-dropped|dropped||0|C
+floor-written|dropped||0|C
+abort-intent|none|B|0|B
+abort-intent|none|Q+|0|Q+
+abort-intent|none|Q|0|Q
+abort-drop-intent|none||0|B Q+
+abort-drop-intent|none||1|B Q+ Q
+abort-dropped|none||1|Q
+abort-start-intent|none||1|Q
+abort-smoke-intent|none||1|Q
+abort-failed|none|drop|0|B Q+
+abort-failed|none|drop|1|B Q+ Q
+abort-failed|none|start|1|Q
+abort-failed|none|smoke|1|Q
+reconcile-needed|none||0|
+TABLE
+  for phase in restored recovery-intent recovering recovery-failed reopen-closed reopen-intent app-start-intent caddy-start-intent smoke-intent reopen-failed cleanup-failed; do
+    for cleanup in none drop-intent dropped; do
+      case "$cleanup" in none) observations=A ;; drop-intent) observations='A C' ;; dropped) observations=C ;; esac
+      for observation in Q Q+ B H A C invalid; do
+        got=0; recovery_accepts "$phase" "$observation" "$cleanup" '' 0 || got=$?
+        want=1; [[ " $observations " != *" $observation "* ]] || want=0
+        [[ "$got" == "$want" ]] || { echo "CLEANUP mismatch: $phase/$cleanup/$observation" >&2; exit 1; }
+      done
+    done
+  done
+  # With no original there is no P. A/C collapse; removal is still monotone.
+  for no_original in 0 1; do
+    got=0; recovery_accepts recovering C none '' "$no_original" || got=$?
+    [[ "$got" != "$no_original" ]]
+  done
+  [[ "$(recovery_classify 10 '' 10 '' '')" == Q ]]
+  [[ "$(recovery_classify 10 '' 10 20 '')" == Q+ ]]
+  [[ "$(recovery_classify 10 20 10 20 '')" == B ]]
+  [[ "$(recovery_classify 10 20 '' 20 10)" == H ]]
+  [[ "$(recovery_classify 10 20 20 '' 10)" == A ]]
+  [[ "$(recovery_classify 10 20 20 '' '')" == C ]]
+  [[ "$(recovery_classify 10 20 99 '' 10)" == invalid ]]
+  [[ "$(recovery_classify 10 20 '' 20 '')" == invalid ]]
+  [[ "$(recovery_classify 10 20 20 20 10)" == invalid ]]
+  for phase in quiesce create-intent created collect-drop-intent collect-failed collected pin-intent pin-failed swap-failed swap-intent; do
+    for observation in Q Q+ B; do
+      recovery_abort_allowed "$phase" "$observation" previous
+      if recovery_abort_allowed "$phase" "$observation" target; then exit 1; fi
+      if recovery_abort_allowed "$phase" "$observation" partial; then exit 1; fi
+    done
+    for observation in H A C invalid; do if recovery_abort_allowed "$phase" "$observation" previous; then exit 1; fi; done
+  done
+  for phase in pinned restored recovering reconcile-needed pre-drop-intent reopen-failed; do
+    if recovery_abort_allowed "$phase" B previous; then exit 1; fi
+  done
+  # CLI refusals and read-only dry runs execute the real installed script.
+  mkdir "$work/tools" "$work/site" "$work/bin"
+  while IFS= read -r row; do cp "$root/deploy/digitalocean/$row" "$work/tools/"; done < <(runtime_tools)
+  chmod 755 "$work/tools/"*.sh
+  printf 'fold-deploy-drill-v1:%s\n' "$work/site" >"$work/site/.deploy-drill"
+  chmod 600 "$work/site/.deploy-drill"
+  cat >"$work/bin/docker" <<'SHIM'
+#!/bin/bash
+printf 'unexpected docker invocation: %s\n' "$*" >>"$RESTORE_FIXTURE_LOG"
+exit 90
+SHIM
+  chmod 755 "$work/bin/docker"
+  export RESTORE_FIXTURE_LOG="$work/calls" PATH="$work/bin:$PATH"
+  : >"$RESTORE_FIXTURE_LOG"
+  local -a restore=("$work/tools/restore.sh" --deploy-dir "$work/site")
+  "${restore[@]}" --dry-run --dump "$work/archive" >"$work/out"
+  grep -q 'snapshot-safe' "$work/out"
+  [[ ! -e "$work/site/ops.lock" && ! -e "$work/site/recovery-tools" && ! -s "$RESTORE_FIXTURE_LOG" ]]
+  for phase in --resume --abort --reopen --status; do "${restore[@]}" --dry-run "$phase" >"$work/out"; done
+  for row in RESTORE_DRILL_PAUSE=after-lock RESTORE_DRILL_FAULT=after-create RESTORE_DRILL_FORCE_TWO_STEP=1; do
+    got=0; env "$row" "${restore[@]}" --dry-run --dump "$work/archive" >"$work/out" 2>&1 || got=$?
+    [[ "$got" != 0 ]]; grep -q 'require --drill' "$work/out"
+  done
+  got=0; "${restore[@]}" --dry-run --hold >"$work/out" 2>&1 || got=$?
+  [[ "$got" != 0 ]]; grep -q 'unknown option: --hold' "$work/out"
+  rm "$work/tools/compose.recovery.yml"
+  got=0; "${restore[@]}" --dry-run --dump "$work/archive" >"$work/out" 2>&1 || got=$?
+  [[ "$got" != 0 ]]; grep -q 'missing compose.recovery.yml' "$work/out"
+  cp "$root/deploy/digitalocean/compose.recovery.yml" "$work/tools/"
+  # Losers must reach no tool copy, state read or Docker observation.
+  (
+    ops_lock_acquire "$work/site" fixture
+    for phase in dump resume abort reopen; do
+      local -a mode=("--$phase")
+      [[ "$phase" != dump ]] || mode+=("$work/archive")
+      got=0
+      (exec 9>&-; "${restore[@]}" "${mode[@]}") >"$work/out" 2>&1 || got=$?
+      [[ "$got" == 75 ]]; grep -q 'Nothing changed' "$work/out"
+    done
+    [[ ! -d "$work/site/recovery-tools" && ! -s "$RESTORE_FIXTURE_LOG" ]]
+  )
+  # Correct nonce alone does not authorize a pin from an outside shell.
+  printf '{"nonce":"0123456789abcdef0123456789abcdef","phase":"pin-intent"}\n' >"$work/site/recovery.lock"
+  chmod 600 "$work/site/recovery.lock"
+  got=0
+  "$work/tools/provision.sh" --skip-harden --pin-only --recovery-nonce 0123456789abcdef0123456789abcdef \
+    --deploy-dir "$work/site" --source-dir "$root" --domain groups.example.org --image fixture:one >"$work/out" 2>&1 || got=$?
+  [[ "$got" != 0 ]]; grep -q 'inherited operations lock' "$work/out"
+  [[ ! -s "$RESTORE_FIXTURE_LOG" ]]
+  echo 'restore protocol fixtures: ok'
+)
+
+# Each fixture script is its own process, so naming a failure here changes
+# nothing about what it checks. (The two functions above are called directly:
+# wrapping them in `||` would switch errexit off inside them.)
+run_fixture_script() {
+  local script="$1" rc=0
+  bash "$root/deploy/digitalocean/$script" || rc=$?
+  if (( rc != 0 )); then
+    echo "dry-run-test.sh: fixture $script failed (exit $rc)" >&2
+    exit "$rc"
+  fi
+}
+
 if [[ "${1:-}" == --fixtures ]]; then
   recovery_fixtures
+  restore_fixtures
+  run_fixture_script deploy-drill-fixtures.sh
+  run_fixture_script restore-drill-fixtures.sh
+  run_fixture_script restore-crossings-fixtures.sh
+  run_fixture_script restore-cli-fixtures.sh
   exit 0
 fi
 
@@ -473,11 +657,20 @@ if [[ -f "$root/.git" ]]; then
   mounts+=(-v "$git_common:$git_common:ro")
 fi
 before="$(git -C "$root" status --porcelain)"
+# No xtrace mode on purpose: bash -x prints the values of variables, and these
+# scripts handle secrets (even disposable ones in this test). The FAILED line
+# from the ERR traps names the script, line and command without values.
+inside=(bash /src/deploy/digitalocean/dry-run-inside.sh)
+container_rc=0
 docker run --rm \
   "${mounts[@]}" \
   -w /src \
   "$container_image" \
-  bash /src/deploy/digitalocean/dry-run-inside.sh
+  "${inside[@]}" || container_rc=$?
+if (( container_rc != 0 )); then
+  echo "dry-run-test.sh: the container run exited $container_rc; the last FAILED line above names the script, line and command" >&2
+  exit "$container_rc"
+fi
 after="$(git -C "$root" status --porcelain)"
 if [[ "$before" != "$after" ]]; then
   echo "dry-run-test.sh: the worktree changed" >&2

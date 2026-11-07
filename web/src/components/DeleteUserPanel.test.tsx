@@ -624,6 +624,76 @@ describe("DeleteUserPanel done", () => {
   });
 });
 
+// R4-6c: what a delete does not reach. Landed code still retains network
+// addresses in the activity log (RETAIN_* rows and conversion groups, inventory
+// IR-1 to IR-4, gate G-9), so the IP sentence is shown before the press and after
+// it, whatever the counts say.
+describe("DeleteUserPanel what a delete does not reach", () => {
+  const IP = "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds.";
+  const BACKUPS = "Deleting reaches Fold's backups only as they expire, so their details can stay in an older backup until then.";
+  const OUTSIDE = "Copies already sent to mailboxes, mail providers and push services are outside Fold, and Fold can't take them back.";
+
+  it("says before the press that backups, outside copies and some network addresses remain, while Delete is on", async () => {
+    open();
+    expect(await screen.findByText(BACKUPS, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(OUTSIDE, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    expect(screen.queryByText(/Households kept/)).not.toBeInTheDocument();
+  });
+
+  it("is plain text in the panel, not a status or an alert that interrupts", async () => {
+    open();
+    await waitFor(() => expect(deleteButton()).toBeEnabled());
+    expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps the IP sentence after the delete, including when the report counts nothing kept", async () => {
+    for (const activityEntriesKept of [0, 3]) {
+      vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: { ...noErasure, activityEntriesKept } });
+      const view = render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+      await press();
+      await screen.findByText("The account was deleted.");
+      expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
+      expect(screen.getByText(BACKUPS, { exact: false })).toBeInTheDocument();
+      expect(screen.getByText(OUTSIDE, { exact: false })).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it("keeps the sentences when the outcome is uncertain, and for a settled delete with no report", async () => {
+    vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(500, "delete_outcome_unknown"));
+    vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce(settleResult("applied"));
+    open();
+    await press();
+    await screen.findByText("The account was deleted.");
+    expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText(/Households kept/)).not.toBeInTheDocument();
+  });
+
+  it("explains the two counts without claiming more than the server says", async () => {
+    vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: { ...noErasure, householdsKept: 2, activityEntriesKept: 5 } });
+    open();
+    await press();
+    await screen.findByText("The account was deleted.");
+    const households = screen.getByText(/Fold left these households as they were/);
+    expect(households).toHaveTextContent("other people still share them");
+    const activity = screen.getByText(/activity-log entries linked to this person/);
+    expect(activity).toHaveTextContent("Fold counts entries, not addresses");
+    expect(activity).toHaveTextContent("a 0 doesn't promise none remain");
+    for (const el of [households, activity]) expect(el.textContent).not.toMatch(/all (gone|removed|erased)|completely|nothing (is |remains|was)/i);
+  });
+
+  it("does not show the delete notes for a disable", async () => {
+    open("disable");
+    await screen.findByRole("button", { name: "Disable account" });
+    expect(screen.queryByText(/backups/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/network \(IP\)/)).not.toBeInTheDocument();
+  });
+});
+
 describe("DeleteUserPanel after the panel closes", () => {
   function deferred<T>() {
     let resolve!: (v: T) => void;

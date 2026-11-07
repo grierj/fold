@@ -34,6 +34,21 @@ const STILL_CHECKING_COPY = "Still checking. Fold can't tell yet whether the acc
 const CHECKING_COPY = "Checking what happened to this delete request…";
 const NO_ACCOUNT_COPY = "This account no longer exists.";
 
+// What a delete does not reach (R4-6c, DEC-144, O-12). Shown before the press
+// and again once the account is gone. The IP line stays for as long as landed
+// code can leave a personal address in the activity log (RETAIN_* rows and the
+// conversion groups, inventory 6.5.2 IR-1 to IR-4, gate G-9); take it out only
+// when that is no longer true, never because the count came back as 0.
+const REACH_LEAD = "Some traces can remain after a delete, so you know what to expect:";
+const REACH_BACKUPS = "Deleting reaches Fold's backups only as they expire, so their details can stay in an older backup until then.";
+const REACH_OUTSIDE = "Copies already sent to mailboxes, mail providers and push services are outside Fold, and Fold can't take them back.";
+const REACH_IP = "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds.";
+// The two counts the delete answers with, in words (account_erasure_report.go;
+// inventory "Report semantics": a count of entries, never proof of ownership).
+const KEPT_HOUSEHOLDS = "Fold left these households as they were, because other people still share them or it couldn't tell whose they were.";
+const KEPT_ACTIVITY =
+  "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain.";
+
 // Where the delete stands after a press. "idle" and "notApplied" leave Delete
 // on; every other phase either waits for an answer or ends the attempt.
 type Phase =
@@ -485,6 +500,8 @@ function PanelBody({ target, action, onDone }: PanelProps) {
         </div>
       )}
       <Outcome phase={phase} statusBox={statusBox} />
+      {phase.kind === "done" && phase.erasure && <KeptNotes />}
+      {deleting && <Reach />}
       <div className="flex flex-wrap gap-3">
         {phase.kind === "done" ? (
           <Button variant="primary" onClick={() => onDone(true)}>
@@ -551,6 +568,39 @@ function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTML
   return (
     <div ref={statusBox} role="status" tabIndex={-1} className="space-y-1">
       {body}
+    </div>
+  );
+}
+
+// What the two counts mean, in plain words and no further than the server says.
+function KeptNotes() {
+  return (
+    <ul className="list-disc space-y-1 pl-5 text-text-muted">
+      <li>
+        <span className="font-semibold">Households kept:</span> {KEPT_HOUSEHOLDS}
+      </li>
+      <li>
+        <span className="font-semibold">Activity entries kept:</span> {KEPT_ACTIVITY}
+      </li>
+    </ul>
+  );
+}
+
+function Reach() {
+  return (
+    <div className="space-y-1 text-text-muted">
+      <p>{REACH_LEAD}</p>
+      <ul className="list-disc space-y-1 pl-5">
+        <li>
+          <span className="font-semibold">Backups.</span> {REACH_BACKUPS}
+        </li>
+        <li>
+          <span className="font-semibold">Email and notifications.</span> {REACH_OUTSIDE}
+        </li>
+        <li>
+          <span className="font-semibold">Activity log.</span> {REACH_IP}
+        </li>
+      </ul>
     </div>
   );
 }

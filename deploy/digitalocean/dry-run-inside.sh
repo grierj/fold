@@ -2,7 +2,17 @@
 # Assertions for provision.sh --dry-run. Run this inside a fresh container
 # (deploy/digitalocean/dry-run-test.sh does that). A real host that already
 # has packages installed will fail the "nothing was installed" checks.
-set -euo pipefail
+set -Eeuo pipefail
+
+# Name the failing line and command; a bare failed check exited silently.
+# Quiet inside the deliberate `set +e` windows below.
+# shellcheck disable=SC2329 # Invoked by the ERR trap.
+dry_run_diag() {
+  [[ $- == *e* ]] || return 0
+  printf 'dry-run-inside.sh: FAILED (exit %s) at line %s: %s\n' "$1" "$2" "$3" >&2
+  return 0
+}
+trap 'dry_run_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 cd /src
 pub=/tmp/fold-dry-run.pub
@@ -217,6 +227,17 @@ expect_tag_status 2 1 $'ERROR: ghcr.io/grierj/fold:0.5.0: not found\nERROR: also
 rm -rf "$stub_dir"
 
 echo "dry-run ok"
-bash deploy/digitalocean/idempotency-inside.sh
+# Each is its own process: only its exit status is read here.
+rc=0
+bash deploy/digitalocean/idempotency-inside.sh || rc=$?
+if (( rc != 0 )); then
+  echo "dry-run-inside.sh: idempotency-inside.sh failed (exit $rc); its FAILED line above names the step" >&2
+  exit "$rc"
+fi
 
-bash deploy/digitalocean/dry-run-test.sh --fixtures
+rc=0
+bash deploy/digitalocean/dry-run-test.sh --fixtures || rc=$?
+if (( rc != 0 )); then
+  echo "dry-run-inside.sh: dry-run-test.sh --fixtures failed (exit $rc); the fixture's own failure text is above" >&2
+  exit "$rc"
+fi

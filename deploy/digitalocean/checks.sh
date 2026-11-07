@@ -12,6 +12,15 @@ check_fail() {
   return 1
 }
 
+# Caller holds the operations lock; these are private interrupted pin snapshots.
+remove_stale_pin_saves() {
+  local entry
+  for entry in "$1"/.pin-save.*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    rm -rf -- "$entry" || return 1
+  done
+}
+
 # env_value FILE KEY — prints the value, or returns 1 when the key is absent.
 env_value() {
   local file="$1" want="$2" line key val
@@ -476,7 +485,7 @@ deploy_tools_version() {
 require_deploy_tools_version() {
   local source="$1" dir="$2" incoming installed path
   incoming="$(deploy_tools_version "$source")" || return 1
-  for path in "$dir" "$dir/deploy-tools"; do
+  for path in "$dir" "$dir/deploy-tools" "$dir/recovery-tools"; do
     installed="$(deploy_tools_version "$path")" || return 1
     if (( incoming < installed )); then
       check_fail "tool-set version ${incoming} is older than installed version ${installed} in ${path}. Run the newer ${path}/upgrade.sh or the newer provision.sh; no older tools were installed"; return 1
@@ -549,19 +558,125 @@ validate_deploy_drill() {
 deploy_drill_pause() {
   local dir="$1" point="$2"
   [[ "${DEPLOY_DRILL_PAUSE:-}" == "$point" ]] || return 0
+  # The hook itself enforces its boundary, even if a caller omits preflight.
+  validate_deploy_drill "$dir" || return 1
   [[ -p "$dir/drill.fifo" ]] || { check_fail "missing drill FIFO in $dir"; return 1; }
   # A re-exec or nested provisioner must not pause at this point again.
   unset DEPLOY_DRILL_PAUSE
-  # Open read/write before publishing readiness so open cannot block. Keep
-  # the FIFO descriptor local to this subshell and bound the builtin read.
-  (
-    exec 8<>"$dir/drill.fifo"
-    printf '%s\n' "$point" >"$dir/drill.ready.tmp"
-    mv "$dir/drill.ready.tmp" "$dir/drill.ready"
-    token=""
-    if ! IFS= read -r -t 180 token <&8; then
-      check_fail "drill barrier $point timed out or closed"; exit 1
+  # Open read/write before publishing readiness so open cannot block. The
+  # holder itself blocks, so SIGKILL cannot leave a helper retaining fd 9.
+  exec 8<>"$dir/drill.fifo"
+  printf '%s\n' "$point" >"$dir/drill.ready.tmp"
+  mv "$dir/drill.ready.tmp" "$dir/drill.ready"
+  local token=""
+  if ! IFS= read -r -t 180 token <&8; then
+    exec 8>&-
+    check_fail "drill barrier $point timed out or closed"; return 1
+  fi
+  exec 8>&-
+  [[ "$token" == continue ]] || { check_fail "drill barrier cancelled"; return 1; }
+}
+
+# All installed tools move together, including the recovery Compose overlay.
+runtime_tools() {
+  printf '%s\n' backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh backup.env.example restore.sh compose.recovery.yml deploy-tools-version
+}
+
+inherited_ops_lock() {
+  [[ -f "$1/ops.lock" && ! -L "$1/ops.lock" && -e /proc/self/fd/9 ]] \
+    && [[ "$(stat -Lc '%d:%i' /proc/self/fd/9)" == "$(stat -Lc '%d:%i' "$1/ops.lock")" ]] \
+    && flock -n -x 9
+}
+
+# Pure identity classifier. Empty original means a missing original database.
+# Q+ is accepted only before an oid has been recorded for this nonce's R.
+recovery_classify() {
+  local original="$1" restored="$2" fold="$3" r="$4" p="$5"
+  if [[ "$fold" == "$original" && -z "$p" ]]; then
+    if [[ -z "$r" ]]; then echo Q; return; fi
+    if [[ -z "$restored" ]]; then echo Q+; return; fi
+    if [[ "$r" == "$restored" ]]; then echo B; return; fi
+  fi
+  if [[ -n "$restored" && "$fold" == "$restored" && -z "$r" ]]; then
+    if [[ -n "$original" && "$p" == "$original" ]]; then echo A; return; fi
+    if [[ -z "$p" ]]; then
+      # With no original, A and C have identical identities. Cleanup decides.
+      echo C; return
     fi
-    [[ "$token" == continue ]] || { check_fail "drill barrier cancelled"; exit 1; }
-  )
+  fi
+  if [[ -n "$original" && -z "$fold" && "$p" == "$original" && -n "$restored" && "$r" == "$restored" ]]; then echo H; return; fi
+  echo invalid
+}
+
+# Keep this table independent of Docker and SQL so fixtures can exhaust it.
+# no_original admits C where A is otherwise required, since there is no P.
+recovery_accepts() {
+  local phase="$1" observation="$2" cleanup="$3" at="${4:-}" no_original="${5:-0}" drop_intent="${6:-0}"
+  case "$phase" in
+    quiesce|create-intent) [[ "$observation" == Q || "$observation" == Q+ ]] ;;
+    created) [[ "$observation" == B ]] ;;
+    collect-drop-intent) [[ "$observation" == B || "$observation" == Q ]] ;;
+    collect-failed) [[ "$observation" == Q ]] ;;
+    collected|pin-intent|pinned|pin-failed|swap-failed) [[ "$observation" == B ]] ;;
+    swap-intent|swap-1) [[ "$observation" == B || "$observation" == H || "$observation" == A || ( "$no_original" == 1 && "$observation" == C ) ]] ;;
+    pre-drop-intent) [[ "$cleanup" == drop-intent && ( "$observation" == A || "$observation" == C ) ]] ;;
+    pre-dropped|floor-written) [[ "$cleanup" == dropped && "$observation" == C ]] ;;
+    restored|recovery-intent|recovering|recovery-failed|reopen-closed|reopen-intent|app-start-intent|caddy-start-intent|smoke-intent|reopen-failed|cleanup-failed)
+      case "$cleanup" in
+        none) [[ "$observation" == A || ( "$no_original" == 1 && "$observation" == C ) ]] ;;
+        drop-intent) [[ "$observation" == A || "$observation" == C ]] ;;
+        dropped) [[ "$observation" == C ]] ;;
+        *) return 1 ;;
+      esac ;;
+    abort-intent) [[ "$observation" == "$at" ]] ;;
+    abort-drop-intent) [[ "$observation" == B || "$observation" == Q+ || ( "$observation" == Q && "$drop_intent" == 1 ) ]] ;;
+    abort-dropped|abort-start-intent|abort-smoke-intent) [[ "$observation" == Q ]] ;;
+    abort-failed)
+      if [[ "$at" == drop ]]; then
+        [[ "$observation" == B || "$observation" == Q+ || ( "$observation" == Q && "$drop_intent" == 1 ) ]]
+      else [[ ( "$at" == start || "$at" == smoke ) && "$observation" == Q ]]; fi ;;
+    *) return 1 ;;
+  esac
+}
+
+recovery_abort_allowed() {
+  [[ "$2" == Q || "$2" == Q+ || "$2" == B ]] || return 1
+  [[ "$3" == previous ]] || return 1
+  case "$1" in
+    quiesce|create-intent|created|collect-drop-intent|collect-failed|collected|pin-intent|pin-failed|swap-failed|swap-intent) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A separate inode coordinates backup/expiry with publication of recovery.lock.
+# Backup never takes ops.lock. Lock order for restore/upgrade is ops (fd 9),
+# then backup (fd 6); a standalone backup takes only fd 6. Never replace it.
+backup_coord_open() {
+  local dir="$1" path="$1/backup.lock" saved_umask
+  [[ -d "$dir" && ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || {
+    check_fail "backup coordination requires an existing deployment and a regular backup.lock"; return 1;
+  }
+  if [[ ! -e /proc/self/fd/6 ]] \
+    || [[ "$(stat -Lc '%d:%i' /proc/self/fd/6)" != "$(stat -Lc '%d:%i' "$path" 2>/dev/null || true)" ]]; then
+    saved_umask="$(umask)"; umask 077
+    exec 6>>"$path" || { umask "$saved_umask"; return 1; }
+    umask "$saved_umask"
+  fi
+  chmod 600 "$path" || return 1
+}
+
+backup_coord_acquire() {
+  backup_coord_open "$1" || return 1
+  if ! flock -x -w "${2:-0}" 6; then
+    case "${3:-maintenance}" in
+      backup) check_fail "backup.lock is held by another operation (backup, restore preflight or provision file copy); this backup was skipped. No dump, restore test, expiry or offsite upload was attempted. Rerun backup.sh later; never delete backup.lock" ;;
+      restore) check_fail "backup coordination busy; no recovery lock published and no services stopped. Let the existing backup finish, then retry. Never delete backup.lock" ;;
+      *) check_fail "backup coordination busy; another operation holds backup.lock. Runtime files were not copied. Retry later; never delete backup.lock" ;;
+    esac
+    return 75
+  fi
+}
+
+backup_coord_release() {
+  flock -u 6 && exec 6>&-
 }

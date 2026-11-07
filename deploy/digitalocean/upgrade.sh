@@ -7,7 +7,8 @@
 #
 # A forward run dumps the database, records the current image or commit in
 # /opt/fold/release.prev (mode 600), then runs provision.sh. --rollback stops
-# the app, pg_restores that dump, and starts the recorded image or commit.
+# the site through restore.sh, which restores into a fresh database and opens
+# only when no erased account would be revived. Otherwise recovery stays private.
 # :latest is refused. --dry-run prints the plan and changes nothing.
 set -euo pipefail
 
@@ -47,6 +48,8 @@ Usage: upgrade.sh --image ghcr.io/grierj/fold:1.2.3
 
 Pins the new release to an image tag (FOLD_VERSION in <deploy-dir>/.env) or a
 git commit (build with docker-compose.build.yml), after a pg_dump.
+--rollback exits 3 if the archive is restored but SITE IS CLOSED in private
+recovery pending operator checks. Exit 0 requires a successful reopen.
 --rollback restores the dump and the previous tag or commit recorded in
 <deploy-dir>/release.prev. :latest is refused, as is a FOLD_VERSION of latest.
 EOF
@@ -153,6 +156,7 @@ if (( ! DRY_RUN )); then
   else
     ops_lock_acquire "$DEPLOY_DIR" upgrade-forward || exit $?
   fi
+  [[ ! -e "$DEPLOY_DIR/recovery.lock" && ! -L "$DEPLOY_DIR/recovery.lock" ]] || die "recovery in progress; run $DEPLOY_DIR/restore.sh --status"
   deploy_drill_pause "$DEPLOY_DIR" after-lock
 fi
 
@@ -162,10 +166,7 @@ install_enforcing_tools() (
   for name in ops_lock_acquire image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor; do
     declare -F "$name" >/dev/null || die "checks.sh lacks $name; run the current provision.sh to install the tool set"
   done
-  # Recovery adds these files in R4-6c-R. Keep the complete set when present.
-  for name in restore.sh compose.recovery.yml; do
-    [[ ! -f "$SCRIPT_DIR/$name" ]] || tools+=("$name")
-  done
+  tools+=(restore.sh compose.recovery.yml)
   for name in "${tools[@]}"; do
     [[ -f "$SCRIPT_DIR/$name" ]] || die "missing $name beside upgrade.sh; run the current provision.sh to install the tool set"
   done
@@ -395,26 +396,6 @@ load_release() {
   [[ -f "$REL_DUMP" ]] || die "dump not found: ${REL_DUMP}"
 }
 
-restore_dump() {
-  local dump="$1" rc
-  if (( DRY_RUN )); then
-    echo "dry-run: docker compose --project-directory ${DEPLOY_DIR} stop app"
-    echo "dry-run: pg_restore -U church -d fold --clean --if-exists --no-owner < ${dump}"
-    return 0
-  fi
-  docker compose --project-directory "$DEPLOY_DIR" stop app
-  set +e
-  docker compose --project-directory "$DEPLOY_DIR" exec -T db \
-    pg_restore -U church -d fold --clean --if-exists --no-owner <"$dump"
-  rc=$?
-  set -e
-  # pg_restore exits 1 when it ignored a warning. 2 and above are errors.
-  if [[ "$rc" -gt 1 ]]; then
-    die "pg_restore failed (${rc}). The app is still stopped. Dump: ${dump}"
-  fi
-  echo "upgrade.sh: restored ${dump}"
-}
-
 run_provision() {
   local rc=0
   local -a cmd=("$PROVISION" --skip-harden --domain "$DOMAIN" --deploy-dir "$DEPLOY_DIR" --source-dir "$SOURCE_DIR")
@@ -497,17 +478,15 @@ rollback() {
     REL_COMMIT="$RESOLVED_COMMIT"
   fi
   echo "upgrade.sh: rolling back mode=${REL_MODE} dump=${REL_DUMP}"
-  restore_dump "$REL_DUMP"
-  if [[ "$REL_MODE" == "image" ]]; then
-    run_provision image "$REL_IMAGE"
-  else
-    if (( DRY_RUN )); then
-      echo "dry-run: git -C ${SOURCE_DIR} checkout --detach ${REL_COMMIT}"
-    else
-      git -C "$SOURCE_DIR" checkout --detach "$REL_COMMIT"
-    fi
-    run_provision build
+  local -a cmd=("$SCRIPT_DIR/restore.sh" --dump "$REL_DUMP" --reopen-if-none --deploy-dir "$DEPLOY_DIR" --source-dir "$REL_SOURCE")
+  if [[ "$REL_MODE" == image ]]; then cmd+=(--image "$REL_IMAGE"); else cmd+=(--commit "$REL_COMMIT"); fi
+  [[ "${DEPLOY_DRILL:-}" != 1 ]] || cmd+=(--drill)
+  if (( DRY_RUN )); then
+    printf 'dry-run: hand off rollback to'; printf ' %q' "${cmd[@]}"; printf '\n'
+    echo 'dry-run: reopen automatically only when the snapshot-safe count is exactly zero; otherwise remain in private recovery'
+    return 0
   fi
+  exec "${cmd[@]}"
 }
 
 if (( DO_ROLLBACK )); then

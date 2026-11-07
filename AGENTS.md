@@ -486,6 +486,27 @@ After a merge, merge master into the other open branches (never rebase) and repo
   `TestRecoveryPolicyFileMatchesConstant`; `fold version --json` reports it), so a release cut from it is
   unpublishable until that tooling lands. Its deployment-level drill (`deploy-drill.sh`, the level-0 rollback
   and forward refusals) is pending.
+- Restore (staged locally, R4-6c-R tooling at `a0969a8` and R4-6c-V notes in `docs/DEPLOY-DIGITALOCEAN.md`;
+  unverified on a real droplet, not published): `restore.sh --dump` restores into a fresh database swapped in
+  whole and keeps the public site closed and background deliveries paused in a worker-free private recovery instance until `--reopen`. It
+  never restores into the live `fold` database. `backup.sh` and its expiry refuse with exit 75 while
+  `DIR/recovery.lock` exists (a separate `DIR/backup.lock` coordinates them with the lock's publication). Never
+  delete, rename or replace `recovery.lock`, `ops.lock` or `backup.lock` to get past a refusal. A plain `--dump`
+  exits 0 with the site closed; `--reopen-if-none` (used by `upgrade.sh --rollback`) exits 3 unless the count is
+  exactly zero. `--abort` works only before the swap; only `--abort` finishes an interrupted abort;
+  `--resume` after an interrupted reopen closes the site and returns to private recovery; `reconcile-needed`
+  writes nothing and is only rechecked. A Droplet Backup restore is outside this protection. Docs call the
+  procedure "recommended" and makes no support promise; it does not restore uploads. Full drills at the exact head, the
+  real level-1 crossings, review and landing are pending.
+
+### Full restore drill frequency
+
+Run the full `deploy/digitalocean/restore-drill.sh` only when at least one of these
+conditions holds: changes have a high chance of altering the restore behavior the
+drill checks; work specifically changed the drill; or more than 30 days have passed
+since its last run. Record the reason and the run date with the evidence. For other
+changes, use targeted checks. A recent run does not by itself satisfy a release gate:
+assess whether its candidate and evidence cover the changes being released.
 
 ## SMS (messaging Phase 3, not yet)
 

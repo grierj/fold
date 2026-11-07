@@ -47,6 +47,14 @@ of the month for 180 days.
 
 --restore-test loads the newest dump into a throwaway database named
 fold_restore_test, counts public tables, and drops that database.
+
+Backup and expiry refuse with exit 75 while recovery.lock exists. They use a
+separate backup.lock, never ops.lock, so a backup already in progress finishes
+before restore publishes recovery.lock. Restore waits at most 120 seconds in
+preflight, with the public site untouched. Use the installed current tools;
+older scripts run by hand do not participate in this coordination.
+If another operation holds backup.lock, this run exits 75 without a backup;
+rerun backup.sh later. A lock collision does not schedule an automatic retry.
 EOF
 }
 
@@ -100,6 +108,31 @@ done
 [[ "$DEPLOY_DIR" == /* && "$BACKUP_DIR" == /* ]] || die "directories must be absolute paths"
 if [[ -z "$ENV_FILE" ]]; then
   ENV_FILE="$DEPLOY_DIR/backup.env"
+fi
+
+# Refuse before reading offsite credentials, selecting a dump, making a backup
+# directory, expiring anything or invoking Docker. A second check under fd 6
+# closes the race with restore publishing its durable recovery interval.
+backup_recovery_guard() {
+  if [[ -e "$DEPLOY_DIR/recovery.lock" || -L "$DEPLOY_DIR/recovery.lock" ]]; then
+    if (( DRY_RUN )); then
+      echo "dry-run: recovery active; no backup, restore test, expiry or offsite upload is permitted. Use $DEPLOY_DIR/restore.sh --status"
+      exit 0
+    fi
+    die "recovery active; no backup, expiry or offsite upload was attempted. Use $DEPLOY_DIR/restore.sh --status" 75
+  fi
+}
+backup_recovery_guard
+if (( ! DRY_RUN )); then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  [[ -f "$SCRIPT_DIR/checks.sh" ]] || die "missing checks.sh; run the current provision.sh to install the complete tool set"
+  # shellcheck source=deploy/digitalocean/checks.sh
+  source "$SCRIPT_DIR/checks.sh"
+  declare -F backup_coord_acquire >/dev/null || die "checks.sh lacks backup coordination; run the current provision.sh to install the complete tool set"
+  backup_coord_acquire "$DEPLOY_DIR" 0 backup || exit $?
+  backup_recovery_guard
+else
+  echo "dry-run: acquire backup.lock and recheck recovery.lock before any backup or expiry"
 fi
 
 load_env() {
