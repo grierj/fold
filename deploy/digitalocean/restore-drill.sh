@@ -63,6 +63,16 @@ command -v node >/dev/null || { echo 'restore-drill.sh: node is required for the
 BROWSER_PREFLIGHT="$(QC1_PREFLIGHT_FOR=restore QC1_WEB_DIR="$ROOT/web" node "$ROOT/deploy/digitalocean/qc1/browser-preflight.mjs")" \
   || { echo 'restore-drill.sh: the browser preflight failed: the recovery browser proof cannot run (restore-drill-nested.sh installs the browser runtime; on another machine run npm ci in web/ and install Playwright'"'"'s Chromium)' >&2; exit 1; }
 jq -e '.ok == true' <<<"$BROWSER_PREFLIGHT" >/dev/null || { echo "restore-drill.sh: the browser preflight did not pass: $BROWSER_PREFLIGHT" >&2; exit 1; }
+# Firefox (R4-6c-V): Playwright's Firefox is a glibc build that cannot start on this Alpine runner, so the launcher prepared a Debian container for it
+# (qc1/browser-prepare.sh, QC1_PREPARE_FIREFOX=1) and proved it launches. Its record must exist: a runner that skipped the preparation is refused, not
+# silently drilled without Firefox. A recorded BUILD failure is allowed and becomes an explicit first-church hand check in lifecycle_cases.
+FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"
+[[ -n "$FIREFOX_RUNTIME" && -f "$FIREFOX_RUNTIME" ]] || { echo 'restore-drill.sh: the Firefox runtime was not prepared (FOLD_FIREFOX_RUNTIME); run the drill through restore-drill-nested.sh' >&2; exit 1; }
+jq -e '.available | type == "boolean"' "$FIREFOX_RUNTIME" >/dev/null || { echo "restore-drill.sh: $FIREFOX_RUNTIME is not a Firefox runtime record" >&2; exit 1; }
+if jq -e '.available == true' "$FIREFOX_RUNTIME" >/dev/null; then
+  [[ -n "${FOLD_FIREFOX_IMAGE:-}" && "$(docker image inspect --format '{{.Id}}' "$FOLD_FIREFOX_IMAGE" 2>/dev/null)" == "$(jq -er .imageId "$FIREFOX_RUNTIME")" ]] \
+    || { echo 'restore-drill.sh: the prepared Firefox image is missing or is not the one the preparation proved' >&2; exit 1; }
+fi
 unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES RESTORE_DRILL_FAULT RESTORE_DRILL_PAUSE RESTORE_DRILL_FORCE_TWO_STEP
 if [[ -z "$WORK" ]]; then
   WORK="$(mktemp -d /tmp/fold-restore-drill.XXXXXX)"; rmdir "$WORK"
@@ -84,6 +94,7 @@ drill_case_end
 MANIFEST="$WORK/restore-drill.json"
 [[ "$(jq -er .revision "$MANIFEST")" == "$REVISION" ]] || { echo 'restore drill source revision mismatch' >&2; exit 1; }
 printf '%s\n' "$BROWSER_PREFLIGHT" >"$WORK/browser-preflight.json"
+cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"
 DIR="$(jq -er .dir "$MANIFEST")"
 SOURCE="$(jq -er .source "$MANIFEST")"
 PROJECT="$(jq -er .project "$MANIFEST")"

@@ -8,7 +8,11 @@
 //            launched with restoreLaunchOptions(env) (the same executable and
 //            sandbox rule when QC1_CHROMIUM names a Chromium, plain
 //            { headless: true } otherwise).
-// QC1_PREFLIGHT_FOR is a comma list of them (default: both).
+//   firefox  the restore drill's Firefox proof (the same restore-browser.cjs, engine
+//            firefox from the `playwright` package, launched { headless: true }). It runs
+//            in the glibc container built by firefox-runtime.sh: Playwright's Firefox is
+//            a glibc build that cannot start on the Alpine runner (no ELF loader).
+// QC1_PREFLIGHT_FOR is a comma list of them (default: qc1,restore; firefox only when asked).
 //
 // For each: Playwright resolves from web/node_modules, the locked packages agree,
 // the node engine range is met, the Chromium launches, and the calls the consumer
@@ -35,7 +39,7 @@ import { launchOptions, restoreLaunchOptions, nodeEngineProblem, chromiumMajorDe
 const env = process.env;
 if (!env.QC1_WEB_DIR) { process.stderr.write("browser-preflight: QC1_WEB_DIR is required\n"); process.exit(2); }
 const consumers = (env.QC1_PREFLIGHT_FOR ?? "qc1,restore").split(",").map((s) => s.trim()).filter(Boolean);
-for (const c of consumers) if (c !== "qc1" && c !== "restore") { process.stderr.write(`browser-preflight: unknown consumer ${c}\n`); process.exit(2); }
+for (const c of consumers) if (c !== "qc1" && c !== "restore" && c !== "firefox") { process.stderr.write(`browser-preflight: unknown consumer ${c}\n`); process.exit(2); }
 const tolerance = Number(env.QC1_CHROMIUM_MAJOR_TOLERANCE ?? 4);
 const sandboxOff = env.QC1_NO_SANDBOX === "1" && env.FOLD_DRILL_ISOLATED_DAEMON === "1";
 const result = { ok: false, consumers, webDir: env.QC1_WEB_DIR, node: process.versions.node, executablePath: env.QC1_CHROMIUM ?? null, sandbox: !sandboxOff };
@@ -47,7 +51,7 @@ try {
   process.stderr.write(`browser-preflight: Playwright does not resolve from ${env.QC1_WEB_DIR} (run npm ci there): ${e.message.split("\n")[0]}\n`);
   process.exit(3);
 }
-Object.assign(result, { playwright: pw.playwrightVersion, playwrightPackage: pw.playwrightPackageVersion, playwrightCore: pw.coreVersion, bundledChromium: pw.bundledChromiumVersion, resolvedFrom: pw.corePath });
+Object.assign(result, { playwright: pw.playwrightVersion, playwrightPackage: pw.playwrightPackageVersion, playwrightCore: pw.coreVersion, bundledChromium: pw.bundledChromiumVersion, bundledFirefox: pw.bundledFirefoxVersion, resolvedFrom: pw.corePath });
 if (new Set([pw.playwrightVersion, pw.playwrightPackageVersion, pw.coreVersion]).size !== 1) {
   process.stderr.write(`browser-preflight: @playwright/test ${pw.playwrightVersion}, playwright ${pw.playwrightPackageVersion} and playwright-core ${pw.coreVersion} differ\n`);
   process.exit(6);
@@ -78,23 +82,25 @@ const origin = `http://localhost:${server.address().port}`;
 const specs = {
   qc1: { via: "@playwright/test", engine: pw.chromium, options: launchOptions(env) },
   restore: { via: "playwright", engine: pw.chromiumViaPlaywright, options: restoreLaunchOptions(env) },
+  firefox: { via: "playwright", engine: pw.firefoxViaPlaywright, options: { headless: true }, label: "Firefox" },
 };
 result.smoke = {};
 let exitCode = 0;
 for (const consumer of consumers) {
-  const { via, engine: chromium, options } = specs[consumer];
+  const { via, engine: chromium, options, label = "Chromium" } = specs[consumer];
+  const isFirefox = consumer === "firefox";
   const entry = { via, launchOptions: options };
   result.smoke[consumer] = entry;
   let browser;
   try {
     browser = await chromium.launch(options);
   } catch (e) {
-    process.stderr.write(`browser-preflight: Chromium did not launch for ${consumer} (${options.executablePath ?? "Playwright's own download"}): ${e.message.split("\n")[0]}\n`);
+    process.stderr.write(`browser-preflight: ${label} did not launch for ${consumer} (${options.executablePath ?? "Playwright's own download"}): ${e.message.split("\n")[0]}\n`);
     exitCode = 3; break;
   }
   try {
-    entry.chromium = browser.version();
-    entry.majorDelta = chromiumMajorDelta(entry.chromium, pw.bundledChromiumVersion);
+    entry[isFirefox ? "firefox" : "chromium"] = browser.version();
+    entry.majorDelta = chromiumMajorDelta(entry[isFirefox ? "firefox" : "chromium"], isFirefox ? pw.bundledFirefoxVersion : pw.bundledChromiumVersion);
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(origin);
@@ -103,23 +109,33 @@ for (const consumer of consumers) {
       longtask: PerformanceObserver.supportedEntryTypes.includes("longtask"),
     }));
     const cookies = await context.cookies(origin);
-    const cdp = await context.newCDPSession(page);
-    await cdp.send("Performance.enable");
-    const metrics = (await cdp.send("Performance.getMetrics")).metrics;
-    const heap = metrics.find((m) => m.name === "JSHeapUsedSize")?.value ?? null;
-    const nodes = metrics.find((m) => m.name === "Nodes")?.value ?? null;
-    await cdp.send("HeapProfiler.enable");
-    await cdp.send("HeapProfiler.collectGarbage");
+    // CDP exists only in Chromium; Firefox is checked by its DOM, its cookie and its version.
+    let heap = null, nodes = null;
+    if (!isFirefox) {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Performance.enable");
+      const metrics = (await cdp.send("Performance.getMetrics")).metrics;
+      heap = metrics.find((m) => m.name === "JSHeapUsedSize")?.value ?? null;
+      nodes = metrics.find((m) => m.name === "Nodes")?.value ?? null;
+      await cdp.send("HeapProfiler.enable");
+      await cdp.send("HeapProfiler.collectGarbage");
+    }
     Object.assign(entry, { domItems: dom.items, longTaskObserver: dom.longtask, heapUsedBytes: heap, domNodes: nodes,
       secureLocalhostCookie: cookies.some((c) => c.name === "fold-session" && c.secure && c.httpOnly) });
     const failed = [];
     if (dom.items !== 2) failed.push("DOM query");
     if (consumer === "qc1" && !dom.longtask) failed.push("longtask observer");
-    if (!(heap > 0)) failed.push("CDP JSHeapUsedSize");
-    if (!(nodes > 0)) failed.push("CDP Nodes");
-    if (consumer === "restore" && !entry.secureLocalhostCookie) failed.push("Secure cookie on localhost");
+    if (!isFirefox && !(heap > 0)) failed.push("CDP JSHeapUsedSize");
+    if (!isFirefox && !(nodes > 0)) failed.push("CDP Nodes");
+    if ((consumer === "restore" || isFirefox) && !entry.secureLocalhostCookie) failed.push("Secure cookie on localhost");
     if (failed.length) { entry.failed = failed; process.stderr.write(`browser-preflight: smoke checks failed for ${consumer}: ${failed.join(", ")}\n`); exitCode = 6; break; }
-    if (entry.majorDelta !== null && entry.majorDelta > tolerance) {
+    if (isFirefox) {
+      // Playwright's own Firefox, installed by its own CLI for exactly this version: the major must be the bundled one.
+      if (entry.majorDelta !== null && entry.majorDelta !== 0) {
+        process.stderr.write(`browser-preflight: Firefox ${entry.firefox} is not the ${pw.bundledFirefoxVersion} this Playwright bundles\n`);
+        exitCode = 7; break;
+      }
+    } else if (entry.majorDelta !== null && entry.majorDelta > tolerance) {
       process.stderr.write(`browser-preflight: Chromium ${entry.chromium} is ${entry.majorDelta} major versions from the ${pw.bundledChromiumVersion} this Playwright bundles (tolerance ${tolerance})\n`);
       exitCode = 7; break;
     }
@@ -133,6 +149,7 @@ for (const consumer of consumers) {
 server.close();
 result.tolerance = tolerance;
 result.chromium = Object.values(result.smoke).map((e) => e.chromium).find(Boolean) ?? null;
+result.firefox = Object.values(result.smoke).map((e) => e.firefox).find(Boolean) ?? null;
 result.majorDelta = Object.values(result.smoke).map((e) => e.majorDelta).find((d) => d !== undefined) ?? null;
 result.ok = exitCode === 0;
 process.stdout.write(JSON.stringify(result) + "\n");

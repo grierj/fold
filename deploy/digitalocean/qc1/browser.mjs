@@ -21,7 +21,8 @@ export const { majorOf, nodeEngineProblem, chromiumMajorDelta, launchOptions, re
 
 // Throws when web/node_modules does not hold Playwright. Returns both entry
 // points the repository uses: chromium from @playwright/test and chromium from
-// playwright (the package restore-browser.cjs requires).
+// playwright (the package restore-browser.cjs requires), and firefox from playwright
+// (the restore drill's Firefox proof, run in the glibc container of firefox-runtime.sh).
 export function resolvePlaywright(webDir) {
   const req = createRequire(path.join(webDir, "package.json"));
   const corePkgPath = req.resolve("playwright-core/package.json");
@@ -30,14 +31,17 @@ export function resolvePlaywright(webDir) {
   const pkg = JSON.parse(readFileSync(req.resolve("playwright/package.json"), "utf8"));
   const browsers = JSON.parse(readFileSync(path.join(path.dirname(corePkgPath), "browsers.json"), "utf8"));
   const bundled = (browsers.browsers ?? []).find((b) => b.name === "chromium")?.browserVersion ?? null;
+  const bundledFirefox = (browsers.browsers ?? []).find((b) => b.name === "firefox")?.browserVersion ?? null;
   return {
     chromium: req("@playwright/test").chromium,
     chromiumViaPlaywright: req("playwright").chromium,
+    firefoxViaPlaywright: req("playwright").firefox,
     playwrightVersion: test.version,
     playwrightPackageVersion: pkg.version,
     coreVersion: core.version,
     nodeEngine: core.engines?.node ?? null,
     corePath: path.dirname(corePkgPath),
     bundledChromiumVersion: bundled,
+    bundledFirefoxVersion: bundledFirefox,
   };
 }

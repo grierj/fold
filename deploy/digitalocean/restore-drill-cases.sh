@@ -918,13 +918,27 @@ lifecycle_cases() {
   else
     printf '%s\n' 'R4-6c-V hand check: dedicated-host daemon restart during recovery and after interrupted reopen; physical Droplet reboot in both states.' >>"$WORK/hand-checks.txt"
   fi
-  # Try installation in scratch storage; preserve a failure as a hand-check reason.
-  if PLAYWRIGHT_BROWSERS_PATH="$WORK/firefox-browsers" timeout 180 node "$ROOT/web/node_modules/playwright/cli.js" install firefox >"$WORK/firefox-install.log" 2>&1; then
-    PLAYWRIGHT_BROWSERS_PATH="$WORK/firefox-browsers" RESTORE_BROWSER=firefox RESTORE_WEB_PACKAGE="$ROOT/web/package.json" RESTORE_SCREENSHOT="$WORK/firefox-delete-390.png" RESTORE_BROWSER_PROOF="$WORK/firefox-cookie-proof.json" RESTORE_TARGET_ID="$A" RESTORE_BROWSER_ARTIFACTS="$WORK" DEBUG="${DEBUG:+$DEBUG,}pw:browser" node "$WORK/private-browser.cjs"
-  else
-    printf '%s\n' 'R4-6c-V hand check: Firefox Secure localhost sign-in and real delete dialog; installation failed or timed out (see firefox-install.log). Safari also requires a hand check.' >>"$WORK/hand-checks.txt"
-  fi
+  firefox_proof "$A"
   reopen_checked
+}
+
+# Firefox proof (R4-6c-V). Playwright's Firefox is a glibc build; the Alpine runner cannot execute it (spawn ENOENT: no ELF loader), so it runs in the
+# Debian container the launcher built and launched once already (FOLD_FIREFOX_IMAGE, qc1/firefox-runtime.sh): the same private-browser.cjs, the same
+# environment, the runner's own network (where the recovery instance is published on 127.0.0.1). If the image could not be BUILT, the recorded reason
+# becomes an explicit hand check; a Firefox that starts in the preflight and fails here fails the drill.
+firefox_proof() { # target-user-id
+  local reason flags=()
+  if [[ -z "${FOLD_FIREFOX_IMAGE:-}" ]]; then
+    reason="$(jq -r '.reason // "no reason recorded"' "$WORK/firefox-runtime.json")"
+    printf '%s\n' "R4-6c-V hand check: Firefox Secure localhost sign-in and real delete dialog; the Firefox runtime could not be installed in the drill runner ($reason; see firefox-runtime.json and prep/firefox-build.log). Safari also requires a hand check." >>"$WORK/hand-checks.txt"
+    return 0
+  fi
+  # shellcheck source=deploy/digitalocean/qc1/firefox-runtime.sh
+  source "$ROOT/deploy/digitalocean/qc1/firefox-runtime.sh"
+  mapfile -t flags < <(firefox_run_flags)
+  docker run "${flags[@]}" -v "$WORK:$WORK" -w "$WORK" -e RESTORE_BROWSER=firefox -e RESTORE_WEB_PACKAGE=/app/package.json \
+    -e RESTORE_SCREENSHOT="$WORK/firefox-delete-390.png" -e RESTORE_BROWSER_PROOF="$WORK/firefox-cookie-proof.json" -e RESTORE_TARGET_ID="$1" \
+    -e RESTORE_BROWSER_ARTIFACTS="$WORK" -e DEBUG="${DEBUG:+$DEBUG,}pw:browser" "$FOLD_FIREFOX_IMAGE" node "$WORK/private-browser.cjs"
 }
 
 # Independent review regressions use the installed production entry points.

@@ -107,7 +107,10 @@ fi
 # web/node_modules. It is installed and proved BEFORE anything is built, drilled or measured, in this runner and nowhere else. Only a QC-1 run given
 # --no-browser skips it, on purpose; the drill has no such switch.
 if (( ! skip_browser )); then
-  docker exec -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
+  # The drill also needs Firefox (glibc, cannot run on this Alpine runner): the preparation builds a Debian container for it and proves it launches.
+  prep_env=(-e QC1_WEB_DIR=/work/fold/web)
+  if (( ! QC1 )); then prep_env+=(-e QC1_PREPARE_FIREFOX=1); fi
+  docker exec "${prep_env[@]}" -w /work/fold "$CID" bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
   if (( rc != 0 )); then
     docker cp "$CID:/work/prep/." "$OUT/prep/" >/dev/null 2>&1 || true
     echo "restore-drill-nested: the browser runtime could not be prepared (exit $rc); nothing was run ($what)" >&2

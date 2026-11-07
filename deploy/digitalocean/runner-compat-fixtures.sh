@@ -24,7 +24,7 @@ trap 'printf "runner compat fixture failed at line %s: %s\n" "$LINENO" "$BASH_CO
 # Every script the runner executes: the drill and its helpers, the provisioners and tools the drill runs for real,
 # and the QC-1 measurement. Fixtures and the drill-only stubs of the developer-side tests are not listed.
 SCRIPTS=(restore-drill.sh restore-drill-cases.sh restore-drill-crossings.sh restore.sh backup.sh upgrade.sh provision.sh
-  checks.sh smoke.sh isolation.sh deploy-drill.sh email-dns.sh qc1-measure.sh qc1/lib.sh qc1/browser-prepare.sh qc1/browser-runtime.sh
+  checks.sh smoke.sh isolation.sh deploy-drill.sh email-dns.sh qc1-measure.sh qc1/lib.sh qc1/browser-prepare.sh qc1/browser-runtime.sh qc1/firefox-runtime.sh
   testdata/restore-docker.sh testdata/restore-drill-docker.sh)
 for f in "${SCRIPTS[@]}"; do [[ -f "$HERE/$f" ]] || { echo "runner compat: $f is not a script of the runner set any more; update SCRIPTS" >&2; exit 1; }; done
 
