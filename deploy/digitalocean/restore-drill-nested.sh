@@ -94,7 +94,7 @@ fi
 if [[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CID")" == host ]]; then echo 'restore-drill-nested: the container uses the host network' >&2; exit 1; fi
 for ((i=0;i<120;i++)); do docker exec "$CID" docker info >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$CID" docker info >/dev/null
-docker exec "$CID" apk add --no-cache bash git jq curl go nodejs npm util-linux coreutils tar make openssl >/dev/null
+docker exec "$CID" apk add --no-cache bash git jq curl go nodejs npm util-linux coreutils findutils tar make openssl >/dev/null
 docker cp "$TMP/fold.bundle" "$CID:/work.bundle"
 docker exec "$CID" sh -c "git clone -q /work.bundle /work/fold && cd /work/fold && git checkout -q --detach $HEAD_SHA && test -z \"\$(git status --porcelain)\""
 rc=0
