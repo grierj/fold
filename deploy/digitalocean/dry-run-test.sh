@@ -601,12 +601,25 @@ SHIM
   echo 'restore protocol fixtures: ok'
 )
 
+# Each fixture script is its own process, so naming a failure here changes
+# nothing about what it checks. (The two functions above are called directly:
+# wrapping them in `||` would switch errexit off inside them.)
+run_fixture_script() {
+  local script="$1" rc=0
+  bash "$root/deploy/digitalocean/$script" || rc=$?
+  if (( rc != 0 )); then
+    echo "dry-run-test.sh: fixture $script failed (exit $rc)" >&2
+    exit "$rc"
+  fi
+}
+
 if [[ "${1:-}" == --fixtures ]]; then
   recovery_fixtures
   restore_fixtures
-  bash "$root/deploy/digitalocean/deploy-drill-fixtures.sh"
-  bash "$root/deploy/digitalocean/restore-drill-fixtures.sh"
-  bash "$root/deploy/digitalocean/restore-cli-fixtures.sh"
+  run_fixture_script deploy-drill-fixtures.sh
+  run_fixture_script restore-drill-fixtures.sh
+  run_fixture_script restore-crossings-fixtures.sh
+  run_fixture_script restore-cli-fixtures.sh
   exit 0
 fi
 
@@ -644,11 +657,20 @@ if [[ -f "$root/.git" ]]; then
   mounts+=(-v "$git_common:$git_common:ro")
 fi
 before="$(git -C "$root" status --porcelain)"
+# No xtrace mode on purpose: bash -x prints the values of variables, and these
+# scripts handle secrets (even disposable ones in this test). The FAILED line
+# from the ERR traps names the script, line and command without values.
+inside=(bash /src/deploy/digitalocean/dry-run-inside.sh)
+container_rc=0
 docker run --rm \
   "${mounts[@]}" \
   -w /src \
   "$container_image" \
-  bash /src/deploy/digitalocean/dry-run-inside.sh
+  "${inside[@]}" || container_rc=$?
+if (( container_rc != 0 )); then
+  echo "dry-run-test.sh: the container run exited $container_rc; the last FAILED line above names the script, line and command" >&2
+  exit "$container_rc"
+fi
 after="$(git -C "$root" status --porcelain)"
 if [[ "$before" != "$after" ]]; then
   echo "dry-run-test.sh: the worktree changed" >&2

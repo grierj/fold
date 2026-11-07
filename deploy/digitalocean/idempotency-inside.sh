@@ -2,7 +2,26 @@
 # Second half of the container test. Run provision.sh twice for real, with
 # systemd and Docker stubbed, and assert the second run changes nothing.
 # Called from dry-run-inside.sh after the dry-run assertions.
-set -euo pipefail
+set -Eeuo pipefail
+
+# A failing bare command used to leave no trace: most steps here send their
+# output to /tmp/*.out. Name the line and command, and show the newest outputs.
+# Quiet inside expect_fail's deliberate `set +e` windows and command
+# substitutions (errexit is off there), so expected failures stay silent.
+# shellcheck disable=SC2329 # Invoked by the ERR trap.
+idempotency_diag() {
+  local rc="$1" line="$2" command="$3" file
+  [[ $- == *e* ]] || return 0
+  {
+    printf 'idempotency: FAILED (exit %s) at idempotency-inside.sh line %s: %s\n' "$rc" "$line" "$command"
+    for file in $(find /tmp -maxdepth 1 -name '*.out' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 3 | cut -d' ' -f2- || true); do
+      printf -- '--- last 30 lines of %s\n' "$file"
+      tail -n 30 "$file" || true
+    done
+  } >&2
+  return 0
+}
+trap 'idempotency_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 cd /src
 
@@ -74,14 +93,34 @@ exec /usr/bin/openssl "$@"
 EOF
 cat >/usr/local/bin/docker <<'EOF'
 #!/bin/bash
+# Docker stand-in. A pulled image reports DOCKER_STUB_IMAGE_LEVEL (default 0).
+# A simulated `compose build` "compiles" the deploy tree it is given and the
+# resulting image reports the recovery level that tree declares in
+# deploy/recovery-policy (absent means 0), so the stub never contradicts the
+# checked source. DOCKER_STUB_BUILT_LEVEL forces another level to model a build
+# that does not match its source; provision.sh must then refuse it.
 set -euo pipefail
+stub_state=/tmp/docker-stub-state
+dir_key() { printf '%s' "$1" | sha256sum | cut -c1-16; }
 if [[ "${1:-}" == "run" ]]; then
-  printf '{"version":"fixture"}\n'
+  image="${*: -3:1}"
+  case "$image" in
+    sha256:fixture-built-*) level="$(cat "$stub_state/${image#sha256:fixture-built-}.level")" ;;
+    *) level="${DOCKER_STUB_IMAGE_LEVEL:-0}" ;;
+  esac
+  if [[ "$level" == 0 ]]; then
+    printf '{"version":"fixture"}\n'
+  else
+    printf '{"version":"fixture","recoveryPolicy":%s}\n' "$level"
+  fi
   exit 0
 fi
 if [[ "${1:-}" == "pull" ]]; then exit 0; fi
 if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
-  echo sha256:fixture
+  case "${*: -1}" in
+    fixture:built-*) ref="${*: -1}"; echo "sha256:fixture-built-${ref#fixture:built-}" ;;
+    *) echo sha256:fixture ;;
+  esac
   exit 0
 fi
 if [[ "${1:-}" == "inspect" ]]; then
@@ -91,12 +130,15 @@ fi
 [[ "${1:-}" == "compose" ]] || { echo "docker stub: $*" >&2; exit 1; }
 shift
 args=()
+project_dir=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-directory)
+      project_dir="$2"
       shift 2
       ;;
     --project-directory=*)
+      project_dir="${1#*=}"
       shift
       ;;
     *)
@@ -107,8 +149,28 @@ while [[ $# -gt 0 ]]; do
 done
 cmd="${args[0]:-}"
 case "$cmd" in
-  version|pull|build|up) exit 0 ;;
-  config) echo '{"services":{"app":{"image":"fixture:pin"}}}' ;;
+  version|up) exit 0 ;;
+  pull)
+    # A pulled release replaces any simulated build of this deploy directory.
+    [[ -z "$project_dir" ]] || rm -f "$stub_state/$(dir_key "$project_dir").level"
+    exit 0
+    ;;
+  build)
+    declared=0
+    if [[ -n "$project_dir" && -f "$project_dir/deploy/recovery-policy" ]]; then
+      declared="$(tr -d '[:space:]' <"$project_dir/deploy/recovery-policy")"
+    fi
+    mkdir -p "$stub_state"
+    printf '%s\n' "${DOCKER_STUB_BUILT_LEVEL:-$declared}" >"$stub_state/$(dir_key "$project_dir").level"
+    exit 0
+    ;;
+  config)
+    image=fixture:pin
+    if [[ -n "$project_dir" && -f "$stub_state/$(dir_key "$project_dir").level" ]]; then
+      image="fixture:built-$(dir_key "$project_dir")"
+    fi
+    printf '{"services":{"app":{"image":"%s"}}}\n' "$image"
+    ;;
   ps)
     if [[ -n "${DOCKER_STUB_PS:-}" ]]; then
       printf '%s\n' "$DOCKER_STUB_PS"
@@ -520,6 +582,19 @@ bash deploy/digitalocean/provision.sh \
   --source-dir /src \
   --deploy-dir "$build_dir" >/tmp/fold-build-2.out 2>&1
 [[ "$build_env_sum" == "$(sha256sum "$build_dir/.env")" ]]
+# A build whose image reports another level than its source declares is refused,
+# lower or higher, and nothing is started. (The stub models the mismatch; the
+# check under test is provision.sh's, unchanged.)
+mismatch_dir=/tmp/fold-build-mismatch
+for wrong_level in 0 2; do
+  DOCKER_STUB_BUILT_LEVEL="$wrong_level" expect_fail 'differs from checked target' bash deploy/digitalocean/provision.sh \
+    --domain groups.example.org \
+    --admin-user deploy \
+    --ssh-pubkey-file "$pub" \
+    --allow-onbox-build \
+    --source-dir /src \
+    --deploy-dir "$mismatch_dir"
+done
 # upgrade.sh records a commit for a source build, so it needs a real checkout.
 mkdir -p /tmp/fold-srcrepo/deploy/digitalocean
 touch /tmp/fold-srcrepo/deploy/digitalocean/provision.sh
@@ -534,7 +609,9 @@ build_cur="$(bash deploy/digitalocean/upgrade.sh --dry-run \
 grep -qF 'mode=build' <<<"$build_cur"
 
 # Moving that deploy to a pulled release drops the override and COMPOSE_FILE.
-bash deploy/digitalocean/provision.sh \
+# The source built above declares level 1, so the pulled release it moves to
+# must be at least level 1 (a lower one is refused by the recovery floor).
+DOCKER_STUB_IMAGE_LEVEL=1 bash deploy/digitalocean/provision.sh \
   --domain groups.example.org \
   --admin-user deploy \
   --ssh-pubkey-file "$pub" \

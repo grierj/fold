@@ -9,15 +9,30 @@ source "$ROOT/deploy/digitalocean/checks.sh"
 source "$ROOT/deploy/digitalocean/deploy-drill.sh"
 # shellcheck source=deploy/digitalocean/restore-drill-cases.sh
 source "$ROOT/deploy/digitalocean/restore-drill-cases.sh"
+# shellcheck source=deploy/digitalocean/restore-drill-crossings.sh
+source "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
 WORK=""
 BASE_IMAGE=""
 KEEP=0
+LANE_REVISION="$CROSSING_LANE_DEFAULT"
+LANDING_REVISION="$CROSSING_LANDING_DEFAULT"
+ARCHIVE_BASE_REVISION="$CROSSING_ARCHIVE_DEFAULT"
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
     --image) BASE_IMAGE="${2:?candidate image required}"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    --help) echo 'Usage: sudo restore-drill.sh [--dir NEW_SCRATCH_PATH] [--image CANDIDATE] [--keep]'; exit 0 ;;
+    --lane-base) LANE_REVISION="${2:?level-0 LANE_BASE commit required}"; shift 2 ;;
+    --landing) LANDING_REVISION="${2:?level-1 T07B-1-V landing commit required}"; shift 2 ;;
+    --archive-base) ARCHIVE_BASE_REVISION="${2:?older level-0 archive commit required}"; shift 2 ;;
+    --help)
+      echo 'Usage: sudo restore-drill.sh [--dir NEW_SCRATCH_PATH] [--image CANDIDATE] [--keep]'
+      echo '         [--lane-base SHA] [--landing SHA] [--archive-base SHA]'
+      echo 'The three revisions drive the real-binary crossing cases (R4-6c-V): LANE_BASE (the recorded level-0'
+      echo 'preflight base, default 8c07c85), the level-1 commit that precedes restore.sh, and the level-0 commit'
+      echo 'the older archive is dumped on (default: LANE_BASE). The candidate binary is built from git archive of'
+      echo 'the committed HEAD; an uncommitted tree is refused. --image serves only the fixture stack.'
+      exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
 done
@@ -26,6 +41,10 @@ for tool in docker go git jq curl node flock timeout; do command -v "$tool" >/de
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 REVISION="$(drill_source_revision "$ROOT")" || exit 1
 LEGACY_REVISION="$(drill_legacy_revision "$ROOT")" || exit 1
+# Every crossing revision is proved from git before a stack, an image or a
+# database exists. There is no switch that skips the real-binary cases.
+crossing_validate_revisions "$ROOT" "$LANE_REVISION" "$LANDING_REVISION" "$ARCHIVE_BASE_REVISION" "$REVISION" || exit 1
+crossing_require_clean_head "$ROOT" || exit 1
 unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES RESTORE_DRILL_FAULT RESTORE_DRILL_PAUSE RESTORE_DRILL_FORCE_TWO_STEP
 if [[ -z "$WORK" ]]; then
   WORK="$(mktemp -d /tmp/fold-restore-drill.XXXXXX)"; rmdir "$WORK"
@@ -36,7 +55,8 @@ drill_progress_init bootstrap base-proof recovery-interruptions reopen-interrupt
   accidental-app-reuse abort-ack-loss operations-lock recovery-configuration \
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
-  review_orphaned_restore_case review_moving_tag_case final-verification
+  review_orphaned_restore_case review_moving_tag_case \
+  real_binary_refusals real_level0_lineage real_same_level_rollback real_older_archive_restore final-verification
 trap 'drill_progress_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
 drill_case_begin bootstrap
 args=(--prepare-only --dir "$WORK")
@@ -82,6 +102,8 @@ cleanup() {
     # shellcheck disable=SC2016 # $1 belongs to the cleanup child.
     timeout 3 bash -c 'echo continue >"$1"' _ "$WORK/holds/$SQL_HOLD_LABEL.fifo" 2>/dev/null || true
   fi
+  # Level-0 lineage sites and the host files their provisioner writes.
+  if (( ! KEEP )); then crossing_cleanup_all || rc=1; else crossing_cleanup_host || rc=1; fi
   if (( ! KEEP )); then docker compose --project-directory "$DIR" down -v --remove-orphans || rc=1; fi
   drill_emit result "$rc" || rc=1
   echo "restore drill result=$rc artifacts=$WORK retained_stack=$KEEP"
@@ -299,7 +321,9 @@ drill_case_end
 # Reset only the stack this runner created. This is fixture setup, not an
 # alternative operator restore path. Never remove ops.lock, even in a drill.
 reset_case() {
-  local ids name
+  # The optional argument pins another image for a real-binary case; every
+  # other case keeps the fixture base image.
+  local ids name image="${1:-$BASE_REGISTRY_IMAGE}"
   drill_note reset/start
   [[ "$DIR" == "$WORK/site" && "$PROJECT" == fold-deploy-drill-* ]] || exit 1
   dc stop caddy app
@@ -310,7 +334,7 @@ reset_case() {
   dc exec -T db pg_restore -U church -d fold --no-owner --no-acl --single-transaction --exit-on-error <"$DB_DUMP"
   rm -f "$DIR/recovery.lock" "$DIR/drill-smoke-fail" "$DIR/drill.ready"
   drill_note reset/provision
-  "$DIR/provision.sh" --skip-harden --allow-os --deploy-dir "$DIR" --source-dir "$SOURCE" --domain groups.example.org --image "$BASE_REGISTRY_IMAGE" >"$WORK/reset-provision.log" 2>&1
+  "$DIR/provision.sh" --skip-harden --allow-os --deploy-dir "$DIR" --source-dir "$SOURCE" --domain groups.example.org --image "$image" >"$WORK/reset-provision.log" 2>&1
   drill_note reset/provision-complete
   wait_public
   URL="$(public_url)"; login; delete_a; capture_original; smtp_clear
@@ -490,7 +514,8 @@ dc logs db >"$WORK/postgres-statements.log"
 drill_case_end
 for drill_family in count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
-  review_orphaned_restore_case review_moving_tag_case; do
+  review_orphaned_restore_case review_moving_tag_case \
+  real_binary_refusals real_level0_lineage real_same_level_rollback real_older_archive_restore; do
   drill_case_begin "$drill_family"
   # A bare call preserves errexit inside the acceptance function. Never put
   # this call in an if/! or || list: Bash would disable its failed assertions.
@@ -501,6 +526,7 @@ drill_case_begin final-verification
 snapshot_state "$DIR" "$SOURCE" >"$WORK/final-state"
 dc logs db >"$WORK/postgres-statements.log"
 assert_statement_history
+assert_crossing_evidence
 drill_case_end
 drill_progress_complete
 printf 'restore drill passed: revision=%s project=%s artifacts=%s\n' "$(jq -er .revision "$MANIFEST")" "$PROJECT" "$WORK"
