@@ -15,7 +15,7 @@ const admin = { id: 1, name: 'Drill Admin', displayName: '', email: 'admin@examp
 const target = { ...admin, id: 2, name: 'Member A', email: 'a@example.invalid', role: 'member' };
 async function scenario(mode) {
   const artifacts = path.join(work, mode); fs.mkdirSync(artifacts);
-  let people = [admin, target], deletes = 0, browser;
+  let people = [admin, target], deletes = 0, mints = 0, lists = 0, browser;
   const server = http.createServer(async (req, res) => {
     const p = new URL(req.url, 'http://localhost').pathname;
     const send = (data, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
@@ -28,9 +28,17 @@ async function scenario(mode) {
       if (p === '/api/v1/admin/users') {
         if (mode === 'list-error') return send({ error: 'fixture list failure' }, 500);
         if (mode === 'closed-browser') { await browser.close(); res.destroy(); return; }
+        lists++;
         return send({ users: people });
       }
-      if (p === '/api/v1/admin/users/2' && req.method === 'DELETE') { deletes++; people = [admin]; return send({ ok: true }); }
+      // The real panel mints an attempt id (80 lowercase hex) and then sends the
+      // DELETE with it; the real server answers the DELETE with an erasure report.
+      if (p === '/api/v1/admin/operation-attempts' && req.method === 'POST') { mints++; return send({ attemptId: 'ab'.repeat(40) }); }
+      if (p === '/api/v1/admin/users/2' && req.method === 'DELETE') {
+        deletes++; people = [admin];
+        if (mode === 'bad-report') return send({ ok: true });
+        return send({ erasure: { householdsKept: 1, householdsScrubbed: 0, peopleAnonymized: 2, guardianLinksRevoked: 0, activityEntriesKept: 3 } });
+      }
       if (p.endsWith('/sole-leader-groups')) return send({ groups: [] });
       if (p.endsWith('/sole-host-events')) return send({ events: [], candidates: [] });
       if (p === '/api/v1/admin/jobs') return send({ jobs: [], more: false });
@@ -63,10 +71,19 @@ async function scenario(mode) {
     try { await runPrivateBrowser({ engine, origin, targetId: 2, artifacts, screenshot: path.join(artifacts, 'delete-390.png'), cookieProof: path.join(artifacts, 'cookies.json'), timeout: 5000 }); } catch (e) { error = e; }
     const events = JSON.parse(fs.readFileSync(path.join(artifacts, 'browser-chromium-events.json')));
     if (mode === 'success') {
-      assert.equal(error, undefined); assert.equal(deletes, 1);
-      assert(events.some(e => e.kind === 'proof-complete'));
+      assert.equal(error, undefined); assert.equal(deletes, 1); assert.equal(mints, 1);
+      // The list loads to find the row and reloads at least once after Done; the
+      // success stays on screen in between, so the helper must press Done.
+      assert(lists >= 2);
+      assert(events.some(e => e.kind === 'proof-complete' && e.detail.erasure.activityEntriesKept === 3));
+      assert(fs.statSync(path.join(artifacts, 'browser-chromium-delete-outcome.png')).size > 0);
       assert(JSON.parse(fs.readFileSync(path.join(artifacts, 'cookies.json'))).some(c => c.name === 'fold-session' && c.secure && c.httpOnly));
       assert(fs.statSync(path.join(artifacts, 'delete-390.png')).size > 0);
+    } else if (mode === 'bad-report') {
+      // An answer that is not an erasure report is not a success; the proof fails there.
+      assert(error); assert.equal(deletes, 1);
+      assert.match(error.message, /no numeric erasure\./);
+      assert(events.some(e => e.kind === 'failure' && e.stage === 'delete'));
     } else {
       assert(error); assert.equal(deletes, 0);
       assert(events.some(e => e.kind === 'failure' && !e.intentionalClose && e.stage === 'users'));
@@ -82,5 +99,5 @@ async function scenario(mode) {
 }
 (async () => {
   assert(fs.existsSync(path.join(dist, 'index.html')), 'build the SPA before running browser fixtures');
-  for (const mode of ['success', 'list-error', 'closed-browser']) await scenario(mode);
+  for (const mode of ['success', 'bad-report', 'list-error', 'closed-browser']) await scenario(mode);
 })().then(() => fs.rmSync(work, { recursive: true }), error => { console.error(error); console.error(`browser fixture artifacts retained: ${work}`); process.exitCode = 1; });
