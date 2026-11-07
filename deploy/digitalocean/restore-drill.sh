@@ -16,6 +16,8 @@ source "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
 WORK=""
 BASE_IMAGE=""
 KEEP=0
+# full (the acceptance run) or crossings-only (a labelled PARTIAL diagnostic, see restore-drill-crossings.sh crossings_only_run)
+MODE=full
 LANE_REVISION="$CROSSING_LANE_DEFAULT"
 LANDING_REVISION="$CROSSING_LANDING_DEFAULT"
 PRIOR_REVISION="$CROSSING_PRIOR_DEFAULT"
@@ -25,12 +27,14 @@ while (( $# )); do
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
     --image) BASE_IMAGE="${2:?candidate image required}"; shift 2 ;;
     --keep) KEEP=1; shift ;;
+    --crossings-only) MODE=crossings-only; shift ;;
     --lane-base) LANE_REVISION="${2:?level-0 LANE_BASE commit required}"; shift 2 ;;
     --landing) LANDING_REVISION="${2:?level-1 T07B-1-V landing commit required}"; shift 2 ;;
     --prior) PRIOR_REVISION="${2:?level-2 prior release commit required}"; shift 2 ;;
     --archive-base) ARCHIVE_BASE_REVISION="${2:?older archive commit (without the reason-review migration) required}"; shift 2 ;;
     --help)
       echo 'Usage: sudo restore-drill.sh [--dir NEW_SCRATCH_PATH] [--image CANDIDATE] [--keep]'
+      echo '         [--crossings-only]  (PARTIAL diagnostic, never full acceptance; exits 10 when it passes)'
       echo '         [--lane-base SHA] [--landing SHA] [--prior SHA] [--archive-base SHA]'
       echo 'The four revisions drive the real-binary crossing cases (R4-6c-V, T07B-2-V): LANE_BASE (the recorded'
       echo 'level-0 preflight base, default 8c07c85), the level-1 commit that precedes restore.sh (default d400b77),'
@@ -67,11 +71,13 @@ jq -e '.ok == true' <<<"$BROWSER_PREFLIGHT" >/dev/null || { echo "restore-drill.
 # (qc1/browser-prepare.sh, QC1_PREPARE_FIREFOX=1) and proved it launches. Its record must exist: a runner that skipped the preparation is refused, not
 # silently drilled without Firefox. A recorded BUILD failure is allowed and becomes an explicit first-church hand check in lifecycle_cases.
 FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"
+if [[ "$MODE" == full ]]; then
 [[ -n "$FIREFOX_RUNTIME" && -f "$FIREFOX_RUNTIME" ]] || { echo 'restore-drill.sh: the Firefox runtime was not prepared (FOLD_FIREFOX_RUNTIME); run the drill through restore-drill-nested.sh' >&2; exit 1; }
 jq -e '.available | type == "boolean"' "$FIREFOX_RUNTIME" >/dev/null || { echo "restore-drill.sh: $FIREFOX_RUNTIME is not a Firefox runtime record" >&2; exit 1; }
 if jq -e '.available == true' "$FIREFOX_RUNTIME" >/dev/null; then
   [[ -n "${FOLD_FIREFOX_IMAGE:-}" && "$(docker image inspect --format '{{.Id}}' "$FOLD_FIREFOX_IMAGE" 2>/dev/null)" == "$(jq -er .imageId "$FIREFOX_RUNTIME")" ]] \
     || { echo 'restore-drill.sh: the prepared Firefox image is missing or is not the one the preparation proved' >&2; exit 1; }
+fi
 fi
 unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES RESTORE_DRILL_FAULT RESTORE_DRILL_PAUSE RESTORE_DRILL_FORCE_TWO_STEP
 if [[ -z "$WORK" ]]; then
@@ -79,12 +85,17 @@ if [[ -z "$WORK" ]]; then
 fi
 WORK="$(realpath -m "$WORK")"
 [[ "$WORK" == /* && "$WORK" != /opt/fold && "$WORK" != /opt/fold/* && ! -e "$WORK" ]] || { echo '--dir must be a new scratch path outside /opt/fold' >&2; exit 1; }
+DRILL_PROGRESS_MODE="$MODE"
+if [[ "$MODE" == full ]]; then
 drill_progress_init bootstrap base-proof recovery-interruptions reopen-interruptions abort-interruptions tamper \
   accidental-app-reuse abort-ack-loss operations-lock recovery-configuration \
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification
+else
+drill_progress_init "${CROSSINGS_ONLY_PLAN[@]}"
+fi
 trap 'drill_progress_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
 drill_case_begin bootstrap
 args=(--prepare-only --dir "$WORK")
@@ -94,7 +105,7 @@ drill_case_end
 MANIFEST="$WORK/restore-drill.json"
 [[ "$(jq -er .revision "$MANIFEST")" == "$REVISION" ]] || { echo 'restore drill source revision mismatch' >&2; exit 1; }
 printf '%s\n' "$BROWSER_PREFLIGHT" >"$WORK/browser-preflight.json"
-cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"
+[[ "$MODE" != full ]] || cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"
 DIR="$(jq -er .dir "$MANIFEST")"
 SOURCE="$(jq -er .source "$MANIFEST")"
 PROJECT="$(jq -er .project "$MANIFEST")"
@@ -127,6 +138,7 @@ monitor=""
 cleanup() {
   local rc=$?
   trap - EXIT
+  [[ "$MODE" == full ]] || rc="$(drill_partial_rc "$rc")"
   [[ -z "$holder" ]] || kill -KILL "$holder" 2>/dev/null || true
   [[ -z "$monitor" ]] || kill "$monitor" 2>/dev/null || true
   if [[ -n "${SQL_HOLDER:-}" && -n "${SQL_HOLD_LABEL:-}" ]]; then
@@ -140,13 +152,17 @@ cleanup() {
   if (( ! KEEP )); then docker compose --project-directory "$DIR" down -v --remove-orphans || rc=1; fi
   drill_emit result "$rc" || rc=1
   echo "restore drill result=$rc artifacts=$WORK retained_stack=$KEEP"
+  [[ "$MODE" == full ]] || drill_mode_finish "$rc"
   exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'drill_progress_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
-drill_case_begin base-proof
+[[ "$MODE" == full ]] || drill_mode_begin
+BASE_CASE="base-proof"
+[[ "$MODE" == full ]] || BASE_CASE="base-prerequisites"
+drill_case_begin "$BASE_CASE"
 
 dc() { docker compose --project-directory "$DIR" "$@"; }
 pg() { dc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
@@ -287,6 +303,8 @@ seed_push_jobs
 # Same custom-format archive as backup.sh. Fixture ids never leave WORK.
 dc exec -T db pg_dump -U church -Fc fold >"$DB_DUMP"
 sha256sum "$DB_DUMP"
+# Everything from here to the end of base-proof (the restore proof itself) is the full run's; the diagnostic goes on to the crossing cases below.
+if [[ "$MODE" == full ]]; then
 pg fold -c "CREATE TABLE drill_live_only(value text); INSERT INTO drill_live_only VALUES ('live-only'); CREATE VIEW drill_live_view AS SELECT id FROM users"
 delete_a
 capture_original
@@ -349,6 +367,7 @@ if grep -q "POST /device-$A " "$WORK/push.reopened.log"; then echo 'ARBITRATE: r
 jq -e '[.messages[].To[]?.Address] | index("a@example.invalid")==null and index("m@example.invalid")!=null' "$WORK/smtp.reopened.json" >/dev/null \
   || { echo 'ARBITRATE: queued work sent to erased A, or M delivery failed; lead must investigate CORE send-time rechecks' >&2; exit 78; }
 
+fi
 drill_case_end
 
 # Reset only the stack this runner created. This is fixture setup, not an
@@ -388,6 +407,11 @@ kill_point() {
   if [[ -n "$(pg postgres -c "SELECT oid FROM pg_database WHERE oid=$(jq -er .origOid "$DIR/recovery.lock")")" ]]; then assert_original_heap
   else [[ "$(jq -er .cleanup "$DIR/recovery.lock")" != none ]]; fi
 }
+# crossings-only: the fixture stack, the dump and reset_case exist now. Run the five real-binary crossing cases and stop: the recovery matrices below are the full run's.
+# A bare call, so errexit stays on inside it; it exits with DRILL_PARTIAL_PASS_EXIT when the diagnostic passes and never returns.
+if [[ "$MODE" != full ]]; then
+crossings_only_run
+fi
 # Each kill uses the installed entry point. SQL logs and lock histories
 # remain available to check that observed oids authorize every action.
 pg postgres -c "ALTER SYSTEM SET log_statement='all'" -c 'SELECT pg_reload_conf()'

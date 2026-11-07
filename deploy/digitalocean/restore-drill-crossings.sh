@@ -1510,3 +1510,99 @@ assert_crossing_evidence() {
   [[ -s "$cdir/lineage-l0-build-binary.json" && -s "$cdir/lineage-l1-build-binary.json" ]]
   jq -e '.applied != null and .path == "/etc/os-release"' "$cdir/os-release-standin.json" >/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# restore-drill.sh --crossings-only: a PARTIAL DIAGNOSTIC, never the acceptance run.
+#
+# The full drill takes about an hour; the five real-binary crossing cases come last, so a deterministic runner
+# problem in them (a missing tool, an OS check, a path) costs a whole run to find. This mode runs exactly what
+# those cases need and nothing else:
+#   bootstrap          the same deploy-drill.sh --prepare-only stack as the full run
+#   base-prerequisites the full run's base-proof fixture setup only: setup wizard, users, group, jobs and
+#                      notifications, and the pg_dump that reset_case restores from (DB_DUMP)
+#   the five real_* families, called exactly as the full run calls them (bare, errexit on)
+#   crossings-evidence assert_crossing_evidence, the same check the full run ends with
+# It skips the restore proofs themselves (swap proof, restore --dump, the 60 s observation, the db restart,
+# the Chromium delete-panel proof), the interruption matrices and the twelve lifecycle/review families, the
+# statement-history check, and Firefox (its record is not required). The Chromium preflight still runs.
+#
+# It cannot be mistaken for the acceptance run: the progress plan has other case names and never
+# the full plan; every progress record carries mode=crossings-only, partial=true, fullAcceptance=false; the
+# result is "partial", never "complete"; WORK holds PARTIAL-NOT-FULL-ACCEPTANCE.txt and drill-mode.json
+# (the full run writes neither); the banner and the last line say so; and a pass exits with
+# DRILL_PARTIAL_PASS_EXIT (10), which the full run never returns (its pass is exit 0).
+# ---------------------------------------------------------------------------
+CROSSINGS_ONLY_FAMILIES=(real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore)
+CROSSINGS_ONLY_PLAN=(bootstrap base-prerequisites "${CROSSINGS_ONLY_FAMILIES[@]}" crossings-evidence)
+# The full run's case names, in order. restore-drill-modes-fixtures.sh keeps this equal to the plan restore-drill.sh passes to drill_progress_init.
+DRILL_FULL_PLAN_NAMES=(bootstrap base-proof recovery-interruptions reopen-interruptions abort-interruptions tamper accidental-app-reuse abort-ack-loss operations-lock recovery-configuration
+  count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases legacy_archive_case review_reconciliation_cases
+  review_backup_archive_cases review_cleanup_retry_cases review_orphaned_restore_case review_moving_tag_case
+  real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification)
+
+drill_mode_banner() {
+  printf '%s\n' '################################################################################' \
+    '# restore-drill.sh --crossings-only: PARTIAL DIAGNOSTIC. This is NOT the full drill and' \
+    '# NOT acceptance. It runs the bootstrap, the fixture prerequisites and the five real' \
+    '# level-2 crossing cases only. A pass exits 10; only a full run exits 0.' \
+    '################################################################################'
+}
+
+# Writes the markers into WORK before the first case. The full run writes none of these.
+drill_mode_begin() {
+  local skipped ran
+  ran="$(printf '%s\n' "${CROSSINGS_ONLY_PLAN[@]}" | jq -Rn '[inputs]')"
+  skipped="$(printf '%s\n' "${DRILL_FULL_PLAN_NAMES[@]}" | jq -Rn --argjson ran "$ran" '[inputs] - $ran | map(select(. != "base-proof"))')"
+  drill_mode_banner
+  printf '%s\n' 'PARTIAL DIAGNOSTIC (restore-drill.sh --crossings-only). This directory is NOT full-drill evidence and NOT acceptance.' \
+    'It holds the bootstrap, the fixture prerequisites and the five real level-2 crossing cases only. See drill-mode.json for what ran and what did not.' \
+    'A pass is exit 10 and status "partial". Acceptance needs a full run (exit 0, status "complete").' >"$WORK/PARTIAL-NOT-FULL-ACCEPTANCE.txt"
+  jq -n --argjson ran "$ran" --argjson skipped "$skipped" --argjson pass "$DRILL_PARTIAL_PASS_EXIT" --arg at "$(date -u +%FT%TZ)" --arg revision "${REVISION:-}" \
+    '{mode:"crossings-only", partial:true, fullAcceptance:false, startedAt:$at, revision:$revision, passExitCode:$pass,
+      purpose:"find deterministic runner failures in the real-binary crossing cases without the full drill",
+      ran:$ran, base:"base-prerequisites runs only the fixture setup and the pg_dump of the full run base-proof",
+      skippedFromFull:$skipped,
+      skippedFromBaseProof:["the swap proof","restore --dump","the 60 s closed observation","the db restart","the Chromium delete-panel proof","reopen","the queued-work checks"],
+      notProved:["any recovery interruption, tamper, race, lifecycle, archive-failure or review case","restore.sh behavior outside the crossing cases","the Chromium and Firefox delete-panel proofs","the statement-history check","that the full drill passes"],
+      browser:{chromiumPreflight:"run", firefox:"not prepared or required in this mode"},
+      result:null, outcome:null}' >"$WORK/drill-mode.json"
+}
+
+# The cases. Called bare, so errexit stays on in every acceptance function; the base-prerequisites case was ended by the caller.
+crossings_only_run() {
+  local family
+  for family in "${CROSSINGS_ONLY_FAMILIES[@]}"; do
+    drill_case_begin "$family"
+    # A bare call preserves errexit inside the acceptance function. Never put this call in an if/! or || list.
+    "$family"
+    drill_case_end
+  done
+  drill_case_begin crossings-evidence
+  assert_crossing_evidence
+  drill_case_end
+  drill_progress_complete
+  printf 'restore drill PARTIAL (crossings-only) passed: revision=%s project=%s artifacts=%s. NOT the full drill, NOT acceptance (exit %s).\n' \
+    "$(jq -er .revision "$MANIFEST")" "$PROJECT" "$WORK" "$DRILL_PARTIAL_PASS_EXIT"
+  exit "$DRILL_PARTIAL_PASS_EXIT"
+}
+
+# Called from the EXIT trap in a partial run: records how it ended in drill-mode.json and repeats the label on the last lines.
+drill_mode_finish() { # rc
+  local rc="$1" outcome=failed tmp
+  (( rc != DRILL_PARTIAL_PASS_EXIT )) || outcome=partial-pass
+  if [[ -s "$WORK/drill-mode.json" ]]; then
+    tmp="$WORK/.drill-mode.$$.tmp"
+    if jq --argjson rc "$rc" --arg outcome "$outcome" '.result = $rc | .outcome = $outcome' "$WORK/drill-mode.json" >"$tmp"; then mv -f -- "$tmp" "$WORK/drill-mode.json"; else rm -f -- "$tmp"; fi
+  fi
+  printf 'restore drill MODE=crossings-only outcome=%s exit=%s: PARTIAL diagnostic, NOT full acceptance (only a full run exiting 0 is acceptance)\n' "$outcome" "$rc"
+}
+
+# The exit code a partial run may report. 10 only when every planned case ended (a failing command inside a case can exit 10 by chance), and never 0:
+# 0 is reserved for the full run's pass.
+drill_partial_rc() { # rc
+  local rc="$1"
+  if (( rc == 0 )); then echo 1
+  elif (( rc == DRILL_PARTIAL_PASS_EXIT )) && [[ -z "${RESTORE_DRILL_CASE:-}" && "$(jq -c . <<<"$DRILL_PROGRESS_DONE")" == "$(jq -c . <<<"$DRILL_PROGRESS_PLAN")" ]]; then echo "$rc"
+  elif (( rc == DRILL_PARTIAL_PASS_EXIT )); then echo 1
+  else echo "$rc"; fi
+}

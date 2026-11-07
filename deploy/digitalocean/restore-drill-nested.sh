@@ -10,6 +10,13 @@
 #
 # With --qc1 the runner measures QC-1 instead of running the restore drill.
 #
+#   deploy/digitalocean/restore-drill-nested.sh --out NEW_DIR --crossings-only [--dind-image REF] [-- drill args...]
+#
+# With --crossings-only the runner runs a PARTIAL DIAGNOSTIC of the restore drill: the bootstrap, the fixture prerequisites and the five real level-2
+# crossing cases (restore-drill.sh --crossings-only), to find deterministic runner failures sooner than a full run can. It is NOT the full drill and NOT
+# acceptance: the Firefox runtime is not built (the crossings do not use it; the Chromium preflight still runs), the evidence directory gets
+# PARTIAL-NOT-FULL-ACCEPTANCE.txt (also written when it fails), and a pass exits 10, never 0. Without the flag nothing about the run changes.
+#
 # Both modes drive a real Chromium: the restore drill's recovery proof
 # (testdata/restore-browser.cjs, through web/node_modules/playwright) and the QC-1
 # panel measurement (through @playwright/test). The nested Alpine runner has
@@ -42,18 +49,20 @@
 #     container (isolation.sh).
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-OUT="" DIND=docker:29-dind QC1=0
+OUT="" DIND=docker:29-dind QC1=0 CROSS=0
 drill_args=()
 while (( $# )); do
   case "$1" in
     --out) OUT="${2:?new evidence directory required}"; shift 2 ;;
     --dind-image) DIND="${2:?image required}"; shift 2 ;;
     --qc1) QC1=1; shift ;;
+    --crossings-only) CROSS=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; drill_args=("$@"); break ;;
     *) echo "unknown option $1 (drill arguments go after --)" >&2; exit 1 ;;
   esac
 done
+if (( QC1 && CROSS )); then echo 'restore-drill-nested: --qc1 and --crossings-only are different runs; choose one' >&2; exit 1; fi
 for tool in docker git tar; do command -v "$tool" >/dev/null || { echo "restore-drill-nested: $tool is required" >&2; exit 1; }; done
 [[ -n "$OUT" ]] || { echo 'restore-drill-nested: --out NEW_DIR is required' >&2; exit 1; }
 OUT="$(realpath -m "$OUT")"
@@ -97,8 +106,14 @@ docker exec "$CID" docker info >/dev/null
 docker exec "$CID" apk add --no-cache bash git jq curl go nodejs npm util-linux coreutils findutils tar make openssl >/dev/null
 docker cp "$TMP/fold.bundle" "$CID:/work.bundle"
 docker exec "$CID" sh -c "git clone -q /work.bundle /work/fold && cd /work/fold && git checkout -q --detach $HEAD_SHA && test -z \"\$(git status --porcelain)\""
+# The label a partial run leaves in its evidence directory, on every path that ends it (also when it fails).
+partial_marker() {
+  (( CROSS )) || return 0
+  printf '%s\n' 'PARTIAL DIAGNOSTIC (restore-drill-nested.sh --crossings-only). This directory is NOT full-drill evidence and NOT acceptance; see drill-mode.json.' \
+    'A pass is exit 10. Acceptance needs a full run (no --crossings-only) exiting 0.' >"$OUT/PARTIAL-NOT-FULL-ACCEPTANCE.txt"
+}
 rc=0
-if (( QC1 )); then what=qc1; else what=drill; fi
+if (( QC1 )); then what=qc1; elif (( CROSS )); then what=crossings-only; else what=drill; fi
 skip_browser=0
 if (( QC1 )); then
   for a in "${drill_args[@]}"; do [[ "$a" != --no-browser ]] || skip_browser=1; done
@@ -109,10 +124,11 @@ fi
 if (( ! skip_browser )); then
   # The drill also needs Firefox (glibc, cannot run on this Alpine runner): the preparation builds a Debian container for it and proves it launches.
   prep_env=(-e QC1_WEB_DIR=/work/fold/web)
-  if (( ! QC1 )); then prep_env+=(-e QC1_PREPARE_FIREFOX=1); fi
+  if (( ! QC1 && ! CROSS )); then prep_env+=(-e QC1_PREPARE_FIREFOX=1); fi
   docker exec "${prep_env[@]}" -w /work/fold "$CID" bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
   if (( rc != 0 )); then
     docker cp "$CID:/work/prep/." "$OUT/prep/" >/dev/null 2>&1 || true
+    partial_marker
     echo "restore-drill-nested: the browser runtime could not be prepared (exit $rc); nothing was run ($what)" >&2
     exit "$rc"
   fi
@@ -124,11 +140,19 @@ wrap='if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; s
 if (( QC1 )); then
   docker exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
     bash -c "$wrap" _ bash deploy/digitalocean/qc1-measure.sh --dir /work/out "${drill_args[@]}" || rc=$?
+elif (( CROSS )); then
+  docker exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
+    bash -c "$wrap" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossings-only "${drill_args[@]}" || rc=$?
 else
   docker exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
     bash -c "$wrap" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out "${drill_args[@]}" || rc=$?
 fi
 docker cp "$CID:/work/prep/." "$OUT/prep/" >/dev/null 2>&1 || true
 docker cp "$CID:/work/out/." "$OUT/" >/dev/null 2>&1 || echo 'restore-drill-nested: no evidence directory to copy out' >&2
+if (( CROSS )); then
+  partial_marker
+  if (( rc == 0 )); then echo 'restore-drill-nested: a crossings-only run reported 0, which only a full run may; treating it as failed' >&2; rc=1; fi
+  echo 'restore-drill-nested: crossings-only is a PARTIAL diagnostic: NOT the full drill, NOT acceptance (a pass exits 10; only a full run exiting 0 is acceptance)'
+fi
 echo "restore-drill-nested: $what exit=$rc evidence=$OUT"
 exit "$rc"

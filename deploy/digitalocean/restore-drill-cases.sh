@@ -4,6 +4,10 @@
 # shellcheck disable=SC2034,SC2154,SC2016 # Shared runner globals; jq/child-shell programs.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from restore-drill.sh only' >&2; exit 1; fi
 
+# restore-drill.sh --crossings-only is a PARTIAL diagnostic, never the acceptance run. Its progress records say so (mode, partial, fullAcceptance=false), its
+# result is "partial" and never "complete", and a pass exits with DRILL_PARTIAL_PASS_EXIT, which a full run never uses (a full pass exits 0).
+DRILL_PARTIAL_PASS_EXIT=10
+
 # One writer owns progress. Background fault holders inherit the case/step
 # labels for command history, but never overwrite the runner's status file.
 drill_progress_init() {
@@ -18,12 +22,15 @@ drill_progress_init() {
 }
 drill_emit() {
   [[ "$BASHPID" == "${DRILL_PROGRESS_OWNER:-}" ]] || return 0
-  local event="$1" rc="${2:-0}" at record status=running
+  local event="$1" rc="${2:-0}" at record status=running suffix=""
   at="$(date -u +%FT%TZ)"
+  [[ "${DRILL_PROGRESS_MODE:-full}" == full ]] || suffix=" mode=$DRILL_PROGRESS_MODE partial=true (NOT full acceptance)"
   [[ "$event" != failed ]] || status=failed
   if [[ "$event" == result ]]; then
     status=failed
-    if (( rc==0 )) && [[ "$(jq -c . <<<"$DRILL_PROGRESS_DONE")" == "$(jq -c . <<<"$DRILL_PROGRESS_PLAN")" ]]; then status=complete; fi
+    if [[ "${DRILL_PROGRESS_MODE:-full}" == full ]]; then
+      if (( rc==0 )) && [[ "$(jq -c . <<<"$DRILL_PROGRESS_DONE")" == "$(jq -c . <<<"$DRILL_PROGRESS_PLAN")" ]]; then status=complete; fi
+    elif (( rc==DRILL_PARTIAL_PASS_EXIT )) && [[ "$(jq -c . <<<"$DRILL_PROGRESS_DONE")" == "$(jq -c . <<<"$DRILL_PROGRESS_PLAN")" ]]; then status=partial; fi
   fi
   record="$(jq -cn --arg at "$at" --arg event "$event" --arg status "$status" \
     --arg caseId "$RESTORE_DRILL_CASE" --arg step "$RESTORE_DRILL_STEP" --arg operation "$DRILL_PROGRESS_OPERATION" \
@@ -31,11 +38,12 @@ drill_emit() {
     --argjson caseElapsed "$((SECONDS-DRILL_PROGRESS_CASE_START))" --argjson stepElapsed "$((SECONDS-DRILL_PROGRESS_STEP_START))" \
     --argjson stepIndex "$DRILL_PROGRESS_STEP_INDEX" --argjson stepTotal "$DRILL_PROGRESS_STEP_TOTAL" \
     --argjson planned "$DRILL_PROGRESS_PLAN" --argjson completed "$DRILL_PROGRESS_DONE" \
+    --arg mode "${DRILL_PROGRESS_MODE:-full}" \
     '{at:$at,event:$event,status:$status,exitCode:$rc,case:$caseId,step:$step,operation:$operation,
       elapsedSeconds:$elapsed,caseSeconds:$caseElapsed,stepSeconds:$stepElapsed,stepIndex:$stepIndex,stepTotal:$stepTotal,
-      completedCases:$completed,remainingCases:($planned-$completed)}')" || return 1
-  printf 'drill-progress at=%s elapsed=%ss case=%s step=%s index=%s/%s event=%s operation=%s\n' \
-    "$at" "$((SECONDS-DRILL_PROGRESS_START))" "$RESTORE_DRILL_CASE" "$RESTORE_DRILL_STEP" "$DRILL_PROGRESS_STEP_INDEX" "$DRILL_PROGRESS_STEP_TOTAL" "$event" "$DRILL_PROGRESS_OPERATION" >&2
+      completedCases:$completed,remainingCases:($planned-$completed)} + (if $mode == "full" then {} else {mode:$mode, partial:true, fullAcceptance:false} end)')" || return 1
+  printf 'drill-progress at=%s elapsed=%ss case=%s step=%s index=%s/%s event=%s operation=%s%s\n' \
+    "$at" "$((SECONDS-DRILL_PROGRESS_START))" "$RESTORE_DRILL_CASE" "$RESTORE_DRILL_STEP" "$DRILL_PROGRESS_STEP_INDEX" "$DRILL_PROGRESS_STEP_TOTAL" "$event" "$DRILL_PROGRESS_OPERATION" "$suffix" >&2
   if [[ -d "${WORK:-}" ]]; then
     [[ -z "$DRILL_PROGRESS_PENDING" ]] || printf '%s\n' "$DRILL_PROGRESS_PENDING" >>"$WORK/case-progress.jsonl" || return 1
     DRILL_PROGRESS_PENDING=""
