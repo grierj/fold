@@ -125,6 +125,7 @@ import type {
   CalendarFeed,
   AttemptMintResponse,
   AttemptSettleResponse,
+  ErasureReasonPage,
   ErasureReport,
   EventDetailResponse,
   EventHostRow,
@@ -717,7 +718,7 @@ export interface AdminUserInput {
 function isErasureReport(v: unknown): v is ErasureReport {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;
-  return ["householdsKept", "householdsScrubbed", "peopleAnonymized", "guardianLinksRevoked", "activityEntriesKept"].every((k) => typeof r[k] === "number");
+  return ["householdsKept", "householdsScrubbed", "peopleAnonymized", "guardianLinksRevoked", "activityEntriesKept", "reasonsKept", "reasonsRemoved"].every((k) => typeof r[k] === "number");
 }
 
 export const AdminUsers = {
@@ -732,6 +733,11 @@ export const AdminUsers = {
   soleLeaderGroups: (id: number) => api<{ groups: SoleLedGroup[] }>(`/admin/users/${id}/sole-leader-groups`),
   // Church-wide events this person hosts alone, with who may host them next (M7.4, R4-H).
   soleHostEvents: (id: number) => api<SoleHostedEventsResponse>(`/admin/users/${id}/sole-host-events`),
+  // One audited page of the contact-request reasons deleting this person would
+  // leave behind (T07B-2b). after is the previous page's next, or null for the
+  // first page; a failed page is retried with the same cursor.
+  erasureReasonsPage: (id: number, after: string | null) =>
+    api<ErasureReasonPage>(`/admin/users/${id}/erasure-reasons/page`, { method: "POST", body: { after } }),
   // attemptId is the id minted for this press (mintAttempt); it travels in the
   // body only, never in the path. A 2xx whose body is not a deletion report (a
   // proxy's page, an empty body) is not a success: it throws a plain Error,

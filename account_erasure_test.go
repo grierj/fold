@@ -62,6 +62,7 @@ func newCoreErasureScene(t *testing.T) coreErasureScene {
 	s.admin = newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
 	s.second = newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
 	s.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	s.ac.autoReview = true
 	return s
 }
 
@@ -560,6 +561,9 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// pending and on a terminal row.
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, l.ID, u.ID, groupID, eventID, occ.ID, 1, "rollback pending note")
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, l.ID, u.ID, groupID, eventID, occ.ID, 2, "rollback denied note")
+	// The two requests above hold reasons, so the deletion needs a review. Read
+	// it now: the pages write a view audit, which must be in the snapshots below.
+	review := s.ac.withKeptReasons("/api/v1/admin/users/"+itoa(u.ID), nil)
 	// Both rows must change on success, so the late-failure snapshot proves
 	// that the audit scrub participates in the handler's transaction.
 	actorAudit := auditErasureLog(t, db, audit.UserCreated, "user", l.ID, &u.ID, map[string]any{"role": "member"})
@@ -576,14 +580,14 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	}
 	whole := writeSet()
 	stopThrottle := erasureTestFailThrottleDelete(t, db)
-	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusInternalServerError {
+	if r := deleteAccount(s.ac, u.ID, review); r.code != http.StatusInternalServerError {
 		t.Fatalf("delete with a failing last statement answered %d %s, want 500", r.code, r.body)
 	}
 	stopThrottle()
 	if got := writeSet(); got != whole {
 		t.Errorf("a failed erasure left a change in the tables R4-2a touches:\n%s\n%s", whole, got)
 	}
-	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK {
+	if r := deleteAccount(s.ac, u.ID, review); r.code != http.StatusOK {
 		t.Fatalf("delete after removing failure answered %d %s, want 200", r.code, r.body)
 	}
 	wantRetainedEmailChoice(t, s.app, addr, "groups", true)
@@ -743,6 +747,9 @@ func TestErasedPersonRendersAsMember(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The contact request holds a reason, so the deletion needs a review (T07B-2b);
+	// this test is about names, so it keeps it.
+	f.admin.autoReview = true
 	if r := deleteAccount(f.admin, u.ID, nil); r.code != http.StatusOK {
 		t.Fatalf("delete: %d %s", r.code, r.body)
 	}
@@ -2871,6 +2878,7 @@ func erasureTestRecipientSeed(t *testing.T, app *App) *erasureRecipientSeed {
 	e.s.admin = newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
 	e.s.second = newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
 	e.s.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	e.s.ac.autoReview = true
 	e.s.ac.holdNotices = true
 	db := app.DB
 	e.u = newTestUser(t, app, "rs-u", erasurePW, models.RoleMember)
@@ -4333,6 +4341,42 @@ type erasureRun struct {
 	EventID   uint // the event of Reg
 	IssuerID  uint // who granted the access
 	RequestID uint // the add request the access names
+	// Reasons are the reasoned requests that name Subject, read just before the
+	// DELETE: the review keeps each, so each writes one decision audit row.
+	Reasons []erasureReasonWant
+}
+
+// erasureReasonWant is one reasoned request the deletion's review decides.
+type erasureReasonWant struct {
+	ID              uint
+	Purpose, Status string
+	Role            string // the erased person's part: requester or subject
+	ReviewerIsParty bool
+}
+
+// erasureReasonWants reads the reasoned requests of subject as the review will
+// see them, for admin.
+func erasureReasonWants(t *testing.T, db *gorm.DB, subject, admin uint) []erasureReasonWant {
+	t.Helper()
+	var rows []struct {
+		ID            uint
+		Purpose       string
+		Status        string
+		RequesterID   uint
+		SubjectUserID uint
+	}
+	if err := db.Raw("SELECT id, purpose, status, requester_id, subject_user_id FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY id", subject, subject).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	var out []erasureReasonWant
+	for _, r := range rows {
+		role := "subject"
+		if r.RequesterID == subject {
+			role = "requester"
+		}
+		out = append(out, erasureReasonWant{ID: r.ID, Purpose: r.Purpose, Status: r.Status, Role: role, ReviewerIsParty: r.RequesterID == admin || r.SubjectUserID == admin})
+	}
+	return out
 }
 
 // erasureLedgerFacts is what checkErasureLedger saw, for the checks that span
@@ -4654,6 +4698,17 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 		"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
 		"issuerId": run.IssuerID, "requestId": run.RequestID,
 		"endedAtMicro": endedMicro, "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}})
+	// The review's decisions: the reasoned requests that name the person are all
+	// kept, one decision row each, by the deleting admin.
+	for _, r := range run.Reasons {
+		action, targetType := audit.ContactReasonKept, "contact_request"
+		if r.Purpose != policy.RequestContact {
+			action, targetType = audit.AddReasonKept, "add_request"
+		}
+		addAudit(auditKey{targetType, r.ID, action}, wantAudit{Actor: &admin, AnyIP: true, Meta: map[string]any{
+			"erasedUserId": run.Subject, "erasedRole": r.Role, "purpose": r.Purpose, "status": r.Status,
+			"reviewerIsParty": r.ReviewerIsParty, "source": "deletion", "reviewVersion": 1}})
+	}
 	seenAudit := map[auditKey]bool{}
 	for id, a := range after.Audit {
 		if _, old := before.Audit[id]; old {
@@ -5111,6 +5166,7 @@ func newAgesNoteScene(t *testing.T, fresh bool, n int) *agesNoteScene {
 	sc.erased = newTestUser(t, app, "ages-erased", erasurePW, models.RoleMember)
 	sc.other = newTestUser(t, app, "ages-other", erasurePW, models.RoleMember)
 	sc.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	sc.ac.autoReview = true
 	sc.ac.holdNotices = true
 	sc.group = newTestGroup(t, app, sc.leader, "Ages note group", models.GroupActive)
 	for i := range sc.events {
@@ -5332,9 +5388,16 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 		if err := db.First(&regBefore, reg.ID).Error; err != nil {
 			t.Fatal(err)
 		}
+		// The review pages write a view audit row, so they are read before the
+		// state this DELETE is judged against; the DELETE then carries the review.
+		review := f.ac.withKeptReasons("/api/v1/admin/users/"+itoa(person.ID), nil)
+		reasons := erasureReasonWants(t, db, person.ID, f.admin.ID)
+		if len(reasons) == 0 {
+			t.Fatalf("%s: no reasoned request names the person", name)
+		}
 		rowsBefore, ledgerBefore := erasureRequestRows(t, db), erasureLedgerOf(t, db)
 		start := time.Now().UTC()
-		r := deleteAccount(f.ac, person.ID, nil)
+		r := deleteAccount(f.ac, person.ID, review)
 		end := time.Now().UTC()
 		if r.code != http.StatusOK {
 			t.Fatalf("delete %s: %d %s", name, r.code, r.body)
@@ -5343,7 +5406,7 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 			t.Fatal(err)
 		}
 		run := erasureRun{Name: name, Subject: person.ID, Admin: f.admin.ID, Pending: pending, Span: erasureSpan{Start: start, End: end},
-			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID}
+			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID, Reasons: reasons}
 		checkErasureRequests(t, run, rowsBefore, erasureRequestRows(t, db))
 		return checkErasureLedger(t, run, ledgerBefore, erasureLedgerOf(t, db)), regAfter
 	}
@@ -9684,6 +9747,10 @@ func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
 	for _, c := range []*apiClient{f.lc, f.sc, f.ac, f.gc, f.oc} {
 		c.holdNotices = true
 	}
+	// No request here has a reason (see request), so no deletion needs a review
+	// and the admin's DELETE must not make review-page requests of its own inside
+	// a timed race.
+	f.ac.autoReview = false
 	w := &agesRaceWorld{t: t, f: f, app: f.app}
 	w.ev, w.occ = seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
 	// Barriers and sessions are registered on the swapped handle (F4).
@@ -9695,6 +9762,14 @@ func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
 // request inserts one occurrence_add request on the world's date. The caller
 // may adjust the row before it is written (the identity columns cannot be
 // changed afterwards).
+//
+// The row has no reason. These races are about the ages note and the gate, and
+// they end or change the pending row before an erasure that is queued behind
+// them takes the gate; a reason would put a review in front of that erasure,
+// and a review made before the other transaction committed is stale by design
+// (409 reason_review_changed). The review's own races are the TestReasonReview*
+// tests, and TestAccountErasureScrubsSubjectAgesNote keeps reasoned rows through
+// a real review, so reason retention is still judged there.
 func (w *agesRaceWorld) request(requester, subject uint, status, note string, adjust ...func(*models.ContactRequest)) models.ContactRequest {
 	w.t.Helper()
 	w.seq++
@@ -9702,7 +9777,7 @@ func (w *agesRaceWorld) request(requester, subject uint, status, note string, ad
 	occ := w.occ.ID
 	r := models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: requester, SubjectUserID: subject,
 		ContextType: policy.ContactEvent, ContextID: w.ev.ID, OccurrenceID: &occ,
-		Reason: fmt.Sprintf("identifying race reason %d", w.seq), SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
+		SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
 		Status: status, AddAttendanceMode: models.AttendanceInPerson, AddChildcareAgesNote: note,
 		CreatedAt: created, ExpiresAt: created.Add(14 * 24 * time.Hour)}
 	if status == policy.ContactWithdrawn {

@@ -797,3 +797,53 @@ func CanManageJobs(p *Person) bool { return IsAdmin(p) }
 // CanClearSuppression: only admins let Fold mail a suppressed address
 // again (M3.2c, DEC-113).
 func CanClearSuppression(p *Person) bool { return IsAdmin(p) }
+
+// CanReviewErasureReasons decides who may review and decide the contact-request
+// reasons of an account that is about to be deleted (M7.4 T07B, owner decision
+// 6): an active adult admin who may also delete that account. adult() is the
+// predicate every contact rule uses (a Person that is not a teen, with no known
+// age or one of at least 18); no other age rule is added. The same predicate
+// runs on the page routes, on the early read of a deletion and again on the
+// locked actor row at the deletion's seal.
+func CanReviewErasureReasons(actor ContactAccount, target *Person, activeAdmins int) bool {
+	return actor.Active && actor.adult() && IsAdmin(actor.Person) && CanDemoteOrDelete(actor.Person, target, activeAdmins)
+}
+
+// ErasureReasonFacts are the facts that put one (request, party) reason item in
+// a state.
+type ErasureReasonFacts struct {
+	// PartyDeleted: the party's account is soft deleted.
+	PartyDeleted bool
+	// Marker: a decision audit row for this (request, party) exists.
+	Marker bool
+	// ReasonBlank: the request's reason is already empty.
+	ReasonBlank bool
+}
+
+// The three states of a reason item.
+const (
+	// ReasonItemLive: the party still has an account, so the deletion is the
+	// moment to decide.
+	ReasonItemLive = "live"
+	// ReasonItemUnreviewedTombstone: the party was deleted and nobody decided
+	// this reason.
+	ReasonItemUnreviewedTombstone = "unreviewed_tombstone"
+	// ReasonItemReviewedTombstone: the party was deleted and the reason is
+	// decided (a marker exists) or already empty.
+	ReasonItemReviewedTombstone = "reviewed_tombstone"
+)
+
+// ErasureReasonItemState classifies one item. A blank reason has nothing left
+// to review, whoever the party is.
+func ErasureReasonItemState(f ErasureReasonFacts) string {
+	switch {
+	case f.ReasonBlank:
+		return ReasonItemReviewedTombstone
+	case !f.PartyDeleted:
+		return ReasonItemLive
+	case f.Marker:
+		return ReasonItemReviewedTombstone
+	default:
+		return ReasonItemUnreviewedTombstone
+	}
+}

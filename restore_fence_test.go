@@ -56,12 +56,27 @@ func TestRecoveryPolicyFileMatchesConstant(t *testing.T) {
 	if err := recoveryPolicyMismatch(string(b), recoveryPolicyLevel); err != nil {
 		t.Error(err)
 	}
-	if recoveryPolicyLevel != 1 {
-		t.Errorf("T07B-1b reports recovery level 1, found %d", recoveryPolicyLevel)
+	if recoveryPolicyLevel != 2 {
+		t.Errorf("T07B-2b reports recovery level 2, found %d", recoveryPolicyLevel)
 	}
 	// The check fails when either side changes alone.
-	if recoveryPolicyMismatch("1\n", 2) == nil || recoveryPolicyMismatch("2\n", 1) == nil || recoveryPolicyMismatch("one", 1) == nil {
-		t.Error("the mismatch check accepted a file and a constant that differ")
+	// T07B-2b raised the level to 2: a file still at 1 (or a constant still at 1
+	// beside a file at 2) is a mismatch, as is anything that is not an integer.
+	for _, tc := range []struct {
+		file  string
+		level int
+	}{
+		{"1\n", 2}, {"2\n", 1}, {"3\n", 2}, {"one", 2}, {"", 2}, {"2.0\n", 2}, {"0\n", 2},
+	} {
+		if recoveryPolicyMismatch(tc.file, tc.level) == nil {
+			t.Errorf("the mismatch check accepted file %q with level %d", tc.file, tc.level)
+		}
+	}
+	if recoveryPolicyMismatch("2\n", 2) != nil || recoveryPolicyMismatch(" 2 \n", 2) != nil {
+		t.Error("the mismatch check refused a file that equals the constant")
+	}
+	if strings.TrimSpace(string(b)) != "2" {
+		t.Errorf("deploy/recovery-policy holds %q, want the single integer 2 (T07B-2b)", string(b))
 	}
 }
 

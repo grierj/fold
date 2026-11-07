@@ -175,7 +175,15 @@ var auditIPAttribution = map[string][]auditIPRule{
 	audit.PushKeysReset:                 auditIPSystem,
 	audit.PushDeviceOn:                  auditIPOrdinary,
 	audit.PushTestSent:                  auditIPOrdinary,
-	contactPrivacyChanged:               auditIPOrdinary,
+	// T07B-2b: a deletion decision carries the deciding admin as actor with their
+	// request IP, so it is cleared with that admin's other actor rows; the page-view
+	// row records no IP.
+	audit.ContactReasonKept:        auditIPOrdinary,
+	audit.ContactReasonRemoved:     auditIPOrdinary,
+	audit.AddReasonKept:            auditIPOrdinary,
+	audit.AddReasonRemoved:         auditIPOrdinary,
+	audit.UserErasureReasonsViewed: auditIPSystem,
+	contactPrivacyChanged:          auditIPOrdinary,
 	audit.InvitationAccepted: {
 		{auditIPMetaUser, `target_type = 'invitation' AND jsonb_typeof(meta_json->'userId') = 'number' AND NOT jsonb_exists(meta_json, 'personId')`, `meta_json->'userId' = to_jsonb(CAST(@uid AS bigint))`},
 		{auditIPLinked, `target_type = 'invitation' AND jsonb_typeof(meta_json->'personId') = 'number' AND NOT jsonb_exists(meta_json, 'userId')`, `target_id = ANY(CAST(@invitations AS bigint[]))`},

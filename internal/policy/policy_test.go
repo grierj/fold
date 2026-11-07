@@ -1196,3 +1196,59 @@ func TestCanClearSuppression(t *testing.T) {
 		t.Fatal("only admins clear an email suppression")
 	}
 }
+
+func TestCanReviewErasureReasons(t *testing.T) {
+	age := func(n int) *int { return &n }
+	target := &Person{ID: 9}
+	adminTarget := &Person{ID: 9, Admin: true}
+	for _, tc := range []struct {
+		name   string
+		actor  ContactAccount
+		target *Person
+		admins int
+		want   bool
+	}{
+		{"unknown age, not a teen", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, target, 2, true},
+		{"adult 18", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true, AgeYears: age(18)}, target, 2, true},
+		{"adult 40", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true, AgeYears: age(40)}, target, 2, true},
+		{"known 17, not a teen", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true, AgeYears: age(17)}, target, 2, false},
+		{"teen at 13", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true, AgeYears: age(13)}, target, 2, false},
+		{"teen at 16", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true, AgeYears: age(16)}, target, 2, false},
+		{"teen at 17", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true, AgeYears: age(17)}, target, 2, false},
+		{"teen with no known age", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true}, target, 2, false},
+		{"not active", ContactAccount{Person: &Person{ID: 1, Admin: true}}, target, 2, false},
+		{"not an admin", ContactAccount{Person: &Person{ID: 1}, Active: true}, target, 2, false},
+		{"nil person", ContactAccount{Active: true}, target, 2, false},
+		{"nil target", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, nil, 2, false},
+		{"their own account", ContactAccount{Person: &Person{ID: 9, Admin: true}, Active: true}, target, 2, false},
+		{"the last admin", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, adminTarget, 1, false},
+		{"one of two admins", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, adminTarget, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanReviewErasureReasons(tc.actor, tc.target, tc.admins); got != tc.want {
+				t.Fatalf("CanReviewErasureReasons=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestErasureReasonItemState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    ErasureReasonFacts
+		want string
+	}{
+		{"live party with text", ErasureReasonFacts{}, ReasonItemLive},
+		{"live party, a stray marker", ErasureReasonFacts{Marker: true}, ReasonItemLive},
+		{"deleted party, no marker", ErasureReasonFacts{PartyDeleted: true}, ReasonItemUnreviewedTombstone},
+		{"deleted party, marker", ErasureReasonFacts{PartyDeleted: true, Marker: true}, ReasonItemReviewedTombstone},
+		{"deleted party, blank reason", ErasureReasonFacts{PartyDeleted: true, ReasonBlank: true}, ReasonItemReviewedTombstone},
+		{"live party, blank reason", ErasureReasonFacts{ReasonBlank: true}, ReasonItemReviewedTombstone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ErasureReasonItemState(tc.f); got != tc.want {
+				t.Fatalf("state = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

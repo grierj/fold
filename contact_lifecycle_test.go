@@ -1997,6 +1997,10 @@ type sealScene struct {
 	aClient *apiClient
 	person  householdPersonJSON
 	token   string
+	// review and reasonID are set by seedReasoned: the deletion of B then carries
+	// a review that removes the one reason B is party to.
+	review   map[string]any
+	reasonID uint
 }
 
 const sealPW = "password1234"
@@ -2078,10 +2082,52 @@ func (s *sealScene) mint(c *apiClient, subject uint) string {
 
 func (s *sealScene) startDelete(c *apiClient, id string) <-chan *httptest.ResponseRecorder {
 	ch := make(chan *httptest.ResponseRecorder, 1)
+	body := map[string]any{"attemptId": id}
+	if s.review != nil {
+		body["reasonReview"] = s.review["reasonReview"]
+	}
 	go func() {
-		ch <- c.do("DELETE", "/api/v1/admin/users/"+itoa(s.b.ID), map[string]any{"attemptId": id}, true)
+		ch <- c.do("DELETE", "/api/v1/admin/users/"+itoa(s.b.ID), body, true)
 	}()
 	return ch
+}
+
+// seedReasoned gives B a reason to review (a withdrawn add request C made about
+// B), reads the review pages as A before any route is parked, and chooses to
+// remove it. The view audit this writes is the only one the scene has.
+func (s *sealScene) seedReasoned() {
+	s.t.Helper()
+	r := erasureMakeRequest(s.t, s.app.DB, policy.RequestGroupAdd, policy.ContactWithdrawn, s.c.ID, s.b.ID, 1, 0, 0, 1, "")
+	s.reasonID = r.ID
+	rev, ok := s.aClient.withKeptReasons("/api/v1/admin/users/"+itoa(s.b.ID), nil).(map[string]any)
+	if !ok {
+		s.t.Fatal("the review pages returned no reason for B")
+	}
+	items := rev["reasonReview"].(map[string]any)["items"].([]map[string]string)
+	if len(items) != 1 {
+		s.t.Fatalf("%d review items, want 1", len(items))
+	}
+	items[0]["choice"] = "remove"
+	s.review = rev
+}
+
+// wantReasonDecidedOnce: the blanked set and the decision audit come only from
+// the applied attempt (a rolled-back attempt leaves neither).
+func (s *sealScene) wantReasonDecidedOnce() {
+	s.t.Helper()
+	var text string
+	if err := s.app.DB.Raw("SELECT reason FROM contact_requests WHERE id = ?", s.reasonID).Scan(&text).Error; err != nil || text != "" {
+		s.t.Errorf("reason %d = %q (%v), want blanked", s.reasonID, text, err)
+	}
+	if n := s.count(&models.AuditLog{}, "action IN ?", decisionActions); n != 1 {
+		s.t.Errorf("%d decision audit rows, want 1", n)
+	}
+	if n := s.count(&models.AuditLog{}, "action = ? AND target_id = ?", audit.AddReasonRemoved, s.reasonID); n != 1 {
+		s.t.Errorf("%d add.reason_removed rows for request %d, want 1", n, s.reasonID)
+	}
+	if n := s.count(&models.AuditLog{}, "action = ?", audit.UserErasureReasonsViewed); n != 1 {
+		s.t.Errorf("%d view audit rows, want the one from the seeding", n)
+	}
 }
 
 func (s *sealScene) startConversion() <-chan *httptest.ResponseRecorder {
@@ -2229,46 +2275,54 @@ func TestActorSealVsConversion(t *testing.T) {
 	// S1 (P1, A.id < B.id): the deletion of B is parked at deleteBeforeSeal; the
 	// conversion takes A and waits on B; the seal then answers 55P03, the
 	// rollback is acknowledged, the conversion commits, and attempt 2 applies.
-	t.Run("S1 deletion parked, conversion waits on B", func(t *testing.T) {
-		withWindow(t, 30*time.Second)
-		s := newSealScene(t, sealOpts{bInHousehold: true})
-		id := s.mint(s.aClient, s.b.ID)
-		counter := &atomic.Int64{}
-		s.serve.sealAttempts = counter
-		park := newParkPoint(t)
-		park.later = s.laterEntry(true) // the conversion has committed before attempt 2
-		s.serve.deleteBeforeSeal = park.seam()
-		convDone := make(chan struct{})
-		s.serve.deleteBeforeRetry = func() { <-convDone }
+	for _, reasoned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("S1 deletion parked, conversion waits on B (reasoned=%v)", reasoned), func(t *testing.T) {
+			withWindow(t, 30*time.Second)
+			s := newSealScene(t, sealOpts{bInHousehold: true})
+			if reasoned {
+				s.seedReasoned()
+			}
+			id := s.mint(s.aClient, s.b.ID)
+			counter := &atomic.Int64{}
+			s.serve.sealAttempts = counter
+			park := newParkPoint(t)
+			park.later = s.laterEntry(true) // the conversion has committed before attempt 2
+			s.serve.deleteBeforeSeal = park.seam()
+			convDone := make(chan struct{})
+			s.serve.deleteBeforeRetry = func() { <-convDone }
 
-		del := s.startDelete(s.aClient, id)
-		dpid := park.await(t)
-		if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
-			t.Fatal("the deletion should hold B FOR UPDATE")
-		}
-		conv := s.startConversion()
-		waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
-		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") {
-			t.Fatal("the conversion should hold A FOR NO KEY UPDATE and the deletion only a plain read of A")
-		}
-		assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
-		park.open()
+			del := s.startDelete(s.aClient, id)
+			dpid := park.await(t)
+			if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+				t.Fatal("the deletion should hold B FOR UPDATE")
+			}
+			conv := s.startConversion()
+			waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
+			if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") {
+				t.Fatal("the conversion should hold A FOR NO KEY UPDATE and the deletion only a plain read of A")
+			}
+			assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
+			park.open()
 
-		cw := awaitRec(t, conv, "the conversion")
-		s.wantPending(cw)
-		close(convDone)
-		dw := awaitRec(t, del, "the deletion")
-		if dw.Code != http.StatusOK {
-			t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
-		}
-		s.noDatabaseErrorsIn("S1", cw.Body.String(), dw.Body.String())
-		s.wantDeleted(id, 2, counter)
-		s.wantConversionRowsOnce()
-		if park.n.Load() != 2 {
-			t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
-		}
-		s.wantSettledApplied(id)
-	})
+			cw := awaitRec(t, conv, "the conversion")
+			s.wantPending(cw)
+			close(convDone)
+			dw := awaitRec(t, del, "the deletion")
+			if dw.Code != http.StatusOK {
+				t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+			}
+			s.noDatabaseErrorsIn("S1", cw.Body.String(), dw.Body.String())
+			s.wantDeleted(id, 2, counter)
+			s.wantConversionRowsOnce()
+			if park.n.Load() != 2 {
+				t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
+			}
+			if reasoned {
+				s.wantReasonDecidedOnce()
+			}
+			s.wantSettledApplied(id)
+		})
+	}
 
 	// S1 at the PRODUCTION retry window (deleteRetryWindow left at 2 s): the
 	// deletion stays parked past the window with the conversion waiting on B.
@@ -2538,41 +2592,49 @@ func TestActorSealVsConversion(t *testing.T) {
 
 	// S5 (P2, the recipient edge): the deletion of B is parked; the conversion
 	// waits for B in notifyAccountRequested's recipient lock while holding A.
-	t.Run("S5 conversion waits on B at the recipient lock", func(t *testing.T) {
-		withWindow(t, 30*time.Second)
-		s := newSealScene(t, sealOpts{})
-		id := s.mint(s.aClient, s.b.ID)
-		counter := &atomic.Int64{}
-		s.serve.sealAttempts = counter
-		park := newParkPoint(t)
-		park.later = s.laterEntry(true)
-		s.serve.deleteBeforeSeal = park.seam()
-		convDone := make(chan struct{})
-		s.serve.deleteBeforeRetry = func() { <-convDone }
-		del := s.startDelete(s.aClient, id)
-		dpid := park.await(t)
-		conv := s.startConversion()
-		waiterBlockedBy(t, s.app.DB, dpid, "FOR KEY SHARE")
-		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
-			t.Fatal("the conversion should hold A FOR NO KEY UPDATE")
-		}
-		assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
-		park.open()
-		cw := awaitRec(t, conv, "the conversion")
-		s.wantPending(cw)
-		close(convDone)
-		dw := awaitRec(t, del, "the deletion")
-		if dw.Code != http.StatusOK {
-			t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
-		}
-		s.noDatabaseErrorsIn("S5", cw.Body.String(), dw.Body.String())
-		s.wantDeleted(id, 2, counter)
-		s.wantConversionRowsOnce()
-		if park.n.Load() != 2 {
-			t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
-		}
-		s.wantSettledApplied(id)
-	})
+	for _, reasoned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("S5 conversion waits on B at the recipient lock (reasoned=%v)", reasoned), func(t *testing.T) {
+			withWindow(t, 30*time.Second)
+			s := newSealScene(t, sealOpts{})
+			if reasoned {
+				s.seedReasoned()
+			}
+			id := s.mint(s.aClient, s.b.ID)
+			counter := &atomic.Int64{}
+			s.serve.sealAttempts = counter
+			park := newParkPoint(t)
+			park.later = s.laterEntry(true)
+			s.serve.deleteBeforeSeal = park.seam()
+			convDone := make(chan struct{})
+			s.serve.deleteBeforeRetry = func() { <-convDone }
+			del := s.startDelete(s.aClient, id)
+			dpid := park.await(t)
+			conv := s.startConversion()
+			waiterBlockedBy(t, s.app.DB, dpid, "FOR KEY SHARE")
+			if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+				t.Fatal("the conversion should hold A FOR NO KEY UPDATE")
+			}
+			assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
+			park.open()
+			cw := awaitRec(t, conv, "the conversion")
+			s.wantPending(cw)
+			close(convDone)
+			dw := awaitRec(t, del, "the deletion")
+			if dw.Code != http.StatusOK {
+				t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+			}
+			s.noDatabaseErrorsIn("S5", cw.Body.String(), dw.Body.String())
+			s.wantDeleted(id, 2, counter)
+			s.wantConversionRowsOnce()
+			if park.n.Load() != 2 {
+				t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
+			}
+			if reasoned {
+				s.wantReasonDecidedOnce()
+			}
+			s.wantSettledApplied(id)
+		})
+	}
 }
 
 // assertSealedAndRolledBack reads a proxy log slice: want settle transactions

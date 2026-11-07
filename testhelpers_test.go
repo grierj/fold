@@ -218,6 +218,56 @@ type apiClient struct {
 	ip          string          // client address for requests; empty uses httptest's default
 	ua          string          // User-Agent for requests; empty sends none
 	ctx         context.Context // request context; nil uses httptest's background context
+	// autoReview makes a DELETE of an account (DELETE /api/v1/admin/users/:id)
+	// carry a "keep" choice for every contact-request reason that account has,
+	// read through the real review pages, unless the body already has a
+	// reasonReview. It lets the erasure tests that predate the reason review
+	// (T07B-2b) keep deleting accounts whose requests hold reasons. Tests of the
+	// review itself leave it off.
+	autoReview bool
+}
+
+var deleteUserPath = regexp.MustCompile(`^/api/v1/admin/users/\d+$`)
+
+// withKeptReasons returns body with a keep-all reasonReview added when the
+// account in path has reasons to review and the body names no review. Any
+// failure to read the pages leaves the body alone, so the DELETE answers as it
+// would have.
+func (c *apiClient) withKeptReasons(path string, body any) any {
+	m := map[string]any{}
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil || json.Unmarshal(raw, &m) != nil || m == nil {
+			return body
+		}
+	}
+	if _, has := m["reasonReview"]; has {
+		return body
+	}
+	var items []map[string]string
+	var after any
+	for i := 0; i < 1000; i++ {
+		w := c.do("POST", path+"/erasure-reasons/page", map[string]any{"after": after}, true)
+		if w.Code != http.StatusOK {
+			return body
+		}
+		var page reasonPageJSON
+		if json.Unmarshal(w.Body.Bytes(), &page) != nil {
+			return body
+		}
+		for _, it := range page.Items {
+			items = append(items, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": "keep"})
+		}
+		if page.Next == nil {
+			break
+		}
+		after = *page.Next
+	}
+	if len(items) == 0 {
+		return body
+	}
+	m["reasonReview"] = map[string]any{"items": items}
+	return m
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -248,6 +298,9 @@ func (c *apiClient) fetchCSRF() {
 }
 
 func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.ResponseRecorder {
+	if c.autoReview && method == "DELETE" && deleteUserPath.MatchString(path) {
+		jsonBody = c.withKeptReasons(path, jsonBody)
+	}
 	var rdr *bytes.Reader
 	if jsonBody != nil {
 		b, err := json.Marshal(jsonBody)

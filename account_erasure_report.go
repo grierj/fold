@@ -24,6 +24,11 @@ type erasureReportJSON struct {
 	// approved requests (including already-empty IPs). This is a row count,
 	// not proof of IP ownership or a complete census of personal-IP residue.
 	ActivityEntriesKept int64 `json:"activityEntriesKept"`
+	// ReasonsKept and ReasonsRemoved: the contact-request reasons the admin
+	// decided in this deletion (T07B-2b). Counts only, zero when the account had
+	// none.
+	ReasonsKept    int `json:"reasonsKept"`
+	ReasonsRemoved int `json:"reasonsRemoved"`
 }
 
 func newErasureReport(h householdErasureCounts, a auditErasureCounts) erasureReportJSON {
