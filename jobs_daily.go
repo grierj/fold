@@ -78,6 +78,8 @@ func (a *App) dailyKinds() []jobs.Kind {
 			MaxAttempts: jobs.DefaultMaxAttempts, Run: a.runTombstonePageJob},
 		// Photo folders a crash or a bad upload left behind (R4-5).
 		daily(kindAvatarSweep, "Finding leftover profile photos", a.sweepAvatars),
+		// Receipts of admin deletions older than 24 hours (T07B-1b).
+		daily(kindAttemptSweep, "Clearing old deletion receipts", a.sweepAttemptReceipts),
 		daily("jobs.cleanup", "Clearing finished background tasks", func(_ context.Context, now time.Time) error {
 			_, err := jobs.PruneDone(a.DB, now.Add(-doneJobsKept))
 			return err

@@ -138,6 +138,21 @@ current-release restore tooling and operator procedure land and are verified.
 The fixture-level refusal evidence does not satisfy that release gate,
 prove real level-1 recovery, or authorize publication. M7.4 remains incomplete.
 
+### M7.4 T07B-1b deletion outcome machinery, staged locally
+
+T07B-1b is implemented in the working tree as of Nov 6, 2026; nothing is
+committed, pushed, published or deployed by the implementing task, and its
+tests await Terra. It adds the restore barrier (`restore_fence.go`), the
+process-bound attempt ledger with receipts, mint and settle routes
+(`admin_operation_attempts.go`), the actor seal (`contactChange.Seal`,
+`currentAdminIn`), the daily receipt sweep, the codes `attempt_expired`,
+`attempt_closed`, `attempt_busy`, `restore_detected` and
+`admin_account_busy`, and recovery level 1 (`fold version --json` and
+`deploy/recovery-policy`). The panel (T07B-1c) is not built, so this slice
+ships with T07B-1c in one landing. The tree now reports `recoveryPolicy` 1: never
+publish a release from it before R4-6c-R's current-release restore tooling and
+operator procedure land and are verified. M7.4 remains incomplete.
+
 ### M7.5 S4 direct mail
 
 S1–S3 are merged in [#253](https://github.com/grierj/fold/pull/253),

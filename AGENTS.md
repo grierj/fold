@@ -75,6 +75,18 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   A change committed after that commit, before or during the call, may not stop the one test send.
   Required mail bypasses choices; provider suppressions remain separate. R4-2d2 is implemented locally
   only; C2 and publication remain pending (inventory 7.6 and 15.8).
+- Restore barrier and deletion attempts (M7.4 T07B-1b, staged: local, unmerged; recovery level 1 in `recoveryPolicyLevel`
+  and `deploy/recovery-policy`, never published before R4-6c-R's tooling lands). `bootRestoreFence` (`restore_fence.go`) runs in
+  `serve` after migrations; every fenced `a.contactMutationCtx` (`apiAdminDeleteUser`, the settle route) takes
+  `a.takeRestoreTicket(tx)` first, defers `a.abandonRestoreTicket(&tk)` before the call and runs `a.acknowledgeRestoreTicket(&tk, err)`
+  as the next statement (`TestFencedTransactionsTakeTheTicketFirst`); only the boot step and the ticket write the `restore_fence`
+  settings row (`TestRestoreFenceHasTwoWriters`), and a settings writer with a non-literal key calls `refuseRestoreFenceKey`.
+  A ticket at or below the floor is 503 `restore_detected` and `requestRestart` makes `serve` exit 1. Attempt ids
+  (`admin_operation_attempts.go`) are minted by `POST /api/v1/admin/operation-attempts` under a per-process key; the ledger is memory only
+  (its mutex never waits: `TestLedgerMutexHoldsNoWait`), the receipt row is inserted right after the ticket, and settle answers
+  `applied`, `not_applied` (with `subjectDeleted`), `history_unavailable` or `checking`. `contactChange.Seal` runs `currentAdminIn`
+  (`FOR SHARE NOWAIT` on the actor, last locking statement before COMMIT, `TestActorSealIsLast`); a busy seal retries at most three
+  times and answers 409 `admin_account_busy`.
 - Household erasure (M7.4 R4-3b, staged: local, unmerged, M7.4 not complete): deleting an account also runs
   `eraseHouseholdRecordsIn` (`account_erasure_households.go`) under household rows taken `FOR UPDATE NOWAIT`.
   It deletes the account's seat, anonymizes the person row(s) that are the same individual (`PERS`, read

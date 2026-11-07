@@ -81,6 +81,8 @@ var tsContracts = []struct {
 	{contactGrantJSON{}, "ContactGrant"},
 	{contactRevealJSON{}, "ContactReveal"},
 	{userJSON{}, "User"},
+	{attemptMintJSON{}, "AttemptMintResponse"},
+	{attemptSettleJSON{}, "AttemptSettleResponse"},
 	{emailSuppressionJSON{}, "EmailSuppression"},
 	{groupSummaryJSON{}, "GroupSummary"},
 	{groupDetailJSON{}, "GroupDetailResponse"},
@@ -5823,5 +5825,724 @@ func TestOptionalMailGuardCatchesBypasses(t *testing.T) {
 				t.Fatal("bypass accepted")
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T07B-1b guards. Parse-only: they read syntax, not types, and bind names with
+// go/parser's object resolution inside one file.
+// ---------------------------------------------------------------------------
+
+// fenceNamed lists the functions that run a fenced a.contactMutationCtx: every
+// call in them takes a restore ticket first in its callback, abandons it by a
+// defer before the call and acknowledges it in the very next statement.
+var fenceNamed = []struct{ file, fn string }{
+	{"api_admin.go", "apiAdminDeleteUser"},
+	{"admin_operation_attempts.go", "apiAdminSettleOperationAttempt"},
+}
+
+func fenceIsSel(e ast.Expr, name string) (*ast.SelectorExpr, bool) {
+	sel, ok := e.(*ast.SelectorExpr)
+	return sel, ok && sel.Sel.Name == name
+}
+
+func fenceSameVar(a, b *ast.Ident) bool {
+	return a != nil && b != nil && a.Obj != nil && a.Obj == b.Obj
+}
+
+// fenceRefOf returns the identifier in &x.
+func fenceRefOf(e ast.Expr) *ast.Ident {
+	u, ok := e.(*ast.UnaryExpr)
+	if !ok || u.Op != token.AND {
+		return nil
+	}
+	id, _ := u.X.(*ast.Ident)
+	return id
+}
+
+func fenceCallOf(s ast.Stmt) (*ast.CallExpr, bool) {
+	es, ok := s.(*ast.ExprStmt)
+	if !ok {
+		return nil, false
+	}
+	c, ok := es.X.(*ast.CallExpr)
+	return c, ok
+}
+
+// fenceProblems checks every a.contactMutationCtx call of the named functions.
+func fenceProblems(sources map[string]string) []string {
+	var bad []string
+	fset := token.NewFileSet()
+	for _, n := range fenceNamed {
+		src, ok := sources[n.file]
+		if !ok {
+			bad = append(bad, n.file+": the file is gone; update fenceNamed")
+			continue
+		}
+		tree, err := parser.ParseFile(fset, n.file, src, 0)
+		if err != nil {
+			bad = append(bad, n.file+": cannot parse: "+err.Error())
+			continue
+		}
+		var decl *ast.FuncDecl
+		for _, d := range tree.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && fd.Name.Name == n.fn {
+				decl = fd
+			}
+		}
+		if decl == nil {
+			bad = append(bad, n.file+": "+n.fn+" no longer exists; update fenceNamed")
+			continue
+		}
+		calls := 0
+		var stack []ast.Node
+		ast.Inspect(decl.Body, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, node)
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, ok := fenceIsSel(call.Fun, "contactMutationCtx"); !ok {
+				return true
+			}
+			calls++
+			if why := fenceCallProblem(append([]ast.Node(nil), stack...)); why != "" {
+				bad = append(bad, fmt.Sprintf("%s: %s: %s", n.file, n.fn, why))
+			}
+			return true
+		})
+		if calls == 0 {
+			bad = append(bad, n.file+": "+n.fn+" has no a.contactMutationCtx call; update fenceNamed")
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// fenceCallProblem checks one call; stack ends with the call.
+func fenceCallProblem(stack []ast.Node) string {
+	call := stack[len(stack)-1].(*ast.CallExpr)
+	for _, n := range stack[:len(stack)-1] {
+		switch n.(type) {
+		case *ast.FuncLit, *ast.GoStmt, *ast.DeferStmt:
+			return "the call sits inside a func literal, go or defer"
+		}
+	}
+	if len(stack) < 3 {
+		return "the call is not a statement of a block"
+	}
+	var result *ast.Ident
+	stmt := stack[len(stack)-2]
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		if len(s.Lhs) != 1 || len(s.Rhs) != 1 || s.Rhs[0] != ast.Expr(call) {
+			return "the call's result must be assigned to one variable"
+		}
+		result, _ = s.Lhs[0].(*ast.Ident)
+	case *ast.ExprStmt:
+		return "the call's result is not captured, so it cannot be acknowledged"
+	default:
+		return "the call must be a whole statement of a block"
+	}
+	block, ok := stack[len(stack)-3].(*ast.BlockStmt)
+	if !ok {
+		return "the call's statement must sit directly in a block"
+	}
+	at := -1
+	for i, s := range block.List {
+		if ast.Node(s) == stmt {
+			at = i
+		}
+	}
+	lit, ok := call.Args[len(call.Args)-1].(*ast.FuncLit)
+	if !ok {
+		return "the callback must be a func literal (a non-literal callback hides the ticket)"
+	}
+	if lit.Type.Params == nil || len(lit.Type.Params.List) != 1 || len(lit.Type.Params.List[0].Names) != 1 {
+		return "the callback must take one named *gorm.DB parameter"
+	}
+	param := lit.Type.Params.List[0].Names[0]
+	if len(lit.Body.List) == 0 {
+		return "the callback is empty"
+	}
+	var take *ast.AssignStmt
+	switch first := lit.Body.List[0].(type) {
+	case *ast.AssignStmt:
+		take = first
+	case *ast.IfStmt:
+		take, _ = first.Init.(*ast.AssignStmt)
+	}
+	if take == nil || take.Tok != token.ASSIGN || len(take.Lhs) != 2 || len(take.Rhs) != 1 {
+		return "the callback's first statement must assign the ticket with = from a.takeRestoreTicket"
+	}
+	tc, ok := take.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return "the callback's first statement must assign from a.takeRestoreTicket"
+	}
+	if _, ok := fenceIsSel(tc.Fun, "takeRestoreTicket"); !ok || len(tc.Args) != 1 {
+		return "the callback's first statement must assign from a.takeRestoreTicket(tx)"
+	}
+	if arg, ok := tc.Args[0].(*ast.Ident); !ok || !fenceSameVar(arg, param) {
+		return "the ticket must be taken on the callback's own *gorm.DB parameter, not a.DB or a local that reuses its name"
+	}
+	tk, ok := take.Lhs[0].(*ast.Ident)
+	if !ok || tk.Obj == nil || tk.Obj.Pos() >= lit.Pos() {
+		return "the ticket variable must be declared before the call, outside the callback"
+	}
+	// The abandon defer comes before the call, in the same block.
+	abandoned := false
+	for _, s := range block.List[:at] {
+		d, ok := s.(*ast.DeferStmt)
+		if !ok {
+			continue
+		}
+		if _, ok := fenceIsSel(d.Call.Fun, "abandonRestoreTicket"); ok && len(d.Call.Args) == 1 && fenceSameVar(fenceRefOf(d.Call.Args[0]), tk) {
+			abandoned = true
+		}
+	}
+	if !abandoned {
+		return "defer a.abandonRestoreTicket(&ticket) must come before the call"
+	}
+	// The acknowledgment is the very next statement, with the call's result.
+	if at+1 >= len(block.List) {
+		return "a.acknowledgeRestoreTicket must be the statement right after the call"
+	}
+	ac, ok := fenceCallOf(block.List[at+1])
+	if !ok {
+		return "a.acknowledgeRestoreTicket must be a plain statement right after the call (not deferred, not a goroutine)"
+	}
+	if _, ok := fenceIsSel(ac.Fun, "acknowledgeRestoreTicket"); !ok || len(ac.Args) != 2 {
+		return "the statement right after the call must be a.acknowledgeRestoreTicket(&ticket, err)"
+	}
+	if !fenceSameVar(fenceRefOf(ac.Args[0]), tk) {
+		return "a.acknowledgeRestoreTicket must acknowledge the ticket the callback took"
+	}
+	if r, ok := ac.Args[1].(*ast.Ident); !ok || !fenceSameVar(r, result) {
+		return "a.acknowledgeRestoreTicket must receive the call's own result"
+	}
+	// Neither acknowledgment nor abandon belongs inside the callback.
+	inside := false
+	ast.Inspect(lit.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			if _, ok := fenceIsSel(c.Fun, "acknowledgeRestoreTicket"); ok {
+				inside = true
+			}
+			if _, ok := fenceIsSel(c.Fun, "abandonRestoreTicket"); ok {
+				inside = true
+			}
+		}
+		return true
+	})
+	if inside {
+		return "the callback must not acknowledge or abandon its ticket"
+	}
+	return ""
+}
+
+const fenceBase = `package main
+
+func (a *App) apiAdminDeleteUser(c *gin.Context) {
+	var err error
+	for {
+		var tk restoreTicket
+		var terr error
+		defer a.abandonRestoreTicket(&tk)
+		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
+				return terr
+			}
+			return nil
+		})
+		a.acknowledgeRestoreTicket(&tk, err)
+	}
+}
+
+func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
+	var err error
+	for {
+		var tk restoreTicket
+		var terr error
+		defer a.abandonRestoreTicket(&tk)
+		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
+				return terr
+			}
+			return nil
+		})
+		a.acknowledgeRestoreTicket(&tk, err)
+	}
+}
+`
+
+func fenceSources(src string) map[string]string {
+	// Both named functions live in the one fixture; each file entry parses it.
+	return map[string]string{"api_admin.go": src, "admin_operation_attempts.go": src}
+}
+
+func TestFencedTransactionsTakeTheTicketFirst(t *testing.T) {
+	sources := map[string]string{}
+	for _, n := range fenceNamed {
+		b, err := os.ReadFile(n.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[n.file] = string(b)
+	}
+	for _, v := range fenceProblems(sources) {
+		t.Error(v)
+	}
+	if bad := fenceProblems(fenceSources(fenceBase)); len(bad) != 0 {
+		t.Fatalf("the positive fixture failed: %v", bad)
+	}
+}
+
+func TestFencedTransactionsGuardCatchesBypasses(t *testing.T) {
+	// Every case changes the clean fixture in one way (both named functions
+	// carry the change, because the replacement applies to every occurrence).
+	with := func(old, replacement string) map[string]string {
+		if !strings.Contains(fenceBase, old) {
+			t.Fatalf("fixture anchor %q is missing", old)
+		}
+		return fenceSources(strings.ReplaceAll(fenceBase, old, replacement))
+	}
+	take := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n"
+	ack := "a.acknowledgeRestoreTicket(&tk, err)\n"
+	cases := []struct {
+		name    string
+		sources map[string]string
+	}{
+		{"ticket not first", with(take, "x := 1\n\t\t\t_ = x\n\t\t\t"+take)},
+		{"taken with a.DB", with("a.takeRestoreTicket(tx)", "a.takeRestoreTicket(a.DB)")},
+		{"taken on a shadowing local", with("func(tx *gorm.DB) error {", "func(db *gorm.DB) error {")},
+		{"no ticket", with(take, "terr = nil\n\t\t\t")},
+		{"ticket declared inside the callback", with("if tk, terr = ", "if tk, terr := ")},
+		{"acknowledge missing", with(ack, "")},
+		{"acknowledge not next", with(ack, "x := 1\n\t\t_ = x\n\t\t"+ack)},
+		{"acknowledge deferred", with(ack, "defer "+ack)},
+		{"acknowledge in a goroutine", with(ack, "go "+ack)},
+		{"acknowledge on another variable", with(ack, "var other restoreTicket\n\t\ta.acknowledgeRestoreTicket(&other, err)\n")},
+		{"acknowledge with another result", with(ack, "a.acknowledgeRestoreTicket(&tk, terr)\n")},
+		{"acknowledge inside the callback", with("return nil\n\t\t})", "a.acknowledgeRestoreTicket(&tk, nil)\n\t\t\treturn nil\n\t\t})")},
+		{"abandon missing", with("defer a.abandonRestoreTicket(&tk)\n", "")},
+		{"non-literal callback", with("func(tx *gorm.DB) error {\n\t\t\tif tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n\t\t\treturn nil\n\t\t})", "callback)")},
+		{"result not captured", with("err = a.contactMutationCtx", "a.contactMutationCtx")},
+		{"call in a goroutine", with("err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "go a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {")},
+		{"listed function gone", fenceSources(strings.ReplaceAll(fenceBase, "apiAdminSettleOperationAttempt", "renamed"))},
+		{"no call in a listed function", fenceSources(strings.Replace(fenceBase, "err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "err = other(ctx, change, func(tx *gorm.DB) error {", 2))},
+	}
+	for _, tc := range cases {
+		if bad := fenceProblems(tc.sources); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
+	}
+	// R-6 stays satisfied by the ticket statement before the soft delete: the
+	// admin callback with the ticket first and eraseContactRequestTextIn after
+	// the soft delete passes both guards.
+	ticket := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\treturn terr\n\t\t}"
+	head := "var tk restoreTicket\n\tvar terr error\n\tvar err error\n\tdefer a.abandonRestoreTicket(&tk)\n\terr = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, "
+	tail := ")\n\ta.acknowledgeRestoreTicket(&tk, err)"
+	admin := ctgAdminFileShape(head, tail, ticket, ctgEraseCall)
+	clean := ctgClean()
+	clean["api_admin.go"] = admin
+	if bad := ctgViolations(clean); len(bad) != 0 {
+		t.Errorf("R-6 rejected the fenced admin callback: %v", bad)
+	}
+	if bad := fenceProblems(map[string]string{"api_admin.go": admin, "admin_operation_attempts.go": fenceBase}); len(bad) != 0 {
+		// The fixture file holds no settle function, so only that is allowed to complain.
+		for _, b := range bad {
+			if !strings.Contains(b, "apiAdminSettleOperationAttempt") && !strings.Contains(b, "admin_operation_attempts.go") {
+				t.Errorf("the fenced admin callback failed the ticket guard: %s", b)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R5-C01 and R6-C01: the actor seal is NOWAIT, loads what CanSignIn needs and
+// is the last locking statement of the transactions that run it.
+// ---------------------------------------------------------------------------
+
+const sealSQL = "SELECT id, status, deleted_at, role, account_type, birth_date, password_hash, session_version, logout_version FROM users WHERE id = ? FOR SHARE NOWAIT"
+
+var sealForRe = regexp.MustCompile(`\bFOR\b`)
+
+// sealForbiddenCalls are never called inside a seal body: a seal reads and
+// decides, it writes nothing and sends nothing.
+var sealForbiddenCalls = map[string]bool{
+	"Exec": true, "Create": true, "Save": true, "Update": true, "Updates": true, "Delete": true,
+	"Send": true, "Write": true, "WriteAll": true, "Resolve": true, "Clauses": true, "Locking": true,
+}
+
+// sealAfterTransition are the only names that may follow the ledger
+// transition inside settle's seal: plain reads of the receipt and the subject,
+// the seam and the facts being filled in.
+var sealAfterTransition = map[string]bool{
+	"Raw": true, "Scan": true, "Error": true, "settleAfterFence": true,
+	"receipt": true, "subjectDeleted": true, "state": true,
+}
+
+func sealNormalize(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func sealCallName(c *ast.CallExpr) string {
+	switch f := c.Fun.(type) {
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	case *ast.Ident:
+		return f.Name
+	}
+	return ""
+}
+
+func sealFuncDecl(tree *ast.File, name string) *ast.FuncDecl {
+	for _, d := range tree.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {
+			return fd
+		}
+	}
+	return nil
+}
+
+// sealRunLiteral reports whether lit is the value of the run field of a
+// contactSeal composite literal, given lit's ancestors (outermost first).
+func sealRunLiteral(parents []ast.Node, lit *ast.FuncLit) bool {
+	if len(parents) < 2 {
+		return false
+	}
+	kv, ok := parents[len(parents)-1].(*ast.KeyValueExpr)
+	if !ok || kv.Value != ast.Expr(lit) {
+		return false
+	}
+	if k, ok := kv.Key.(*ast.Ident); !ok || k.Name != "run" {
+		return false
+	}
+	cl, ok := parents[len(parents)-2].(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	t, ok := cl.Type.(*ast.Ident)
+	return ok && t.Name == "contactSeal"
+}
+
+// sealProblems checks the seal's contract over admin_operation_attempts.go,
+// contact_lifecycle.go and api_host_handoff.go.
+func sealProblems(sources map[string]string) []string {
+	var bad []string
+	fset := token.NewFileSet()
+	trees := map[string]*ast.File{}
+	for _, name := range []string{"admin_operation_attempts.go", "contact_lifecycle.go", "api_host_handoff.go"} {
+		src, ok := sources[name]
+		if !ok {
+			bad = append(bad, name+": missing")
+			continue
+		}
+		tree, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			bad = append(bad, name+": cannot parse: "+err.Error())
+			continue
+		}
+		trees[name] = tree
+	}
+	if len(bad) > 0 {
+		return bad
+	}
+
+	// currentAdminIn itself.
+	attempts := trees["admin_operation_attempts.go"]
+	cur := sealFuncDecl(attempts, "currentAdminIn")
+	if cur == nil {
+		return append(bad, "admin_operation_attempts.go: currentAdminIn is gone")
+	}
+	var names []string
+	for _, p := range cur.Type.Params.List {
+		for _, n := range p.Names {
+			names = append(names, n.Name)
+		}
+	}
+	if strings.Join(names, ",") != "tx,me,pred" {
+		bad = append(bad, "currentAdminIn must take exactly tx, me and pred")
+	}
+	literals := 0
+	var actorDeclared, scanned, canSignIn bool
+	ast.Inspect(cur.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.BasicLit:
+			if x.Kind == token.STRING {
+				if s, err := strconv.Unquote(x.Value); err == nil && strings.HasPrefix(s, "SELECT") {
+					literals++
+					if sealNormalize(s) != sealSQL {
+						bad = append(bad, "currentAdminIn's SQL is not the sealed statement: "+sealNormalize(s))
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			if gd, ok := x.Decl.(*ast.GenDecl); ok {
+				for _, sp := range gd.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == "actor" {
+						if sel, ok := vs.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "User" {
+							actorDeclared = true
+						}
+					}
+				}
+			}
+		case *ast.CallExpr:
+			if sealCallName(x) == "Scan" && len(x.Args) == 1 {
+				if u, ok := x.Args[0].(*ast.UnaryExpr); ok && u.Op == token.AND {
+					if id, ok := u.X.(*ast.Ident); ok && id.Name == "actor" {
+						scanned = true
+					}
+				}
+			}
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSignIn" {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "actor" {
+					canSignIn = true
+				}
+			}
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "PasswordHash" {
+					bad = append(bad, "currentAdminIn assigns a PasswordHash")
+				}
+			}
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok && id.Name == "me" && x.Sel.Name != "ID" && x.Sel.Name != "SessionVersion" && x.Sel.Name != "LogoutVersion" {
+				bad = append(bad, "currentAdminIn reads me."+x.Sel.Name+"; only the id and the two versions come from the session")
+			}
+		}
+		return true
+	})
+	if literals != 1 {
+		bad = append(bad, fmt.Sprintf("currentAdminIn must hold exactly one SELECT literal, found %d", literals))
+	}
+	if !actorDeclared || !scanned {
+		bad = append(bad, "currentAdminIn must scan into a models.User declared inside it")
+	}
+	if !canSignIn {
+		bad = append(bad, "currentAdminIn must decide sign-in with actor.CanSignIn()")
+	}
+
+	// Every call of currentAdminIn sits in a contactSeal run literal; seal
+	// bodies hold no write, lock or notice.
+	var stack []ast.Node
+	ast.Inspect(attempts, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "currentAdminIn" {
+			return true
+		}
+		inSeal := false
+		for i := len(stack) - 2; i >= 0; i-- {
+			if lit, ok := stack[i].(*ast.FuncLit); ok {
+				inSeal = sealRunLiteral(stack[:i], lit)
+				break
+			}
+			if _, ok := stack[i].(*ast.FuncDecl); ok {
+				break
+			}
+		}
+		if !inSeal {
+			bad = append(bad, fmt.Sprintf("admin_operation_attempts.go:%d: currentAdminIn is called outside a contactSeal run function", fset.Position(call.Pos()).Line))
+		}
+		return true
+	})
+	stack = nil
+	ast.Inspect(attempts, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		lit, ok := n.(*ast.FuncLit)
+		if !ok || !sealRunLiteral(stack[:len(stack)-1], lit) {
+			return true
+		}
+		transition := -1
+		for i, s := range lit.Body.List {
+			ast.Inspect(s, func(m ast.Node) bool {
+				switch x := m.(type) {
+				case *ast.CallExpr:
+					if sealForbiddenCalls[sealCallName(x)] {
+						bad = append(bad, "a seal body calls "+sealCallName(x))
+					}
+					if sealCallName(x) == "settleTransition" && transition < 0 {
+						transition = i
+					}
+				case *ast.BasicLit:
+					if x.Kind == token.STRING && sealForRe.MatchString(x.Value) {
+						bad = append(bad, "a seal body holds SQL with FOR: "+x.Value)
+					}
+				case *ast.SelectorExpr:
+					if x.Sel.Name == "Locking" {
+						bad = append(bad, "a seal body names clause.Locking")
+					}
+				}
+				return true
+			})
+		}
+		if transition >= 0 {
+			for _, s := range lit.Body.List[transition+1:] {
+				ast.Inspect(s, func(m ast.Node) bool {
+					switch x := m.(type) {
+					case *ast.SelectorExpr:
+						if !sealAfterTransition[x.Sel.Name] {
+							bad = append(bad, "after the ledger transition the seal may only read plainly; it uses ."+x.Sel.Name)
+						}
+					case *ast.BasicLit:
+						if x.Kind == token.STRING && sealForRe.MatchString(x.Value) {
+							bad = append(bad, "a locking read follows the ledger transition: "+x.Value)
+						}
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+
+	// contactMutationOn: reconcileContacts, the seal, then the reserve check,
+	// with nothing between.
+	lc := sealFuncDecl(trees["contact_lifecycle.go"], "contactMutationOn")
+	if lc == nil {
+		bad = append(bad, "contact_lifecycle.go: contactMutationOn is gone")
+	} else {
+		at := -1
+		for i, s := range lc.Body.List {
+			is, ok := s.(*ast.IfStmt)
+			if !ok || is.Init == nil {
+				continue
+			}
+			found := false
+			ast.Inspect(is.Init, func(m ast.Node) bool {
+				if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "reconcileContacts" {
+					found = true
+				}
+				return true
+			})
+			if found {
+				at = i
+			}
+		}
+		okShape := at >= 0 && at+2 < len(lc.Body.List)
+		if okShape {
+			seal, sok := lc.Body.List[at+1].(*ast.IfStmt)
+			reserve, rok := lc.Body.List[at+2].(*ast.IfStmt)
+			okShape = sok && rok
+			if okShape {
+				hasSeal, hasReserve := false, false
+				ast.Inspect(seal, func(m ast.Node) bool {
+					if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "run" {
+						hasSeal = true
+					}
+					return true
+				})
+				ast.Inspect(reserve, func(m ast.Node) bool {
+					if id, ok := m.(*ast.Ident); ok && id.Name == "errCommitReserve" {
+						hasReserve = true
+					}
+					return true
+				})
+				okShape = hasSeal && hasReserve
+			}
+		}
+		if !okShape {
+			bad = append(bad, "contactMutationOn must run reconcileContacts, then change.Seal.run, then the commit-reserve check, with no statement between")
+		}
+	}
+
+	// deletionHostPlan's actor read takes no lock.
+	dp := sealFuncDecl(trees["api_host_handoff.go"], "deletionHostPlan")
+	if dp == nil {
+		bad = append(bad, "api_host_handoff.go: deletionHostPlan is gone")
+	} else {
+		reads := 0
+		ast.Inspect(dp.Body, func(m ast.Node) bool {
+			c, ok := m.(*ast.CallExpr)
+			if !ok || sealCallName(c) != "First" || len(c.Args) < 1 {
+				return true
+			}
+			u, ok := c.Args[0].(*ast.UnaryExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := u.X.(*ast.Ident); !ok || id.Name != "actor" {
+				return true
+			}
+			reads++
+			ast.Inspect(c.Fun, func(k ast.Node) bool {
+				if kc, ok := k.(*ast.CallExpr); ok && (sealCallName(kc) == "Clauses") {
+					bad = append(bad, "deletionHostPlan's actor read takes a lock")
+				}
+				return true
+			})
+			return true
+		})
+		if reads != 1 {
+			bad = append(bad, fmt.Sprintf("deletionHostPlan must read the actor once with tx.First(&actor, ...), found %d", reads))
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+func sealRealSources(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, name := range []string{"admin_operation_attempts.go", "contact_lifecycle.go", "api_host_handoff.go"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[name] = string(b)
+	}
+	return out
+}
+
+func TestActorSealIsLast(t *testing.T) {
+	real := sealRealSources(t)
+	for _, v := range sealProblems(real) {
+		t.Error(v)
+	}
+	with := func(file, old, replacement string) map[string]string {
+		if strings.Count(real[file], old) != 1 {
+			t.Fatalf("fixture anchor %q must occur once in %s, found %d", old, file, strings.Count(real[file], old))
+		}
+		out := map[string]string{}
+		for k, v := range real {
+			out[k] = v
+		}
+		out[file] = strings.Replace(real[file], old, replacement, 1)
+		return out
+	}
+	const aops = "admin_operation_attempts.go"
+	cases := []struct {
+		name    string
+		sources map[string]string
+	}{
+		{"FOR SHARE without NOWAIT", with(aops, "users WHERE id = ? FOR SHARE NOWAIT\"", "users WHERE id = ? FOR SHARE\"")},
+		{"a projection without password_hash", with(aops, "birth_date, password_hash, session_version", "birth_date, session_version")},
+		{"a password_hash IS NOT NULL projection", with(aops, "birth_date, password_hash, session_version", "birth_date, (password_hash IS NOT NULL) AS password_hash, session_version")},
+		{"a deleted_at IS NULL filter", with(aops, "FROM users WHERE id = ? FOR SHARE NOWAIT\"", "FROM users WHERE id = ? AND deleted_at IS NULL FOR SHARE NOWAIT\"")},
+		{"a PasswordHash copied from another value", with(aops, "\tvar actor models.User\n\terr := tx.Raw(", "\tvar actor models.User\n\tactor.PasswordHash = me.PasswordHash\n\terr := tx.Raw(")},
+		{"a sign-in check other than CanSignIn", with(aops, "!actor.CanSignIn()", "actor.Status != models.UserActive")},
+		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
+		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
+		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, nil)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, nil)\n\t}}")},
+		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
+		{"a Locking clause on deletionHostPlan's actor read", with("api_host_handoff.go", "tx.First(&actor, me.ID)", "tx.Clauses(clause.Locking{Strength: \"SHARE\"}).First(&actor, me.ID)")},
+	}
+	for _, tc := range cases {
+		if bad := sealProblems(tc.sources); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
 	}
 }
