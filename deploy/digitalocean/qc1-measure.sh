@@ -708,7 +708,13 @@ measure_browser_panel() { # n k
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
   note "size $n: loading background rows"
-  psql_db -c 'TRUNCATE contact_requests' >/dev/null
+  # TRUNCATE of the whole referencing set (contact_grants, registrations), each proved empty first: see qc1_reset_contact_requests. The seeded admin, the
+  # counterparts and the group are in other tables and must survive it; the scenarios below are built on them.
+  qc1_reset_contact_requests || exit 1
+  [[ "$(psql_db -c "SELECT count(*) FROM users WHERE email = 'admin@example.invalid'")" == 1 && "$(psql_db -c "SELECT count(*) FROM groups WHERE id = $GROUP")" == 1 \
+    && "$(psql_db -c "SELECT count(*) FROM users WHERE email LIKE 'qc1-counterpart-%@example.invalid'")" == 10 ]] \
+    || { echo 'qc1: clearing the background rows removed the seeded admin, counterparts or group' >&2; exit 1; }
+  [[ "$(psql_db -c 'SELECT count(*) FROM contact_requests')" == 0 ]] || { echo 'qc1: contact_requests is not empty after clearing it' >&2; exit 1; }
   load_filler "$n" all
   # The cost of one request that changes nothing, for the WAL a deletion shares
   # with its own session bookkeeping.

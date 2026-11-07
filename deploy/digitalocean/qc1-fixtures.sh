@@ -748,4 +748,83 @@ sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep -q '(( BROWSER )) |
 for pat in 'harnessPageLoad' 'renderedPanel' 'humanAssumptions' 'not a rendered panel'; do grep -qF -- "$pat" "$RUNNER"; done
 # A browser row carries its tool and its note; the harness figures name themselves a shell wall time.
 grep -qF 'headless Chromium' "$PM"
+
+# --- clearing the background rows: the foreign-key set (pilot: contact_grants made `TRUNCATE contact_requests` fail) -----------------------------------------------------------
+# What references contact_requests in the schema, from the migrations (the baseline spells every foreign key as an ALTER TABLE ONLY ... ADD CONSTRAINT ... FOREIGN KEY).
+fk_edges() { # prints "child parent" for every foreign key in the baseline
+  awk '/^ALTER TABLE ONLY public\./ { child = $4; sub(/^public\./, "", child) }
+       /FOREIGN KEY/ && match($0, /REFERENCES public\.[a-z_0-9]+/) { parent = substr($0, RSTART + 18, RLENGTH - 18); print child, parent }' "$ROOT/migrations/00001_baseline.sql"
+}
+fk_closure() { # root -> the root and every table that references it, transitively
+  local -a todo=("$1"); local -A seen=(); local t c p
+  while ((${#todo[@]})); do
+    t="${todo[0]}"; todo=("${todo[@]:1}")
+    [[ -z "${seen[$t]:-}" ]] || continue
+    seen[$t]=1
+    while read -r c p; do [[ "$p" != "$t" ]] || todo+=("$c"); done < <(fk_edges)
+  done
+  printf '%s\n' "${!seen[@]}" | LC_ALL=C sort
+}
+[[ "$(fk_closure contact_requests | paste -sd,)" == contact_grants,contact_requests,registrations ]] \
+  || { echo "the tables that reference contact_requests changed: $(fk_closure contact_requests | paste -sd,). Review qc1_reset_contact_requests (it adapts by itself, but a new referrer may hold rows)." >&2; exit 1; }
+# contact_requests references nothing, so the filler's parties (ids far above any account) are valid rows and need no stand-in users
+[[ -z "$(fk_edges | awk '$1 == "contact_requests"')" ]]
+# no later migration adds a reference to the set (the baseline is the only place the foreign keys are written, and the closure above is complete)
+if grep -lE 'REFERENCES +(public\.)?(contact_requests|contact_grants|registrations)\b' "$ROOT"/migrations/*.sql | grep -v '00001_baseline.sql'; then echo 'a migration after the baseline references the contact-request tables: re-check the QC-1 loader' >&2; exit 1; fi
+
+# The loader against a model of the database: a catalog that lists the closure, row counts, and every statement recorded.
+export QC1_MODEL_REFERRERS="" QC1_MODEL_LOG="$WORK/sql.log"
+psql_db() { # -c SQL
+  local sql="$2"
+  printf '%s\n' "$sql" >>"$QC1_MODEL_LOG"
+  case "$sql" in
+    "WITH RECURSIVE r(oid) AS"*) [[ -z "${QC1_MODEL_FAIL_CATALOG:-}" ]] || return 1; printf '%s\n' "$QC1_MODEL_REFERRERS" ;;
+    "SELECT count(*) FROM "*) local t="${sql#SELECT count(*) FROM }"; local v="QC1_MODEL_ROWS_${t//[^a-z_0-9]/_}"; printf '%s\n' "${!v:-0}" ;;
+    "TRUNCATE "*) [[ -z "${QC1_MODEL_FAIL_TRUNCATE:-}" ]] || return 1 ;;
+    *) echo "unexpected sql: $sql" >&2; return 1 ;;
+  esac
+}
+model() { : >"$QC1_MODEL_LOG"; unset QC1_MODEL_FAIL_CATALOG QC1_MODEL_FAIL_TRUNCATE QC1_MODEL_ROWS_contact_grants QC1_MODEL_ROWS_registrations QC1_MODEL_ROWS_grant_notes; }
+truncates() { grep -c '^TRUNCATE ' "$QC1_MODEL_LOG" || true; }
+closure_text="$(fk_closure contact_requests)"
+# the SQL asks the catalog for the transitive foreign-key set of the real table
+grep -qF "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f')" "$HERE/qc1/lib.sh"
+# (1) empty referrers: one TRUNCATE naming the whole set, no CASCADE, no DELETE, nothing before the checks
+model; QC1_MODEL_REFERRERS="$closure_text"
+qc1_reset_contact_requests
+[[ "$(truncates)" == 1 ]]; [[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations' ]]
+if grep -qiE 'CASCADE|DELETE|RESTART IDENTITY' "$QC1_MODEL_LOG"; then echo 'the reset deletes, cascades or restarts identities' >&2; exit 1; fi
+[[ "$(grep -n '^SELECT count' "$QC1_MODEL_LOG" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n '^TRUNCATE ' "$QC1_MODEL_LOG" | cut -d: -f1)" ]]    # every count before the statement
+[[ "$(grep -c '^SELECT count(\*) FROM ' "$QC1_MODEL_LOG")" == 2 ]]                                                                              # both referrers, not contact_requests itself
+# (2) a referrer that holds rows: refused, named, nothing truncated
+for t in contact_grants registrations; do
+  model; QC1_MODEL_REFERRERS="$closure_text"; export "QC1_MODEL_ROWS_$t=3"
+  refused "$t holds 3 rows that depend on contact_requests" qc1_reset_contact_requests
+  [[ "$(truncates)" == 0 ]]
+done
+# (3) a table reached only through another referrer is found and checked too
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"
+qc1_reset_contact_requests
+[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, grant_notes, registrations' ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"; export QC1_MODEL_ROWS_grant_notes=1
+refused 'grant_notes holds 1 rows' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+# (4) the catalog cannot be read, lists a table in another schema or a quoted name, omits the table itself, or a count is unreadable: refused, nothing truncated
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_FAIL_CATALOG=1
+refused 'cannot list the tables' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" other.t)"; refused "unexpected table name 'other.t'" qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" '"Odd Name"')"; refused 'unexpected table name' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' contact_grants registrations)"; refused 'not in the foreign-key closure' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS=""; refused 'not in the foreign-key closure' qc1_reset_contact_requests
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_ROWS_contact_grants=many; refused 'unreadable row count for contact_grants' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+# (5) TRUNCATE itself failing is reported
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_FAIL_TRUNCATE=1
+refused 'TRUNCATE contact_grants, contact_requests, registrations failed' qc1_reset_contact_requests
+unset -f psql_db model truncates
+# The runner uses it, once per size, before the filler loads, and checks what the clear must not touch; the bare table-only TRUNCATE is gone.
+RUNNER_BODY="$(sed -n '/^measure_size() {/,/^}$/p' "$HERE/qc1-measure.sh")"
+if grep -n "TRUNCATE contact_requests" "$HERE/qc1-measure.sh"; then echo 'the runner still truncates contact_requests alone' >&2; exit 1; fi
+r_l="$(grep -n 'qc1_reset_contact_requests || exit 1' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"; f_l="$(grep -n 'load_filler "\$n" all' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+s_l="$(grep -n "admin@example.invalid'\")\" == 1" <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+[[ -n "$r_l$f_l$s_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$f_l" ]]
+for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$RUNNER_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
 echo 'qc1 fixtures: ok'

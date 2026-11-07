@@ -463,3 +463,32 @@ qc1_plan_counts() { # log
   done
   printf '}\n'
 }
+
+# --- clearing the background rows between sizes -------------------------------------------------------------
+# `TRUNCATE contact_requests` alone is refused by PostgreSQL while any table holds a foreign key to it
+# (pilot: "cannot truncate a table referenced in a foreign key constraint", contact_grants). TRUNCATE is wanted, not
+# DELETE, because a clean heap is what each size is measured on: deleting 10 000 to 1 000 000 rows would leave dead
+# tuples, bloat and stale statistics in the very table the measurements read. So the whole referencing set (found in
+# the catalog, transitively, so a later migration that adds one is covered) is truncated in ONE statement, and only
+# after each referrer is proved empty: the fixture creates no grants or registrations, and a referrer that holds rows
+# means the database is not the fixture's, so the loader stops instead of deleting someone's data. CASCADE is never used.
+# psql_db is the caller's -At psql on the measured database.
+qc1_contact_request_referrers() {
+  psql_db -c "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f') SELECT oid::regclass::text FROM r ORDER BY 1"
+}
+qc1_reset_contact_requests() {
+  local names t n list=""
+  names="$(qc1_contact_request_referrers)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
+  grep -qx 'contact_requests' <<<"$names" || { echo 'qc1: contact_requests is not in the foreign-key closure the catalog returned' >&2; return 1; }
+  while IFS= read -r t; do
+    [[ -n "$t" ]] || continue
+    [[ "$t" =~ ^[a-z_][a-z0-9_]*$ ]] || { echo "qc1: refusing the unexpected table name '$t' (another schema or a quoted name)" >&2; return 1; }
+    if [[ "$t" != contact_requests ]]; then
+      n="$(psql_db -c "SELECT count(*) FROM $t")" || { echo "qc1: cannot count the rows of $t" >&2; return 1; }
+      [[ "$n" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for $t: '$n'" >&2; return 1; }
+      (( n == 0 )) || { echo "qc1: $t holds $n rows that depend on contact_requests; the loader will not delete them. This is not the QC-1 fixture database." >&2; return 1; }
+    fi
+    list+="${list:+, }$t"
+  done <<<"$names"
+  psql_db -c "TRUNCATE $list" >/dev/null || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+}
