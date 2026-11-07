@@ -9,6 +9,8 @@ source "$ROOT/deploy/digitalocean/checks.sh"
 source "$ROOT/deploy/digitalocean/deploy-drill.sh"
 # shellcheck source=deploy/digitalocean/restore-drill-cases.sh
 source "$ROOT/deploy/digitalocean/restore-drill-cases.sh"
+# shellcheck source=deploy/digitalocean/isolation.sh
+source "$ROOT/deploy/digitalocean/isolation.sh"
 # shellcheck source=deploy/digitalocean/restore-drill-crossings.sh
 source "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
 WORK=""
@@ -16,6 +18,7 @@ BASE_IMAGE=""
 KEEP=0
 LANE_REVISION="$CROSSING_LANE_DEFAULT"
 LANDING_REVISION="$CROSSING_LANDING_DEFAULT"
+PRIOR_REVISION="$CROSSING_PRIOR_DEFAULT"
 ARCHIVE_BASE_REVISION="$CROSSING_ARCHIVE_DEFAULT"
 while (( $# )); do
   case "$1" in
@@ -24,18 +27,26 @@ while (( $# )); do
     --keep) KEEP=1; shift ;;
     --lane-base) LANE_REVISION="${2:?level-0 LANE_BASE commit required}"; shift 2 ;;
     --landing) LANDING_REVISION="${2:?level-1 T07B-1-V landing commit required}"; shift 2 ;;
-    --archive-base) ARCHIVE_BASE_REVISION="${2:?older level-0 archive commit required}"; shift 2 ;;
+    --prior) PRIOR_REVISION="${2:?level-2 prior release commit required}"; shift 2 ;;
+    --archive-base) ARCHIVE_BASE_REVISION="${2:?older archive commit (without the reason-review migration) required}"; shift 2 ;;
     --help)
       echo 'Usage: sudo restore-drill.sh [--dir NEW_SCRATCH_PATH] [--image CANDIDATE] [--keep]'
-      echo '         [--lane-base SHA] [--landing SHA] [--archive-base SHA]'
-      echo 'The three revisions drive the real-binary crossing cases (R4-6c-V): LANE_BASE (the recorded level-0'
-      echo 'preflight base, default 8c07c85), the level-1 commit that precedes restore.sh, and the level-0 commit'
-      echo 'the older archive is dumped on (default: LANE_BASE). The candidate binary is built from git archive of'
-      echo 'the committed HEAD; an uncommitted tree is refused. --image serves only the fixture stack.'
+      echo '         [--lane-base SHA] [--landing SHA] [--prior SHA] [--archive-base SHA]'
+      echo 'The four revisions drive the real-binary crossing cases (R4-6c-V, T07B-2-V): LANE_BASE (the recorded'
+      echo 'level-0 preflight base, default 8c07c85), the level-1 commit that precedes restore.sh (default d400b77),'
+      echo 'the level-2 release before the candidate, the only legal rollback target (default 6927e89), and the'
+      echo 'archive base (default 8989979): the first parent of the reason-review schema landing, whose migrations'
+      echo 'lack the reason-review file. LANE_BASE is also dumped as the older table-set archive. The candidate'
+      echo 'binary is built from git archive of the committed HEAD, which must be recovery level 2; an uncommitted'
+      echo 'tree is refused. --image serves only the fixture stack.'
       exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
 done
+# The drill runs provisioners that write /etc/cron.d and /etc/logrotate.d and publishes ports 80 and 443: only inside a throwaway container with its own
+# Docker daemon (restore-drill-nested.sh), and never over an owner's configuration. Checked before anything is created.
+# shellcheck disable=SC2119 # the function takes optional test inputs, never the drill's arguments
+isolation_require_disposable || exit 1
 [[ "$(id -u)" == 0 ]] || { echo 'restore-drill.sh requires root on a disposable Docker host' >&2; exit 1; }
 for tool in docker go git jq curl node flock timeout; do command -v "$tool" >/dev/null; done
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
@@ -43,8 +54,15 @@ REVISION="$(drill_source_revision "$ROOT")" || exit 1
 LEGACY_REVISION="$(drill_legacy_revision "$ROOT")" || exit 1
 # Every crossing revision is proved from git before a stack, an image or a
 # database exists. There is no switch that skips the real-binary cases.
-crossing_validate_revisions "$ROOT" "$LANE_REVISION" "$LANDING_REVISION" "$ARCHIVE_BASE_REVISION" "$REVISION" || exit 1
+crossing_validate_revisions "$ROOT" "$LANE_REVISION" "$LANDING_REVISION" "$PRIOR_REVISION" "$ARCHIVE_BASE_REVISION" "$REVISION" || exit 1
 crossing_require_clean_head "$ROOT" || exit 1
+# The recovery browser proof (testdata/restore-browser.cjs) drives a real Chromium through web/node_modules/playwright. It is found, launched with the options the
+# proof will use (restoreLaunchOptions, qc1/browser-launch.cjs) and exercised now, before a stack exists, instead of failing hours in. restore-drill-nested.sh installs
+# the runtime (qc1/browser-prepare.sh) and exports QC1_CHROMIUM; this check refuses a runner where that was skipped. No switch skips it: the proof is not optional.
+command -v node >/dev/null || { echo 'restore-drill.sh: node is required for the recovery browser proof' >&2; exit 1; }
+BROWSER_PREFLIGHT="$(QC1_PREFLIGHT_FOR=restore QC1_WEB_DIR="$ROOT/web" node "$ROOT/deploy/digitalocean/qc1/browser-preflight.mjs")" \
+  || { echo 'restore-drill.sh: the browser preflight failed: the recovery browser proof cannot run (restore-drill-nested.sh installs the browser runtime; on another machine run npm ci in web/ and install Playwright'"'"'s Chromium)' >&2; exit 1; }
+jq -e '.ok == true' <<<"$BROWSER_PREFLIGHT" >/dev/null || { echo "restore-drill.sh: the browser preflight did not pass: $BROWSER_PREFLIGHT" >&2; exit 1; }
 unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES RESTORE_DRILL_FAULT RESTORE_DRILL_PAUSE RESTORE_DRILL_FORCE_TWO_STEP
 if [[ -z "$WORK" ]]; then
   WORK="$(mktemp -d /tmp/fold-restore-drill.XXXXXX)"; rmdir "$WORK"
@@ -56,7 +74,7 @@ drill_progress_init bootstrap base-proof recovery-interruptions reopen-interrupt
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
-  real_binary_refusals real_level0_lineage real_same_level_rollback real_older_archive_restore final-verification
+  real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification
 trap 'drill_progress_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
 drill_case_begin bootstrap
 args=(--prepare-only --dir "$WORK")
@@ -65,6 +83,7 @@ args=(--prepare-only --dir "$WORK")
 drill_case_end
 MANIFEST="$WORK/restore-drill.json"
 [[ "$(jq -er .revision "$MANIFEST")" == "$REVISION" ]] || { echo 'restore drill source revision mismatch' >&2; exit 1; }
+printf '%s\n' "$BROWSER_PREFLIGHT" >"$WORK/browser-preflight.json"
 DIR="$(jq -er .dir "$MANIFEST")"
 SOURCE="$(jq -er .source "$MANIFEST")"
 PROJECT="$(jq -er .project "$MANIFEST")"
@@ -294,7 +313,7 @@ expect_fail checked-church-records restore --reopen
 # Browser uses real Secure cookies over localhost and the real delete panel.
 # Resolve Playwright from web/, without adding a repository test file.
 cp "$ROOT/deploy/digitalocean/testdata/restore-browser.cjs" "$WORK/private-browser.cjs"
-RESTORE_WEB_PACKAGE="$ROOT/web/package.json" RESTORE_SCREENSHOT="$WORK/recovery-delete-390.png" \
+RESTORE_WEB_PACKAGE="$ROOT/web/package.json" RESTORE_BROWSER_LAUNCH="$ROOT/deploy/digitalocean/qc1/browser-launch.cjs" RESTORE_SCREENSHOT="$WORK/recovery-delete-390.png" \
   RESTORE_BROWSER_PROOF="$WORK/chromium-cookie-proof.json" RESTORE_TARGET_ID="$A" RESTORE_BROWSER_ARTIFACTS="$WORK" \
   DEBUG="${DEBUG:+$DEBUG,}pw:browser" node "$WORK/private-browser.cjs"
 [[ "$(pg fold -c "SELECT deleted_at IS NOT NULL FROM users WHERE id=$A")" == t ]]
@@ -515,7 +534,7 @@ drill_case_end
 for drill_family in count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
-  real_binary_refusals real_level0_lineage real_same_level_rollback real_older_archive_restore; do
+  real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore; do
   drill_case_begin "$drill_family"
   # A bare call preserves errexit inside the acceptance function. Never put
   # this call in an if/! or || list: Bash would disable its failed assertions.

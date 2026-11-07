@@ -11,7 +11,7 @@ const APPLIED = 'The account was deleted.';
 const ERASURE_KEYS = ['householdsKept', 'householdsScrubbed', 'peopleAnonymized', 'guardianLinksRevoked', 'activityEntriesKept'];
 
 async function runPrivateBrowser(options) {
-  const { engine, origin = 'http://localhost:18080', targetId, artifacts, screenshot, cookieProof, timeout = 15000 } = options;
+  const { engine, origin = 'http://localhost:18080', targetId, artifacts, screenshot, cookieProof, timeout = 15000, launchOptions = { headless: true } } = options;
   const url = new URL(origin);
   if (url.protocol !== 'http:' || url.hostname !== 'localhost' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('browser drill requires a localhost HTTP origin');
   if (!Number.isSafeInteger(targetId) || targetId <= 0) throw new Error('browser drill requires the seeded target id');
@@ -20,7 +20,7 @@ async function runPrivateBrowser(options) {
   const prefix = path.join(artifacts, `browser-${engine.name()}`);
   const outcomeShot = `${prefix}-delete-outcome.png`;
   const record = (kind, detail) => { events.push({ time: new Date().toISOString(), stage, kind, detail, intentionalClose }); fs.writeFileSync(`${prefix}-events.json`, JSON.stringify(events, null, 2)); };
-  const browser = await engine.launch({ headless: true });
+  const browser = await engine.launch(launchOptions);
   browser.on('disconnected', () => record('browser-disconnected'));
   try {
     context = await browser.newContext({ viewport: { width: 390, height: 900 } });
@@ -128,5 +128,8 @@ async function runPrivateBrowser(options) {
 module.exports = { runPrivateBrowser };
 if (require.main === module) {
   const pw = createRequire(process.env.RESTORE_WEB_PACKAGE)('playwright');
-  runPrivateBrowser({ engine: process.env.RESTORE_BROWSER === 'firefox' ? pw.firefox : pw.chromium, targetId: Number(process.env.RESTORE_TARGET_ID), artifacts: process.env.RESTORE_BROWSER_ARTIFACTS, screenshot: process.env.RESTORE_SCREENSHOT, cookieProof: process.env.RESTORE_BROWSER_PROOF }).catch(error => { console.error(error); process.exitCode = 1; });
+  // A disposable runner names its own Chromium (QC1_CHROMIUM) and sets the sandbox switches it needs; the launch rules live in qc1/browser-launch.cjs, which
+  // restore-drill.sh points RESTORE_BROWSER_LAUNCH at (this file is copied out of the repository). Without them the launch is exactly { headless: true }.
+  const launchOptions = process.env.RESTORE_BROWSER_LAUNCH && process.env.QC1_CHROMIUM && process.env.RESTORE_BROWSER !== 'firefox' ? require(process.env.RESTORE_BROWSER_LAUNCH).restoreLaunchOptions(process.env) : { headless: true };
+  runPrivateBrowser({ engine: process.env.RESTORE_BROWSER === 'firefox' ? pw.firefox : pw.chromium, targetId: Number(process.env.RESTORE_TARGET_ID), artifacts: process.env.RESTORE_BROWSER_ARTIFACTS, screenshot: process.env.RESTORE_SCREENSHOT, cookieProof: process.env.RESTORE_BROWSER_PROOF, launchOptions }).catch(error => { console.error(error); process.exitCode = 1; });
 }
