@@ -174,6 +174,42 @@ R4-6c-R's current-release restore tooling and operator procedure land and are
 verified; this slice does not satisfy that gate. See inventory 15.9 for the
 evidence table and its limits.
 
+### M7.4 R4-6c restore tooling and interim operator notes (R4-6c-R, R4-6c-V), staged locally
+
+`restore.sh` and `compose.recovery.yml` (R4-6c-R, committed locally as `a0969a8`)
+restore a `backup.sh` dump into a fresh database that replaces `fold` whole, keep
+the public site closed and background deliveries paused in a private recovery instance (workers off,
+`127.0.0.1:18080` through an SSH tunnel) while an admin deletes again whoever was
+deleted after the dump, then reopen. `docs/DEPLOY-DIGITALOCEAN.md` ("Restoring a
+nightly dump") now carries the interim operator notes, and
+`docs/FIRST-CHURCH-CHECKS.md` the hand checks. The notes say, and the scripts do:
+backups and expiry are suspended while `recovery.lock` exists (exit 75, no retry);
+`ops.lock`, `backup.lock` and `recovery.lock` are never deleted; a plain `--dump`
+exits 0 with the site still closed, and `upgrade.sh --rollback` (which hands off
+to `restore.sh --reopen-if-none`) exits 3 unless the count is exactly zero;
+`--abort` works only before the swap and only `--abort` finishes an interrupted
+abort; `--resume` after an interrupted reopen closes the site and returns to
+private recovery; `reconcile-needed` changes nothing and is only rechecked; a
+lower recovery level is refused on every scripted path, forward included; and a
+Droplet Backup restore is outside the protection. The restore is recommended, not
+a promise, and `restore.sh` does not restore the uploads volume.
+
+Evidence and its limits. The full `restore-drill.sh` run "drill16" passed
+(`r46cr-drill16-evidence.json`, exit 0, "restore drill result=0") on an
+uncommitted candidate whose base was `3a97ff9`. That is prior candidate evidence:
+it is not a run at the current head and its bytes were not checked against
+`a0969a8`. Still pending, none done by this documentation task (which ran no test):
+exact-head full checks including `make e2e`, `make compose-smoke` and a full
+`restore-drill.sh`; the real level-1 crossing drills (rollback, forward
+`--commit`/`--image` and `restore.sh --commit` refused toward the level-0 base; a
+rollback to the pre-`restore.sh` commit; the older-archive, newer-schema restore);
+independent review (UI primary, security covering the recovery interval, the
+nonce-scoped pin and the level rule); and local landing. The first-church hand
+checks (real droplet, reboot, browsers, phone) are unchecked. A release at
+`recoveryPolicy >= 1` must not be published until the tooling and procedure land
+and are verified. R4-6c (the delete-dialog copy) stays staged. C4 is not met and
+M7.4 is not complete; nothing here claims full erasure.
+
 ### M7.5 S4 direct mail
 
 S1–S3 are merged in [#253](https://github.com/grierj/fold/pull/253),
