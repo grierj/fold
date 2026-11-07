@@ -333,6 +333,8 @@ qc1_judge_defs() { cat <<'JQ'
     def numz: if type == "number" then . else null end;
     def ran($r): [$r.traversal, $r.delete, $r.window, $r.put, $r.probe] | map(select(type == "object"));
     # The reasons a case says its account was loaded with, from its label (null when the label does not say). Items 1 and 2 load none; the plans case loads min(size, 1,000).
+    # The smallest a legacy decision can be on the wire: {"requestId":"1","reviewHash":"<64 hex>","choice":"keep"}. A 100-decision body cannot be smaller than 100 of them plus 99 commas.
+    def legacyMinEntry: ({requestId: "1", reviewHash: ("0" * 64), choice: "keep"} | tojson | length);
     def lblk($m):
       if ($m.case | type) != "string" then null
       elif $m.item == 1 or $m.item == 2 then 0
@@ -345,10 +347,12 @@ qc1_judge_defs() { cat <<'JQ'
       elif $m.item == 8 and $m.case == "plans" then (if ($m.size | type) == "number" then ([$m.size, 1000] | min) else null end)
       else null end;
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","probe") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","probe","legacy") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.browser |= (if type == "object" then reduce ("pages","digest","phases","press","reload","clicks","navigation","firstPage","gate") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
+       | (if .put != null then .put |= (reduce ("workload","effects","countRefusal") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) | .effects |= (if type == "object" then reduce ("markers","audits") as $c (.; if (.[$c] | type) == "object" then . else .[$c] = null end) | (.markers |= (if type == "object" then (if (.byAction | type) == "object" then . else .byAction = {} end) else . end)) else . end)) else . end)
+       | (if .probe != null then .probe |= (reduce ("workload","marker") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end)) else . end)
        | (if .put != null then .put |= (.ms |= numz) else . end) | (if .probe != null then .probe |= (.ms |= numz) else . end) | (if .window != null then .window |= (.ms |= numz) else . end)
        | (.browser.phases |= (if type == "object" then reduce ("walk","interactions","press") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end)));
     # The interaction budgets are engineering proposals (design R2); the 120 s traversal line is the existing one. Shared by whole rows and by the partial rows a failed browser run leaves.
@@ -357,6 +361,8 @@ qc1_judge_defs() { cat <<'JQ'
       ( if ($m.browser.walkEndMs | type) == "number" and $m.browser.walkEndMs > $trav then bud("browser-walk"; {ms:$m.browser.walkEndMs, budget:$trav}) else empty end ),
       # The 10 s per-page / per-unit line applies to every review page request the browser made, whole rows and the partial rows a failed run leaves.
       ( if ($m.browser.pages.requestMsMax | type) == "number" and $m.browser.pages.requestMsMax > $unit then bud("page-request"; {ms:$m.browser.pages.requestMsMax, budget:$unit}) else empty end ),
+      # A review page response still unfinished when the run ended, which had already been in flight longer than the 10 s line, is the same finding: it is not "no data".
+      ( if ($m.browser.pages.pendingAgeMsMax | type) == "number" and $m.browser.pages.pendingAgeMsMax > $unit then bud("page-request-unfinished"; {ageMs:$m.browser.pages.pendingAgeMsMax, budget:$unit, incomplete:$m.browser.pages.incomplete}) else empty end ),
       ( if ($m.browser.clicks.p95Ms | type) == "number" and $m.browser.clicks.p95Ms > $clickp95 then bud("click-p95"; {ms:$m.browser.clicks.p95Ms, budget:$clickp95}) else empty end ),
       ( if ($m.browser.clicks.maxMs | type) == "number" and $m.browser.clicks.maxMs > $clickmax then bud("click-max"; {ms:$m.browser.clicks.maxMs, budget:$clickmax}) else empty end ),
       ( ($m.browser.navigation // {}) | to_entries[] | select((.value | type) == "object" and (.value.maxMs | type) == "number" and .value.maxMs > $nav) | bud("navigation"; {control:.key, ms:.value.maxMs, budget:$nav}) );
@@ -365,25 +371,43 @@ JQ
 qc1_judge_rules() { cat <<'JQ'
     select(.status == "measured" or .status == "observation") | norm_row as $m
     | ( if ([$m.item] | inside([1,2,3,4,5])) and ($m.item != 5 or $m.case == "request-size") and ($m.case != "legacy-discovery-probe") and (($m.traversal | type) != "object" or ($m.traversal.totalMs | type) != "number" or ($m.traversal.slowestUnitMs | type) != "number") then inv("missing-traversal"; {item:$m.item}) else empty end ),
-      # Legacy rows (T07B-3a's routes are not in this tree). They stay PENDING until a row proves a real measurement: where the pairs came from and how many were loaded, the
-      # table the operation ran against, the full instrument set of the operation, and for the PUT the exact maximum body (a 200 at the largest body that fits maxRequestBytes and a
-      # 413 at the next) and the database state it left. A sample body, a validated flag or a lone timing proves none of that.
+      # Legacy rows (T07B-3a's routes are not in this tree). They stay PENDING until a row proves a real measurement: where the pairs came from and how many were seeded, the table
+      # the operation ran against (the declared background size plus exactly the pairs seeded), the full instrument set of the operation, and, for the PUT and the marker lookup, the
+      # database effects the route is approved to have. Approved rev8: the legacy PUT takes 1 to 100 decisions (a subset is allowed), applies each as Keep or Blank with a party-qualified
+      # audit marker, and a request with more than 100 decisions is refused by count validation. So the PUT row is the ACCEPTED 100-DECISION subset, and nothing about it is a byte-cap
+      # crossing: no 413 is required of it, and no route is added to get one. A sample body, a flag or a lone timing proves none of this.
       ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe"
             and (($m.reasons | type) != "number" or ($m.case != ("legacy-discovery-" + ($m.reasons | tostring))) or $m.expect.items != $m.reasons or $m.legacy.loadedPairs != $m.reasons or $m.traversal.items != $m.reasons or $m.traversal.tableRowsBefore != ($m.size + $m.legacy.loadedPairs)
                  or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0 or $m.legacy.source != "T07B-3a")
         then inv("legacy-no-metrics"; {case:$m.case, why:"a legacy discovery row names its route and source, and the pairs loaded, expected and listed all equal the pairs in its case name"}) else empty end ),
       ( if $m.item == 4 and $m.case == "legacy-discovery-probe"
-            and (($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.status != "200" or $m.probe.found != true or ($m.probe.marker | type) != "string" or ($m.probe.marker | length) == 0
-                 or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0 or ($m.probe.tableRowsBefore | type) != "number")
-        then inv("legacy-no-metrics"; {case:$m.case, why:"the marker lookup row carries a real lookup: its route, the marker it found, its time and the instrument set of the operation"}) else empty end ),
+            and (($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.status != "200" or $m.probe.found != true
+                 or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0 or ($m.probe.tableRowsBefore | type) != "number"
+                 or ($m.probe.workload | type) != "object" or $m.probe.workload.backgroundRows != $m.size or ($m.probe.workload.loadedPairs | type) != "number" or $m.probe.workload.loadedPairs < 1
+                 or $m.probe.tableRowsBefore != ($m.size + $m.probe.workload.loadedPairs)
+                 or ($m.probe.workload.markersSeeded | type) != "number" or $m.probe.workload.markersSeeded < 1 or $m.probe.workload.markersSeeded > $m.probe.workload.loadedPairs
+                 or ($m.probe.workload.tombstoneId | type) != "number"
+                 or ($m.probe.marker | type) != "object" or ($m.probe.marker.requestId | type) != "string" or ($m.probe.marker.requestId | length) == 0
+                 or $m.probe.marker.party != $m.probe.workload.tombstoneId or $m.probe.marker.source != "legacy_review"
+                 or ([ "add.reason_kept", "add.reason_removed" ] | index($m.probe.marker.action)) == null)
+        then inv("legacy-no-metrics"; {case:$m.case, why:"the marker lookup row carries a real lookup over a seeded workload: the declared size plus the pairs seeded is the table it ran against, at least one party-qualified marker was seeded and the one found names the tombstone party, its action and the legacy_review source"}) else empty end ),
       ( if $m.item == 5 and $m.case == "legacy-put"
-            and (($m.put | type) != "object" or ($m.put.bodyBytes | type) != "number" or ($m.put.ms | type) != "number" or $m.put.status != "200" or ($m.put.appPeakKb | type) != "number"
-                 or ($m.put.route | type) != "string" or ($m.put.route | length) == 0
-                 or ($m.put.boundary | type) != "object" or $m.put.boundary.fitStatus != "200" or $m.put.boundary.nextStatus != "413" or ($m.put.boundary.fitBytes | type) != "number" or ($m.put.boundary.nextBytes | type) != "number"
-                 or $m.put.bodyBytes != $m.put.boundary.fitBytes or $m.put.boundary.fitBytes > $cap or $m.put.boundary.nextBytes <= $cap
-                 or ($m.put.boundary.nextBytes - $m.put.boundary.fitBytes) <= 0 or ($m.put.boundary.nextBytes - $m.put.boundary.fitBytes) > 256
-                 or ($m.put.outcome | type) != "object" or $m.put.outcome.dbOk != true or ($m.put.outcome.rowsBefore | type) != "number" or ($m.put.outcome.rowsAfter | type) != "number")
-        then inv("legacy-no-metrics"; {case:$m.case, cap:$cap, why:"the legacy PUT row is the exact maximum body: 200 at the largest body within maxRequestBytes, 413 at the next (one old-form entry larger, at most 256 bytes more: an entry is a id of at most 20 digits, a 64-hex hash and a choice), the database state before and after, and the instrument set"}) else empty end ),
+            and (($m.put | type) != "object" or $m.put.status != "200" or ($m.put.ms | type) != "number" or ($m.put.appPeakKb | type) != "number" or ($m.put.route | type) != "string" or ($m.put.route | length) == 0
+                 # the accepted subset is the approved maximum of 100 decisions, all applied, and its body is measured: it holds at least the 100 decisions the format needs, and was accepted within the cap
+                 or $m.put.decisions != 100 or $m.put.accepted != 100 or ($m.put.bodyBytes | type) != "number" or $m.put.bodyBytes < (100 * legacyMinEntry + 99) or $m.put.bodyBytes > $cap
+                 # the seeded workload is bound to the declared size: the table is the size plus the pairs seeded, and at least the 100 decisions were seeded for this tombstone
+                 or ($m.put.workload | type) != "object" or $m.put.workload.backgroundRows != $m.size or ($m.put.workload.loadedPairs | type) != "number" or $m.put.workload.loadedPairs < 100
+                 or $m.put.tableRowsBefore != ($m.size + $m.put.workload.loadedPairs) or ($m.put.workload.tombstoneId | type) != "number"
+                 # the effects, verified in the database: Keep keeps the text, Blank blanks it, one party-qualified marker and one audit per decision, from the legacy_review source
+                 or ($m.put.effects | type) != "object" or $m.put.effects.dbOk != true
+                 or ($m.put.effects.kept | type) != "number" or ($m.put.effects.blanked | type) != "number" or $m.put.effects.kept < 1 or $m.put.effects.blanked < 1 or ($m.put.effects.kept + $m.put.effects.blanked) != 100
+                 or $m.put.effects.rowsBlank != $m.put.effects.blanked or $m.put.effects.rowsWithText != $m.put.effects.kept
+                 or ($m.put.effects.markers | type) != "object" or $m.put.effects.markers.count != 100 or $m.put.effects.markers.party != $m.put.workload.tombstoneId or $m.put.effects.markers.partyQualified != true or $m.put.effects.markers.source != "legacy_review"
+                 or $m.put.effects.markers.byAction["add.reason_kept"] != $m.put.effects.kept or $m.put.effects.markers.byAction["add.reason_removed"] != $m.put.effects.blanked
+                 or ($m.put.effects.audits | type) != "object" or $m.put.effects.audits.count != 100 or $m.put.effects.audits.source != "legacy_review"
+                 # the 101st decision is COUNT validation: a request with 101 decisions is refused with a client error and changes nothing (any 4xx; no byte-cap status is asked for)
+                 or ($m.put.countRefusal | type) != "object" or $m.put.countRefusal.decisions != 101 or (($m.put.countRefusal.status | type) != "string") or (($m.put.countRefusal.status | test("^4[0-9][0-9]$")) | not) or $m.put.countRefusal.unchanged != true)
+        then inv("legacy-no-metrics"; {case:$m.case, cap:$cap, why:"the legacy PUT row is the accepted 100-decision subset: its measured body bytes, the instrument set, a workload bound to the declared size, and the verified database effects (kept and blanked text, party-qualified markers and audits); the 101st decision is refused by count validation"}) else empty end ),
       # The labels are bound to the data: a row proves what its case name, size and mode claim. The reasons it was loaded with, the table it ran against (background size plus
       # those reasons, immediately before each operation), the direction of the reasons it listed, and the outcome the database shows after a deletion must all agree with the label.
       ( lblk($m) as $k
@@ -542,7 +566,7 @@ qc1_judge_rules() { cat <<'JQ'
               ["heapAfterGcBytes", $m.browser.heapAfterGcBytes], ["domNodes", $m.browser.domNodes], ["longTaskMs", $m.browser.longTaskMs], ["secureContext", $m.browser.secureContext],
               ["clickP95Ms", $m.browser.clicks.p95Ms], ["clickMaxMs", $m.browser.clicks.maxMs], ["navNextPageMax", $m.browser.navigation.nextPage.maxMs],
               ["navJumpMax", $m.browser.navigation.jump.maxMs], ["navNextUnchosenMax", $m.browser.navigation.nextUnchosen.maxMs], ["navNextChangedMax", $m.browser.navigation.nextChanged.maxMs],
-              ["pagesCount", $m.browser.pages.count], ["pageResponseBytesMax", $m.browser.pages.responseBytesMax], ["pageRequestMsMax", $m.browser.pages.requestMsMax], ["pageReadMsMax", $m.browser.pages.readMsMax], ["pagesAbsentFields", (if ($m.browser.pages.absent | type) == "object" and ([$m.browser.pages.absent[]] | add) == 0 then 0 else null end)],
+              ["pagesCount", $m.browser.pages.count], ["pageResponseBytesMax", $m.browser.pages.responseBytesMax], ["pageRequestMsMax", $m.browser.pages.requestMsMax], ["pageReadMsMax", $m.browser.pages.readMsMax], ["pagesIncomplete", (if ($m.browser.pages.incomplete | type) == "number" and $m.browser.pages.incomplete == 0 then 0 else null end)], ["pagesAbsentFields", (if ($m.browser.pages.absent | type) == "object" and ([$m.browser.pages.absent[]] | add) == 0 then 0 else null end)],
               ["pagesWalks", (if ($m.browser.pages.walks | type) == "array" and ($m.browser.pages.walks | length) >= 2 then ($m.browser.pages.walks | length) else null end)], ["pageParseMsMax", $m.browser.pages.parseMsMax], ["pageParseMsTotal", $m.browser.pages.parseMsTotal],
               ["digestPath", $m.browser.digest.path], ["digestBuildMs", $m.browser.digest.buildMs], ["digestPreimageBytes", $m.browser.digest.preimageBytes], ["pressResponseMs", $m.browser.press.responseMs],
               ["phaseWalkWalBytes", $m.browser.phases.walk.walBytes], ["phaseInteractionsWalBytes", $m.browser.phases.interactions.walBytes], ["phasePressWalBytes", $m.browser.phases.press.walBytes],
@@ -563,7 +587,9 @@ qc1_judge_rules() { cat <<'JQ'
             # The path that ran must be one the page could have taken: webcrypto needs crypto.subtle (a secure context that was not stripped). A fallback in a secure context
             # is LEGITIMATE (a preimage above 16 MiB, or the product's known-answer self-test failing), so it is recorded against the expected path, never judged as a fault.
             elif ($m.browser.digest.path != "webcrypto" and $m.browser.digest.path != "fallback") or ($m.browser.noSubtle == true and $m.browser.digest.path != "fallback") or ($m.browser.secureContext != true and $m.browser.digest.path == "webcrypto") then inv("browser-digest-path"; {digest:$m.browser.digest, noSubtle:$m.browser.noSubtle, secureContext:$m.browser.secureContext})
-            elif ($m.browser.pages.count // 0) < (($m.reasons + 99) / 100 | floor) then inv("browser-pages-short"; {pages:$m.browser.pages.count, reasons:$m.reasons})
+            # Every response of the first read AND of the reload is accounted for: each walk started at least a whole walk of pages, and every one of them completed.
+            elif ($m.browser.pages.walks | length) < 2 or ([ $m.browser.pages.walks[] | select(.walk == 1 or .walk == 2) | select((.started // 0) < (($m.reasons + 99) / 100 | floor)) ] | length) > 0 then inv("browser-pages-short"; {pages:$m.browser.pages.count, walks:$m.browser.pages.walks, reasons:$m.reasons})
+            elif ($m.browser.pages.incomplete // 1) != 0 or ([ $m.browser.pages.walks[] | select((.incomplete // 1) != 0 or (.completed // -1) != (.started // -2)) ] | length) > 0 then inv("browser-pages-incomplete"; {incomplete:$m.browser.pages.incomplete, walks:$m.browser.pages.walks})
             else empty end
         else empty end ),
       ( if $m.item == 10 then browser_budgets($m) else empty end )
@@ -614,7 +640,7 @@ qc1_legacy_want_json() { # sizes
   local sizes
   sizes="$(qc1_list "$1" | paste -sd, -)" || return 1
   jq -nc --argjson sizes "[$sizes]" --argjson lc "[$QC1_LEGACY_COUNTS]" '
-    [ $sizes[] as $s | ($lc[] as $k | select($k <= $s) | {item:4,size:$s,case:("legacy-discovery-" + ($k|tostring))}), {item:4,size:$s,case:"legacy-discovery-probe"}, {item:5,size:$s,case:"legacy-put"} ]'
+    [ $sizes[] as $s | ($lc[] as $k | select($k <= $s) | {item:4,size:$s,case:("legacy-discovery-" + ($k|tostring))}), {item:4,size:$s,case:"legacy-discovery-probe"}, (select($s >= 100) | {item:5,size:$s,case:"legacy-put"}) ]'
 }
 
 # Said out loud in every evidence status: what this harness does NOT measure or only approximates, so a clean run is not read as more than it is.
@@ -775,9 +801,11 @@ qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
                    rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0) } end) } ]'
 }
 
-# The page summary rebuilt from the observations the measurement process persisted as each review page completed (QC1_OUT.pages.jsonl, one JSON object a line): what a run
-# that died before it could write its result still has. The page's own read and parse times are not in the file (they live in the page), so they are ABSENT for every page and
-# the row can never pass as complete; the bytes, the request time and the Node-side parse are, and a slow request is judged from them. Same shape as summarizePages.
+# The page summary rebuilt from the observations the measurement process persisted (QC1_OUT.pages.jsonl, one JSON object a line): what a run that died before it could write
+# its result still has. A response is a "start" line when it arrives and a "done" line when its body has been read (and a "timeout" line if the drain gave up on it); one with no
+# "done" is an EXPLICIT missing entry (completed:false, null figures), so a page that never finished is counted, not forgotten. Lines with no event are done records. The page's own
+# read and parse times are not in the file (they live in the page), so they are ABSENT for every page and the row can never pass as complete; the bytes, the request time and the
+# Node-side parse are, and a slow or unfinished request is judged from them. Same shape as summarizePages.
 qc1_pages_from_jsonl() { # file
   jq -sc '
     def col(k): map(.[k]) | map(select(type == "number"));
@@ -785,12 +813,20 @@ qc1_pages_from_jsonl() { # file
     def sm(k): col(k) as $c | if ($c | length) > 0 then ($c | add) else null end;
     def p95(k): col(k) | sort as $c | if ($c | length) > 0 then $c[([(($c | length) * 0.95 | ceil), 1] | max) - 1] else null end;
     def absent(k): length - (col(k) | length);
-    def summary: { count: length, responseBytesMax: mx("bytes"), responseBytesTotal: sm("bytes"), requestMsMax: mx("requestMs"), requestMsP95: p95("requestMs"),
+    def inc: map(select(.completed == false));
+    def summary: { count: length, started: length, completed: (length - (inc | length)), incomplete: (inc | length), pendingAgeMsMax: (inc | mx("ageMs")),
+                   responseBytesMax: mx("bytes"), responseBytesTotal: sm("bytes"), requestMsMax: mx("requestMs"), requestMsP95: p95("requestMs"),
                    readMsMax: null, readMsTotal: null, parseMsMax: null, parseMsTotal: null, nodeParseMsMax: mx("nodeParseMs"),
                    absent: { bytes: absent("bytes"), requestMs: absent("requestMs"), readMs: length, parseMs: length, nodeParseMs: absent("nodeParseMs") } };
-    if length == 0 then null else
-      summary + { walks: (group_by(.walk // 1) | map({walk: (.[0].walk // 1)} + summary)), parseKind: "rebuilt from the persisted observations: the page-side read and parse times are not in them" }
-    end' "$1"
+    ( group_by(.seq)
+      | map( ( map(select(.event == "done" or .event == null)) | .[0] ) as $d
+             | if $d != null then ($d | del(.event))
+               else ( ( map(select(.event == "start")) | .[0] ) // .[0] ) as $s
+                    | ( map(select(.event == "timeout")) | .[0] ) as $t
+                    | { seq: $s.seq, walk: ($s.walk // 1), status: $s.status, foreignOrigin: $s.foreignOrigin, bytes: null, requestMs: null, nodeParseMs: null, completed: false, ageMs: ($t.ageMs // null) } end ) ) as $obs
+    | if ($obs | length) == 0 then null else
+        ($obs | summary) + { walks: ($obs | group_by(.walk // 1) | map({walk: (.[0].walk // 1)} + summary)), parseKind: "rebuilt from the persisted observations: the page-side read and parse times are not in them" }
+      end' "$1"
 }
 
 # The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a

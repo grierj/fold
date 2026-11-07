@@ -391,7 +391,7 @@ gen() { # sizes counts [dense]
     for bc in $(qc1_list "$QC1_BROWSER_COUNTS") $dlist; do
       (( bc <= s )) || continue
       np=$(( (bc + 99) / 100 )); pre=$(( 35 + 40 * bc ))
-      pages="{\"count\":$(( np * 2 )),\"responseBytesMax\":30000,\"responseBytesTotal\":$(( bc * 600 )),\"requestMsMax\":20,\"requestMsP95\":15,\"readMsMax\":3,\"readMsTotal\":$(( np * 4 )),\"parseMsMax\":5,\"parseMsTotal\":$(( np * 6 )),\"nodeParseMsMax\":4,\"absent\":{\"bytes\":0,\"requestMs\":0,\"readMs\":0,\"parseMs\":0,\"nodeParseMs\":0},\"walks\":[{\"walk\":1,\"count\":$np,\"requestMsMax\":20},{\"walk\":2,\"count\":$np,\"requestMsMax\":18}]}"
+      pages="{\"count\":$(( np * 2 )),\"started\":$(( np * 2 )),\"completed\":$(( np * 2 )),\"incomplete\":0,\"pendingAgeMsMax\":null,\"responseBytesMax\":30000,\"responseBytesTotal\":$(( bc * 600 )),\"requestMsMax\":20,\"requestMsP95\":15,\"readMsMax\":3,\"readMsTotal\":$(( np * 4 )),\"parseMsMax\":5,\"parseMsTotal\":$(( np * 6 )),\"nodeParseMsMax\":4,\"absent\":{\"bytes\":0,\"requestMs\":0,\"readMs\":0,\"parseMs\":0,\"nodeParseMs\":0},\"walks\":[{\"walk\":1,\"count\":$np,\"started\":$np,\"completed\":$np,\"incomplete\":0,\"requestMsMax\":20},{\"walk\":2,\"count\":$np,\"started\":$np,\"completed\":$np,\"incomplete\":0,\"requestMsMax\":18}]}"
       digest="{\"path\":\"webcrypto\",\"expectedPath\":\"webcrypto\",\"matchesExpectation\":true,\"subtleCalls\":2,\"subtleBytes\":$(( pre + 4 )),\"subtleMs\":3,\"preimageBytes\":$pre,\"buildMs\":40}"
       ph="{\"walBytes\":5000,\"auditActionsDelta\":{\"x.view\":$np},\"auditRows\":{\"before\":1,\"after\":2},\"tableRows\":{\"before\":$(( s + bc )),\"after\":$(( s + bc ))},\"auditBytes\":{\"before\":100,\"after\":200,\"delta\":100}}"
       printf '{"status":"measured","item":10,"case":"browser-panel-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"window":{"ms":100,%s},"browser":{"walkTotal":%s,"renderReadyMs":4000,"walkEndMs":3900,"firstPage":{"firstInteractiveMs":600,"itemsRendered":%s},"itemsRendered":%s,"heapAfterGcBytes":5000000,"domNodes":9000,"longTaskMs":900,"secureContext":true,"noSubtle":false,"clicks":{"count":30,"p95Ms":40,"maxMs":60},"navigation":{"nextPage":{"maxMs":50},"jump":{"maxMs":60},"nextUnchosen":{"maxMs":70},"nextChanged":{"maxMs":80}},"pageRequests":%s,"pageResponseBytes":%s,"apiOrigin":"real","press":{"observed":true,"status":"409","bodyBytes":1200,"responseMs":900},"reload":{"unchosenAfterReload":1},"pages":%s,"digest":%s,"phases":{"walk":%s,"interactions":%s,"press":%s}}}\n' \
@@ -436,27 +436,30 @@ jq -e 'select(.failure == "unit") | .budget == 10000 and .ms == 12000' "$WORK/fa
 { gen 10,100 0,10,100,1000,10000; } >"$WORK/e.jsonl"
 status="$(status_of "$WORK/e.jsonl")"
 [[ "$(jq -c '.missing' <<<"$status")" == '[]' && "$(jq -c '.invalid' <<<"$status")" == '[]' ]] || { echo "healthy rows are not clean: $status" >&2; exit 1; }
-# The legacy rows the matrix owes PER SIZE are named as pending even when no row mentions them: never complete. Size 10 owes discovery with 0 pairs, the probe and the
-# PUT; size 100 adds 100 pairs (10,000 does not fit).
-[[ "$(jq -c '.pending | map(.case + "@" + (.size | tostring)) | sort' <<<"$status")" == '["legacy-discovery-0@10","legacy-discovery-0@100","legacy-discovery-100@100","legacy-discovery-probe@10","legacy-discovery-probe@100","legacy-put@10","legacy-put@100"]' && "$(jq -r .complete <<<"$status")" == false ]]
+# The legacy rows the matrix owes PER SIZE are named as pending even when no row mentions them: never complete. Size 10 owes discovery with 0 pairs and the probe; size 100
+# adds 100 pairs and the PUT (the approved PUT takes up to 100 decisions, so it is owed only where 100 pairs can be seeded; 10,000 pairs do not fit at 100).
+[[ "$(jq -c '.pending | map(.case + "@" + (.size | tostring)) | sort' <<<"$status")" == '["legacy-discovery-0@10","legacy-discovery-0@100","legacy-discovery-100@100","legacy-discovery-probe@10","legacy-discovery-probe@100","legacy-put@100"]' && "$(jq -r .complete <<<"$status")" == false ]]
 [[ "$(jq -c '.pending | map(.item) | unique' <<<"$status")" == '[4,5]' ]]
 # set-v1 has no per-reason body growth to speak of (18.9 million reasons fit the cap): healthy rows report no budget finding, and a body over the cap
 # would be one (tested below), never an invalid run.
 [[ "$(jq -c '.budgetFailures' <<<"$status")" == '[]' ]]
 { cat "$WORK/e.jsonl"; echo "$PEND"; } >"$WORK/ec.jsonl"
 status="$(status_of "$WORK/ec.jsonl")"
-[[ "$(jq -r .complete <<<"$status")" == false && "$(jq -c '.pending | map(.item) | unique' <<<"$status")" == '[4,5]' && "$(jq -r '.pending | length' <<<"$status")" == 7 ]]   # a runner placeholder row clears nothing
+[[ "$(jq -r .complete <<<"$status")" == false && "$(jq -c '.pending | map(.item) | unique' <<<"$status")" == '[4,5]' && "$(jq -r '.pending | length' <<<"$status")" == 6 ]]   # a runner placeholder row clears nothing
 # Item 4 and the legacy PUT measured (T07B-3a landed): complete.
 # One legacy row set per size, as T07B-3a will produce it: discovery with each count that fits, the marker lookup, and a real PUT. Every row carries real metrics.
 legacy_rows() { # sizes
-  local s k fit=6291400
+  local s k
   for s in $(qc1_list "$1"); do
     for k in $(qc1_list "$QC1_LEGACY_COUNTS"); do
       (( k <= s )) || continue
       printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a"},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
     done
-    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"marker":"legacy-marker","route":"/api/v1/admin/users/ID/legacy-reasons/marker",%s}}\n' "$s" "$(ins "$(( s + 10 ))")"
-    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"bodyBytes":%s,"ms":50,"status":"200","appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","boundary":{"fitBytes":%s,"nextBytes":%s,"fitStatus":"200","nextStatus":"413"},"outcome":{"dbOk":true,"rowsBefore":%s,"rowsAfter":%s},%s}}\n' "$s" "$fit" "$fit" "$(( fit + 120 ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(ins "$(( s + 10 ))")"
+    # the marker lookup: a workload of 20 pairs with 5 party-qualified markers seeded for tombstone 7, one found
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
+    # the legacy PUT: the accepted 100-decision subset of 120 seeded pairs (50 Keep, 50 Blank), its measured body, the verified effects, and the 101st decision refused by count validation
+    (( s >= 100 )) || continue
+    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","decisions":100,"accepted":100,"bodyBytes":17500,"workload":{"backgroundRows":%s,"loadedPairs":120,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"}},"countRefusal":{"decisions":101,"status":"400","unchanged":true},%s}}\n' "$s" "$s" "$(ins "$(( s + 120 ))")"
   done
 }
 { cat "$WORK/e.jsonl"
@@ -702,7 +705,8 @@ mut dig-webcrypto-insecure "$BP then .browser.secureContext = false else . end";
 mut dig-ok-fallback "$BP then .browser.noSubtle = true | .browser.secureContext = false | .browser.digest.path = \"fallback\" else . end"
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.dig-ok-fallback")")" == true ]]
 mut dig-unknown "$BP then .browser.digest.path = \"inferred\" else . end"; expect_invalid dig-unknown browser-digest-path
-mut pages-short "$BP then .browser.pages.count = 0 else . end"; expect_invalid pages-short browser-pages-short
+mut pages-short "$BP then .browser.pages.walks[0].started = 0 | .browser.pages.walks[0].completed = 0 else . end"; expect_invalid pages-short browser-pages-short
+mut pages-short-reload "$BP then .browser.pages.walks[1].started = 0 | .browser.pages.walks[1].completed = 0 else . end"; expect_invalid pages-short-reload browser-pages-short
 # A browser run that failed part-way leaves a PARTIAL row: the walk's budget failure survives, the row is invalid as incomplete, and the case stays missing.
 mut partial "$BP then .status = \"partial\" | .failed = {phase:\"press\", error:\"the page stopped answering\"} | .browser.walkEndMs = 130000 | .browser.renderReadyMs = 130000 | .browser.clicks.p95Ms = 150 | del(.browser.press) | del(.browser.phases.press) else . end"
 st="$(status_of "$WORK/e2.partial")"
@@ -796,32 +800,80 @@ for drop in '"case":"legacy-discovery-0","size":10,' '"case":"legacy-discovery-1
   [[ "$(legacy_pending "$WORK/e2.nolegacy")" == 1 ]] || { echo "dropping $drop did not leave exactly one pending" >&2; exit 1; }
 done
 mut leg-failed 'if .item == 4 and .case == "legacy-discovery-0" and .size == 10 then .status = "failed" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-failed")" == 1 ]]
-mut leg-placeholder 'if .item == 5 then {status:"measured", item:5, case:"legacy-put", size:.size, workers:0} else . end'; [[ "$(legacy_pending "$WORK/e2.leg-placeholder")" == 2 ]]
+mut leg-placeholder 'if .item == 5 then {status:"measured", item:5, case:"legacy-put", size:.size, workers:0} else . end'; [[ "$(legacy_pending "$WORK/e2.leg-placeholder")" == 1 ]]
 mut leg-wrong-count 'if .item == 4 and .case == "legacy-discovery-100" then .expect.items = 99 else . end'; [[ "$(legacy_pending "$WORK/e2.leg-wrong-count")" == 1 ]]
-# The PUT clears pending only as the EXACT maximum body: 200 at the largest body within maxRequestBytes and 413 at the next, the database state it left, the route and the
-# full instrument set. A tiny sample with a flag, a body that is not the boundary, a boundary that does not straddle the cap, or a PUT without its state or instruments does not.
-lp() { mut "$1" "if .item == 5 and .size == $2 then $3 else . end"; [[ "$(legacy_pending "$WORK/e2.$1")" == 1 ]] || { echo "legacy PUT mutation $1 cleared pending" >&2; exit 1; }; }
-lp leg-put-db 10 '.put.outcome.dbOk = false'
-lp leg-put-nostate 100 'del(.put.outcome.rowsAfter)'
-lp leg-put-refused 100 '.put.status = "413"'
-lp leg-put-nomem 10 'del(.put.appPeakKb)'
-lp leg-put-sample 10 '.put.bodyBytes = 1000 | .put.boundary.fitBytes = 1000 | .put.boundary.nextBytes = 1120'
-lp leg-put-sample-flag 100 '.put.bodyBytes = 1000 | .put.validated = true | del(.put.boundary)'
-lp leg-put-notboundary 10 '.put.bodyBytes = 6000000'
-lp leg-put-gap 100 '.put.boundary.nextBytes = .put.boundary.fitBytes + 5000'
-lp leg-put-nostraddle 10 '.put.boundary.nextBytes = 6291456'
-lp leg-put-overcap 100 '.put.bodyBytes = 6291457 | .put.boundary.fitBytes = 6291457 | .put.boundary.nextBytes = 6291500'
-lp leg-put-fit-refused 10 '.put.boundary.fitStatus = "409"'
-lp leg-put-next-accepted 10 '.put.boundary.nextStatus = "200"'
-lp leg-put-noroute 100 'del(.put.route)'
-lp leg-put-noinstr 10 'del(.put.walBytes)'
-lp leg-put-noaudit 100 'del(.put.auditActionsDelta)'
-lp leg-put-notable 10 'del(.put.tableRowsBefore)'
-lp leg-put-ms-str 100 '.put.ms = "50"'
+# The PUT clears pending only as the ACCEPTED 100-DECISION SUBSET (approved rev8: 1 to 100 decisions, a subset allowed): its measured body, the instrument set, a workload bound to the
+# declared size, the verified database effects (Keep keeps the text, Blank blanks it, one party-qualified marker and audit per decision) and the 101st decision refused by count validation.
+# It is owed only where 100 decisions can be seeded (size 100 here). No 413, no boundary and no byte-cap crossing is asked of it, and none satisfies it.
+lp() { mut "$1" "if .item == 5 and .size == 100 then $2 else . end"; [[ "$(legacy_pending "$WORK/e2.$1")" == 1 ]] || { echo "legacy PUT mutation $1 cleared pending" >&2; exit 1; }; }
+lp leg-put-refused '.put.status = "400"'
+lp leg-put-nomem 'del(.put.appPeakKb)'
+lp leg-put-noroute 'del(.put.route)'
+lp leg-put-noinstr 'del(.put.walBytes)'
+lp leg-put-noaudit 'del(.put.auditActionsDelta)'
+lp leg-put-notable 'del(.put.tableRowsBefore)'
+lp leg-put-ms-str '.put.ms = "50"'
+lp leg-put-sample '.put = {bodyBytes: 1000, ms: 50, status: "200", validated: true, appPeakKb: 2048}'
+lp leg-put-nobytes 'del(.put.bodyBytes)'
+lp leg-put-tiny '.put.bodyBytes = 1000'
+lp leg-put-overcap '.put.bodyBytes = 6291457'
+lp leg-put-99 '.put.decisions = 99 | .put.accepted = 99'
+lp leg-put-101 '.put.decisions = 101 | .put.accepted = 101'
+lp leg-put-partial '.put.accepted = 90'
+# the workload is bound to the declared size and the table the operation saw
+lp leg-put-size '.put.workload.backgroundRows = 1000000'
+lp leg-put-table '.put.tableRowsBefore = 100'
+lp leg-put-table-bg '.put.tableRowsBefore = 1010'
+lp leg-put-few '.put.workload.loadedPairs = 99 | .put.tableRowsBefore = 199'
+lp leg-put-noworkload 'del(.put.workload)'
+lp leg-put-notombstone 'del(.put.workload.tombstoneId)'
+# the effects are verified in the database, not asserted: text kept and blanked, markers and audits qualified by party
+lp leg-put-noeffects 'del(.put.effects)'
+lp leg-put-dbok-only '.put.effects = {dbOk: true}'
+lp leg-put-db '.put.effects.dbOk = false'
+lp leg-put-allkeep '.put.effects.kept = 100 | .put.effects.blanked = 0 | .put.effects.rowsWithText = 100 | .put.effects.rowsBlank = 0 | .put.effects.markers.byAction = {"add.reason_kept": 100, "add.reason_removed": 0}'
+lp leg-put-sum '.put.effects.kept = 51'
+lp leg-put-blank '.put.effects.rowsBlank = 49'
+lp leg-put-text '.put.effects.rowsWithText = 49'
+lp leg-put-markers '.put.effects.markers.count = 99'
+lp leg-put-marker-action '.put.effects.markers.byAction = {"add.reason_kept": 50, "add.reason_removed": 49}'
+lp leg-put-marker-party '.put.effects.markers.party = 8'
+lp leg-put-marker-unqualified '.put.effects.markers.partyQualified = false'
+lp leg-put-marker-source '.put.effects.markers.source = "forward"'
+lp leg-put-audits '.put.effects.audits.count = 99'
+lp leg-put-audit-source '.put.effects.audits.source = "forward"'
+lp leg-put-nomarkers 'del(.put.effects.markers)'
+lp leg-put-noaudits 'del(.put.effects.audits)'
+# the 101st decision is count validation, shown as a refusal that changes nothing; ANY client error will do
+lp leg-put-norefusal 'del(.put.countRefusal)'
+lp leg-put-refusal-200 '.put.countRefusal.status = "200"'
+lp leg-put-refusal-500 '.put.countRefusal.status = "500"'
+lp leg-put-refusal-n '.put.countRefusal.decisions = 100'
+lp leg-put-refusal-changed '.put.countRefusal.unchanged = false'
+# a 413 is NOT required, and is not the only refusal that satisfies it
+mut leg-put-400 'if .item == 5 and .size == 100 then .put.countRefusal.status = "422" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-400")" == 0 ]]
+mut leg-put-413 'if .item == 5 and .size == 100 then .put.countRefusal.status = "413" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-413")" == 0 ]]
+if jq -e '.put | has("boundary")' "$WORK/e2.jsonl" >/dev/null 2>&1; then echo 'qc1: the legacy PUT row still carries a byte-cap boundary' >&2; exit 1; fi
+if grep -nE 'nextStatus|fitStatus.*413|boundary' <(sed -n '/Legacy rows (T07B-3a/,/The labels are bound to the data/p' "$HERE/qc1/lib.sh"); then echo 'qc1: the legacy PUT judge still asks for a byte-cap boundary' >&2; exit 1; fi
 # The marker lookup and the legacy discovery likewise need their route, their source and count, the table they ran against and their instruments.
 lq() { mut "$1" "if $2 then $3 else . end"; [[ "$(legacy_pending "$WORK/e2.$1")" == 1 ]] || { echo "legacy mutation $1 cleared pending" >&2; exit 1; }; }
 lq leg-probe-nofound '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' '.probe.found = false'
 lq leg-probe-nomarker '.item == 4 and .case == "legacy-discovery-probe" and .size == 10' 'del(.probe.marker)'
+# the probe's workload is the declared size plus the pairs seeded, with party-qualified markers seeded for a tombstone, and the marker found names that party
+PRB='.item == 4 and .case == "legacy-discovery-probe" and .size == 100'
+lq leg-probe-size "$PRB" '.probe.workload.backgroundRows = 1000000'
+lq leg-probe-table "$PRB" '.probe.tableRowsBefore = 100'
+lq leg-probe-table-bg "$PRB" '.probe.tableRowsBefore = 1010'
+lq leg-probe-noworkload "$PRB" 'del(.probe.workload)'
+lq leg-probe-nopairs "$PRB" 'del(.probe.workload.loadedPairs)'
+lq leg-probe-nomarkers "$PRB" '.probe.workload.markersSeeded = 0'
+lq leg-probe-toomany "$PRB" '.probe.workload.markersSeeded = 21'
+lq leg-probe-notombstone "$PRB" 'del(.probe.workload.tombstoneId)'
+lq leg-probe-party "$PRB" '.probe.marker.party = 8'
+lq leg-probe-action "$PRB" '.probe.marker.action = "add.reason_reviewed"'
+lq leg-probe-source "$PRB" '.probe.marker.source = "forward"'
+lq leg-probe-reqid "$PRB" '.probe.marker.requestId = ""'
+lq leg-probe-string "$PRB" '.probe.marker = "legacy-marker"'
 lq leg-probe-noroute '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' 'del(.probe.route)'
 lq leg-probe-noinstr '.item == 4 and .case == "legacy-discovery-probe" and .size == 10' 'del(.probe.walBytes)'
 lq leg-probe-lone-timing '.item == 4 and .case == "legacy-discovery-probe" and .size == 100' '.probe = {ms: 3, status: "200", found: true}'
@@ -1008,8 +1060,8 @@ fs="$(full_status "$WORK/full.mislabel3")"; [[ "$(jq -r .releaseEvidence <<<"$fs
 # DUPLICATES: the same (item, size, case) twice is invalid, clears nothing, and cannot stand in for a missing row.
 { cat "$WORK/e2.jsonl"; grep -F '"case":"delete-subject-100-mixed","size":100,' "$WORK/e2.jsonl"; } >"$WORK/e2.dup"
 st="$(status_of "$WORK/e2.dup")"; [[ "$(jq -c '[.invalid[] | select(.failure == "duplicate-row") | [.item, .size, .case, .count]]' <<<"$st")" == '[[6,100,"delete-subject-100-mixed",2]]' && "$(jq -r .complete <<<"$st")" == false ]]
-{ cat "$WORK/e2.jsonl"; grep -F '"case":"legacy-put","size":10,' "$WORK/e2.jsonl"; } >"$WORK/e2.dup-legacy"
-st="$(status_of "$WORK/e2.dup-legacy")"; [[ "$(jq -r '.pending | map(select(.case == "legacy-put" and .size == 10)) | length' <<<"$st")" == 1 && "$(jq -r .complete <<<"$st")" == false ]]
+{ cat "$WORK/e2.jsonl"; grep -F '"case":"legacy-put","size":100,' "$WORK/e2.jsonl"; } >"$WORK/e2.dup-legacy"
+st="$(status_of "$WORK/e2.dup-legacy")"; [[ "$(jq -r '.pending | map(select(.case == "legacy-put" and .size == 100)) | length' <<<"$st")" == 1 && "$(jq -r .complete <<<"$st")" == false ]]
 { cat "$WORK/full.jsonl"; grep -F '"case":"browser-panel-100000","size":1000000,' "$WORK/full.jsonl"; } >"$WORK/full.dup"
 fs="$(full_status "$WORK/full.dup")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false ]]
 # a duplicate under a different STATUS (a failed row beside a measured one) is not a duplicate of a measurement, but it does not make the missing one present either
@@ -1018,7 +1070,7 @@ fs="$(full_status "$WORK/full.failed")"; [[ "$(jq -r .coverage.kind <<<"$fs")" =
 # (2) Legacy rows with a tiny sample, a flag, a lone timing, no state or no instruments clear NOTHING (the mutations above); the complete schema does, and only it.
 [[ "$(legacy_pending "$WORK/e2.jsonl")" == 0 ]]
 grep -v '"item":[45],"case":"legacy' "$WORK/e2.jsonl" | cat - <(jq -c 'select(.item == 5) | .put = {bodyBytes: 1000, ms: 50, status: "200", validated: true, appPeakKb: 2048}' "$WORK/e2.jsonl") >"$WORK/e2.oldsample"
-[[ "$(legacy_pending "$WORK/e2.oldsample")" == 7 ]]
+[[ "$(legacy_pending "$WORK/e2.oldsample")" == 6 ]]
 # (3) The scanner probe is held to exactly what the collector promises.
 PBS='if .item == 8 and .size == 100'
 sp() { mut "$1" "$PBS then .scannerProbe.executions |= ($2) else . end"; expect_invalid "$1" "${3:-scanner-probe-missing}"; }
@@ -1072,11 +1124,56 @@ st="$(qc1_evidence_status "$WORK/crash.jsonl" 100 100 "$WORK/env.json" "$HEAD_FA
 mbp2="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER_SRC")"
 for pat in 'rm -f "$PANEL_OUT" "$PANEL_OUT.pages.jsonl"' 'qc1_pages_from_jsonl "$PANEL_OUT.pages.jsonl"' 'RECORD_STATUS=partial record 10' 'phase:"unknown"'; do grep -qF -- "$pat" <<<"$mbp2" || { echo "qc1: measure_browser_panel lost: $pat" >&2; exit 1; }; done
 grep -qF 'appendFileSync(pagesFile, line)' "$HERE/qc1/panel-measure.mjs"; grep -qF 'observer.startWalk(2)' "$HERE/qc1/panel-driver.mjs"
-grep -qF 'append(JSON.stringify(rec) + "\n")' "$HERE/qc1/page-observer.mjs"
+for pat in 'event: "start"' '{ ...rec, event: "done" }' 'event: "timeout"' 'async drain(' 'observationsWithMissing' 'reconcile()'; do grep -qF -- "$pat" "$HERE/qc1/page-observer.mjs" || { echo "qc1: page-observer lost: $pat" >&2; exit 1; }; done
+grep -qF 'await observer.drain(10000)' "$HERE/qc1/panel-driver.mjs"; grep -qF 'observer.observationsWithMissing()' "$HERE/qc1/panel-driver.mjs"
 # (P3) The generated note says what the clocks are: the page's timestamps, not the Node loop's.
 if grep -n 'Node clock' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-core.mjs" "$HERE/qc1/panel-driver.mjs"; then echo 'qc1: generated text still says Node clock' >&2; exit 1; fi
 grep -qF "every interval of the first load and of the second walk is the PAGE's own clock" "$HERE/qc1/panel-measure.mjs"
 grep -qF 'only a page request' "$HERE/qc1/panel-measure.mjs"
+
+# --- the third recheck: every review response is accounted for, and one that never finished is never valid ----------------------------------------------------
+# THE REVIEW'S CASE: 10 first-read responses, 9 completed reload responses and 1 still pending. (Row browser-panel-1000 would be 10 pages per walk; the fixture's 100-reason
+# case needs one per walk, so the numbers are scaled with the same shape: the reload is one response short of complete.)
+mut inc-measured "$BP then .browser.pages.started = 20 | .browser.pages.completed = 19 | .browser.pages.incomplete = 1 | .browser.pages.absent.bytes = 1 | .browser.pages.absent.requestMs = 1 | .browser.pages.absent.nodeParseMs = 1 | .browser.pages.walks[1].started = 10 | .browser.pages.walks[1].completed = 9 | .browser.pages.walks[1].incomplete = 1 else . end"
+st="$(status_of "$WORK/e2.inc-measured")"
+[[ "$(jq -r .complete <<<"$st")" == false && "$(jq -r '[.invalid[] | select(.failure == "browser-missing" and (.metrics | index("pagesIncomplete")))] | length' <<<"$st")" == 1 && "$(jq -r '.missing | length' <<<"$st")" == 0 ]] || { echo "an unfinished reload response did not make the row incomplete: $(jq -c '[.invalid, .complete]' <<<"$st")" >&2; exit 1; }
+# ...whichever field the lie is in: the walks must reconcile with the totals, completed must equal started, and incomplete must be zero everywhere
+mut inc-total-lie "$BP then .browser.pages.walks[1].incomplete = 1 | .browser.pages.walks[1].completed = 0 else . end"; expect_invalid inc-total-lie browser-pages-incomplete
+mut inc-completed-lie "$BP then .browser.pages.walks[1].completed = 0 else . end"; expect_invalid inc-completed-lie browser-pages-incomplete
+mut inc-top-lie "$BP then .browser.pages.incomplete = 1 else . end"; expect_invalid inc-top-lie browser-missing
+mut inc-gone "$BP then del(.browser.pages.incomplete) else . end"; expect_invalid inc-gone browser-missing
+mut inc-walk-gone "$BP then del(.browser.pages.walks[1].incomplete) else . end"; expect_invalid inc-walk-gone browser-pages-incomplete
+mut inc-started-gone "$BP then del(.browser.pages.walks[1].started) else . end"; expect_invalid inc-started-gone browser-pages-short
+mut inc-reload-short "$BP then .browser.pages.walks[1].started = 0 | .browser.pages.walks[1].completed = 0 else . end"; expect_invalid inc-reload-short browser-pages-short
+# a response still unfinished after more than the 10 s page line is the page-request budget, not "no data"
+mut inc-late "$BP then .browser.pages.incomplete = 1 | .browser.pages.pendingAgeMsMax = 10500 else . end"
+st="$(status_of "$WORK/e2.inc-late")"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request-unfinished") | .ageMs]' <<<"$st")" == '[10500]' && "$(jq -r .complete <<<"$st")" == false ]]
+mut inc-young "$BP then .browser.pages.incomplete = 1 | .browser.pages.pendingAgeMsMax = 9000 else . end"
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request-unfinished")] | length' <<<"$(status_of "$WORK/e2.inc-young")")" == 0 ]]
+# a PARTIAL row (the run stopped, or the process died) with the reload one response short keeps its budget findings and is incomplete
+mut inc-partial "$BP then .status = \"partial\" | .failed = {phase:\"press\", error:\"the page stopped answering\"} | .browser.pages.requestMsMax = 10500 | .browser.pages.incomplete = 1 | .browser.pages.pendingAgeMsMax = 11000 | .browser.pages.walks[1].started = 10 | .browser.pages.walks[1].completed = 9 | .browser.pages.walks[1].incomplete = 1 | del(.browser.press) else . end"
+st="$(status_of "$WORK/e2.inc-partial")"
+[[ "$(jq -c '[.budgetFailures[] | .failure] | sort' <<<"$st")" == '["page-request","page-request-unfinished"]' && "$(jq -r '[.invalid[] | select(.failure == "browser-incomplete")] | length' <<<"$st")" == 1 && "$(jq -r .complete <<<"$st")" == false && "$(jq -r '.missing | map(.case) | index("browser-panel-100") != null' <<<"$st")" == true ]]
+# The persisted file shows an unfinished response as an explicit missing entry: a start with no done (and a timeout line when the drain gave up on it).
+cat >"$WORK/pages2.jsonl" <<'JSONL'
+{"seq":0,"walk":1,"event":"start","status":200,"foreignOrigin":false}
+{"seq":0,"walk":1,"status":200,"foreignOrigin":false,"bytes":30000,"requestMs":12,"nodeParseMs":2,"event":"done"}
+{"seq":1,"walk":2,"event":"start","status":200,"foreignOrigin":false}
+{"seq":1,"walk":2,"status":200,"foreignOrigin":false,"bytes":30100,"requestMs":10400,"nodeParseMs":2.5,"event":"done"}
+{"seq":2,"walk":2,"event":"start","status":200,"foreignOrigin":false}
+{"seq":2,"walk":2,"event":"timeout","ageMs":10250}
+{"seq":3,"walk":2,"event":"start","status":200,"foreignOrigin":false}
+JSONL
+pj="$(qc1_pages_from_jsonl "$WORK/pages2.jsonl")"
+[[ "$(jq -c '[.count, .started, .completed, .incomplete, .pendingAgeMsMax, .requestMsMax, .absent.requestMs, .absent.bytes, (.walks | map([.walk, .started, .completed, .incomplete]))]' <<<"$pj")" == '[4,4,2,2,10250,10400,2,2,[[1,1,1,0],[2,3,1,2]]]' ]] || { echo "rebuilt summary: $(jq -c . <<<"$pj")" >&2; exit 1; }
+jq -nc --argjson pages "$pj" '{status:"partial", item:10, case:"browser-panel-100", size:100, workers:0, reasons:100, browser:{pages:$pages}, failed:{phase:"unknown", error:"x"}}' >"$WORK/crash2.jsonl"
+st="$(qc1_evidence_status "$WORK/crash2.jsonl" 100 100 "$WORK/env.json" "$HEAD_FAKE" 6291456 | jq -c '[.budgetFailures[] | .failure] | sort')"
+[[ "$st" == '["page-request","page-request-unfinished"]' ]] || { echo "a crashed run with unfinished pages: $st" >&2; exit 1; }
+# a file with an old-style record (no event) is a done record
+[[ "$(qc1_pages_from_jsonl "$WORK/pages.jsonl" | jq -c '[.count, .completed, .incomplete]')" == '[3,3,0]' ]]
+# The driver drains before it collects, in EVERY walk, and returns the missing entries too (not just walk 1); the core collects at the walk end and again at the end.
+grep -qF 'await observer.drain(10000);' "$HERE/qc1/panel-driver.mjs"; grep -qF 'observer.observationsWithMissing()' "$HERE/qc1/panel-driver.mjs"
+if grep -n 'observer.observations()' "$HERE/qc1/panel-driver.mjs"; then echo 'qc1: the driver collects only the completed observations' >&2; exit 1; fi
 
 # --- statements: the markers are still the Go source's ------------------------------------
 for which in "${QC1_PLAN_KINDS[@]}"; do

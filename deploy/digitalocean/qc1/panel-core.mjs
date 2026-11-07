@@ -81,8 +81,14 @@ export function summarizePages(list) {
   const maxIf = (rows, k) => (nums(rows, k).length > 0 ? Math.max(...nums(rows, k)) : null);
   const sumIf = (rows, k) => (nums(rows, k).length > 0 ? nums(rows, k).reduce((a, b) => a + b, 0) : null);
   const absent = (rows, k) => rows.length - nums(rows, k).length;
+  const incomplete = (rows) => rows.filter((p) => p?.completed === false);
   const summary = (rows) => ({
+    // count is every response that ARRIVED (started); completed and incomplete reconcile it. An incomplete one has null figures, so it also shows in every absent count.
     count: rows.length,
+    started: rows.length,
+    completed: rows.length - incomplete(rows).length,
+    incomplete: incomplete(rows).length,
+    pendingAgeMsMax: nums(incomplete(rows), "ageMs").length > 0 ? Math.max(...nums(incomplete(rows), "ageMs")) : null,
     responseBytesMax: maxIf(rows, "bytes"),
     responseBytesTotal: sumIf(rows, "bytes"),
     requestMsMax: maxIf(rows, "requestMs"),

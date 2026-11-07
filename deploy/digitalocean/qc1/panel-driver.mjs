@@ -265,12 +265,15 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
     // EVERY review page observation that has completed, in every walk, with the page's own read and parse time merged in by arrival order. If the page is gone (a failed run)
     // the in-page figures are null (absent) and the Node-side observations, which were persisted as they completed, are still returned.
     async pageObservations() {
+      // Drain first: wait (bounded) for every response still in flight, in EVERY walk, so the final collection covers all that arrived; the ones that do not complete stay as
+      // explicit missing entries (completed:false) rather than disappearing.
+      await observer.drain(10000);
       let inPage = [];
       try {
         inPage = await page.evaluate(() => window.__qc.pages.map((p) => ({ r: p.readMs, p: p.parseMs })));
       } catch { /* the page is gone */ }
       const r2 = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : null);
-      return observer.observations().map((o) => ({ ...o, pageReadMs: r2(inPage[o.seq]?.r), pageParseMs: r2(inPage[o.seq]?.p) }));
+      return observer.observationsWithMissing().map((o) => ({ ...o, pageReadMs: o.completed === false ? null : r2(inPage[o.seq]?.r), pageParseMs: o.completed === false ? null : r2(inPage[o.seq]?.p) }));
     },
     async metrics() {
       const cdp = await context.newCDPSession(page);

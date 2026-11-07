@@ -354,64 +354,127 @@ assert.equal(summarizePages(null), null);
   assert.deepEqual(s.absent, { bytes: 1, requestMs: 0, readMs: 1, parseMs: 1, nodeParseMs: 1 });
 }
 
-// --- the page observer: each page is persisted AS IT COMPLETES, through every walk ------------------------------------------------------------------------
+// --- the page observer: each page is recorded when it ARRIVES and persisted as it completes, through every walk ------------------------------------------------
+const resp = (path, { status = 200, body = '{"items":[]}', timing = { startTime: 1, responseEnd: 20 }, origin = "http://127.0.0.1:8080", fail = false, gate = null } = {}) => ({
+  url: () => `${origin}${path}`,
+  status: () => status,
+  body: async () => {
+    if (gate) await gate;
+    if (fail) throw new Error("no body");
+    return Buffer.from(body);
+  },
+  request: () => ({ timing: () => timing }),
+});
+const PAGE = "/api/v1/admin/users/7/erasure-reasons/page";
+const parsed = (lines, event) => lines.map((l) => JSON.parse(l)).filter((x) => x.event === event);
 {
   const lines = [];
   const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async () => {}, clock: () => 0 });
-  const resp = (path, { status = 200, body = '{"items":[]}', timing = { startTime: 1, responseEnd: 20 }, origin = "http://127.0.0.1:8080", fail = false, gate = null } = {}) => ({
-    url: () => `${origin}${path}`,
-    status: () => status,
-    body: async () => {
-      if (gate) await gate;
-      if (fail) throw new Error("no body");
-      return Buffer.from(body);
-    },
-    request: () => ({ timing: () => timing }),
-  });
-  const page = "/api/v1/admin/users/7/erasure-reasons/page";
   await obs.onResponse(resp("/api/v1/auth/me"));
   assert.equal(obs.responses(), 0, "only review pages are observed");
-  await obs.onResponse(resp(page));
-  assert.equal(lines.length, 1, "the first page is already persisted");
-  assert.deepEqual(JSON.parse(lines[0]), { seq: 0, walk: 1, status: 200, foreignOrigin: false, bytes: 12, requestMs: 20, nodeParseMs: 0, });
-  // A slow page still being read is NOT lost to a later failure once it completes, and a pending one is not reported as done.
+  assert.equal(lines.length, 0);
+  await obs.onResponse(resp(PAGE));
+  assert.deepEqual(lines.map((l) => JSON.parse(l).event), ["start", "done"], "arrival, then completion");
+  assert.deepEqual(JSON.parse(lines[0]), { seq: 0, walk: 1, event: "start", status: 200, foreignOrigin: false });
+  assert.deepEqual(JSON.parse(lines[1]), { seq: 0, walk: 1, status: 200, foreignOrigin: false, bytes: 12, requestMs: 20, nodeParseMs: 0, event: "done" });
+  // A slow page is on the file the moment it ARRIVES, and not reported as done until its body has been read.
   let release;
   const gate = new Promise((r) => { release = r; });
-  const pending = obs.onResponse(resp(page, { gate, timing: { startTime: 1, responseEnd: 14000 } }));
-  assert.equal(lines.length, 1);
+  const pending = obs.onResponse(resp(PAGE, { gate, timing: { startTime: 1, responseEnd: 14000 } }));
+  assert.equal(parsed(lines, "start").length, 2, "the slow page's start is already persisted");
+  assert.equal(parsed(lines, "done").length, 1);
   assert.equal(obs.responses(), 2, "a request that has arrived counts for a fresh-traversal proof before it completes");
-  assert.equal(obs.observations().length, 1);
+  assert.equal(obs.observations().length, 1, "completed only");
+  const withMissing = obs.observationsWithMissing();
+  assert.equal(withMissing.length, 2);
+  assert.deepEqual([withMissing[1].completed, withMissing[1].bytes, withMissing[1].requestMs], [false, null, null], "the unfinished one is an explicit missing entry");
+  assert.deepEqual(obs.reconcile(), [{ walk: 1, started: 2, completed: 1, pending: 1 }]);
   release();
   await pending;
-  assert.equal(lines.length, 2);
+  assert.deepEqual(obs.reconcile(), [{ walk: 1, started: 2, completed: 2, pending: 0 }]);
   assert.equal(obs.observations()[1].requestMs, 14000);
-  // walk 1's totals, then the reload is walk 2 and is persisted and kept apart
-  const ws = await obs.walkStats(1);
-  assert.deepEqual(ws, { pageRequests: 2, pageResponseBytes: 24, apiOrigin: "real" });
+  assert.deepEqual(await obs.walkStats(1), { pageRequests: 2, pageResponseBytes: 24, apiOrigin: "real" });
+  // the reload is walk 2, persisted and kept apart
   obs.startWalk(2);
-  await obs.onResponse(resp(page, { timing: { startTime: 1, responseEnd: 11000 } }));
+  await obs.onResponse(resp(PAGE, { timing: { startTime: 1, responseEnd: 11000 } }));
   assert.deepEqual(obs.observations().map((o) => [o.seq, o.walk]), [[0, 1], [1, 1], [2, 2]]);
-  assert.equal(JSON.parse(lines[2]).walk, 2);
-  assert.equal(JSON.parse(lines[2]).requestMs, 11000);
-  const w1 = await obs.walkStats(1);
-  assert.equal(w1.pageRequests, 2, "the reload does not change the first walk's totals");
-  // an unreadable body is recorded with null fields (absent), a non-JSON body has no parse time, a foreign origin and a non-200 make the origin unverified
-  await obs.onResponse(resp(page, { fail: true }));
-  await obs.onResponse(resp(page, { body: "not json" }));
-  assert.deepEqual(JSON.parse(lines[3]), { seq: 3, walk: 2, status: 200, foreignOrigin: false, bytes: null, requestMs: null, nodeParseMs: null });
-  assert.equal(JSON.parse(lines[4]).nodeParseMs, null);
-  assert.equal(JSON.parse(lines[4]).bytes, 8);
+  assert.equal(parsed(lines, "done")[2].walk, 2);
+  assert.equal(parsed(lines, "done")[2].requestMs, 11000);
+  assert.equal((await obs.walkStats(1)).pageRequests, 2, "the reload does not change the first walk's totals");
+  // an unreadable body is recorded with null fields (absent), a non-JSON body has no parse time
+  await obs.onResponse(resp(PAGE, { fail: true }));
+  await obs.onResponse(resp(PAGE, { body: "not json" }));
+  const dones = parsed(lines, "done");
+  assert.deepEqual(dones[3], { seq: 3, walk: 2, status: 200, foreignOrigin: false, bytes: null, requestMs: null, nodeParseMs: null, event: "done" });
+  assert.equal(dones[4].nodeParseMs, null);
+  assert.equal(dones[4].bytes, 8);
+  // a foreign origin and a non-200 make the origin unverified
   const o2 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
-  await o2.onResponse(resp(page, { origin: "http://evil.example" }));
+  await o2.onResponse(resp(PAGE, { origin: "http://evil.example" }));
   assert.equal((await o2.walkStats(1)).apiOrigin, "unverified");
   const o3 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
-  await o3.onResponse(resp(page, { status: 503 }));
+  await o3.onResponse(resp(PAGE, { status: 503 }));
   assert.equal((await o3.walkStats(1)).apiOrigin, "unverified");
   // a walk with a request that never completes gets no totals (null, unverified), after waiting for it
   const o4 = pageObserver({ origin: "http://127.0.0.1:8080", sleep: async () => {} });
-  void o4.onResponse(resp(page, { gate: new Promise(() => {}) }));
+  void o4.onResponse(resp(PAGE, { gate: new Promise(() => {}) }));
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(await o4.walkStats(1, 100), { pageRequests: 1, pageResponseBytes: null, apiOrigin: "unverified" });
+}
+{
+  // DRAIN: the final collection waits (bounded) for everything in flight, in every walk. What does not complete is marked timed out ONCE, persisted, and stays as an explicit entry with the age it reached.
+  let t = 0;
+  const lines = [];
+  const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async (ms) => { t += ms; await new Promise((r) => setTimeout(r, 0)); }, clock: () => t });
+  for (let i = 0; i < 10; i++) await obs.onResponse(resp(PAGE));
+  obs.startWalk(2);
+  for (let i = 0; i < 9; i++) await obs.onResponse(resp(PAGE));
+  let finish;
+  void obs.onResponse(resp(PAGE, { gate: new Promise((r) => { finish = r; }) }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(obs.reconcile(), [{ walk: 1, started: 10, completed: 10, pending: 0 }, { walk: 2, started: 10, completed: 9, pending: 1 }]);
+  assert.equal(await obs.drain(300), 1, "one is still pending after the drain");
+  assert.equal(parsed(lines, "timeout").length, 1);
+  assert.equal(await obs.drain(100), 1);
+  assert.equal(parsed(lines, "timeout").length, 1, "the timeout is persisted once");
+  assert.ok(parsed(lines, "timeout")[0].ageMs >= 300);
+  const all = obs.observationsWithMissing();
+  assert.equal(all.length, 20, "every response that arrived, in both walks");
+  assert.deepEqual(all.filter((o) => o.completed === false).map((o) => [o.seq, o.walk, o.bytes, o.requestMs]), [[19, 2, null, null]]);
+  // ...and the summary the core builds from them says so, never valid
+  const s = summarizePages(all);
+  assert.deepEqual([s.started, s.completed, s.incomplete], [20, 19, 1]);
+  assert.deepEqual(s.walks.map((w) => [w.walk, w.started, w.completed, w.incomplete]), [[1, 10, 10, 0], [2, 10, 9, 1]]);
+  assert.deepEqual(s.absent, { bytes: 1, requestMs: 1, readMs: 20, parseMs: 20, nodeParseMs: 1 }, "these observations carry no page-side times, and the unfinished one carries nothing");
+  assert.ok(s.pendingAgeMsMax >= 300);
+  // if it finishes late, the next collection has it as completed and nothing else changes
+  finish();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(obs.reconcile(), [{ walk: 1, started: 10, completed: 10, pending: 0 }, { walk: 2, started: 10, completed: 10, pending: 0 }]);
+  assert.equal(obs.observationsWithMissing().filter((o) => o.completed === false).length, 0);
+}
+{
+  // THE REVIEW'S CASE through the whole measurement: 10 first responses, 9 completed reload responses and 1 still pending at the end. The row is INCOMPLETE and carries it; the budget
+  // findings of what did finish are kept; it can never be a valid measured case.
+  const lines = [];
+  let t = 0;
+  const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async (ms) => { t += ms; await new Promise((r) => setTimeout(r, 0)); }, clock: () => t });
+  for (let i = 0; i < 10; i++) await obs.onResponse(resp(PAGE, { timing: { startTime: 1, responseEnd: i === 4 ? 10500 : 20 } }));
+  obs.startWalk(2);
+  for (let i = 0; i < 9; i++) await obs.onResponse(resp(PAGE));
+  void obs.onResponse(resp(PAGE, { gate: new Promise(() => {}) }));
+  await new Promise((r) => setTimeout(r, 0));
+  const p = fakePanel({ expected: 1000 });
+  p.pageObservations = async () => {
+    await obs.drain(200);
+    return obs.observationsWithMissing().map((o) => ({ ...o, pageReadMs: o.completed === false ? null : 2, pageParseMs: o.completed === false ? null : 3 }));
+  };
+  clock = 0;
+  const r = await measurePanel(p, { expected: 1000, now, sleep });
+  assert.equal(r.failed, null);
+  assert.deepEqual([r.pages.started, r.pages.completed, r.pages.incomplete], [20, 19, 1]);
+  assert.equal(r.pages.requestMsMax, 10500, "the slow page that did finish keeps its figure beside the unfinished one");
+  assert.deepEqual(r.pages.walks.map((w) => [w.walk, w.incomplete]), [[1, 0], [2, 1]]);
 }
 
 // --- small and boundary reviews -----------------------------------------------------------------------------------------------------------------------
