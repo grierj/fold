@@ -440,25 +440,53 @@ qc1_judge_defs() { cat <<'JQ'
     def explained_case($m): ($m.case | type) == "string" and ($m.case | endswith("-explained"));
     def audit_retention($m):
       ($m.auditRetention) as $a | ($m.explained) as $x
-      | ( if ($x | type) != "object" or $x.status != "200" or ($x.ms | type) != "number" or $x.reasonsKept != 0 or $x.reasonsRemoved != 0
+      | def isnum: type == "number";
+        def num_all($o; $keys): $o | type == "object" and ($keys | all(. as $k | $o[$k] | isnum));
+        # The parameters the statement was run with, checked again from what the row stored: every position against the kind of argument the Go source puts there. The account is the one
+        # the explained deletion deleted; an array position is an id-array literal; a list shorter or longer than its kinds, or naming another account anywhere, fails.
+        def params_ok($i; $acct):
+          ($i.parameterKinds) as $k | ($i.parameterValues) as $v
+          | ($k | type) == "array" and ($v | type) == "array" and ($k | length) >= 8 and ($k | length) == ($v | length) and ($acct | isnum)
+            and ([ range(0; $k | length) as $j
+                   | if $k[$j] == "uid" then $v[$j] == ("'" + ($acct | tostring) + "'")
+                     elif ($k[$j] == "people" or $k[$j] == "requests" or $k[$j] == "invitations") then (($v[$j] | type) == "string" and ($v[$j] | test("^'\\{([0-9]+(,[0-9]+)*)?\\}'$")))
+                     else false end ] | all);
+        # A JIT section is either truly absent (null, and no stray JIT lines in the plan text) or complete: every field the collector promises, numeric, and a total that is the sum of its parts.
+        def jit_ok($p):
+          ($p | has("jit")) and ($p.jitStray == false)
+          and ( $p.jit == null
+                or ( num_all($p.jit; ["functions", "generationMs", "inliningMs", "optimizationMs", "emissionMs", "totalMs"]) and ($p.jit.functions >= 1)
+                     and ($p.jit.options | type) == "string" and ($p.jit.options | length) > 0
+                     and ([ $p.jit.generationMs, $p.jit.inliningMs, $p.jit.optimizationMs, $p.jit.emissionMs ] | all(. >= 0))
+                     and ((($p.jit.generationMs + $p.jit.inliningMs + $p.jit.optimizationMs + $p.jit.emissionMs) - $p.jit.totalMs) | fabs) <= 0.05 ) );
+        ( if ($x | type) != "object" or $x.status != "200" or ($x.ms | type) != "number" or $x.reasonsKept != 0 or $x.reasonsRemoved != 0
                or ($m.outcome | type) != "object" or $m.outcome.dbOk != true or $m.outcome.accountDeleted != "true" or $m.outcome.reasonsBlank != 0 or $m.outcome.reasonsWithText != 0 or $m.outcome.decisionAudits != 0
                or $m.expect.items != 0 or $m.expect.kept != 0 or $m.expect.removed != 0
                or ($x.tableRowsBefore | type) != "number" or $x.tableRowsBefore != $m.size
-          then inv("explained-delete-unverified"; {why:"the explained deletion answered 200, kept and removed nothing, left the database as the zero-reason deletion implies, and ran against the declared table"}) else empty end ),
+               or ($x.targetUserId | isnum | not)
+          then inv("explained-delete-unverified"; {why:"the explained deletion answered 200, kept and removed nothing, left the database as the zero-reason deletion implies, ran against the declared table and names the account it deleted"}) else empty end ),
         ( if ($a | type) != "object" or ($a.statementBlocks | type) != "number" or $a.statementBlocks == 0 then
             inv("audit-plan-missing"; {why:"no plan of the audit-retention report statement was found in the server log for the explained deletion: the capture failed or the statement was not logged"})
           elif $a.statementBlocks != 1 then
             inv("audit-statement-ambiguous"; {blocks:$a.statementBlocks, why:"exactly one logged plan of the report statement is expected for one deletion"})
           else
-            ( $a.identity ) as $i | ( $a.plan.nodes ) as $n
+            ( $a.identity ) as $i | ( $a.plan.nodes ) as $n | ( $a.plan ) as $p
+            | ( [ if ($n | type) == "array" then $n[] | select(.relation == "audit_logs") else empty end ] ) as $sc
+            | ( [ $sc[] | select(.neverExecuted != true) ] ) as $ran
             | ( if ($i | type) != "object" or $i.prefixOk != true or $i.suffixOk != true or $i.piecesInOrder != true or $i.variablePartsNonEmpty != true or $i.parametersAreTarget != true
+                   or $i.tailMatchesSource != true or $i.classificationOk != true
+                   or ($i.targetUserId | isnum | not) or $i.targetUserId != $x.targetUserId or (params_ok($i; $i.targetUserId) | not)
                    or ($i.backendPid | type) != "string" or ($i.backendPid | length) == 0 or ($i.auditUpdatesBefore | type) != "number" or $i.auditUpdatesBefore < 1 or ($i.malformedCountAfter | type) != "number" or $i.malformedCountAfter < 1
                    or ($i.queryTextSha256 | type) != "string" or ($i.queryTextSha256 | test("^[0-9a-f]{64}$") | not) or ($i.queryTextBytes | type) != "number" or $i.queryTextBytes < 1
-                then inv("audit-statement-unproven"; {why:"the logged statement must begin and end with the fixed pieces of the Go source around non-empty parts, take the deleted account as its parameters, and sit in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it", identity:$i}) else empty end ),
-              ( if ($n | type) != "array" or ($n | length) == 0 or ($n[0].totalCost | type) != "number" or ($n[0].planRows | type) != "number" or ($n[0].actualTotalMs | type) != "number" or ($n[0].actualRows | type) != "number"
-                   or ([ $n[] | select(.relation == "audit_logs") ] | length) == 0 or ([ $n[] | select(.relation == "audit_logs") | select((.sharedHit | type) != "number" or (.sharedRead | type) != "number" or (.actualTotalMs | type) != "number") ] | length) > 0
+                then inv("audit-statement-unproven"; {why:"the logged statement must be the Go source text (fixed pieces, subject-mention and malformed-link constants byte for byte, a classification of the source shape), take the complete parameter list with the deleted account at every account position and id arrays at the array positions, and sit in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it", identity:$i}) else empty end ),
+              ( if ($n | type) != "array" or ($n | length) == 0 or (num_all($n[0]; ["startupCost", "totalCost", "planRows", "actualRows", "actualTotalMs"]) | not)
+                   or ($sc | length) == 0 or ($ran | length) == 0
+                   or ([ $sc[] | select(num_all(.; ["startupCost", "totalCost", "planRows"]) | not) ] | length) > 0
+                   or ([ $ran[] | select(num_all(.; ["actualRows", "loops", "actualTotalMs", "sharedHit", "sharedRead"]) | not) ] | length) > 0
                    or ($a.durationMs | type) != "number"
-                then inv("audit-plan-incomplete"; {why:"the plan must give the planner estimates (cost and rows) and the actual time and rows of its top node, the audit_logs scan with its shared buffers and time, and the statement duration"}) else empty end ),
+                then inv("audit-plan-incomplete"; {why:"the plan must give the planner estimates (startup and total cost, rows) and the actual time and rows of its top node, and for every audit_logs scan its estimates and, for every one that ran, its actual rows, loops, time and shared buffers; plus the statement duration"}) else empty end ),
+              ( if ($p | type) != "object" or (jit_ok($p) | not)
+                then inv("audit-jit-malformed"; {why:"a JIT section is truly absent (no JIT lines in the plan) or complete: functions, options, generation, inlining, optimization, emission and total, numeric, the total being the sum of the parts; a section that is partial, non-numeric or has stray JIT lines is malformed", jit:($p.jit // null), jitStray:($p.jitStray // null)}) else empty end ),
               ( if $a.rowLocks != false or ($a.lockWaits | type) != "object" or $a.lockWaits.logged != true or ($a.lockWaits.count | type) != "number"
                    or ($m.autoExplain | type) != "object" or ($m.autoExplain.caveats | type) != "array" or ($m.autoExplain.caveats | length) < 4 or ($m.autoExplain.scope | type) != "string"
                 then inv("audit-caveats-missing"; {why:"the row must say the statement takes no row locks, that log_lock_waits was on with the count it logged, and carry the scan, lock and cluster caveats"}) else empty end )
@@ -1051,6 +1079,7 @@ qc1_plan_nodes() {
       t = line; sub(/^ +/, "", t)
       if (!inplan) next
       if (t ~ /^JIT:/) { injit = 1; next }
+      if (!injit && (t ~ /^Functions: [0-9]/ || t ~ /^Options: Inlining/ || t ~ /^Timing: Generation/)) { stray = 1; next }   # JIT lines with no JIT: header above them: a damaged plan, not an absent section
       if (injit) {
         if (t ~ /^Functions: /) { jf = substr(t, 12) + 0 }
         else if (t ~ /^Options: /) { jo = substr(t, 10) }
@@ -1068,18 +1097,39 @@ qc1_plan_nodes() {
       else if (t ~ /^Sort Method: /) { if (sm == "") { sm = substr(t, 14); sub(/ .*$/, "", sm) } }
       else if (t ~ /^Buffers: shared /) { if (sh == "" && sr == "") { sh = 0; sr = 0; if (match(t, /hit=[0-9]+/)) sh = substr(t, RSTART + 4, RLENGTH - 4) + 0; if (match(t, /read=[0-9]+/)) sr = substr(t, RSTART + 5, RLENGTH - 5) + 0 } }
     }
-    END { emit(); printf "],\"jit\":"
+    END { emit(); printf "],\"jitStray\":%s,\"jit\":", (stray ? "true" : "false")
       if (injit) printf "{\"functions\":%s,\"options\":%s,\"generationMs\":%s,\"inliningMs\":%s,\"optimizationMs\":%s,\"emissionMs\":%s,\"totalMs\":%s}", nz(jf), js(jo), nz(jg), nz(ji), nz(jopt), nz(je), nz(jt)
       else printf "null"
       printf "}\n" }'
 }
 
-# The audit-retention report statement in an auto_explain log, proven to be the application'"'"'s and no other, with its plan. Arguments: the log, the repo root (for the Go source), the id of the
+# The body of a Go raw-string constant (`...`) in account_erasure_audit.go, byte for byte (newlines included), nothing when it is not there.
+qc1_go_raw_const() { # repo-root const-name
+  awk -v name="$2" '
+    !on && $0 ~ ("^[ \t]*const " name " = `") { s = $0; sub(/^[^`]*`/, "", s); on = 1
+      if (s ~ /`/) { sub(/`.*$/, "", s); printf "%s", s; exit } printf "%s\n", s; next }
+    on { if ($0 ~ /`/) { s = $0; sub(/`.*$/, "", s); printf "%s", s; exit } printf "%s\n", $0 }' "$1/account_erasure_audit.go"
+}
+# What the Go source says the report statement is made of beyond its four fixed pieces: the subject-mention and malformed-link texts with each named argument (@uid, @people) numbered $1, $2 ...
+# in order of appearance (what GORM sends), and the kind of argument at each position. One JSON object {mention, link, kinds}; kinds is empty when a constant is missing.
+qc1_audit_expected() { # repo-root
+  local mention link
+  mention="$(qc1_go_raw_const "$1" subjectMention; printf x)"; mention="${mention%x}"
+  link="$(qc1_go_raw_const "$1" auditMalformedConversionLink; printf x)"; link="${link%x}"
+  jq -nc --arg mention "$mention" --arg link "$link" '
+    def toks: [ match("@[a-z]+"; "g").string | ltrimstr("@") ];
+    def number($start): . as $t | reduce (match("@[a-z]+"; "g")) as $m ({out: "", pos: 0, n: $start}; .out += $t[.pos:$m.offset] + "$" + (.n | tostring) | .pos = ($m.offset + $m.length) | .n += 1) | .out + $t[.pos:];
+    ($mention | toks) as $tm | ($link | toks) as $tl
+    | { mention: ($mention | number(1)), link: ($link | number(($tm | length) + 1)), kinds: ($tm + $tl) }
+    | if ($mention | length) == 0 or ($link | length) == 0 or (.kinds | length) == 0 then . + {kinds: []} else . end'
+}
+
+# The audit-retention report statement in an auto_explain log, proven to be the application own and no other, with its plan. Arguments: the log, the repo root (for the Go source), the id of the
 # account the deletion deleted, whether log_lock_waits was on while the log was written. Prints one JSON object; statementBlocks is 0 when the log holds none (the caller marks that INVALID).
 qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(true|false)
-  local log="$1" root="$2" target="$3" lw="$4" blocks n block1 qtext params rest pid line dur sha i p
+  local q log="$1" root="$2" target="$3" lw="$4" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt
   local -a pieces=()
-  local prefix_ok=false suffix_ok=false order_ok=false param_ok=false before=0 after=0 parts_ok=true lockw samples bytes
+  local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 after=0 parts_ok=false lockw samples bytes
   blocks="$(qc1_extract_plans "$log" audit-report)" || return 2
   n="$(grep -c 'duration: .* plan:' <<<"$blocks" || true)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -1088,21 +1138,34 @@ qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(tr
   mapfile -t pieces < <(qc1_go_audit_pieces "$root")
   qtext="$(awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }' <<<"$block1")"
   params="$(awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }' <<<"$block1")"
+  expected="$(qc1_audit_expected "$root")"
+  kinds_json="$(jq -c '.kinds' <<<"$expected")"
   if (( ${#pieces[@]} == 4 )); then
     [[ "$qtext" == "${pieces[0]}"* ]] && prefix_ok=true
     [[ "$qtext" == *"${pieces[3]}" ]] && suffix_ok=true
+    # Everything after the classification must be the Go source's own text, byte for byte: the fixed pieces around the subject-mention and the malformed-link constants with their
+    # named arguments numbered as GORM sends them. The classification is the one part the source generates from its rule table, so it is held to its shape: a CASE that starts and ends
+    # as the source writes it and carries no placeholder.
+    mention="$(jq -j '.mention' <<<"$expected")"; link="$(jq -j '.link' <<<"$expected")"
     rest="${qtext#"${pieces[0]}"}"
-    order_ok=true
-    for i in 1 2; do
-      p="${pieces[$i]}"
-      if [[ "$rest" == *"$p"* ]]; then
-        [[ -n "${rest%%"$p"*}" ]] || parts_ok=false   # a variable part between two fixed pieces is never empty
-        rest="${rest#*"$p"}"
-      else order_ok=false; fi
-    done
-    [[ "$rest" == *"${pieces[3]}" && -n "${rest%"${pieces[3]}"}" ]] || parts_ok=false
+    var1="${rest%%"${pieces[1]}"*}"
+    tail_txt="${rest#"$var1"}"
+    [[ -n "$mention" && -n "$link" && "$tail_txt" == "${pieces[1]}${mention}${pieces[2]}${link}${pieces[3]}" ]] && { order_ok=true; tail_ok=true; }
+    [[ "$var1" == "CASE WHEN "*"ELSE 'RETAIN_UNATTRIBUTED' END" && "$var1" != *'$'* ]] && class_ok=true
+    parts_ok=$class_ok
   fi
-  [[ "$params" == "\$1 = '$target', \$2 = '$target'"* ]] && param_ok=true
+  # The parameters: the complete list the statement takes, in order, $1 to $N with nothing before, between or after, each against the kind of argument the Go source puts at that
+  # position (uid: the deleted account's id; people: an array literal of ids). A list cut short, extended, reordered or naming another account anywhere fails.
+  q="'"
+  values_json="$(jq -nc --arg p "$params" --arg q "$q" '[ $p | scan("\\$([0-9]+) = (" + $q + "(?:[^" + $q + "]|" + $q + $q + ")*" + $q + "|NULL)") | {n: (.[0] | tonumber), v: .[1]} ]')"
+  param_ok="$(jq -nc --argjson kinds "$kinds_json" --argjson vals "$values_json" --arg target "$target" --arg p "$params" --arg q "$q" '
+    ($kinds | length) as $k
+    | $k > 0 and ($vals | length) == $k and ($vals | map(.n)) == [range(1; $k + 1)]
+      and ($vals | map("$" + (.n | tostring) + " = " + .v) | join(", ")) == $p
+      and ([ range(0; $k) as $i | ($kinds[$i]) as $kind | ($vals[$i].v) as $v
+             | if $kind == "uid" then $v == ($q + $target + $q)
+               elif $kind == "people" or $kind == "requests" or $kind == "invitations" then ($v | test("^" + $q + "\\{([0-9]+(,[0-9]+)*)?\\}" + $q + "$"))
+               else false end ] | all)')"
   # where it sits in the log: its backend, and the application's own audit statements around it
   read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }')
   if [[ -n "${line:-}" ]]; then
@@ -1116,11 +1179,12 @@ qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(tr
   jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
     --argjson before "${before:-0}" --argjson after "${after:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson target "$target" --arg params "$params" \
     --argjson pieces "$(printf '%s\n' "${pieces[@]}" | jq -Rsc 'split("\n")[:-1] | map(length)')" --argjson dur "${dur:-null}" --argjson lw "$lw" --argjson lockw "$lockw" --argjson samples "$samples" \
+    --argjson tailok "$tail_ok" --argjson classok "$class_ok" --argjson kinds "$kinds_json" --argjson vals "$values_json" \
     --argjson plan "$(printf '%s\n' "$block1" | qc1_plan_nodes)" '
     { statementBlocks: $blocks,
-      identity: { prefixOk: $prefix, suffixOk: $suffix, piecesInOrder: $order, variablePartsNonEmpty: $parts, parametersAreTarget: $param, parameters: $params, targetUserId: $target,
+      identity: { prefixOk: $prefix, suffixOk: $suffix, piecesInOrder: $order, variablePartsNonEmpty: $parts, parametersAreTarget: $param, parameters: $params, parameterKinds: $kinds, parameterValues: ($vals | map(.v)), tailMatchesSource: $tailok, classificationOk: $classok, targetUserId: $target,
                   backendPid: $pid, auditUpdatesBefore: $before, malformedCountAfter: $after, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces,
-                  proof: "the statement text begins and ends with the Go source'"'"'s fixed pieces around non-empty variable parts, takes the deleted account as its parameters, and ran in the backend of the erasure'"'"'s own audit UPDATEs before it and its diagnostic count after it; the harness ran, re-ran and substituted nothing" },
+                  proof: "the statement text is the Go source text (the fixed pieces, the subject-mention and malformed-link constants byte for byte, a classification of the source shape), it took the complete parameter list the source puts in it (the deleted account at every account position, id arrays at the array positions), and it ran in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it; the harness ran, re-ran and substituted nothing" },
       durationMs: $dur,
       plan: $plan,
       rowLocks: false,

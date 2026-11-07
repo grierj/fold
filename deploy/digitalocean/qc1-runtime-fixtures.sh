@@ -605,4 +605,115 @@ sed -n '/^cleanup() {/,/^}/p' "$RUNNER" | grep -q 'docker volume inspect --forma
 if grep -n 'docker volume rm' "$RUNNER" | grep -v 'fold.qc1.owner' | grep -v '^[0-9]*:      docker volume rm -f "\$VOL"'; then echo 'an unguarded volume removal' >&2; exit 1; fi
 if grep -nE 'docker volume create [^-]|docker volume create "|--name qc1' "$RUNNER"; then echo 'the volume is named' >&2; exit 1; fi
 grep -q '^VOL_TOKEN="\$(cat /proc/sys/kernel/random/uuid)"$' "$RUNNER"
+
+# --- auto_explain / log_lock_waits are never left on in the runner's own database: reset on every exit, --keep and signals included ---------------------------------------------
+# The runner's own functions (cleanup, autoexplain_on/off/reset, await_setting, psql_db, and capture_plans / explained_order_control_delete with the case helpers stubbed) are taken out of the
+# script as they are and run against a stub `docker` that models the one thing that matters here: ALTER SYSTEM writes a pending value, pg_reload_conf makes it active, SHOW reads the active one.
+AEB="$WORK/aebin"; mkdir -p "$AEB"
+cat >"$AEB/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+S="$STUB_STATE"
+dflt() { case "$1" in auto_explain.log_min_duration) echo -1 ;; log_lock_waits) echo off ;; *) echo ;; esac; }
+case "$1" in
+  exec)
+    args=("$@"); sqls=()
+    for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[i]}" == -c ]] && sqls+=("${args[i+1]}"); done
+    if [[ -n "${STUB_FAIL_RESET:-}" && " ${sqls[*]} " == *"auto_explain.log_min_duration = -1"*"RESET log_lock_waits"*"pg_reload_conf"* ]]; then exit 1; fi
+    for sql in "${sqls[@]}"; do
+      case "$sql" in
+        "ALTER SYSTEM SET "*) k="${sql#ALTER SYSTEM SET }"; printf '%s' "${k#* = }" >"$S/pending.${k%% = *}" ;;
+        "ALTER SYSTEM RESET "*) n="${sql#ALTER SYSTEM RESET }"; printf '%s' "$(dflt "$n")" >"$S/pending.$n" ;;
+        "SELECT pg_reload_conf()") if [[ -z "${STUB_NO_RELOAD:-}" ]]; then for p in "$S"/pending.*; do [[ -e "$p" ]] && cp "$p" "$S/active.${p##*/pending.}"; done; fi ;;
+        "SHOW "*) n="${sql#SHOW }"; if [[ -e "$S/active.$n" ]]; then cat "$S/active.$n"; echo; else dflt "$n"; fi ;;
+        *max\(id\)*) echo 0 ;;
+      esac
+    done ;;
+  rm|network|volume) : ;;
+esac
+exit 0
+STUB
+chmod +x "$AEB/docker"
+cat >"$WORK/ae-driver.sh" <<'DRV'
+set -Eeuo pipefail
+exec </dev/null
+RUNNER="$1"; MODE="$2"
+export PATH="$AEB:$PATH"
+KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; APP_STARTED_MS=0; ROOT=/nonexistent
+mkdir -p "$WORK/ae-work"; echo '[]' >"$WORK/ae-work/plan-items.json"; WORK="$WORK/ae-work"
+sleep() { :; }
+src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
+for fn in autoexplain_reset cleanup await_setting psql_db autoexplain_on autoexplain_off capture_plans explained_order_control_delete; do eval "$(src "$fn")"; done
+eval "$(grep -E '^AUTOEXPLAIN_DIRTY=0$' "$RUNNER" | head -n 1)"
+eval "$(grep -E "^trap (cleanup EXIT|'exit (130|143|129)' (INT|TERM|HUP))\$" "$RUNNER")"
+fresh_user() { echo 5; }; load_scenario() { :; }; traverse() { :; }; mint_attempt() { echo id; }; qc1_delete_body_n() { :; }; drop_scenarios() { :; }
+qc1_scheduler_wait() { echo 0; }; quiesce() { :; }; ms() { echo 1; }; table_rows() { echo 5; }; do_delete() { return 1; }
+case "$MODE" in
+  fail7)  autoexplain_on; exit 7 ;;
+  err)    autoexplain_on; false ;;
+  term)   autoexplain_on; kill -TERM $$; : ;;
+  int)    autoexplain_on; kill -INT $$; : ;;
+  hup)    autoexplain_on; kill -HUP $$; : ;;
+  clean)  autoexplain_on; autoexplain_off; exit 0 ;;
+  ok0)    autoexplain_on; exit 0 ;;
+  never)  exit 3 ;;
+  halfon) AUTOEXPLAIN_DIRTY=1; psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null; exit 4 ;;
+  offfail) autoexplain_on; export STUB_NO_RELOAD=1; autoexplain_off ;;
+  capture) capture_plans 100 ;;
+  explained) explained_order_control_delete 100 start ;;
+esac
+DRV
+: >"$WORK/ae.dummy"
+# the driver gets its default signal dispositions back (a background job of a non-interactive shell inherits SIGINT ignored, which bash would then refuse to trap)
+ae_run() { # mode [env...]  -> rc
+  local mode="$1"; shift
+  rm -rf "$WORK/ae-state" "$WORK/ae-work"; mkdir -p "$WORK/ae-state"; : >"$WORK/ae-stub.log"
+  rc=0; env --default-signal=INT,HUP,TERM "$@" AEB="$AEB" WORK="$WORK" STUB_LOG="$WORK/ae-stub.log" STUB_STATE="$WORK/ae-state" bash "$WORK/ae-driver.sh" "$RUNNER" "$mode" >"$WORK/ae.out" 2>&1 || rc=$?
+}
+ae_active() { local n; for n in auto_explain.log_min_duration log_lock_waits; do if [[ -e "$WORK/ae-state/active.$n" ]]; then cat "$WORK/ae-state/active.$n"; else case "$n" in auto_explain.log_min_duration) printf -- -1 ;; *) printf off ;; esac; fi; printf ' '; done; }
+ae_resets() { grep -c 'ALTER SYSTEM SET auto_explain.log_min_duration = -1.*ALTER SYSTEM RESET log_lock_waits.*pg_reload_conf' "$WORK/ae-stub.log" || true; }
+ae_before_rm() { local r d; r="$(grep -n 'ALTER SYSTEM SET auto_explain.log_min_duration = -1.*ALTER SYSTEM RESET log_lock_waits.*pg_reload_conf' "$WORK/ae-stub.log" | head -n 1 | cut -d: -f1)"; d="$(grep -n '^rm -fv' "$WORK/ae-stub.log" | head -n 1 | cut -d: -f1)"; [[ -n "$r" && -n "$d" && "$r" -lt "$d" ]]; }
+# a failure after the enable (the exit status is the failure's own), removed stack: reset first, then the removals, the database ends with both off
+ae_run fail7; [[ "$rc" == 7 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]; ae_before_rm; grep -qx 'qc1 autoexplain_reset=ok' "$WORK/ae.out"; grep -qx 'qc1 result=7 artifacts=.* retained_stack=0' "$WORK/ae.out"
+[[ "$(grep -c '^rm -fv ' "$WORK/ae-stub.log")" == 2 ]]
+# --keep: the same reset, and nothing removed (the stack stays, quiet)
+ae_run fail7 KEEP=1; [[ "$rc" == 7 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]; grep -qx 'qc1 autoexplain_reset=ok' "$WORK/ae.out"; grep -qx 'qc1 result=7 artifacts=.* retained_stack=1' "$WORK/ae.out"
+if grep -q '^rm -fv\|^network rm\|^volume rm' "$WORK/ae-stub.log"; then echo '--keep removed something' >&2; exit 1; fi
+# an error (set -e), and a successful run that never turned it off: the status stays what it was, the reset runs
+ae_run err; [[ "$rc" == 1 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+ae_run ok0 KEEP=1; [[ "$rc" == 0 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+# signals: the status is the signal's (130, 143, 129), the reset still runs
+ae_run term; [[ "$rc" == 143 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]; ae_before_rm
+ae_run int; [[ "$rc" == 130 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+ae_run hup KEEP=1; [[ "$rc" == 129 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+# a failure halfway through the enable (the first ALTER ran, nothing was proven): the flag was set before it, so the reset is still owed and done
+ae_run halfon; [[ "$rc" == 4 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+# a clean on/off leaves nothing owed: no reset statement, and the line says so
+ae_run clean; [[ "$rc" == 0 && "$(ae_resets)" == 0 && "$(ae_active)" == '-1 off ' ]]; grep -qx 'qc1 autoexplain_reset=not-needed' "$WORK/ae.out"
+ae_run never; [[ "$rc" == 3 && "$(ae_resets)" == 0 ]]; grep -qx 'qc1 autoexplain_reset=not-needed' "$WORK/ae.out"
+# the reset itself fails (the daemon refuses it): REPORTED, in the output and a marker file, and the exit status is untouched (7, and 0); the removals still happen unless --keep
+ae_run fail7 STUB_FAIL_RESET=1; [[ "$rc" == 7 && "$(ae_resets)" == 3 ]]   # three tries, all refused; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"; grep -q 'WARNING: auto_explain / log_lock_waits could not be proven off' "$WORK/ae.out"
+[[ "$(grep -c '^rm -fv ' "$WORK/ae-stub.log")" == 2 ]]; grep -q 'the container is removed below' "$WORK/ae.out"; [[ -s "$WORK/ae-work/autoexplain-reset-failed" ]]
+ae_run ok0 STUB_FAIL_RESET=1 KEEP=1; [[ "$rc" == 0 ]]; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"; grep -q 'goes on logging a plan for every statement until you run: docker exec dbcid psql' "$WORK/ae.out"; grep -q "ALTER SYSTEM SET auto_explain.log_min_duration = -1" "$WORK/ae.out"
+[[ -s "$WORK/ae-work/autoexplain-reset-failed" ]]; grep -qx 'qc1 result=0 artifacts=.* retained_stack=1' "$WORK/ae.out"; [[ "$(ae_active)" == '0 on ' ]]   # still on, and the report says so
+# the reload does not take effect: turning it off cannot be proven, the run stops (exit 1), the reset cannot be proven either, and that is reported too
+ae_run offfail; [[ "$rc" == 1 ]]; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"
+# the older plan capture (capture_plans) and the explained deletion, each failing at its delete AFTER the enable, in the real functions
+ae_run capture; [[ "$rc" != 0 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]; grep -qx 'qc1 autoexplain_reset=ok' "$WORK/ae.out"
+ae_run capture KEEP=1; [[ "$rc" != 0 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+ae_run explained; [[ "$rc" != 0 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]; grep -qx 'qc1 autoexplain_reset=ok' "$WORK/ae.out"
+ae_run explained KEEP=1; [[ "$rc" != 0 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off ' ]]
+# only the runner's own database container is touched: every statement of the reset goes to DB_CID, never to another container or a host database
+if grep '^exec ' "$WORK/ae-stub.log" | grep -v '^exec -i dbcid psql -X -U church -d fold ' ; then echo 'a statement went to something other than the runner database' >&2; exit 1; fi
+# static: the order and the shape in the real runner
+cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
+l_k="$(grep -n 'kill "\$p"' <<<"$cl_body" | cut -d: -f1)"; l_r="$(grep -n 'autoexplain_reset' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"
+[[ -n "$l_k$l_r$l_d" && "$l_k" -lt "$l_r" && "$l_r" -lt "$l_d" ]]
+grep -qF "trap '' INT TERM HUP" <<<"$cl_body"; grep -qF 'exit "$rc"' <<<"$cl_body"; ! grep -qE 'rc=\$\(\(|rc=1' <<<"$cl_body"     # the status is the original
+grep -qx "trap 'exit 129' HUP" "$RUNNER"
+ar_body="$(sed -n '/^autoexplain_reset() {/,/^}/p' "$RUNNER")"; [[ "$(grep -c 'timeout 20 docker exec -i "\$DB_CID"' <<<"$ar_body")" -ge 3 ]]; ! grep -qE 'docker (rm|volume|network)|DROP|DELETE|TRUNCATE' <<<"$ar_body"
+ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER")"; [[ "$(sed -n 2p <<<"$ao_body")" == "  AUTOEXPLAIN_DIRTY=1"* ]]                  # the first statement of the enable
+cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER")"; l_f="$(grep -n 'AUTOEXPLAIN_DIRTY=1' <<<"$cp_body" | cut -d: -f1)"; l_a="$(grep -n 'ALTER SYSTEM SET auto_explain.log_min_duration = 0' <<<"$cp_body" | cut -d: -f1)"
+l_w="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_c="$(grep -n 'AUTOEXPLAIN_DIRTY=0' <<<"$cp_body" | cut -d: -f1)"; [[ -n "$l_f$l_a$l_w$l_c" && "$l_f" -lt "$l_a" && "$l_w" -lt "$l_c" ]]
+[[ "$(grep -c 'AUTOEXPLAIN_DIRTY=1' "$RUNNER")" == 2 && "$(grep -c '^  AUTOEXPLAIN_DIRTY=0' "$RUNNER")" == 2 ]]    # exactly the two places that turn it on and the two that prove it off
 echo 'qc1 runtime fixtures: ok'

@@ -139,13 +139,52 @@ JAR="$WORK/cookies" URL=""
 MEASUREMENTS="$WORK/measurements.jsonl"; : >"$MEASUREMENTS"
 SAMPLERS=() CONTAINERS=() NET_ID="" VOL="" APP_CID="" DB_CID="" SIDE_CID="" CURRENT_WORKERS=0 APP_STARTED_MS=0
 APP_CONTAINERS="[]"
+# 1 from just before the first statement that turns auto_explain (or log_lock_waits) on in the runner's own database until the moment both are proven off in a new session.
+# While it is 1, an exit of any kind (a failure, a signal, --keep) owes the database a reset: ALTER SYSTEM is persistent, so a stack kept for inspection would otherwise go on
+# logging a plan for every statement of every session. Set BEFORE the change so a failure halfway through it is covered too.
+AUTOEXPLAIN_DIRTY=0
+
+# Best effort, on the runner's own database container only (never a database the owner supplied: there is none, DB_CID is the container this run started): put auto_explain's
+# threshold back to -1 and log_lock_waits back to its default, reload, and read both back in a new session. Bounded in time (a hung daemon cannot hold an exit), three tries.
+# Succeeds only when both read back as off; says nothing itself, the caller reports.
+# shellcheck disable=SC2329 # called from cleanup.
+autoexplain_reset() {
+  local i a="" b=""
+  [[ -n "$DB_CID" ]] || return 1
+  for i in 1 2 3; do
+    if timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 \
+         -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" -c "ALTER SYSTEM RESET log_lock_waits" -c 'SELECT pg_reload_conf()' </dev/null >/dev/null 2>&1; then
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        a="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW auto_explain.log_min_duration' </dev/null 2>/dev/null || true)"
+        b="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW log_lock_waits' </dev/null 2>/dev/null || true)"
+        [[ "$a" == -1 && "$b" == off ]] && return 0
+        sleep 0.5
+      done
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 # Everything this run made is removed by id; nothing else on the daemon is touched.
+# The original exit status is kept whatever happens here: a failed reset is REPORTED (a line, a marker file and the result line), never turned into the exit status.
 # shellcheck disable=SC2329 # EXIT trap.
 cleanup() {
-  local rc=$? p id
+  local rc=$? p id reset=not-needed
   trap - EXIT
+  trap '' INT TERM HUP   # a second signal must not cut the reset or the removals short
   for p in "${SAMPLERS[@]}"; do kill "$p" 2>/dev/null || true; done
+  if (( AUTOEXPLAIN_DIRTY )); then
+    if autoexplain_reset; then reset=ok; else
+      reset=failed
+      if (( KEEP )); then
+        echo "qc1: WARNING: auto_explain / log_lock_waits could not be proven off in the runner database ${DB_CID:-?}; this retained stack goes on logging a plan for every statement until you run: docker exec ${DB_CID:-ID} psql -U church -d fold -c 'ALTER SYSTEM SET auto_explain.log_min_duration = -1' -c 'ALTER SYSTEM RESET log_lock_waits' -c 'SELECT pg_reload_conf()'" >&2
+      else
+        echo "qc1: WARNING: auto_explain / log_lock_waits could not be proven off in the runner database ${DB_CID:-?}; the container is removed below, which ends it" >&2
+      fi
+      [[ -z "${WORK:-}" || ! -d "$WORK" ]] || echo "auto_explain reset failed; runner database container ${DB_CID:-?}; retained_stack=$KEEP" >"$WORK/autoexplain-reset-failed" 2>/dev/null || true
+    fi
+  fi
   if (( ! KEEP )); then
     for id in "${CONTAINERS[@]}"; do docker rm -fv "$id" >/dev/null 2>&1 || true; done
     [[ -z "$NET_ID" ]] || docker network rm "$NET_ID" >/dev/null 2>&1 || true
@@ -153,12 +192,14 @@ cleanup() {
       docker volume rm -f "$VOL" >/dev/null 2>&1 || true
     fi
   fi
+  echo "qc1 autoexplain_reset=$reset"
   echo "qc1 result=$rc artifacts=$WORK retained_stack=$KEEP"
   exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 note() { printf 'qc1: %s\n' "$*"; }
 ms() { date +%s%3N; }
@@ -830,6 +871,7 @@ make_clean_copy() {
 # statement text, typed by the harness and labelled as such; the application's own logged plan is the evidence that counts.
 capture_plans() { # n
   local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged logged_cont logged_init sql_init sql_cont exec_json actual_rows probe_bloated probe_clean stats_bloated stats_clean idx=false initidx=false
+  AUTOEXPLAIN_DIRTY=1   # owed a reset from here until both are proven off (cleanup does it on any exit)
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration 0 || exit 1   # the capture is really on before anything is run for it
@@ -846,6 +888,7 @@ capture_plans() { # n
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration -1 || exit 1  # and off again before the next measured row
+  AUTOEXPLAIN_DIRTY=0
   docker logs --since "$since" "$DB_CID" >"$WORK/pglog-$n.txt" 2>&1
   # The probe runs AFTER the capture is off and its log is taken (its own EXPLAINs must not be counted as the application's executions) and BEFORE the scenario is dropped.
   # The same statements on the table as the matrix left it (bloated: autovacuum is off and every scenario was loaded and dropped) and, as a SEPARATE labelled observation, on a
@@ -989,6 +1032,7 @@ order_control_delete() { # n which
 # auto_explain (plans WITH actual rows, timing and buffers, as the server is already configured) and log_lock_waits turned on for ONE operation and off again, each change waited
 # for as a new session sees it. Never on for the matrix: log_min_duration 0 logs a plan for every statement of every session, and per-node timing slows each of them.
 autoexplain_on() {
+  AUTOEXPLAIN_DIRTY=1   # before the first change: a failure anywhere after this leaves the reset owed
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" -c "ALTER SYSTEM SET log_lock_waits = on" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration 0 || exit 1
@@ -999,6 +1043,7 @@ autoexplain_off() {
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration -1 || exit 1
   await_setting log_lock_waits off || exit 1
+  AUTOEXPLAIN_DIRTY=0
 }
 # The deletion of an account with no reasons again, at the start and at the end of a size run, with auto_explain on for THAT deletion only: the plan, with actual rows, timing and
 # buffers, of the audit-retention report statement the application itself runs once per erasure (account_erasure_audit.go), found in the server log by its text and PROVEN to be the
@@ -1038,10 +1083,10 @@ explained_order_control_delete() { # n which
   ev="$(qc1_audit_report_evidence "$log" "$ROOT" "$t" true)" || ev='{"statementBlocks":0}'
   { printf '=== audit-report (size %s, %s)\n' "$n" "$which"; qc1_extract_plans "$log" audit-report; } >"$WORK/explain-audit-$which-$n.log"
   record 6 "order-control-delete-$which-explained" "$n" "$(jq -nc --arg st "$DEL_STATUS" --argjson ms "$(( ms1 - ms0 ))" --argjson reqms "$DEL_MS" --argjson kept "$kept" --argjson removed "$removed" --argjson bytes "$body_bytes" \
-      --argjson expect "$expect" --argjson outcome "$outcome" --argjson ev "$ev" --argjson ar0 "$ar0" --argjson ab0 "$ab0" --argjson tr0 "${tr0:-null}" --arg which "$which" \
+      --argjson expect "$expect" --argjson outcome "$outcome" --argjson ev "$ev" --argjson ar0 "$ar0" --argjson ab0 "$ab0" --argjson tr0 "${tr0:-null}" --arg which "$which" --argjson tid "$t" \
       --argjson planner "$(planner_settings)" '
     {reasons:0, bodyBytes:$bytes, expect:$expect, outcome:$outcome,
-     explained:{status:$st, ms:$ms, requestMs:$reqms, reasonsKept:$kept, reasonsRemoved:$removed, auditRowsBefore:$ar0, auditBytesBefore:$ab0, tableRowsBefore:$tr0,
+     explained:{targetUserId:$tid, status:$st, ms:$ms, requestMs:$reqms, reasonsKept:$kept, reasonsRemoved:$removed, auditRowsBefore:$ar0, auditBytesBefore:$ab0, tableRowsBefore:$tr0,
                 note:"this deletion ran with auto_explain (log_min_duration 0, ANALYZE, BUFFERS, per-node timing) and log_lock_waits on, so its time includes that overhead and is NOT comparable with the unexplained controls; it is outside the instrument window"},
      auditRetention:$ev,
      autoExplain:{scope:"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off",

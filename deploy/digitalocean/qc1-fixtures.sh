@@ -382,7 +382,7 @@ PILOT3_AUDIT_LOG="$HERE/testdata/qc1-pilot3-audit-retention.log"
 AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" "$ROOT" 46 true)"
 AUTOEX='{"scope":"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off","settings":{"log_lock_waits":"on"},"caveats":["one execution","log_lock_waits reports only waits longer than deadlock_timeout","no row locks","other sessions in the same log","docker logs --since"]}'
 explained_row() { # which size
-  printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
+  printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s,"targetUserId":46},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
 }
 gen() { # sizes counts [dense]
   local s k d m c kept removed bc K dlist ci np pre pages digest ph probe probec act k9 name item
@@ -2030,4 +2030,117 @@ p1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$(qc1_extract_plans "$HERE/t
 # (the pilot rows' findings are asserted above; this pins that the new requirement is the reason an old row is not clean)
 planner_body="$(sed -n '/^planner_settings() {/,/^}/p' "$RUNNER_SRC")"; grep -qF "'jit', 'jit_above_cost', 'jit_inline_above_cost', 'jit_optimize_above_cost', 'random_page_cost', 'seq_page_cost'" <<<"$planner_body"; grep -qF 'effective_cache_size' <<<"$planner_body"
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'plannerSettings:$planner, estimates:true' <<<"$sp_body"; grep -qF 'planner="$(planner_settings)"' <<<"$sp_body"
+# === review round: the COMPLETE parameter list, a COMPLETE plan, and a JIT section that is truly absent or complete =================================================================
+# (a) THE PARAMETERS. The real statement takes eight: the deleted account at $1 to $6 and $8, an id-array literal at $7. They are parsed from the logged Query Parameters line and held to the kind of
+# argument the Go source puts at each position (qc1_audit_expected: the named arguments of the subject-mention and malformed-link constants, numbered as GORM numbers them).
+[[ "$(qc1_audit_expected "$ROOT" | jq -c .kinds)" == '["uid","uid","uid","uid","uid","uid","people","uid"]' ]]
+[[ "$(jq -c '[.identity.parameterKinds, .identity.parameterValues, .identity.tailMatchesSource, .identity.classificationOk]' <<<"$AUD_EV")" == '[["uid","uid","uid","uid","uid","uid","people","uid"],["'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'{}'"'"'","'"'"'46'"'"'"],true,true]' ]]
+# the source text of the two constants is what the real log holds, byte for byte after the numbering (the tail check is exact, not a prefix)
+[[ "$(qc1_audit_expected "$ROOT" | jq -r '.mention' | head -n 1)" == "actor_id = \$1 OR (target_type = 'user' AND target_id = \$2)" ]]
+pmut() { sed "$1" "$PILOT3_AUDIT_LOG" >"$WORK/aud.$2"; }                              # sed-script name
+pev() { aud "$WORK/aud.$1" "${2:-46}"; }                                              # name [target] -> evidence
+pf() { pev "$1" | jq -c "$2"; }                                                       # name jq-expression
+for k in 2 3 4 5 6 7 8; do   # cut short after $((k-1)) parameters (the first two alone were what the first version checked)
+  pmut "/^\tQuery Parameters:/s/, \\\$$k = .*\$//" "cut$k"
+  [[ "$(pf "cut$k" '[.identity.parametersAreTarget, (.identity.parameterValues | length)]')" == "[false,$((k - 1))]" ]] || { echo "a parameter list cut after $((k - 1)) was accepted: $(pf "cut$k" .identity.parameters)" >&2; exit 1; }
+done
+for k in 1 2 3 4 5 6 8; do   # another account at any one account position
+  pmut "/^\tQuery Parameters:/s/\\\$$k = '46'/\$$k = '47'/" "other$k"
+  [[ "$(pf "other$k" '.identity.parametersAreTarget')" == false ]] || { echo "another account at \$$k was accepted" >&2; exit 1; }
+done
+pmut "/^\tQuery Parameters:/s/\\\$7 = '{}'/\$7 = '46'/" arr-scalar; [[ "$(pf arr-scalar .identity.parametersAreTarget)" == false ]]       # an account where the id array belongs
+pmut "/^\tQuery Parameters:/s/\\\$7 = '{}'/\$7 = '{x}'/" arr-junk;   [[ "$(pf arr-junk .identity.parametersAreTarget)" == false ]]
+pmut "/^\tQuery Parameters:/s/\\\$7 = '{}'/\$7 = '{1,}'/" arr-comma; [[ "$(pf arr-comma .identity.parametersAreTarget)" == false ]]
+pmut "/^\tQuery Parameters:/s/\\\$7 = '{}'/\$7 = NULL/" arr-null;    [[ "$(pf arr-null .identity.parametersAreTarget)" == false ]]
+pmut "/^\tQuery Parameters:/s/\\\$7 = '{}'/\$7 = '{5,60}'/" arr-ids;  [[ "$(pf arr-ids .identity.parametersAreTarget)" == true ]]              # the subject's person ids are an array literal of ids
+pmut "/^\tQuery Parameters:/s/\$/, \$9 = '46'/" extra;               [[ "$(pf extra .identity.parametersAreTarget)" == false ]]          # a ninth parameter the statement does not take
+pmut "/^\tQuery Parameters:/s/\\\$8 = '46'/\$9 = '46'/" gap;          [[ "$(pf gap .identity.parametersAreTarget)" == false ]]            # numbered with a gap
+pmut "/^\tQuery Parameters:/s/\\\$3 = '46', \\\$4 = '46'/\$4 = '46', \$3 = '46'/" swapped; [[ "$(pf swapped .identity.parametersAreTarget)" == false ]]   # out of order
+pmut "/^\tQuery Parameters: /s/Parameters: /Parameters:  /" nolead; [[ "$(pf nolead .identity.parametersAreTarget)" == false ]]          # formatting that is not the logger own is not accepted
+sed "/^\tQuery Parameters:/d" "$PILOT3_AUDIT_LOG" >"$WORK/aud.noparams"; [[ "$(pf noparams '[.identity.parametersAreTarget, (.identity.parameterValues | length)]')" == '[false,0]' ]]
+# the statement text after the classification is the Go source text exactly: a different operator, a renumbered placeholder, another account position in the malformed link
+pmut "s/OR meta_json->>'teenUserId' = CAST(CAST(\\\$6/AND meta_json->>'teenUserId' = CAST(CAST(\$6/" t-op;   [[ "$(pf t-op '[.identity.tailMatchesSource, .identity.piecesInOrder]')" == '[false,false]' ]]
+pmut "s/CAST(CAST(\\\$4 AS bigint)/CAST(CAST(\$5 AS bigint)/" t-num;                                              [[ "$(pf t-num .identity.tailMatchesSource)" == false ]]
+pmut "s/r.decided_by = \\\$8/r.decided_by = \$1/" t-link;                                                          [[ "$(pf t-link .identity.tailMatchesSource)" == false ]]
+pmut "0,/CASE WHEN ip IS NULL/s//CASE WHEN \$9 ip IS NULL/" c-ph;                                                  [[ "$(pf c-ph .identity.classificationOk)" == false ]]   # a placeholder in the generated classification
+pmut "s/ELSE 'RETAIN_UNATTRIBUTED' END/ELSE 'RETAIN_UNATTRIBUTED' END2/" c-end;                                  [[ "$(pf c-end .identity.classificationOk)" == false ]]
+pmut "s/CASE WHEN ip IS NULL/CASE  WHEN ip IS NULL/" c-start;                                                      [[ "$(pf c-start .identity.classificationOk)" == false ]]
+# the judge recomputes the parameter check from what the row stored, so a row edited by hand cannot keep a true flag
+exinv ep-value '.auditRetention.identity.parameterValues[4] = "'"'"'47'"'"'"' audit-statement-unproven
+exinv ep-value-last '.auditRetention.identity.parameterValues[7] = "'"'"'47'"'"'"' audit-statement-unproven
+exinv ep-array '.auditRetention.identity.parameterValues[6] = "'"'"'46'"'"'"' audit-statement-unproven
+exinv ep-trunc '.auditRetention.identity.parameterKinds |= .[0:2] | .auditRetention.identity.parameterValues |= .[0:2]' audit-statement-unproven
+exinv ep-short '.auditRetention.identity.parameterValues |= .[0:2]' audit-statement-unproven
+exinv ep-kinds-null '.auditRetention.identity.parameterKinds = null' audit-statement-unproven
+exinv ep-values-gone 'del(.auditRetention.identity.parameterValues)' audit-statement-unproven
+exinv ep-kind-unknown '.auditRetention.identity.parameterKinds[3] = "other"' audit-statement-unproven
+exinv ep-flag '.auditRetention.identity.parametersAreTarget = false' audit-statement-unproven
+exinv ep-tail '.auditRetention.identity.tailMatchesSource = false' audit-statement-unproven
+exinv ep-class '.auditRetention.identity.classificationOk = false' audit-statement-unproven
+exinv ep-target '.explained.targetUserId = 47' audit-statement-unproven        # the evidence is of another account's deletion
+exinv ep-target-gone 'del(.explained.targetUserId)' explained-delete-unverified
+exinv ep-id-target '.auditRetention.identity.targetUserId = 47' audit-statement-unproven
+mut ep-ids "$EX then .auditRetention.identity.parameterValues[6] = \"'{5,60}'\" else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ep-ids")")" == true ]]
+# real-log evidence for each, through the judge
+for nm in cut3 cut7 other5 other8 arr-scalar extra gap swapped noparams t-op t-num t-link c-ph c-end c-start; do
+  mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-statement-unproven
+done
+mut ev-ok "$EX then .auditRetention = $(pev arr-ids | jq -c .) else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ev-ok")")" == true ]]
+# (b) A COMPLETE PLAN. The audit_logs scan needs its estimates (startup and total cost, rows) and, once it ran, its actual rows, loops, time and shared buffers; the top node too.
+SCANL=45; BUFL=48
+pmut "${SCANL}s/  (cost=0.00..9615649.14 rows=620 width=64)//" p-nocost;                       [[ "$(pf p-nocost '[.plan.nodes | map(select(.relation == "audit_logs")) | length]')" == '[0]' ]]    # no estimates: not even a node
+pmut "${SCANL}s/ (actual time=2153.310..2153.315 rows=0 loops=1)//" p-noactual;                 [[ "$(pf p-noactual '.plan.nodes | map(select(.relation == "audit_logs")) | [.[0].actualRows, .[0].neverExecuted]')" == '[null,false]' ]]
+pmut "${SCANL}s/(actual time=2153.310..2153.315 rows=0 loops=1)/(never executed)/" p-never;      [[ "$(pf p-never '.plan.nodes | map(select(.relation == "audit_logs")) | [.[0].actualRows, .[0].neverExecuted]')" == '[null,true]' ]]
+pmut "${BUFL}d" p-nobuf;                                                                         [[ "$(pf p-nobuf '.plan.nodes | map(select(.relation == "audit_logs")) | [.[0].sharedHit, .[0].sharedRead]')" == '[null,null]' ]]
+pmut "${SCANL}s/loops=1)/loops=x)/" p-noloops;                                                   [[ "$(pf p-noloops '.plan.nodes | map(select(.relation == "audit_logs")) | .[0].loops')" == null ]]
+for nm in p-nocost p-noactual p-never p-nobuf p-noloops; do mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-plan-incomplete; done
+exinv pl-scan-cost '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .totalCost = null else . end)' audit-plan-incomplete
+exinv pl-scan-start '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .startupCost = null else . end)' audit-plan-incomplete
+exinv pl-scan-rows '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .planRows = null else . end)' audit-plan-incomplete
+exinv pl-scan-actual '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .actualRows = null else . end)' audit-plan-incomplete
+exinv pl-scan-loops '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .loops = null else . end)' audit-plan-incomplete
+exinv pl-scan-time '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .actualTotalMs = null else . end)' audit-plan-incomplete
+exinv pl-scan-hit '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .sharedHit = null else . end)' audit-plan-incomplete
+exinv pl-scan-read '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .sharedRead = null else . end)' audit-plan-incomplete
+exinv pl-scan-never '.auditRetention.plan.nodes |= map(if .relation == "audit_logs" then .neverExecuted = true else . end)' audit-plan-incomplete   # none of them ran
+exinv pl-root-start '.auditRetention.plan.nodes[0].startupCost = null' audit-plan-incomplete
+exinv pl-root-actual '.auditRetention.plan.nodes[0].actualRows = null' audit-plan-incomplete
+# a second audit_logs scan that never ran needs only its estimates; the one that ran is still complete
+mut pl-never-extra "$EX then .auditRetention.plan.nodes += [(.auditRetention.plan.nodes | map(select(.relation == \"audit_logs\")) | .[0]) + {neverExecuted:true, actualRows:null, loops:null, actualTotalMs:null, sharedHit:null, sharedRead:null}] else . end"
+[[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.pl-never-extra")")" == true ]]
+exinv pl-never-extra-est '.auditRetention.plan.nodes += [(.auditRetention.plan.nodes | map(select(.relation == "audit_logs")) | .[0]) + {neverExecuted:true, planRows:null}]' audit-plan-incomplete
+# (c) JIT: truly absent is complete; present must be complete; damaged is malformed, never "absent".
+pmut '/^\t\(JIT:\|  Functions:\|  Options:\|  Timing:\)/d' j-absent;       [[ "$(pf j-absent '[.plan.jit, .plan.jitStray]')" == '[null,false]' ]]
+mut ev-j-absent "$EX then .auditRetention = $(pev j-absent | jq -c .) else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ev-j-absent")")" == true ]]
+pmut 's/Generation 21.619 ms,/Generation 21.619 ms (Deform 4.100 ms),/' j-deform;  [[ "$(pf j-deform '.plan.jit.generationMs')" == 21.619 ]]       # the Deform clause some versions add
+mut ev-j-deform "$EX then .auditRetention = $(pev j-deform | jq -c .) else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ev-j-deform")")" == true ]]
+pmut '/^\t  Functions:/d' j-nofunc;                                [[ "$(pf j-nofunc '[.plan.jit.functions, .plan.jit.totalMs]')" == '[null,2093.456]' ]]
+pmut '/^\t  Options:/d' j-noopt;                                   [[ "$(pf j-noopt '.plan.jit.options')" == '""' ]]
+pmut '/^\t  Timing:/d' j-notiming;                                 [[ "$(pf j-notiming '[.plan.jit.functions, .plan.jit.generationMs, .plan.jit.totalMs]')" == '[131,null,null]' ]]
+pmut 's/, Emission 899.524 ms//' j-noemit;                         [[ "$(pf j-noemit '[.plan.jit.emissionMs, .plan.jit.totalMs]')" == '[null,2093.456]' ]]
+pmut 's/, Total 2093.456 ms//' j-nototal;                          [[ "$(pf j-nototal '[.plan.jit.generationMs, .plan.jit.totalMs]')" == '[21.619,null]' ]]
+pmut 's/Optimization 1118.674 ms/Optimization xyz ms/' j-nonnum;   [[ "$(pf j-nonnum '.plan.jit.optimizationMs')" == null ]]
+pmut 's/Total 2093.456 ms/Total 5.000 ms/' j-sum;                  [[ "$(pf j-sum '.plan.jit.totalMs')" == 5.000 ]]
+pmut '/^\tJIT:$/d' j-nohead;                                       [[ "$(pf j-nohead '[.plan.jit, .plan.jitStray]')" == '[null,true]' ]]            # the lines are there, the header is not: damaged, not absent
+pmut '/^\t  Timing:/d;/^\t  Options:/d;/^\tJIT:$/d' j-funconly;     [[ "$(pf j-funconly '[.plan.jit, .plan.jitStray]')" == '[null,true]' ]]
+for nm in j-nofunc j-noopt j-notiming j-noemit j-nototal j-nonnum j-sum j-nohead j-funconly; do mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-jit-malformed; done
+exinv jt-key-gone 'del(.auditRetention.plan.jit)' audit-jit-malformed
+exinv jt-stray '.auditRetention.plan.jitStray = true' audit-jit-malformed
+exinv jt-stray-gone 'del(.auditRetention.plan.jitStray)' audit-jit-malformed
+exinv jt-func-str '.auditRetention.plan.jit.functions = "131"' audit-jit-malformed
+exinv jt-func-zero '.auditRetention.plan.jit.functions = 0' audit-jit-malformed
+exinv jt-gen '.auditRetention.plan.jit.generationMs = null' audit-jit-malformed
+exinv jt-inl '.auditRetention.plan.jit.inliningMs = "x"' audit-jit-malformed
+exinv jt-opt '.auditRetention.plan.jit.optimizationMs = null' audit-jit-malformed
+exinv jt-emit '.auditRetention.plan.jit.emissionMs = null' audit-jit-malformed
+exinv jt-total '.auditRetention.plan.jit.totalMs = null' audit-jit-malformed
+exinv jt-neg '.auditRetention.plan.jit.generationMs = -1' audit-jit-malformed
+exinv jt-options '.auditRetention.plan.jit.options = ""' audit-jit-malformed
+exinv jt-sum '.auditRetention.plan.jit.totalMs = 100' audit-jit-malformed
+exinv jt-plan-null '.auditRetention.plan = null' audit-plan-incomplete
+mut jt-null-ok "$EX then .auditRetention.plan.jit = null else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.jt-null-ok")")" == true ]]
+# the three kinds of finding are distinct codes, so a reader sees which one a row has
+[[ "$(jq -r '[.invalid[] | select(.failure == "audit-jit-malformed")] | length > 0 and (map(.failure) | unique | length) == 1' <<<"$(status_of "$WORK/e2.ev-j-sum")")" == true ]]
+# the runner records the account it deleted beside the evidence, and hands the same id to the evidence function, so the judge can tie the two together
+grep -qF 'explained:{targetUserId:$tid,' <<<"$ex_body"; grep -qF -- '--argjson tid "$t"' <<<"$ex_body"; grep -qF 'qc1_audit_report_evidence "$log" "$ROOT" "$t" true' <<<"$ex_body"
 echo 'qc1 fixtures: ok'
