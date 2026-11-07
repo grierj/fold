@@ -223,7 +223,9 @@ expect_fail() {
   [[ -z "$needle" ]] || grep -qF "$needle" "$WORK/refusal.log"
 }
 observe_services() {
-  local ids
+  # Bash scopes variables dynamically: a loop variable not declared local here would overwrite the caller's variable of the same name. kill_point calls this
+  # from crossing_older_archive_case, whose local "id" (the archive role) it emptied, so the evidence was written to older-archive-.json.
+  local ids id
   ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT")"
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue

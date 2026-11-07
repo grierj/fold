@@ -625,6 +625,7 @@ if [[ "${1:-}" == --fixtures ]]; then
   run_fixture_script qc1-runtime-fixtures.sh
   run_fixture_script runner-compat-fixtures.sh
   run_fixture_script restore-drill-modes-fixtures.sh
+  run_fixture_script restore-crossings-archive-fixtures.sh
   exit 0
 fi
 
