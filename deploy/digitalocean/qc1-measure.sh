@@ -169,7 +169,10 @@ APP_REPO_DIGESTS="$(docker image inspect --format '{{json .RepoDigests}}' "$IMAG
 # that reads the app's process memory) on CPU 0, with the limits --droplet
 # names. Defaults for everything else, as the shipped Compose file runs them.
 # pg_stat_statements and auto_explain are loaded; auto_explain stays off
-# (log_min_duration -1) except while plans are captured.
+# (its default, log_min_duration -1) except while plans are captured. The
+# threshold is deliberately NOT given on this command line: a setting from the
+# command line outranks postgresql.auto.conf, so the ALTER SYSTEM that turns the
+# capture on would be ignored (pilot2: no plan was ever logged).
 CPUSET="${QC1_CPUSET-0}"
 CPUSET_ARGS=(); [[ -z "$CPUSET" ]] || CPUSET_ARGS=(--cpuset-cpus "$CPUSET")
 NET_ID="$(docker network create "qc1-$$-$RANDOM")"
@@ -179,7 +182,7 @@ VOL="$(docker volume create --label "fold.qc1.owner=$VOL_TOKEN")"
 DB_CID="$(docker run -d --network "$NET_ID" --network-alias qc1-db "${CPUSET_ARGS[@]}" --memory "$DB_MEMORY" -v "$VOL:/var/lib/postgresql/data" \
   -e POSTGRES_USER=church -e POSTGRES_PASSWORD=qc1-disposable -e POSTGRES_DB=fold "$PG_IMAGE_ID" \
   -c shared_preload_libraries=pg_stat_statements,auto_explain -c track_io_timing=on -c pg_stat_statements.track=all \
-  -c auto_explain.log_min_duration=-1 -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on -c auto_explain.log_wal=on \
+  -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on -c auto_explain.log_wal=on \
   -c auto_explain.log_timing=on -c auto_explain.log_format=text -c auto_explain.log_nested_statements=off)"
 CONTAINERS+=("$DB_CID")
 for ((i=0;i<120;i++)); do docker exec "$DB_CID" pg_isready -U church -d fold >/dev/null 2>&1 && break; sleep 1; done
@@ -187,6 +190,18 @@ sleep 3 # the entrypoint restarts the server once after initdb
 for ((i=0;i<120;i++)); do docker exec "$DB_CID" pg_isready -U church -d fold >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$DB_CID" pg_isready -U church -d fold >/dev/null
 psql_db -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements' >/dev/null
+# A setting as a NEW session sees it, waited for after a reload (the reload is asynchronous).
+await_setting() { # name value
+  local i v=""
+  for ((i=0;i<100;i++)); do
+    v="$(psql_db -c "SHOW $1" 2>/dev/null || true)"
+    [[ "$v" == "$2" ]] && return 0
+    sleep 0.1
+  done
+  echo "qc1: $1 is '$v', not '$2', ten seconds after the reload" >&2
+  return 1
+}
+await_setting auto_explain.log_min_duration -1 || exit 1   # off at the start: nothing is logged outside the capture
 # Quiesce the database's own competitors: no autovacuum, no timed checkpoint or
 # WAL-triggered one inside a measured operation (the harness checkpoints itself).
 psql_db -c "ALTER SYSTEM SET autovacuum = off" >/dev/null
@@ -261,7 +276,15 @@ new_user() {
 # --- instruments: all through the daemon, none through host paths -------------------------------------
 # App process memory: the helper shares the app's pid namespace, so the app is
 # its pid 1. Peak = VmHWM since a clear_refs reset, minus the RSS before.
-app_status_kb() { docker exec "$SIDE_CID" awk -v k="$1" '$1 == k ":" {print $2}' /proc/1/status; }
+# One read of the helper can fail (an exec under load); three tries, the first success wins.
+app_status_kb() {
+  local i v
+  for i in 1 2 3; do
+    v="$(docker exec "$SIDE_CID" awk -v k="$1" '$1 == k ":" {print $2}' /proc/1/status 2>/dev/null)" && [[ "$v" =~ ^[0-9]+$ ]] && { printf '%s\n' "$v"; return 0; }
+    sleep 0.05
+  done
+  return 1
+}
 app_reset_hwm() { docker exec "$SIDE_CID" sh -c 'echo 5 > /proc/1/clear_refs' >/dev/null 2>&1; }
 # Database memory: the container's own cgroup, read inside it (cgroup v2, then v1).
 db_mem_file() {
@@ -281,6 +304,16 @@ db_mem_start() { # out
 db_mem_stop() {
   docker exec "$DB_CID" touch /tmp/qc1-stop >/dev/null 2>&1 || true
   wait "$DBMEM_PID" 2>/dev/null || true
+}
+# The app's own memory every 100 ms from the helper that shares its pid namespace: "VmRSS VmHWM" per line (see qc1_app_peak).
+app_mem_start() { # out
+  docker exec "$SIDE_CID" sh -c "rm -f /tmp/qc1-app-stop; while [ ! -e /tmp/qc1-app-stop ]; do awk '\$1 == \"VmRSS:\" { r = \$2 } \$1 == \"VmHWM:\" { h = \$2 } END { print r, h }' /proc/1/status; sleep 0.1; done" >"$1" 2>/dev/null &
+  APPMEM_PID=$!
+  SAMPLERS+=("$APPMEM_PID")
+}
+app_mem_stop() {
+  docker exec "$SIDE_CID" touch /tmp/qc1-app-stop >/dev/null 2>&1 || true
+  wait "$APPMEM_PID" 2>/dev/null || true
 }
 # The contact gate's exclusive grant, sampled every 20 ms from a psql session
 # that \watch keeps open. Lines "epoch_ms|gate_count|gate_pids|autovacuum|clients";
@@ -346,8 +379,9 @@ instrumented() {
     hwm_reset="$(app_status_kb VmHWM || true)"
     if [[ "$rss0" =~ ^[0-9]+$ && "$hwm_reset" =~ ^[0-9]+$ ]] && (( hwm_reset <= rss0 + 4096 )); then APP_HWM_RESET=true; fi
   fi
-  : >"$WORK/gate.samples"; : >"$WORK/mem.db"
+  : >"$WORK/gate.samples"; : >"$WORK/mem.db"; : >"$WORK/mem.app"
   db_mem_start "$WORK/mem.db"
+  app_mem_start "$WORK/mem.app"
   gate_sampler_start "$WORK/gate.samples"
   sleep 0.2
   OP_START="$(ms)"
@@ -356,11 +390,12 @@ instrumented() {
   sleep 0.1
   gate_sampler_stop
   db_mem_stop
+  app_mem_stop
   lsn1="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
   WAL_BYTES="$(qc1_lsn_bytes "$lsn0" "$lsn1")" || WAL_BYTES=null
   hwm_end="$(app_status_kb VmHWM || true)"
-  APP_PEAK_KB=null
-  if [[ "$APP_HWM_RESET" == true && "$hwm_end" =~ ^[0-9]+$ ]] && (( hwm_end >= hwm_reset )); then APP_PEAK_KB=$((hwm_end - hwm_reset)); fi
+  read -r APP_PEAK_KB APP_MEM_SAMPLES APP_BELOW_BASELINE <<<"$(qc1_app_peak "$hwm_reset" "$hwm_end" "$WORK/mem.app")"
+  [[ "$APP_HWM_RESET" == true ]] || APP_PEAK_KB=null
   DB_PEAK_KB=null
   read -r dbmax dbfirst <<<"$(awk '/^[0-9]+$/ { if ($1 > m) m = $1; if (!n++) f = $1 } END { if (n) print m, f }' "$WORK/mem.db")"
   if [[ "$dbmax" =~ ^[0-9]+$ && "$dbfirst" =~ ^[0-9]+$ ]]; then DB_PEAK_KB=$(( (dbmax - dbfirst) / 1024 )); fi
@@ -371,11 +406,11 @@ instrumented() {
   SCHEDULER_ROWS="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at >= to_timestamp($OP_START / 1000.0) - interval '1 second' AND created_at <= to_timestamp($OP_END / 1000.0) AND unique_key ~ '^[a-z_.]+:[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2})?\$'")"
 }
 instr_json() {
-  jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
+  jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
-    '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, dbPeakKb:$db, dbMemSamples:$dbs,
+    '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
@@ -516,19 +551,15 @@ mint_attempt() { # target
 }
 # What a deletion left in the database, against what it was asked to do. The
 # request ids are the items the account's panel listed. Sets OUTCOME_JSON.
-verify_outcome() { # target items-file kept removed
-  local t="$1" file="$2" kept="$3" removed="$4" ids res deleted blank nonblank audits ok=false
+verify_outcome() { # target items-file kept removed audit-mark
+  local t="$1" file="$2" kept="$3" removed="$4" mark="$5" ids res deleted blank nonblank audits ok=false
   ids="$(jq -r 'map(.requestId) | join(",")' "$file")"
   [[ -n "$ids" ]] || ids="-1"
-  res="$(psql_stdin <<SQL
-SELECT coalesce((SELECT (deleted_at IS NOT NULL)::text FROM users WHERE id = $t), 'missing') || '|' ||
- (SELECT count(*) FROM contact_requests WHERE id IN ($ids) AND reason = '') || '|' ||
- (SELECT count(*) FROM contact_requests WHERE id IN ($ids) AND reason <> '') || '|' ||
- (SELECT count(*) FROM audit_logs WHERE action IN ('contact.reason_kept','contact.reason_removed','add.reason_kept','add.reason_removed') AND target_id IN ($ids));
-SQL
-)" || res="error|0|0|0"
+  # The audit count is bound to THIS deletion by the watermark taken just before it (qc1_audit_count_sql): scenario request ids are reused,
+  # and audit_logs keeps every earlier scenario's rows under the same target ids.
+  res="$(qc1_outcome_sql "$t" "$ids" "$mark" | psql_stdin)" || res="error|0|0|0"
   IFS='|' read -r deleted blank nonblank audits <<<"$res"
-  if [[ "$deleted" == true && "$blank" == "$removed" && "$nonblank" == "$kept" && "$audits" == "$((kept + removed))" ]]; then ok=true; fi
+  if qc1_outcome_ok "$deleted" "$blank" "$nonblank" "$audits" "$kept" "$removed"; then ok=true; fi
   OUTCOME_JSON="$(jq -nc --argjson ok "$ok" --arg deleted "$deleted" --arg blank "${blank:-0}" --arg nonblank "${nonblank:-0}" --arg audits "${audits:-0}" \
     '{dbOk:$ok, accountDeleted:$deleted, reasonsBlank:($blank|tonumber), reasonsWithText:($nonblank|tonumber), decisionAudits:($audits|tonumber)}')"
 }
@@ -537,17 +568,20 @@ SQL
 # the answer and the database against the split the mode implies. Sets
 # DELETE_JSON, EXPECT_JSON, OUTCOME_JSON and BODY_BYTES.
 delete_with() { # target mode items-file
-  local t="$1" mode="$2" file="$3" k id kept removed
+  local t="$1" mode="$2" file="$3" k id kept removed audit_mark
   k="$(jq 'length' "$file")"
   read -r kept removed <<<"$(qc1_expected_split "$mode" "$k")"
   id="$(mint_attempt "$t")"
   qc1_delete_body_n "$mode" "$file" "$k" "$id" >"$WORK/delete.body"
   BODY_BYTES="$(wc -c <"$WORK/delete.body")"
+  # The watermark: only audits written after this point belong to this deletion.
+  audit_mark="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
+  [[ "$audit_mark" =~ ^[0-9]+$ ]] || { echo "qc1: cannot read the audit watermark ('$audit_mark')" >&2; exit 1; }
   instrumented do_delete "$t" "$WORK/delete.body"
   DEL_KEPT="$(jq '.erasure.reasonsKept // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DEL_REMOVED="$(jq '.erasure.reasonsRemoved // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DELETE_JSON="$(delete_json)"
-  verify_outcome "$t" "$file" "$kept" "$removed"
+  verify_outcome "$t" "$file" "$kept" "$removed" "$audit_mark"
   EXPECT_JSON="$(jq -nc --argjson i "$k" --argjson kp "$kept" --argjson rm "$removed" '{items:$i, kept:$kp, removed:$rm}')"
   unset DEL_KEPT DEL_REMOVED
 }
@@ -639,6 +673,7 @@ capture_plans() { # n
   local n="$1" t since which out="$WORK/explain-$1.log" counts id
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
+  await_setting auto_explain.log_min_duration 0 || exit 1   # the capture is really on before anything is run for it
   sleep 1
   since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   t="$(fresh_user)"
@@ -650,6 +685,7 @@ capture_plans() { # n
   drop_scenarios
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
+  await_setting auto_explain.log_min_duration -1 || exit 1  # and off again before the next measured row
   docker logs --since "$since" "$DB_CID" >"$WORK/pglog-$n.txt" 2>&1
   : >"$out"
   for which in "${QC1_PLAN_KINDS[@]}"; do

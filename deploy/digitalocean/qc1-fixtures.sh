@@ -827,4 +827,127 @@ r_l="$(grep -n 'qc1_reset_contact_requests || exit 1' <<<"$RUNNER_BODY" | head -
 s_l="$(grep -n "admin@example.invalid'\")\" == 1" <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
 [[ -n "$r_l$f_l$s_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$f_l" ]]
 for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$RUNNER_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
+
+# --- pilot2: the outcome of ONE deletion, the app's peak, and the plan capture -------------------------------------------------------------------------------------------------------
+RUNNER_SRC="$HERE/qc1-measure.sh"
+# (1) Audits bound to the deletion. Scenario request ids are reused (rows dropped and rebuilt), audit_logs keeps all earlier deletions' rows.
+sql="$(qc1_outcome_sql 42 '1,3,5' 77)"
+grep -qF "FROM audit_logs WHERE id > 77 AND action IN ('contact.reason_kept','contact.reason_removed','add.reason_kept','add.reason_removed') AND target_id IN (1,3,5)" <<<"$sql"
+grep -qF "WHERE id IN (1,3,5) AND reason = ''" <<<"$sql"; grep -qF "WHERE id IN (1,3,5) AND reason <> ''" <<<"$sql"; grep -qF "FROM users WHERE id = 42" <<<"$sql"
+[[ "$(qc1_outcome_sql 42 -1 0 | grep -c 'IN (-1)')" == 3 ]]
+while IFS='|' read -r a b c; do
+  if qc1_outcome_sql "$a" "$b" "$c" >/dev/null 2>&1; then echo "qc1_outcome_sql accepted: $a $b $c" >&2; exit 1; fi
+done <<'BAD'
+x|1,3|5
+42|1,3|five
+42|1,,3|5
+42|1;DROP|5
+42|1,3|-5
+4a2|1|5
+42||5
+42|1,3|
+BAD
+qc1_outcome_ok true 5 5 10 5 5
+qc1_outcome_ok true 0 10 10 10 0; qc1_outcome_ok true 10 0 10 0 10; qc1_outcome_ok true 0 0 0 0 0
+for bad in "false 5 5 10 5 5" "true 5 5 20 5 5" "true 5 5 9 5 5" "true 4 6 10 5 5" "true 5 5 10 6 4" "missing 5 5 10 5 5" "true x 5 10 5 5" "true 5 5 '' 5 5"; do
+  # shellcheck disable=SC2086
+  if eval "qc1_outcome_ok $bad" 2>/dev/null; then echo "qc1_outcome_ok accepted: $bad" >&2; exit 1; fi
+done
+# the real query, run against a model table through successive scenarios that reuse the same request ids
+if command -v sqlite3 >/dev/null; then
+  db="$WORK/audit.sqlite"
+  sqlite3 "$db" 'CREATE TABLE audit_logs (id INTEGER PRIMARY KEY, action TEXT NOT NULL, target_id INTEGER NOT NULL)'
+  old_sql() { printf "SELECT count(*) FROM audit_logs WHERE action IN ('contact.reason_kept','contact.reason_removed','add.reason_kept','add.reason_removed') AND target_id IN (%s)" "$1"; }
+  for k in 10 10 100 10 1000; do
+    ids="$(seq -s, 1 2 $((2 * k - 1)))"
+    mark="$(sqlite3 "$db" 'SELECT coalesce(max(id), 0) FROM audit_logs')"
+    # noise that must never count: other actions on the same ids, other targets, and an earlier deletion's rows
+    sqlite3 "$db" "INSERT INTO audit_logs(action, target_id) VALUES ('group.approved', 1), ('contact.reason_kept', 999999)"
+    mark2="$(sqlite3 "$db" 'SELECT coalesce(max(id), 0) FROM audit_logs')"
+    # this deletion: half kept, half removed (or all kept for 10)
+    sqlite3 "$db" "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $k) INSERT INTO audit_logs(action, target_id) SELECT CASE WHEN i % 2 = 0 THEN 'add.reason_removed' ELSE 'add.reason_kept' END, 2 * i - 1 FROM n"
+    bound="$(sqlite3 "$db" "$(qc1_audit_count_sql "$ids" "$mark2")")"
+    unbound="$(sqlite3 "$db" "$(old_sql "$ids")")"
+    [[ "$bound" == "$k" ]] || { echo "bound audit count $bound, expected $k (mark $mark2)" >&2; exit 1; }
+    (( mark == 0 )) || [[ "$unbound" != "$k" ]] || { echo "the unbound count should have accumulated, got $unbound for $k" >&2; exit 1; }   # the pilot2 shape
+  done
+  # accumulated exactly as in the pilot: 10 + 10 = 20 for the second scenario's ids when unbound
+  [[ "$(sqlite3 "$db" "$(old_sql '1,3,5,7,9,11,13,15,17,19')")" == 50 ]]
+  # a watermark in the future counts nothing; mark 0 counts everything
+  [[ "$(sqlite3 "$db" "$(qc1_audit_count_sql '1,3,5' 999999999)")" == 0 ]]
+else
+  echo 'note: sqlite3 is not installed; the audit-binding query was checked as text only' >&2
+fi
+# the runner: watermark read as a number before the delete, passed to the outcome, and no unbound count left
+d_body="$(sed -n '/^delete_with() {/,/^}/p' "$RUNNER_SRC")"
+m_l="$(grep -n "SELECT coalesce(max(id), 0) FROM audit_logs" <<<"$d_body" | head -n 1 | cut -d: -f1)"; x_l="$(grep -n 'instrumented do_delete' <<<"$d_body" | head -n 1 | cut -d: -f1)"; v_l="$(grep -n 'verify_outcome "\$t" "\$file" "\$kept" "\$removed" "\$audit_mark"' <<<"$d_body" | head -n 1 | cut -d: -f1)"
+[[ -n "$m_l$x_l$v_l" && "$m_l" -lt "$x_l" && "$x_l" -lt "$v_l" ]]
+grep -qF 'audit_mark" =~ ^[0-9]+$' <<<"$d_body"
+vo_body="$(sed -n '/^verify_outcome() {/,/^}/p' "$RUNNER_SRC")"
+grep -qF 'qc1_outcome_sql "$t" "$ids" "$mark" | psql_stdin' <<<"$vo_body"; grep -qF 'qc1_outcome_ok "$deleted" "$blank" "$nonblank" "$audits" "$kept" "$removed"' <<<"$vo_body"
+if grep -n 'FROM audit_logs' "$RUNNER_SRC" | grep -v 'max(id)'; then echo 'the runner counts audits outside qc1_audit_count_sql' >&2; exit 1; fi
+# the judge still requires the database outcome: the pilot2 rows (accumulated audits) are invalid, bound rows are not
+mut dbbad "$DEL then .outcome = {dbOk:false, accountDeleted:\"true\", reasonsBlank:50, reasonsWithText:50, decisionAudits:1260} else . end"; expect_invalid dbbad outcome-db
+
+# (2) The app's peak over an operation.
+printf '100 5000\n120 5000\n' >"$WORK/app.a"
+[[ "$(qc1_app_peak 5000 5000 "$WORK/app.a")" == '0 2 false' ]]
+printf '6000 6100\n7000 7000\n' >"$WORK/app.b"
+[[ "$(qc1_app_peak 5000 7000 "$WORK/app.b")" == '2000 2 false' ]]             # the sampled high-water mark wins over the final one
+[[ "$(qc1_app_peak 5000 6500 "$WORK/app.b")" == '2000 2 false' ]]
+printf '5200 5200\n' >"$WORK/app.c"
+[[ "$(qc1_app_peak 5000 8000 "$WORK/app.c")" == '3000 1 false' ]]             # the final reading when it is the highest
+[[ "$(qc1_app_peak 9000 8000 "$WORK/app.c")" == '0 1 true' ]]                 # pilot2: the final VmHWM fell below the one read after the reset: no growth, flagged, not "missing"
+: >"$WORK/app.none"
+[[ "$(qc1_app_peak 9000 8000 "$WORK/app.none")" == '0 0 true' ]]
+[[ "$(qc1_app_peak 5000 7000 "$WORK/app.none")" == '2000 0 false' ]]
+[[ "$(qc1_app_peak 5000 '' "$WORK/app.b")" == '2000 2 false' ]]               # one failed read of the end value does not lose the window
+[[ "$(qc1_app_peak 5000 '' "$WORK/app.none")" == 'null 0 false' ]]            # nothing was read at all: missing
+[[ "$(qc1_app_peak '' 7000 "$WORK/app.b")" == 'null 2 false' ]]               # no baseline: missing
+[[ "$(qc1_app_peak x 7000 "$WORK/app.b")" == 'null 2 false' ]]
+printf 'garbage\n 1 2 3\n6000 6000\n\n' >"$WORK/app.d"
+[[ "$(qc1_app_peak 5000 5000 "$WORK/app.d")" == '1000 1 false' ]]             # partial or malformed lines are ignored
+# the judge: a numeric peak (including 0) is evidence, a null one is not (existing rule, unchanged)
+mut peak0 "$DEL then .delete.appPeakKb = 0 | .delete.appHwmBelowBaseline = true else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.peak0")")" == true ]]
+mut peaknull "$DEL then .delete.appPeakKb = null | .delete.appHwmBelowBaseline = true else . end"; expect_invalid peaknull metric-missing
+# the instrument: sampled during the window, stopped after it, with the baseline read after the reset and retried reads
+i_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
+s_l="$(grep -n 'app_mem_start "\$WORK/mem.app"' <<<"$i_body" | cut -d: -f1)"; o_l="$(grep -n '"\$@"$' <<<"$i_body" | head -n 1 | cut -d: -f1)"; e_l="$(grep -n 'app_mem_stop' <<<"$i_body" | cut -d: -f1)"
+r_l="$(grep -n 'hwm_reset="\$(app_status_kb VmHWM' <<<"$i_body" | cut -d: -f1)"; p_l="$(grep -n 'qc1_app_peak "\$hwm_reset" "\$hwm_end" "\$WORK/mem.app"' <<<"$i_body" | cut -d: -f1)"
+[[ -n "$s_l$o_l$e_l$r_l$p_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$o_l" && "$o_l" -lt "$e_l" && "$e_l" -lt "$p_l" ]]
+grep -qF "APP_HWM_RESET\" == true ]] || APP_PEAK_KB=null" <<<"$i_body"        # an unverified reset still yields no figure
+sed -n '/^app_status_kb() {/,/^}/p' "$RUNNER_SRC" | grep -q 'for i in 1 2 3'
+grep -qF 'appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow' "$RUNNER_SRC"
+
+# (3) auto_explain: the capture's ALTER SYSTEM must not be outranked by the command line (pilot2 logged no plan at all).
+db_run="$(sed -n '/^DB_CID="\$(docker run -d/,/CONTAINERS+=("\$DB_CID")/p' "$RUNNER_SRC")"
+[[ -n "$db_run" ]]
+if grep -q 'auto_explain.log_min_duration' <<<"$db_run"; then echo 'the database command line sets auto_explain.log_min_duration; ALTER SYSTEM cannot override a command-line setting' >&2; exit 1; fi
+grep -q 'auto_explain.log_analyze=on' <<<"$db_run"; grep -q 'shared_preload_libraries=pg_stat_statements,auto_explain' <<<"$db_run"
+cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
+on_l="$(grep -n 'SET auto_explain.log_min_duration = 0' <<<"$cp_body" | cut -d: -f1)"; w1_l="$(grep -n 'await_setting auto_explain.log_min_duration 0' <<<"$cp_body" | cut -d: -f1)"
+tr_l="$(grep -n 'traverse "\$t"' <<<"$cp_body" | cut -d: -f1)"; off_l="$(grep -n 'SET auto_explain.log_min_duration = -1' <<<"$cp_body" | cut -d: -f1)"; w2_l="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"
+lg_l="$(grep -n 'docker logs --since' <<<"$cp_body" | cut -d: -f1)"
+[[ -n "$on_l$w1_l$tr_l$off_l$w2_l$lg_l" && "$on_l" -lt "$w1_l" && "$w1_l" -lt "$tr_l" && "$tr_l" -lt "$off_l" && "$off_l" -lt "$w2_l" && "$w2_l" -lt "$lg_l" ]]
+grep -qE '^await_setting auto_explain.log_min_duration -1 \|\| exit 1' "$RUNNER_SRC"    # off at the start, proven in a new session
+# A missing plan is still a failed row, never a silent pass: the capture's judge rule is unchanged
+grep -qF 'jq -e '"'"'to_entries | all(.value >= 1)'"'"' <<<"$counts"' <<<"$cp_body"
+mut noplans "if .item == 8 then .plans = {\"scanner-unit\":0,\"delete-set\":0,\"blank-batch\":0} else . end"; expect_invalid noplans plans-missing
+# Real PostgreSQL log text for all three statements is found by its markers (single- and multi-line Query Text, with the prefix docker logs keeps)
+cat >"$WORK/pg.sample" <<'LOG'
+2026-11-07 14:31:01.100 UTC [71] LOG:  duration: 3.2 ms  plan:
+	Query Text: SELECT id, requester_id FROM contact_requests
+	 WHERE ($1::bigint IS NULL OR id > $2::bigint) ORDER BY id LIMIT $3
+	Limit  (cost=0.29..10.1 rows=100 width=8) (actual time=0.02..0.9 rows=100 loops=1)
+2026-11-07 14:31:01.300 UTC [71] LOG:  duration: 8.0 ms  plan:
+	Query Text: SELECT id FROM contact_requests WHERE reason <> '' AND (requester_id = $1 OR subject_user_id = $2) ORDER BY id FOR UPDATE
+	LockRows  (cost=0.0..1.0 rows=1 width=14) (actual time=0.1..7.0 rows=10 loops=1)
+2026-11-07 14:31:01.900 UTC [71] LOG:  duration: 5.5 ms  plan:
+	Query Text: UPDATE contact_requests SET reason = '' WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3)
+	Update on contact_requests  (cost=0.0..1.0 rows=0 width=0) (actual time=5.0..5.0 rows=0 loops=1)
+2026-11-07 14:31:02.000 UTC [1] LOG:  received SIGHUP, reloading configuration files
+LOG
+[[ "$(qc1_plan_counts "$WORK/pg.sample")" == '{"scanner-unit":1,"delete-set":1,"blank-batch":1}' ]]
+printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading configuration files' >"$WORK/pg.pilot2"
+[[ "$(qc1_plan_counts "$WORK/pg.pilot2")" == '{"scanner-unit":0,"delete-set":0,"blank-batch":0}' ]]       # what the pilot saw: nothing
 echo 'qc1 fixtures: ok'

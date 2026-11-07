@@ -492,3 +492,38 @@ qc1_reset_contact_requests() {
   done <<<"$names"
   psql_db -c "TRUNCATE $list" >/dev/null || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
 }
+
+# --- what a deletion left behind, bound to THIS deletion -----------------------------------------------------------------
+# The scenarios reuse request ids: every scenario's rows are dropped and rebuilt, so the odd ids 1, 3, 5, ... carry a different
+# account's reasons each time while audit_logs keeps every earlier deletion's rows (target_id is the request id). Counting the decision
+# audits of "these ids" therefore added up all earlier scenarios (pilot2: 20, 30, 130, 230 ... against 10, 10, 100 ... expected).
+# A deletion is bound by a watermark: the largest audit id before it ran; only audits written after it count.
+qc1_audit_count_sql() { # ids mark
+  printf "SELECT count(*) FROM audit_logs WHERE id > %s AND action IN ('contact.reason_kept','contact.reason_removed','add.reason_kept','add.reason_removed') AND target_id IN (%s)" "$2" "$1"
+}
+qc1_outcome_sql() { # target ids mark  -> one row: deleted|blank|withText|audits
+  [[ "${1:-}" =~ ^[0-9]+$ && "${3:-}" =~ ^[0-9]+$ && "${2:-}" =~ ^(-1|[0-9]+(,[0-9]+)*)$ ]] || return 1
+  printf "SELECT coalesce((SELECT (deleted_at IS NOT NULL)::text FROM users WHERE id = %s), 'missing') || '|' ||\n (SELECT count(*) FROM contact_requests WHERE id IN (%s) AND reason = '') || '|' ||\n (SELECT count(*) FROM contact_requests WHERE id IN (%s) AND reason <> '') || '|' ||\n (%s);\n" \
+    "$1" "$2" "$2" "$(qc1_audit_count_sql "$2" "$3")"
+}
+# Whether the row read back is the split the mode implies: account deleted, `removed` reasons blank, `kept` still with text, one decision audit each.
+qc1_outcome_ok() { # deleted blank withText audits kept removed
+  [[ "$1" == true && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9]+$ ]] || return 1
+  [[ "$2" == "$6" && "$3" == "$5" && "$4" == "$(( $5 + $6 ))" ]]
+}
+
+# --- the app's peak memory over one operation --------------------------------------------------------------------------------
+# VmHWM right after the reset is the baseline. The peak is the highest of the final VmHWM and every VmRSS / VmHWM sampled during the window,
+# above that baseline. The kernel's high-water mark is not a monotone reading you can difference: RSS that falls without an unmap (file pages
+# reclaimed under the container's memory limit) leaves the final VmHWM BELOW the one read just after the reset, and pilot2 judged such rows
+# metric-missing although the app simply did not grow. That is a peak of 0, recorded with the flag; a figure is missing only when there is no
+# baseline or nothing was read at all. Prints "peak_kb|null samples below_baseline".
+qc1_app_peak() { # baseline_kb end_kb samples_file
+  awk -v base="$1" -v endv="$2" '
+    /^[0-9]+ [0-9]+$/ { n++; if ($1 > m) m = $1 + 0; if ($2 > m) m = $2 + 0 }
+    END {
+      e = (endv ~ /^[0-9]+$/); if (e && endv + 0 > m) m = endv + 0
+      if (base !~ /^[0-9]+$/ || (n == 0 && !e)) { print "null", n + 0, "false"; exit }
+      print (m > base + 0 ? m - base : 0), n + 0, ((e && endv + 0 < base + 0) ? "true" : "false")
+    }' "$3"
+}
