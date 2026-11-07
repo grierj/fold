@@ -104,7 +104,8 @@ cp "$ROOT/deploy/digitalocean/testdata/restore-drill-docker.sh" "$WORK/drill-bin
 cat >"$WORK/drill-bin/sync" <<'SYNC'
 #!/usr/bin/env bash
 if [[ -f "$RESTORE_DRILL_WORK/fail-floor" && "$*" == *recovery-policy-floor* ]]; then exit 1; fi
-exec /usr/bin/sync "$@"
+if [[ -x /usr/bin/sync ]]; then exec /usr/bin/sync "$@"; fi
+exec /bin/sync "$@"
 SYNC
 chmod 755 "$WORK/drill-bin/"*
 export PATH="$WORK/drill-bin:$PATH"
