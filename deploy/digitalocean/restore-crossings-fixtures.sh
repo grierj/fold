@@ -507,4 +507,68 @@ history_copy="$(sed -n 's/^const HISTORY_COPY = "\(.*\)";$/\1/p' "$ROOT/web/src/
 grep -qF 'Check again' "$ROOT/web/src/components/DeleteUserPanel.tsx"; grep -qF 'AdminUsers.mintAttempt(target.id)' "$ROOT/web/src/components/DeleteUserPanel.tsx"
 # The item says the drill is protocol only.
 grep -qi 'only checks the server protocol with curl' <<<"$item_text"
+
+# --- the os-release stand-in in the crossing cases (drill4: upgrade.sh -> provision.sh check_os refused "alpine 3.24.4") ---------------------------------------------
+# Wiring: applied once in the first crossing case, before any image is built; restored by the runner's EXIT trap; part of the evidence.
+prep_body="$(sed -n '/^crossing_prepare() {/,/^}/p' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh")"
+os_l="$(grep -n 'crossing_os_standin "\$cdir"' <<<"$prep_body" | head -n 1 | cut -d: -f1)"; build_l="$(grep -n 'crossing_build_image candidate' <<<"$prep_body" | head -n 1 | cut -d: -f1)"
+[[ -n "$os_l" && -n "$build_l" && "$os_l" -lt "$build_l" ]]
+grep -q 'isolation_os_restore "\$CROSSING_OS_STATE"' "$RUNNER"
+cleanup_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
+[[ "$(grep -n 'crossing_cleanup_all' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'isolation_os_restore' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" ]]
+[[ "$(grep -n 'isolation_os_restore' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'drill_emit result' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" ]]
+sed -n '/^assert_crossing_evidence() {/,/^}/p' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh" | grep -qxF "  jq -e '.applied != null and .path == \"/etc/os-release\"' \"\$cdir/os-release-standin.json\" >/dev/null"
+guard_l="$(grep -n '^isolation_require_disposable || exit 1' "$RUNNER" | cut -d: -f1)"; loop_l="$(grep -n '^for drill_family in' "$RUNNER" | cut -d: -f1)"
+[[ "$guard_l" -lt "$loop_l" ]]
+# The only callers of the writer are the crossing library (after that guard); no --allow-os was added to any upgrade.sh call; no shipped tool mentions the stand-in.
+[[ "$(grep -lE 'isolation_os_standin' "$ROOT"/deploy/digitalocean/*.sh | xargs -n1 basename | sort | tr '\n' ' ')" == 'isolation-fixtures.sh isolation.sh restore-crossings-fixtures.sh restore-drill-crossings.sh ' ]]
+if grep -hvE '^[[:space:]]*#|never forwards' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh" "$ROOT/deploy/digitalocean/restore-drill-cases.sh" "$ROOT/deploy/digitalocean/restore-drill.sh" | grep -nE 'upgrade\.sh[^|]*--allow-os|--allow-os[^|]*upgrade\.sh'; then echo 'a crossing runs upgrade.sh with --allow-os' >&2; exit 1; fi
+if grep -lE 'os-release|os_release|isolation_os' "$ROOT"/deploy/digitalocean/{provision,upgrade,restore,backup,smoke,checks}.sh 2>/dev/null | grep -v provision.sh | grep .; then echo 'a shipped tool changed for the stand-in' >&2; exit 1; fi
+
+# Behaviour, in a temp tree: Alpine's link shape, the real revisions' own check_os, and the evidence it writes.
+CXO="$WORK/cxos"; mkdir -p "$CXO/etc" "$CXO/usr/lib" "$WORK/crossings"
+printf 'ID=alpine\nVERSION_ID=3.24.4\n' >"$CXO/usr/lib/os-release"; ln -s ../usr/lib/os-release "$CXO/etc/os-release"
+printf '36 35 0:50 / / rw - overlay overlay rw\n' >"$CXO/mi"
+head_rev="$(git -C "$ROOT" rev-parse HEAD)"
+for v in REVISION LANE_REVISION LANDING_REVISION PRIOR_REVISION ARCHIVE_BASE_REVISION; do
+  default="$head_rev"
+  case "$v" in LANE_REVISION) default="$CROSSING_LANE_DEFAULT" ;; LANDING_REVISION) default="$CROSSING_LANDING_DEFAULT" ;; PRIOR_REVISION) default="$CROSSING_PRIOR_DEFAULT" ;; ARCHIVE_BASE_REVISION) default="$CROSSING_ARCHIVE_DEFAULT" ;; esac
+  if git -C "$ROOT" cat-file -e "$default^{commit}" 2>/dev/null; then printf -v "$v" '%s' "$default"; else echo "note: $v default $default is not in this clone; the check uses HEAD for it" >&2; printf -v "$v" '%s' "$head_rev"; fi
+done
+# shellcheck disable=SC2030,SC2031 # the exports belong to this subshell on purpose
+(
+  export FOLD_DRILL_ISOLATED_DAEMON=1 FOLD_DRILL_ASSUME_CONTAINER=1
+  crossing_os_standin "$WORK/crossings" "$CXO/etc/os-release" "$CXO/mi"
+  [[ "$(isolation_os_identity "$CXO/etc/os-release")" == 'ubuntu 24.04' ]]
+  jq -e '.applied == true and .original.id == "alpine"' "$WORK/crossings/os-release-standin.json" >/dev/null
+  [[ "$(jq -s '[.[] | select(.checkOsAcceptsStandIn == true)] | length' "$WORK/crossings/tools.jsonl")" == 5 ]]
+  jq -s -e 'any(.[]; .file == "/etc/os-release" and .replacedByDrill == true)' "$WORK/crossings/tools.jsonl" >/dev/null
+  grep -q '^DEVIATION real_\* cases: .*Ubuntu 24.04 /etc/os-release' "$WORK/deviations.txt"
+  grep -q 'nothing outside the container is touched' "$WORK/deviations.txt"
+  isolation_os_restore "$WORK/crossings/os-release-standin.json"
+  [[ -L "$CXO/etc/os-release" && "$(isolation_os_identity "$CXO/etc/os-release")" == 'alpine 3.24.4' ]]
+)
+# A provisioner that would STILL refuse the stand-in stops the run before any image is built (here: a revision whose check_os wants Ubuntu 99).
+rm -rf "$WORK/crossings" "$WORK/deviations.txt"; mkdir -p "$WORK/crossings"; rm -f "$CXO/etc/os-release"; ln -s ../usr/lib/os-release "$CXO/etc/os-release"
+FAKE="$WORK/fakeroot"; mkdir -p "$FAKE/deploy/digitalocean"
+cat >"$FAKE/deploy/digitalocean/provision.sh" <<'FP'
+check_os() {
+  . /etc/os-release
+  if [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "99.04" ]]; then echo "os: Ubuntu $VERSION_ID"; return 0; fi
+  die "Ubuntu 99.04 required"
+}
+FP
+git -C "$FAKE" init -q; git -C "$FAKE" config user.name f; git -C "$FAKE" config user.email f@example.invalid; git -C "$FAKE" config commit.gpgsign false; git -C "$FAKE" config core.hooksPath /dev/null
+git -C "$FAKE" add -A; git -C "$FAKE" commit -qm fake
+fake_rev="$(git -C "$FAKE" rev-parse HEAD)"
+rc=0
+# shellcheck disable=SC2030,SC2031 # the exports belong to this subshell on purpose
+( ROOT="$FAKE"; REVISION="$fake_rev"; LANE_REVISION="$fake_rev"; LANDING_REVISION="$fake_rev"; PRIOR_REVISION="$fake_rev"; ARCHIVE_BASE_REVISION="$fake_rev"
+  export FOLD_DRILL_ISOLATED_DAEMON=1 FOLD_DRILL_ASSUME_CONTAINER=1
+  crossing_os_standin "$WORK/crossings" "$CXO/etc/os-release" "$CXO/mi" ) >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'would still refuse this container' "$WORK/out"
+[[ ! -e "$WORK/deviations.txt" ]]
+# ...and its state file still lets the EXIT trap put the identity back
+jq -e '.applied == true' "$WORK/crossings/os-release-standin.json" >/dev/null
+isolation_os_restore "$WORK/crossings/os-release-standin.json"; [[ -L "$CXO/etc/os-release" ]]
 echo 'restore crossing fixtures: ok'

@@ -460,6 +460,29 @@ crossing_function_defs() { # database -> prints the definitions, ordered
   pg "$1" -c "SELECT pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN ($CROSSING_REASON_FUNCTIONS) ORDER BY proname"
 }
 
+# The nested runner is Alpine, and provision.sh's check_os (every revision's copy) refuses it without --allow-os, which upgrade.sh never forwards. The
+# container presents a Ubuntu 24.04 /etc/os-release for the real_* cases (isolation_os_standin, container-local, saved and restored at exit, only after the
+# isolation guard). Before any image is built, EACH revision's own check_os is run against it, so a provisioner that would still refuse stops the run
+# now. The stand-in changes only what check_os sees: the recovery-level refusals under test come from require_recovery_level / check_target_level, which the
+# trace assertions name, and run before any provisioning. It is recorded as a deviation in the evidence.
+crossing_os_standin() { # crossing-dir [os-release-path] [mountinfo]; the last two are for fixtures
+  local cdir="$1" osfile="${2:-/etc/os-release}" mountinfo="${3:-/proc/self/mountinfo}" rev tmp
+  CROSSING_OS_STATE="$cdir/os-release-standin.json"
+  isolation_os_standin "$CROSSING_OS_STATE" "$osfile" "$mountinfo" || return 1
+  tmp="$(mktemp)"
+  for rev in "$REVISION" "$LANE_REVISION" "$LANDING_REVISION" "$PRIOR_REVISION" "$ARCHIVE_BASE_REVISION"; do
+    git -C "$ROOT" show "$rev:deploy/digitalocean/provision.sh" >"$tmp" || { rm -f "$tmp"; return 1; }
+    isolation_check_os_accepts "$tmp" "$osfile" || { rm -f "$tmp"; echo "crossing: the provisioner of $rev would still refuse this container's OS ($(isolation_os_identity "$osfile"))" >&2; return 1; }
+    crossing_emit tools.jsonl --arg rev "$rev" '{label:"environment", file:"provision.sh", revision:$rev, checkOsAcceptsStandIn:true}'
+  done
+  rm -f "$tmp"
+  crossing_emit tools.jsonl --argjson applied "$(jq '.applied' "$CROSSING_OS_STATE")" \
+    '{label:"environment", file:"/etc/os-release", replacedByDrill:$applied, standIn:"container-local Ubuntu 24.04, saved first and restored at exit"}'
+  if [[ "$(jq -r '.applied' "$CROSSING_OS_STATE")" == true ]]; then
+    printf '%s\n' 'DEVIATION real_* cases: this disposable Alpine container presents a container-local Ubuntu 24.04 /etc/os-release (restored at exit; see crossings/os-release-standin.json) because provision.sh check_os refuses Alpine and upgrade.sh never forwards --allow-os. No script is changed, no --allow-os is used for it, and nothing outside the container is touched.' >>"$WORK/deviations.txt"
+  fi
+}
+
 # Everything expensive or global happens once, in the first crossing case.
 crossing_prepare() {
   local cdir f archive_level
@@ -487,6 +510,7 @@ crossing_prepare() {
     >"$cdir/revisions.json"
   jq -e '.laneBaseIsPreflightBase' "$cdir/revisions.json" >/dev/null \
     || echo 'crossing: note: LANE_BASE differs from the recorded preflight base (recorded in revisions.json)' >&2
+  crossing_os_standin "$cdir" || return 1
   CROSSING_RUN="$(isolation_run_id)"
   CROSSING_HOST_BEFORE=()
   for f in "${CROSSING_HOST_FILES[@]}"; do [[ ! -e "$f" ]] || CROSSING_HOST_BEFORE+=("$f"); done
@@ -1484,4 +1508,5 @@ assert_crossing_evidence() {
   crossing_evidence_complete "$cdir/cases.jsonl" "$cdir/images.jsonl" || return 1
   [[ -s "$cdir/revisions.json" && -s "$cdir/older-archive-lane-base.json" && -s "$cdir/older-archive-reason-review.json" ]]
   [[ -s "$cdir/lineage-l0-build-binary.json" && -s "$cdir/lineage-l1-build-binary.json" ]]
+  jq -e '.applied != null and .path == "/etc/os-release"' "$cdir/os-release-standin.json" >/dev/null
 }

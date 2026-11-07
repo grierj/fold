@@ -135,6 +135,8 @@ cleanup() {
   fi
   # Level-0 lineage sites and the host files their provisioner writes.
   if (( ! KEEP )); then crossing_cleanup_all || rc=1; else crossing_cleanup_host || rc=1; fi
+  # The container-local OS identity the real_* cases presented is put back (and recorded) whether the run passed or failed.
+  [[ -z "${CROSSING_OS_STATE:-}" ]] || isolation_os_restore "$CROSSING_OS_STATE" || rc=1
   if (( ! KEEP )); then docker compose --project-directory "$DIR" down -v --remove-orphans || rc=1; fi
   drill_emit result "$rc" || rc=1
   echo "restore drill result=$rc artifacts=$WORK retained_stack=$KEEP"
