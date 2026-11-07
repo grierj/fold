@@ -14,6 +14,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from qc1-measure.sh only
 QC1_SIZES_DEFAULT=10000,100000,1000000
 QC1_COUNTS_DEFAULT=0,10,100,1000,10000
 QC1_DELETE_COUNTS=0,10,100,1000,10000
+QC1_LEGACY_COUNTS=0,100,10000   # R4-C06 item 4: legacy discovery with this many unreviewed pairs, per size that can hold them
 # Dense histories the rendered panel is measured with, in a real browser.
 QC1_BROWSER_COUNTS=1000,10000
 QC1_DIRECTIONS=(requester subject)
@@ -332,7 +333,7 @@ qc1_judge_defs() { cat <<'JQ'
     def numz: if type == "number" then . else null end;
     def ran($r): [$r.traversal, $r.delete, $r.window] | map(select(type == "object"));
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","probe") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.browser |= (if type == "object" then reduce ("pages","digest","phases","press","reload","clicks","navigation","firstPage","gate") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
@@ -341,6 +342,8 @@ qc1_judge_defs() { cat <<'JQ'
     def browser_budgets($m):
       ( if ($m.browser.renderReadyMs | type) == "number" and $m.browser.renderReadyMs > $trav then bud("browser-traversal"; {ms:$m.browser.renderReadyMs, walkEndMs:$m.browser.walkEndMs, firstInteractiveMs:$m.browser.firstPage.firstInteractiveMs, budget:$trav}) else empty end ),
       ( if ($m.browser.walkEndMs | type) == "number" and $m.browser.walkEndMs > $trav then bud("browser-walk"; {ms:$m.browser.walkEndMs, budget:$trav}) else empty end ),
+      # The 10 s per-page / per-unit line applies to every review page request the browser made, whole rows and the partial rows a failed run leaves.
+      ( if ($m.browser.pages.requestMsMax | type) == "number" and $m.browser.pages.requestMsMax > $unit then bud("page-request"; {ms:$m.browser.pages.requestMsMax, budget:$unit}) else empty end ),
       ( if ($m.browser.clicks.p95Ms | type) == "number" and $m.browser.clicks.p95Ms > $clickp95 then bud("click-p95"; {ms:$m.browser.clicks.p95Ms, budget:$clickp95}) else empty end ),
       ( if ($m.browser.clicks.maxMs | type) == "number" and $m.browser.clicks.maxMs > $clickmax then bud("click-max"; {ms:$m.browser.clicks.maxMs, budget:$clickmax}) else empty end ),
       ( ($m.browser.navigation // {}) | to_entries[] | select((.value | type) == "object" and (.value.maxMs | type) == "number" and .value.maxMs > $nav) | bud("navigation"; {control:.key, ms:.value.maxMs, budget:$nav}) );
@@ -348,8 +351,11 @@ JQ
 }
 qc1_judge_rules() { cat <<'JQ'
     select(.status == "measured" or .status == "observation") | norm_row as $m
-    | ( if ([$m.item] | inside([1,2,3,4,5])) and ($m.item != 5 or $m.case == "request-size") and (($m.traversal | type) != "object" or ($m.traversal.totalMs | type) != "number" or ($m.traversal.slowestUnitMs | type) != "number") then inv("missing-traversal"; {item:$m.item}) else empty end ),
-      ( if $m.item == 5 and $m.case == "legacy-put" and (($m.put.bodyBytes | type) != "number" or ($m.put.ms | type) != "number" or ($m.put.status | type) != "string") then inv("legacy-no-metrics"; {case:$m.case, why:"a measured legacy PUT row carries the body bytes, the time and the status of the PUT it measured"}) else empty end ),
+    | ( if ([$m.item] | inside([1,2,3,4,5])) and ($m.item != 5 or $m.case == "request-size") and ($m.case != "legacy-discovery-probe") and (($m.traversal | type) != "object" or ($m.traversal.totalMs | type) != "number" or ($m.traversal.slowestUnitMs | type) != "number") then inv("missing-traversal"; {item:$m.item}) else empty end ),
+      ( if $m.item == 5 and $m.case == "legacy-put" and (($m.put.bodyBytes | type) != "number" or ($m.put.ms | type) != "number" or $m.put.status != "200" or $m.put.validated != true or ($m.put.appPeakKb | type) != "number") then inv("legacy-no-metrics"; {case:$m.case, why:"a measured legacy PUT row is a REAL PUT: the body bytes, the time, the memory peak, status 200 and validated true (the largest valid body, accepted)"}) else empty end ),
+      ( if $m.item == 4 and $m.case == "legacy-discovery-probe" and (($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.status != "200" or $m.probe.found != true) then inv("legacy-no-metrics"; {case:$m.case, why:"the marker lookup row carries the time of a real lookup that found its marker (status 200, found true)"}) else empty end ),
+      ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe" and ($m.reasons | type) != "number" then inv("legacy-no-metrics"; {case:$m.case, why:"a legacy discovery row names the unreviewed pairs it was loaded with (reasons)"}) else empty end ),
+      ( if $m.item == 4 and (($m.case | type) == "string" and ($m.case | startswith("legacy-discovery-"))) and $m.case != "legacy-discovery-probe" and ($m.reasons | type) == "number" and ($m.case != ("legacy-discovery-" + ($m.reasons | tostring)) or $m.expect.items != $m.reasons) then inv("legacy-no-metrics"; {case:$m.case, reasons:$m.reasons, expected:$m.expect.items, why:"the case name, the pairs loaded and the pairs expected must agree"}) else empty end ),
       ( if ([$m.item] | inside([1,2,5,6,9])) and ($m.item != 5 or $m.case == "request-size") and (($m.delete | type) != "object" or ($m.delete.ms | type) != "number") then inv("missing-delete"; {item:$m.item}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and ($m.request | type) != "object" then inv("missing-request"; {item:$m.item}) else empty end ),
       ( if ($m.traversal.slowestUnitMs // 0) > $unit then bud("unit"; {ms:$m.traversal.slowestUnitMs, budget:$unit}) else empty end ),
@@ -371,7 +377,7 @@ qc1_judge_rules() { cat <<'JQ'
       ( ran($m)[] | . as $o
         | ( [ ["walBytes", $o.walBytes], ["appPeakKb", $o.appPeakKb], ["dbPeakKb", $o.dbPeakKb], ["gateTicks", $o.gateTicks],
               ["commitCalls", $o.commitCalls], ["commitMsMax", $o.commitMsMax], ["commitMsTotal", $o.commitMsTotal], ["dbMemSamples", $o.dbMemSamples],
-              ["gateMaxGapMs", $o.gateMaxGapMs], ["auditRowsBefore", $o.auditRowsBefore], ["auditRowsAfter", $o.auditRowsAfter], ["auditBytesBefore", $o.auditBytesBefore], ["auditBytesAfter", $o.auditBytesAfter], ["auditActionsBefore", $o.auditActionsBefore], ["auditActionsAfter", $o.auditActionsAfter], ["auditActionsDelta", $o.auditActionsDelta] ] | map(select(.[1] == null) | .[0]) ) as $missing
+              ["gateMaxGapMs", $o.gateMaxGapMs], ["auditRowsBefore", $o.auditRowsBefore], ["auditRowsAfter", $o.auditRowsAfter], ["auditBytesBefore", $o.auditBytesBefore], ["auditBytesAfter", $o.auditBytesAfter], ["tableRowsBefore", $o.tableRowsBefore], ["tableRowsAfter", $o.tableRowsAfter], ["auditActionsBefore", $o.auditActionsBefore], ["auditActionsAfter", $o.auditActionsAfter], ["auditActionsDelta", $o.auditActionsDelta] ] | map(select(.[1] == null) | .[0]) ) as $missing
         | if ($missing | length) > 0 then inv("metric-missing"; {metrics:$missing}) else empty end ),
       ( ran($m)[] | select(.appHwmReset != true) | inv("peak-reset-failed"; {}) ),
       ( ran($m)[] | . as $o | (($o.ms // $o.totalMs // 0) / 100 | floor) as $want
@@ -388,7 +394,7 @@ qc1_judge_rules() { cat <<'JQ'
       ( if $m.status == "observation" and ($m.workers // 0) == 0 then inv("observation-without-workers"; {}) else empty end ),
       ( if $m.traversal != null and (($m.traversal.requestMs // 0) > ($m.traversal.totalMs // 0) + ($m.traversal.units // 0)) then inv("accounting"; {requestMs:$m.traversal.requestMs, totalMs:$m.traversal.totalMs}) else empty end ),
       ( if $m.traversal != null and (($m.traversal.clientMs // -1) != ([ ($m.traversal.totalMs // 0) - ($m.traversal.requestMs // 0), 0 ] | max)) then inv("accounting"; {clientMs:$m.traversal.clientMs}) else empty end ),
-      ( if ([1, 2, 3, 4, 6, 9] | index($m.item)) != null and $m.expect == null then inv("no-expectation"; {}) else empty end ),
+      ( if ([1, 2, 3, 4, 6, 9] | index($m.item)) != null and $m.case != "legacy-discovery-probe" and $m.expect == null then inv("no-expectation"; {}) else empty end ),
       ( if $m.expect != null and $m.traversal != null and ($m.traversal.items // -1) != $m.expect.items then inv("discovery-count"; {items:$m.traversal.items, expected:$m.expect.items}) else empty end ),
       ( if $m.expect != null and $m.delete != null and (($m.delete.reasonsKept // -1) != $m.expect.kept or ($m.delete.reasonsRemoved // -1) != $m.expect.removed) then inv("outcome-count"; {kept:$m.delete.reasonsKept, removed:$m.delete.reasonsRemoved, expected:$m.expect}) else empty end ),
       ( if $m.expect != null and $m.delete != null and $m.outcome.dbOk != true then inv("outcome-db"; {outcome:$m.outcome}) else empty end ),
@@ -406,6 +412,26 @@ qc1_judge_rules() { cat <<'JQ'
             or ($m.executions.scannerContinuation.rows | length) != $m.executions.scannerContinuation.count or ($m.executions.scannerContinuation.sharedBlocks | length) != $m.executions.scannerContinuation.count
             or ([$m.executions.scannerInitial.rows[], $m.executions.scannerInitial.sharedBlocks[], $m.executions.scannerContinuation.rows[], $m.executions.scannerContinuation.sharedBlocks[]] | any(type != "number"))) then inv("plan-executions-missing"; {why:"rows and buffers of every scanner execution must be read from the logged plans"}) else empty end ),
       ( if $m.item == 8 and ([$m.executions.scannerInitial.rows[]?, $m.executions.scannerContinuation.rows[]?] | any(type == "number" and . > $unitrows)) then inv("scanner-unit-overrun"; {unitRows:$unitrows}) else empty end ),
+      # The scanner probe (the REAL statements, prepared and run more than six times in one session at controlled cursor positions, in the application's plan_cache_mode
+      # and forced generic): without it the index path is not proven and the evidence stays incomplete.
+      ( if $m.item == 8 and (($m.scannerProbe | type) != "object" or ($m.scannerProbe.executions | type) != "array" or ($m.scannerProbe.sameSession != true)
+            or ([ "auto", "force_generic_plan" ] | any(. as $mode | ([ $m.scannerProbe.executions[] | select(.mode == $mode) ] | length) < 7))
+            or ([ $m.scannerProbe.executions[] | select((.scan | type) != "object" or (.scan.rows | type) != "number" or (.scan.loops | type) != "number" or (.scan.sharedHit | type) != "number" or (.scan.sharedRead | type) != "number" or (.hasSort | type) != "boolean") ] | length) > 0)
+        then inv("scanner-probe-missing"; {why:"the real scanner statements must be executed more than six times per mode in one session, each with its child scan rows, loops, buffers and sort/filter facts"}) else empty end ),
+      ( if $m.item == 8 and ($m.scannerProbe.executions | type) == "array" then
+          ( $m.scannerProbe.executions[] | select((.scan | type) == "object") as $e
+            | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows}) else empty end ),
+              ( if $e.hasSort then bud("scanner-sort"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, why:"a Sort in a scanner unit means the unit is not read in primary-key order"}) else empty end ),
+              ( if (($e.scan.nodeType | type) != "string") or (($e.scan.nodeType | startswith("Index")) | not) then bud("scanner-not-indexed"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, nodeType:$e.scan.nodeType}) else empty end ),
+              ( if ($e.scan.filter | type) == "string" and ($e.scan.filter | test("(^|[^a-z_])id[ )]")) then bud("scanner-id-filter"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, filter:$e.scan.filter, why:"the id predicate must be an Index Cond, not a Filter over a scan"}) else empty end ),
+              ( if $e.kind == "continuation" and (($e.scan.indexCond | type) != "string" or ($e.scan.indexCond | test("id >") | not)) then bud("scanner-continuation-cond"; {mode:$e.mode, afterId:$e.afterId, indexCond:$e.scan.indexCond}) else empty end ),
+              ( if $e.scan.loops != 1 then bud("scanner-loops"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, loops:$e.scan.loops}) else empty end ) ),
+          # Buffer growth across cursor positions (an engineering proposal, like the interaction budgets): a bounded unit should touch a similar number of blocks wherever
+          # the cursor is, so a continuation that touches more than twice what the first position did is a finding. The figures are recorded either way.
+          ( [ "auto", "force_generic_plan" ][] as $mode
+            | [ $m.scannerProbe.executions[] | select(.mode == $mode and .kind == "continuation" and (.scan | type) == "object") | (.scan.sharedHit + .scan.sharedRead) ] as $b
+            | if ($b | length) > 1 and $b[0] > 0 and (($b | max) > 2 * $b[0]) then bud("scanner-buffer-growth"; {mode:$mode, firstPosition:$b[0], max:($b | max), blocks:$b, proposal:"more than twice the first position"}) else empty end )
+        else empty end ),
       ( if $m.item == 8 and $m.generic.scannerInitial.idIndexScan == false then bud("plan-initial"; {why:"the first scanner unit must read the table in id order from the primary key index; the generic plan of the real statement does not"}) else empty end ),
       ( if $m.item == 8 and ($m.generic.scannerContinuation.indexCondOnId == false or $m.continuationPlanIndexCond == false) then bud("plan-continuation"; {genericPlanHasIndexCond:$m.generic.scannerContinuation.indexCondOnId, loggedPlanHasIndexCond:$m.continuationPlanIndexCond, why:"the continuation unit must be bounded by an id Index Cond (design R3); a plan without one can rescan from the start and a large traversal is quadratic"}) else empty end ),
       ( if $m.item == 10 then
@@ -417,7 +443,7 @@ qc1_judge_rules() { cat <<'JQ'
               ["digestPath", $m.browser.digest.path], ["digestBuildMs", $m.browser.digest.buildMs], ["digestPreimageBytes", $m.browser.digest.preimageBytes], ["pressResponseMs", $m.browser.press.responseMs],
               ["phaseWalkWalBytes", $m.browser.phases.walk.walBytes], ["phaseInteractionsWalBytes", $m.browser.phases.interactions.walBytes], ["phasePressWalBytes", $m.browser.phases.press.walBytes],
               ["phaseWalkAuditActions", $m.browser.phases.walk.auditActionsDelta], ["phasePressAuditActions", $m.browser.phases.press.auditActionsDelta],
-              ["phaseAuditBytesWalk", $m.browser.phases.walk.auditBytes], ["phaseAuditBytesPress", $m.browser.phases.press.auditBytes],
+              ["phaseTableRowsWalk", $m.browser.phases.walk.tableRows.before], ["phaseTableRowsInteractions", $m.browser.phases.interactions.tableRows.before], ["phaseTableRowsPress", $m.browser.phases.press.tableRows.before], ["phaseAuditBytesWalk", $m.browser.phases.walk.auditBytes], ["phaseAuditBytesPress", $m.browser.phases.press.auditBytes],
               ["windowWalBytes", $m.window.walBytes], ["windowGateTicks", $m.window.gateTicks], ["windowCommitCalls", $m.window.commitCalls] ]
             | map(select(.[1] == null) | .[0]) ) as $gone
           | ([$m.reasons, 50] | min) as $first
@@ -430,7 +456,9 @@ qc1_judge_rules() { cat <<'JQ'
             elif $m.browser.apiOrigin != "real" then inv("browser-not-real-api"; {})
             elif $m.browser.press.observed != true or $m.browser.press.status != "409" or ($m.browser.press.bodyBytes | type) != "number" then inv("browser-press"; {press:$m.browser.press})
             elif ($m.browser.reload.unchosenAfterReload) != 1 then inv("browser-reload"; {reload:$m.browser.reload})
-            elif ($m.browser.digest.path != "webcrypto" and $m.browser.digest.path != "fallback") or ($m.browser.noSubtle == true and $m.browser.digest.path != "fallback") or ($m.browser.noSubtle != true and $m.browser.secureContext == true and $m.browser.digest.path != "webcrypto") then inv("browser-digest-path"; {digest:$m.browser.digest, noSubtle:$m.browser.noSubtle, secureContext:$m.browser.secureContext})
+            # The path that ran must be one the page could have taken: webcrypto needs crypto.subtle (a secure context that was not stripped). A fallback in a secure context
+            # is LEGITIMATE (a preimage above 16 MiB, or the product's known-answer self-test failing), so it is recorded against the expected path, never judged as a fault.
+            elif ($m.browser.digest.path != "webcrypto" and $m.browser.digest.path != "fallback") or ($m.browser.noSubtle == true and $m.browser.digest.path != "fallback") or ($m.browser.secureContext != true and $m.browser.digest.path == "webcrypto") then inv("browser-digest-path"; {digest:$m.browser.digest, noSubtle:$m.browser.noSubtle, secureContext:$m.browser.secureContext})
             elif ($m.browser.pages.count // 0) < (($m.reasons + 99) / 100 | floor) then inv("browser-pages-short"; {pages:$m.browser.pages.count, reasons:$m.reasons})
             else empty end
         else empty end ),
@@ -454,49 +482,17 @@ qc1_judge() { # measurements.jsonl max_request_bytes
   jq "${a[@]}" -f <(qc1_judge_defs; qc1_judge_partial) "$1"
 }
 
-# What a PILOT run does not cover and a FULL run must: the design's matrix (R4-C06 and the additive scaling rows). A run is "full" only when its own settings
-# (the environment record) name all of it; anything less is a "pilot", and a pilot's complete=true means only that every row it asked for exists and is
-# clean. releaseEvidence is complete AND full. Nothing here is a threshold on a measurement.
-qc1_coverage() { # environment.json
-  jq -c '
-    (.settings // {}) as $s
-    | def nums($x): ($x | tostring | split(",") | map(tonumber? // empty));
-      def lacks($have; $want): ($want - $have);
-    [ (if (lacks(nums($s.sizes); [10000, 100000, 1000000]) | length) > 0 then "sizes lack " + (lacks(nums($s.sizes); [10000, 100000, 1000000]) | map(tostring) | join(", ")) else empty end),
-      (if (lacks(nums($s.counts); [0, 10, 100, 1000, 10000]) | length) > 0 then "counts lack " + (lacks(nums($s.counts); [0, 10, 100, 1000, 10000]) | map(tostring) | join(", ")) else empty end),
-      (if (lacks(nums($s.deleteCounts); [0, 10, 100, 1000, 10000]) | length) > 0 then "deletion counts lack " + (lacks(nums($s.deleteCounts); [0, 10, 100, 1000, 10000]) | map(tostring) | join(", ")) else empty end),
-      (if (lacks(nums($s.denseCounts); [100000]) | length) > 0 then "the dense 100,000-reason case is not run" else empty end),
-      (if $s.browser != true then "no browser panel measurement" else empty end),
-      (if $s.targetReasonLen != 1000 then "the dense target reasons are not the 1,000-rune maximum (targetReasonLen " + ($s.targetReasonLen | tostring) + ")" else empty end),
-      (if $s.wire != "set-v1" then "not the set-v1 wire" else empty end) ]
-    | {kind: (if length == 0 then "full" else "pilot" end), reasons: .}' "$1" 2>/dev/null || printf '%s\n' '{"kind":"pilot","reasons":["environment record unreadable"]}'
-}
-# Said out loud in every evidence status: what this harness does NOT measure or only approximates, so a clean run is not read as more than it is.
-QC1_NOT_MEASURED_JSON='["gate hold time: the gate figures are SAMPLED (span from first to last sample that saw it, with the sampler cadence), never a hold time","digest-only time on the bundled fallback path: only press-to-request (an upper bound that includes minting the attempt id and serialising the body) is available; crypto.subtle time is measured by wrapping the call, on the webcrypto path only","non-ASCII reasons: the dense targets are ASCII 1,000-rune reasons; multi-byte runes would make larger pages","a real droplet: the figures come from a nested or local Docker approximation unless the environment record says otherwise","audit and WAL attribution: cluster-wide counters read around an operation (and, for the browser case, around each phase), not attributed to one statement","actual table size: background rows plus the scenario rows (n + k), recorded as table.actualRows"]'
-
-# Which measurements a complete QC-1 run holds. Prints
-# {complete, missing, pending, invalid, budgetFailures}. sizes and counts are
-# comma lists; env is the environment record, head HEAD's SHA, max the
-# maxRequestBytes. complete needs nothing missing, nothing pending (items 4 and
-# the legacy PUT stay open until T07B-3a), no invalid finding, a sound
-# environment record and a judge that ran. Budget failures are reported for
-# disposition and do not make a run incomplete.
-qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts]
-  local sizes counts dense="" want judged judge_ok=true env_problems max_size
-  # Lines that are not JSON cannot be judged or counted: the whole file is invalid evidence.
-  if ! jq -e . "$1" >/dev/null 2>&1; then
-    printf '%s\n' '{"complete":false,"missing":[],"pending":[],"invalid":[{"class":"invalid","failure":"unparsable-measurements"}],"budgetFailures":[]}'
-    return 0
-  fi
-  sizes="$(qc1_list "$2" | paste -sd, -)" || return 1
-  counts="$(qc1_list "$3" | paste -sd, -)" || return 1
-  max_size="$(qc1_list "$2" | sort -n | tail -n 1)"
-  if [[ -n "${7:-}" ]]; then dense="$(qc1_list "$7" | paste -sd, -)" || return 1; fi
-  # A count above the table's size is not measured (the table could not hold it), so it is not wanted. The dense targets of the scaling design are
-  # additive: the same rows (discovery both directions, browser panel, deletion keep/remove/mixed both directions) for each dense count the table holds.
-  # The order control repeats the first discovery case at the end of the size's run; its distance from the first is the order effect of the audit
-  # rows and the dirtied table the run itself leaves behind.
-  want="$(jq -nc --argjson sizes "[$sizes]" --argjson counts "[$counts]" --argjson dense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson bc "[$QC1_BROWSER_COUNTS]" --argjson max "$max_size" '
+# The rows a run owes for sizes, counts and dense targets (items 1 to 3 and 5 to 10), as [{item, size, case}]. A count above the table's size is not wanted (the table
+# could not hold it). The dense targets are additive: the same discovery, browser and deletion rows for each dense count the table holds. The order control repeats
+# the first discovery case at the end of the size's run; its distance from the first is the order effect of the audit rows and the dirtied table the run leaves behind.
+# Legacy items 4 and 5 are NOT here: they are owed separately (qc1_legacy_want_json) and stay pending until measured.
+qc1_want_json() { # sizes counts dense(optional, may be empty)
+  local sizes counts dense="" max_size
+  sizes="$(qc1_list "$1" | paste -sd, -)" || return 1
+  counts="$(qc1_list "$2" | paste -sd, -)" || return 1
+  max_size="$(qc1_list "$1" | sort -n | tail -n 1)"
+  if [[ -n "${3:-}" ]]; then dense="$(qc1_list "$3" | paste -sd, -)" || return 1; fi
+  jq -nc --argjson sizes "[$sizes]" --argjson counts "[$counts]" --argjson dense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson bc "[$QC1_BROWSER_COUNTS]" --argjson max "$max_size" '
     [ ($sizes[] as $s | (
         {item:1,size:$s,case:"sparse"}, {item:2,size:$s,case:"unrelated"},
         ($counts[] as $k | select($k <= $s) | ("requester","subject") as $d | {item:3,size:$s,case:("discovery-" + $d + "-" + ($k|tostring))}),
@@ -506,19 +502,88 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
         (($bc + $dense)[] as $k | select($k <= $s) | {item:10,size:$s,case:("browser-panel-" + ($k|tostring))}),
         (($dc + $dense)[] as $k | select($k <= $s) | ("requester","subject") as $d | ("keep","remove","mixed") as $m
           | {item:6,size:$s,case:("delete-" + $d + "-" + ($k|tostring) + "-" + $m)}) )),
-      {item:9,size:$max,case:"workers-on-delete"} ]')"
+      {item:9,size:$max,case:"workers-on-delete"} ]'
+}
+# The legacy rows the R4-C06 matrix owes PER SIZE, which T07B-3a will produce: legacy discovery with 0, 100 and 10,000 unreviewed pairs, the marker lookup
+# (the probe), and the legacy PUT with its real validation. Until every one of them is a measured, clean row they are all pending, whatever else exists.
+qc1_legacy_want_json() { # sizes
+  local sizes
+  sizes="$(qc1_list "$1" | paste -sd, -)" || return 1
+  jq -nc --argjson sizes "[$sizes]" --argjson lc "[$QC1_LEGACY_COUNTS]" '
+    [ $sizes[] as $s | ($lc[] as $k | select($k <= $s) | {item:4,size:$s,case:("legacy-discovery-" + ($k|tostring))}), {item:4,size:$s,case:"legacy-discovery-probe"}, {item:5,size:$s,case:"legacy-put"} ]'
+}
+
+# Said out loud in every evidence status: what this harness does NOT measure or only approximates, so a clean run is not read as more than it is.
+QC1_NOT_MEASURED_JSON="$(cat <<'JSON'
+["gate hold time: the gate figures are SAMPLED (the span from the first to the last sample that saw it, with the sampler cadence), never an exact hold time",
+ "digest-only time on the bundled fallback path: only press-to-request (an upper bound that includes minting the attempt id and serialising the body) is available; crypto.subtle time is measured by wrapping the call, on the webcrypto path only",
+ "isolated server-side parse and encode time: only whole request times, and the page's own text() read and JSON.parse, are measured; the server's share of a request is not separated",
+ "multi-byte reasons: the dense targets are ASCII 1,000-rune reasons, so pages of 1,000 four-byte runes are not measured",
+ "cluster attribution: WAL, commit, audit and memory figures are cluster-wide counters read around an operation (and around each browser phase), not attributed to one statement",
+ "a real droplet: the figures come from a nested or local Docker approximation unless the environment record says otherwise",
+ "an exact table size: each operation records the rows contact_requests held just before and after it (background plus the scenario rows, n + k); the background target is not the total"]
+JSON
+)"
+
+# Which measurements a complete QC-1 run holds. Prints {complete, missing, pending, invalid, budgetFailures, coverage, releaseEvidence, notMeasured, confounding}.
+# sizes, counts and dense are the comma lists the run was asked for; env is the environment record, head HEAD's SHA, max the maxRequestBytes.
+#   complete          nothing missing, nothing pending, no invalid finding, a sound environment record and a judge that ran, FOR THE ROWS IT ASKED FOR.
+#   pending           every legacy row the matrix owes per size (qc1_legacy_want_json) that is not a measured, clean row. A failed row, a placeholder or a row that
+#                     fails the judge clears nothing.
+#   coverage          "full" only when the ROWS prove it: every row of the full matrix (sizes 10k/100k/1M, the default counts, the dense 100,000) is a measured, clean row,
+#                     the target histories are 1,000 runes, the browser ran, and the environment record's settings AGREE with the arguments and the rows. The settings
+#                     alone never make a run full; a disagreement between them and the arguments or the rows is an invalid finding.
+#   releaseEvidence   complete AND full.
+# Budget failures are reported for disposition and do not make a run incomplete.
+qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts]
+  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson
+  # Lines that are not JSON cannot be judged or counted: the whole file is invalid evidence.
+  if ! jq -e . "$1" >/dev/null 2>&1; then
+    printf '%s\n' '{"complete":false,"missing":[],"pending":[],"invalid":[{"class":"invalid","failure":"unparsable-measurements"}],"budgetFailures":[]}'
+    return 0
+  fi
+  sizes="$(qc1_list "$2" | paste -sd, -)" || return 1
+  counts="$(qc1_list "$3" | paste -sd, -)" || return 1
+  if [[ -n "${7:-}" ]]; then dense="$(qc1_list "$7" | paste -sd, -)" || return 1; fi
+  want="$(qc1_want_json "$sizes" "$counts" "$dense")" || return 1
+  fullwant="$(qc1_want_json 10000,100000,1000000 "$QC1_COUNTS_DEFAULT" 100000)" || return 1
+  legacy="$(qc1_legacy_want_json "$sizes")" || return 1
   judged="$(qc1_judge "$1" "$6")" || judge_ok=false
   env_problems="$(qc1_environment_problems "$4" "$5" | jq -R . | jq -sc .)" || env_problems='["environment record unreadable"]'
-  jq -s -c --argjson want "$want" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
-    --argjson envProblems "$env_problems" --argjson coverage "$(qc1_coverage "$4")" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --argjson judged "$(jq -sc . <<<"$judged")" '
+  envjson="$(jq -c . "$4" 2>/dev/null || printf null)"
+  jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
+    --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
+    --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --argjson judged "$(jq -sc . <<<"$judged")" '
+    def nums($x): if $x == null then null else ($x | tostring | split(",") | map(tonumber? // empty) | unique) end;
+    def same($a; $b): ($a | unique) == ($b | unique);
     . as $rows
     | ($rows | map({item, size, case, status})) as $have
-    | { missing: [ $want[] | . as $w | select(($have | map(select(.item == $w.item and .size == $w.size and .case == $w.case and (.status == "measured" or (.status == "observation" and $w.item == 9)))) | length) == 0) ],
-        pending: ([ $rows[] | select(.status == "pending") | {item, case, reason} ]
-                  + (if ($rows | map(select(.item == 4)) | length) == 0 then [{item:4, case:"legacy-discovery", reason:$pending4}] else [] end)
-                  + (if ($rows | map(select(.item == 5 and .case == "legacy-put")) | length) == 0 then [{item:5, case:"legacy-put", reason:$pending5}] else [] end)),
+    | def present($w): any($have[]; .item == $w.item and .size == $w.size and .case == $w.case and (.status == "measured" or (.status == "observation" and $w.item == 9)));
+      def clean($w): present($w) and ($judged | all(.class != "invalid" or .item != $w.item or .size != $w.size or .case != $w.case));
+      ($env.settings // {}) as $s
+    | ([ if $s.sizes != null and (same(nums($s.sizes); $argSizes) | not) then {what:"sizes", settings:$s.sizes, argument:$argSizes} else empty end,
+         if $s.counts != null and (same(nums($s.counts); $argCounts) | not) then {what:"counts", settings:$s.counts, argument:$argCounts} else empty end,
+         if $s.denseCounts != null and ($s.denseCounts | tostring) != "none" and (same(nums($s.denseCounts); $argDense) | not) then {what:"dense counts", settings:$s.denseCounts, argument:$argDense}
+           elif $s.denseCounts != null and ($s.denseCounts | tostring) == "none" and ($argDense | length) > 0 then {what:"dense counts", settings:"none", argument:$argDense} else empty end,
+         if $s.deleteCounts != null and (same(nums($s.deleteCounts); ($dc + $argDense)) | not) then {what:"deletion counts", settings:$s.deleteCounts, argument:($dc + $argDense)} else empty end,
+         # a row that says its target reasons are not what the settings say they are
+         ($rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and $s.targetReasonLen != null and .targetReasonLen != $s.targetReasonLen)
+            | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}) ]) as $disagree
+    | ([ $fullWant[] | select(clean(.) | not) ]) as $fullGaps
+    | ([ $rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and .targetReasonLen != 1000) ] | length) as $shortTargets
+    | ([ (if ($env == null) then "environment record unreadable" else empty end),
+         (if ($fullGaps | length) > 0 then "rows of the full matrix are not measured and clean: " + ($fullGaps | length | tostring) + " (first: item " + ($fullGaps[0].item | tostring) + " size " + ($fullGaps[0].size | tostring) + " " + $fullGaps[0].case + ")" else empty end),
+         (if $shortTargets > 0 then "rows whose target reasons are not the 1,000-rune maximum: " + ($shortTargets | tostring) else empty end),
+         (if $s.targetReasonLen != 1000 then "the settings do not name 1,000-rune target reasons (targetReasonLen " + ($s.targetReasonLen | tostring) + ")" else empty end),
+         (if $s.browser != true then "no browser panel measurement" else empty end),
+         (if $s.wire != "set-v1" then "not the set-v1 wire" else empty end),
+         (if ($disagree | length) > 0 then "the settings disagree with the arguments or the rows: " + ($disagree | map(.what) | join(", ")) else empty end),
+         (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end) ]) as $covReasons
+    | { missing: [ $want[] | select(present(.) | not) ],
+        pending: [ $legacyWant[] | select(clean(.) | not) | . + {reason: (if .item == 4 then $pending4 else $pending5 end)} ],
         invalid: ( [ $judged[] | select(.class == "invalid") ]
                    + [ $envProblems[] | {class:"invalid", failure:"environment", problem:.} ]
+                   + [ $disagree[] | {class:"invalid", failure:"settings-disagreement"} + . ]
                    + (if $judgeOk then [] else [{class:"invalid", failure:"judge-failed"}] end) ),
         budgetFailures: [ $judged[] | select(.class == "budget") ],
         confounding: (
@@ -532,9 +597,10 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                 | ($ms | map(select(.item == 3 and .size == $c.size and .case == "discovery-requester-10")) | .[0]) as $f
                 | {size: $c.size, firstSeq: $f.seq, controlSeq: $c.seq, firstTotalMs: $f.traversal.totalMs, controlTotalMs: $c.traversal.totalMs,
                    ratio: (if (($f.traversal.totalMs | type) == "number") and (($c.traversal.totalMs | type) == "number") and $f.traversal.totalMs > 0 then ((($c.traversal.totalMs / $f.traversal.totalMs) * 100 | round) / 100) else null end),
-                   auditRowsFirst: $f.traversal.auditRowsBefore, auditRowsControl: $c.traversal.auditRowsBefore} ] } ) }
+                   auditRowsFirst: $f.traversal.auditRowsBefore, auditRowsControl: $c.traversal.auditRowsBefore} ] } ),
+        coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
-    | . + {coverage: $coverage, releaseEvidence: (.complete and $coverage.kind == "full"), notMeasured: $notMeasured}' "$1"
+    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}' "$1"
 }
 
 # The statements whose plans QC-1 records. Plans come from auto_explain's log
@@ -583,6 +649,24 @@ qc1_plan_counts() { # log
   printf '}\n'
 }
 
+
+# The scanner probe: the REAL scanner statements (qc1_go_sql) prepared and executed several times in ONE session at controlled cursor positions, each under
+# EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON), in plan_cache_mode auto (the mode the application runs in: the sixth and later executions may use a generic plan) and
+# force_generic_plan. This reads each execution's child scan: node type, index, index condition, filter, actual rows, loops and shared blocks, and whether any Sort
+# is in the plan. Input: one EXPLAIN JSON document per execution, in order; $1 is the matching JSON array of {mode, kind, percent, afterId}.
+qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
+  jq -sc --argjson meta "$1" '
+    def nodes: [.. | objects | select(has("Node Type"))];
+    [ range(0; length) as $i | .[$i][0].Plan as $p | ($meta[$i] // {}) as $m
+      | ($p | nodes) as $ns
+      | ([ $ns[] | select((.["Node Type"] | test("Scan$")) and ((.["Relation Name"] // "") == "contact_requests")) ] | .[0]) as $scan
+      | $m + { topRows: $p["Actual Rows"],
+               hasSort: ($ns | any(.["Node Type"] == "Sort" or .["Node Type"] == "Incremental Sort")),
+               scan: (if $scan == null then null else
+                 { nodeType: $scan["Node Type"], indexName: $scan["Index Name"], indexCond: $scan["Index Cond"], filter: $scan["Filter"],
+                   rows: $scan["Actual Rows"], loops: $scan["Actual Loops"], sharedHit: $scan["Shared Hit Blocks"], sharedRead: $scan["Shared Read Blocks"],
+                   rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0) } end) } ]'
+}
 
 # The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a
 # generic plan is of the REAL statement, with its real projection, and not of a statement the harness wrote. Prints nothing when the constant is gone.

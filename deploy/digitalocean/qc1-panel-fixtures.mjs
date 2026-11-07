@@ -35,9 +35,23 @@ function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = ()
   const d = {
     state: s,
     canChange,
+    // Sign-in, navigation and the user search take 300 ms before the Delete-menu action; the menu action is where every measured interval starts.
     async open() {
-      s.tOpen = clock;
       clock += 300;
+      s.tOpen = clock;
+      s.menuAt = clock;
+    },
+    async timeline() {
+      return {
+        menuAt: s.menuAt ?? null,
+        firstPageAt: s.menuAt === undefined ? null : s.menuAt + firstPageAt,
+        walkDoneAt: neverEnds || s.menuAt === undefined ? null : s.menuAt + walkEndAt,
+        pressAt: s.pressedAt ?? null,
+        walk2DoneAt: s.walk2End ?? null,
+      };
+    },
+    async lastClickEnd() {
+      return s.lastEnd;
     },
     async snapshot() {
       if (failAt === "snapshot-after-walk" && clock - s.tOpen > walkEndAt + 100) throw new Error("the page stopped answering");
@@ -57,6 +71,7 @@ function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = ()
       s.chooseCalls++;
       const ms = clickMs(s.chooseCalls);
       clock += ms;
+      s.lastEnd = clock;
       s.chosen.add(s.start + i);
       return ms;
     },
@@ -92,6 +107,7 @@ function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = ()
     },
     async press() {
       s.pressed = true;
+      s.pressedAt = clock;
       s.start = 0;
       s.restartAt = clock + restartDelay;
       s.walk2End = s.restartAt + walk2Ms;
@@ -121,6 +137,7 @@ function fakePanel({ expected, firstPageAt = 700, walkEndAt = 9000, clickMs = ()
     // The phase hook: absolute WAL bytes and audit_logs (rows, bytes, rows by action) that grow with the virtual clock.
     d.phase = async (name) => {
       s.marks.push(name);
+      clock += 500; // the hook (a docker exec and four queries) is slow, and none of it may reach a measured interval
       s.wal += 1000 + Math.floor(clock);
       const views = Math.floor(clock / 1000);
       return { wal: s.wal, auditRows: 10 + views, auditBytes: 8192 * (1 + Math.floor(views / 50)), auditActions: { "reason.view": views, ...(s.pressed ? { "reason.refused": 1 } : {}) } };
@@ -319,6 +336,44 @@ assert.equal(parseUnchosen("All 10 reasons chosen."), null);
 await assert.rejects(measurePanel(fakePanel({ expected: 1 }), { expected: 0, now, sleep }), /whole number of reasons/);
 await assert.rejects(measurePanel(fakePanel({ expected: 1 }), { expected: 1.5, now, sleep }), /whole number of reasons/);
 // A measurement given no clock does not read one.
-await assert.rejects(measurePanel(fakePanel({ expected: 1 }), { expected: 5 }), /not given a clock/);
+clock = 0;
+{
+  const r = await measurePanel(fakePanel({ expected: 5 }), { expected: 5 });
+  assert.match(r.failed.error, /not given a clock/, "no clock is a recorded failure, not a number");
+}
+// --- the clock starts at the Delete-menu action and every stamp is the page's own -----------------------------------------------------------------------------
+{
+  // Sign-in, navigation and search before the menu (300 ms) and a slow phase hook (500 ms a mark) are NOT in any interval; 190 ms clicks made while the walk runs
+  // do not postpone the walk's stamp (a loop that noticed the end after its clicks would read well over 2,000 ms here).
+  const { r } = await run({ expected: 1000, firstPageAt: 700, walkEndAt: 2000, clickMs: () => 190 });
+  assert.equal(r.failed, null);
+  assert.equal(r.firstPage.firstPageMs, 700);
+  assert.equal(r.walkEndMs, 2000, "the walk end is the page's stamp, from the menu action");
+  assert.ok(r.firstPage.firstInteractiveMs !== null && r.firstPage.firstInteractiveMs >= 700 + 190 && r.firstPage.firstInteractiveMs < 1100, `first interactive is its own completion stamp: ${r.firstPage.firstInteractiveMs}`);
+  assert.equal(r.renderReadyMs, 2000);
+}
+{
+  // The first interactive click completes AFTER the walk ended: readiness is that later stamp.
+  const { r } = await run({ expected: 1000, firstPageAt: 100, walkEndAt: 400, clickMs: () => 150 });
+  assert.equal(r.walkEndMs, 400);
+  assert.ok(r.firstPage.firstInteractiveMs > 100, "from the menu action");
+  assert.equal(r.renderReadyMs, Math.max(r.walkEndMs, r.firstPage.firstInteractiveMs));
+}
+{
+  // The second walk is timed from the pointerdown on Delete to the page's own stamp of the new walk's end.
+  const { r } = await run({ expected: 1000, restartDelay: 3000, walk2Ms: 4000 });
+  assert.equal(r.reload.reloadAfterRefusalMs, 3000 + 4000);
+}
+// A page that stamps nothing leaves every interval null (missing), not a guess from the loop's clock.
+{
+  const p = fakePanel({ expected: 1000 });
+  p.timeline = async () => ({ menuAt: null, firstPageAt: null, walkDoneAt: null, pressAt: null, walk2DoneAt: null });
+  clock = 0;
+  const r = await measurePanel(p, { expected: 1000, now, sleep });
+  assert.equal(r.walkEndMs, null);
+  assert.equal(r.firstPage.firstPageMs, null);
+  assert.equal(r.renderReadyMs, null);
+  assert.equal(r.reload.reloadAfterRefusalMs, null);
+}
 
 console.log("qc1 panel fixtures: ok");

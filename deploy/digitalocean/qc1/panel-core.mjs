@@ -101,6 +101,8 @@ export function phaseDelta(a, b) {
     walBytes: b.wal - a.wal,
     auditActionsDelta: Object.fromEntries(keys.map((k) => [k, (b.auditActions[k] ?? 0) - (a.auditActions[k] ?? 0)])),
     auditRows: { before: a.auditRows ?? null, after: b.auditRows ?? null },
+    // The rows contact_requests held at each end of the phase (background plus the scenario rows): the phase's own count, not one taken later.
+    tableRows: { before: num(a.tableRows), after: num(b.tableRows) },
     auditBytes: { before: a.auditBytes ?? null, after: b.auditBytes ?? null, delta: num(a.auditBytes) !== null && num(b.auditBytes) !== null ? b.auditBytes - a.auditBytes : null },
     note: "cluster-wide counters read by the harness between the two marks; the marks are the phase boundaries, and the hook's own queries fall at the edges",
   };
@@ -120,7 +122,11 @@ export async function measurePanel(d, opts) {
   const mark = async (name) => {
     if (typeof d.phase === "function") marks[name] = await d.phase(name);
   };
-  const t0 = now();
+  // Time zero is NOT taken here. Every interval of the first load is measured by the PAGE, on its own clock, from the pointerdown of the Delete-menu action
+  // (menuAt) to the moment it saw the thing happen (first page rendered, walk ended, first interactive click completed), each timestamped where it occurred and
+  // independently of this loop. So the phase hook, the sign-in, the navigation and the user search before the menu, and the clicks and navigation made while the
+  // walk runs, add nothing to a figure and cannot postpone it.
+  let timeline = null;
 
   async function until(what, test) {
     const limit = now() + timeoutMs;
@@ -140,7 +146,6 @@ export async function measurePanel(d, opts) {
     await mark("open");
     await d.open();
     R.firstRows = (await until("the first page of reasons", async () => ((await d.snapshot()).rows >= firstPageItems ? { rows: (await d.snapshot()).rows } : null))).rows;
-    R.firstPageMs = Math.round(now() - t0);
     R.env = await d.env();
 
     // The first radio must accept a real click and show chosen within 200 ms; a click that is slower does not count as ready, and the next
@@ -153,7 +158,7 @@ export async function measurePanel(d, opts) {
       chosen.add(next);
       (ended ? clicks.afterWalk : clicks.beforeWalkEnd).push(ms);
       if (ms <= FIRST_CLICK_MS) {
-        R.firstInteractiveMs = Math.round(now() - t0);
+        R.firstInteractiveEnd = await d.lastClickEnd();
         next++;
         break;
       }
@@ -166,7 +171,7 @@ export async function measurePanel(d, opts) {
 
     phase = "walk";
     await until("the walk to end", async () => walkEnded(await d.snapshot()));
-    R.walkEndMs = Math.round(now() - t0);
+    timeline = await d.timeline();
     R.walkTotal = parseNavLine((await d.snapshot()).navLine)?.total ?? null;
     await mark("walk-end");
     R.walkStats = await d.walkStats();
@@ -250,13 +255,13 @@ export async function measurePanel(d, opts) {
       const before = await d.pageResponseCount();
       await mark("press-start");
       const pressed = await d.press();
-      const pressedAt = now();
       await until("a fresh traversal after the refusal", async () => ((await d.pageResponseCount()) - before >= 1 ? true : null));
       await until("the second walk to end", async () => {
         const s = await d.snapshot();
         return (await d.pageResponseCount()) - before >= pagesPerWalk && walkEnded(s) ? s : null;
       });
-      const reloadMs = Math.round(now() - pressedAt);
+      timeline = await d.timeline();
+      const reloadMs = num(timeline && timeline.walk2DoneAt) !== null && num(timeline.pressAt) !== null ? Math.round(timeline.walk2DoneAt - timeline.pressAt) : null;
       const secondWalkPages = (await d.pageResponseCount()) - before;
       await mark("press-end");
       const after = await d.snapshot();
@@ -283,6 +288,14 @@ export async function measurePanel(d, opts) {
 
   const all = [...clicks.beforeWalkEnd, ...clicks.midList, ...clicks.lastPage, ...clicks.afterWalk];
   const navSummary = Object.fromEntries(Object.entries(nav).map(([k, v]) => [k, { ...summarize(v), observed: v.length > 0, samples: v }]));
+  if (timeline === null) {
+    try { timeline = await d.timeline(); } catch { /* the page is gone: every interval stays null */ }
+  }
+  // The page-clock intervals, all from the Delete-menu action. A missing stamp is null (missing), never a guess from this loop's clock.
+  const since = (stamp) => (timeline && num(timeline.menuAt) !== null && num(stamp) !== null ? Math.round((stamp - timeline.menuAt) * 10) / 10 : null);
+  R.firstPageMs = since(timeline && timeline.firstPageAt);
+  R.walkEndMs = since(timeline && timeline.walkDoneAt);
+  R.firstInteractiveMs = R.firstInteractiveEnd !== undefined ? since(R.firstInteractiveEnd) : null;
   const readyCandidates = [R.walkEndMs, R.firstInteractiveMs];
   const preimageBytes = 35 + 40 * expected;
   const hasSubtle = R.env ? R.env.hasSubtle : null;
@@ -295,11 +308,16 @@ export async function measurePanel(d, opts) {
         subtleBytes: R.digest.subtleBytes,
         subtleMs: R.digest.subtleMs,
         preimageBytes,
+        // What the environment predicts: crypto.subtle present and a preimage that fits the product's one-call limit. A fallback in a secure context is legitimate
+        // (a preimage above 16 MiB, or the known-answer self-test failing), so a difference is RECORDED, never a failure.
+        expectedPath: hasSubtle === true && preimageBytes <= 16 * 1024 * 1024 ? "webcrypto" : "fallback",
         // Press-to-request is an UPPER BOUND on building the digest: it also includes minting the attempt id and serialising the body.
         buildMs: R.press && num(R.press.pressToRequestMs) !== null ? R.press.pressToRequestMs : null,
         buildMsKind: "press-to-request, an upper bound (it includes minting the attempt id and serialising the body); subtleMs is the crypto.subtle time alone, measured on the webcrypto path only",
+        matchesExpectation: null,
       }
     : null;
+  if (digest) digest.matchesExpectation = digest.path === digest.expectedPath;
   const phases = {
     walk: phaseDelta(marks.open, marks["walk-end"]),
     interactions: phaseDelta(marks["walk-end"], marks["interactions-end"]),
@@ -315,6 +333,7 @@ export async function measurePanel(d, opts) {
     digest,
     firstPage: { itemsRendered: R.firstRows, expectedItems: firstPageItems, firstPageMs: R.firstPageMs, firstInteractiveMs: R.firstInteractiveMs },
     walkEndMs: R.walkEndMs,
+    timeline, // the page-clock stamps behind every interval above (null until they happened)
     walkTotal: R.walkTotal,
     pageRequests: R.walkStats ? R.walkStats.pageRequests : null,
     pageResponseBytes: R.walkStats ? R.walkStats.pageResponseBytes : null,

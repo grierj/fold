@@ -101,7 +101,7 @@ try {
     return { pageRequests: walk.requests, pageResponseBytes: walk.bytes, apiOrigin: walkOrigin(walk, walk.bytes, sizes.length), pageList: list };
   };
 
-  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", walk: walkStats, pageResponses: () => allPageResponses });
+  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", walk: walkStats, pageResponses: () => allPageResponses });
   const result = await measurePanel(driver, {
     expected,
     now: () => performance.now(),

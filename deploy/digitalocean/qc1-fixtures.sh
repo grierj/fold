@@ -126,7 +126,7 @@ slurp_line="$(grep -n 'jq -sc . "\$WORK/items.jsonl" >"\$out"' "$HERE/qc1-measur
 ended_line="$(grep -n '^  ended="\$(ms)"$' "$HERE/qc1-measure.sh" | head -n 1 | cut -d: -f1)"
 [[ -n "$slurp_line" && -n "$ended_line" && "$slurp_line" -lt "$ended_line" ]]
 # Every instrument a row can carry, healthy. A row is built from these and then broken one field at a time.
-INSTR='"auditRowsBefore":10,"auditRowsAfter":20,"auditBytesBefore":1000,"auditBytesAfter":2000,"auditActionsBefore":{"x.view":5},"auditActionsAfter":{"x.view":15,"add.reason_kept":5},"auditActionsDelta":{"x.view":10,"add.reason_kept":5},"walBytes":100,"walControlBytes":10,"appPeakKb":5,"appHwmReset":true,"dbPeakKb":7,"dbMemSamples":50,"gateSpanMs":0,"gateGrantTicks":0,"gateTicks":50,"gateHolders":0,"gateMaxGapMs":25,"gateMeanGapMs":22,"gateHoles":0,"autovacuumWorkers":0,"maxActiveClients":1,"commitCalls":1,"commitMsMax":1,"commitMsTotal":1,"schedulerOverlap":false,"schedulerRows":0'
+INSTR='"tableRowsBefore":1010,"tableRowsAfter":1010,"auditRowsBefore":10,"auditRowsAfter":20,"auditBytesBefore":1000,"auditBytesAfter":2000,"auditActionsBefore":{"x.view":5},"auditActionsAfter":{"x.view":15,"add.reason_kept":5},"auditActionsDelta":{"x.view":10,"add.reason_kept":5},"walBytes":100,"walControlBytes":10,"appPeakKb":5,"appHwmReset":true,"dbPeakKb":7,"dbMemSamples":50,"gateSpanMs":0,"gateGrantTicks":0,"gateTicks":50,"gateHolders":0,"gateMaxGapMs":25,"gateMeanGapMs":22,"gateHoles":0,"autovacuumWorkers":0,"maxActiveClients":1,"commitCalls":1,"commitMsMax":1,"commitMsTotal":1,"schedulerOverlap":false,"schedulerRows":0'
 good_tr="{\"units\":5,\"slowestUnitMs\":200,\"totalMs\":1000,\"requestMs\":800,\"clientMs\":200,\"items\":3,\"lastStatus\":\"200\",$INSTR}"
 row() { jq -nc --argjson t "$1" '{status:"measured",item:3,case:"discovery-requester-10",size:100,workers:0,reasons:3,expect:{items:3},traversal:$t}'; }
 row "$good_tr" >"$WORK/acc.jsonl"; [[ -z "$(qc1_judge "$WORK/acc.jsonl" 6291456)" ]] || { qc1_judge "$WORK/acc.jsonl" 6291456 >&2; exit 1; }
@@ -355,8 +355,19 @@ QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows
 # A complete set of rows for sizes S, counts C and dense counts D: every kind holds its instruments, its expectation and its outcome. Dense counts are
 # additive: the same discovery, browser and deletion rows for each dense count the table holds. The set-v1 request-size row is the largest deletion count
 # the table holds (K), its refusals, the over-cap body and the old-form comparison.
+# The scanner probe of a healthy run: eight executions per mode (one initial unit, seven continuations at cursor positions 0 to 85 per cent), each an index scan in
+# primary-key order with its id predicate as an Index Cond, no Sort, one loop, the unit's rows and a flat number of shared blocks.
+probe_json() {
+  jq -nc '{unit:50000, tableRows:1000, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8,
+    executions:[("auto","force_generic_plan") as $m
+      | ({mode:$m, kind:"initial", percent:null, afterId:null, topRows:50000, hasSort:false,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0}},
+         ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), topRows:50000, hasSort:false,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0}}))]}'
+}
 gen() { # sizes counts [dense]
-  local s k d m c kept removed bc K dlist ci np pre pages digest ph
+  local s k d m c kept removed bc K dlist ci np pre pages digest ph probe
+  probe="$(probe_json)"
   for s in $(qc1_list "$1"); do
     dlist=""; [[ -z "${3:-}" ]] || dlist="$(qc1_list "$3")"
     K=0; for k in $(qc1_list "$QC1_DELETE_COUNTS") $dlist; do (( k <= s && k > K )) && K=$k; done
@@ -365,30 +376,30 @@ gen() { # sizes counts [dense]
       read -r name item <<<"$c"
       printf '{"status":"measured","item":%s,"case":"%s","size":%s,"workers":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":0,"lastStatus":"200",%s},"delete":{%s,"reasonsKept":0,"reasonsRemoved":0}}\n' "$item" "$name" "$s" "$okout" "$INSTR" "$HDEL"
     done
-    printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"reasons":10,"expect":{"items":10},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":10,"lastStatus":"200",%s}}\n' "$s" "$INSTR"
+    printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"targetReasonLen":1000,"reasons":10,"expect":{"items":10},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":10,"lastStatus":"200",%s}}\n' "$s" "$INSTR"
     printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true},"countMismatch":{"status":"400","unchanged":true},"changedSet":{"status":"409","unchanged":true},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true},"legacyComparison":{"synthetic":true,"capacityEntries":52868,"entriesOver":52869,"overStatus":"413","fitStatus":"409","fitUnchanged":true},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":{%s,"reasonsKept":%s,"reasonsRemoved":%s},"traversal":{"units":1,"slowestUnitMs":50,"totalMs":100,"requestMs":90,"clientMs":10,"items":%s,"lastStatus":"200",%s}}\n' \
       "$s" "$K" "$(( 400 + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$okout" "$HDEL" "$(( K / 2 ))" "$(( K - K / 2 ))" "$K" "$INSTR"
     printf '{"status":"measured","item":7,"case":"human-progress","size":%s,"workers":0,"assessment":{"perCount":[{"reasons":10}]}}\n' "$s"
-    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}}}\n' \
-      "$s" "$s" "$(( s + 1000 ))" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')"
+    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s}\n' \
+      "$s" "$s" "$(( s + 1000 ))" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( s + 1000 > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( s + 1000 > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe"
     for bc in $(qc1_list "$QC1_BROWSER_COUNTS") $dlist; do
       (( bc <= s )) || continue
       np=$(( (bc + 99) / 100 )); pre=$(( 35 + 40 * bc ))
       pages="{\"count\":$np,\"responseBytesMax\":30000,\"responseBytesTotal\":$(( bc * 300 )),\"requestMsMax\":20,\"requestMsP95\":15,\"readMsMax\":3,\"readMsTotal\":$(( np * 2 )),\"parseMsMax\":5,\"parseMsTotal\":$(( np * 3 )),\"nodeParseMsMax\":4}"
-      digest="{\"path\":\"webcrypto\",\"subtleCalls\":2,\"subtleBytes\":$(( pre + 4 )),\"subtleMs\":3,\"preimageBytes\":$pre,\"buildMs\":40}"
-      ph="{\"walBytes\":5000,\"auditActionsDelta\":{\"x.view\":$np},\"auditRows\":{\"before\":1,\"after\":2},\"auditBytes\":{\"before\":100,\"after\":200,\"delta\":100}}"
-      printf '{"status":"measured","item":10,"case":"browser-panel-%s","size":%s,"workers":0,"reasons":%s,"window":{"ms":100,%s},"browser":{"walkTotal":%s,"renderReadyMs":4000,"walkEndMs":3900,"firstPage":{"firstInteractiveMs":600,"itemsRendered":%s},"itemsRendered":%s,"heapAfterGcBytes":5000000,"domNodes":9000,"longTaskMs":900,"secureContext":true,"noSubtle":false,"clicks":{"count":30,"p95Ms":40,"maxMs":60},"navigation":{"nextPage":{"maxMs":50},"jump":{"maxMs":60},"nextUnchosen":{"maxMs":70},"nextChanged":{"maxMs":80}},"pageRequests":%s,"pageResponseBytes":%s,"apiOrigin":"real","press":{"observed":true,"status":"409","bodyBytes":1200,"responseMs":900},"reload":{"unchosenAfterReload":1},"pages":%s,"digest":%s,"phases":{"walk":%s,"interactions":%s,"press":%s}}}\n' \
+      digest="{\"path\":\"webcrypto\",\"expectedPath\":\"webcrypto\",\"matchesExpectation\":true,\"subtleCalls\":2,\"subtleBytes\":$(( pre + 4 )),\"subtleMs\":3,\"preimageBytes\":$pre,\"buildMs\":40}"
+      ph="{\"walBytes\":5000,\"auditActionsDelta\":{\"x.view\":$np},\"auditRows\":{\"before\":1,\"after\":2},\"tableRows\":{\"before\":1010,\"after\":1010},\"auditBytes\":{\"before\":100,\"after\":200,\"delta\":100}}"
+      printf '{"status":"measured","item":10,"case":"browser-panel-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"window":{"ms":100,%s},"browser":{"walkTotal":%s,"renderReadyMs":4000,"walkEndMs":3900,"firstPage":{"firstInteractiveMs":600,"itemsRendered":%s},"itemsRendered":%s,"heapAfterGcBytes":5000000,"domNodes":9000,"longTaskMs":900,"secureContext":true,"noSubtle":false,"clicks":{"count":30,"p95Ms":40,"maxMs":60},"navigation":{"nextPage":{"maxMs":50},"jump":{"maxMs":60},"nextUnchosen":{"maxMs":70},"nextChanged":{"maxMs":80}},"pageRequests":%s,"pageResponseBytes":%s,"apiOrigin":"real","press":{"observed":true,"status":"409","bodyBytes":1200,"responseMs":900},"reload":{"unchosenAfterReload":1},"pages":%s,"digest":%s,"phases":{"walk":%s,"interactions":%s,"press":%s}}}\n' \
         "$bc" "$s" "$bc" "$INSTR" "$bc" "$(( bc < 50 ? bc : 50 ))" "$(( bc < 50 ? bc : 50 ))" "$np" "$(( bc * 300 ))" "$pages" "$digest" "$ph" "$ph" "$ph"
     done
     for k in $(qc1_list "$2") $dlist; do
       (( k <= s )) || continue
-      for d in requester subject; do printf '{"status":"measured","item":3,"case":"discovery-%s-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}}\n' "$d" "$k" "$s" "$k" "$k" "$k" "$INSTR"; done
+      for d in requester subject; do printf '{"status":"measured","item":3,"case":"discovery-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}}\n' "$d" "$k" "$s" "$k" "$k" "$k" "$INSTR"; done
     done
     for k in $(qc1_list "$QC1_DELETE_COUNTS") $dlist; do
       (( k <= s )) || continue
       for d in requester subject; do for m in keep remove mixed; do
         read -r kept removed <<<"$(qc1_expected_split "$m" "$k")"
-        printf '{"status":"measured","item":6,"case":"delete-%s-%s-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":{%s,"reasonsKept":%s,"reasonsRemoved":%s}}\n' "$d" "$k" "$m" "$s" "$k" "$k" "$kept" "$removed" "$okout" "$HDEL" "$kept" "$removed"
+        printf '{"status":"measured","item":6,"case":"delete-%s-%s-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":{%s,"reasonsKept":%s,"reasonsRemoved":%s}}\n' "$d" "$k" "$m" "$s" "$k" "$k" "$kept" "$removed" "$okout" "$HDEL" "$kept" "$removed"
       done; done
     done
   done
@@ -417,19 +428,31 @@ jq -e 'select(.failure == "unit") | .budget == 10000 and .ms == 12000' "$WORK/fa
 { gen 10,100 0,10,100,1000,10000; } >"$WORK/e.jsonl"
 status="$(status_of "$WORK/e.jsonl")"
 [[ "$(jq -c '.missing' <<<"$status")" == '[]' && "$(jq -c '.invalid' <<<"$status")" == '[]' ]] || { echo "healthy rows are not clean: $status" >&2; exit 1; }
-# Items 4 and the legacy PUT are named as pending even when no row mentions them: never complete.
-[[ "$(jq -c '.pending | map(.item) | sort' <<<"$status")" == '[4,5]' && "$(jq -r .complete <<<"$status")" == false ]]
+# The legacy rows the matrix owes PER SIZE are named as pending even when no row mentions them: never complete. Size 10 owes discovery with 0 pairs, the probe and the
+# PUT; size 100 adds 100 pairs (10,000 does not fit).
+[[ "$(jq -c '.pending | map(.case + "@" + (.size | tostring)) | sort' <<<"$status")" == '["legacy-discovery-0@10","legacy-discovery-0@100","legacy-discovery-100@100","legacy-discovery-probe@10","legacy-discovery-probe@100","legacy-put@10","legacy-put@100"]' && "$(jq -r .complete <<<"$status")" == false ]]
+[[ "$(jq -c '.pending | map(.item) | unique' <<<"$status")" == '[4,5]' ]]
 # set-v1 has no per-reason body growth to speak of (18.9 million reasons fit the cap): healthy rows report no budget finding, and a body over the cap
 # would be one (tested below), never an invalid run.
 [[ "$(jq -c '.budgetFailures' <<<"$status")" == '[]' ]]
 { cat "$WORK/e.jsonl"; echo "$PEND"; } >"$WORK/ec.jsonl"
 status="$(status_of "$WORK/ec.jsonl")"
-[[ "$(jq -r .complete <<<"$status")" == false && "$(jq -c '.pending | map(.item) | sort' <<<"$status")" == '[4,5]' ]]
+[[ "$(jq -r .complete <<<"$status")" == false && "$(jq -c '.pending | map(.item) | unique' <<<"$status")" == '[4,5]' && "$(jq -r '.pending | length' <<<"$status")" == 7 ]]   # a runner placeholder row clears nothing
 # Item 4 and the legacy PUT measured (T07B-3a landed): complete.
+# One legacy row set per size, as T07B-3a will produce it: discovery with each count that fits, the marker lookup, and a real PUT. Every row carries real metrics.
+legacy_rows() { # sizes
+  local s k
+  for s in $(qc1_list "$1"); do
+    for k in $(qc1_list "$QC1_LEGACY_COUNTS"); do
+      (( k <= s )) || continue
+      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"200",%s}}\n' "$k" "$s" "$k" "$k" "$k" "$INSTR"
+    done
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true}}\n' "$s"
+    printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"bodyBytes":1000,"ms":50,"status":"200","validated":true,"appPeakKb":2048}}\n' "$s"
+  done
+}
 { cat "$WORK/e.jsonl"
-  # A measured legacy row carries real metrics (a bare row with none no longer completes the evidence; tested below).
-  printf '{"status":"measured","item":4,"case":"legacy-discovery","size":null,"workers":0,"reasons":100,"expect":{"items":100},"traversal":{"units":1,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":100,"lastStatus":"200",%s}}\n' "$INSTR"
-  echo '{"status":"measured","item":5,"case":"legacy-put","size":null,"workers":0,"put":{"bodyBytes":1000,"ms":50,"status":"200"}}'; } >"$WORK/e2.jsonl"
+  legacy_rows 10,100; } >"$WORK/e2.jsonl"
 status="$(status_of "$WORK/e2.jsonl")"
 [[ "$(jq -r .complete <<<"$status")" == true && "$(jq -c '[.missing, .pending, .invalid] | map(length)' <<<"$status")" == '[0,0,0]' ]] || { echo "not complete: $status" >&2; exit 1; }
 mut() { jq -c "$2" "$WORK/e2.jsonl" >"$WORK/e2.$1"; }  # name jq-filter (applied to every row)
@@ -656,7 +679,11 @@ mut win-reset "$BP then .window.appHwmReset = false else . end"; expect_invalid 
 mut win-audit "$BP then .window.auditActionsBefore = null else . end"; expect_invalid win-audit metric-missing
 # The digest path is the one that ACTUALLY ran, and it must agree with the environment: no subtle means fallback; subtle in a secure context means webcrypto.
 mut dig-nosubtle "$BP then .browser.noSubtle = true else . end"; expect_invalid dig-nosubtle browser-digest-path
-mut dig-fallback-secure "$BP then .browser.digest.path = \"fallback\" else . end"; expect_invalid dig-fallback-secure browser-digest-path
+# A fallback in a SECURE context is legitimate (a preimage above 16 MiB, or the known-answer self-test failing): judged supported, recorded against the expected path.
+mut dig-fallback-secure "$BP then .browser.digest.path = \"fallback\" | .browser.digest.matchesExpectation = false else . end"
+[[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.dig-fallback-secure")")" == true && "$(jq -c "[.invalid, .budgetFailures] | map(length)" <<<"$(status_of "$WORK/e2.dig-fallback-secure")")" == "[0,0]" ]]
+# ...but webcrypto without crypto.subtle (an insecure context) cannot have run.
+mut dig-webcrypto-insecure "$BP then .browser.secureContext = false else . end"; expect_invalid dig-webcrypto-insecure browser-digest-path
 mut dig-ok-fallback "$BP then .browser.noSubtle = true | .browser.secureContext = false | .browser.digest.path = \"fallback\" else . end"
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.dig-ok-fallback")")" == true ]]
 mut dig-unknown "$BP then .browser.digest.path = \"inferred\" else . end"; expect_invalid dig-unknown browser-digest-path
@@ -698,24 +725,73 @@ mut ex-overrun 'if .item == 8 then .executions.scannerInitial.rows = [50001] els
 mut act-big 'if .item == 8 then .table.actualRows = 50001 | .plans["scanner-continuation"] = 0 else . end'; expect_invalid act-big plans-missing
 mut act-small 'if .item == 8 then .table.actualRows = 50000 | .plans["scanner-continuation"] = 0 else . end'
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.act-small")")" == true ]]
-# Every recorded case says what the table held: the background target and the actual rows.
-grep -qF 'table:{backgroundRows:$size, actualRows:$actual,' "$RUNNER_SRC"; grep -qF 'psql_db -c '"'"'SELECT count(*) FROM contact_requests'"'"' 2>/dev/null' "$RUNNER_SRC"
-# Coverage: PILOT or FULL is said, and release evidence needs both complete and full.
+# Counts of the table: taken immediately BEFORE each operation (instrumented and the request-size operations), never at record time (when the scenario is often gone).
+rec_body="$(sed -n '/^record() {/,/^}/p' "$RUNNER_SRC")"
+if grep -q 'SELECT count(\*) FROM contact_requests' <<<"$rec_body"; then echo 'qc1: record() counts rows after the operation' >&2; exit 1; fi
+if grep -qF 'actualRows:$actual' <<<"$rec_body"; then echo 'qc1: record() still writes a record-time row count' >&2; exit 1; fi
+ins_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
+l_rows="$(grep -n 'TABLE_ROWS0="\$(table_rows)"' <<<"$ins_body" | cut -d: -f1)"; l_win="$(grep -n 'OP_START="\$(ms)"' <<<"$ins_body" | cut -d: -f1)"; l_after="$(grep -n 'TABLE_ROWS1="\$(table_rows)"' <<<"$ins_body" | cut -d: -f1)"; l_end="$(grep -n 'OP_END="\$(ms)"' <<<"$ins_body" | cut -d: -f1)"
+[[ -n "$l_rows$l_win$l_after$l_end" && "$l_rows" -lt "$l_win" && "$l_end" -lt "$l_after" ]]
+grep -qF 'tableRowsBefore:$tr0, tableRowsAfter:$tr1' "$RUNNER_SRC"
+rs_body="$(sed -n '/^measure_request_size() {/,/^}/p' "$RUNNER_SRC")"
+for pat in 'over_rows="$(table_rows)"' 'fit_rows="$(table_rows)"' 'over_old_rows="$(table_rows)"' 'overCap:{tableRowsBefore:$overCapRows' 'tableRowsBefore:{fit:$fitRows, over:$overRows}'; do grep -qF -- "$pat" <<<"$rs_body" || { echo "qc1: request-size lost: $pat" >&2; exit 1; }; done
+grep -qF 'tableRowsBefore:$rows0, tableRowsAfter:$rows1' "$RUNNER_SRC"
+# Each operation's own counts are judged present; the browser phases carry theirs.
+for f in tableRowsBefore tableRowsAfter; do mut "tr-$f" "if .item == 3 and .case == \"discovery-requester-10\" then .traversal.$f = null else . end"; expect_invalid "tr-$f" metric-missing; done
+mut tr-win "$BP then .window.tableRowsBefore = null else . end"; expect_invalid tr-win metric-missing
+for ph in walk interactions press; do mut "tr-$ph" "$BP then .browser.phases.$ph.tableRows = null else . end"; expect_invalid "tr-$ph" browser-missing; done
+# Coverage: PILOT or FULL is said, and release evidence needs both complete and full. It is derived from the ROWS, not from the settings alone.
 st="$(status_of "$WORK/e2.jsonl")"
-[[ "$(jq -r .coverage.kind <<<"$st")" == pilot && "$(jq -r .releaseEvidence <<<"$st")" == false && "$(jq -r '.coverage.reasons | length' <<<"$st")" -ge 5 ]]
-[[ "$(jq -r '.notMeasured | length' <<<"$st")" -ge 5 && "$(jq -r '.notMeasured | map(select(test("gate hold time"))) | length' <<<"$st")" == 1 ]]
-jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000", denseCounts:"100000", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
-full_status() { qc1_evidence_status "$WORK/e2.jsonl" 10,100 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456; }
-[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence]' <<<"$(full_status)")" == '["full",true,true]' ]]
-for spec in '.settings.sizes = "10000,100000"|sizes lack 1000000' '.settings.counts = "10,100"|counts lack' '.settings.deleteCounts = "10,100,1000,10000"|deletion counts lack 0' \
-  '.settings.denseCounts = "none"|dense 100,000' '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune maximum' 'del(.settings.targetReasonLen)|1,000-rune maximum' '.settings.wire = "items"|not the set-v1 wire'; do
-  jq -c "${spec%%|*}" "$WORK/env.full" >"$WORK/env.cov"
-  cs="$(qc1_evidence_status "$WORK/e2.jsonl" 10,100 0,10,100,1000,10000 "$WORK/env.cov" "$HEAD_FAKE" 6291456)"
-  [[ "$(jq -r .coverage.kind <<<"$cs")" == pilot && "$(jq -r .releaseEvidence <<<"$cs")" == false && "$(jq -r --arg w "${spec##*|}" '[.coverage.reasons[] | select(contains($w))] | length > 0' <<<"$cs")" == true ]] || { echo "coverage not pilot for ${spec%%|*}: $(jq -c .coverage <<<"$cs")" >&2; exit 1; }
+[[ "$(jq -r .coverage.kind <<<"$st")" == pilot && "$(jq -r .releaseEvidence <<<"$st")" == false && "$(jq -r '.coverage.reasons | length' <<<"$st")" -ge 4 ]]
+[[ "$(jq -r '.notMeasured | length' <<<"$st")" -ge 7 ]]
+for lim in 'gate hold time' 'digest-only time' 'isolated server-side parse' 'multi-byte' 'cluster attribution' 'droplet'; do
+  [[ "$(jq -r --arg l "$lim" '[.notMeasured[] | select(contains($l))] | length' <<<"$st")" == 1 ]] || { echo "notMeasured lacks: $lim" >&2; exit 1; }
 done
-# A complete run on a full environment that is not clean is not release evidence either.
-[[ "$(jq -r .releaseEvidence <<<"$(qc1_evidence_status "$WORK/e2.dig-unknown" 10,100 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456)")" == false ]]
-[[ "$(qc1_coverage /nonexistent | jq -r .kind)" == pilot ]]   # an unreadable environment record is a pilot, never full
+# THE REVIEW'S CASE: an environment record whose settings claim the whole matrix, with the 10 and 100 row sizes and arguments. The settings alone never make a run full.
+jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000,100000", denseCounts:"100000", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
+fake="$(qc1_evidence_status "$WORK/e2.jsonl" 10,100 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456)"
+[[ "$(jq -r .coverage.kind <<<"$fake")" == pilot && "$(jq -r .releaseEvidence <<<"$fake")" == false && "$(jq -r .complete <<<"$fake")" == false ]] || { echo "a fake-full environment passed: $(jq -c '[.coverage, .complete, .releaseEvidence]' <<<"$fake")" >&2; exit 1; }
+[[ "$(jq -r '[.coverage.reasons[] | select(contains("rows of the full matrix are not measured and clean"))] | length' <<<"$fake")" == 1 ]]
+[[ "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement")] | map(.what) | sort | join(",")' <<<"$fake")" == "deletion counts,dense counts,sizes" ]] || { echo "the settings/argument disagreement was not rejected: $(jq -c '.invalid' <<<"$fake")" >&2; exit 1; }
+# A REAL full run: every row of the full matrix at 10k, 100k and 1M, legacy rows per size, the settings agreeing. Only then is it full, and release evidence only when clean.
+{ gen 10000,100000,1000000 0,10,100,1000,10000 100000; legacy_rows 10000,100000,1000000; } >"$WORK/full.jsonl"
+full_status() { qc1_evidence_status "${1:-$WORK/full.jsonl}" 10000,100000,1000000 0,10,100,1000,10000 "${2:-$WORK/env.full}" "$HEAD_FAKE" 6291456 100000; }
+fs="$(full_status)"
+[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence, (.missing|length), (.pending|length), (.invalid|length)]' <<<"$fs")" == '["full",true,true,0,0,0]' ]] || { echo "a real full run is not full: $(jq -c '[.coverage, .missing[:3], .pending[:3], .invalid[:3]]' <<<"$fs")" >&2; exit 1; }
+# One required full-matrix row gone, or one target of the wrong length, and it is a pilot again.
+grep -v '"item":10,"case":"browser-panel-100000","size":1000000,' "$WORK/full.jsonl" >"$WORK/full.nobrowser"
+fs="$(full_status "$WORK/full.nobrowser")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r '.missing | length' <<<"$fs")" == 1 ]]
+jq -c 'if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100000 then .targetReasonLen = 200 else . end' "$WORK/full.jsonl" >"$WORK/full.short"
+fs="$(full_status "$WORK/full.short")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "target reason length")] | length' <<<"$fs")" == 1 ]]
+# A full environment but a run asked for fewer sizes than the settings name (arguments disagree), or the settings name fewer than the arguments: rejected either way.
+fs="$(qc1_evidence_status "$WORK/full.jsonl" 10000,100000 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456 100000)"
+[[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "sizes")] | length' <<<"$fs")" == 1 ]]
+jq -c '.settings.denseCounts = "none"' "$WORK/env.full" >"$WORK/env.nodense"
+fs="$(full_status "$WORK/full.jsonl" "$WORK/env.nodense")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.what == "dense counts")] | length' <<<"$fs")" == 1 ]]
+for spec in '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune' 'del(.settings.targetReasonLen)|1,000-rune' '.settings.wire = "items"|not the set-v1 wire' 'del(.settings.sizes)|do not name the sizes'; do
+  jq -c "${spec%%|*}" "$WORK/env.full" >"$WORK/env.cov"
+  fs="$(full_status "$WORK/full.jsonl" "$WORK/env.cov")"
+  [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r --arg w "${spec##*|}" '[.coverage.reasons[] | select(contains($w))] | length > 0' <<<"$fs")" == true ]] || { echo "coverage not pilot for ${spec%%|*}: $(jq -c .coverage <<<"$fs")" >&2; exit 1; }
+done
+# A full run that is not clean is not release evidence.
+jq -c 'if .item == 10 and .case == "browser-panel-100" then . else . end | if .item == 8 then .generic.source = "harness" else . end' "$WORK/full.jsonl" >"$WORK/full.dirty"
+fs="$(full_status "$WORK/full.dirty")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false ]]
+# Legacy pending: a failed row, a runner placeholder or a row that fails the judge clears nothing; only measured, clean rows for EVERY case at EVERY size do.
+legacy_pending() { qc1_evidence_status "$1" 10,100 0,10,100,1000,10000 "$WORK/env.json" "$HEAD_FAKE" 6291456 | jq -r '.pending | length'; }
+[[ "$(legacy_pending "$WORK/e2.jsonl")" == 0 ]]
+for drop in '"case":"legacy-discovery-0","size":10,' '"case":"legacy-discovery-100","size":100,' '"case":"legacy-discovery-probe","size":10,' '"case":"legacy-put","size":100,'; do
+  grep -vF -- "$drop" "$WORK/e2.jsonl" >"$WORK/e2.nolegacy"
+  [[ "$(legacy_pending "$WORK/e2.nolegacy")" == 1 ]] || { echo "dropping $drop did not leave exactly one pending" >&2; exit 1; }
+done
+mut leg-failed 'if .item == 4 and .case == "legacy-discovery-0" and .size == 10 then .status = "failed" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-failed")" == 1 ]]
+mut leg-placeholder 'if .item == 5 then {status:"measured", item:5, case:"legacy-put", size:.size, workers:0} else . end'; [[ "$(legacy_pending "$WORK/e2.leg-placeholder")" == 2 ]]
+mut leg-wrong-count 'if .item == 4 and .case == "legacy-discovery-100" then .expect.items = 99 else . end'; [[ "$(legacy_pending "$WORK/e2.leg-wrong-count")" == 1 ]]
+mut leg-put-unvalidated 'if .item == 5 and .size == 10 then .put.validated = false else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-unvalidated")" == 1 ]]
+mut leg-put-refused 'if .item == 5 and .size == 100 then .put.status = "413" else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-refused")" == 1 ]]
+mut leg-put-nomem 'if .item == 5 and .size == 10 then del(.put.appPeakKb) else . end'; [[ "$(legacy_pending "$WORK/e2.leg-put-nomem")" == 1 ]]
+mut leg-probe-nofound 'if .item == 4 and .case == "legacy-discovery-probe" and .size == 100 then .probe.found = false else . end'; [[ "$(legacy_pending "$WORK/e2.leg-probe-nofound")" == 1 ]]
+mut leg-name 'if .item == 4 and .case == "legacy-discovery-100" then .reasons = 99 else . end'; [[ "$(legacy_pending "$WORK/e2.leg-name")" == 1 ]]
+[[ "$QC1_LEGACY_COUNTS" == 0,100,10000 ]]
 # The target reasons are the 1,000-rune maximum by default, separate from the background rows, and the loader can make them.
 grep -qF 'TARGET_REASON_LEN=1000' "$RUNNER_SRC"; grep -qF -- '--target-reason-len' "$RUNNER_SRC"
 grep -qF -- '-v reason_len="$TARGET_REASON_LEN" -f - <"$HERE/qc1/scenario.sql"' "$RUNNER_SRC"; grep -qF -- '-v reason_len="$REASON_LEN" -v reasons="$2" -f - <"$HERE/qc1/filler.sql"' "$RUNNER_SRC"
@@ -773,6 +849,80 @@ LOG
 [[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-initial | paste -sd'|')" == '50000 900' ]]
 [[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-continuation | paste -sd'|')" == '50000 905|12 40' ]]
 [[ -z "$(qc1_plan_executions "$WORK/pg.exec" blank-batch)" ]]
+
+# --- the recheck's findings, each as a regression ----------------------------------------------------------------------------------------------------
+# (1) A zero-reason deletion has no per-reason size: null with the explanation, not a division by zero.
+prog="$(awk '/perReasonBytes:\(if \$k == 0/ { print }' "$RUNNER_SRC" | head -n 1 | sed -E "s/^.*--argjson b \"\\\$bytes\" '//; s/' <<<\"\\\$bodies\"\)\"\$//")"
+[[ -n "$prog" ]]
+prog="${prog//\'\"\$fixed\"\'/100}"
+[[ "$(jq -c --arg d requester --argjson k 0 --argjson b 100 "$prog" <<<'[]')" == '[{"direction":"requester","reasons":0,"bodyBytes":100,"perReasonBytes":null,"perReasonNote":"not applicable: no reasons, so no reasonReview and no per-reason size"}]' ]]
+[[ "$(jq -c --arg d subject --argjson k 10 --argjson b 180 "$prog" <<<'[]' | jq -c '.[0] | [.perReasonBytes, .perReasonNote]')" == '[8,null]' ]]
+# The default matrix really reaches k = 0 (so this is not a corner no run visits).
+[[ " ${QC1_DELETE_COUNTS//,/ } " == *" 0 "* ]]
+# (7) The fallback-digest case takes the largest browser count the first size CAN hold, and says so when none fits.
+fb="$(awk '/^    # The largest browser count this table can hold/ { p = 1 } p { print } p && /^    if \[\[ -n "\$bk" \]\]/ { exit }' "$RUNNER_SRC")"
+[[ -n "$fb" ]]
+pick() { # n list...  -> prints the count the case would run with, or none
+  local n="$1" bk="" k; shift; local -a ALL_BROWSER_LIST=("$@")
+  for k in "${ALL_BROWSER_LIST[@]}"; do (( k <= n )) && bk="$k"; done
+  [[ -n "$bk" ]] && printf '%s' "$bk" || printf none
+}
+[[ "$(pick 10000 1000 10000 100000)" == 10000 && "$(pick 1000000 1000 10000 100000)" == 100000 && "$(pick 1000 1000 10000 100000)" == 1000 && "$(pick 500 1000 10000 100000)" == none ]]
+grep -qF 'bk=""; for k in "${ALL_BROWSER_LIST[@]}"; do (( k <= n )) && bk="$k"; done' "$RUNNER_SRC"
+if grep -qF 'bk="${ALL_BROWSER_LIST[-1]}"' "$RUNNER_SRC"; then echo 'qc1: the fallback case still takes the largest count before the size filter' >&2; exit 1; fi
+grep -qF 'the fallback-digest case is not run' "$RUNNER_SRC"
+# (8) The 10 s per-page budget applies to the browser's page requests, on measured rows AND on the partial rows a failed run leaves.
+mut preq "$BP then .browser.pages.requestMsMax = 10001 else . end"
+st="$(status_of "$WORK/e2.preq")"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request") | .budget]' <<<"$st")" == '[10000]' && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+mut preq-ok "$BP then .browser.pages.requestMsMax = 10000 else . end"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "page-request")] | length' <<<"$(status_of "$WORK/e2.preq-ok")")" == 0 ]]
+mut preq-partial "$BP then .status = \"partial\" | .failed = {phase:\"press\", error:\"x\"} | .browser.pages.requestMsMax = 12000 | del(.browser.press) else . end"
+st="$(status_of "$WORK/e2.preq-partial")"
+[[ "$(jq -c '[.budgetFailures[] | .failure]' <<<"$st")" == '["page-request"]' && "$(jq -r '[.invalid[] | select(.failure == "browser-incomplete")] | length' <<<"$st")" == 1 ]]
+# (4) The scanner probe: the real statements, more than six executions per mode in one session, the child scan proven an index scan with its id predicate as an
+# Index Cond, no Sort, rows within the unit, flat buffers. Without it the evidence is incomplete, never complete.
+PBS='if .item == 8 and .size == 100'
+mut probe-gone "$PBS then del(.scannerProbe) else . end"; expect_invalid probe-gone scanner-probe-missing
+mut probe-short "$PBS then .scannerProbe.executions |= map(select(.mode == \"auto\" and (.kind == \"initial\" or .percent < 70)) ) else . end"; expect_invalid probe-short scanner-probe-missing
+mut probe-session "$PBS then .scannerProbe.sameSession = false else . end"; expect_invalid probe-session scanner-probe-missing
+mut probe-noscan "$PBS then .scannerProbe.executions[3].scan = null else . end"; expect_invalid probe-noscan scanner-probe-missing
+mut probe-nobuf "$PBS then .scannerProbe.executions[3].scan.sharedHit = null else . end"; expect_invalid probe-nobuf scanner-probe-missing
+mut probe-overrun "$PBS then .scannerProbe.executions[2].scan.rows = 50001 else . end"; expect_invalid probe-overrun scanner-unit-overrun
+for spec in 'sort|.hasSort = true|scanner-sort' 'seq|.scan.nodeType = "Seq Scan"|scanner-not-indexed' 'filter|.scan.filter = "(id > $1)"|scanner-id-filter' 'nocond|.scan.indexCond = null|scanner-continuation-cond' 'loops|.scan.loops = 2|scanner-loops'; do
+  IFS='|' read -r nm filt fail <<<"$spec"
+  mut "probe-$nm" "$PBS then .scannerProbe.executions |= (to_entries | map(if .key == 12 then .value |= ($filt) else . end) | map(.value)) else . end"
+  st="$(status_of "$WORK/e2.probe-$nm")"
+  [[ "$(jq -r --arg f "$fail" '[.budgetFailures[] | select(.failure == $f)] | length > 0' <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]] || { echo "probe $nm did not report $fail: $(jq -c '[.budgetFailures, .invalid]' <<<"$st" | cut -c1-400)" >&2; exit 1; }
+done
+# Buffer growth across cursor positions: more than twice the first position's blocks is a (proposed) finding; the same figures are recorded either way.
+mut probe-growth "$PBS then .scannerProbe.executions |= (to_entries | map(if .key == 7 then .value.scan.sharedHit = 4000 else . end) | map(.value)) else . end"
+st="$(status_of "$WORK/e2.probe-growth")"; [[ "$(jq -r '[.budgetFailures[] | select(.failure == "scanner-buffer-growth")] | length' <<<"$st")" == 1 ]]
+mut probe-flat "$PBS then .scannerProbe.executions |= (to_entries | map(if .key == 7 then .value.scan.sharedHit = 1800 else . end) | map(.value)) else . end"
+[[ "$(jq -r '[.budgetFailures[] | select(.failure == "scanner-buffer-growth")] | length' <<<"$(status_of "$WORK/e2.probe-flat")")" == 0 ]]
+# The probe's parser reads a child scan out of real EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) documents.
+cat >"$WORK/explain.docs" <<'JSON'
+[{"Plan":{"Node Type":"Limit","Actual Rows":50000,"Actual Loops":1,"Plans":[{"Node Type":"Index Scan","Relation Name":"contact_requests","Index Name":"contact_requests_pkey","Index Cond":"(id > $1)","Actual Rows":50000,"Actual Loops":1,"Shared Hit Blocks":900,"Shared Read Blocks":5}]}}]
+[{"Plan":{"Node Type":"Limit","Actual Rows":12,"Actual Loops":1,"Plans":[{"Node Type":"Sort","Plans":[{"Node Type":"Seq Scan","Relation Name":"contact_requests","Filter":"(id > $1)","Rows Removed by Filter":99,"Actual Rows":12,"Actual Loops":1,"Shared Hit Blocks":7000,"Shared Read Blocks":0}]}]}}]
+JSON
+pp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":5},{"mode":"force_generic_plan","kind":"continuation","afterId":6}]' <"$WORK/explain.docs")"
+[[ "$(jq -c '[.[] | [.mode, .hasSort, .scan.nodeType, .scan.indexCond, .scan.filter, .scan.rows, .scan.loops, .scan.sharedHit, .scan.sharedRead, .scan.rowsRemovedByFilter]]' <<<"$pp")" == '[["auto",false,"Index Scan","(id > $1)",null,50000,1,900,5,0],["force_generic_plan",true,"Seq Scan",null,"(id > $1)",12,1,7000,0,99]]' ]]
+# The runner: it runs the REAL statements prepared, eight times per mode in one session, in both plan cache modes, read-only, AFTER the logged capture is off and BEFORE the scenario is dropped.
+sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
+for pat in 'qc1_go_sql "$ROOT" reasonScanInitialSQL' 'qc1_go_sql "$ROOT" reasonScanContinuationSQL' 'for mode in auto force_generic_plan' 'SET plan_cache_mode = $mode' 'PREPARE qi (bigint) AS $sql_init' 'PREPARE qc (bigint, bigint) AS $sql_cont' \
+  'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qi($unit)' 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qc($id, $unit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
+  grep -qF -- "$pat" <<<"$sp_body" || { echo "qc1: scanner_probe lost: $pat" >&2; exit 1; }
+done
+if grep -Eiq 'INSERT|UPDATE|DELETE|TRUNCATE' <<<"$(grep -v '^ *#' <<<"$sp_body" | grep -v 'sameSession\|note:')"; then echo 'qc1: the scanner probe writes' >&2; exit 1; fi
+cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
+l_off="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_log="$(grep -n 'docker logs --since' <<<"$cp_body" | cut -d: -f1)"; l_probe="$(grep -n '^  scanner_probe$' <<<"$cp_body" | cut -d: -f1)"; l_drop="$(grep -n '^  drop_scenarios$' <<<"$cp_body" | tail -n 1 | cut -d: -f1)"
+[[ -n "$l_off$l_log$l_probe$l_drop" && "$l_off" -lt "$l_log" && "$l_log" -lt "$l_probe" && "$l_probe" -lt "$l_drop" ]]
+grep -qF 'scannerProbe:$probe' <<<"$cp_body"
+# (5) The browser measurement starts its clock at the Delete-menu action, on the page, and the stamps are the page's own.
+PD="$HERE/qc1/panel-driver.mjs"; PC="$HERE/qc1/panel-core.mjs"
+for pat in 'qc.menuAt = e.timeStamp' 'qc.firstPageAt = t' 'qc.walkDoneAt = t' 'qc.walk2DoneAt = t' 'qc.endAt = performance.now()' 'async timeline()' 'async lastClickEnd()' 'MutationObserver(stamp)'; do
+  grep -qF -- "$pat" "$PD" || { echo "qc1: panel-driver lost: $pat" >&2; exit 1; }
+done
+if grep -nE 'Math.round\(now\(\) - t0\)|const t0 = now\(\)' "$PC"; then echo 'qc1: the panel core times from its own loop clock' >&2; exit 1; fi
+grep -qF 'since(timeline && timeline.walkDoneAt)' "$PC"; grep -qF 'since(timeline && timeline.firstPageAt)' "$PC"; grep -qF 'since(R.firstInteractiveEnd)' "$PC"
 
 # --- statements: the markers are still the Go source's ------------------------------------
 for which in "${QC1_PLAN_KINDS[@]}"; do

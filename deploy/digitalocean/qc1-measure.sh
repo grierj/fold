@@ -396,6 +396,7 @@ instrumented() {
   # behind, so a later case runs against a larger audit_logs than an earlier one. Recorded per case, with the case's seq, never corrected for.
   read -r AUDIT_ROWS0 AUDIT_BYTES0 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
   AUDIT_ACTIONS0="$(audit_actions)"
+  TABLE_ROWS0="$(table_rows)"   # the rows contact_requests holds as THIS operation starts (background plus the scenario rows), never a count taken after a scenario was dropped
   psql_db -c 'SELECT pg_stat_statements_reset()' >/dev/null
   psql_db -c 'CHECKPOINT' >/dev/null
   lsn0="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
@@ -430,23 +431,26 @@ instrumented() {
   read -r COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX <<<"$(psql_db -c "SELECT coalesce(sum(calls), 0) || ' ' || coalesce(round(sum(total_exec_time)), 0) || ' ' || coalesce(round(max(max_exec_time)), 0) FROM pg_stat_statements WHERE query ~* '^commit'")"
   read -r AUDIT_ROWS1 AUDIT_BYTES1 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
   AUDIT_ACTIONS1="$(audit_actions)"
+  TABLE_ROWS1="$(table_rows)"
   SCHEDULER_OVERLAP="$(qc1_scheduler_overlap "$OP_START" "$OP_END" "$APP_STARTED_MS")"
   SCHEDULER_ROWS="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at >= to_timestamp($OP_START / 1000.0) - interval '1 second' AND created_at <= to_timestamp($OP_END / 1000.0) AND unique_key ~ '^[a-z_.]+:[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2})?\$'")"
 }
 # audit_logs rows by action, as one JSON object {action: count}: read before and after each instrumented operation, so the rows an operation wrote are
 # attributed to their kind (a view audit per nonempty page, a decision audit per reason) and not only counted.
+# The rows contact_requests holds right now, as a number (null when unreadable). Taken immediately BEFORE each operation, by instrumented and by the cases that are not instrumented.
+table_rows() { local c; c="$(psql_db -c 'SELECT count(*) FROM contact_requests' 2>/dev/null || true)"; if [[ "$c" =~ ^[0-9]+$ ]]; then printf "%s" "$c"; else printf null; fi; }
 audit_actions() { psql_db -c "SELECT coalesce(jsonb_object_agg(action, c), '{}'::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s"; }
 instr_json() {
   jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
-    --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
+    --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
     '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
-      auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, auditActionsBefore:$aa0, auditActionsAfter:$aa1,
+      auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, tableRowsBefore:$tr0, tableRowsAfter:$tr1, auditActionsBefore:$aa0, auditActionsAfter:$aa1,
       auditActionsDelta:(if ($aa0|type) == "object" and ($aa1|type) == "object" then ([$aa0, $aa1] | (.[0] | keys) + (.[1] | keys) | unique | map(. as $k | {key:$k, value:(($aa1[$k] // 0) - ($aa0[$k] // 0))}) | from_entries) else null end),
       attribution:"WAL, commit and gate figures are cluster-wide counters, not attributed to this operation; they are attributable only if no invalid finding names a competitor"}'
 }
@@ -546,13 +550,12 @@ ctl_request() { api GET /auth/me >/dev/null; }
 CASE_SEQ=0
 record() {
   CASE_SEQ=$((CASE_SEQ + 1))
-  local actual_rows
-  actual_rows="$(psql_db -c 'SELECT count(*) FROM contact_requests' 2>/dev/null || true)"
-  [[ "$actual_rows" =~ ^[0-9]+$ ]] || actual_rows=null
+  # No row count is taken here: record runs after the operation and often after its scenario was dropped. Each operation carries the rows
+  # contact_requests held just before and after it (tableRowsBefore/After in its figures); a case with several operations keeps one per operation.
   jq -nc --arg status "${RECORD_STATUS:-measured}" --argjson item "$1" --arg case "$2" --argjson size "$3" --argjson extra "$4" --arg layout "$LAYOUT" \
-    --argjson reasonLen "$REASON_LEN" --argjson targetLen "$TARGET_REASON_LEN" --argjson workers "$CURRENT_WORKERS" --argjson seq "$CASE_SEQ" --argjson actual "$actual_rows" \
+    --argjson reasonLen "$REASON_LEN" --argjson targetLen "$TARGET_REASON_LEN" --argjson workers "$CURRENT_WORKERS" --argjson seq "$CASE_SEQ" \
     '{status:$status, item:$item, case:$case, size:$size, seq:$seq, layout:$layout, reasonLen:$reasonLen, targetReasonLen:$targetLen, workers:$workers,
-      table:{backgroundRows:$size, actualRows:$actual, note:"size is the background row count; actualRows is what contact_requests held when the case was recorded (background plus the scenario rows, n + k)"}} + $extra' >>"$MEASUREMENTS"
+      table:{backgroundRows:$size, note:"size is the BACKGROUND row count; the rows the table really held (background plus the scenario rows, n + k) are tableRowsBefore/After in each operation'"'"'s figures (and per phase for the browser case)"}} + $extra' >>"$MEASUREMENTS"
 }
 
 load_filler() { # n reasons
@@ -659,13 +662,14 @@ refusal_case() { # kind target items-file k   (sets REFUSAL_JSON)
   code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
   if [[ "$(account_untouched "$t")" == t ]]; then unchanged=true; fi
   REFUSAL_JSON="$(jq -nc --arg status "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson app "$APP_PEAK_KB" --argjson bytes "$bytes" --argjson unchanged "$unchanged" --arg code "$code" \
-    '{status:$status, ms:$ms, appPeakKb:$app, bodyBytes:$bytes, unchanged:$unchanged, code:$code}')"
+    --argjson rows0 "${TABLE_ROWS0:-null}" --argjson rows1 "${TABLE_ROWS1:-null}" \
+    '{status:$status, ms:$ms, appPeakKb:$app, bodyBytes:$bytes, unchanged:$unchanged, code:$code, tableRowsBefore:$rows0, tableRowsAfter:$rows1}')"
 }
 # The account is as it was: not deleted, and none of its reasons blanked.
 account_untouched() { psql_db -c "SELECT (SELECT deleted_at IS NULL FROM users WHERE id = $1) AND (SELECT count(*) FROM contact_requests WHERE reason = '' AND (requester_id = $1 OR subject_user_id = $1)) = 0"; }
 measure_request_size() { # n
   local n="$1" cap="$MAX_REQUEST_BYTES" id80 K k d f t id cap_n cap_at cap_next populated fixed bodies="[]" bytes probe_tr fit_bytes want_bytes
-  local parse_json count_json changed_json over_bytes over_status over_ms over_code over_unchanged=false digits old_n old_at old_next legacy_json
+  local over_rows fit_rows over_old_rows parse_json count_json changed_json over_bytes over_status over_ms over_code over_unchanged=false digits old_n old_at old_next legacy_json
   local fit_status fit_code fit_unchanged=false over_old_status old_over_bytes over_old_unchanged=false fit_delete fit_outcome fit_expect
   id80="$(printf 'a%.0s' {1..80})"
   K=0
@@ -686,7 +690,7 @@ measure_request_size() { # n
       f="$WORK/items-$d-$k.json"
       (( k <= n )) && [[ -f "$f" ]] || continue
       bytes="$(qc1_delete_body_n mixed "$f" "$k" "$id80" | wc -c)"
-      bodies="$(jq -c --arg d "$d" --argjson k "$k" --argjson b "$bytes" '. + [{direction:$d, reasons:$k, bodyBytes:$b, perReasonBytes:((($b - '"$fixed"') / $k) * 1000 | round / 1000)}]' <<<"$bodies")"
+      bodies="$(jq -c --arg d "$d" --argjson k "$k" --argjson b "$bytes" '. + [{direction:$d, reasons:$k, bodyBytes:$b, perReasonBytes:(if $k == 0 then null else ((($b - '"$fixed"') / $k) * 1000 | round / 1000) end), perReasonNote:(if $k == 0 then "not applicable: no reasons, so no reasonReview and no per-reason size" else null end)}]' <<<"$bodies")"
     done
   done
 
@@ -703,6 +707,7 @@ measure_request_size() { # n
   qc1_oversize_body "$cap" "$id" >"$WORK/delete.body"
   over_bytes="$(wc -c <"$WORK/delete.body")"
   (( over_bytes > cap )) || { echo 'qc1: the over-cap body is not over the cap' >&2; exit 1; }
+  over_rows="$(table_rows)"   # the rows the table holds as THIS request is sent
   do_delete "$t" "$WORK/delete.body"
   over_status="$DEL_STATUS"; over_ms="$DEL_MS"; over_code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
   if [[ "$(account_untouched "$t")" == t ]]; then over_unchanged=true; fi
@@ -719,23 +724,25 @@ measure_request_size() { # n
   read -r old_n old_at old_next <<<"$(qc1_legacy_capacity "$cap" "$digits" "$id80")"
   id="$(mint_attempt "$t")"
   qc1_legacy_body "$old_n" "$digits" "$id" >"$WORK/delete.body"
+  fit_rows="$(table_rows)"
   do_delete "$t" "$WORK/delete.body"
   fit_status="$DEL_STATUS"; fit_code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
   if [[ "$(account_untouched "$t")" == t ]]; then fit_unchanged=true; fi
   id="$(mint_attempt "$t")"
   qc1_legacy_body "$((old_n + 1))" "$digits" "$id" >"$WORK/delete.body"
   old_over_bytes="$(wc -c <"$WORK/delete.body")"
+  over_old_rows="$(table_rows)"
   do_delete "$t" "$WORK/delete.body"
   over_old_status="$DEL_STATUS"
   if [[ "$(account_untouched "$t")" == t ]]; then over_old_unchanged=true; fi
   legacy_json="$(jq -nc --argjson digits "$digits" --argjson n "$old_n" --argjson at "$old_at" --argjson next "$old_next" --arg fitStatus "$fit_status" --arg fitCode "$fit_code" \
-    --argjson fitUnchanged "$fit_unchanged" --argjson over "$((old_n + 1))" --argjson overBytes "$old_over_bytes" --arg overStatus "$over_old_status" --argjson overUnchanged "$over_old_unchanged" \
+    --argjson fitRows "$fit_rows" --argjson overRows "$over_old_rows" --argjson fitUnchanged "$fit_unchanged" --argjson over "$((old_n + 1))" --argjson overBytes "$old_over_bytes" --arg overStatus "$over_old_status" --argjson overUnchanged "$over_old_unchanged" \
     '{synthetic:true, idDigits:$digits, capacityEntries:$n, fitBytes:$at, nextBytes:$next, fitStatus:$fitStatus, fitCode:$fitCode, fitUnchanged:$fitUnchanged,
-      entriesOver:$over, overBytes:$overBytes, overStatus:$overStatus, overUnchanged:$overUnchanged,
+      entriesOver:$over, overBytes:$overBytes, overStatus:$overStatus, overUnchanged:$overUnchanged, tableRowsBefore:{fit:$fitRows, over:$overRows},
       note:"the OLD items envelope, measured as a comparison only: synthetic entries of the stated id width. The pilots found 52,760 entries within maxRequestBytes and 52,761 not (413); the old form has a limit that is a function of the entry count; the set-v1 capacity is reported under request.capacity and request.populatedCapacity"}')"
 
   record 5 request-size "$n" "$(jq -nc --argjson cap "$cap" --argjson capN "$cap_n" --argjson capAt "$cap_at" --argjson capNext "$cap_next" --argjson populated "$populated" --argjson K "$K" --argjson fitBytes "$fit_bytes" \
-    --argjson fixed "$fixed" --argjson bodies "$bodies" --argjson parse "$parse_json" --argjson count "$count_json" --argjson changed "$changed_json" --argjson overBytes "$over_bytes" \
+    --argjson fixed "$fixed" --argjson bodies "$bodies" --argjson parse "$parse_json" --argjson count "$count_json" --argjson changed "$changed_json" --argjson overCapRows "$over_rows" --argjson overBytes "$over_bytes" \
     --arg overStatus "$over_status" --argjson overMs "$over_ms" --arg overCode "$over_code" --argjson overUnchanged "$over_unchanged" --argjson legacy "$legacy_json" \
     --argjson fit "$fit_delete" --argjson fitExpect "$fit_expect" --argjson fitOutcome "$fit_outcome" --argjson probeTr "$probe_tr" \
     '{request:{format:"set-v1", maxRequestBytes:$cap,
@@ -745,12 +752,45 @@ measure_request_size() { # n
                capacity:{reasons:$capN, bytesAt:$capAt, bytesNext:$capNext, note:"the most reasons whose body fits maxRequestBytes, computed exactly from the format; a body of that size is not sent (it would take that many reasons)"},
                bodies:$bodies, largest:{reasons:$K, bodyBytes:$fitBytes, sent:true}, headroomBytes:($cap - $fitBytes),
                parseRefusal:$parse, countMismatch:$count, changedSet:$changed,
-               overCap:{reasons:($capN + 1), bodyBytes:$overBytes, status:$overStatus, ms:$overMs, code:$overCode, unchanged:$overUnchanged, note:"a syntactically valid set-v1 body one reason over the capacity, with a synthetic digest: refused (413) before any row is read"},
+               overCap:{tableRowsBefore:$overCapRows, reasons:($capN + 1), bodyBytes:$overBytes, status:$overStatus, ms:$overMs, code:$overCode, unchanged:$overUnchanged, note:"a syntactically valid set-v1 body one reason over the capacity, with a synthetic digest: refused (413) before any row is read"},
                legacyComparison:$legacy, fitExpect:$fitExpect, fitOutcome:$fitOutcome,
                source:"bodies are built from the ids and hashes the server issued for the discovery cases of this size; the sent body is the largest of them, in the panel envelope with a minted 80-hex attempt id",
                refusals:"the real largest body with only the last choice code replaced by 3 (400), with the count one higher (400), and with one digest digit changed (409 reason_review_changed, the streamed read and compare, rolled back); each leaves the account as it was"},
       delete:$fit, traversal:$probeTr}')"
   drop_scenarios
+}
+
+# The scanner probe (see qc1_scanner_probe_parse): the REAL scanner statements out of the Go source, prepared once and executed eight times per mode in one
+# session (one initial unit and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
+# application's plan_cache_mode (auto: the sixth and later executions of a prepared statement may switch to a generic plan) and forced generic. Read-only.
+# Run while the scenario rows are still in the table. Sets SCANNER_PROBE_JSON.
+scanner_probe() {
+  local unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont
+  local -a pcts=(0 10 25 40 55 70 85) afters=()
+  sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
+  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
+  total="$(psql_db -c 'SELECT count(*) FROM contact_requests')"
+  for pct in "${pcts[@]}"; do
+    off=$(( total * pct / 100 ))
+    id="$(psql_db -c "SELECT id FROM contact_requests ORDER BY id OFFSET $off LIMIT 1")"
+    [[ "$id" =~ ^[0-9]+$ ]] || id=0
+    afters+=("$id")
+  done
+  for mode in auto force_generic_plan; do
+    meta="$(jq -nc --arg mode "$mode" --argjson pcts "$(printf '%s\n' "${pcts[@]}" | jq -sc 'map(tonumber)')" --argjson ids "$(printf '%s\n' "${afters[@]}" | jq -sc 'map(tonumber)')" \
+      '[{mode:$mode, kind:"initial", percent:null, afterId:null}] + [range(0; $pcts | length) | {mode:$mode, kind:"continuation", percent:$pcts[.], afterId:$ids[.]}]')"
+    script="SET plan_cache_mode = $mode;
+PREPARE qi (bigint) AS $sql_init;
+PREPARE qc (bigint, bigint) AS $sql_cont;
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qi($unit);"
+    for id in "${afters[@]}"; do script+=$'\n'"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qc($id, $unit);"; done
+    out="$(psql_db -q -f - <<<"$script")" || { echo "qc1: the scanner probe failed in mode $mode" >&2; exit 1; }
+    parsed="$(qc1_scanner_probe_parse "$meta" <<<"$out")"
+    all="$(jq -c --argjson more "$parsed" '. + $more' <<<"$all")"
+  done
+  SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --argjson ex "$all" \
+    '{unit:$unit, tableRows:$total, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex,
+      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS); child scan node, index condition, filter, rows, loops and shared blocks as the plan reports them"}')"
 }
 
 # auto_explain on for one scanner walk, one page of items and one mixed deletion, then off again; the plans of the application's own
@@ -773,11 +813,13 @@ capture_plans() { # n
   do_delete "$t" "$WORK/delete.body"
   # The table the statements ran against: background plus the scenario rows (n + k), counted before the scenario is dropped.
   actual_rows="$(psql_db -c 'SELECT count(*) FROM contact_requests')"
-  drop_scenarios
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration -1 || exit 1  # and off again before the next measured row
   docker logs --since "$since" "$DB_CID" >"$WORK/pglog-$n.txt" 2>&1
+  # The probe runs AFTER the capture is off and its log is taken (its own EXPLAINs must not be counted as the application's executions) and BEFORE the scenario is dropped.
+  scanner_probe
+  drop_scenarios
   : >"$out"
   for which in "${QC1_PLAN_KINDS[@]}"; do
     { printf '=== %s (size %s)\n' "$which" "$n"; qc1_extract_plans "$WORK/pglog-$n.txt" "$which"; } >>"$out"
@@ -803,8 +845,8 @@ capture_plans() { # n
                   note:"rows and shared blocks (hit + read) of the top plan node of every logged execution, from auto_explain with log_analyze and log_buffers; recorded in execution order, not judged against a ceiling"}')"
   need="$(jq -nc --argjson n "$actual_rows" --argjson unit "$QC1_SCANNER_UNIT_ROWS" '["scanner-initial","page-items","delete-set","blank-batch"] + (if $n > $unit then ["scanner-continuation"] else [] end)')"
   if jq -e --argjson need "$need" '. as $c | $need | all(. as $k | $c[$k] >= 1)' <<<"$counts" >/dev/null; then RECORD_STATUS=measured; else RECORD_STATUS=failed; fi
-  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson actual "$actual_rows" --argjson bg "$n" \
-    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex,
+  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson probe "$SCANNER_PROBE_JSON" --argjson actual "$actual_rows" --argjson bg "$n" \
+    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe,
       generic:{source:"go-source", scannerContinuation:{sql:$sc, text:$gc, indexCondOnId:$idx}, scannerInitial:{sql:$si, text:$gi, idIndexScan:$initidx}},
       note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text read from account_erasure_reasons.go; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
   unset RECORD_STATUS
@@ -862,7 +904,7 @@ measure_browser_panel() { # n k [suffix]
   cat >"$PANEL_PHASE" <<SH
 #!/bin/sh
 set -eu
-exec docker exec -i $DB_CID psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -c "SELECT json_build_object('wal', pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint, 'auditRows', (SELECT count(*) FROM audit_logs), 'auditBytes', pg_total_relation_size('audit_logs'), 'auditActions', (SELECT coalesce(json_object_agg(action, c), '{}'::json) FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s))::text"
+exec docker exec -i $DB_CID psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -c "SELECT json_build_object('wal', pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint, 'tableRows', (SELECT count(*) FROM contact_requests), 'auditRows', (SELECT count(*) FROM audit_logs), 'auditBytes', pg_total_relation_size('audit_logs'), 'auditActions', (SELECT coalesce(json_object_agg(action, c), '{}'::json) FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s))::text"
 SH
   chmod 755 "$PANEL_HOOK" "$PANEL_PHASE"
   rm -f "$PANEL_OUT"
@@ -947,7 +989,9 @@ measure_size() { # n
   for bk in "${ALL_BROWSER_LIST[@]}"; do (( bk <= n )) && measure_browser_panel "$n" "$bk"; done
   # One extra case, not part of the matrix: crypto.subtle removed, so the bundled SHA-256 makes the digest (a plain-http LAN address has none).
   if (( BROWSER_NOSUBTLE )) && [[ "$n" == "${SIZE_LIST[0]}" ]]; then
-    bk="${ALL_BROWSER_LIST[-1]}"; (( bk <= n )) && QC1_NO_SUBTLE=1 measure_browser_panel "$n" "$bk" "-nosubtle"
+    # The largest browser count this table can hold (the largest of the list is skipped when it is above the first size, as 100,000 is above 10,000).
+    bk=""; for k in "${ALL_BROWSER_LIST[@]}"; do (( k <= n )) && bk="$k"; done
+    if [[ -n "$bk" ]]; then QC1_NO_SUBTLE=1 measure_browser_panel "$n" "$bk" "-nosubtle"; else note "no browser count fits a table of $n rows: the fallback-digest case is not run"; fi
   fi
 
   if [[ "$n" == "$MAX_SIZE" ]]; then observe_workers_on "$n"; fi
