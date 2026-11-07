@@ -904,7 +904,7 @@ measure_browser_panel() { # n k [suffix]
   drop_scenarios
   make_user
   load_scenario "$n" "$k" "$USER_ID" both "$CPS"
-  printf '#!/bin/sh\nset -eu\ncase "$1" in *[!0-9]*|"") exit 2 ;; esac\nexec docker exec -i %s psql -X -U church -d fold -v ON_ERROR_STOP=1 -c "SET session_replication_role = replica" -c "UPDATE contact_requests SET reason = reason || '"'"'!'"'"' WHERE id = $1 AND reason <> '"''"'"\n' "$DB_CID" >"$PANEL_HOOK"
+  printf '#!/bin/sh\nset -eu\ncase "$1" in *[!0-9]*|"") exit 2 ;; esac\nexec docker exec -i %s psql -X -U church -d fold -v ON_ERROR_STOP=1 -c "SET session_replication_role = replica" -c "UPDATE contact_requests SET reason = left(reason, 999) || CASE WHEN right(reason, 1) = chr(33) THEN chr(63) ELSE chr(33) END WHERE id = $1 AND reason <> '"''"'"\n' "$DB_CID" >"$PANEL_HOOK"
   cat >"$PANEL_PHASE" <<SH
 #!/bin/sh
 set -eu

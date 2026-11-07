@@ -1414,6 +1414,9 @@ sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep -q 'the row is miss
 sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep -q '(( BROWSER )) || return 0'
 mbp="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER")"; rpm="$(sed -n '/^run_panel_measure() {/,/^}/p' "$RUNNER")"
 grep -qF 'QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE"' <<<"$rpm"
+# The changed-reason hook must alter even a maximum-length reason without
+# exceeding the database's 1,000-character constraint.
+grep -qF 'left(reason, 999) || CASE WHEN right(reason, 1) = chr(33) THEN chr(63) ELSE chr(33) END' "$RUNNER"
 # The whole run is one instrumented window (WAL, commits, sampled gate, audit by action), recorded as the row's window; a run that stopped part-way (exit 6) is a PARTIAL row.
 grep -qF 'instrumented run_panel_measure' <<<"$mbp"; grep -qF 'window:$window' <<<"$mbp"
 grep -qF 'RECORD_STATUS=partial record 10' <<<"$mbp"; grep -qF 'failed:$b[0].failed' <<<"$mbp"; grep -qF 'PANEL_RC == 6' <<<"$mbp"
