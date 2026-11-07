@@ -36,6 +36,13 @@ const RESTORE = "Fold noticed its database was restored while it was running, so
 const BUSY =
   "Someone was changing this person's household at the same moment, so nothing was deleted. Try again in a moment.";
 const NOT_DELETED = /nothing was deleted|not deleted|wasn't deleted|was not deleted/i;
+// R4-6c: what a delete does not reach, and what the two counts mean. Landed code
+// still retains network addresses in the activity log (inventory IR-1 to IR-4).
+const BACKUPS_NOTE = /Deleting reaches Fold's backups only as they expire/;
+const OUTSIDE_NOTE = /Copies already sent to mailboxes, mail providers and push services are outside Fold/;
+const IP_NOTE = /Some network \(IP\) addresses can remain in the activity log/;
+const KEPT_HOUSEHOLDS_NOTE = /Fold left these households as they were/;
+const KEPT_ACTIVITY_NOTE = /Fold counts entries, not addresses/;
 
 type Admin = Awaited<ReturnType<typeof apiAs>>;
 type Person = { id: number; email: string; name: string };
@@ -212,8 +219,11 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
 
     await row.getByRole("button", { name: "Delete account" }).click();
     await expect(row.getByText(DELETED)).toBeVisible();
-    await expect(row.getByText("Households kept")).toBeVisible();
-    await expect(row.getByText("Activity entries kept")).toBeVisible();
+    await expect(row.getByText("Households kept", { exact: true })).toBeVisible();
+    await expect(row.getByText("Activity entries kept", { exact: true })).toBeVisible();
+    await expect(row.getByText(KEPT_HOUSEHOLDS_NOTE)).toBeVisible();
+    await expect(row.getByText(KEPT_ACTIVITY_NOTE)).toBeVisible();
+    await expect(row.getByText(IP_NOTE)).toBeVisible();
     await evidence(page, "done-with-counts");
     await row.getByRole("button", { name: "Done" }).click();
     await expect(page.getByRole("row").filter({ hasText: target.email })).toHaveCount(0);
@@ -223,6 +233,32 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     expect(watch.ids.deleted).toHaveLength(2);
     expect(watch.ids.deleted[0]).not.toBe(watch.ids.deleted[1]);
     expect(watch.ids.settled).toEqual([watch.ids.deleted[0]]);
+  });
+
+  test("before the press the panel says what a delete does not reach, and a plain delete keeps saying it", async ({ page, request }) => {
+    const suffix = Date.now().toString(36);
+    const admin = await apiAs(request, adminName);
+    const target = await makePerson(admin, `reach-${suffix}`, `Rae Reach ${suffix}`);
+    await signInTo(page, adminName, "/admin?tab=users");
+    const row = await openDelete(page, target);
+
+    await expect(row.getByText(BACKUPS_NOTE)).toBeVisible();
+    await expect(row.getByText(OUTSIDE_NOTE)).toBeVisible();
+    await expect(row.getByText(IP_NOTE)).toBeVisible();
+    await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    await expect(row.getByText("Households kept", { exact: true })).toHaveCount(0);
+    await evidence(page, "reach-before-delete");
+
+    await row.getByRole("button", { name: "Delete account" }).click();
+    await expect(row.getByText(DELETED)).toBeVisible();
+    await expect(row.getByText(KEPT_HOUSEHOLDS_NOTE)).toBeVisible();
+    await expect(row.getByText(KEPT_ACTIVITY_NOTE)).toBeVisible();
+    await expect(row.getByText(BACKUPS_NOTE)).toBeVisible();
+    await expect(row.getByText(IP_NOTE)).toBeVisible();
+    await expect(row.getByText(NOT_DELETED)).toHaveCount(0);
+    await evidence(page, "reach-after-delete");
+    await row.getByRole("button", { name: "Done" }).click();
+    await expect(page.getByRole("row").filter({ hasText: target.email })).toHaveCount(0);
   });
 
   test("a valid id older than ten minutes says Fold did not run it, settles that same id to nothing deleted, and a fresh press deletes", async ({ page, request }) => {
