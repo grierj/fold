@@ -1456,12 +1456,16 @@ export interface ErasureReasonItem {
   reason: string;
 }
 
-// One entry of the DELETE body's reasonReview.items: the item as it was shown
-// (id and hash) and the admin's explicit choice.
-export interface ReasonReviewChoice {
-  requestId: string;
-  reviewHash: string;
-  choice: "keep" | "remove";
+// The DELETE body's reasonReview (format "set-v1", T07B-2): how many reasons
+// the admin reviewed (a decimal string), the SHA-256 over the reviewed set in
+// ascending signed id order (lib/reasonSetDigest.ts) and the admin's explicit
+// choice for each, two bits apiece, as standard base64. No JSON number carries
+// an id or a count.
+export interface ReasonReviewBody {
+  format: "set-v1";
+  count: string;
+  digest: string;
+  choices: string;
 }
 
 // One page of the review. reviewRequired is present only on a page with items:

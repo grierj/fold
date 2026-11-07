@@ -59,6 +59,7 @@ export const ERROR_COPY = {
   admin_account_busy: "Your own account was being updated at the same moment, so nothing was changed. Try again in a moment.",
   needs_reason_review: "This person has contact-request reasons to review before the account can be deleted. Reload this page to review them.",
   reason_review_changed: "Some reasons changed since you loaded them. Check the marked ones, then delete again.",
+  reason_review_outdated: "Fold was updated while this page was open. Reload this page, then review the reasons again.",
   reason_review_not_allowed: "Only an adult admin can review these reasons. Ask another admin to delete this account.",
   reason_review_busy: "Fold couldn't load the reasons just now. Try again in a minute.",
   attempt_expired: "This delete request was too old to run, so Fold didn't run it. Fold is checking what happened.",

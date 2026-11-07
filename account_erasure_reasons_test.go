@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +21,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -119,6 +123,12 @@ func referenceHash(secret string, viewer, party string, fields []sql.NullString)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// reviewHashOf is the hex form of reviewHashRaw, which the page shows.
+func reviewHashOf(key []byte, viewerID, partyID int64, fields []sql.NullString) string {
+	raw := reviewHashRaw(key, viewerID, partyID, fields)
+	return hex.EncodeToString(raw[:])
+}
+
 func TestReviewHashVectors(t *testing.T) {
 	const secret = "fold-test-secret"
 	key := reasonHashKey([]byte(secret))
@@ -197,34 +207,6 @@ func TestReasonProjectionShape(t *testing.T) {
 	}
 	if !strings.HasSuffix(reasonSelect, ", created_at") {
 		t.Errorf("reasonSelect must end with created_at: %s", reasonSelect)
-	}
-}
-
-func TestParseReasonReview(t *testing.T) {
-	h := strings.Repeat("ab", 32)
-	item := func(id, hash, choice string) reasonChoiceBody {
-		return reasonChoiceBody{RequestID: id, ReviewHash: hash, Choice: choice}
-	}
-	if m, ok := parseReasonReview(nil); !ok || m != nil {
-		t.Errorf("a missing review must parse to nil, got %v %v", m, ok)
-	}
-	m, ok := parseReasonReview(&reasonReviewBody{Items: []reasonChoiceBody{item("-5", h, "remove"), item("9223372036854775807", h, "keep")}})
-	if !ok || len(m) != 2 || !m[-5].remove || m[9223372036854775807].remove {
-		t.Errorf("a good review parsed to %v %v", m, ok)
-	}
-	for name, items := range map[string][]reasonChoiceBody{
-		"duplicate":        {item("1", h, "keep"), item("1", h, "remove")},
-		"non-canonical id": {item("01", h, "keep")},
-		"plus id":          {item("+1", h, "keep")},
-		"out of range id":  {item("9223372036854775808", h, "keep")},
-		"short hash":       {item("1", h[:62], "keep")},
-		"upper-case hash":  {item("1", strings.ToUpper(h), "keep")},
-		"no choice":        {item("1", h, "")},
-		"another choice":   {item("1", h, "blank")},
-	} {
-		if _, ok := parseReasonReview(&reasonReviewBody{Items: items}); ok {
-			t.Errorf("%s was accepted", name)
-		}
 	}
 }
 
@@ -413,12 +395,22 @@ func allPages(t *testing.T, c *apiClient, target uint) []reasonItemJSON {
 	return nil
 }
 
-func reviewOf(items []reasonItemJSON, choice func(reasonItemJSON) string) map[string]any {
-	var out []map[string]string
+// entriesOf turns served items into review entries with the given choices.
+func entriesOf(items []reasonItemJSON, choice func(reasonItemJSON) string) []reviewEntry {
+	var out []reviewEntry
 	for _, it := range items {
-		out = append(out, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": choice(it)})
+		id, ok := parseRequestID(it.RequestID)
+		if !ok {
+			panic("entriesOf: bad request id " + it.RequestID)
+		}
+		out = append(out, reviewEntry{ID: id, Hash: it.ReviewHash, Choice: choice(it)})
 	}
-	return map[string]any{"items": out}
+	return out
+}
+
+// reviewOf is the set-v1 envelope for items with the given choices.
+func reviewOf(items []reasonItemJSON, choice func(reasonItemJSON) string) map[string]any {
+	return envelopeOf(entriesOf(items, choice))
 }
 
 func countAudit(t *testing.T, db *gorm.DB, actions ...string) int64 {
@@ -537,7 +529,8 @@ func TestReasonReviewPage(t *testing.T) {
 func TestReasonReviewAdultRule(t *testing.T) {
 	s := newReasonScene(t)
 	r := s.request(t, s.other, 1)
-	if code, page, _ := pageOf(t, s.ac, s.target.ID, nil); code != http.StatusOK || len(page.Items) != 1 {
+	code, first, _ := pageOf(t, s.ac, s.target.ID, nil)
+	if code != http.StatusOK || len(first.Items) != 1 {
 		t.Fatalf("an admin of unknown age: %d", code)
 	}
 	before := countAudit(t, s.app.DB, audit.UserErasureReasonsViewed)
@@ -554,7 +547,7 @@ func TestReasonReviewAdultRule(t *testing.T) {
 	}
 	// And the deletion with a nonempty set refuses the same admin; an empty set
 	// would not.
-	if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": map[string]any{"items": []any{}}}); res.code != http.StatusForbidden {
+	if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": reviewOf(first.Items, func(reasonItemJSON) string { return "keep" })}); res.code != http.StatusForbidden {
 		t.Errorf("delete by a known-underage admin: %d %s", res.code, res.body)
 	}
 	if reasonTextOf(t, s.app.DB, r.ID) == "" {
@@ -613,7 +606,7 @@ func TestReasonScanIsBounded(t *testing.T) {
 	var unit reasonUnit
 	err := s.app.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		unit, err = scanReasonItems(tx, liveReasonFilter(int64(s.target.ID)), nil)
+		unit, err = scanReasonItems(tx, liveReasonFilter(int64(s.target.ID)), nil, reasonPageRequests)
 		return err
 	})
 	if err != nil {
@@ -655,9 +648,7 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 		{"no review at all", http.StatusConflict, "needs_reason_review", func(t *testing.T, p setup) any { return nil }},
 		{"a missing item", http.StatusConflict, "reason_review_changed", func(t *testing.T, p setup) any { return reviewOf(p.items[1:], keepAll) }},
 		{"an extra item", http.StatusConflict, "reason_review_changed", func(t *testing.T, p setup) any {
-			r := reviewOf(p.items, keepAll)
-			r["items"] = append(r["items"].([]map[string]string), map[string]string{"requestId": "999999", "reviewHash": strings.Repeat("0", 64), "choice": "keep"})
-			return r
+			return envelopeOf(append(entriesOf(p.items, keepAll), reviewEntry{ID: 999999, Hash: strings.Repeat("0", 64), Choice: "keep"}))
 		}},
 		{"a changed row", http.StatusConflict, "reason_review_changed", func(t *testing.T, p setup) any {
 			// A contact request: a terminal add request cannot be edited while
@@ -681,7 +672,7 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 		}},
 		{"a hash for the other party", http.StatusConflict, "reason_review_changed", func(t *testing.T, p setup) any {
 			// The same rows hashed for the counterpart: viewer and party differ.
-			rows, err := p.s.app.DB.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY id", p.s.target.ID, p.s.target.ID).Rows()
+			rows, err := p.s.app.DB.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id", p.s.target.ID, p.s.target.ID).Rows()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1163,23 +1154,36 @@ func recordContactRequestStatements(t *testing.T, db *gorm.DB) func() []reasonSt
 const reasonUnitPrefix = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests"
 
 // unitCursor is the lower bound a recorded scanner statement carries (nil for
-// the first page).
+// the first page). The two statements differ in shape (F5): the first binds only
+// the limit and has no id predicate; a continuation binds the cursor, then the
+// limit, and filters on id > the cursor. Neither binds a NULL.
 func unitCursor(t *testing.T, st reasonStatement) *int64 {
 	t.Helper()
-	if len(st.Vars) != 3 {
-		t.Fatalf("a scanner unit binds %d values, want after, after and the limit: %v", len(st.Vars), st.Vars)
-	}
-	switch v := st.Vars[0].(type) {
-	case nil:
+	switch len(st.Vars) {
+	case 1:
+		if strings.Contains(st.SQL, "WHERE") {
+			t.Fatalf("a first-page scanner unit binds only the limit but has a predicate: %s", st.SQL)
+		}
 		return nil
-	case *int64:
-		return v
-	case int64:
-		return &v
+	case 2:
+		if !strings.Contains(st.SQL, "WHERE id > $1::bigint") {
+			t.Fatalf("a continuation unit binds a cursor but does not filter on it: %s", st.SQL)
+		}
+		switch v := st.Vars[0].(type) {
+		case *int64:
+			if v == nil {
+				t.Fatal("a continuation unit bound a nil cursor")
+			}
+			return v
+		case int64:
+			return &v
+		default:
+			t.Fatalf("cursor bound as %T", st.Vars[0])
+		}
 	default:
-		t.Fatalf("cursor bound as %T", st.Vars[0])
-		return nil
+		t.Fatalf("a scanner unit binds %d values, want the limit alone or the cursor and the limit: %v", len(st.Vars), st.Vars)
 	}
+	return nil
 }
 
 // An account with no reasons over a table larger than three units reaches next
@@ -2466,6 +2470,16 @@ var reasonReviewRepeatSet = []string{
 	"TestReasonReviewLogoutBetweenPageAndDelete",
 	"TestReasonReviewDecisionMetaReviewerIsParty",
 	"TestReasonBlankCounterpartyLockIsNotAHouseholdBusy",
+	"TestReasonBlankBusyInALaterBatch",
+	"TestReasonProbeIsBounded",
+	"TestReasonDeleteBatchStatements",
+	"TestReasonDeleteFaultsRollBack",
+	"TestReasonEnvelopeAttemptOrdering",
+	"TestReasonOrderingMatrix",
+	"TestReasonDeleteBatching",
+	"TestReasonOrderIsSigned",
+	"TestReasonLegacyEnvelope",
+	"TestReasonReviewDeleteStreaming",
 	"TestSignedRequestIDsEndToEnd",
 	"TestSignedRequestIDsSurviveReviewerErasure",
 	"TestNegativeIDPendingRowIsAKnownRollback",
@@ -2505,4 +2519,1933 @@ func TestReasonReviewRepeatSetExists(t *testing.T) {
 		seen[name] = true
 	}
 	t.Logf("-run '^(%s)$'", strings.Join(reasonReviewRepeatSet, "|"))
+}
+
+// ---------------------------------------------------------------------------
+// T07B-2 scaling: signed order, the set-v1 envelope, the streamed consume and
+// the batched writes. Database tests.
+// ---------------------------------------------------------------------------
+
+// Every statement that lists reasons orders by the bigint id: pages, the cursor
+// chain, the DELETE stream and the digest agree on ascending signed order.
+func TestReasonOrderIsSigned(t *testing.T) {
+	prev := reasonPageRequests
+	reasonPageRequests = 4
+	t.Cleanup(func() { reasonPageRequests = prev })
+	s := newReasonScene(t)
+	signed := []int64{-9223372036854775808, -10, -2, -1, 0, 2, 10, 9007199254740993, 9223372036854775807}
+	shuffled := []int64{10, -1, 9223372036854775807, 0, -10, 9007199254740993, 2, -9223372036854775808, -2}
+	for i, id := range shuffled {
+		r := s.contactRequest(t, 30+i)
+		if err := s.app.DB.Exec("UPDATE contact_requests SET id = ? WHERE id = ?", id, r.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var items []reasonItemJSON
+	var cursors []string
+	var after *string
+	for i := 0; i < 10; i++ {
+		code, page, body := pageOf(t, s.ac, s.target.ID, after)
+		if code != http.StatusOK {
+			t.Fatalf("page: %d %s", code, body)
+		}
+		items = append(items, page.Items...)
+		if page.Next == nil {
+			break
+		}
+		cursors = append(cursors, *page.Next)
+		after = page.Next
+	}
+	var got []int64
+	for _, it := range items {
+		id, _ := parseRequestID(it.RequestID)
+		got = append(got, id)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(signed) {
+		t.Fatalf("page order %v, want signed %v", got, signed)
+	}
+	// 4 requests per page: the cursor is the fourth and the eighth id.
+	if fmt.Sprint(cursors) != "[-1 9007199254740993]" {
+		t.Errorf("cursor chain %v, want [-1 9007199254740993]", cursors)
+	}
+	// The old order, kept as a regression fixture: sorting the same ids as text
+	// differs, so this test can fail.
+	text := make([]string, len(signed))
+	for i, id := range signed {
+		text[i] = strconv.FormatInt(id, 10)
+	}
+	sort.Strings(text)
+	if fmt.Sprint(text) == fmt.Sprint(signed) {
+		t.Fatal("the text order equals the signed order: the fixture proves nothing")
+	}
+	// The DELETE streams the set in signed order and the digest follows it, so a
+	// signed-order envelope is accepted; the decisions are audited in that order.
+	if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": reviewOf(items, func(reasonItemJSON) string { return "keep" })}); res.code != http.StatusOK {
+		t.Fatalf("delete: %d %s", res.code, res.body)
+	}
+	var audited []int64
+	if err := s.app.DB.Raw("SELECT target_id FROM audit_logs WHERE action = ? ORDER BY id", audit.ContactReasonKept).Scan(&audited).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(audited) != fmt.Sprint(signed) {
+		t.Errorf("decision audits in order %v, want %v", audited, signed)
+	}
+}
+
+// The old items envelope: ignored when the account has no reasons, refused with
+// reason_review_outdated (before the permission check, applying nothing) when it
+// has some; a malformed one is always a 400.
+func TestReasonLegacyEnvelope(t *testing.T) {
+	legacyOf := func(items []reasonItemJSON) map[string]any {
+		var out []map[string]string
+		for _, it := range items {
+			out = append(out, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": "remove"})
+		}
+		return map[string]any{"items": out}
+	}
+	t.Run("an empty current set ignores it", func(t *testing.T) {
+		s := newReasonScene(t)
+		res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": legacyOf([]reasonItemJSON{{RequestID: "5", ReviewHash: strings.Repeat("c", 64)}})})
+		if res.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+		if n := countAudit(t, s.app.DB, decisionActions...); n != 0 {
+			t.Errorf("%d decision audits", n)
+		}
+		if !strings.Contains(res.body, `"reasonsKept":0`) || !strings.Contains(res.body, `"reasonsRemoved":0`) {
+			t.Errorf("counts: %s", res.body)
+		}
+	})
+	t.Run("a nonempty set is outdated, even when every hash matches", func(t *testing.T) {
+		s := newReasonScene(t)
+		r := s.request(t, s.other, 1)
+		items := allPages(t, s.ac, s.target.ID)
+		// Before the permission check: a known-underage admin still gets outdated.
+		if err := s.app.DB.Model(&models.User{}).Where("id = ?", s.admin.ID).Update("birth_date", time.Now().AddDate(-15, 0, 0)).Error; err != nil {
+			t.Fatal(err)
+		}
+		res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": legacyOf(items)})
+		if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"reason_review_outdated"`) {
+			t.Fatalf("delete: %d %s, want 409 reason_review_outdated", res.code, res.body)
+		}
+		if reasonTextOf(t, s.app.DB, r.ID) == "" || countAudit(t, s.app.DB, decisionActions...) != 0 {
+			t.Error("an outdated review blanked a reason or left a decision")
+		}
+		var u models.User
+		if err := s.app.DB.Unscoped().First(&u, s.target.ID).Error; err != nil || u.DeletedAt.Valid {
+			t.Errorf("the account was deleted by a refusal: %v", err)
+		}
+	})
+	t.Run("no review with a nonempty set still needs one", func(t *testing.T) {
+		s := newReasonScene(t)
+		s.request(t, s.other, 1)
+		res := deleteAccount(s.ac, s.target.ID, nil)
+		if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"needs_reason_review"`) {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+	})
+	t.Run("a malformed envelope is a 400 whatever the database holds", func(t *testing.T) {
+		s := newReasonScene(t) // an empty set
+		h := strings.Repeat("ab", 32)
+		for name, raw := range map[string]string{
+			"legacy duplicate id":    `{"reasonReview":{"items":[{"requestId":"1","reviewHash":"` + h + `","choice":"keep"},{"requestId":"1","reviewHash":"` + h + `","choice":"keep"}]}}`,
+			"legacy case variant":    `{"reasonReview":{"Items":[]}}`,
+			"legacy extra key":       `{"reasonReview":{"items":[],"x":"y"}}`,
+			"items null":             `{"reasonReview":{"items":null}}`,
+			"empty object":           `{"reasonReview":{}}`,
+			"new, duplicate count":   `{"reasonReview":{"format":"set-v1","count":"1","count":"1","digest":"` + h + `","choices":"AQ=="}}`,
+			"new, count 0":           `{"reasonReview":{"format":"set-v1","count":"0","digest":"` + h + `","choices":""}}`,
+			"new, case variant":      `{"reasonReview":{"format":"set-v1","Count":"1","digest":"` + h + `","choices":"AQ=="}}`,
+			"new, unchosen code":     `{"reasonReview":{"format":"set-v1","count":"1","digest":"` + h + `","choices":"AA=="}}`,
+			"new, count 2^40":        `{"reasonReview":{"format":"set-v1","count":"1099511627776","digest":"` + h + `","choices":"AQ=="}}`,
+			"reasonReview twice":     `{"reasonReview":{"items":[]},"reasonReview":null}`,
+			"reasonReview in a case": `{"reasonreview":{"items":[]}}`,
+		} {
+			res := deleteAccount(s.ac, s.target.ID, json.RawMessage(raw))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid reason review") {
+				t.Errorf("%s: %d %s, want 400 invalid reason review", name, res.code, res.body)
+			}
+		}
+		var u models.User
+		if err := s.app.DB.Unscoped().First(&u, s.target.ID).Error; err != nil || u.DeletedAt.Valid {
+			t.Errorf("a malformed review deleted the account: %v", err)
+		}
+	})
+	t.Run("an ambiguous attemptId is refused as a body that does not parse", func(t *testing.T) {
+		s := newReasonScene(t)
+		for _, raw := range []string{`{"attemptId":"a","attemptId":"b"}`, `{"attemptid":"a"}`} {
+			res := deleteAccount(s.ac, s.target.ID, json.RawMessage(raw))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid body") {
+				t.Errorf("%s: %d %s, want 400 invalid body", raw, res.code, res.body)
+			}
+		}
+	})
+}
+
+// The set digest: a claim whose count is wrong, whose vector is longer than the
+// set or whose digest is for another set is 409 reason_review_changed with
+// nothing changed; a claim whose size alone is impossible is a 400.
+func TestReasonReviewDeleteStreaming(t *testing.T) {
+	s := newReasonScene(t)
+	reqs := []models.ContactRequest{s.request(t, s.other, 1), s.request(t, s.second, 2), s.contactRequest(t, 3)}
+	items := allPages(t, s.ac, s.target.ID)
+	if len(items) != 3 {
+		t.Fatalf("%d items, want 3", len(items))
+	}
+	keep := func(reasonItemJSON) string { return "keep" }
+	refuse := func(name string, body map[string]any, code int, api string) {
+		t.Helper()
+		res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": body})
+		if res.code != code || !strings.Contains(res.body, api) {
+			t.Errorf("%s: %d %s, want %d %s", name, res.code, res.body, code, api)
+		}
+	}
+	// A claim of one fewer item, with a digest consistent with that claim.
+	refuse("a claim of fewer items", reviewOf(items[:2], keep), http.StatusConflict, `"code":"reason_review_changed"`)
+	// A huge, internally consistent vector against a small set: no scaling with the claim.
+	huge := reviewOf(items, keep)
+	huge["count"] = strconv.Itoa(400000)
+	huge["choices"] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, 100000))
+	refuse("a huge consistent claim", huge, http.StatusConflict, `"code":"reason_review_changed"`)
+	// A claim no vector can match: shape.
+	shape := reviewOf(items, keep)
+	shape["count"] = "1099511627776"
+	refuse("a claim of 2^40", shape, http.StatusBadRequest, "invalid reason review")
+	// The right claim with a flipped digest bit.
+	flipped := reviewOf(items, keep)
+	d := []byte(flipped["digest"].(string))
+	if d[0] == 'a' {
+		d[0] = 'b'
+	} else {
+		d[0] = 'a'
+	}
+	flipped["digest"] = string(d)
+	refuse("a wrong digest", flipped, http.StatusConflict, `"code":"reason_review_changed"`)
+	// A digest computed in the wrong order.
+	rev := entriesOf(items, keep)
+	rev[0], rev[2] = rev[2], rev[0]
+	refuse("a digest made in descending order", envelopeInOrder(rev), http.StatusConflict, `"code":"reason_review_changed"`)
+	for _, r := range reqs {
+		if reasonTextOf(t, s.app.DB, r.ID) == "" {
+			t.Errorf("request %d was blanked by a refusal", r.ID)
+		}
+	}
+	if n := countAudit(t, s.app.DB, decisionActions...); n != 0 {
+		t.Errorf("%d decision audits after refusals", n)
+	}
+	// An empty set ignores a well-formed new-form review made for other rows.
+	t.Run("an empty set ignores a stale new-form review", func(t *testing.T) {
+		e := newReasonScene(t)
+		stale := reviewOf([]reasonItemJSON{{RequestID: "5", ReviewHash: strings.Repeat("c", 64)}}, func(reasonItemJSON) string { return "remove" })
+		if res := deleteAccount(e.ac, e.target.ID, map[string]any{"reasonReview": stale}); res.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+		if n := countAudit(t, e.app.DB, decisionActions...); n != 0 {
+			t.Errorf("%d decision audits for an empty set", n)
+		}
+	})
+}
+
+// The writes go in batches of reasonBlankBatch: boundaries at N and N+1, every
+// decision audited once, the removes blanked and the kept left alone.
+func TestReasonDeleteBatching(t *testing.T) {
+	prev := reasonBlankBatch
+	reasonBlankBatch = 2
+	t.Cleanup(func() { reasonBlankBatch = prev })
+	for _, n := range []int{1, 2, 3, 4, 5} {
+		t.Run(fmt.Sprintf("%d reasons in batches of 2", n), func(t *testing.T) {
+			s := newReasonScene(t)
+			for i := 0; i < n; i++ {
+				s.request(t, s.other, 40+i)
+			}
+			items := allPages(t, s.ac, s.target.ID)
+			// Remove every item but the second.
+			keepID := ""
+			if n >= 2 {
+				keepID = items[1].RequestID
+			}
+			res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": reviewOf(items, func(it reasonItemJSON) string {
+				if it.RequestID == keepID {
+					return "keep"
+				}
+				return "remove"
+			})})
+			if res.code != http.StatusOK {
+				t.Fatalf("delete: %d %s", res.code, res.body)
+			}
+			wantKept := 0
+			if n >= 2 {
+				wantKept = 1
+			}
+			if got := countAudit(t, s.app.DB, audit.AddReasonKept); got != int64(wantKept) {
+				t.Errorf("%d kept audits, want %d", got, wantKept)
+			}
+			if got := countAudit(t, s.app.DB, audit.AddReasonRemoved); got != int64(n-wantKept) {
+				t.Errorf("%d removed audits, want %d", got, n-wantKept)
+			}
+			var blank int64
+			if err := s.app.DB.Raw("SELECT count(*) FROM contact_requests WHERE reason = ''").Scan(&blank).Error; err != nil {
+				t.Fatal(err)
+			}
+			if blank != int64(n-wantKept) {
+				t.Errorf("%d blanked rows, want %d", blank, n-wantKept)
+			}
+		})
+	}
+}
+
+// A hold on a deleted party's users row that only a later batch touches still
+// answers 409 delete_reason_busy (never a busy household), with nothing
+// deleted and no decision audit; once the row is free the same review applies.
+func TestReasonBlankBusyInALaterBatch(t *testing.T) {
+	prev := reasonBlankBatch
+	reasonBlankBatch = 2
+	t.Cleanup(func() { reasonBlankBatch = prev })
+	s := newReasonScene(t)
+	// Batch one (ids 1 and 2) has a live counterpart; batch two (3 and 4) a tombstone.
+	var reqs []models.ContactRequest
+	reqs = append(reqs, s.request(t, s.other, 1), s.request(t, s.other, 2), s.request(t, s.second, 3), s.request(t, s.second, 4))
+	if err := s.app.DB.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", s.second.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	review := reviewOf(allPages(t, s.ac, s.target.ID), func(reasonItemJSON) string { return "remove" })
+	hold, _ := beginOwnedTx(t, s.app.DB)
+	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.second.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			hold.Rollback()
+		}
+	}
+	defer release()
+	res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review})
+	if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"delete_reason_busy"`) || strings.Contains(res.body, "delete_household_busy") {
+		t.Fatalf("a held counterparty row in a later batch: %d %s, want 409 delete_reason_busy", res.code, res.body)
+	}
+	for _, leak := range []string{"55P03", "NOWAIT"} {
+		if strings.Contains(res.body, leak) {
+			t.Errorf("the response carries %q: %s", leak, res.body)
+		}
+	}
+	for _, r := range reqs {
+		if reasonTextOf(t, s.app.DB, r.ID) == "" {
+			t.Errorf("request %d was blanked by a refused attempt", r.ID)
+		}
+	}
+	if countAudit(t, s.app.DB, decisionActions...) != 0 {
+		t.Error("a refused attempt left a decision audit")
+	}
+	release()
+	if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}); res.code != http.StatusOK {
+		t.Fatalf("after the row is free: %d %s, want 200", res.code, res.body)
+	}
+	for _, r := range reqs {
+		if reasonTextOf(t, s.app.DB, r.ID) != "" {
+			t.Errorf("request %d was not blanked once the row was free", r.ID)
+		}
+	}
+}
+
+// The scanner's statements, planned with parameters unknown: the initial one is
+// a Limit over an ordered Index Scan with no Sort and no id predicate, the
+// continuation has an Index Cond on id and no Filter on it. Planner switches are
+// off only to keep a near-empty table from choosing a sequential scan: the proof
+// is that the primary key can serve the predicate as written.
+func TestReasonScanSQLShape(t *testing.T) {
+	s := newReasonScene(t)
+	dollar := func(sql string) string {
+		n := 0
+		for strings.Contains(sql, "?") {
+			n++
+			sql = strings.Replace(sql, "?", "$"+strconv.Itoa(n), 1)
+		}
+		return sql
+	}
+	// plan prepares sql with the named parameter types and explains its generic
+	// plan: EXPLAIN (GENERIC_PLAN) cannot be sent with a parameter list through
+	// the driver (it counts the $n in the text and wants arguments), and
+	// EXPLAIN EXECUTE under force_generic_plan shows the same plan with the
+	// parameters unknown.
+	plan := func(sql, types, args string) string {
+		var lines []string
+		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+			for _, set := range []string{"enable_seqscan = off", "enable_bitmapscan = off", "plan_cache_mode = force_generic_plan"} {
+				if err := tx.Exec("SET LOCAL " + set).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec("PREPARE reason_scan_shape (" + types + ") AS " + dollar(sql)).Error; err != nil {
+				return err
+			}
+			defer tx.Exec("DEALLOCATE reason_scan_shape")
+			return tx.Raw("EXPLAIN EXECUTE reason_scan_shape(" + args + ")").Scan(&lines).Error
+		})
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		return strings.Join(lines, "\n")
+	}
+	initial := plan(reasonScanInitialSQL, "integer", "100")
+	// Either index supplies id order: contact_requests_scope also starts with id.
+	orderedIndex := strings.Contains(initial, "contact_requests_pkey") || strings.Contains(initial, "contact_requests_scope")
+	if !strings.Contains(initial, "Limit") || !orderedIndex || strings.Contains(initial, "Sort") || strings.Contains(initial, "Index Cond") {
+		t.Errorf("initial plan:\n%s", initial)
+	}
+	cont := plan(reasonScanContinuationSQL, "bigint, integer", "0, 100")
+	if !strings.Contains(cont, "Index Cond: (id > $1)") || strings.Contains(cont, "Sort") || strings.Contains(cont, "Filter:") {
+		t.Errorf("continuation plan:\n%s", cont)
+	}
+	// The old statement could not be served that way.
+	old := plan("SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE (?::bigint IS NULL OR id > ?::bigint) ORDER BY id LIMIT ?", "bigint, bigint, integer", "0, 0, 100")
+	if strings.Contains(old, "Index Cond: (id > $") {
+		t.Errorf("the NULL-or statement gained an Index Cond; this test no longer shows the difference:\n%s", old)
+	}
+}
+
+// Many executions on one connection, then a forced generic plan: the units
+// still walk the whole table in order with no skip, at signed boundary ids.
+func TestReasonScanUnderAGenericPlan(t *testing.T) {
+	prev := reasonUnitRows
+	reasonUnitRows = 3
+	t.Cleanup(func() { reasonUnitRows = prev })
+	s := newReasonScene(t)
+	ids := []int64{-9223372036854775808, -1, 0, 7, 9223372036854775807}
+	for i, id := range ids {
+		r := s.contactRequest(t, 60+i)
+		if err := s.app.DB.Exec("UPDATE contact_requests SET id = ? WHERE id = ?", id, r.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mode := range []string{"auto", "force_generic_plan"} {
+		t.Run(mode, func(t *testing.T) {
+			var got []int64
+			err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec("SET LOCAL plan_cache_mode = " + mode).Error; err != nil {
+					return err
+				}
+				var after *int64
+				for i := 0; i < 20; i++ {
+					unit, err := scanReasonItems(tx, liveReasonFilter(int64(s.target.ID)), after, 100)
+					if err != nil {
+						return err
+					}
+					got = append(got, unit.Requests...)
+					if unit.Next == nil {
+						return nil
+					}
+					after = unit.Next
+				}
+				t.Fatal("the walk never ended")
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(ids) {
+				t.Errorf("walk found %v, want %v", got, ids)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T07B-2 scaling, second pass: the bounds the first pass only stated. Database
+// tests; fixtures here are bulk-made with bulkRequests so a table can hold
+// thousands of rows.
+// ---------------------------------------------------------------------------
+
+// bulkRequests copies the request template into n new rows (new ids, every
+// other column equal) in one statement.
+func bulkRequests(t *testing.T, db *gorm.DB, template uint, n int) {
+	t.Helper()
+	var cols string
+	if err := db.Raw(`SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'contact_requests' AND column_name <> 'id'`).Scan(&cols).Error; err != nil || cols == "" {
+		t.Fatalf("contact_requests columns: %q %v", cols, err)
+	}
+	if err := db.Exec("INSERT INTO contact_requests ("+cols+") SELECT "+cols+" FROM (SELECT * FROM contact_requests WHERE id = ?) c, generate_series(1, ?)", template, n).Error; err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+}
+
+// fillerRequest makes a request that is none of the target's: other asks second,
+// with a reason, so it is a reasoned row the scanner reads and drops.
+func (s reasonScene) fillerRequest(t *testing.T) models.ContactRequest {
+	t.Helper()
+	return erasureMakeRequest(t, s.app.DB, policy.RequestContact, policy.ContactWithdrawn, s.other.ID, s.second.ID, 1, 0, 0, 999, "")
+}
+
+// targetIDs is the reference answer: the ids of every reasoned request the
+// target is in, in ascending signed order, straight from SQL.
+func targetIDs(t *testing.T, db *gorm.DB, target uint) []int64 {
+	t.Helper()
+	var ids []int64
+	if err := db.Raw("SELECT id FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id", target, target).Scan(&ids).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// rowHeld says whether another connection cannot take the row's lock right now.
+// NOWAIT never waits, so this is a read of the row-lock table through the only
+// interface that counts, not through granted pg_locks entries.
+func rowHeld(t *testing.T, db *gorm.DB, id int64) bool {
+	t.Helper()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	err := tx.Exec("SELECT id FROM contact_requests WHERE id = ? FOR UPDATE NOWAIT", id).Error
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "55P03" {
+		return true
+	}
+	if err != nil {
+		t.Fatalf("lock probe on %d: %v", id, err)
+	}
+	return false
+}
+
+// explainLines runs EXPLAIN (ANALYZE, BUFFERS) for sql (built with Sprintf from
+// numbers only) in tx and returns the text plan.
+func explainLines(t *testing.T, tx *gorm.DB, sql string) string {
+	t.Helper()
+	var lines []string
+	if err := tx.Raw("EXPLAIN (ANALYZE, BUFFERS) " + sql).Scan(&lines).Error; err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+var (
+	planRemoved = regexp.MustCompile(`Rows Removed by Filter: (\d+)`)
+	planBuffers = regexp.MustCompile(`Buffers: shared hit=(\d+)(?: read=(\d+))?`)
+	planIndex   = regexp.MustCompile(`Index Scan using \S+ on contact_requests.*actual time=[\d.]+\.\.[\d.]+ rows=(\d+) loops=`)
+)
+
+func planInt(t *testing.T, re *regexp.Regexp, plan string, group int) int {
+	t.Helper()
+	m := re.FindStringSubmatch(plan)
+	if m == nil || m[group] == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(m[group])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// ---- the investigation of the old envelope's answers -------------------------
+
+// The old {items} envelope against the new server, in every combination of
+// envelope, set and admin the route can meet. Order of refusals, which this
+// pins (T07B-2 R6): malformed (400, whatever the set) / no reasons (everything
+// is ignored and the account is deleted, whoever the admin is) / absent or old
+// envelope with reasons (needs_reason_review or reason_review_outdated, both
+// BEFORE the permission check, as needs_reason_review always was) / a set-v1
+// envelope with reasons (permission first, then the comparison).
+//
+// What changed against 166da5d, and only this: a well-formed old envelope for
+// an account that has reasons used to reach the permission check and the
+// comparison (403 for an under-18 admin, 409 reason_review_changed for a stale
+// one, and applied choices for a current one). It is now always 409
+// reason_review_outdated and nothing in it is applied. A page reload then shows
+// the person what is true: the page route still answers 403 for the same admin.
+func TestReasonOrderingMatrix(t *testing.T) {
+	type admin struct {
+		name  string
+		under bool
+	}
+	admins := []admin{{"an adult admin", false}, {"an admin known to be under 18", true}}
+	legacy := func(items []reasonItemJSON) map[string]any {
+		out := []map[string]string{} // an empty array, not null: a well-formed old envelope
+		for _, it := range items {
+			out = append(out, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": "keep"})
+		}
+		return map[string]any{"items": out}
+	}
+	stale := func(items []reasonItemJSON) map[string]any {
+		return envelopeOf(append(entriesOf(items, func(reasonItemJSON) string { return "keep" }), reviewEntry{ID: 424242, Hash: strings.Repeat("0", 64), Choice: "keep"}))
+	}
+	type want struct {
+		code int
+		api  string // the code in the body, "" for a deletion
+	}
+	type envelope struct {
+		name string
+		body func(items []reasonItemJSON) any
+		// empty and full are the answers for an account without and with reasons.
+		empty, adultFull, underFull want
+	}
+	ok := want{http.StatusOK, ""}
+	envelopes := []envelope{
+		{"no review", func([]reasonItemJSON) any { return nil }, ok, want{409, "needs_reason_review"}, want{409, "needs_reason_review"}},
+		{"the old items envelope", func(i []reasonItemJSON) any { return map[string]any{"reasonReview": legacy(i)} }, ok, want{409, "reason_review_outdated"}, want{409, "reason_review_outdated"}},
+		{"a current set-v1 review", func(i []reasonItemJSON) any {
+			if len(i) == 0 { // an account with none: any well-formed review is ignored
+				return map[string]any{"reasonReview": envelopeOf([]reviewEntry{{ID: 5, Hash: strings.Repeat("c", 64), Choice: "remove"}})}
+			}
+			return map[string]any{"reasonReview": reviewOf(i, func(reasonItemJSON) string { return "keep" })}
+		}, ok, ok, want{403, "reason_review_not_allowed"}},
+		{"a stale set-v1 review", func(i []reasonItemJSON) any { return map[string]any{"reasonReview": stale(i)} }, ok, want{409, "reason_review_changed"}, want{403, "reason_review_not_allowed"}},
+		{"a malformed review", func([]reasonItemJSON) any {
+			return json.RawMessage(`{"reasonReview":{"items":[],"x":"y"}}`)
+		}, want{400, "invalid reason review"}, want{400, "invalid reason review"}, want{400, "invalid reason review"}},
+	}
+	for _, a := range admins {
+		for _, e := range envelopes {
+			for _, full := range []bool{false, true} {
+				name := fmt.Sprintf("%s, %s, %s", a.name, e.name, map[bool]string{false: "no reasons", true: "reasons"}[full])
+				t.Run(name, func(t *testing.T) {
+					s := newReasonScene(t)
+					var r models.ContactRequest
+					var items []reasonItemJSON
+					if full {
+						r = s.request(t, s.other, 1)
+						items = allPages(t, s.ac, s.target.ID)
+					}
+					if a.under {
+						if err := s.app.DB.Model(&models.User{}).Where("id = ?", s.admin.ID).Update("birth_date", time.Now().AddDate(-15, 0, 0)).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					w := e.empty
+					if full {
+						w = e.adultFull
+						if a.under {
+							w = e.underFull
+						}
+					}
+					res := deleteAccount(s.ac, s.target.ID, e.body(items))
+					if res.code != w.code || (w.api != "" && !strings.Contains(res.body, w.api)) {
+						t.Fatalf("%d %s, want %d %s", res.code, res.body, w.code, w.api)
+					}
+					var u models.User
+					if err := s.app.DB.Unscoped().First(&u, s.target.ID).Error; err != nil {
+						t.Fatal(err)
+					}
+					if deleted := u.DeletedAt.Valid; deleted != (w.code == http.StatusOK) {
+						t.Errorf("deleted = %v after a %d", deleted, w.code)
+					}
+					if w.code != http.StatusOK && full && reasonTextOf(t, s.app.DB, r.ID) == "" {
+						t.Error("a refusal blanked a reason")
+					}
+					if w.code != http.StatusOK && countAudit(t, s.app.DB, decisionActions...) != 0 {
+						t.Error("a refusal wrote a decision audit")
+					}
+					if a.under && full && e.name == "the old items envelope" {
+						// The person is not stuck: a reload shows the page's own refusal.
+						if code, _, body := pageOf(t, s.ac, s.target.ID, nil); code != http.StatusForbidden || !strings.Contains(body, "reason_review_not_allowed") {
+							t.Errorf("the page for the same admin: %d %s, want 403 reason_review_not_allowed", code, body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// ---- the probe ---------------------------------------------------------------
+
+// The probe takes no row lock, and the streamed consume locks exactly the
+// account's reasoned rows, whole, and nothing else. Locks are read with NOWAIT
+// from a third connection (never from granted pg_locks entries, which count
+// tuple locks unreliably).
+func TestReasonProbeIsBounded(t *testing.T) {
+	s := newReasonScene(t)
+	mine := []models.ContactRequest{s.request(t, s.other, 1), s.request(t, s.second, 2), s.contactRequest(t, 3)}
+	others := []models.ContactRequest{s.fillerRequest(t)}
+	// A blank reason of the target's own: not part of the set, so not locked.
+	blank := s.contactRequest(t, 4)
+	if err := s.app.DB.Exec("UPDATE contact_requests SET reason = '' WHERE id = ?", blank.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rs ...models.ContactRequest) (out []int64) {
+		for _, r := range rs {
+			out = append(out, int64(r.ID))
+		}
+		return out
+	}
+
+	t.Run("the probe locks nothing, even parked inside its transaction", func(t *testing.T) {
+		tx, _ := beginOwnedTx(t, s.app.DB)
+		has, err := reasonSetExistsIn(tx, s.target.ID)
+		if err != nil || !has {
+			t.Fatalf("probe = %v, %v, want true", has, err)
+		}
+		for _, id := range ids(append(append(mine, others...), blank)...) {
+			if rowHeld(t, s.app.DB, id) {
+				t.Errorf("row %d is locked by the probe", id)
+			}
+		}
+		tx.Rollback()
+	})
+
+	t.Run("the probe answers false for an account with none", func(t *testing.T) {
+		has, err := reasonSetExistsIn(s.app.DB, s.second.ID+1000)
+		if err != nil || has {
+			t.Fatalf("probe = %v, %v, want false", has, err)
+		}
+	})
+
+	t.Run("the consume locks the whole set while it streams, and only the set", func(t *testing.T) {
+		items := allPages(t, s.ac, s.target.ID)
+		if len(items) != 3 {
+			t.Fatalf("%d items, want 3", len(items))
+		}
+		parked, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		prev := reasonRowHook
+		reasonRowHook = func(seen uint64) {
+			if seen == 2 {
+				once.Do(func() { close(parked) })
+				<-release
+			}
+		}
+		t.Cleanup(func() { reasonRowHook = prev })
+		done := make(chan httpResult, 1)
+		go func() {
+			done <- deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": reviewOf(items, func(reasonItemJSON) string { return "keep" })})
+		}()
+		select {
+		case <-parked:
+		case <-time.After(20 * time.Second):
+			close(release)
+			t.Fatal("the consume never reached its second row")
+		}
+		var held, free []int64
+		for _, id := range ids(mine...) {
+			if rowHeld(t, s.app.DB, id) {
+				held = append(held, id)
+			}
+		}
+		for _, id := range ids(append(others, blank)...) {
+			if !rowHeld(t, s.app.DB, id) {
+				free = append(free, id)
+			}
+		}
+		close(release)
+		res := <-done
+		if len(held) != len(mine) {
+			t.Errorf("rows held while parked: %v of %v (the whole set is locked by design)", held, ids(mine...))
+		}
+		if len(free) != 2 {
+			t.Errorf("rows outside the set that were free: %v, want both", free)
+		}
+		if res.code != http.StatusOK {
+			t.Fatalf("delete: %d %s", res.code, res.body)
+		}
+	})
+}
+
+// planBlocks is the number of buffer blocks (hit plus read, shared plus local)
+// the top node of an EXPLAIN (ANALYZE, BUFFERS) plan touched. Local buffers are
+// what a temporary table uses.
+func planBlocks(plan string) int {
+	m := regexp.MustCompile(`Buffers: ([^\n]*)`).FindStringSubmatch(plan)
+	if m == nil {
+		return 0
+	}
+	total, kind := 0, ""
+	for _, tok := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ' ' || r == ',' }) {
+		switch tok {
+		case "shared", "local", "temp":
+			kind = tok
+			continue
+		}
+		if kind == "temp" {
+			continue
+		}
+		if strings.HasPrefix(tok, "hit=") || strings.HasPrefix(tok, "read=") {
+			n, err := strconv.Atoi(tok[strings.Index(tok, "=")+1:])
+			if err == nil {
+				total += n
+			}
+		}
+	}
+	return total
+}
+
+// What the probe costs when nothing matches, when the match is last and when it
+// is first. LIMIT 1 bounds the answer and the locks, not the read: a table with
+// no match is read whole (the 40 s deletion budget bounds that, not this
+// statement). The early-stop assertion is made only where it is achievable: a
+// serial heap scan whose physical order the fixture controls.
+//
+// The measured fixture is a private temporary table with contact_requests'
+// columns, and the statement is reasonProbeSQL with the table name swapped. The
+// shared table cannot give a deterministic block count: testdb empties tables
+// with DELETE, so earlier tests leave dead tuples in its heap, a scan reads
+// those pages ahead of a new row, and VACUUM FULL keeps them while any other
+// session or prepared transaction still holds an older snapshot. In the suite
+// that showed as a first-row match that removed 0 rows yet read 500 or 1000
+// pages, a different number each run; alone, 1 page. A temporary table is new
+// storage that only this session can see, so its pages are its own. The shared
+// table is still measured for what it can prove (rows removed, which counts
+// live tuples only); its block counts are logged with the facts that explain
+// them, not asserted.
+func TestReasonProbeScanCost(t *testing.T) {
+	const filler = 20000
+	s := newReasonScene(t)
+	target := strconv.Itoa(int(s.target.ID))
+
+	measure := func(t *testing.T, order string) (removed, blocks int) {
+		var plan string
+		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("CREATE TEMP TABLE probe_cost (LIKE contact_requests INCLUDING DEFAULTS) ON COMMIT DROP").Error; err != nil {
+				return err
+			}
+			insert := func(from, to int, reason string, requester, subject string) error {
+				return tx.Exec(`INSERT INTO probe_cost (id, requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin, admin_decision, expires_at)
+					SELECT g, `+requester+`, `+subject+`, 'group', 1, 'email', ?, false, 'not_needed', now() FROM generate_series(?::bigint, ?::bigint) g`, reason, from, to).Error
+			}
+			mine, other := target, "99999999"
+			rows := []func() error{
+				func() error { return insert(1, filler, "filler reason", other, other+"+1") },
+			}
+			match := func() error { return insert(filler+1, filler+1, "the target's reason", mine, other) }
+			switch order {
+			case "absent":
+			case "late":
+				rows = append(rows, match)
+			case "early":
+				rows = append([]func() error{func() error { return insert(filler+1, filler+1, "the target's reason", mine, other) }}, rows...)
+			}
+			for _, f := range rows {
+				if err := f(); err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec("ANALYZE probe_cost").Error; err != nil {
+				return err
+			}
+			// No indexes exist; synchronized scans could still start midway through
+			// the heap and parallel workers could read ahead, either of which would
+			// defeat the fixture's deliberate row order.
+			for _, set := range []string{"synchronize_seqscans = off", "max_parallel_workers_per_gather = 0", "enable_bitmapscan = off"} {
+				if err := tx.Exec("SET LOCAL " + set).Error; err != nil {
+					return err
+				}
+			}
+			probe := strings.NewReplacer("?", target).Replace(reasonProbeSQL)
+			if strings.Count(probe, "contact_requests") != 1 {
+				t.Fatalf("the probe statement names its table %d times: %s", strings.Count(probe, "contact_requests"), probe)
+			}
+			plan = explainLines(t, tx, strings.Replace(probe, "contact_requests", "probe_cost", 1))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan, "Seq Scan on probe_cost") || !strings.Contains(plan, "Limit") || strings.Contains(plan, "Gather") {
+			t.Fatalf("the controlled plan is not a limited, serial heap scan:\n%s", plan)
+		}
+		t.Logf("%s plan:\n%s", order, plan)
+		return planInt(t, planRemoved, plan, 1), planBlocks(plan)
+	}
+	var absentRows, lateRows, earlyRows, absentBlocks, lateBlocks, earlyBlocks int
+	t.Run("absent", func(t *testing.T) { absentRows, absentBlocks = measure(t, "absent") })
+	t.Run("late", func(t *testing.T) { lateRows, lateBlocks = measure(t, "late") })
+	t.Run("early", func(t *testing.T) { earlyRows, earlyBlocks = measure(t, "early") })
+	t.Logf("probe over %d unrelated reasoned rows: no match removed %d rows (%d blocks); match last removed %d (%d); match first removed %d (%d)",
+		filler, absentRows, absentBlocks, lateRows, lateBlocks, earlyRows, earlyBlocks)
+	if absentRows < filler || lateRows < filler {
+		t.Errorf("a probe with no match, or a late one, must read the table: removed %d and %d of %d", absentRows, lateRows, filler)
+	}
+	if earlyRows > filler/100 {
+		t.Errorf("the early match still removed %d rows: the limit did not stop the heap scan", earlyRows)
+	}
+	if lateBlocks < 100 {
+		t.Errorf("the full read touched only %d blocks: the fixture is too small to show an early stop", lateBlocks)
+	}
+	if earlyBlocks*10 > lateBlocks {
+		t.Errorf("early-stop blocks %d are not far below the full read %d", earlyBlocks, lateBlocks)
+	}
+
+	// The shared table itself: rows removed are live-tuple counts and so are
+	// deterministic; blocks and the facts behind them are logged.
+	t.Run("contact_requests", func(t *testing.T) {
+		shared := func(t *testing.T, build func(t *testing.T, s reasonScene)) (removed, blocks int, facts string) {
+			sc := newReasonScene(t)
+			if err := sc.app.DB.Exec("VACUUM FULL contact_requests").Error; err != nil {
+				t.Fatal(err)
+			}
+			build(t, sc)
+			if err := sc.app.DB.Exec("ANALYZE contact_requests").Error; err != nil {
+				t.Fatal(err)
+			}
+			var plan string
+			if err := sc.app.DB.Transaction(func(tx *gorm.DB) error {
+				for _, set := range []string{"enable_indexscan", "enable_bitmapscan", "enable_indexonlyscan", "synchronize_seqscans"} {
+					if err := tx.Exec("SET LOCAL " + set + " = off").Error; err != nil {
+						return err
+					}
+				}
+				plan = explainLines(t, tx, strings.NewReplacer("?", strconv.Itoa(int(sc.target.ID))).Replace(reasonProbeSQL))
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(plan, "Seq Scan on contact_requests") || !strings.Contains(plan, "Limit") || strings.Contains(plan, "Gather") {
+				t.Fatalf("the controlled plan is not a limited, serial heap scan:\n%s", plan)
+			}
+			var pages, dead, holders, prepared, slots int64
+			for q, dst := range map[string]*int64{
+				"SELECT pg_relation_size('contact_requests') / 8192":                                               &pages,
+				"SELECT coalesce(max(n_dead_tup), 0) FROM pg_stat_user_tables WHERE relname = 'contact_requests'":  &dead,
+				"SELECT count(*) FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()": &holders,
+				"SELECT count(*) FROM pg_prepared_xacts":                                                           &prepared,
+				"SELECT count(*) FROM pg_replication_slots":                                                        &slots,
+			} {
+				if err := sc.app.DB.Raw(q).Scan(dst).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			facts = fmt.Sprintf("heap %d pages, %d dead tuples (stats), %d other sessions holding a snapshot, %d prepared transactions, %d replication slots", pages, dead, holders, prepared, slots)
+			return planInt(t, planRemoved, plan, 1), planBlocks(plan), facts
+		}
+		fill := func(t *testing.T, sc reasonScene) { bulkRequests(t, sc.app.DB, sc.fillerRequest(t).ID, filler) }
+		var rows [3]int
+		var blocks [3]int
+		var facts [3]string
+		t.Run("absent", func(t *testing.T) { rows[0], blocks[0], facts[0] = shared(t, fill) })
+		t.Run("late", func(t *testing.T) {
+			rows[1], blocks[1], facts[1] = shared(t, func(t *testing.T, sc reasonScene) { fill(t, sc); sc.contactRequest(t, 1) })
+		})
+		t.Run("early", func(t *testing.T) {
+			rows[2], blocks[2], facts[2] = shared(t, func(t *testing.T, sc reasonScene) { sc.contactRequest(t, 1); fill(t, sc) })
+		})
+		t.Logf("shared table: removed %v rows, touched %v blocks; %s | %s | %s", rows, blocks, facts[0], facts[1], facts[2])
+		if rows[0] < filler || rows[1] < filler {
+			t.Errorf("a probe with no match, or a late one, must read the table: removed %d and %d of %d", rows[0], rows[1], filler)
+		}
+		if rows[2] > filler/100 {
+			t.Errorf("the early match still removed %d rows: the limit did not stop the heap scan", rows[2])
+		}
+	})
+}
+
+// ---- the consume is bounded by what the database holds, not by the claim ------
+
+// A claim for millions of reasons against a set of three, in three parts so
+// each cost is seen alone.
+//
+//  1. End to end: the route refuses it as changed and changes nothing. Its total
+//     allocation includes the JSON read, decode and check of a multi-megabyte
+//     body, which is unavoidable and linear in the body; the 32-bytes-per-claim
+//     backstop here only catches a record per claimed reason. The tight bounds on
+//     parsing alone are TestReasonEnvelopeParseMemoryIsLinearInTheBody.
+//  2. The consume alone: planReasonReviewIn is called on an envelope built in
+//     memory (so no JSON is parsed in the window) for a fixed actual set of three
+//     rows, with claims from a million to 64 million. What it allocates must not
+//     depend on the claim: the same, within a fixed allowance, at every claim.
+//  3. TestReasonConsumePeakMemoryOnLargeSets measures peak memory on large actual
+//     sets.
+func TestReasonConsumeMemoryDoesNotScaleWithClaim(t *testing.T) {
+	s := newReasonScene(t)
+	s.request(t, s.other, 1)
+	s.request(t, s.second, 2)
+	s.contactRequest(t, 3)
+	items := allPages(t, s.ac, s.target.ID)
+
+	t.Run("end to end", func(t *testing.T) {
+		claim := func(n int) json.RawMessage {
+			env := reviewOf(items, func(reasonItemJSON) string { return "keep" })
+			env["count"] = strconv.Itoa(n)
+			env["choices"] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x55}, n/4))
+			b, err := json.Marshal(map[string]any{"reasonReview": env})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
+		measure := func(n int) uint64 {
+			body := claim(n)
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			res := deleteAccount(s.ac, s.target.ID, body)
+			runtime.ReadMemStats(&after)
+			if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"reason_review_changed"`) {
+				t.Fatalf("claim of %d: %d %.200s, want 409 reason_review_changed", n, res.code, res.body)
+			}
+			return after.TotalAlloc - before.TotalAlloc
+		}
+		small, large := 4_000_000, 16_000_000 // the larger vector is 4 MB: about 5.3 MB of base64, under the 6 MiB body limit
+		a, b := measure(small), measure(large)
+		extra := int64(b) - int64(a)
+		t.Logf("allocated %d bytes for a claim of %d and %d for %d: %d bytes more for %d more claimed reasons", a, small, b, large, extra, large-small)
+		if allowance := int64(large-small) * 32; extra > allowance {
+			t.Errorf("memory grew by %d bytes for %d more claimed reasons, over the %d-byte allowance (32 per claimed reason)", extra, large-small, allowance)
+		}
+		for _, r := range []string{"identifying reason 1", "identifying reason 2", "identifying reason 3"} {
+			var n int64
+			if err := s.app.DB.Raw("SELECT count(*) FROM contact_requests WHERE reason = ?", r).Scan(&n).Error; err != nil || n != 1 {
+				t.Errorf("reason %q: %d rows, %v", r, n, err)
+			}
+		}
+	})
+
+	t.Run("the consume alone, for a fixed actual set", func(t *testing.T) {
+		var actor, target models.User
+		if err := s.app.DB.First(&actor, s.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := s.app.DB.First(&target, s.target.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		// One call's allocation, in a transaction that is rolled back. The claim's
+		// choices vector exists before the window opens; the call must not copy it.
+		consume := func(claim uint64, choices []byte) uint64 {
+			var used uint64
+			err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+				env := reasonEnvelope{kind: reasonEnvelopeNew, count: claim, choices: choices}
+				var err error
+				used = allocated(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+				if !errors.Is(err, errReasonReviewChanged) {
+					t.Fatalf("claim of %d: %v, want errReasonReviewChanged", claim, err)
+				}
+				return errors.New("roll back")
+			})
+			if err == nil || err.Error() != "roll back" {
+				t.Fatal(err)
+			}
+			return used
+		}
+		// The least of several runs drops stray allocations from other goroutines.
+		least := func(claim uint64) uint64 {
+			choices := make([]byte, (claim+3)/4)
+			min := ^uint64(0)
+			for i := 0; i < 5; i++ {
+				if u := consume(claim, choices); u < min {
+					min = u
+				}
+			}
+			return min
+		}
+		const allowance = 64 << 10 // the difference between any two claims, for the same three rows
+		base := least(1 << 20)
+		for _, claim := range []uint64{1 << 24, 1 << 26} {
+			got := least(claim)
+			t.Logf("consume of 3 actual reasons: %d bytes at a claim of %d, %d at %d", base, 1<<20, got, claim)
+			if got > base+allowance {
+				t.Errorf("claim %d allocated %d bytes against %d at a claim of %d: more than %d bytes apart, so it scales with the claim", claim, got, base, 1<<20, allowance)
+			}
+		}
+		if base > 1<<20 {
+			t.Errorf("reading three reasons allocated %d bytes: over 1 MiB", base)
+		}
+	})
+}
+
+// peakHeapGrowth runs f while a sampler reads the live heap every half
+// millisecond, and returns the most it grew beyond the heap after a collection
+// just before f. It is a sampled peak, so it can miss a spike shorter than the
+// sampling interval; the bounds asserted from it have room for that.
+func peakHeapGrowth(f func()) uint64 {
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	stop, done := make(chan struct{}), make(chan uint64)
+	go func() {
+		var m runtime.MemStats
+		var peak uint64
+		tick := time.NewTicker(500 * time.Microsecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				done <- peak
+				return
+			case <-tick.C:
+				runtime.ReadMemStats(&m)
+				peak = max(peak, m.HeapAlloc)
+			}
+		}
+	}()
+	f()
+	var end runtime.MemStats
+	runtime.ReadMemStats(&end)
+	close(stop)
+	peak := max(<-done, end.HeapAlloc)
+	if peak < base.HeapAlloc {
+		return 0
+	}
+	return peak - base.HeapAlloc
+}
+
+// Peak memory on large actual sets, apart from the claim: the consume's peak
+// grows with the real rows it keeps (a small record each), and the write stage's
+// peak does not grow with the set at all (it holds one batch). Measured at 20,000
+// and at 60,000 real reasons, with the collector made eager so garbage does not
+// stand in for retention. The bounds are per row and fixed, with room for the
+// sampler, and far under what a hash, a text or a metadata map per row (a kilobyte
+// or more each) would cost.
+func TestReasonConsumePeakMemoryOnLargeSets(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(20))
+	const first, second = 20_000, 60_000
+	s := newReasonScene(t)
+	tpl := s.contactRequest(t, 1)
+	var actor, target models.User
+	if err := s.app.DB.First(&actor, s.admin.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.app.DB.First(&target, s.target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	grow := func(to int) {
+		var have int64
+		if err := s.app.DB.Raw("SELECT count(*) FROM contact_requests WHERE reason <> '' AND requester_id = ?", s.target.ID).Scan(&have).Error; err != nil {
+			t.Fatal(err)
+		}
+		bulkRequests(t, s.app.DB, tpl.ID, to-int(have))
+	}
+	type peaks struct{ consume, write uint64 }
+	measure := func(n int) peaks {
+		grow(n)
+		var p peaks
+		// The consume, with the claim equal to the set so every row is kept.
+		env := reasonEnvelope{kind: reasonEnvelopeNew, count: uint64(n), choices: make([]byte, (n+3)/4)}
+		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+			var err error
+			p.consume = peakHeapGrowth(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+			if !errors.Is(err, errReasonReviewChanged) {
+				t.Fatalf("consume of %d: %v, want errReasonReviewChanged", n, err)
+			}
+			return errors.New("roll back")
+		})
+		if err == nil || err.Error() != "roll back" {
+			t.Fatal(err)
+		}
+		// The write stage, for decisions made before the window: half blanked, half kept.
+		ids := targetIDs(t, s.app.DB, s.target.ID)
+		if len(ids) != n {
+			t.Fatalf("%d reasons, want %d", len(ids), n)
+		}
+		plan := reasonPlan{ActorID: actor.ID}
+		for i, id := range ids {
+			plan.Decisions = append(plan.Decisions, reasonDecision{RequestID: id, Remove: i%2 == 0, Role: "requester", Purpose: policy.RequestContact, Status: policy.ContactWithdrawn})
+		}
+		err = s.app.DB.Transaction(func(tx *gorm.DB) error {
+			var err error
+			p.write = peakHeapGrowth(func() { err = eraseContactRequestReasonsIn(tx, erasureSubject{ID: s.target.ID}, plan) })
+			if err != nil {
+				t.Fatalf("write of %d: %v", n, err)
+			}
+			return errors.New("roll back")
+		})
+		if err == nil || err.Error() != "roll back" {
+			t.Fatal(err)
+		}
+		return p
+	}
+	a, b := measure(first), measure(second)
+	t.Logf("peak heap growth: consume %d bytes at %d reasons, %d at %d; write %d at %d, %d at %d", a.consume, first, b.consume, second, a.write, first, b.write, second)
+	if slope := (float64(b.consume) - float64(a.consume)) / float64(second-first); slope > 400 {
+		t.Errorf("the consume's peak grows by %.0f bytes per real reason (400 allowed; a 72-byte record that doubles as it grows is about 216)", slope)
+	}
+	if b.consume > 400*second+8<<20 {
+		t.Errorf("the consume's peak at %d reasons is %d bytes", second, b.consume)
+	}
+	if grew := int64(b.write) - int64(a.write); grew > 4<<20 {
+		t.Errorf("the write stage's peak grew %d bytes from %d to %d reasons: it should hold one batch whatever the set", grew, first, second)
+	}
+	if b.write > 32<<20 {
+		t.Errorf("the write stage's peak at %d reasons is %d bytes (32 MiB allowed)", second, b.write)
+	}
+}
+
+// ---- batches -----------------------------------------------------------------
+
+// newProxiedReasonScene is a reason scene whose routes reach the database
+// through pgproxy, which logs every statement the server runs.
+func newProxiedReasonScene(t *testing.T) (reasonScene, *ctxRig) {
+	t.Helper()
+	s := newReasonScene(t)
+	rig := newCtxRigFor(t, s.app)
+	bootFence(t, rig.papp)
+	rig.papp.requestRestart = func() {}
+	s.ac = loginAPI(t, rig.papp, "erase-admin", erasurePW)
+	return s, rig
+}
+
+// With the batch shortened to two, the statements one deletion sends are, per
+// batch in order: its audit INSERT and then, only when the batch removes
+// something, its blanking UPDATE. Checked at N and N+1 around each boundary,
+// from the proxy's statement log and not from the rows.
+func TestReasonDeleteBatchStatements(t *testing.T) {
+	prev := reasonBlankBatch
+	reasonBlankBatch = 2
+	t.Cleanup(func() { reasonBlankBatch = prev })
+	// Keep ordinals 2 and 3 (the whole second batch of four) and remove the rest.
+	keep := map[int]bool{2: true, 3: true}
+	for _, n := range []int{1, 2, 3, 4, 5, 6} {
+		t.Run(fmt.Sprintf("%d reasons", n), func(t *testing.T) {
+			s, rig := newProxiedReasonScene(t)
+			for i := 0; i < n; i++ {
+				s.request(t, s.other, 70+i)
+			}
+			items := allPages(t, s.ac, s.target.ID)
+			ordinal := map[string]int{}
+			for i, it := range items {
+				ordinal[it.RequestID] = i
+			}
+			// Only the deletion's own statements are compared.
+			start := len(rig.proxy.Events())
+			res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": reviewOf(items, func(it reasonItemJSON) string {
+				if keep[ordinal[it.RequestID]] {
+					return "keep"
+				}
+				return "remove"
+			})})
+			if res.code != http.StatusOK {
+				t.Fatalf("delete: %d %s", res.code, res.body)
+			}
+			var got, want []string
+			for _, e := range rig.proxy.Events()[start:] {
+				if e.Kind != testdb.KindStatement || e.Action != testdb.ActionForwarded {
+					continue
+				}
+				switch {
+				case strings.Contains(e.SQL, "jsonb_to_recordset"):
+					got = append(got, "audit")
+				case strings.Contains(e.SQL, "UPDATE contact_requests SET reason = ''"):
+					got = append(got, "blank")
+				}
+			}
+			for first := 0; first < n; first += 2 {
+				want = append(want, "audit")
+				for i := first; i < min(first+2, n); i++ {
+					if !keep[i] {
+						want = append(want, "blank")
+						break
+					}
+				}
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("statements %v, want %v", got, want)
+			}
+			var blank int64
+			if err := s.app.DB.Raw("SELECT count(*) FROM contact_requests WHERE reason = ''").Scan(&blank).Error; err != nil {
+				t.Fatal(err)
+			}
+			wantBlank := 0
+			for i := 0; i < n; i++ {
+				if !keep[i] {
+					wantBlank++
+				}
+			}
+			if blank != int64(wantBlank) {
+				t.Errorf("%d blanked rows, want %d", blank, wantBlank)
+			}
+		})
+	}
+}
+
+// injectRequestFault makes an UPDATE of the request's reason raise (mode
+// "raise") or silently skip the row ("skip"), through a BEFORE UPDATE trigger
+// that fires ahead of the migrations' own (triggers run in name order). It is
+// removed when the test ends: testdb clears rows between tests, not triggers.
+func injectRequestFault(t *testing.T, db *gorm.DB, id uint, mode string) {
+	t.Helper()
+	action := "RAISE EXCEPTION 'injected failure' USING ERRCODE = 'P0001'"
+	if mode == "skip" {
+		action = "RETURN NULL"
+	}
+	for _, sql := range []string{
+		fmt.Sprintf(`CREATE FUNCTION aaa_reason_fault() RETURNS trigger LANGUAGE plpgsql AS $f$
+			BEGIN IF OLD.id = %d AND NEW.reason = '' THEN %s; END IF; RETURN NEW; END $f$`, id, action),
+		"CREATE TRIGGER aaa_reason_fault BEFORE UPDATE ON contact_requests FOR EACH ROW EXECUTE FUNCTION aaa_reason_fault()",
+	} {
+		if err := db.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS aaa_reason_fault ON contact_requests")
+		db.Exec("DROP FUNCTION IF EXISTS aaa_reason_fault()")
+	})
+}
+
+// A failure in any batch, or a blanking that touches a different number of rows
+// than the review named, rolls back the whole deletion: no decision audit from
+// an earlier batch, no blanked row, the account still there, the attempt id
+// rolled back, and nothing about it said to the admin but "could not delete".
+func TestReasonDeleteFaultsRollBack(t *testing.T) {
+	prev := reasonBlankBatch
+	reasonBlankBatch = 2
+	t.Cleanup(func() { reasonBlankBatch = prev })
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		ordinal int // which reason (0-based, ascending id) the fault is on
+	}{
+		{"a statement error in the second batch", "raise", 3},
+		{"a statement error in the last, partial batch", "raise", 4},
+		{"a row skipped in the first batch", "skip", 1},
+		{"a row skipped in the second batch", "skip", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newReasonScene(t)
+			var reqs []models.ContactRequest
+			for i := 0; i < 5; i++ {
+				reqs = append(reqs, s.request(t, s.other, 80+i))
+			}
+			items := allPages(t, s.ac, s.target.ID)
+			review := reviewOf(items, func(reasonItemJSON) string { return "remove" })
+			injectRequestFault(t, s.app.DB, reqs[tc.ordinal].ID, tc.mode)
+			id := mintAttemptFor(t, s.ac, s.target.ID)
+			res := deleteAccount(s.ac, s.target.ID, map[string]any{"attemptId": id, "reasonReview": review})
+			// A 500 never carries its cause (the route logs "could not delete user" and
+			// answers the generic server_error); the cause is in the log and in the
+			// rollback asserted below.
+			if res.code != http.StatusInternalServerError || !strings.Contains(res.body, `"code":"server_error"`) {
+				t.Fatalf("delete: %d %s, want 500 server_error", res.code, res.body)
+			}
+			for _, leak := range []string{"delete_reason_busy", "delete_household_busy", "delete_outcome_unknown", "delete_timed_out", "injected", "P0001", "blanked"} {
+				if strings.Contains(res.body, leak) {
+					t.Errorf("the response carries %q: %s", leak, res.body)
+				}
+			}
+			var u models.User
+			if err := s.app.DB.Unscoped().First(&u, s.target.ID).Error; err != nil || u.DeletedAt.Valid {
+				t.Errorf("the account was deleted by a failed attempt: %v", err)
+			}
+			if n := countAudit(t, s.app.DB, decisionActions...); n != 0 {
+				t.Errorf("%d decision audits survived the rollback", n)
+			}
+			for _, r := range reqs {
+				if reasonTextOf(t, s.app.DB, r.ID) == "" {
+					t.Errorf("request %d was blanked by a rolled-back deletion", r.ID)
+				}
+			}
+			// The attempt ended rolled back: it is closed, and settling says not applied.
+			if again := deleteAccount(s.ac, s.target.ID, map[string]any{"attemptId": id, "reasonReview": review}); again.code != http.StatusConflict || !strings.Contains(again.body, "attempt_closed") {
+				t.Errorf("resubmitting the id: %d %s, want 409 attempt_closed", again.code, again.body)
+			}
+			if got := settleOf(t, s.ac, id, s.target.ID); got.Result != settleNotApplied {
+				t.Errorf("settle = %+v, want not_applied", got)
+			}
+		})
+	}
+}
+
+// mintAttemptFor mints an account-delete attempt id as c's admin.
+func mintAttemptFor(t *testing.T, c *apiClient, subject uint) string {
+	t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindAccountDelete, "subjectUserId": subject}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var out attemptMintJSON
+	decodeJSON(t, w, &out)
+	return out.AttemptID
+}
+
+func settleOf(t *testing.T, c *apiClient, id string, subject uint) attemptSettleJSON {
+	t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts/settle", map[string]any{"attemptId": id, "kind": attemptKindAccountDelete, "subjectUserId": subject}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("settle: %d %s", w.Code, w.Body.String())
+	}
+	var out attemptSettleJSON
+	decodeJSON(t, w, &out)
+	return out
+}
+
+// ---- a spent budget ---------------------------------------------------------
+
+// The deletion's budget running out answers 503 delete_timed_out, never busy and
+// never "nothing was deleted", rolls everything back, and the same review
+// applies afterwards. The three places it can run out here: between streamed
+// rows, between write batches, and while the stream waits on a row another
+// connection holds.
+func TestReasonSpentBudget(t *testing.T) {
+	const budget, reserve = 3 * time.Second, time.Second
+	setup := func(t *testing.T, n int) (reasonScene, []models.ContactRequest, map[string]any) {
+		s := newReasonScene(t)
+		var reqs []models.ContactRequest
+		for i := 0; i < n; i++ {
+			reqs = append(reqs, s.request(t, s.other, 90+i))
+		}
+		items := allPages(t, s.ac, s.target.ID)
+		return s, reqs, reviewOf(items, func(reasonItemJSON) string { return "remove" })
+	}
+	refused := func(t *testing.T, s reasonScene, reqs []models.ContactRequest, res httpResult) {
+		t.Helper()
+		if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, `"code":"delete_timed_out"`) {
+			t.Fatalf("delete: %d %s, want 503 delete_timed_out", res.code, res.body)
+		}
+		for _, wrong := range []string{"delete_reason_busy", "delete_household_busy", "delete_outcome_unknown"} {
+			if strings.Contains(res.body, wrong) {
+				t.Errorf("the response says %q: %s", wrong, res.body)
+			}
+		}
+		var u models.User
+		if err := s.app.DB.Unscoped().First(&u, s.target.ID).Error; err != nil || u.DeletedAt.Valid {
+			t.Errorf("the account was deleted: %v", err)
+		}
+		if countAudit(t, s.app.DB, decisionActions...) != 0 {
+			t.Error("a timed-out deletion left a decision audit")
+		}
+		for _, r := range reqs {
+			if reasonTextOf(t, s.app.DB, r.ID) == "" {
+				t.Errorf("request %d was blanked", r.ID)
+			}
+		}
+	}
+	// spend sleeps until less than the reserve is left of the deletion's budget.
+	spend := func(started time.Time) {
+		time.Sleep(time.Until(started.Add(budget - reserve/2)))
+	}
+
+	t.Run("between streamed rows", func(t *testing.T) {
+		setAdminDeleteBounds(t, budget, reserve)
+		s, reqs, review := setup(t, 4)
+		prevEvery, prevHook := reasonGuardEvery, reasonRowHook
+		reasonGuardEvery = 1
+		started := time.Now()
+		reasonRowHook = func(seen uint64) {
+			if seen == 2 {
+				spend(started)
+			}
+		}
+		t.Cleanup(func() { reasonGuardEvery, reasonRowHook = prevEvery, prevHook })
+		refused(t, s, reqs, deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}))
+		reasonRowHook = nil
+		if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}); res.code != http.StatusOK {
+			t.Fatalf("the same review afterwards: %d %s", res.code, res.body)
+		}
+	})
+
+	t.Run("between write batches", func(t *testing.T) {
+		setAdminDeleteBounds(t, budget, reserve)
+		prevBatch := reasonBlankBatch
+		reasonBlankBatch = 2
+		t.Cleanup(func() { reasonBlankBatch = prevBatch })
+		s, reqs, review := setup(t, 5)
+		prevHook := reasonBatchHook
+		started := time.Now()
+		reasonBatchHook = func(batch int) {
+			if batch == 1 {
+				spend(started)
+			}
+		}
+		t.Cleanup(func() { reasonBatchHook = prevHook })
+		refused(t, s, reqs, deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}))
+		reasonBatchHook = nil
+		if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}); res.code != http.StatusOK {
+			t.Fatalf("the same review afterwards: %d %s", res.code, res.body)
+		}
+	})
+
+	t.Run("while the stream waits on a row another connection holds", func(t *testing.T) {
+		setAdminDeleteBounds(t, 2*time.Second, 500*time.Millisecond)
+		s, reqs, review := setup(t, 3)
+		hold, _ := beginOwnedTx(t, s.app.DB)
+		if err := hold.Exec("SELECT id FROM contact_requests WHERE id = ? FOR UPDATE", reqs[1].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		released := false
+		release := func() {
+			if !released {
+				released = true
+				hold.Rollback()
+			}
+		}
+		defer release()
+		refused(t, s, reqs, deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}))
+		release()
+		setAdminDeleteBounds(t, 40*time.Second, 2*time.Second)
+		if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}); res.code != http.StatusOK {
+			t.Fatalf("after the row is free: %d %s", res.code, res.body)
+		}
+	})
+}
+
+// ---- the envelope and the attempt ----------------------------------------------
+
+// The envelope's refusals never come before the submission check and never
+// leave an attempt id open: a body that does not parse, or names attemptId
+// twice, records nothing (the id still works); every refusal after the claim
+// ends it rolled back (closed, and settling says not applied); an id that is
+// not this deletion's is refused as such before the envelope is looked at.
+func TestReasonEnvelopeAttemptOrdering(t *testing.T) {
+	bad := `{"items":[],"x":"y"}`
+	body := func(id, review string) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"attemptId":%q,"reasonReview":%s}`, id, review))
+	}
+	// An account with no reasons, as its own scene.
+	scene := func(t *testing.T) (reasonScene, *models.User) {
+		s := newReasonScene(t)
+		return s, newTestUser(t, s.app, "attempt-subject", erasurePW, models.RoleMember)
+	}
+
+	t.Run("an attemptId named twice records nothing", func(t *testing.T) {
+		s, target := scene(t)
+		id := mintAttemptFor(t, s.ac, target.ID)
+		for _, raw := range []string{
+			fmt.Sprintf(`{"attemptId":%q,"attemptId":%q}`, id, id),
+			fmt.Sprintf(`{"attemptid":%q}`, id),
+			fmt.Sprintf(`{"attemptId":%q,"ATTEMPTID":""}`, id),
+		} {
+			res := deleteAccount(s.ac, target.ID, json.RawMessage(raw))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid body") {
+				t.Fatalf("%s: %d %s, want 400 invalid body", raw, res.code, res.body)
+			}
+		}
+		// The id was never claimed: it still runs, once.
+		if res := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); res.code != http.StatusOK {
+			t.Fatalf("the unclaimed id afterwards: %d %s", res.code, res.body)
+		}
+	})
+
+	t.Run("a body that does not parse records nothing", func(t *testing.T) {
+		s, target := scene(t)
+		id := mintAttemptFor(t, s.ac, target.ID)
+		res := deleteAccount(s.ac, target.ID, rawJSON(fmt.Sprintf(`{"attemptId":%q,`, id)))
+		if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid body") {
+			t.Fatalf("%d %s, want 400 invalid body", res.code, res.body)
+		}
+		if res := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); res.code != http.StatusOK {
+			t.Fatalf("the id afterwards: %d %s", res.code, res.body)
+		}
+	})
+
+	for i, raw := range []func(id string) json.RawMessage{
+		func(id string) json.RawMessage {
+			return json.RawMessage(fmt.Sprintf(`{"attemptId":%q,"reasonReview":null,"reasonReview":{"items":[]}}`, id))
+		},
+		func(id string) json.RawMessage {
+			return json.RawMessage(fmt.Sprintf(`{"attemptId":%q,"reasonreview":{"items":[]}}`, id))
+		},
+		func(id string) json.RawMessage { return body(id, bad) },
+	} {
+		t.Run(fmt.Sprintf("a malformed or ambiguous review (%d) ends the id rolled back", i), func(t *testing.T) {
+			s, target := scene(t)
+			id := mintAttemptFor(t, s.ac, target.ID)
+			res := deleteAccount(s.ac, target.ID, raw(id))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid reason review") {
+				t.Fatalf("%s: %d %s, want 400 invalid reason review", raw(id), res.code, res.body)
+			}
+			if again := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); again.code != http.StatusConflict || !strings.Contains(again.body, "attempt_closed") {
+				t.Errorf("resubmitting: %d %s, want 409 attempt_closed", again.code, again.body)
+			}
+			if got := settleOf(t, s.ac, id, target.ID); got.Result != settleNotApplied {
+				t.Errorf("settle = %+v, want not_applied", got)
+			}
+			var u models.User
+			if err := s.app.DB.Unscoped().First(&u, target.ID).Error; err != nil || u.DeletedAt.Valid {
+				t.Errorf("the account was deleted by a malformed review: %v", err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name, api string
+		review    func(items []reasonItemJSON) any
+	}{
+		{"outdated", "reason_review_outdated", func(i []reasonItemJSON) any {
+			return map[string]any{"items": []map[string]string{{"requestId": i[0].RequestID, "reviewHash": i[0].ReviewHash, "choice": "keep"}}}
+		}},
+		{"needs a review", "needs_reason_review", func([]reasonItemJSON) any { return nil }},
+		{"changed", "reason_review_changed", func([]reasonItemJSON) any {
+			return envelopeOf([]reviewEntry{{ID: 1, Hash: strings.Repeat("1", 64), Choice: "keep"}})
+		}},
+	} {
+		t.Run("a review refused after the claim ends the id: "+tc.name, func(t *testing.T) {
+			sc := newReasonScene(t)
+			sc.request(t, sc.other, 1)
+			items := allPages(t, sc.ac, sc.target.ID)
+			id := mintAttemptFor(t, sc.ac, sc.target.ID)
+			b := map[string]any{"attemptId": id}
+			if r := tc.review(items); r != nil {
+				b["reasonReview"] = r
+			}
+			res := deleteAccount(sc.ac, sc.target.ID, b)
+			if res.code != http.StatusConflict || !strings.Contains(res.body, tc.api) {
+				t.Fatalf("%d %s, want 409 %s", res.code, res.body, tc.api)
+			}
+			if again := deleteAccount(sc.ac, sc.target.ID, b); again.code != http.StatusConflict || !strings.Contains(again.body, "attempt_closed") {
+				t.Errorf("resubmitted: %d %s, want attempt_closed", again.code, again.body)
+			}
+			if got := settleOf(t, sc.ac, id, sc.target.ID); got.Result != settleNotApplied {
+				t.Errorf("settle = %+v", got)
+			}
+		})
+	}
+
+	// Keys written with JSON escapes: the same keys as the plain spellings, so the
+	// same outcomes. Before the claim, a collision or a case variant of attemptId is
+	// a body that does not parse and records nothing; after it, a collision or a
+	// case variant of reasonReview ends the id rolled back. (jsonEsc turns "#u"
+	// into a real backslash-u; see account_erasure_reasons_envelope_test.go.)
+	t.Run("an attemptId written with an escape is the attemptId, and is spent by the delete", func(t *testing.T) {
+		s, target := scene(t)
+		id := mintAttemptFor(t, s.ac, target.ID)
+		res := deleteAccount(s.ac, target.ID, rawJSON(jsonEsc(fmt.Sprintf(`{"attempt#u0049d":%q}`, id))))
+		if res.code != http.StatusOK {
+			t.Fatalf("%d %s, want 200: the escaped key is attemptId", res.code, res.body)
+		}
+		var u models.User
+		if err := s.app.DB.Unscoped().First(&u, target.ID).Error; err != nil || !u.DeletedAt.Valid {
+			t.Errorf("the account was not deleted: %v", err)
+		}
+		if got := settleOf(t, s.ac, id, target.ID); got.Result != settleApplied {
+			t.Errorf("settle = %+v, want applied (the id was claimed)", got)
+		}
+		if again := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); again.code != http.StatusConflict {
+			t.Errorf("replay: %d %s, want 409", again.code, again.body)
+		}
+	})
+
+	for name, key := range map[string]string{
+		"plain, then escaped":   `"attemptId":%[1]q,"attempt#u0049d":%[1]q`,
+		"escaped, then plain":   `"attempt#u0049d":%[1]q,"attemptId":%[1]q`,
+		"escaped twice":         `"attempt#u0049d":%[1]q,"attempt#u0049d":%[1]q`,
+		"escaped two ways":      `"attempt#u0049d":%[1]q,"#u0061ttemptId":%[1]q`,
+		"an escaped capital":    `"#u0041ttemptId":%[1]q`,
+		"an escaped lower-case": `"attempt#u0069d":%[1]q`,
+	} {
+		t.Run("an attemptId named ambiguously through an escape records nothing: "+name, func(t *testing.T) {
+			s, target := scene(t)
+			id := mintAttemptFor(t, s.ac, target.ID)
+			res := deleteAccount(s.ac, target.ID, rawJSON(jsonEsc("{"+fmt.Sprintf(key, id)+"}")))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid body") {
+				t.Fatalf("%d %s, want 400 invalid body (before the claim)", res.code, res.body)
+			}
+			// Never claimed: the id still runs, once, for its own account.
+			if res := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); res.code != http.StatusOK {
+				t.Fatalf("the unclaimed id afterwards: %d %s", res.code, res.body)
+			}
+		})
+	}
+
+	t.Run("a reasonReview written with an escape is the review", func(t *testing.T) {
+		sc := newReasonScene(t)
+		r := sc.request(t, sc.other, 1)
+		items := allPages(t, sc.ac, sc.target.ID)
+		review, err := json.Marshal(reviewOf(items, func(reasonItemJSON) string { return "remove" }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := mintAttemptFor(t, sc.ac, sc.target.ID)
+		res := deleteAccount(sc.ac, sc.target.ID, rawJSON(jsonEsc(fmt.Sprintf(`{"attemptId":%q,"reasonRev#u0069ew":%s}`, id, review))))
+		if res.code != http.StatusOK {
+			t.Fatalf("%d %s, want 200: the escaped key is reasonReview", res.code, res.body)
+		}
+		if reasonTextOf(t, sc.app.DB, r.ID) != "" {
+			t.Error("the removed reason was not blanked: the escaped key was not read as the review")
+		}
+	})
+
+	for name, tail := range map[string]string{
+		"plain, then escaped": `"reasonReview":null,"reason#u0052eview":{"items":[]}`,
+		"escaped twice":       `"reasonRev#u0069ew":null,"reasonRev#u0069ew":{"items":[]}`,
+		"escaped, then plain": `"reasonRev#u0069ew":{"items":[]},"reasonReview":null`,
+		"an escaped capital":  `"#u0052easonReview":{"items":[]}`,
+	} {
+		t.Run("a reasonReview named ambiguously through an escape ends the id rolled back: "+name, func(t *testing.T) {
+			s, target := scene(t)
+			id := mintAttemptFor(t, s.ac, target.ID)
+			res := deleteAccount(s.ac, target.ID, rawJSON(jsonEsc(fmt.Sprintf(`{"attemptId":%q,`, id)+tail+"}")))
+			if res.code != http.StatusBadRequest || !strings.Contains(res.body, "invalid reason review") {
+				t.Fatalf("%d %s, want 400 invalid reason review (after the claim)", res.code, res.body)
+			}
+			if again := deleteAccount(s.ac, target.ID, map[string]any{"attemptId": id}); again.code != http.StatusConflict || !strings.Contains(again.body, "attempt_closed") {
+				t.Errorf("resubmitting: %d %s, want 409 attempt_closed", again.code, again.body)
+			}
+			if got := settleOf(t, s.ac, id, target.ID); got.Result != settleNotApplied {
+				t.Errorf("settle = %+v, want not_applied", got)
+			}
+			var u models.User
+			if err := s.app.DB.Unscoped().First(&u, target.ID).Error; err != nil || u.DeletedAt.Valid {
+				t.Errorf("the account was deleted: %v", err)
+			}
+		})
+	}
+
+	t.Run("an id for another account is refused first, before the envelope is read", func(t *testing.T) {
+		s, target := scene(t)
+		other := newTestUser(t, s.app, "attempt-other", erasurePW, models.RoleMember)
+		id := mintAttemptFor(t, s.ac, other.ID)
+		res := deleteAccount(s.ac, target.ID, body(id, bad))
+		if res.code != http.StatusConflict || !strings.Contains(res.body, "attempt_expired") {
+			t.Fatalf("%d %s, want 409 attempt_expired (the submission check comes first)", res.code, res.body)
+		}
+		// And it was not spent: it still runs for its own account.
+		if res := deleteAccount(s.ac, other.ID, map[string]any{"attemptId": id}); res.code != http.StatusOK {
+			t.Fatalf("the id for its own account: %d %s", res.code, res.body)
+		}
+	})
+}
+
+// ---- the scanner over wide, signed and sparse tables -----------------------------
+
+// walkPages walks the live pages from a null cursor and returns, per page, the
+// number of items, the ids in order, and the cursor each page gave.
+func walkPages(t *testing.T, s reasonScene) (sizes []int, ids []int64, cursors []string) {
+	t.Helper()
+	var after *string
+	for i := 0; i < 500; i++ {
+		code, page, body := pageOf(t, s.ac, s.target.ID, after)
+		if code != http.StatusOK {
+			t.Fatalf("page: %d %s", code, body)
+		}
+		sizes = append(sizes, len(page.Items))
+		for _, it := range page.Items {
+			id, ok := parseRequestID(it.RequestID)
+			if !ok {
+				t.Fatalf("item id %q", it.RequestID)
+			}
+			ids = append(ids, id)
+		}
+		if page.Next == nil {
+			return sizes, ids, cursors
+		}
+		cursors = append(cursors, *page.Next)
+		after = page.Next
+	}
+	t.Fatal("the walk never ended")
+	return
+}
+
+// 101 and 200 matches inside one 50,000-row unit, at the approved page cap of
+// 100 requests: a page holds a full 100, the next page starts after the 100th,
+// and a table that ends exactly on the cap still ends with an empty page.
+// Signed boundary ids sit among the matches, and every walk equals the
+// reference query: nothing skipped, nothing twice.
+func TestReasonScanWideUnitsAreExactAtTheCap(t *testing.T) {
+	if reasonPageRequests != 100 || reasonUnitRows != 50000 {
+		t.Fatalf("the approved bounds changed: %d requests, %d rows", reasonPageRequests, reasonUnitRows)
+	}
+	build := func(t *testing.T, matches int, signed bool) reasonScene {
+		s := newReasonScene(t)
+		tpl := s.contactRequest(t, 1)
+		bulkRequests(t, s.app.DB, tpl.ID, matches-1)
+		if signed {
+			old := targetIDs(t, s.app.DB, s.target.ID)
+			for i, to := range map[int]int64{0: -9223372036854775808, 1: -1, 2: 0, matches - 1: 9223372036854775807} {
+				if err := s.app.DB.Exec("UPDATE contact_requests SET id = ? WHERE id = ?", to, old[i]).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		matches int
+		signed  bool
+		sizes   []int
+	}{
+		{101, false, []int{100, 1}},
+		{200, false, []int{100, 100, 0}},
+		{101, true, []int{100, 1}},
+		{200, true, []int{100, 100, 0}},
+		{99, false, []int{99}},
+		{100, false, []int{100, 0}},
+	} {
+		t.Run(fmt.Sprintf("%d matches, signed boundaries %v", tc.matches, tc.signed), func(t *testing.T) {
+			s := build(t, tc.matches, tc.signed)
+			want := targetIDs(t, s.app.DB, s.target.ID)
+			if len(want) != tc.matches {
+				t.Fatalf("the fixture holds %d reasons, want %d", len(want), tc.matches)
+			}
+			sizes, got, cursors := walkPages(t, s)
+			if fmt.Sprint(sizes) != fmt.Sprint(tc.sizes) {
+				t.Errorf("page sizes %v, want %v", sizes, tc.sizes)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("the walk returned %d ids that differ from the reference (%d)", len(got), len(want))
+			}
+			for i, c := range cursors {
+				// A page that reached the cap names its 100th request as the cursor.
+				if i < len(tc.sizes) && tc.sizes[i] == 100 && c != strconv.FormatInt(want[(i+1)*100-1], 10) {
+					t.Errorf("cursor %d = %s, want the 100th id of its page %d", i, c, want[(i+1)*100-1])
+				}
+			}
+		})
+	}
+	t.Run("an empty table", func(t *testing.T) {
+		s := newReasonScene(t)
+		sizes, ids, cursors := walkPages(t, s)
+		if fmt.Sprint(sizes) != "[0]" || len(ids) != 0 || len(cursors) != 0 {
+			t.Errorf("empty table walked as %v %v %v", sizes, ids, cursors)
+		}
+	})
+}
+
+// buildSparse makes a table of about 4,900 rows with the target's seven reasons
+// spread through it and the first and last at the signed extremes.
+func buildSparse(t *testing.T, s reasonScene) {
+	t.Helper()
+	tpl := s.fillerRequest(t)
+	for i := 0; i < 7; i++ {
+		bulkRequests(t, s.app.DB, tpl.ID, 700)
+		s.contactRequest(t, 100+i)
+	}
+	ids := targetIDs(t, s.app.DB, s.target.ID)
+	for from, to := range map[int64]int64{ids[0]: -9223372036854775808, ids[len(ids)-1]: 9223372036854775807} {
+		if err := s.app.DB.Exec("UPDATE contact_requests SET id = ? WHERE id = ?", to, from).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A table many units long with matches far apart: the walk takes exactly as
+// many pages as there are units (a unit with no match is an empty page with a
+// cursor, never "no reasons"), finds every match once in signed order, and the
+// pages that end a traversal are the only ones without a cursor.
+func TestReasonScanSparseTableSpansUnits(t *testing.T) {
+	prev := reasonUnitRows
+	reasonUnitRows = 1000
+	t.Cleanup(func() { reasonUnitRows = prev })
+	s := newReasonScene(t)
+	buildSparse(t, s)
+	var rows int
+	if err := s.app.DB.Raw("SELECT count(*) FROM contact_requests").Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := targetIDs(t, s.app.DB, s.target.ID)
+	sizes, got, cursors := walkPages(t, s)
+	if fmt.Sprint(got) != fmt.Sprint(want) || len(want) != 7 {
+		t.Fatalf("walk found %v, want %v", got, want)
+	}
+	if units := (rows + reasonUnitRows - 1) / reasonUnitRows; len(sizes) != units {
+		t.Errorf("%d pages for %d rows in units of %d, want %d", len(sizes), rows, reasonUnitRows, units)
+	}
+	if len(cursors) != len(sizes)-1 {
+		t.Errorf("%d cursors for %d pages: only the last page may end the walk", len(cursors), len(sizes))
+	}
+	empty := 0
+	for _, n := range sizes {
+		if n == 0 {
+			empty++
+		}
+	}
+	t.Logf("%d rows, %d pages, %d of them empty with a cursor", rows, len(sizes), empty)
+}
+
+// The same sparse table walked through scanReasonItems on one connection, more
+// than six times (so the driver's statement may switch to a generic plan), in
+// the server's own choice of plan and with generic plans forced. The units
+// found equal the reference either way. pg_prepared_statements is logged so
+// the record shows which plans ran.
+func TestReasonScanSparseTableUnderGenericPlans(t *testing.T) {
+	prev := reasonUnitRows
+	reasonUnitRows = 300
+	t.Cleanup(func() { reasonUnitRows = prev })
+	s := newReasonScene(t)
+	buildSparse(t, s)
+	want := targetIDs(t, s.app.DB, s.target.ID)
+	for _, mode := range []string{"auto", "force_generic_plan", "force_custom_plan"} {
+		t.Run(mode, func(t *testing.T) {
+			var got []int64
+			units := 0
+			err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec("SET LOCAL plan_cache_mode = " + mode).Error; err != nil {
+					return err
+				}
+				var after *int64
+				for {
+					unit, err := scanReasonItems(tx, liveReasonFilter(int64(s.target.ID)), after, reasonPageRequests)
+					if err != nil {
+						return err
+					}
+					units++
+					got = append(got, unit.Requests...)
+					if unit.Next == nil {
+						break
+					}
+					after = unit.Next
+				}
+				var plans []struct {
+					GenericPlans, CustomPlans int64
+				}
+				if err := tx.Raw("SELECT generic_plans, custom_plans FROM pg_prepared_statements WHERE statement LIKE '%contact_requests WHERE id > %'").Scan(&plans).Error; err != nil {
+					return err
+				}
+				t.Logf("%s: %d units; continuation statement plans (generic, custom): %+v", mode, units, plans)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if units <= 6 {
+				t.Fatalf("only %d units: the statement never ran more than six times", units)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("walk found %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// Under a generic plan, a continuation reads the same few index entries whether
+// its cursor is near the start of the table or near the end, and never filters
+// on id: the buffers of a unit do not grow with the cursor, and its index scan
+// returns at most the unit. The statement that carried a NULL-or condition is
+// planned the same way and logged for comparison.
+func TestReasonScanPlanDoesNotGrowWithCursor(t *testing.T) {
+	s := newReasonScene(t)
+	bulkRequests(t, s.app.DB, s.fillerRequest(t).ID, 30000)
+	if err := s.app.DB.Exec("ANALYZE contact_requests").Error; err != nil {
+		t.Fatal(err)
+	}
+	var lo, hi int64
+	if err := s.app.DB.Raw("SELECT min(id), max(id) FROM contact_requests").Row().Scan(&lo, &hi); err != nil {
+		t.Fatal(err)
+	}
+	const unit = 1000
+	dollar := func(sql string) string {
+		n := 0
+		for strings.Contains(sql, "?") {
+			n++
+			sql = strings.Replace(sql, "?", "$"+strconv.Itoa(n), 1)
+		}
+		return sql
+	}
+	plan := func(sql string, params string, args string) string {
+		var out string
+		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
+			for _, set := range []string{"enable_seqscan = off", "enable_bitmapscan = off", "plan_cache_mode = force_generic_plan"} {
+				if err := tx.Exec("SET LOCAL " + set).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec("PREPARE reason_scan_plan (" + params + ") AS " + dollar(sql)).Error; err != nil {
+				return err
+			}
+			defer tx.Exec("DEALLOCATE reason_scan_plan")
+			out = explainLines(t, tx, "EXECUTE reason_scan_plan("+args+")")
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	var buffers []int
+	for _, cursor := range []int64{lo, lo + (hi-lo)/2, hi - 1500} {
+		p := plan(reasonScanContinuationSQL, "bigint, integer", fmt.Sprintf("%d, %d", cursor, unit))
+		if strings.Contains(p, "Sort") || strings.Contains(p, "Rows Removed by Filter") || !strings.Contains(p, "Index Cond: (id > $1)") {
+			t.Errorf("cursor %d: the plan filters or sorts:\n%s", cursor, p)
+		}
+		if rows := planInt(t, planIndex, p, 1); rows > unit || rows == 0 {
+			t.Errorf("cursor %d: the index scan returned %d rows for a unit of %d", cursor, rows, unit)
+		}
+		buffers = append(buffers, planInt(t, planBuffers, p, 1)+planInt(t, planBuffers, p, 2))
+	}
+	t.Logf("buffers per unit at cursors near the start, middle and end: %v", buffers)
+	for _, b := range buffers[1:] {
+		if b > buffers[0]*2+30 {
+			t.Errorf("buffers grew with the cursor: %v", buffers)
+		}
+	}
+	t.Logf("the old NULL-or statement, generic plan, middle cursor:\n%s", plan("SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE (?::bigint IS NULL OR id > ?::bigint) ORDER BY id LIMIT ?", "bigint, bigint, integer", fmt.Sprintf("%d, %d, %d", lo+(hi-lo)/2, lo+(hi-lo)/2, unit)))
 }

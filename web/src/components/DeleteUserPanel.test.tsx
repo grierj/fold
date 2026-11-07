@@ -1,13 +1,35 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminUsers, ApiError } from "../api";
 import { reloadStarted, reloadSucceeded, requireReload } from "../lib/deleteReload";
 import { ERROR_COPY } from "../lib/errors";
 import type { AttemptSettleResponse, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
+import { REMOVE, type ReasonReviewStore } from "../lib/reasonReviewStore";
+import { DigestUnavailableError, lastDigestPath, reasonReviewBody, resetDigestChoice } from "../lib/reasonSetDigest";
 import { DeleteUserPanel } from "./DeleteUserPanel";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1, name: "Grier" } }) }));
+// useAuth is read once per render of the panel's body, so its call count is the panel's render count.
+const auth = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: (auth.calls++, { id: 1, name: "Grier" }) }) }));
+// The panel's own store, caught as it is made, so a test can change it behind the panel's back.
+const made = vi.hoisted(() => ({ stores: [] as unknown[] }));
+vi.mock("../lib/reasonReviewStore", async (importActual) => {
+  const actual = await importActual<typeof import("../lib/reasonReviewStore")>();
+  class Caught extends actual.ReasonReviewStore {
+    constructor() {
+      super();
+      made.stores.push(this);
+    }
+  }
+  return { ...actual, ReasonReviewStore: Caught };
+});
+// The digest is the real one unless a test makes it fail (reasonReviewBody is the only call the panel makes).
+vi.mock("../lib/reasonSetDigest", async (importActual) => {
+  const actual = await importActual<typeof import("../lib/reasonSetDigest")>();
+  return { ...actual, reasonReviewBody: vi.fn(actual.reasonReviewBody) };
+});
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() },
@@ -1164,6 +1186,28 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
 
 describe("DeleteUserPanel reason review", () => {
   const hashOf = (c: string) => c.repeat(64);
+  // The set-v1 body the server would accept for these (id, hash seed, choice) entries, built
+  // here from the wire spec and not from the code under test.
+  const reviewFor = (entries: Array<[string, string, "keep" | "remove"]>) => {
+    const parts: Uint8Array[] = [Uint8Array.from("fold:erasure-reason-set:v1\0", (c) => c.charCodeAt(0))];
+    const num = new Uint8Array(8);
+    new DataView(num.buffer).setBigUint64(0, BigInt(entries.length));
+    parts.push(num);
+    const choices = new Uint8Array(Math.ceil(entries.length / 4));
+    entries.forEach(([id, seed, choice], i) => {
+      const b = new Uint8Array(8);
+      new DataView(b.buffer).setBigInt64(0, BigInt(id));
+      parts.push(b, Uint8Array.from(hashOf(seed).match(/../g) ?? [], (h) => parseInt(h, 16)));
+      choices[i >> 2] |= (choice === "keep" ? 1 : 2) << ((i & 3) * 2);
+    });
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      all.set(p, at);
+      at += p.length;
+    }
+    return { format: "set-v1", count: String(entries.length), digest: createHash("sha256").update(all).digest("hex"), choices: btoa(String.fromCharCode(...choices)) };
+  };
   const reason = (id: string, h: string, over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
     requestId: id, reviewHash: hashOf(h), role: "subject", purpose: "contact", status: "pending", createdAt: "2026-11-01T12:00:00Z",
     counterpartName: "Lee Leader", counterpartDeleted: false, reviewerIsParty: false, reason: `Reason text ${id}`, ...over,
@@ -1267,7 +1311,7 @@ describe("DeleteUserPanel reason review", () => {
     expect(screen.getByText("Your choices stay on this page only until you delete or close it.")).toBeInTheDocument();
   });
 
-  it("sends exactly the loaded items, in order, each with its hash and the choice made", async () => {
+  it("sends the count, the set digest and one choice per loaded reason, in order", async () => {
     serve({ start: page([A, B], "5"), "5": page([C]) });
     open();
     await screen.findByText("Reason text 3");
@@ -1276,11 +1320,7 @@ describe("DeleteUserPanel reason review", () => {
     await choose(3, 3, "Blank text");
     await press();
     await screen.findByText(/The account was deleted/);
-    expect(vi.mocked(AdminUsers.remove).mock.calls[0]).toEqual([9, {}, {}, "attempt-1", [
-      { requestId: "1", reviewHash: hashOf("a"), choice: "remove" },
-      { requestId: "2", reviewHash: hashOf("b"), choice: "keep" },
-      { requestId: "3", reviewHash: hashOf("c"), choice: "remove" },
-    ]]);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[0]).toEqual([9, {}, {}, "attempt-1", reviewFor([["1", "a", "remove"], ["2", "b", "keep"], ["3", "c", "remove"]])]);
   });
 
   it("changing a choice before the press sends the last one", async () => {
@@ -1291,7 +1331,7 @@ describe("DeleteUserPanel reason review", () => {
     await choose(1, 1, "Keep text");
     await press();
     await screen.findByText(/The account was deleted/);
-    expect(vi.mocked(AdminUsers.remove).mock.calls[0][4]).toEqual([{ requestId: "1", reviewHash: hashOf("a"), choice: "keep" }]);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[0][4]).toEqual(reviewFor([["1", "a", "keep"]]));
   });
 
   it("summarizes the delete before the press, and says blanked text can't come back only when something is blanked", async () => {
@@ -1365,7 +1405,155 @@ describe("DeleteUserPanel reason review", () => {
     await press();
     await screen.findByText(/The account was deleted/);
     expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
-    expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual([{ requestId: "1", reviewHash: hashOf("a"), choice: "remove" }]);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual(reviewFor([["1", "a", "remove"]]));
+  });
+
+  describe("preparing the review (set digest)", () => {
+    it("sends exactly format, count, digest and choices, with no item list and no hashes", async () => {
+      serve({ start: page([A, B]) });
+      open();
+      await screen.findByText("Reason text 2");
+      await choose(1, 2, "Blank text");
+      await choose(2, 2, "Keep text");
+      await press();
+      await screen.findByText(/The account was deleted/);
+      const body = vi.mocked(AdminUsers.remove).mock.calls[0][4] as unknown as Record<string, string>;
+      expect(Object.keys(body).sort()).toEqual(["choices", "count", "digest", "format"]);
+      expect(JSON.stringify(body)).not.toContain(hashOf("a"));
+    });
+
+    it("a change to the store while the digest is made aborts before any id is minted, and keeps the change", async () => {
+      serve({ start: page([A, B]) });
+      made.stores.length = 0;
+      open();
+      await screen.findByText("Reason text 2");
+      await choose(1, 2, "Keep text");
+      await choose(2, 2, "Keep text");
+      const store = made.stores[made.stores.length - 1] as ReasonReviewStore;
+      vi.mocked(reasonReviewBody).mockImplementationOnce(async (...args) => {
+        store.choose(0, REMOVE); // the first reason flips behind the panel's back
+        const actual = await vi.importActual<typeof import("../lib/reasonSetDigest")>("../lib/reasonSetDigest");
+        return actual.reasonReviewBody(...args);
+      });
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent("The reasons changed while Fold was preparing your choices. Check them and try again.");
+      expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
+      expect(AdminUsers.remove).not.toHaveBeenCalled();
+      expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
+      expect(group(1, 2).getByRole("radio", { name: "Blank text" })).toBeChecked();
+      expect(deleteButton()).toBeEnabled();
+      // A fresh press sends what is on the screen now.
+      await press();
+      await screen.findByText(/The account was deleted/);
+      expect(vi.mocked(AdminUsers.remove).mock.calls[0][4]).toEqual(reviewFor([["1", "a", "remove"], ["2", "b", "keep"]]));
+      expect(AdminUsers.mintAttempt).toHaveBeenCalledTimes(1);
+    });
+
+    it("on a page with no crypto.subtle (plain http) the bundled SHA-256 makes the same digest the server computes", async () => {
+      vi.stubGlobal("crypto", {});
+      vi.stubGlobal("isSecureContext", false);
+      resetDigestChoice();
+      try {
+        serve({ start: page([A, B, C]) });
+        open();
+        await screen.findByText("Reason text 3");
+        await choose(1, 3, "Blank text");
+        await choose(2, 3, "Keep text");
+        await choose(3, 3, "Blank text");
+        await press();
+        await screen.findByText(/The account was deleted/);
+        expect(vi.mocked(AdminUsers.remove).mock.calls[0][4]).toEqual(reviewFor([["1", "a", "remove"], ["2", "b", "keep"], ["3", "c", "remove"]]));
+        expect(lastDigestPath()).toBe("fallback");
+      } finally {
+        vi.unstubAllGlobals();
+        resetDigestChoice();
+      }
+    });
+
+    it("a transient hashing failure mints nothing, sends nothing, keeps every choice and offers another try", async () => {
+      serve({ start: page([A]) });
+      vi.mocked(reasonReviewBody).mockRejectedValueOnce(new Error("out of memory"));
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Blank text");
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent("Fold couldn't prepare your choices just now. Try again.");
+      expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
+      expect(AdminUsers.remove).not.toHaveBeenCalled();
+      expect(group(1, 1).getByRole("radio", { name: "Blank text" })).toBeChecked();
+      expect(deleteButton()).toBeEnabled();
+      await press();
+      await screen.findByText(/The account was deleted/);
+      expect(AdminUsers.mintAttempt).toHaveBeenCalledTimes(1);
+    });
+
+    it("a browser with no working SHA-256 keeps Delete off for the life of the page, with a client-only message", async () => {
+      serve({ start: page([A]) });
+      vi.mocked(reasonReviewBody).mockRejectedValueOnce(new DigestUnavailableError());
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Keep text");
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent("This browser can't prepare the review safely. Open this page in a current browser.");
+      expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
+      expect(AdminUsers.remove).not.toHaveBeenCalled();
+      expect(deleteButton()).toBeDisabled();
+    });
+
+    it("disables every radio while the digest is made, and says so", async () => {
+      serve({ start: page([A]) });
+      let release!: () => void;
+      vi.mocked(reasonReviewBody).mockImplementationOnce(async (...args) => {
+        await new Promise<void>((resolve) => (release = resolve));
+        const actual = await vi.importActual<typeof import("../lib/reasonSetDigest")>("../lib/reasonSetDigest");
+        return actual.reasonReviewBody(...args);
+      });
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Keep text");
+      await press();
+      expect(await screen.findByText("Preparing your choices…")).toBeInTheDocument();
+      for (const r of screen.getAllByRole("radio")) expect(r).toBeDisabled();
+      expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
+      release();
+      await screen.findByText(/The account was deleted/);
+    });
+
+    it("reason_review_outdated is definitive: Delete stays off, the page offers a reload, and nothing else is minted", async () => {
+      serve({ start: page([A]) });
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "reason_review_outdated"));
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Keep text");
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_outdated);
+      expect(deleteButton()).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reload page" })).toBeInTheDocument();
+      expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
+      expect(AdminUsers.mintAttempt).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("choosing re-renders the panel only when Delete turns on, not once per click", async () => {
+    // 52 reasons: two display pages. The panel's body reads useAuth once per render.
+    const many = Array.from({ length: 52 }, (_, i) => reason(String(i + 1), "abcdef"[i % 6]));
+    serve({ start: page(many) });
+    open();
+    await screen.findByRole("group", { name: "Reason 50 of 52" });
+    auth.calls = 0;
+    for (let n = 1; n <= 10; n++) await choose(n, 52, n % 2 ? "Keep text" : "Blank text");
+    expect(auth.calls).toBe(0);
+    // Choose the rest: the last click is the only one that changes what the panel shows.
+    for (let n = 11; n <= 50; n++) await choose(n, 52, "Keep text");
+    expect(auth.calls).toBe(0);
+    await userEvent.click(screen.getByRole("button", { name: "Next 50" }));
+    await choose(51, 52, "Keep text");
+    expect(auth.calls).toBe(0);
+    expect(deleteButton()).toBeDisabled();
+    await choose(52, 52, "Blank text");
+    expect(deleteButton()).toBeEnabled();
+    expect(auth.calls).toBeGreaterThan(0);
+    expect(auth.calls).toBeLessThanOrEqual(3);
   });
 
   it("Stop leaves Delete off, and Keep checking continues from the cursor it stopped at", async () => {
@@ -1501,7 +1689,7 @@ describe("DeleteUserPanel reason review", () => {
 
   describe("when the reasons changed or were never reviewed", () => {
     it("reason_review_changed reloads every page, keeps unchanged choices, marks changed and new ones, drops vanished ones", async () => {
-      const B2 = reason("2", "z"); // same request, different hash
+      const B2 = reason("2", "e"); // same request, different hash
       const D = reason("4", "d"); // new
       serve({ start: page([A, B], "5"), "5": page([C]) });
       open();
@@ -1523,8 +1711,8 @@ describe("DeleteUserPanel reason review", () => {
       expect(deleteButton()).toBeDisabled();
       expect(screen.getByText("Choose Keep text or Blank text for 2 more reasons.")).toBeInTheDocument();
       expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
-      // focus goes to the first thing to choose again
-      await waitFor(() => expect(group(2, 3).getByRole("radio", { name: "Keep text" })).toHaveFocus());
+      // focus goes to the heading of the first thing to choose again, so Tab reaches its radios
+      await waitFor(() => expect(document.querySelector('[data-reason-heading="1"]')).toHaveFocus());
 
       await choose(2, 3, "Keep text");
       expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(1);
@@ -1533,11 +1721,7 @@ describe("DeleteUserPanel reason review", () => {
       await press();
       await screen.findByText(/The account was deleted/);
       expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
-      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual([
-        { requestId: "1", reviewHash: hashOf("a"), choice: "keep" },
-        { requestId: "2", reviewHash: hashOf("z"), choice: "keep" },
-        { requestId: "4", reviewHash: hashOf("d"), choice: "remove" },
-      ]);
+      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual(reviewFor([["1", "a", "keep"], ["2", "e", "keep"], ["4", "d", "remove"]]));
     });
 
     it("a reload that finds the set unchanged leaves every choice and a ready Delete", async () => {
@@ -1571,7 +1755,7 @@ describe("DeleteUserPanel reason review", () => {
       await press();
       await screen.findByText(/The account was deleted/);
       expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
-      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toHaveLength(2);
+      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual(reviewFor([["1", "a", "remove"], ["2", "b", "keep"]]));
     });
 
     it("a reload that fails part way offers Try again from its cursor and keeps the set-aside choices", async () => {

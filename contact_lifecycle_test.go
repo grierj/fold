@@ -2099,15 +2099,13 @@ func (s *sealScene) seedReasoned() {
 	s.t.Helper()
 	r := erasureMakeRequest(s.t, s.app.DB, policy.RequestGroupAdd, policy.ContactWithdrawn, s.c.ID, s.b.ID, 1, 0, 0, 1, "")
 	s.reasonID = r.ID
-	rev, ok := s.aClient.withKeptReasons("/api/v1/admin/users/"+itoa(s.b.ID), nil).(map[string]any)
+	rev, ok := s.aClient.withChosenReasons("/api/v1/admin/users/"+itoa(s.b.ID), nil, "remove").(map[string]any)
 	if !ok {
 		s.t.Fatal("the review pages returned no reason for B")
 	}
-	items := rev["reasonReview"].(map[string]any)["items"].([]map[string]string)
-	if len(items) != 1 {
-		s.t.Fatalf("%d review items, want 1", len(items))
+	if n := rev["reasonReview"].(map[string]any)["count"]; n != "1" {
+		s.t.Fatalf("review count %v, want 1", n)
 	}
-	items[0]["choice"] = "remove"
 	s.review = rev
 }
 
