@@ -691,11 +691,11 @@ ae_run halfon; [[ "$rc" == 4 && "$(ae_resets)" == 1 && "$(ae_active)" == '-1 off
 # a clean on/off leaves nothing owed: no reset statement, and the line says so
 ae_run clean; [[ "$rc" == 0 && "$(ae_resets)" == 0 && "$(ae_active)" == '-1 off ' ]]; grep -qx 'qc1 autoexplain_reset=not-needed' "$WORK/ae.out"
 ae_run never; [[ "$rc" == 3 && "$(ae_resets)" == 0 ]]; grep -qx 'qc1 autoexplain_reset=not-needed' "$WORK/ae.out"
-# the reset itself fails (the daemon refuses it): REPORTED, in the output and a marker file, and the exit status is untouched (7, and 0); the removals still happen unless --keep
+# A failed reset preserves an existing failure and turns success into failure.
 ae_run fail7 STUB_FAIL_RESET=1; [[ "$rc" == 7 && "$(ae_resets)" == 3 ]]   # three tries, all refused; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"; grep -q 'WARNING: auto_explain / log_lock_waits could not be proven off' "$WORK/ae.out"
 [[ "$(grep -c '^rm -fv ' "$WORK/ae-stub.log")" == 2 ]]; grep -q 'the container is removed below' "$WORK/ae.out"; [[ -s "$WORK/ae-work/autoexplain-reset-failed" ]]
-ae_run ok0 STUB_FAIL_RESET=1 KEEP=1; [[ "$rc" == 0 ]]; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"; grep -q 'goes on logging a plan for every statement until you run: docker exec dbcid psql' "$WORK/ae.out"; grep -q "ALTER SYSTEM SET auto_explain.log_min_duration = -1" "$WORK/ae.out"
-[[ -s "$WORK/ae-work/autoexplain-reset-failed" ]]; grep -qx 'qc1 result=0 artifacts=.* retained_stack=1' "$WORK/ae.out"; [[ "$(ae_active)" == '0 on ' ]]   # still on, and the report says so
+ae_run ok0 STUB_FAIL_RESET=1 KEEP=1; [[ "$rc" == 1 ]]; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"; grep -q 'goes on logging a plan for every statement until you run: docker exec dbcid psql' "$WORK/ae.out"; grep -q "ALTER SYSTEM SET auto_explain.log_min_duration = -1" "$WORK/ae.out"
+[[ -s "$WORK/ae-work/autoexplain-reset-failed" ]]; grep -qx 'qc1 result=1 artifacts=.* retained_stack=1' "$WORK/ae.out"; [[ "$(ae_active)" == '0 on ' ]]   # still on, and the report says so
 # the reload does not take effect: turning it off cannot be proven, the run stops (exit 1), the reset cannot be proven either, and that is reported too
 ae_run offfail; [[ "$rc" == 1 ]]; grep -qx 'qc1 autoexplain_reset=failed' "$WORK/ae.out"
 # the older plan capture (capture_plans) and the explained deletion, each failing at its delete AFTER the enable, in the real functions

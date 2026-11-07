@@ -167,7 +167,7 @@ autoexplain_reset() {
 }
 
 # Everything this run made is removed by id; nothing else on the daemon is touched.
-# The original exit status is kept whatever happens here: a failed reset is REPORTED (a line, a marker file and the result line), never turned into the exit status.
+# Preserve an existing failure; a reset that cannot be verified also fails a successful run.
 # shellcheck disable=SC2329 # EXIT trap.
 cleanup() {
   local rc=$? p id reset=not-needed
@@ -177,6 +177,7 @@ cleanup() {
   if (( AUTOEXPLAIN_DIRTY )); then
     if autoexplain_reset; then reset=ok; else
       reset=failed
+      (( rc != 0 )) || rc=1
       if (( KEEP )); then
         echo "qc1: WARNING: auto_explain / log_lock_waits could not be proven off in the runner database ${DB_CID:-?}; this retained stack goes on logging a plan for every statement until you run: docker exec ${DB_CID:-ID} psql -U church -d fold -c 'ALTER SYSTEM SET auto_explain.log_min_duration = -1' -c 'ALTER SYSTEM RESET log_lock_waits' -c 'SELECT pg_reload_conf()'" >&2
       else

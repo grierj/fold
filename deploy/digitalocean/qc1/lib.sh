@@ -456,7 +456,7 @@ qc1_judge_defs() { cat <<'JQ'
           ($p | has("jit")) and ($p.jitStray == false)
           and ( $p.jit == null
                 or ( num_all($p.jit; ["functions", "generationMs", "inliningMs", "optimizationMs", "emissionMs", "totalMs"]) and ($p.jit.functions >= 1)
-                     and ($p.jit.options | type) == "string" and ($p.jit.options | length) > 0
+                     and ($p.jit.options | type) == "string" and ($p.jit.options | test("^Inlining (true|false), Optimization (true|false), Expressions (true|false), Deforming (true|false)$"))
                      and ([ $p.jit.generationMs, $p.jit.inliningMs, $p.jit.optimizationMs, $p.jit.emissionMs ] | all(. >= 0))
                      and ((($p.jit.generationMs + $p.jit.inliningMs + $p.jit.optimizationMs + $p.jit.emissionMs) - $p.jit.totalMs) | fabs) <= 0.05 ) );
         ( if ($x | type) != "object" or $x.status != "200" or ($x.ms | type) != "number" or $x.reasonsKept != 0 or $x.reasonsRemoved != 0
@@ -1079,9 +1079,9 @@ qc1_plan_nodes() {
       t = line; sub(/^ +/, "", t)
       if (!inplan) next
       if (t ~ /^JIT:/) { injit = 1; next }
-      if (!injit && (t ~ /^Functions: [0-9]/ || t ~ /^Options: Inlining/ || t ~ /^Timing: Generation/)) { stray = 1; next }   # JIT lines with no JIT: header above them: a damaged plan, not an absent section
+      if (!injit && (t ~ /^Functions:/ || t ~ /^Options:/ || t ~ /^Timing: Generation/)) { stray = 1; next }   # JIT lines with no JIT: header above them: a damaged plan, not an absent section
       if (injit) {
-        if (t ~ /^Functions: /) { jf = substr(t, 12) + 0 }
+        if (t ~ /^Functions: /) { if (t ~ /^Functions: [0-9]+$/) jf = substr(t, 12) + 0; else jf = "" }
         else if (t ~ /^Options: /) { jo = substr(t, 10) }
         else if (t ~ /^Timing: /) {
           if (match(t, /Generation [0-9.]+ ms/)) jg = substr(t, RSTART + 11, RLENGTH - 14)

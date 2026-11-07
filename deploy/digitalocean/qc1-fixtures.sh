@@ -2123,7 +2123,10 @@ pmut 's/Optimization 1118.674 ms/Optimization xyz ms/' j-nonnum;   [[ "$(pf j-no
 pmut 's/Total 2093.456 ms/Total 5.000 ms/' j-sum;                  [[ "$(pf j-sum '.plan.jit.totalMs')" == 5.000 ]]
 pmut '/^\tJIT:$/d' j-nohead;                                       [[ "$(pf j-nohead '[.plan.jit, .plan.jitStray]')" == '[null,true]' ]]            # the lines are there, the header is not: damaged, not absent
 pmut '/^\t  Timing:/d;/^\t  Options:/d;/^\tJIT:$/d' j-funconly;     [[ "$(pf j-funconly '[.plan.jit, .plan.jitStray]')" == '[null,true]' ]]
-for nm in j-nofunc j-noopt j-notiming j-noemit j-nototal j-nonnum j-sum j-nohead j-funconly; do mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-jit-malformed; done
+pmut 's/Functions: 131/Functions: 131oops/' j-funcoops;             [[ "$(pf j-funcoops '.plan.jit.functions')" == null ]]
+pmut '/^\t  Timing:/d;/^\t  Options:/d;/^\tJIT:$/d;s/Functions: 131/Functions: unknown/' j-funcunknown; [[ "$(pf j-funcunknown '[.plan.jit, .plan.jitStray]')" == '[null,true]' ]]
+pmut 's/Options: Inlining true, Optimization true, Expressions true, Deforming true/Options: unknown/' j-badoptions
+for nm in j-nofunc j-noopt j-notiming j-noemit j-nototal j-nonnum j-sum j-nohead j-funconly j-funcoops j-funcunknown j-badoptions; do mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-jit-malformed; done
 exinv jt-key-gone 'del(.auditRetention.plan.jit)' audit-jit-malformed
 exinv jt-stray '.auditRetention.plan.jitStray = true' audit-jit-malformed
 exinv jt-stray-gone 'del(.auditRetention.plan.jitStray)' audit-jit-malformed
