@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1794,4 +1796,811 @@ func (c *contactCleanupConn) Rollback() error {
 		return context.Canceled
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// T07B-1b: the actor seal against household conversion (R5-C01, R6-C02,
+// R7-C01, R7-C02). TestActorSealVsConversion runs the real DELETE and
+// invitation-acceptance routes with the seams of the design (deleteBeforeSeal,
+// conversionAfterUserLocks, deleteBeforeRetry, sealAttempts). EVIDENCE RULES,
+// each applied before any retry count, response, ledger state or settle answer
+// is asserted: (E1) the waiter is the unique backend waiting on the holder's
+// pid, with the statement the schedule names and an ungranted pg_locks row;
+// (E2) a parked holder is idle in transaction and waits on nothing; (E3) held
+// modes come from NOWAIT probes on a third connection, each rolled back at once;
+// (E4) later entries of deleteBeforeSeal re-run (E2) and the probe on A only.
+// ---------------------------------------------------------------------------
+
+// probeNoWait reports whether a third connection can take the row lock now.
+// FOR KEY SHARE fails only while someone holds FOR UPDATE; FOR SHARE fails
+// while someone holds FOR NO KEY UPDATE or stronger. The probe never waits and
+// holds nothing when it returns.
+func probeNoWait(t testing.TB, db *gorm.DB, user uint, mode string) bool {
+	t.Helper()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Errorf("probe: %v", tx.Error)
+		return false
+	}
+	defer tx.Rollback()
+	err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR "+mode+" NOWAIT", user).Error
+	if err == nil {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return false
+	}
+	t.Errorf("probe on user %d FOR %s: %v", user, mode, err)
+	return false
+}
+
+type waiterRow struct {
+	PID   int    `gorm:"column:pid"`
+	Query string `gorm:"column:query"`
+}
+
+// waiterBlockedBy is (E1): the unique backend in pg_stat_activity waiting on a
+// lock with holder among its blockers, whose statement contains fragment and
+// that has an ungranted transactionid or tuple lock. None or several within
+// five seconds fails the test.
+func waiterBlockedBy(t testing.TB, db *gorm.DB, holder int, fragment string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var rows []waiterRow
+		if err := db.Raw(`SELECT pid, query FROM pg_stat_activity WHERE datname = current_database()
+			AND wait_event_type = 'Lock' AND ? = ANY(pg_blocking_pids(pid))`, holder).Scan(&rows).Error; err != nil {
+			t.Fatalf("find the waiter: %v", err)
+		}
+		if len(rows) > 1 {
+			t.Fatalf("%d backends wait on backend %d, want exactly one: %+v", len(rows), holder, rows)
+		}
+		if len(rows) == 1 && strings.Contains(rows[0].Query, fragment) {
+			var n int64
+			if err := db.Raw(`SELECT count(*) FROM pg_locks WHERE pid = ? AND NOT granted AND locktype IN ('transactionid', 'tuple')`, rows[0].PID).Scan(&n).Error; err != nil {
+				t.Fatalf("pg_locks: %v", err)
+			}
+			if n > 0 {
+				return rows[0].PID
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no unique waiter on backend %d with a statement containing %q: %+v", holder, fragment, rows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertWaitsOnNothing is (E2): the backend is parked inside its transaction
+// and is blocked by nobody.
+func assertWaitsOnNothing(t testing.TB, db *gorm.DB, pid int, who string) {
+	t.Helper()
+	var state string
+	var blockers int
+	if err := db.Raw("SELECT coalesce((SELECT state FROM pg_stat_activity WHERE pid = ?), '')", pid).Scan(&state).Error; err != nil {
+		t.Errorf("%s state: %v", who, err)
+		return
+	}
+	if err := db.Raw("SELECT cardinality(pg_blocking_pids(?))", pid).Scan(&blockers).Error; err != nil {
+		t.Errorf("%s blockers: %v", who, err)
+		return
+	}
+	if state != "idle in transaction" || blockers != 0 {
+		t.Errorf("%s (backend %d) is %q with %d blockers, want parked: idle in transaction and waiting on nothing", who, pid, state, blockers)
+	}
+}
+
+func backendPID(tx *gorm.DB) int {
+	var pid int
+	_ = tx.Raw("SELECT pg_backend_pid()").Scan(&pid).Error
+	return pid
+}
+
+// parkPoint is a seam that stops its first entry inside the open transaction
+// until opened, and runs later on every later entry.
+type parkPoint struct {
+	entered chan int
+	release chan struct{}
+	once    sync.Once
+	n       atomic.Int32
+	later   func(tx *gorm.DB)
+}
+
+func newParkPoint(t testing.TB) *parkPoint {
+	p := &parkPoint{entered: make(chan int, 1), release: make(chan struct{})}
+	t.Cleanup(p.open)
+	return p
+}
+
+func (p *parkPoint) open() { p.once.Do(func() { close(p.release) }) }
+
+func (p *parkPoint) seam() func(*gorm.DB) {
+	return func(tx *gorm.DB) {
+		if p.n.Add(1) == 1 {
+			p.entered <- backendPID(tx)
+			<-p.release
+			return
+		}
+		if p.later != nil {
+			p.later(tx)
+		}
+	}
+}
+
+func (p *parkPoint) await(t testing.TB) int {
+	t.Helper()
+	select {
+	case pid := <-p.entered:
+		return pid
+	case <-time.After(20 * time.Second):
+		t.Fatal("the seam was never reached")
+		return 0
+	}
+}
+
+func awaitRec(t testing.TB, ch <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
+	t.Helper()
+	select {
+	case w := <-ch:
+		return w
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s never returned", what)
+		return nil
+	}
+}
+
+// logCapture collects the standard logger's output for one test.
+type logCapture struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logCapture) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logCapture) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func captureServerLog(t testing.TB) *logCapture {
+	old := log.Writer()
+	lc := &logCapture{}
+	log.SetOutput(lc)
+	t.Cleanup(func() { log.SetOutput(old) })
+	return lc
+}
+
+type sealOpts struct {
+	bInHousehold bool // B is a second account of A's household (populations P1, P3)
+	bFirst       bool // B.id < A.id (P3)
+	registration bool // B registered P on an occurrence that has already started (S3h)
+	proxied      bool // serve through the fault proxy (statement log)
+}
+
+// sealScene: A (the household's adult account, the inviter and the acting
+// admin), B (an admin, the deletion target) and C (an admin outside every
+// conversionLockIDs source), with an invitation from A to the household's adult
+// person P.
+type sealScene struct {
+	logs    *logCapture
+	t       *testing.T
+	app     *App // direct handle: control and observer
+	serve   *App // the App whose routes run (the proxied copy when proxied)
+	rig     *ctxRig
+	a, b, c *models.User
+	aClient *apiClient
+	person  householdPersonJSON
+	token   string
+}
+
+const sealPW = "password1234"
+
+func newSealScene(t *testing.T, o sealOpts) *sealScene {
+	t.Helper()
+	logs := captureServerLog(t)
+	app := testApp(t)
+	adminC, gid := openGroup(t, app, "Seal")
+	s := &sealScene{t: t, app: app, serve: app, logs: logs}
+	newB := func() *models.User { return newTestUser(t, app, "bob", sealPW, models.RoleAdmin) }
+	if o.bFirst {
+		s.b = newB()
+	}
+	holder, hc, person, _ := householdFamily(t, app, adminC, "alice")
+	if !o.bFirst {
+		s.b = newB()
+	}
+	s.a, s.person = holder, person
+	if err := app.DB.Exec("UPDATE users SET role = 'admin' WHERE id = ?", s.a.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	s.c = &models.User{}
+	if err := app.DB.Where("email = ?", testEmail("admin")).First(s.c).Error; err != nil {
+		t.Fatal(err)
+	}
+	if (s.a.ID < s.b.ID) == o.bFirst {
+		t.Fatalf("user ids: A %d B %d, want B before A = %v", s.a.ID, s.b.ID, o.bFirst)
+	}
+	if o.bInHousehold {
+		var acct models.HouseholdAccount
+		if err := app.DB.Where("user_id = ?", s.a.ID).First(&acct).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: acct.HouseholdID, UserID: s.b.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if o.registration {
+		eventID, _ := seedCappedEvent(t, app, adminC, gid, intPtr(30), true)
+		now := time.Now().UTC().Truncate(time.Second)
+		start := now.Add(-26 * time.Hour)
+		occ := models.EventOccurrence{EventID: eventID, OriginalDate: calDate(start.Format("2006-01-02")), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+		if err := app.DB.Create(&occ).Error; err != nil {
+			t.Fatal(err)
+		}
+		reg := models.Registration{OccurrenceID: occ.ID, HouseholdPersonID: &person.ID, RegisteredBy: &s.b.ID, Status: models.RegGoing,
+			AttendanceMode: models.AttendanceInPerson, Source: "admin", CreatedAt: now, UpdatedAt: now}
+		if err := app.DB.Create(&reg).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.token = inviteHouseholdPerson(t, app, hc, person.ID, "independent@example.com")
+	if o.proxied {
+		s.rig = newCtxRigFor(t, app)
+		s.serve = s.rig.papp
+	}
+	s.aClient = s.client()
+	return s
+}
+
+// client is a fresh session of A on the serving App, one per concurrent request.
+func (s *sealScene) client() *apiClient {
+	c := loginAPI(s.t, s.serve, "alice", sealPW)
+	c.holdNotices = true
+	return c
+}
+
+func (s *sealScene) mint(c *apiClient, subject uint) string {
+	s.t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindAccountDelete, "subjectUserId": subject}, true)
+	if w.Code != http.StatusOK {
+		s.t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var out attemptMintJSON
+	decodeJSON(s.t, w, &out)
+	return out.AttemptID
+}
+
+func (s *sealScene) startDelete(c *apiClient, id string) <-chan *httptest.ResponseRecorder {
+	ch := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		ch <- c.do("DELETE", "/api/v1/admin/users/"+itoa(s.b.ID), map[string]any{"attemptId": id}, true)
+	}()
+	return ch
+}
+
+func (s *sealScene) startConversion() <-chan *httptest.ResponseRecorder {
+	anon := newAPIClient(s.t, s.serve)
+	anon.holdNotices = true
+	anon.fetchCSRF()
+	ch := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		ch <- anon.do("POST", "/api/v1/invitations/accept", map[string]any{"ageBand": "adult", "token": s.token, "password": "password1234"}, true)
+	}()
+	return ch
+}
+
+func (s *sealScene) settle(c *apiClient, id string) (int, attemptSettleJSON) {
+	s.t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts/settle",
+		map[string]any{"attemptId": id, "kind": attemptKindAccountDelete, "subjectUserId": s.b.ID}, true)
+	var out attemptSettleJSON
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+func (s *sealScene) ledger(id string) attemptState {
+	s.t.Helper()
+	nonce, _, ok := s.serve.openAttempt(id, attemptKindAccountDelete, s.a.ID, s.b.ID)
+	if !ok {
+		s.t.Fatal("the id does not open for A and B")
+	}
+	st, _ := s.serve.attempts.ledger.look(nonce)
+	return st
+}
+
+func (s *sealScene) count(model any, where string, args ...any) int64 {
+	s.t.Helper()
+	return contactCount(s.t, s.app, model, where, args...)
+}
+
+func (s *sealScene) noDatabaseErrorsIn(what string, bodies ...string) {
+	s.t.Helper()
+	s.noServerErrors(what, false)
+	s.noErrorsInBodies(what, bodies...)
+}
+
+func (s *sealScene) noErrorsInBodies(what string, bodies ...string) {
+	s.t.Helper()
+	for _, b := range bodies {
+		for _, leak := range []string{"40P01", "55P03", "NOWAIT", "deadlock"} {
+			if strings.Contains(b, leak) {
+				s.t.Errorf("%s: a response carries %q: %s", what, leak, b)
+			}
+		}
+	}
+}
+
+// noServerErrors reads the server log captured since the scene began: no
+// deadlock (40P01) and, unless a schedule ends in the busy answer on purpose, no
+// lock_not_available (55P03) may have reached it.
+func (s *sealScene) noServerErrors(what string, busyIsExpected bool) {
+	s.t.Helper()
+	text := s.logs.String()
+	leaks := []string{"40P01", "deadlock detected"}
+	if !busyIsExpected {
+		leaks = append(leaks, "55P03", "NOWAIT")
+	}
+	for _, leak := range leaks {
+		if strings.Contains(text, leak) {
+			s.t.Errorf("%s: the server log carries %q:\n%s", what, leak, text)
+		}
+	}
+}
+
+// laterEntry is (E4) for an attempt that follows a busy one: the entry is
+// recorded by sealAttempts, (E2) holds for the deletion's own backend, and the
+// FOR SHARE probe on A alone says whether the conversion still holds A.
+func (s *sealScene) laterEntry(aFree bool) func(*gorm.DB) {
+	return func(tx *gorm.DB) {
+		assertWaitsOnNothing(s.t, s.app.DB, backendPID(tx), "the deletion (later attempt)")
+		if probeNoWait(s.t, s.app.DB, s.a.ID, "SHARE") != aFree {
+			s.t.Errorf("later attempt: FOR SHARE on A free = %v, want %v", !aFree, aFree)
+		}
+	}
+}
+
+// wantSettledApplied settles an applied id after both routes have responded:
+// no conversion holds A, so the seal runs once.
+func (s *sealScene) wantSettledApplied(id string) {
+	s.t.Helper()
+	counter := &atomic.Int64{}
+	s.serve.sealAttempts = counter
+	_, got := s.settle(s.client(), id)
+	wantSettle(s.t, got, settleApplied, nil)
+	if counter.Load() != 1 {
+		s.t.Errorf("settle sealed %d times, want 1 (no conversion holds A)", counter.Load())
+	}
+}
+
+func (s *sealScene) wantPending(w *httptest.ResponseRecorder) {
+	s.t.Helper()
+	var out invitationAcceptanceJSON
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || !out.PendingApproval {
+		s.t.Fatalf("conversion: %d %s, want 200 pendingApproval", w.Code, w.Body.String())
+	}
+}
+
+// conversionRows are the conversion's own rows, each exactly once.
+func (s *sealScene) wantConversionRowsOnce() {
+	s.t.Helper()
+	if n := s.count(&models.AccountRequest{}, "source = ? AND status = ? AND requested_by = ?", models.RequestHouseholdConversion, models.RequestPending, s.a.ID); n != 1 {
+		s.t.Errorf("%d household_conversion requests, want 1", n)
+	}
+	for _, action := range []string{audit.AccountRequested, audit.InvitationAccepted} {
+		if n := s.count(&models.AuditLog{}, "action = ?", action); n != 1 {
+			s.t.Errorf("%d %s audit rows, want 1", n, action)
+		}
+	}
+	if n := s.count(&models.Invitation{}, "accepted_at IS NOT NULL"); n != 1 {
+		s.t.Errorf("%d accepted invitations, want 1", n)
+	}
+}
+
+func (s *sealScene) wantDeleted(id string, sealed int64, counter *atomic.Int64) {
+	s.t.Helper()
+	if got := counter.Load(); got != sealed {
+		s.t.Errorf("sealAttempts = %d, want %d", got, sealed)
+	}
+	if n := s.count(&models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, s.b.ID); n != 1 {
+		s.t.Errorf("%d user.deleted rows, want 1", n)
+	}
+	var receipts int64
+	if err := s.app.DB.Raw("SELECT count(*) FROM admin_operation_attempts").Scan(&receipts).Error; err != nil || receipts != 1 {
+		s.t.Errorf("receipts = %d (%v), want 1", receipts, err)
+	}
+	if s.ledger(id) != attemptApplied {
+		s.t.Errorf("ledger = %v, want applied", s.ledger(id))
+	}
+}
+
+func TestActorSealVsConversion(t *testing.T) {
+	withWindow := func(t *testing.T, d time.Duration) {
+		old := deleteRetryWindow
+		deleteRetryWindow = d
+		t.Cleanup(func() { deleteRetryWindow = old })
+	}
+
+	// S1 (P1, A.id < B.id): the deletion of B is parked at deleteBeforeSeal; the
+	// conversion takes A and waits on B; the seal then answers 55P03, the
+	// rollback is acknowledged, the conversion commits, and attempt 2 applies.
+	t.Run("S1 deletion parked, conversion waits on B", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newSealScene(t, sealOpts{bInHousehold: true})
+		id := s.mint(s.aClient, s.b.ID)
+		counter := &atomic.Int64{}
+		s.serve.sealAttempts = counter
+		park := newParkPoint(t)
+		park.later = s.laterEntry(true) // the conversion has committed before attempt 2
+		s.serve.deleteBeforeSeal = park.seam()
+		convDone := make(chan struct{})
+		s.serve.deleteBeforeRetry = func() { <-convDone }
+
+		del := s.startDelete(s.aClient, id)
+		dpid := park.await(t)
+		if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+			t.Fatal("the deletion should hold B FOR UPDATE")
+		}
+		conv := s.startConversion()
+		waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") {
+			t.Fatal("the conversion should hold A FOR NO KEY UPDATE and the deletion only a plain read of A")
+		}
+		assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
+		park.open()
+
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		close(convDone)
+		dw := awaitRec(t, del, "the deletion")
+		if dw.Code != http.StatusOK {
+			t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+		}
+		s.noDatabaseErrorsIn("S1", cw.Body.String(), dw.Body.String())
+		s.wantDeleted(id, 2, counter)
+		s.wantConversionRowsOnce()
+		if park.n.Load() != 2 {
+			t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
+		}
+		s.wantSettledApplied(id)
+	})
+
+	// S1 at the PRODUCTION retry window (deleteRetryWindow left at 2 s): the
+	// deletion stays parked past the window with the conversion waiting on B.
+	// When it is released the seal answers 55P03, the rollback is acknowledged,
+	// and no second attempt begins, because a new attempt may start only within
+	// the window: 409 admin_account_busy, one sealed attempt, nothing deleted.
+	t.Run("S1 at the production retry window", func(t *testing.T) {
+		s := newSealScene(t, sealOpts{bInHousehold: true})
+		id := s.mint(s.aClient, s.b.ID)
+		counter := &atomic.Int64{}
+		s.serve.sealAttempts = counter
+		park := newParkPoint(t)
+		s.serve.deleteBeforeSeal = park.seam()
+		del := s.startDelete(s.aClient, id)
+		dpid := park.await(t)
+		conv := s.startConversion()
+		waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
+		time.Sleep(deleteRetryWindow + 300*time.Millisecond)
+		park.open()
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		dw := awaitRec(t, del, "the deletion")
+		if dw.Code != http.StatusConflict || codeOf(t, dw) != "admin_account_busy" {
+			t.Fatalf("the deletion: %d %s, want 409 admin_account_busy (no retry after the window)", dw.Code, dw.Body.String())
+		}
+		if counter.Load() != 1 || park.n.Load() != 1 {
+			t.Fatalf("sealed attempts %d, seam entries %d, want 1 and 1: a new attempt began after the window", counter.Load(), park.n.Load())
+		}
+		s.noErrorsInBodies("S1 production window", cw.Body.String(), dw.Body.String())
+		s.noServerErrors("S1 production window", true)
+		if s.ledger(id) != attemptRolledBack || s.count(&models.AdminOperationAttempt{}, "true") != 0 {
+			t.Error("the id should end rolled back with no receipt")
+		}
+		s.wantConversionRowsOnce()
+		_, got := s.settle(s.client(), id)
+		wantSettle(t, got, settleNotApplied, nil)
+	})
+
+	// S2 (P2): the conversion is parked at conversionAfterUserLocks holding A;
+	// the deletion of B reaches its seal three times and answers admin_account_busy;
+	// settle during the park answers checking (R7-C01).
+	t.Run("S2 conversion parked, deletion busy three times", func(t *testing.T) {
+		s := newSealScene(t, sealOpts{proxied: true})
+		id := s.mint(s.aClient, s.b.ID)
+		counter := &atomic.Int64{}
+		s.serve.sealAttempts = counter
+		convPark := newParkPoint(t)
+		s.serve.conversionAfterUserLocks = convPark.seam()
+		conv := s.startConversion()
+		cpid := convPark.await(t)
+		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") || !probeNoWait(t, s.app.DB, s.b.ID, "SHARE") {
+			t.Fatal("the conversion should hold A FOR NO KEY UPDATE and nobody should hold B")
+		}
+		before := erasureWaitSnapshot(t, s.app.DB)
+		entries := atomic.Int32{}
+		s.serve.deleteBeforeSeal = func(tx *gorm.DB) {
+			entries.Add(1)
+			pid := backendPID(tx)
+			if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+				t.Errorf("entry %d: the deletion should hold B FOR UPDATE", entries.Load())
+			}
+			assertWaitsOnNothing(t, s.app.DB, pid, "the deletion")
+			assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+			if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+				t.Errorf("entry %d: A should still be held by the conversion", entries.Load())
+			}
+		}
+		dw := awaitRec(t, s.startDelete(s.aClient, id), "the deletion")
+		if dw.Code != http.StatusConflict || codeOf(t, dw) != "admin_account_busy" {
+			t.Fatalf("the deletion: %d %s, want 409 admin_account_busy", dw.Code, dw.Body.String())
+		}
+		s.noErrorsInBodies("S2", dw.Body.String())
+		s.noServerErrors("S2", true) // the exhausted busy answer is logged by design; no deadlock may be
+		if counter.Load() != 3 || entries.Load() != 3 {
+			t.Fatalf("sealed attempts %d, seam entries %d, want 3 and 3", counter.Load(), entries.Load())
+		}
+		// B is untouched and the attempt is rolled back.
+		if after := erasureWaitSnapshot(t, s.app.DB); after != before {
+			t.Error("a busy deletion changed the database")
+		}
+		if s.ledger(id) != attemptRolledBack || s.count(&models.AdminOperationAttempt{}, "true") != 0 {
+			t.Error("the id should end rolled back with no receipt")
+		}
+		resub := s.startDelete(s.aClient, id)
+		if w := awaitRec(t, resub, "the resubmission"); w.Code != http.StatusConflict || codeOf(t, w) != "attempt_closed" {
+			t.Fatalf("resubmission: %d %s, want 409 attempt_closed", w.Code, w.Body.String())
+		}
+
+		// SETTLE DURING THE PARK (R7-C01).
+		var fenceEntries atomic.Int32
+		s.serve.settleBeforeFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.settleAfterFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.deleteBeforeSeal = nil
+		sc := s.client()
+		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+			t.Fatal("A should be held by the conversion before the settle")
+		}
+		counter.Store(0)
+		mark := len(s.rig.proxy.Events())
+		started := time.Now()
+		code, got := s.settle(sc, id)
+		if code != http.StatusOK || got.Result != settleChecking || got.SubjectDeleted != nil {
+			t.Fatalf("settle during the park: %d %+v, want checking with no other field", code, got)
+		}
+		if took := time.Since(started); took > 2*time.Second {
+			t.Errorf("settle took %s, want its three sealed transactions inside 2 s", took)
+		}
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+			t.Fatal("A should still be held by the conversion after the settle")
+		}
+		if counter.Load() != 3 || fenceEntries.Load() != 0 || s.ledger(id) != attemptRolledBack {
+			t.Fatalf("settle during the park: sealed %d (want 3), fence seam entries %d (want 0), ledger %v (want rolled back)", counter.Load(), fenceEntries.Load(), s.ledger(id))
+		}
+		assertSealedAndRolledBack(t, s.rig.proxy.Events()[mark:], 3)
+
+		// The conversion is released; its 200 is awaited.
+		convPark.open()
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		s.wantConversionRowsOnce()
+		for u, want := range map[*models.User]int64{s.a: 0, s.b: 1, s.c: 1} {
+			if got := countOf(t, s.app, u.ID, notify.AccountRequested); got != want {
+				t.Errorf("user %d has %d account.requested notices, want %d", u.ID, got, want)
+			}
+		}
+		counter.Store(0)
+		code, got = s.settle(sc, id)
+		if code != http.StatusOK || got.Result != settleNotApplied || got.SubjectDeleted != nil || counter.Load() != 1 {
+			t.Fatalf("settle after the conversion: %d %+v sealed %d, want not_applied without subjectDeleted in one sealed transaction", code, got, counter.Load())
+		}
+		if s.ledger(id) != attemptRolledBack {
+			t.Error("settle changed the ledger")
+		}
+		// Only now is a fresh id minted to delete B.
+		fresh := s.mint(s.aClient, s.b.ID)
+		counter.Store(0)
+		dw = awaitRec(t, s.startDelete(s.aClient, fresh), "the fresh deletion")
+		if dw.Code != http.StatusOK || counter.Load() != 1 {
+			t.Fatalf("the fresh deletion: %d %s sealed %d, want 200 with one sealed attempt", dw.Code, dw.Body.String(), counter.Load())
+		}
+		code, got = s.settle(sc, id)
+		wantSettle(t, got, settleNotApplied, ptr(true))
+		if code != http.StatusOK {
+			t.Fatalf("settle of the first id: %d", code)
+		}
+		_, got = s.settle(sc, fresh)
+		wantSettle(t, got, settleApplied, nil)
+	})
+
+	// S3 and S3h (P3: B.id < A.id plus an admin C outside every source). The
+	// deletion of B is parked holding B FOR UPDATE; the conversion waits on B
+	// before it can lock A; the seal finds no holder.
+	for _, withRegistration := range []bool{false, true} {
+		name := "S3 deleted participant, B a household account only"
+		if withRegistration {
+			name = "S3h deleted participant, B also registered the person"
+		}
+		t.Run(name, func(t *testing.T) {
+			withWindow(t, 30*time.Second)
+			s := newSealScene(t, sealOpts{bInHousehold: true, bFirst: true, registration: withRegistration})
+			id := s.mint(s.aClient, s.b.ID)
+			counter := &atomic.Int64{}
+			s.serve.sealAttempts = counter
+			var entries atomic.Int32
+			s.serve.conversionAfterUserLocks = func(*gorm.DB) { entries.Add(1) }
+			park := newParkPoint(t)
+			s.serve.deleteBeforeSeal = park.seam()
+
+			del := s.startDelete(s.aClient, id)
+			dpid := park.await(t)
+			if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+				t.Fatal("the deletion should hold B FOR UPDATE")
+			}
+			conv := s.startConversion()
+			waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
+			if !probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.c.ID, "SHARE") {
+				t.Fatal("the conversion holds no users row yet: FOR SHARE on A and C should succeed")
+			}
+			assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
+			park.open()
+
+			dw := awaitRec(t, del, "the deletion")
+			cw := awaitRec(t, conv, "the conversion")
+			if dw.Code != http.StatusOK {
+				t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+			}
+			s.noDatabaseErrorsIn("S3", cw.Body.String(), dw.Body.String())
+			s.wantDeleted(id, 1, counter)
+			if entries.Load() != 1 {
+				t.Errorf("conversionAfterUserLocks entered %d times, want once", entries.Load())
+			}
+			// Settle only after both routes have responded.
+			_, got := s.settle(s.client(), id)
+			wantSettle(t, got, settleApplied, nil)
+			if !withRegistration {
+				s.wantPending(cw)
+				s.wantConversionRowsOnce()
+				for u, want := range map[*models.User]int64{s.a: 0, s.c: 1} {
+					if got := countOf(t, s.app, u.ID, notify.AccountRequested); got != want {
+						t.Errorf("user %d has %d account.requested notices, want %d", u.ID, got, want)
+					}
+				}
+				if n := s.count(&models.Notification{}, "user_id = ?", s.b.ID); n != 0 {
+					t.Errorf("deleted B has %d notifications", n)
+				}
+				return
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(cw.Body.Bytes(), &body)
+			if cw.Code != http.StatusConflict || body.Error != errConversionHolder.Error() {
+				t.Fatalf("conversion: %d %s, want 409 %q", cw.Code, cw.Body.String(), errConversionHolder.Error())
+			}
+			if s.count(&models.AccountRequest{}, "source = ?", models.RequestHouseholdConversion) != 0 ||
+				s.count(&models.AuditLog{}, "action IN (?, ?)", audit.AccountRequested, audit.InvitationAccepted) != 0 ||
+				s.count(&models.Invitation{}, "accepted_at IS NOT NULL OR revoked_at IS NOT NULL") != 0 {
+				t.Error("a refused conversion left a request, an audit row or a changed invitation")
+			}
+			var registeredBy uint
+			if err := s.app.DB.Raw("SELECT registered_by FROM registrations WHERE household_person_id = ?", s.person.ID).Scan(&registeredBy).Error; err != nil || registeredBy != s.b.ID {
+				t.Errorf("the registration keeps registered_by = %d, got %d (%v)", s.b.ID, registeredBy, err)
+			}
+			if got := countOf(t, s.app, s.c.ID, notify.AccountRequested); got != 0 {
+				t.Errorf("C got %d account.requested notices from a refused conversion", got)
+			}
+		})
+	}
+
+	// S4 (P1, conversion first): the conversion is parked holding A and B; the
+	// deletion waits for B before it reaches its seal, then applies.
+	t.Run("S4 conversion parked first, deletion waits on B", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newSealScene(t, sealOpts{bInHousehold: true})
+		id := s.mint(s.aClient, s.b.ID)
+		counter := &atomic.Int64{}
+		s.serve.sealAttempts = counter
+		convPark := newParkPoint(t)
+		s.serve.conversionAfterUserLocks = convPark.seam()
+		conv := s.startConversion()
+		cpid := convPark.await(t)
+		for _, u := range []uint{s.a.ID, s.b.ID} {
+			if probeNoWait(t, s.app.DB, u, "SHARE") || !probeNoWait(t, s.app.DB, u, "KEY SHARE") {
+				t.Fatalf("the conversion should hold user %d FOR NO KEY UPDATE", u)
+			}
+		}
+		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+		del := s.startDelete(s.aClient, id)
+		waiterBlockedBy(t, s.app.DB, cpid, "FOR UPDATE")
+		if counter.Load() != 0 {
+			t.Fatalf("the deletion reached its seal %d times while waiting for B", counter.Load())
+		}
+		convPark.open()
+		cw := awaitRec(t, conv, "the conversion")
+		dw := awaitRec(t, del, "the deletion")
+		s.wantPending(cw)
+		if dw.Code != http.StatusOK {
+			t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+		}
+		s.noDatabaseErrorsIn("S4", cw.Body.String(), dw.Body.String())
+		s.wantDeleted(id, 1, counter)
+		s.wantConversionRowsOnce()
+		s.wantSettledApplied(id)
+	})
+
+	// S5 (P2, the recipient edge): the deletion of B is parked; the conversion
+	// waits for B in notifyAccountRequested's recipient lock while holding A.
+	t.Run("S5 conversion waits on B at the recipient lock", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newSealScene(t, sealOpts{})
+		id := s.mint(s.aClient, s.b.ID)
+		counter := &atomic.Int64{}
+		s.serve.sealAttempts = counter
+		park := newParkPoint(t)
+		park.later = s.laterEntry(true)
+		s.serve.deleteBeforeSeal = park.seam()
+		convDone := make(chan struct{})
+		s.serve.deleteBeforeRetry = func() { <-convDone }
+		del := s.startDelete(s.aClient, id)
+		dpid := park.await(t)
+		conv := s.startConversion()
+		waiterBlockedBy(t, s.app.DB, dpid, "FOR KEY SHARE")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+			t.Fatal("the conversion should hold A FOR NO KEY UPDATE")
+		}
+		assertWaitsOnNothing(t, s.app.DB, dpid, "the deletion")
+		park.open()
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		close(convDone)
+		dw := awaitRec(t, del, "the deletion")
+		if dw.Code != http.StatusOK {
+			t.Fatalf("the deletion: %d %s", dw.Code, dw.Body.String())
+		}
+		s.noDatabaseErrorsIn("S5", cw.Body.String(), dw.Body.String())
+		s.wantDeleted(id, 2, counter)
+		s.wantConversionRowsOnce()
+		if park.n.Load() != 2 {
+			t.Errorf("deleteBeforeSeal entered %d times, want 2", park.n.Load())
+		}
+		s.wantSettledApplied(id)
+	})
+}
+
+// assertSealedAndRolledBack reads a proxy log slice: want settle transactions
+// ended with currentAdminIn's statement, each followed on its connection by an
+// acknowledged ROLLBACK and nothing else.
+func assertSealedAndRolledBack(t testing.TB, events []testdb.Event, want int) {
+	t.Helper()
+	sealed := 0
+	for i, e := range events {
+		if e.Kind != testdb.KindStatement || !strings.Contains(e.SQL, "FOR SHARE NOWAIT") || !strings.Contains(e.SQL, "logout_version") {
+			continue
+		}
+		sealed++
+		next := -1
+		for j := i + 1; j < len(events); j++ {
+			if events[j].Conn != e.Conn {
+				continue
+			}
+			next = j
+			break
+		}
+		if next < 0 {
+			t.Errorf("nothing follows the sealed statement on connection %d", e.Conn)
+		} else if !(events[next].Kind == testdb.KindRollback || strings.EqualFold(strings.TrimSpace(events[next].SQL), "ROLLBACK")) {
+			t.Errorf("the sealed statement on connection %d is followed by %+v, not ROLLBACK", e.Conn, events[next])
+		}
+	}
+	if sealed != want {
+		t.Errorf("%d sealed transactions in the proxy log, want %d", sealed, want)
+	}
 }

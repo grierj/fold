@@ -19,7 +19,7 @@ rm -rf "$work" && mkdir -p "$work"
 if [ -n "${FOLD_E2E_BIN:-}" ]; then
   cp "$FOLD_E2E_BIN" "$work/fold"
 else
-  (cd "$root" && go build -o "$work/fold" .)
+  (cd "$root" && go build -tags e2eclock -o "$work/fold" .)
 fi
 
 # Production by default. The invitation scenarios use dev mode's outbox.
@@ -28,7 +28,7 @@ fi
 export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}" \
   SESSION_SECRET=e2e-only-session-secret-0123456789abcdef \
   FOLD_SETUP_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  UPLOAD_DIR="$work/uploads"
+  UPLOAD_DIR="$work/uploads" FOLD_E2E_CLOCK=1
 export APP_ENV="${E2E_APP_ENV:-prod}"
 cd "$root" # templates/ is read from the working directory
 exec "$work/fold" serve

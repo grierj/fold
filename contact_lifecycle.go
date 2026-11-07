@@ -44,7 +44,18 @@ type contactChange struct {
 	UserID  uint
 	EventID uint
 	GroupID uint
+	// Seal, when set, runs after reconcileContacts and immediately before the
+	// commit-reserve check (T07B-1b, R5-C01). It is a pointer so contactChange
+	// stays comparable; reconcileContacts reads only the three ids above. A nil
+	// Seal sends exactly the statements a call sent before.
+	Seal *contactSeal
 }
+
+// contactSeal is the actor seal a fenced transaction runs last: the signed-in
+// admin is decided FOR SHARE NOWAIT on their own row (currentAdminIn), so the
+// lock adds no wait-for edge and the transaction then runs only plain reads,
+// in-memory work and COMMIT.
+type contactSeal struct{ run func(*gorm.DB) error }
 
 // Server-side bounds for a contact transaction that has a deadline (R4-CTX).
 // They are vars so tests can set and restore them; a test that sets one stays
@@ -290,6 +301,13 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	}
 	if _, err := a.reconcileContacts(tx, time.Now().UTC(), change); err != nil {
 		return rollback(err)
+	}
+	// The actor seal is the last locking statement (R5-C01): after it the
+	// transaction runs only plain reads, in-memory work and COMMIT.
+	if change.Seal != nil {
+		if err := change.Seal.run(tx); err != nil {
+			return rollback(err)
+		}
 	}
 	if ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {
 		return rollback(errCommitReserve)

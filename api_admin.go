@@ -912,20 +912,16 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 }
 
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
-	u, ok := a.adminTargetUser(c)
+	me := apiUser(c)
+	u, ok := a.adminDeletionTarget(c, me)
 	if !ok {
 		return
 	}
-	me := apiUser(c)
-	if !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
-		msg := "cannot delete the last admin"
-		if u.ID == me.ID {
-			msg = "you cannot delete your own account"
-		}
-		jsonError(c, http.StatusBadRequest, msg)
-		return
-	}
 	var body struct {
+		// AttemptID is the id minted for this press (POST
+		// /admin/operation-attempts). Old clients send none and keep today's
+		// behavior apart from the deadline and the outcome codes (T07B-1b).
+		AttemptID string `json:"attemptId"`
 		// Successors maps group id to the new leader, for every group this
 		// person leads alone (DEC-36; see GET /admin/users/:id/sole-leader-groups).
 		Successors map[string]uint `json:"successors"`
@@ -940,8 +936,36 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// The submission check is the first step after the body is decoded
+	// (R4-C08), so every refusal below ends the id rolled back: a client may
+	// treat each as definitive. Two refusals come before it and record
+	// nothing: the 404 for a missing target and the body that did not parse.
+	var claim *attemptClaim
+	if body.AttemptID != "" {
+		var r submitResult
+		if claim, r = a.submitAttempt(body.AttemptID, attemptKindAccountDelete, me.ID, u.ID); claim == nil {
+			answerSubmit(c, r)
+			return
+		}
+		defer claim.guard()
+	}
+	if a.restoreDetected() {
+		claim.end(attemptRolledBack)
+		answerRestoreDetected(c)
+		return
+	}
+	if !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
+		claim.end(attemptRolledBack)
+		msg := "cannot delete the last admin"
+		if u.ID == me.ID {
+			msg = "you cannot delete your own account"
+		}
+		jsonError(c, http.StatusBadRequest, msg)
+		return
+	}
 	hostPicks, ok := parseHostSuccessors(body.HostSuccessors)
 	if !ok {
+		claim.end(attemptRolledBack)
 		jsonError(c, http.StatusBadRequest, "invalid host successors")
 		return
 	}
@@ -969,9 +993,28 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// replaces these on every successful attempt; rolled-back values are unused.
 	var householdCounts householdErasureCounts
 	var auditCounts auditErasureCounts
+	// The actor is decided again on their locked row as the last locking
+	// statement before COMMIT (R5-C01), with or without an attempt id.
+	seal := a.deletionSeal(me)
 	for {
 		u := &models.User{ID: targetID}
-		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+		// A fresh restore ticket per attempt (T07B-1b): taken first in the
+		// callback, acknowledged by the statement right after the call, and
+		// abandoned by the defer if the call never reached its acknowledgment.
+		var tk restoreTicket
+		var terr error
+		defer a.abandonRestoreTicket(&tk)
+		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID, Seal: seal}, func(tx *gorm.DB) error {
+			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
+				return terr
+			}
+			// The receipt: the first write after the ticket, committing only
+			// with the deletion, so a lost reply can be answered "applied".
+			if claim != nil {
+				if err := insertAttemptReceipt(tx, claim.nonce); err != nil {
+					return err
+				}
+			}
 			// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
 			// admin (plain read) and the facts again; see api_host_handoff.go.
 			picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
@@ -1086,11 +1129,19 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// shortest time before commit (detected limit D2).
 			return eraseOwnedThrottleKeysIn(tx, s)
 		})
+		a.acknowledgeRestoreTicket(&tk, err)
 		var again bool
 		if again, err = retry.after(err); !again {
 			break
 		}
+		if a.deleteBeforeRetry != nil {
+			a.deleteBeforeRetry()
+		}
 	}
+	// The id's final state is recorded before any response is sent: applied
+	// only from an acknowledged COMMIT, unknown from a commit that may have
+	// happened, rolled back otherwise (every refusal after the claim).
+	claim.end(outcomeAttemptState(err))
 	if needSuccessors(c, err) || needHostSuccessors(c, err) {
 		return
 	}
@@ -1100,6 +1151,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	}
 	if errors.Is(err, errSecuritySession) {
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if errors.Is(err, errActorForbidden) {
+		jsonError(c, http.StatusForbidden, "forbidden")
 		return
 	}
 	var rule errAdminRule
@@ -1119,6 +1174,18 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			log.Printf("user deletion timed out (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
 			jsonErrorCode(c, http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted")
 		default:
+			if errors.Is(err, errRestoreDetected) {
+				log.Printf("user deletion refused: the database was restored while Fold was running")
+				answerRestoreDetected(c)
+				return
+			}
+			if errors.Is(err, errActorBusy) {
+				// The admin's own row was held at the seal on every attempt:
+				// nothing was deleted, COMMIT was never sent.
+				log.Printf("user deletion found the admin's own account busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+				jsonErrorCode(c, http.StatusConflict, "admin_account_busy", "your own account was being updated, so nothing was changed")
+				return
+			}
 			if isHouseholdBusy(err) {
 				// Every attempt found a household row held by someone else (or
 				// the rollback after one was not acknowledged, so no further

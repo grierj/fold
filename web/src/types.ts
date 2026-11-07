@@ -1395,6 +1395,26 @@ export interface MessagePreview {
   text: string;
 }
 
+/**
+ * POST /admin/operation-attempts answers one id per press of Delete (mirrors
+ * attemptMintJSON in admin_operation_attempts.go). The id is a capability: send
+ * it in the DELETE body and the settle body, never in a URL, and never show it.
+ */
+export interface AttemptMintResponse {
+  attemptId: string;
+}
+
+/**
+ * POST /admin/operation-attempts/settle: what became of an id (mirrors
+ * attemptSettleJSON). "checking" asks the client to check again with the same
+ * id; subjectDeleted is sent, as true, only on "not_applied" when the account is
+ * already deleted (it is absent otherwise) and never says who deleted it.
+ */
+export interface AttemptSettleResponse {
+  result: "applied" | "not_applied" | "history_unavailable" | "checking";
+  subjectDeleted?: boolean;
+}
+
 // What DELETE /admin/users/:id answers under "erasure" (mirrors
 // erasureReportJSON in account_erasure_report.go). Counts only: no names,
 // ids or addresses. householdsKept is households left as they were because

@@ -816,64 +816,62 @@ func (a *App) actorName(id *uint) string {
 // variant, which names nobody.
 // ---------------------------------------------------------------------------
 
-// readEmailRecipients loads each account with the email consent scopes they
-// opted out of (DEC-97), the address's open suppressions (DEC-112), and the
-// church name and address for optional-mail footers. One read for the
-// accounts, opt-outs and footer, one for suppressions, so a batch stays at
-// two reads.
-func readEmailRecipients(db *gorm.DB, userIDs []uint) ([]emailRecipient, error) {
+// readEmailRecipients loads accounts and footer, then open suppressions.
+// Optional mail also needs the effective choices: three reads for up to 500
+// destinations. Required mail never reads account or address choices.
+func readEmailRecipients(db *gorm.DB, userIDs []uint, needChoice bool) ([]emailRecipient, emailOff, error) {
 	if len(userIDs) == 0 {
-		return nil, nil
+		return nil, emailOff{}, nil
 	}
 	var users []emailRecipient
-	err := db.Model(&models.User{}).Select(`users.*, COALESCE((
-		SELECT string_agg(latest.scope, ',') FROM (
-			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
-			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
-		) latest WHERE latest.status = ?), '') AS email_opt_outs,
+	err := db.Model(&models.User{}).Select(`users.*,
 		COALESCE((SELECT value FROM settings WHERE key = 'site_name'), '') AS site_name,
-		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`,
-		models.ConsentEmail, models.ConsentOptedOut, settingChurchAddress).
+		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`, settingChurchAddress).
 		Where("users.id IN ?", userIDs).Find(&users).Error
 	if err != nil {
-		return nil, err
+		return nil, emailOff{}, err
 	}
-	// The one change from the old SQL join is that the account's address is
-	// normalized in Go (mail.NormalizeAddress) instead of lower(btrim()) in
-	// SQL: identical for ASCII addresses (inventory 7.4).
 	emails := make([]string, 0, len(users))
+	dests := make([]emailDest, 0, len(users))
 	for i := range users {
 		emails = append(emails, users[i].Email)
+		dests = append(dests, emailDest{UserID: users[i].ID, Address: users[i].Email})
 	}
 	reasons, err := mail.OpenSuppressionReasons(db, emails)
 	if err != nil {
-		return nil, err
+		return nil, emailOff{}, err
 	}
 	for i := range users {
 		users[i].EmailSuppressions = strings.Join(reasons[mail.NormalizeAddress(users[i].Email)], ",")
 	}
-	return users, nil
+	var off emailOff
+	if needChoice {
+		off, err = readEmailOff(db, dests)
+		if err != nil {
+			return nil, emailOff{}, err
+		}
+	}
+	return users, off, nil
 }
 
 // readEmailRecipient is that read for one person. A missing account returns
 // a nil user and no error. A database error returns the error and nothing
 // else, so the caller records no delivery.
-func readEmailRecipient(db *gorm.DB, userID uint) (u *models.User, optedOut map[string]bool, suppressions []string, footer footerFacts, err error) {
-	users, err := readEmailRecipients(db, []uint{userID})
+func readEmailRecipient(db *gorm.DB, userID uint, needChoice bool) (u *models.User, off emailOff, suppressions []string, footer footerFacts, err error) {
+	users, off, err := readEmailRecipients(db, []uint{userID}, needChoice)
 	if err != nil {
-		return nil, nil, nil, footerFacts{}, err
+		return nil, emailOff{}, nil, footerFacts{}, err
 	}
-	byID, optOuts, suppressed, footer := indexEmailRecipients(users)
-	return byID[userID], optOuts[userID], suppressed[userID], footer, nil
+	byID, suppressed, footer := indexEmailRecipients(users)
+	return byID[userID], off, suppressed[userID], footer, nil
 }
 
 // indexEmailRecipients splits the joined read into the maps the sender uses.
 // The footer comes from the first row; site name and address are the same
 // on every row.
-func indexEmailRecipients(users []emailRecipient) (byID map[uint]*models.User, optOuts map[uint]map[string]bool, suppressed map[uint][]string, footer footerFacts) {
+func indexEmailRecipients(users []emailRecipient) (byID map[uint]*models.User, suppressed map[uint][]string, footer footerFacts) {
 	byID = make(map[uint]*models.User, len(users))
 	suppressed = make(map[uint][]string, len(users))
-	optOuts = make(map[uint]map[string]bool, len(users))
 	footer = footerFacts{site: "Fold"}
 	if len(users) > 0 {
 		if users[0].SiteName != "" {
@@ -886,24 +884,13 @@ func indexEmailRecipients(users []emailRecipient) (byID map[uint]*models.User, o
 		if users[i].EmailSuppressions != "" {
 			suppressed[users[i].ID] = strings.Split(users[i].EmailSuppressions, ",")
 		}
-		for _, scope := range strings.Split(users[i].EmailOptOuts, ",") {
-			if scope == "" {
-				continue
-			}
-			if optOuts[users[i].ID] == nil {
-				optOuts[users[i].ID] = map[string]bool{}
-			}
-			optOuts[users[i].ID][scope] = true
-		}
 	}
-	return byID, optOuts, suppressed, footer
+	return byID, suppressed, footer
 }
 
-// emailRecipient is a notification email recipient with the comma-joined
-// email consent scopes whose latest record opts out.
+// emailRecipient is an account with its suppression and footer facts.
 type emailRecipient struct {
 	models.User
-	EmailOptOuts string
 	// EmailSuppressions are the open suppression reasons on the address
 	// (DEC-112), comma-joined in ascending suppression id: one more read for
 	// the whole set, filled after the accounts load.
@@ -912,28 +899,6 @@ type emailRecipient struct {
 	// footers add no reads (the same on every row).
 	SiteName      string
 	ChurchAddress string
-}
-
-// emailOptOuts maps each user to the email consent scopes whose latest
-// record opts out (5.12, DEC-97). Delivery reads the same thing alongside
-// each recipient's account (readEmailRecipient).
-func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error) {
-	var rows []models.Consent
-	if err := db.Raw(`SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents
-		WHERE user_id IN ? AND channel = ? ORDER BY user_id, scope, at DESC, id DESC`, userIDs, models.ConsentEmail).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	out := make(map[uint]map[string]bool)
-	for _, r := range rows {
-		if r.Status != models.ConsentOptedOut {
-			continue
-		}
-		if out[r.UserID] == nil {
-			out[r.UserID] = map[string]bool{}
-		}
-		out[r.UserID][r.Scope] = true
-	}
-	return out, nil
 }
 
 func categoryScope(category string) string { return "category:" + category }
@@ -950,7 +915,7 @@ func (a *App) notificationEmailMessage(n *models.Notification, u *models.User, k
 	text += "\n\n" + a.emailLink(n.Link)
 	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
 	if !k.Required {
-		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
+		token := a.unsubscribeToken(u.ID, categoryScope(k.Category), u.Email)
 		msg.ListUnsubscribe = a.oneClickURL(token)
 		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
@@ -1023,7 +988,7 @@ func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	}
 	switch which.Channel {
 	case "", models.ConsentEmail:
-		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm, me) {
+		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm, me, nil) {
 			return
 		}
 	case models.ConsentPush:

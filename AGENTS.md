@@ -60,6 +60,63 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
   (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
   `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
+  Staged `00007` (T07B-2a, local, no caller) adds a licence for a reason-only blank on non-contact,
+  non-pending rows with a soft-deleted party; contact and pending rows keep the baseline.
+- Optional email uses one effective-choice reader, `readEmailOff` in `email_optouts.go`: the account's
+  latest email choice or the actual destination address's retained opt-out can turn a category off.
+  `email_address_optouts` is written only by `exportEmailOptOutsIn` during erasure with a held address,
+  and deleted only by the current holder's affirmative turn-on under the user lock. Keep the original
+  choice time; never reconstruct a legacy tombstone address. Settings expose only effective choices.
+  Version 2 links bind the destination address for turn-on; legacy and moved-address links still allow
+  turn-off, and erased-account links stay invalid. A session older than an address change cannot turn
+  email on. Batch rows recheck `message_recipients.address` inside each row's claim transaction after
+  its claim and before rendering and dispatch; optional notifications check inside their claim too.
+  At READ COMMITTED, a choice committed before the choice statement starts is honored. A later change
+  may not stop that one in-flight send; every later row and retry rechecks. The composer test checks
+  the session and choice under the author's row lock, releases it at commit, then calls the provider.
+  A change committed after that commit, before or during the call, may not stop the one test send.
+  Required mail bypasses choices; provider suppressions remain separate. R4-2d2 is implemented locally
+  only; C2 and publication remain pending (inventory 7.6 and 15.8).
+- Deletion outcomes and the restore barrier (M7.4 T07B-1b and T07B-1c, staged: committed locally as `cd3ad9a` (1b), `99fd0b3`
+  (merge of the reason schema) and `5f941e6` (1c); unmerged, unpushed, unpublished; final checks at the landing head, the
+  four-concern integration review, the deployment-level drill and the first-church hand checks are pending; C4 is not met and M7.4
+  is not complete; inventory 15.9). It is two halves that land together, and a release carrying them reports
+  `recoveryPolicy` 1, which must never be published before R4-6c-R's current-release restore tooling and operator procedure land
+  and are verified.
+  - Boot step: `bootRestoreFence` (`restore_fence.go`) runs in `serve` after migrations and before anything serves. One
+    transaction under the migrations advisory lock creates and advances the `settings` row `restore_fence`; only an acknowledged
+    COMMIT sets the in-memory floor, and any failure exits non-zero. A restart is the restart boundary: ids and the floor belong
+    to one process.
+  - Commit-aware fence: every fenced `a.contactMutationCtx` (`apiAdminDeleteUser`, the settle route) takes
+    `a.takeRestoreTicket(tx)` first (the one-slot turn under the contact gate, then the counter), defers
+    `a.abandonRestoreTicket(&tk)` before the call and runs `a.acknowledgeRestoreTicket(&tk, err)` as the next statement. The floor
+    is raised only when the call returned nil (an acknowledged COMMIT), and only then is the turn released, so a later ticket never
+    reads the counter between a COMMIT and its acknowledgment (`TestFencedTransactionsTakeTheTicketFirst`). A ticket at or below
+    the floor, or a missing row, is 503 `restore_detected`, and `requestRestart` makes `serve` exit 1 for the supervisor. Only the
+    boot step and the ticket write the row (`TestRestoreFenceHasTwoWriters`); a settings writer with a non-literal key calls
+    `refuseRestoreFenceKey`. Detection limit, stated: a stored counter or boot value alone detects nothing; only the in-memory
+    floor does, and only when a restore loses a commit this process saw acknowledged. A restore of a dump taken after the last
+    acknowledged fenced commit, one that loses only an unknown commit, and one made while the process was stopped are not detected;
+    `TestRestoreFenceUndetectedCases` pins that the first two never answer "not applied" for a deletion that ran.
+  - Attempt ids (`admin_operation_attempts.go`): `POST /api/v1/admin/operation-attempts` mints an id under a per-process key; only
+    that process mints or verifies it, and it runs at most once, in that process, if first submitted within 10 minutes. The
+    ledger is memory only (its mutex never waits: `TestLedgerMutexHoldsNoWait`) and is checked before an id's age; the receipt row (`admin_operation_attempts`, T39) is inserted right after the ticket in the deletion's own transaction
+    and a daily `admin_attempts.sweep` job deletes receipts older than 24 hours. `POST .../settle` answers `applied`,
+    `not_applied` (`subjectDeleted: true` only when the account is already gone), `history_unavailable` or `checking`;
+    `not_applied` comes only from the ledger in memory. `attempt_expired` means only that this submission ran nothing; its copy
+    never says "nothing was deleted". After a restart or 60 minutes an id settles `history_unavailable`.
+  - Actor seal: `contactChange.Seal` runs `currentAdminIn` (`FOR SHARE NOWAIT` on the actor's own row, decided with `CanSignIn`
+    and both session versions) as the last locking statement before COMMIT, with or without an attempt id
+    (`TestActorSealIsLast`, `TestCurrentAdminInFacts`); a busy seal retries at most three times and answers 409
+    `admin_account_busy`, and settle makes at most three sealed tries in two seconds and then answers `checking`.
+  - Panel (1c): `DeleteUserPanel` mints an id per press and keeps it in memory. A lost, unreadable or ambiguous answer settles
+    the same id with Delete off and shows no "nothing was deleted" copy first; definitive refusals discard the id; a
+    `restore_detected` or `history_unavailable` answer keeps Delete off until the users list reloads successfully
+    (`lib/deleteReload.ts`).
+  - Test-only clock: `attempt_clock_e2e.go` (build tag `e2eclock`, with `e2e_hooks.go`) adds an offset to the attempt clock and an
+    admin-only, CSRF-protected `POST /api/v1/e2e/attempt-clock`, and only when `FOLD_E2E_CLOCK=1`. `web/e2e/run.sh` and
+    `server.sh` build with the tag and set the variable; the Dockerfile, release build, `make test` and `go build` never set the
+    tag, which is checked by review, not by a test.
 - Household erasure (M7.4 R4-3b, staged: local, unmerged, M7.4 not complete): deleting an account also runs
   `eraseHouseholdRecordsIn` (`account_erasure_households.go`) under household rows taken `FOR UPDATE NOWAIT`.
   It deletes the account's seat, anonymizes the person row(s) that are the same individual (`PERS`, read
@@ -144,7 +201,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   layout checks run in parts (`UI_PARTS`, `partSelected`); `UPDATE_UI_BASELINE=1` needs
   `E2E_SHARDS=1`. Prefer `gotoSettled` to `waitForLoadState("networkidle")`. `signIn` clears
   cookies first. Assert on roles and visible text; accept `confirm()` with `page.on("dialog")`.
-  Traces: `web/test-results/shard-<n>/`.
+  Traces: `web/test-results/shard-<n>/`. The e2e binary is built with `-tags e2eclock` (`run.sh`, `server.sh`) and the server
+  gets `FOLD_E2E_CLOCK=1`, which adds the test-only attempt clock; no shipped build has either.
 - Legacy erasure is staged locally (R4-6b, not merged): `erasure.tombstone_sweep` starts a daily
   keyset page chain; `erasure.tombstone_page` continues it, at most 200 subjects plus one continuation
   per transaction; `erasure.tombstone` scrubs one exact soft-deleted `deleted-<id>@deleted.invalid`
@@ -201,7 +259,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   old address and cancellation capability, which cannot be reconstructed after verification;
   `App.sendGuestConfirmationEmail` in `api_guest.go` shares its manage capability with the browser,
   so delayed rotation would invalidate the displayed link. The composer's test send in
-  `api_message_preview.go` also remains synchronous by design, separate from those exceptions.
+  `api_message_preview.go` also remains synchronous by design, separate from those exceptions. It
+  checks the author's session and effective email choice under the user row lock before recording
+  the test attempt, then commits before its provider call. An opt-out, erasure or address change
+  committed after that commit may not stop that one test send; the next request rechecks. The call
+  keeps its 30-second context and holds no user lock across provider I/O.
   Both account exceptions use the 20-second `syncMailTimeout`, leaving 40 seconds of the
   server's 60-second write budget for transaction work and the response. Delivery jobs keep
   the 60-second `deliverSendTimeout`. Failure logs use `jobs.CleanError` and never add a
@@ -324,10 +386,13 @@ The migration chain is the generated baseline (M7.7, DEC-138) plus additive numb
 (`00002_suppression_address_hash.sql` is the M7.4 R4-S expand)
 (`00003_consent_erasure_scrub.sql` lets the erasure blank a deleted owner's consent evidence, R4-2d1)
 (`00004_ages_note_erasure_scrub.sql` lets the erasure blank the erased subject's contact-request ages note, R4-T07A)
-(`00005_email_address_optouts.sql` stages the dormant address-level optional-email opt-out table, R4-2d2-1,
-owner decision 8; it implements no opt-out behavior yet)
-(`00006_admin_operation_attempts.sql` stages dormant receipt storage, T07B-1a: a 16-byte nonce and
-timestamp only, with no behavior or cleanup yet; inventory T39 records the planned 24-hour cleanup).
+(`00005_email_address_optouts.sql` adds the address-level optional-email opt-out table, R4-2d2-1,
+owner decision 8; R4-2d2-2a through -3 activate its local behavior, inventory 7.6 and 15.8)
+(`00006_admin_operation_attempts.sql` originally staged receipt storage in T07B-1a: a 16-byte nonce and
+timestamp only. T07B-1b now uses it locally and runs the 24-hour cleanup; inventory T39 and 15.9 record the staged behavior)
+(`00007_reason_review_erasure_scrub.sql` adds a dormant reason-blank branch to both `contact_requests` trigger
+functions, T07B-2a: non-contact, non-pending rows with a soft-deleted party only, ages-note branches intact,
+no caller; local, verification and landing pending, inventory 15.4).
 `TestBaselineFileShape` checks the chain
 through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
 and Down). `scripts/baseline-proof.sh generate`
@@ -416,7 +481,11 @@ After a merge, merge master into the other open branches (never rebase) and repo
   exits 75 naming the holder from informational `ops.owner`. Never delete, rename or replace the lock.
   Never publish `recoveryPolicy >= 1` before R4-6c-R's current-release restore tooling and operator
   procedure land and are verified. Local refusal drills do not satisfy that release gate or the
-  real-droplet checks in `docs/FIRST-CHURCH-CHECKS.md`.
+  real-droplet checks in `docs/FIRST-CHURCH-CHECKS.md`. The T07B-1b tree is itself level 1
+  (`const recoveryPolicyLevel` in `restore_fence.go` equals `deploy/recovery-policy`, checked by
+  `TestRecoveryPolicyFileMatchesConstant`; `fold version --json` reports it), so a release cut from it is
+  unpublishable until that tooling lands. Its deployment-level drill (`deploy-drill.sh`, the level-0 rollback
+  and forward refusals) is pending.
 
 ## SMS (messaging Phase 3, not yet)
 
@@ -460,6 +529,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | Notices use `notify.deliver`; reconstructible direct mail uses ID-based jobs; synchronous mail is limited to the documented methods and composer test | `TestNoticesAreDeliveredBySendNotByCallers`, `TestMailGoesThroughJobs`, `TestNoticeGuardCatchesPostCommitDelivery`, `TestMailGuardCatchesBypasses`, `TestMailGuardScopesSynchronousExceptions`, `TestMailGuardAllowsDeliveryAndReadOnlyOutbox` |
+| Optional email honors the account's choice and the destination address's retained opt-out through one function | `readEmailOff`; `TestEmailChoiceSQLStaysInOneHelper`, `TestEmailChoiceGuardCatchesBypasses`, `TestReadEmailOffCombinesAccountAndDestination`, `TestEmailSettingsHideChoiceSource`, `TestReusedAddressKeepsErasedChoicesUntilHolderTurnsOn` |
+| Every optional or broadcast email checks the effective choice at its send boundary | `TestOptionalMailChecksTheEffectiveChoice`, `TestOptionalMailGuardCatchesBypasses`, `TestBatchRechecksTheChoiceAtEachRow`, `TestTestSendHonorsTheEffectiveChoice`, `TestTestSendInFlightWindow` (parse-only guard checks named calls and lexical order; behavioral tests cover application of the result and the permitted in-flight window) |
 | Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook writer, and matches by Go-computed hash | `TestSuppressionSQLStaysInItsHelpers`, `TestSuppressionSQLGuardCatchesBypasses` (parse-only; it does not see table names built from non-literal pieces, reflection, SQL sent around GORM, dot-imports of `fold/models` or cross-package helpers) |
 | Suppression matching assumes a UTF8 database with a deterministic default collation | `TestSuppressionMatchingBasis` (`migrations/migrations_test.go`) |
 | Throttle keys come from the typed builders in `throttle_keys.go`, and erasure deletes every owned key | `TestThrottleKeysComeFromBuilders`, `TestThrottleSQLStaysInItsHelpers`, `TestOwnedThrottleKeysCoverEveryOwnedBuilder`, `TestThrottleKeyStringsAreUnchanged`, `TestAccountErasureDeletesOnlyOwnedThrottleKeys` (parse-only; it does not see keys built inside SQL text in a listed helper, SQL sent around GORM, reflection, generics or code outside the root package, and it matches identifiers by name) |
@@ -494,4 +565,10 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, in CI after the build) |
 | Secrets in URLs (calendar and room feed tokens, guest manage links, unsubscribe and email settings links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`); `TestAccessLogKeepsSecretsOut` |
 | Push payloads never carry contact details, signed links or a hidden group's name; endpoints are never logged | `TestEveryKindsPushTextIsLockScreenSafe` (`internal/notify`), `TestPushLogsKeepSecretsOut` |
+| The restore barrier's boot step runs in `serve` after migrations and before anything serves, and a failure exits non-zero | `TestRestoreFenceBoot` (`restore_fence_test.go`); the call's position in `serve` is checked by review |
+| Every fenced transaction takes the restore ticket first, and the floor is raised only on an acknowledged COMMIT before the turn is released; only the boot step and the ticket write `restore_fence` | `TestFencedTransactionsTakeTheTicketFirst`, `TestFencedTransactionsGuardCatchesBypasses` (parse-only, over `apiAdminDeleteUser` and the settle route), `TestRestoreFenceHasTwoWriters`, `TestSettingsWritersRefuseTheFenceKey`, `TestRestoreFenceDelayedAcknowledgment`, `TestRestoreFenceNoFalseDetection`, `TestRestoreFenceSameLifetime`; `TestRestoreFenceUndetectedCases` pins the stated detection limit |
+| Attempt ids are minted and checked only by the process that holds the key, run at most once, and are in the ledger before their age is judged; `attempt_expired` means only that the submission ran nothing; `not_applied` is answered only from memory | `TestAttemptIDCapability`, `TestAttemptLedgerRules`, `TestAttemptLifecycle`, `TestDefinitiveResponsesEndTheAttempt`, `TestOutcomeClassification`, `TestLedgerMutexHoldsNoWait`, `TestSettleAuthorization`, `TestSettleUnknownCommit`, `TestRestoreFenceFencedIdAcrossARestart` |
+| The signed-in admin is decided on their own row `FOR SHARE NOWAIT` as the last locking statement before COMMIT | `TestActorSealIsLast`, `TestCurrentAdminInFacts`, `TestActorSealBusy`, `TestActorSealVsConversion` |
+| The recovery level the binary reports equals `deploy/recovery-policy`, and R4-RP's tooling refuses a lower level on every scripted path; no release at level 1 or above before R4-6c-R's tooling and procedure land | `TestRecoveryPolicyFileMatchesConstant`, `TestVersionJSONReportsRecoveryPolicy`; the tooling refusal is R4-RP's; the publication gate is review only |
+| The test-only attempt clock exists only in a binary built with `-tags e2eclock` and run with `FOLD_E2E_CLOCK=1` | The build tag and `attempt_clock_e2e.go`'s admin-and-CSRF route; that no shipped build sets the tag is review only (no test) |
 | Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |

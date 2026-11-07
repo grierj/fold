@@ -170,6 +170,9 @@ test.describe("replacement host before an account is deleted", () => {
     await expect(select).toHaveValue(String(rafa.id));
     await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
     await row.getByRole("button", { name: "Delete account" }).click();
+    // The panel says it is done before the list reloads (T07B-1c).
+    await expect(row.getByText("The account was deleted.")).toBeVisible();
+    await row.getByRole("button", { name: "Done" }).click();
     await expect(page.getByRole("row").filter({ hasText: target.email })).toHaveCount(0);
 
     await gotoReady(page, `/events/${eventId}`);
@@ -213,6 +216,9 @@ test.describe("replacement host before an account is deleted", () => {
     await expect(newSelect).toHaveValue(String(rafa.id));
     await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
     await row.getByRole("button", { name: "Delete account" }).click();
+    // The panel says it is done before the list reloads (T07B-1c).
+    await expect(row.getByText("The account was deleted.")).toBeVisible();
+    await row.getByRole("button", { name: "Done" }).click();
     await expect(page.getByRole("row").filter({ hasText: target.email })).toHaveCount(0);
 
     for (const id of [firstId, secondId]) {

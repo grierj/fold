@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AdminUsers, ApiError } from "../api";
 import { useAuth } from "../auth";
-import type { HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
-import { errorCode, errorText } from "../lib/errors";
+import type { ErasureReport, HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
+import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
+import { needsReload, needsRestoreReload, requireReload, requireRestoreReload } from "../lib/deleteReload";
 import { formatEventDay } from "../lib/when";
 import { Button } from "./ui/Button";
 import { Field, FormError, Select } from "./ui/Field";
@@ -12,8 +13,85 @@ import { Field, FormError, Select } from "./ui/Field";
 // the deleting admin preselected (DEC-36). Deleting also needs a new host for
 // every church-wide event the person hosts alone, and that one is never
 // preselected: nobody becomes a host without being chosen (M7.4, R4-H).
+//
+// Every press of Delete mints its own attempt id (T07B-1c) and sends it with
+// the DELETE. The id lives in this component's memory only and is dropped when
+// the panel closes. An answer that does not say what happened (a lost
+// connection, delete_outcome_unknown, attempt_closed, attempt_expired, a
+// response that is not JSON) never reads as "nothing was deleted": the panel
+// settles the same id and says what the server answers. Only a definitive
+// refusal, or a settle answer of not_applied, lets the next press mint a fresh id.
 
 type HostPicks = Record<string, number>;
+
+// What the settle answers say (T07B-D4 R4-C08). None of these names or implies
+// another person.
+const APPLIED_COPY = "The account was deleted.";
+const NOT_APPLIED_COPY = "Nothing was deleted by this attempt.";
+const ALREADY_DELETED_COPY = "The account is already deleted; this attempt did not delete it.";
+const HISTORY_COPY = "Fold can't tell whether an earlier delete finished. Reload this person's page to check.";
+const STILL_CHECKING_COPY = "Still checking. Fold can't tell yet whether the account was deleted. Check again in a moment.";
+const CHECKING_COPY = "Checking what happened to this delete request…";
+const NO_ACCOUNT_COPY = "This account no longer exists.";
+
+// Where the delete stands after a press. "idle" and "notApplied" leave Delete
+// on; every other phase either waits for an answer or ends the attempt.
+type Phase =
+  | { kind: "idle" }
+  | { kind: "checking"; text: string }
+  | { kind: "still"; text: string }
+  | { kind: "notApplied" }
+  | { kind: "already" }
+  | { kind: "history" }
+  // A definitive refusal that no press can fix (signed out, not allowed, the
+  // account is gone, a restore was seen). `reload` closes with a list reload.
+  | { kind: "locked"; reload: boolean }
+  | { kind: "done"; erasure: ErasureReport | null };
+
+// What a failed DELETE means. "uncertain" settles the same id; the rest are
+// definitive (the server ended the id before answering, or never saw it).
+type Failure =
+  | { kind: "uncertain"; text: string }
+  | { kind: "retry"; text: string }
+  | { kind: "locked"; text: string; reload: boolean };
+
+const UNCERTAIN: Failure = { kind: "uncertain", text: CHECKING_COPY };
+const BUSY_CODES = ["delete_timed_out", "delete_household_busy", "admin_account_busy", "attempt_busy"] as const;
+
+// Answers that end the attempt on any of the three calls: a restore was seen,
+// the session ended, or this admin may not do it.
+function endingCopy(e: unknown): string | null {
+  if (!(e instanceof ApiError)) return null;
+  if (errorCode(e) === "restore_detected") return ERROR_COPY.restore_detected;
+  if (e.status === 401) return ERROR_COPY.signed_out;
+  if (e.status === 403) return ERROR_COPY.not_allowed;
+  return null;
+}
+
+// A restore was seen: the whole server, not one person, waits for a fresh list.
+function noteRestore(e: unknown): void {
+  if (errorCode(e) === "restore_detected") requireRestoreReload();
+}
+
+function failureOf(e: unknown): Failure {
+  if (!(e instanceof ApiError)) return UNCERTAIN; // a dropped connection or an aborted fetch
+  // A failure status whose body is not JSON (a gateway page, nothing at all) is
+  // not the server's refusal, whatever its status: it may have deleted.
+  if (e.unreadable) return UNCERTAIN;
+  const code = errorCode(e);
+  if (code === "attempt_closed" || code === "attempt_expired") return { kind: "uncertain", text: ERROR_COPY[code] };
+  if (code === "delete_outcome_unknown") return UNCERTAIN;
+  const ending = endingCopy(e);
+  if (ending !== null) return { kind: "locked", text: ending, reload: code === "restore_detected" };
+  if (e.status === 404) return { kind: "locked", text: NO_ACCOUNT_COPY, reload: true };
+  for (const busy of BUSY_CODES) if (code === busy) return { kind: "retry", text: ERROR_COPY[busy] };
+  // The deletion's own validation answers (last admin, your own account,
+  // successors, hosts) are 400s the server sent before it changed anything.
+  if (e.status === 400) return { kind: "retry", text: errorText(e, "That didn't work.") };
+  // A 5xx with no code, a page from a proxy, any status or code not named
+  // above: the server may have deleted the account.
+  return UNCERTAIN;
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
@@ -49,15 +127,20 @@ function initialGroupPicks(groups: SoleLedGroup[], meId: number | undefined): Re
 const candidateLabel = (c: HandoffCandidate, meId: number | undefined) =>
   `${c.id === meId ? `Me (${c.name})` : c.name}${c.admin && c.id !== meId ? " · admin" : ""}`;
 
-export function DeleteUserPanel({
-  target,
-  action,
-  onDone,
-}: {
+type PanelProps = {
   target: User;
   action: "delete" | "disable";
   onDone: (done: boolean) => void;
-}) {
+};
+
+// A new person or a new action is a new panel: its state, its attempt id and
+// every request still in flight belong to the old one and are dropped with it
+// (the key remounts the body, whose cleanup spends the old presses).
+export function DeleteUserPanel(props: PanelProps) {
+  return <PanelBody key={`${props.target.id}:${props.action}`} {...props} />;
+}
+
+function PanelBody({ target, action, onDone }: PanelProps) {
   const { user: me } = useAuth();
   const meId = me?.id;
   const deleting = action === "delete";
@@ -68,10 +151,33 @@ export function DeleteUserPanel({
   const [hostPicks, setHostPicks] = useState<HostPicks>({});
   const [everyHost, setEveryHost] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // After history_unavailable (this person) or restore_detected (everyone),
+  // Delete stays off until the users list has loaded afresh, even in a later
+  // panel (lib/deleteReload.ts).
+  const heldFor = action === "delete" ? (needsReload(target.id) ? "history" : needsRestoreReload() ? "restore" : null) : null;
+  const [error, setError] = useState<string | null>(() => (heldFor === "restore" ? ERROR_COPY.restore_detected : null));
+  const [phase, setPhase] = useState<Phase>(() =>
+    heldFor === "history" ? { kind: "history" } : heldFor === "restore" ? { kind: "locked", reload: true } : { kind: "idle" },
+  );
   const [focusTick, setFocusTick] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
   const alertBox = useRef<HTMLDivElement>(null);
+  const statusBox = useRef<HTMLDivElement>(null);
+  // The attempt id of the press in flight, memory only. `presses` counts
+  // presses and is spent when the panel closes, so a late answer for a dropped
+  // id finds no matching press and is ignored.
+  const mounted = useRef(true);
+  const presses = useRef(0);
+  const attempt = useRef<string | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      attempt.current = null;
+    };
+  }, []);
+  const isCurrent = (press: number) => mounted.current && presses.current === press;
 
   useEffect(() => {
     let live = true;
@@ -102,6 +208,12 @@ export function DeleteUserPanel({
     const open = [...(panel.current?.querySelectorAll<HTMLSelectElement>("select[data-host-event]") ?? [])].find((s) => s.value === "");
     (open ?? alertBox.current)?.focus();
   }, [focusTick]);
+
+  // Once Delete is off or gone, focus would be lost: move it to the answer.
+  useEffect(() => {
+    if (phase.kind === "locked") alertBox.current?.focus();
+    else if (["still", "already", "history", "done"].includes(phase.kind)) statusBox.current?.focus();
+  }, [phase]);
 
   // The server's list of events and candidates changed under us. Keep a pick
   // only while its event and its person both still appear.
@@ -152,47 +264,147 @@ export function DeleteUserPanel({
     });
   }
 
-  async function remove() {
+  // Settles the id of press `press` and shows what the server answers.
+  async function settle(id: string, press: number, text = CHECKING_COPY) {
+    setPhase({ kind: "checking", text });
+    try {
+      const res = await AdminUsers.settleAttempt(id, target.id);
+      if (!isCurrent(press)) return;
+      if (res.result === "applied") {
+        attempt.current = null;
+        setPhase({ kind: "done", erasure: null });
+      } else if (res.result === "not_applied") {
+        attempt.current = null;
+        setPhase(res.subjectDeleted === true ? { kind: "already" } : { kind: "notApplied" });
+      } else if (res.result === "history_unavailable") {
+        attempt.current = null;
+        requireReload(target.id);
+        setPhase({ kind: "history" });
+      } else {
+        setPhase({ kind: "still", text: STILL_CHECKING_COPY });
+      }
+    } catch (e) {
+      if (!isCurrent(press)) return;
+      const ending = endingCopy(e);
+      if (ending === null) {
+        setPhase({ kind: "still", text: STILL_CHECKING_COPY });
+      } else if (errorCode(e) === "restore_detected") {
+        // Checking again after the restart answers history_unavailable.
+        noteRestore(e);
+        setPhase({ kind: "still", text: ending });
+      } else {
+        attempt.current = null;
+        setError(ending);
+        setPhase({ kind: "locked", reload: false });
+      }
+    }
+  }
+
+  async function checkAgain() {
+    if (attempt.current !== null) await settle(attempt.current, presses.current);
+  }
+
+  function applyStale(e: unknown) {
+    if (!(e instanceof ApiError)) return;
+    const code = errorCode(e);
+    if (code === "needs_host_successor") applyStaleHosts(e.data);
+    else if (code === "needs_successor") applyStaleGroups(e.data);
+  }
+
+  async function disable() {
+    const press = ++presses.current;
     setBusy(true);
     setError(null);
     try {
-      if (deleting) await AdminUsers.remove(target.id, picks, hostPicks);
-      else await AdminUsers.update(target.id, { status: "disabled", successors: picks });
-      onDone(true);
+      await AdminUsers.update(target.id, { status: "disabled", successors: picks });
+      if (isCurrent(press)) onDone(true);
     } catch (e) {
-      const code = errorCode(e);
-      if (e instanceof ApiError) {
-        if (code === "needs_host_successor") applyStaleHosts(e.data);
-        else if (code === "needs_successor") applyStaleGroups(e.data);
-      }
+      if (!isCurrent(press)) return;
+      applyStale(e);
       setError(errorText(e, "That didn't work."));
     } finally {
-      setBusy(false);
+      if (isCurrent(press)) setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!deleting) return disable();
+    const press = ++presses.current;
+    attempt.current = null;
+    setBusy(true);
+    setError(null);
+    setPhase({ kind: "idle" });
+    try {
+      // One fresh id per press. The mint reads no database; if it fails, no
+      // DELETE has been sent, so nothing can have happened.
+      let id: string;
+      try {
+        id = (await AdminUsers.mintAttempt(target.id)).attemptId;
+        if (!id) throw new Error("no attempt id"); // never send a DELETE without one
+      } catch (e) {
+        if (!isCurrent(press)) return;
+        const ending = endingCopy(e);
+        setError(ending ?? errorText(e, "That didn't work."));
+        if (ending !== null) {
+          noteRestore(e);
+          setPhase({ kind: "locked", reload: errorCode(e) === "restore_detected" });
+        }
+        return;
+      }
+      if (!isCurrent(press)) return;
+      attempt.current = id;
+      const res = await AdminUsers.remove(target.id, picks, hostPicks, id);
+      if (!isCurrent(press)) return;
+      attempt.current = null;
+      setPhase({ kind: "done", erasure: res.erasure ?? null });
+    } catch (e) {
+      if (!isCurrent(press)) return;
+      const failure = failureOf(e);
+      if (failure.kind === "uncertain") {
+        // Never a not-deleted message before the settle answer.
+        if (attempt.current !== null) void settle(attempt.current, press, failure.text);
+        return;
+      }
+      attempt.current = null;
+      noteRestore(e);
+      applyStale(e);
+      setError(failure.text);
+      if (failure.kind === "locked") setPhase({ kind: "locked", reload: failure.reload });
+    } finally {
+      if (isCurrent(press)) setBusy(false);
     }
   }
 
   const name = target.displayName || target.name;
+  // Delete stays off while an answer is unresolved or the attempt has ended it.
+  const canPress = phase.kind === "idle" || phase.kind === "notApplied";
+  // Closing reloads the list when the account is gone or may be.
+  // The answer is in: the questions above it no longer apply.
+  const finished = phase.kind === "done" || phase.kind === "already";
+  const closeReloads = phase.kind === "already" || phase.kind === "history" || (phase.kind === "locked" && phase.reload);
   const ready = groups !== null && (!deleting || events !== null);
   const hosted = events ?? [];
   const missing = hosted.filter((ev) => hostPicks[String(ev.id)] === undefined).length;
   const hostsDone = hosted.length === 0 || (candidates.length > 0 && missing === 0);
   return (
     <div ref={panel} className="mt-3 rounded-md border border-danger-border bg-danger-subtle p-4 text-sm space-y-3">
-      <p className="font-semibold text-danger-on-subtle">
-        {deleting ? "Delete" : "Disable"} {name}? They will be signed out and can't sign in.
-      </p>
+      {!finished && (
+        <p className="font-semibold text-danger-on-subtle">
+          {deleting ? "Delete" : "Disable"} {name}? They will be signed out and can't sign in.
+        </p>
+      )}
       {action === "disable" && (
         <p className="text-text-muted">
           Their groups and registrations are kept but hidden until you enable them again; they come back as a member, not a
           leader.
         </p>
       )}
-      {!ready && !error && (
+      {!finished && !ready && !error && (
         <p role="status" className="text-text-muted">
           {deleting ? "Checking their groups and events…" : "Checking their groups…"}
         </p>
       )}
-      {groups && groups.length > 0 && (
+      {!finished && groups && groups.length > 0 && (
         <div className="space-y-2">
           <p className="text-text-muted">They are the only leader of these groups. Choose who leads each one next:</p>
           {groups.map((g) => (
@@ -212,7 +424,7 @@ export function DeleteUserPanel({
           ))}
         </div>
       )}
-      {deleting && hosted.length > 0 && (
+      {!finished && deleting && hosted.length > 0 && (
         <div className="space-y-3">
           <p className="text-text-muted">They are the only host of these church-wide events. Choose who hosts each one next:</p>
           {candidates.length === 0 ? (
@@ -272,14 +484,73 @@ export function DeleteUserPanel({
           <FormError>{error}</FormError>
         </div>
       )}
-      <div className="flex gap-3">
-        <Button variant="danger" onClick={remove} disabled={busy || !ready || (deleting && !hostsDone)}>
-          {busy ? "Working…" : deleting ? "Delete account" : "Disable account"}
-        </Button>
-        <Button variant="secondary" onClick={() => onDone(false)}>
-          Cancel
-        </Button>
+      <Outcome phase={phase} statusBox={statusBox} />
+      <div className="flex flex-wrap gap-3">
+        {phase.kind === "done" ? (
+          <Button variant="primary" onClick={() => onDone(true)}>
+            Done
+          </Button>
+        ) : (
+          <>
+            {phase.kind === "still" && (
+              <Button variant="secondary" onClick={checkAgain}>
+                Check again
+              </Button>
+            )}
+            {phase.kind !== "already" && (
+              <Button variant="danger" onClick={remove} disabled={busy || !ready || (deleting && !hostsDone) || !canPress}>
+                {busy ? "Working…" : deleting ? "Delete account" : "Disable account"}
+              </Button>
+            )}
+            <Button variant="secondary" onClick={() => onDone(closeReloads)}>
+              {phase.kind === "idle" || phase.kind === "notApplied" || phase.kind === "checking" || phase.kind === "still" ? "Cancel" : "Close"}
+            </Button>
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+// What the server said about the attempt, in words (never color alone). The
+// box takes focus when Delete goes away, so the answer is read.
+function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTMLDivElement | null> }) {
+  let body: ReactNode = null;
+  switch (phase.kind) {
+    case "checking":
+    case "still":
+      body = <p>{phase.text}</p>;
+      break;
+    case "notApplied":
+      body = <p>{NOT_APPLIED_COPY}</p>;
+      break;
+    case "already":
+      body = <p>{ALREADY_DELETED_COPY}</p>;
+      break;
+    case "history":
+      body = <p>{HISTORY_COPY}</p>;
+      break;
+    case "done":
+      body = (
+        <>
+          <p className="font-semibold">{APPLIED_COPY}</p>
+          {phase.erasure && (
+            <dl className="grid grid-cols-[auto_auto] justify-start gap-x-4 gap-y-1 text-text-muted">
+              <dt>Households kept</dt>
+              <dd>{phase.erasure.householdsKept}</dd>
+              <dt>Activity entries kept</dt>
+              <dd>{phase.erasure.activityEntriesKept}</dd>
+            </dl>
+          )}
+        </>
+      );
+      break;
+    default:
+      return null;
+  }
+  return (
+    <div ref={statusBox} role="status" tabIndex={-1} className="space-y-1">
+      {body}
     </div>
   );
 }

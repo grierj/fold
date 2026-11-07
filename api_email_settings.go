@@ -49,12 +49,12 @@ func emailKindsFor(u *models.User) []string {
 
 func (a *App) emailSettingsFor(db *gorm.DB, u *models.User) (emailSettingsJSON, error) {
 	out := emailSettingsJSON{Kinds: []emailKindJSON{}, OptionalEmailOff: true}
-	optOuts, err := emailOptOuts(db, []uint{u.ID})
+	optOuts, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		return out, err
 	}
 	for _, c := range emailKindsFor(u) {
-		off := optOuts[u.ID][categoryScope(c)]
+		off := optOuts.Off(u.ID, u.Email, categoryScope(c))
 		out.Kinds = append(out.Kinds, emailKindJSON{Category: c, Off: off})
 		out.OptionalEmailOff = out.OptionalEmailOff && off
 	}
@@ -73,7 +73,7 @@ type emailSettingsChange struct {
 // applyEmailSettings validates and writes one change; false means an error was
 // sent. A signed-in caller passes its session, so a stale or erased one answers
 // 401; a signed link passes nil, and an erased person answers 404.
-func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, session *models.User) bool {
+func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, session *models.User, link *unsubscribeLink) bool {
 	var body emailSettingsChange
 	// BodyWith: Me → Notifications reads the body first for its channel.
 	if err := c.ShouldBindBodyWith(&body, binding.JSON); err != nil {
@@ -108,7 +108,7 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, 
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		for _, k := range kinds {
-			if _, err := setEmailConsent(tx, u.ID, categoryScope(k), status, source, c.ClientIP(), c.Request.UserAgent(), session); err != nil {
+			if _, err := setEmailConsent(tx, u.ID, categoryScope(k), status, source, c.ClientIP(), c.Request.UserAgent(), session, link); err != nil {
 				return err
 			}
 		}
@@ -120,6 +120,10 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, 
 		} else {
 			jsonError(c, http.StatusNotFound, "not found")
 		}
+		return false
+	}
+	if errors.Is(err, errUnboundEmailLink) {
+		jsonError(c, http.StatusForbidden, errEmailLinkTurnOn)
 		return false
 	}
 	if err != nil {
@@ -142,7 +146,7 @@ func maskEmail(email string) string {
 // apiTokenEmailSettings is the signed-out page's read: the masked address,
 // the kind the link came from, and the switches. 404 for a bad link.
 func (a *App) apiTokenEmailSettings(c *gin.Context) {
-	u, scope, ok := a.unsubscribeUser(c.Param("token"))
+	u, link, ok := a.unsubscribeUser(c.Param("token"))
 	if !ok {
 		jsonError(c, http.StatusNotFound, "not found")
 		return
@@ -153,19 +157,19 @@ func (a *App) apiTokenEmailSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"emailSettings": s, "email": maskEmail(u.Email),
-		"fromCategory": strings.TrimPrefix(scope, "category:")})
+		"fromCategory": strings.TrimPrefix(link.Scope, "category:"), "canTurnOn": link.boundTo(u.Email)})
 }
 
 // apiTokenUpdateEmailSettings changes one switch from the signed-out page.
 // The link is the authority; the request still carries the CSRF token like
 // every other form.
 func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
-	u, _, ok := a.unsubscribeUser(c.Param("token"))
+	u, link, ok := a.unsubscribeUser(c.Param("token"))
 	if !ok {
 		jsonError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if !a.applyEmailSettings(c, u, models.ConsentSourceUnsubscribe, nil) {
+	if !a.applyEmailSettings(c, u, models.ConsentSourceUnsubscribe, nil, link) {
 		return
 	}
 	s, err := a.emailSettingsFor(a.DB, u)

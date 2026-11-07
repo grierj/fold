@@ -20,6 +20,11 @@ const errReplyToInvalid = "enter one email address, or leave it empty"
 // saveSetting writes key = value and its audit row together. The value is
 // assigned as a map: a struct would skip "" and never clear a setting.
 func (a *App) saveSetting(c *gin.Context, key, value, action string, meta map[string]any) error {
+	// A key that is not spelled as a constant here must never reach the restore
+	// barrier's own row (restore_fence.go).
+	if err := refuseRestoreFenceKey(key); err != nil {
+		return err
+	}
 	me := apiUser(c)
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where(models.Setting{Key: key}).Assign(map[string]any{"value": value}).FirstOrCreate(&models.Setting{}).Error; err != nil {
