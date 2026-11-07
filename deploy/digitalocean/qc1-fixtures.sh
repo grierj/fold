@@ -1281,7 +1281,7 @@ cc_body="$(sed -n '/^make_clean_copy() {/,/^}/p' "$RUNNER_SRC")"
 for pat in 'CREATE SCHEMA qc1_clean' 'LIKE public.contact_requests INCLUDING ALL' 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' 'VACUUM (ANALYZE) qc1_clean.contact_requests'; do grep -qF -- "$pat" <<<"$cc_body" || { echo "qc1: make_clean_copy lost: $pat" >&2; exit 1; }; done
 if grep -E 'VACUUM|ALTER|TRUNCATE|DELETE|UPDATE|DROP TABLE' <<<"$cc_body" | grep -v 'qc1_clean' | grep -v 'CLEAN_COPY_JSON' | grep -v '^ *#'; then echo 'qc1: make_clean_copy touches the original table' >&2; exit 1; fi
 grep -qF "scanner_probe public; probe_bloated=" <<<"$cp_body"; grep -qF 'scanner_probe qc1_clean; probe_clean=' <<<"$cp_body"; grep -qF "DROP SCHEMA qc1_clean CASCADE" <<<"$cp_body"
-grep -qF 'tables:{bloated:$sb, clean:($sc + $copy)}' <<<"$cp_body"
+grep -qF 'tables:{bloated:$statsb, clean:($statsc + $copy)}' <<<"$cp_body"
 l_pb="$(grep -n 'scanner_probe public' <<<"$cp_body" | cut -d: -f1)"; l_cc="$(grep -n '^  make_clean_copy' <<<"$cp_body" | cut -d: -f1)"; l_pc="$(grep -n 'scanner_probe qc1_clean' <<<"$cp_body" | cut -d: -f1)"; l_dr="$(grep -n 'DROP SCHEMA qc1_clean' <<<"$cp_body" | cut -d: -f1)"; l_ds="$(grep -n '^  drop_scenarios$' <<<"$cp_body" | tail -n 1 | cut -d: -f1)"
 [[ -n "$l_pb$l_cc$l_pc$l_dr$l_ds" && "$l_pb" -lt "$l_cc" && "$l_cc" -lt "$l_pc" && "$l_pc" -lt "$l_dr" && "$l_dr" -lt "$l_ds" ]]
 grep -qF "'schema', n.nspname, 'relpages', c.relpages, 'actualPages'" "$RUNNER_SRC"
@@ -1292,7 +1292,7 @@ mut top-win "$BP then del(.window.topStatements) else . end"; expect_invalid top
 mut top-put 'if .item == 5 and .case == "legacy-put" then del(.put.topStatements) else . end'; [[ "$(legacy_pending "$WORK/e2.top-put")" == 1 ]]
 ts_sql="$HERE/qc1/top-statements.sql"
 for pat in 'pg_stat_statements' 'total_exec_time DESC' 'LIMIT 8' 'cluster-wide' 'NOT attributed'; do grep -qF -- "$pat" "$ts_sql" || { echo "qc1: top-statements.sql lost: $pat" >&2; exit 1; }; done
-if grep -v '^--' "$ts_sql" | grep -Eiq 'reset|insert|update |delete|truncate|alter|create|drop|vacuum'; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
+if grep -v '^--' "$ts_sql" | grep -Eiqw 'reset|insert|update|delete|truncate|alter|create|drop|vacuum'; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
 ins_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
 [[ "$(grep -c 'pg_stat_statements_reset' <<<"$ins_body")" == 1 ]]   # one reset, at the start of the window, as before: the COMMIT timing is read from the same window
 l_reset="$(grep -n 'pg_stat_statements_reset' <<<"$ins_body" | cut -d: -f1)"; l_end="$(grep -n 'OP_END="\$(ms)"' <<<"$ins_body" | cut -d: -f1)"; l_commit="$(grep -n 'COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX' <<<"$ins_body" | cut -d: -f1)"; l_top="$(grep -n 'TOP_STATEMENTS="\$(top_statements)"' <<<"$ins_body" | cut -d: -f1)"
@@ -1314,6 +1314,102 @@ mut oc-ms 'if .item == 6 and .case == "order-control-delete-end" and .size == 10
 st="$(status_of "$WORK/e2.oc-ms")"
 [[ "$(jq -c '.confounding.deleteOrderControls | map(select(.size == 100) | [.startMs, .endMs, .ratio])' <<<"$st")" == '[[100,250,2.5]]' && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
 [[ "$(jq -c '.confounding.deleteOrderControls | map([.size, .ratio])' <<<"$(status_of "$WORK/e2.jsonl")")" == '[[10,1],[100,1]]' ]]
+
+jq_arg_duplicates() { # file -> "<last line of the command>: <name>" for every jq invocation that names the same --arg/--argjson twice (jq silently keeps the FIRST definition)
+  awk '
+    { line = line $0; if ($0 ~ /\\$/) { sub(/\\$/, "", line); next }
+      n = split(line, parts, /jq -/)
+      for (i = 2; i <= n; i++) {
+        seg = parts[i]; q = index(seg, "\047"); if (q > 0) seg = substr(seg, 1, q - 1)
+        delete seen
+        while (match(seg, /--arg(json|file|slurpfile|rawfile)? [A-Za-z_][A-Za-z0-9_]*/)) {
+          split(substr(seg, RSTART, RLENGTH), f, " "); name = f[2]
+          if (name in seen) print NR ": " name
+          seen[name] = 1
+          seg = substr(seg, RSTART + RLENGTH)
+        }
+      }
+      line = "" }' "$1"
+}
+# --- pilot2: a jq argument named twice (the plan row never reached the file) ----------------------------------------------------------------------------------
+# The pilot2 failure, retained as evidence (testdata/qc1-pilot2-failure.log): the plans row's jq was given `--arg sc "$sql_cont"` (the SQL text, already there for the generic plan) AND my new
+# `--argjson sc "$stats_clean"` (the clean table's numbers). jq keeps the FIRST definition and says nothing, so `clean:($sc + $copy)` added the SQL string to the copy's object: "string (...) and
+# object (...) cannot be added", an empty row, and `jq: invalid JSON text passed to --argjson` from record. The text-only checks did not run the construction; these do.
+P2FAIL="$HERE/testdata/qc1-pilot2-failure.log"
+grep -qF 'string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added' "$P2FAIL"; grep -qF 'jq: invalid JSON text passed to --argjson' "$P2FAIL"; grep -qF 'qc1 result=2' "$P2FAIL"
+# jq itself, minimal: the first definition of a name wins, silently.
+second_x=(--argjson x '{"a":1}')   # (built in an array, so the guard below does not read this line as a second definition)
+[[ "$(jq -nc --arg x first "${second_x[@]}" '$x')" == '"first"' ]]
+# Guard: no jq invocation in the runner, the library or these fixtures names an argument twice. (It flags the pilot2 version of the runner, below.)
+for f in "$RUNNER_SRC" "$HERE/qc1/lib.sh" "$HERE/qc1-fixtures.sh" "$HERE/qc1-runtime-fixtures.sh"; do
+  dups="$(jq_arg_duplicates "$f")"; [[ -z "$dups" ]] || { echo "qc1: $f has a jq argument named twice: $dups" >&2; exit 1; }
+done
+# THE EXACT CONSTRUCTION, RUN: the statement that builds the plans row, taken out of capture_plans as it is, with the real SQL text read from the Go source, a clean-table object, the clean-copy
+# description the runner itself makes, the probes, the tables and the shapes of the pilot's real logged plans. record is a stub that keeps the row.
+rec8_stmt="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC" | sed -n '/^  record 8 plans/,/^  unset RECORD_STATUS/p' | sed '$d')"
+[[ "$rec8_stmt" == *'record 8 plans'* && "$rec8_stmt" == *'$statsc + $copy'* ]]
+clean_copy_stmt="$(sed -n '/^make_clean_copy() {/,/^}/p' "$RUNNER_SRC" | grep '^  CLEAN_COPY_JSON=')"; [[ -n "$clean_copy_stmt" ]]
+run_rec8() { # statement-text -> row in $WORK/rec8.json (empty when the construction failed), jq's complaints in $WORK/rec8.err
+  : >"$WORK/rec8.json"; : >"$WORK/rec8.err"
+  (
+    record() { printf '%s' "$4" >"$WORK/rec8.json"; }
+    # shellcheck disable=SC2034  # read by the statement under test, which is eval'd below
+    n=100 actual_rows=200 idx=true initidx=true cont_logged=false
+    counts='{"scanner-initial":1,"scanner-continuation":10,"page-items":10,"delete-set":1,"blank-batch":1}'
+    need='["scanner-initial","page-items","delete-set","blank-batch"]'
+    gen_cont="$(jq -r '.generic.scannerContinuation.text' "$PLANS_ROW")"; gen_init="$(jq -r '.generic.scannerInitial.text' "$PLANS_ROW")"
+    sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"; sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"
+    exec_json="$(jq -c '.executions' "$PLANS_ROW")"
+    probe_bloated="$(probe_json public)"; probe_clean="$(probe_json qc1_clean)"
+    stats_bloated="$(tables_json | jq -c '.bloated')"; stats_clean="$(tables_json | jq -c '.clean | del(.kind, .vacuumed, .analyzed)')"
+    eval "$clean_copy_stmt"
+    logged_cont="$(qc1_plan_shapes "$PLANS_LOG" scanner-continuation)"; logged_init="$(qc1_plan_shapes "$PLANS_LOG" scanner-initial)"
+    eval "$1"
+  ) 2>"$WORK/rec8.err"
+}
+run_rec8 "$rec8_stmt"
+[[ ! -s "$WORK/rec8.err" ]] || { echo "qc1: the plans row construction complained: $(cat "$WORK/rec8.err")" >&2; exit 1; }
+jq -e . "$WORK/rec8.json" >/dev/null
+# what it built: the real SQL text where the SQL text belongs, the clean table's numbers merged with what was done to make it, both probes, both tables, the shapes
+[[ "$(jq -r '.generic.scannerContinuation.sql' "$WORK/rec8.json")" == "$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)" && "$(jq -r '.generic.scannerInitial.sql' "$WORK/rec8.json")" == "$(qc1_go_sql "$ROOT" reasonScanInitialSQL)" ]]
+[[ "$(jq -c '.tables.clean | [.schema, .relpages, .vacuumed, .analyzed, (.kind | startswith("a copy of the same rows in a scratch schema"))]' "$WORK/rec8.json")" == '["qc1_clean",560,true,true,true]' ]]
+[[ "$(jq -c '.tables.bloated | [.schema, .relpages, .nDeadTup]' "$WORK/rec8.json")" == '["public",13500,90000]' ]]
+[[ "$(jq -c '[.scannerProbe.schema, .scannerProbeClean.schema, .loggedShapes.initial.executions, .loggedShapes.continuation.executions, .table.actualRows, .table.backgroundRows]' "$WORK/rec8.json")" == '["public","qc1_clean",1,10,200,100]' ]]
+# ...and the row it built is a row the judge reads: nothing invalid; the two findings it keeps are the application's own logged plans (Seq Scan + Sort initial; one continuation without the id Index Cond)
+jq -nc --slurpfile e "$WORK/rec8.json" '{status:"measured", item:8, case:"plans", size:100, workers:0} + $e[0]' >"$WORK/rec8.row.jsonl"
+rj="$(qc1_judge "$WORK/rec8.row.jsonl" 6291456)"
+[[ "$(jq -sc '[.[] | select(.class == "invalid")] | length' <<<"$rj")" == 0 && "$(jq -sc '[.[] | .failure] | sort' <<<"$rj")" == '["plan-continuation","plan-initial-logged"]' ]] || { echo "the built plans row: $(jq -sc '[.[] | [.class, .failure]]' <<<"$rj")" >&2; exit 1; }
+# THE PILOT2 CONSTRUCTION, RETAINED AS A FAILURE: the same statement with the two names as pilot2 had them reproduces the recorded error and builds nothing.
+old_stmt="${rec8_stmt//--argjson statsb/--argjson sb}"; old_stmt="${old_stmt//--argjson statsc/--argjson sc}"; old_stmt="${old_stmt//\$statsb/\$sb}"; old_stmt="${old_stmt//\$statsc/\$sc}"
+[[ "$old_stmt" == *'--arg sc "$sql_cont"'*'--argjson sc "$stats_clean"'* && "$old_stmt" == *'clean:($sc + $copy)'* ]]
+run_rec8 "$old_stmt"
+[[ ! -s "$WORK/rec8.json" ]] && grep -qF 'string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added' "$WORK/rec8.err" || { echo "the pilot2 construction did not fail the way pilot2 did: $(cat "$WORK/rec8.err")" >&2; exit 1; }
+# the guard flags that very version of the runner
+printf '%s\n' "$old_stmt" >"$WORK/old-stmt.sh"; [[ -n "$(jq_arg_duplicates "$WORK/old-stmt.sh")" ]]
+# the other rows pilot2 wrote before it stopped are judged clean by the current judge, and carry what the follow-up added: the delete order control, top statements, table rows
+P2ROWS="$HERE/testdata/qc1-pilot2-delete-rows.jsonl"   # pilot2's order-control-delete-start, delete-requester-1000-keep, delete-requester-10000-keep and delete-subject-0-keep rows, as measured
+[[ -z "$(qc1_judge "$P2ROWS" 6291456)" ]]
+[[ "$(jq -sc 'map(.case)' "$P2ROWS")" == '["order-control-delete-start","delete-requester-1000-keep","delete-requester-10000-keep","delete-subject-0-keep"]' ]]
+[[ "$(jq -sc 'map(.delete.topStatements | type) | unique' "$P2ROWS")" == '["array"]' ]]
+# The observation those rows hold (not a harness fault; recorded here, not judged): in every deletion the account-erasure audit pass (account_erasure_audit.go) ran
+# `SELECT class, action, count(*) FROM (SELECT action, CASE WHEN ip IS NULL ...` over audit_logs, and it is where the time goes once the audit table has grown: a fraction of a millisecond at the start,
+# 157 ms in the 1,000-reason deletion, 2.4 s in the 10,000-reason one and 2.4 s again in a deletion of an account with NO reasons.
+[[ "$(jq -sc 'map([.case, .delete.ms, (.delete.topStatements | map(select(.query | startswith("SELECT class, action, count(*)"))) | .[0].totalMs)])' "$P2ROWS")" == '[["order-control-delete-start",69,0.1],["delete-requester-1000-keep",330,157.2],["delete-requester-10000-keep",3016,2378.9],["delete-subject-0-keep",2534,2426.8]]' ]]
+grep -qF 'SELECT class, action, count(*) FROM (SELECT action, "+classification+" AS class FROM audit_logs' "$ROOT/account_erasure_audit.go"
+
+# The top-statements filter keeps the application's statements and drops the harness's own bookkeeping that pilot2 showed leaking into the list (audit rows and bytes, audit rows by action,
+# the row count, the scheduler-row count). The patterns are read out of the SQL file and applied to the statement texts pilot2 recorded.
+ts_pats=(); while IFS= read -r l; do ts_pats+=("$l"); done < <(sed -n "s/^ *AND query !~\* '\(.*\)'$/\1/p" "$HERE/qc1/top-statements.sql")
+[[ "${#ts_pats[@]}" == 3 ]]
+ts_dropped() { local q="$1" p; for p in "${ts_pats[@]}"; do if printf '%s' "$q" | grep -Eiq -- "$p"; then return 0; fi; done; return 1; }
+for q in 'SELECT coalesce(jsonb_object_agg(action, c), $1::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s' 'SELECT count(*) || $1 || pg_total_relation_size($2) FROM audit_logs' 'SELECT count(*) FROM contact_requests' \
+  "SELECT count(*) FROM jobs WHERE created_at >= to_timestamp(\$1 / \$2) - interval \$3 AND created_at <= to_timestamp(\$4)" 'BEGIN' 'SELECT pg_current_wal_lsn()' 'SET LOCAL statement_timeout = $1'; do
+  ts_dropped "$q" || { echo "qc1: a harness statement is not filtered from the top statements: $q" >&2; exit 1; }
+done
+for q in 'SELECT class, action, count(*) FROM (SELECT action, CASE WHEN ip IS NULL OR ip = $9 THEN $10 ELSE $11 END AS class FROM audit_logs WHERE ip <> $1) classified GROUP BY class, action' 'UPDATE contact_requests SET reason = $4 WHERE id = ANY($1::bigint[]) AND reason <> $5' \
+  'INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip) SELECT r.actor_id FROM x r' 'SELECT id FROM contact_requests WHERE reason <> $3 AND (requester_id = $1 OR subject_user_id = $2) LIMIT $4' 'SELECT current_setting($1) AS text, (SELECT setting::bigint FROM pg_settings WHERE name = $2) AS ms'; do
+  if ts_dropped "$q"; then echo "qc1: an application statement is filtered from the top statements: $q" >&2; exit 1; fi
+done
 
 # --- statements: the markers are still the Go source's ------------------------------------
 for which in "${QC1_PLAN_KINDS[@]}"; do

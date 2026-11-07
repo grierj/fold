@@ -1,0 +1,8 @@
+qc1: size 10000: plans (auto_explain)
+NOTICE:  schema "qc1_clean" does not exist, skipping
+NOTICE:  drop cascades to table qc1_clean.contact_requests
+jq: error (at <unknown>): string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added
+jq: invalid JSON text passed to --argjson
+Use jq --help for help with command-line options,
+or see the jq manpage, or online docs at https://jqlang.org
+qc1 result=2 artifacts=/work/out retained_stack=0
