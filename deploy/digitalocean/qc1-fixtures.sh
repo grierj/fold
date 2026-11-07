@@ -126,7 +126,7 @@ slurp_line="$(grep -n 'jq -sc . "\$WORK/items.jsonl" >"\$out"' "$HERE/qc1-measur
 ended_line="$(grep -n '^  ended="\$(ms)"$' "$HERE/qc1-measure.sh" | head -n 1 | cut -d: -f1)"
 [[ -n "$slurp_line" && -n "$ended_line" && "$slurp_line" -lt "$ended_line" ]]
 # Every instrument a row can carry, healthy. A row is built from these and then broken one field at a time.
-INSTR='"tableRowsBefore":1010,"tableRowsAfter":1010,"auditRowsBefore":10,"auditRowsAfter":20,"auditBytesBefore":1000,"auditBytesAfter":2000,"auditActionsBefore":{"x.view":5},"auditActionsAfter":{"x.view":15,"add.reason_kept":5},"auditActionsDelta":{"x.view":10,"add.reason_kept":5},"walBytes":100,"walControlBytes":10,"appPeakKb":5,"appHwmReset":true,"dbPeakKb":7,"dbMemSamples":50,"gateSpanMs":0,"gateGrantTicks":0,"gateTicks":50,"gateHolders":0,"gateMaxGapMs":25,"gateMeanGapMs":22,"gateHoles":0,"autovacuumWorkers":0,"maxActiveClients":1,"commitCalls":1,"commitMsMax":1,"commitMsTotal":1,"schedulerOverlap":false,"schedulerRows":0'
+INSTR='"tableRowsBefore":1010,"tableRowsAfter":1010,"topStatements":[{"query":"UPDATE contact_requests SET reason = $1","calls":1,"totalMs":1.0,"meanMs":1.0,"rows":1,"sharedHit":1,"sharedRead":0,"walBytes":0}],"topStatementsNote":"cluster-wide, not attributed","auditRowsBefore":10,"auditRowsAfter":20,"auditBytesBefore":1000,"auditBytesAfter":2000,"auditActionsBefore":{"x.view":5},"auditActionsAfter":{"x.view":15,"add.reason_kept":5},"auditActionsDelta":{"x.view":10,"add.reason_kept":5},"walBytes":100,"walControlBytes":10,"appPeakKb":5,"appHwmReset":true,"dbPeakKb":7,"dbMemSamples":50,"gateSpanMs":0,"gateGrantTicks":0,"gateTicks":50,"gateHolders":0,"gateMaxGapMs":25,"gateMeanGapMs":22,"gateHoles":0,"autovacuumWorkers":0,"maxActiveClients":1,"commitCalls":1,"commitMsMax":1,"commitMsTotal":1,"schedulerOverlap":false,"schedulerRows":0'
 good_tr="{\"units\":5,\"slowestUnitMs\":200,\"totalMs\":1000,\"requestMs\":800,\"clientMs\":200,\"items\":3,\"lastStatus\":\"200\",${INSTR//\"tableRowsBefore\":1010,\"tableRowsAfter\":1010/\"tableRowsBefore\":103,\"tableRowsAfter\":103}}"
 row() { jq -nc --argjson t "$1" '{status:"measured",item:3,case:"discovery-requester-3",size:100,workers:0,reasons:3,expect:{items:3},roles:{requester:3,subject:0},traversal:$t}'; }
 row "$good_tr" >"$WORK/acc.jsonl"; [[ -z "$(qc1_judge "$WORK/acc.jsonl" 6291456)" ]] || { qc1_judge "$WORK/acc.jsonl" 6291456 >&2; exit 1; }
@@ -355,14 +355,17 @@ QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows
 # the table holds (K), its refusals, the over-cap body and the old-form comparison.
 # The scanner probe of a healthy run: eight executions per mode (one initial unit, seven continuations at cursor positions 0 to 85 per cent), each an index scan in
 # primary-key order with its id predicate as an Index Cond, no Sort, one loop, the unit's rows and a flat number of shared blocks.
-probe_json() {
-  jq -nc '{unit:50000, tableRows:1000, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8,
+probe_json() { # [schema]
+  jq -nc --arg schema "${1:-public}" '{unit:50000, tableRows:1000, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8,
     executions:[("auto","force_generic_plan") as $m
       | ({mode:$m, kind:"initial", percent:null, afterId:null, topRows:50000, hasSort:false,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0}},
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, idIndexCond:null, bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0}},
          ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), topRows:50000, hasSort:false,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0}}))]}'
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", idIndexCond:"(id > $1)", bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0}}))]}'
 }
+# The two tables behind the plans row (bloated as the matrix left it, clean copy vacuumed and analyzed) and the shapes of the application's own logged executions of a healthy run.
+tables_json() { printf '{"bloated":{"schema":"public","relpages":13500,"actualPages":13500,"reltuples":11000,"heapBytes":110592000,"indexBytes":2000000,"nLiveTup":11000,"nDeadTup":90000,"autovacuumCount":0},"clean":{"schema":"qc1_clean","relpages":560,"actualPages":560,"reltuples":11000,"heapBytes":4587520,"indexBytes":400000,"nLiveTup":11000,"nDeadTup":0,"kind":"a copy of the same rows in a scratch schema, vacuumed and analyzed","vacuumed":true,"analyzed":true}}'; }
+shapes_json() { printf '{"initial":{"executions":1,"withIdIndexCond":0,"indexScan":1,"bitmapIndexScan":0,"seqScan":0,"seqScanFilterOnId":0,"withSort":0,"withoutIdIndexCond":[1]},"continuation":{"executions":%s,"withIdIndexCond":%s,"indexScan":%s,"bitmapIndexScan":0,"seqScan":0,"seqScanFilterOnId":0,"withSort":0,"withoutIdIndexCond":[]}}' "$1" "$1" "$1"; }
 # --- rows that PROVE their labels: every number below follows from the case name, the size and the mode, the way a real run's would ---------------------
 # ins ROWS: the instrument fragment with the table size the operation saw (background plus the reasons the case loaded: size + k, immediately before it ran).
 ins() { printf '%s' "${INSTR//\"tableRowsBefore\":1010,\"tableRowsAfter\":1010/\"tableRowsBefore\":$1,\"tableRowsAfter\":$1}"; }
@@ -371,8 +374,8 @@ dele() { printf '{"status":"200","ms":100,%s,"reasonsKept":%s,"reasonsRemoved":%
 outc() { printf '{"dbOk":true,"accountDeleted":"true","reasonsBlank":%s,"reasonsWithText":%s,"decisionAudits":%s}' "$2" "$1" "$(( $1 + $2 ))"; }          # kept removed
 rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0}' "$2"; else printf '{"requester":0,"subject":%s}' "$2"; fi; }          # direction k
 gen() { # sizes counts [dense]
-  local s k d m c kept removed bc K dlist ci np pre pages digest ph probe act k9 name item
-  probe="$(probe_json)"
+  local s k d m c kept removed bc K dlist ci np pre pages digest ph probe probec act k9 name item
+  probe="$(probe_json public)"; probec="$(probe_json qc1_clean)"
   for s in $(qc1_list "$1"); do
     dlist=""; [[ -z "${3:-}" ]] || dlist="$(qc1_list "$3")"
     K=0; for k in $(qc1_list "$QC1_DELETE_COUNTS") $dlist; do (( k <= s && k > K )) && K=$k; done
@@ -383,11 +386,14 @@ gen() { # sizes counts [dense]
       printf '{"status":"measured","item":%s,"case":"%s","size":%s,"workers":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"traversal":%s,"delete":%s}\n' "$item" "$name" "$s" "$(outc 0 0)" "$(trav "$s" 0)" "$(dele "$s" 0 0)"
     done
     printf '{"status":"measured","item":3,"case":"order-control-requester-10","size":%s,"workers":0,"targetReasonLen":1000,"reasons":10,"expect":{"items":10},"traversal":%s}\n' "$s" "$(trav "$((s + 10))" 10)"
+    for name in start end; do
+      printf '{"status":"measured","item":6,"case":"order-control-delete-%s","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"delete":%s}\n' "$name" "$s" "$(outc 0 0)" "$(dele "$s" 0 0)"
+    done
     printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true,"tableRowsBefore":%s},"countMismatch":{"status":"400","unchanged":true,"tableRowsBefore":%s},"changedSet":{"status":"409","unchanged":true,"tableRowsBefore":%s},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true,"tableRowsBefore":%s},"legacyComparison":{"synthetic":true,"capacityEntries":52802,"entriesOver":52803,"overStatus":"413","fitStatus":"409","fitUnchanged":true,"tableRowsBefore":{"fit":%s,"over":%s}},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":%s,"traversal":%s}\n' \
       "$s" "$K" "$(( 400 + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$(outc "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(dele "$(( s + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(trav "$(( s + K ))" "$K")"
     printf '{"status":"measured","item":7,"case":"human-progress","size":%s,"workers":0,"assessment":{"perCount":[{"reasons":10}]}}\n' "$s"
-    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s}\n' \
-      "$s" "$s" "$act" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe"
+    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s,"scannerProbeClean":%s,"tables":%s,"loggedShapes":%s}\n' \
+      "$s" "$s" "$act" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe" "$probec" "$(tables_json)" "$(shapes_json "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))")"
     for bc in $(qc1_list "$QC1_BROWSER_COUNTS") $dlist; do
       (( bc <= s )) || continue
       np=$(( (bc + 99) / 100 )); pre=$(( 35 + 40 * bc ))
@@ -620,8 +626,14 @@ mut gen-init-gone 'if .item == 8 then del(.generic.scannerInitial) else . end'; 
 # The continuation must be bounded by an id Index Cond: the generic plan, or the application's own logged plan, without one is a budget finding.
 mut gen-nocond 'if .item == 8 then .generic.scannerContinuation.indexCondOnId = false else . end'
 st="$(status_of "$WORK/e2.gen-nocond")"; [[ "$(jq -r '[.budgetFailures[] | select(.failure == "plan-continuation")] | length > 0' <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
-mut logged-nocond 'if .item == 8 and .size == 100 then .continuationPlanIndexCond = false | .plans["scanner-continuation"] = 1 else . end'
-st="$(status_of "$WORK/e2.logged-nocond")"; [[ "$(jq -r '[.budgetFailures[] | select(.failure == "plan-continuation")] | length > 0' <<<"$st")" == true ]]
+mut logged-nocond 'if .item == 8 and .size == 100 then .loggedShapes.continuation = {executions:10, withIdIndexCond:9, indexScan:6, bitmapIndexScan:3, seqScan:1, seqScanFilterOnId:1, withSort:4, withoutIdIndexCond:[1]} | .plans["scanner-continuation"] = 10 else . end'
+st="$(status_of "$WORK/e2.logged-nocond")"
+[[ "$(jq -r '[.budgetFailures[] | select(.failure == "plan-continuation")] | length' <<<"$st")" == 1 && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+# ...and says precisely what the log held: 9 of 10 with the id predicate as an Index Cond, execution 1 only a Filter on a Seq Scan, 4 with a Sort. Never "no Index Cond" for the ones that had one.
+[[ "$(jq -r '.budgetFailures[] | select(.failure == "plan-continuation") | .why' <<<"$st")" == 'of 10 logged continuation executions 9 had the id predicate as an Index Cond (on an Index Scan, or beneath a Bitmap Heap Scan); the others (executions 1) had it only as a Filter on a Seq Scan. 4 had a Sort above the scan.' ]]
+mut logged-init-sort 'if .item == 8 and .size == 100 then .loggedShapes.initial = {executions:1, withIdIndexCond:0, indexScan:0, bitmapIndexScan:0, seqScan:1, seqScanFilterOnId:0, withSort:1, withoutIdIndexCond:[1]} else . end'
+st="$(status_of "$WORK/e2.logged-init-sort")"; [[ "$(jq -r '[.budgetFailures[] | select(.failure == "plan-initial-logged")] | length' <<<"$st")" == 1 && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+mut logged-shapes-gone 'if .item == 8 and .size == 100 then .loggedShapes.continuation = null | .plans["scanner-continuation"] = 3 else . end'; expect_invalid logged-shapes-gone logged-shapes-missing
 # Browser response accounting: the decoded body sizes must be there (a chunked or unreadable response gives none), the walk must have the requests its pages need.
 for bad in null 0 '"123"' 9999 '-5'; do
   mut "bytes-$bad" "if .item == 10 and .case == \"browser-panel-100\" then .browser.pageResponseBytes = $bad else . end"; expect_invalid "bytes-$bad" browser-bytes
@@ -657,8 +669,8 @@ mut failed6 'if .item == 6 and .case == "delete-subject-100-remove" and .size ==
 [[ "$(jq -c '.missing | map(.case + "@" + (.size|tostring))' <<<"$(status_of "$WORK/e2.failed6")")" == '["delete-subject-100-remove@100"]' ]]
 grep -v '"item":3,"case":"discovery-requester-0","size":10,' "$WORK/e2.jsonl" >"$WORK/e4.jsonl"
 [[ "$(jq -r '.missing | length' <<<"$(status_of "$WORK/e4.jsonl")")" == 1 ]]
-# A whole size missing lists all of it: 41 rows (sparse, unrelated, 8 discovery, the order control, request size, progress, plans, 2 browser, 24 deletions: 0, 10, 100 and 1,000 reasons in both directions and all three modes) with the observation at the new largest size.
-[[ "$(jq -r '.missing | length' <<<"$(qc1_evidence_status "$WORK/e2.jsonl" 10,100,1000 0,10,100,1000,10000 "$WORK/env.json" "$HEAD_FAKE" 6291456)")" == 41 ]]
+# A whole size missing lists all of it: 43 rows (sparse, unrelated, 8 discovery, the discovery order control, the two delete order controls, request size, progress, plans, 2 browser, 24 deletions: 0, 10, 100 and 1,000 reasons in both directions and all three modes) with the observation at the new largest size.
+[[ "$(jq -r '.missing | length' <<<"$(qc1_evidence_status "$WORK/e2.jsonl" 10,100,1000 0,10,100,1000,10000 "$WORK/env.json" "$HEAD_FAKE" 6291456)")" == 43 ]]
 refused 'not a whole number' status_of "$WORK/e2.jsonl" 10,x 0
 # The judge failing is itself invalid: a row the judge cannot read must not read as clean.
 { cat "$WORK/e2.jsonl"; printf 'this line is not json\n'; } >"$WORK/e2.garbled"
@@ -981,7 +993,7 @@ mut probe-session "$PBS then .scannerProbe.sameSession = false else . end"; expe
 mut probe-noscan "$PBS then .scannerProbe.executions[3].scan = null else . end"; expect_invalid probe-noscan scanner-probe-missing
 mut probe-nobuf "$PBS then .scannerProbe.executions[3].scan.sharedHit = null else . end"; expect_invalid probe-nobuf scanner-probe-missing
 mut probe-overrun "$PBS then .scannerProbe.executions[2].scan.rows = 50001 else . end"; expect_invalid probe-overrun scanner-unit-overrun
-for spec in 'sort|.hasSort = true|scanner-sort' 'seq|.scan.nodeType = "Seq Scan"|scanner-not-indexed' 'filter|.scan.filter = "(id > $1)"|scanner-id-filter' 'nocond|.scan.indexCond = null|scanner-continuation-cond' 'loops|.scan.loops = 2|scanner-loops'; do
+for spec in 'sort|.hasSort = true|scanner-sort' 'seq|.scan.nodeType = "Seq Scan"|scanner-not-indexed' 'filter|.scan.filter = "(id > $1)"|scanner-id-filter' 'nocond|.scan += {indexCond: null, idIndexCond: null}|scanner-continuation-cond' 'loops|.scan.loops = 2|scanner-loops'; do
   IFS='|' read -r nm filt fail <<<"$spec"
   mut "probe-$nm" "$PBS then .scannerProbe.executions |= (to_entries | map(if .key == 12 then .value |= ($filt) else . end) | map(.value)) else . end"
   st="$(status_of "$WORK/e2.probe-$nm")"
@@ -1002,14 +1014,14 @@ pp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":5
 # The runner: it runs the REAL statements prepared, eight times per mode in one session, in both plan cache modes, read-only, AFTER the logged capture is off and BEFORE the scenario is dropped.
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
 for pat in 'qc1_go_sql "$ROOT" reasonScanInitialSQL' 'qc1_go_sql "$ROOT" reasonScanContinuationSQL' 'for mode in auto force_generic_plan' 'SET plan_cache_mode = $mode' 'PREPARE qi (bigint) AS $sql_init' 'PREPARE qc (bigint, bigint) AS $sql_cont' \
-  'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qi($unit)' 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qc($id, $unit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
+  'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($unit)' 'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $unit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
   grep -qF -- "$pat" <<<"$sp_body" || { echo "qc1: scanner_probe lost: $pat" >&2; exit 1; }
 done
 if grep -Eiq 'INSERT|UPDATE|DELETE|TRUNCATE' <<<"$(grep -v '^ *#' <<<"$sp_body" | grep -v 'sameSession\|note:')"; then echo 'qc1: the scanner probe writes' >&2; exit 1; fi
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
-l_off="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_log="$(grep -n 'docker logs --since' <<<"$cp_body" | cut -d: -f1)"; l_probe="$(grep -n '^  scanner_probe$' <<<"$cp_body" | cut -d: -f1)"; l_drop="$(grep -n '^  drop_scenarios$' <<<"$cp_body" | tail -n 1 | cut -d: -f1)"
+l_off="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_log="$(grep -n 'docker logs --since' <<<"$cp_body" | cut -d: -f1)"; l_probe="$(grep -n '^  scanner_probe public;' <<<"$cp_body" | cut -d: -f1)"; l_drop="$(grep -n '^  drop_scenarios$' <<<"$cp_body" | tail -n 1 | cut -d: -f1)"
 [[ -n "$l_off$l_log$l_probe$l_drop" && "$l_off" -lt "$l_log" && "$l_log" -lt "$l_probe" && "$l_probe" -lt "$l_drop" ]]
-grep -qF 'scannerProbe:$probe' <<<"$cp_body"
+grep -qF 'scannerProbe:$probe, scannerProbeClean:$probec' <<<"$cp_body"
 # (5) The browser measurement starts its clock at the Delete-menu action, on the page, and the stamps are the page's own.
 PD="$HERE/qc1/panel-driver.mjs"; PC="$HERE/qc1/panel-core.mjs"
 for pat in 'qc.menuAt = e.timeStamp' 'qc.firstPageAt = t' 'qc.walkDoneAt = t' 'qc.walk2DoneAt = t' 'qc.endAt = performance.now()' 'async timeline()' 'async lastClickEnd()' 'MutationObserver(stamp)'; do
@@ -1177,6 +1189,132 @@ st="$(qc1_evidence_status "$WORK/crash2.jsonl" 100 100 "$WORK/env.json" "$HEAD_F
 grep -qF 'await observer.drain(10000);' "$HERE/qc1/panel-driver.mjs"; grep -qF 'observer.observationsWithMissing()' "$HERE/qc1/panel-driver.mjs"
 if grep -n 'observer.observations()' "$HERE/qc1/panel-driver.mjs"; then echo 'qc1: the driver collects only the completed observations' >&2; exit 1; fi
 
+# --- the pilot1 follow-up: harness corrections that keep every measured miss (R3 is not softened) --------------------------------------------------------------
+PLANS_LOG="$HERE/testdata/qc1-pilot1-scanner-plans.log"   # the first 128 lines of pilot1's explain-10000.log: the application's own logged scanner executions, as measured
+PLANS_ROW="$HERE/testdata/qc1-pilot1-plans-row.json"      # pilot1's item-8 row, as measured
+# (1) `plan-continuation`: the extraction is CAPTURED and searched, never `extract | grep -q`. THE PIPE FAILURE FIRST: under pipefail a grep -q that matches in the first block closes the
+# pipe while the extraction still has far more than a pipe buffer to write, and the pipeline is reported as failed although the text is there.
+big="$WORK/big-plans.log"
+{ for i in $(seq 1 3000); do
+    printf '2026-11-07 20:13:%02d.000 UTC [1] LOG:  duration: 1.0 ms  plan:\n\tQuery Text: SELECT id, requester_id, subject_user_id, (reason <> %s) AS has_reason %s\n\tQuery Parameters: $1 = %s, $2 = %s\n\tLimit  (cost=0.29..1.0 rows=1 width=25) (actual time=0.01..0.02 rows=1 loops=1)\n\t  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.018..0.5 rows=1 loops=1)\n\t        Index Cond: (id > $1)\n\t        Buffers: shared hit=1 padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding-padding\n' \
+      "$((i % 60))" "''" "$(qc1_plan_marker scanner-continuation)" "'$i'" "'50000'"
+  done; } >"$big"
+[[ "$(qc1_extract_plans "$big" scanner-continuation | wc -c)" -gt 1000000 ]]   # far more than a 64 KiB pipe buffer
+old_pattern() { set -o pipefail; qc1_extract_plans "$big" scanner-continuation | grep -q 'Index Cond: (id >'; }
+if ( old_pattern ); then echo 'qc1: the fixture does not trigger the pipefail/SIGPIPE failure it is meant to demonstrate' >&2; exit 1; fi   # the OLD pattern fails on a log that plainly contains the text
+( set -o pipefail; qc1_plan_has "$big" scanner-continuation 'Index Cond: (id >' )                  # the new helper finds it, under pipefail, on the same log
+( set -Eeuo pipefail; qc1_plan_has "$big" scanner-continuation 'Index Cond: (id >' )
+if qc1_plan_has "$big" scanner-continuation 'no such text anywhere'; then echo 'qc1: plan_has found text that is not there' >&2; exit 1; fi
+rc=0; qc1_plan_has "$WORK/no-such.log" scanner-continuation 'x' 2>/dev/null || rc=$?; [[ "$rc" == 2 ]]
+( set -o pipefail; qc1_plan_has "$PLANS_LOG" scanner-continuation 'Index Cond: (id >' )              # and on the real pilot log, under pipefail
+[[ "$(qc1_plan_shapes "$big" scanner-continuation | jq -c '[.executions, .withIdIndexCond, .indexScan, .withSort]')" == '[3000,3000,3000,0]' ]]
+# the shapes of the REAL pilot log: 10 continuation executions, 9 with the id predicate as an Index Cond (6 Index Scan, 3 beneath a Bitmap Heap Scan), the first only a Filter on a Seq Scan, 4 with a Sort; the one initial execution a Seq Scan + Sort
+[[ "$(qc1_plan_shapes "$PLANS_LOG" scanner-continuation)" == '{"executions":10,"withIdIndexCond":9,"indexScan":6,"bitmapIndexScan":3,"seqScan":1,"seqScanFilterOnId":1,"withSort":4,"withoutIdIndexCond":[1]}' ]]
+[[ "$(qc1_plan_shapes "$PLANS_LOG" scanner-initial)" == '{"executions":1,"withIdIndexCond":0,"indexScan":0,"bitmapIndexScan":0,"seqScan":1,"seqScanFilterOnId":0,"withSort":1,"withoutIdIndexCond":[1]}' ]]
+# no `extract | grep` anywhere: the runner and the library read plans through a captured variable
+if grep -nE 'qc1_extract_plans[^|]*\|[^|]*grep -q' "$RUNNER_SRC" "$HERE/qc1/lib.sh" | grep -v '^[^:]*:[0-9]*: *#'; then echo 'qc1: a plan extraction is piped into grep -q' >&2; exit 1; fi
+grep -qF 'logged_cont="$(qc1_plan_shapes "$WORK/pglog-$n.txt" scanner-continuation)"' "$RUNNER_SRC"; grep -qF 'loggedShapes:{initial:$linit, continuation:$lcont}' "$RUNNER_SRC"
+# (2) THE PILOT'S OWN ROW, judged by the corrected rules (the bitmap executions get the Bitmap Index Scan the pilot's logs show beneath them; the row is otherwise as measured).
+# Every miss is still a budget finding; none is demoted for the table being smaller than the unit; the two Bitmap executions are no longer called "no Index Cond".
+jq -c '([39] | implode) as $q | .scannerProbe.schema = "public" | .scannerProbe.executions |= map(.scan.schema = "public"
+        | if .scan.nodeType == "Bitmap Heap Scan" then .scan.bitmapIndex = {nodeType:"Bitmap Index Scan", indexName:"contact_requests_pkey", indexCond:("(id > " + $q + (.afterId | tostring) + $q + "::bigint)")} | .scan.idIndexCond = .scan.bitmapIndex.indexCond
+          elif (.scan.indexCond | type) == "string" then .scan.idIndexCond = .scan.indexCond else .scan.idIndexCond = null end)
+      | .loggedShapes = {initial: {executions:1, withIdIndexCond:0, indexScan:0, bitmapIndexScan:0, seqScan:1, seqScanFilterOnId:0, withSort:1, withoutIdIndexCond:[1]},
+                         continuation: {executions:10, withIdIndexCond:9, indexScan:6, bitmapIndexScan:3, seqScan:1, seqScanFilterOnId:1, withSort:4, withoutIdIndexCond:[1]}}' "$PLANS_ROW" >"$WORK/pilot-plans.jsonl"
+pj="$(qc1_judge "$WORK/pilot-plans.jsonl" 6291456)"
+[[ "$(jq -sc '[.[] | select(.class == "budget") | .failure] | group_by(.) | map([.[0], length])' <<<"$pj")" == '[["plan-continuation",1],["plan-initial-logged",1],["scanner-continuation-cond",2],["scanner-id-filter",2],["scanner-not-indexed",5],["scanner-sort",5]]' ]] || { echo "pilot findings: $(jq -sc '[.[] | select(.class == "budget") | .failure] | group_by(.) | map([.[0], length])' <<<"$pj")" >&2; exit 1; }
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-continuation-cond")] | length' <<<"$pj")" == 2 ]] || { echo "continuation-cond count" >&2; exit 1; }   # afterId 1 and 2001: the Seq Scans with only a Filter; the two Bitmap executions are NOT among them
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-continuation-cond") | .afterId] | sort' <<<"$pj")" == '[1,2001]' ]]
+[[ "$(jq -sc '[.[] | select(.class == "budget" and .failure == "scanner-not-indexed" and .nodeType == "Bitmap Heap Scan") | .why] | unique' <<<"$pj")" == '["the id predicate IS an Index Cond (on the Bitmap Index Scan, not on the parent), but the rows are fetched through a bitmap heap scan and need a Sort: not an ordered Index Scan on the primary key"]' ]]
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-sort" and .afterId == 5001) | .plan]' <<<"$pj")" == "[\"Bitmap Heap Scan over Bitmap Index Scan on contact_requests_pkey (Index Cond (id > '5001'::bigint)) + Sort\"]" ]]
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-sort" and .afterId == 1) | .plan]' <<<"$pj")" == "[\"Seq Scan with Filter (id > '1'::bigint) + Sort\"]" ]]
+[[ "$(jq -sc '[.[] | select(.class == "budget" and (.failure | startswith("scanner-") or startswith("plan-"))) | select(.disposition != null or .requirement != null)] | length' <<<"$pj")" == 16 ]]   # every one carries its requirement and its open disposition (the generic-plan finding aside: none was raised)
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .belowUnit] | unique' <<<"$pj")" == '[true]' ]]   # recorded as a FACT beside the finding (11,000 rows < the 50,000 unit), never as a reason to drop it
+[[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .tableRows] | unique' <<<"$pj")" == '[11000]' ]]
+[[ "$(jq -sc '[.[] | select(.failure == "plan-continuation") | .why]' <<<"$pj")" == '["of 10 logged continuation executions 9 had the id predicate as an Index Cond (on an Index Scan, or beneath a Bitmap Heap Scan); the others (executions 1) had it only as a Filter on a Seq Scan. 4 had a Sort above the scan."]' ]]
+# nothing else about the pilot row went wrong, except what the pilot predates (a clean probe and the tables)
+[[ "$(jq -sc '[.[] | select(.class == "invalid") | .failure] | unique' <<<"$pj")" == '["clean-table-missing","scanner-probe-missing"]' ]]
+# The parser reads the id Index Cond from beneath a Bitmap Heap Scan, and the schema the scan read.
+cat >"$WORK/bitmap.json" <<'JSON'
+[{"Plan":{"Node Type":"Limit","Actual Rows":8810,"Plans":[{"Node Type":"Sort","Plans":[{"Node Type":"Bitmap Heap Scan","Relation Name":"contact_requests","Schema":"qc1_clean","Recheck Cond":"(id > '3981'::bigint)","Actual Rows":8810,"Actual Loops":1,"Shared Hit Blocks":2295,"Shared Read Blocks":0,"Plans":[{"Node Type":"Bitmap Index Scan","Index Name":"contact_requests_pkey","Index Cond":"(id > '3981'::bigint)","Actual Rows":20205,"Shared Hit Blocks":130}]}]}]}}]
+JSON
+bp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":3981}]' <"$WORK/bitmap.json")"
+[[ "$(jq -c '.[0] | [.hasSort, .scan.nodeType, .scan.indexCond, .scan.idIndexCond, .scan.bitmapIndex.nodeType, .scan.bitmapIndex.indexName, .scan.bitmapIndex.indexCond, .scan.schema]' <<<"$bp")" == "[true,\"Bitmap Heap Scan\",null,\"(id > '3981'::bigint)\",\"Bitmap Index Scan\",\"contact_requests_pkey\",\"(id > '3981'::bigint)\",\"qc1_clean\"]" ]]
+# A bitmap execution in a probe: no "no Index Cond" finding, but the Sort and the not-an-ordered-Index-Scan findings are kept, in words.
+BPR='if .item == 8 and .size == 100'
+mut bm-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true | .scan += {nodeType:\"Bitmap Heap Scan\", indexName:null, indexCond:null, idIndexCond:\"(id > 1)\", bitmapIndex:{nodeType:\"Bitmap Index Scan\", indexName:\"contact_requests_pkey\", indexCond:\"(id > 1)\"}} else . end) else . end"
+st="$(status_of "$WORK/e2.bm-exec")"
+[[ "$(jq -c '[.budgetFailures[] | select(.item == 8) | .failure] | sort' <<<"$st")" == '["scanner-not-indexed","scanner-sort"]' && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]] || { echo "bitmap: $(jq -c '[.budgetFailures, .invalid]' <<<"$st" | cut -c1-600)" >&2; exit 1; }
+mut seq-exec "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 10 then .hasSort = true | .scan += {nodeType:\"Seq Scan\", indexName:null, indexCond:null, idIndexCond:null, bitmapIndex:null, filter:\"(id > '2001'::bigint)\"} else . end) else . end"
+st="$(status_of "$WORK/e2.seq-exec")"
+[[ "$(jq -c '[.budgetFailures[] | select(.item == 8) | .failure] | sort' <<<"$st")" == '["scanner-continuation-cond","scanner-id-filter","scanner-not-indexed","scanner-sort"]' ]]
+# Findings are kept whatever the table: the same sort on a table over the unit is the same finding, with belowUnit false beside it.
+plans_one 49001 2 | jq -c '.scannerProbe.executions |= map(if .mode == "auto" and .percent == 25 then .hasSort = true else . end)' >"$WORK/plans.bigsort"
+[[ "$(qc1_judge "$WORK/plans.bigsort" 6291456 | jq -c 'select(.failure == "scanner-sort") | [.belowUnit, .tableRows, .unitRows, .disposition[0:5]]')" == '[false,50001,50000,"open:"]' ]]
+mut small-sort "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
+[[ "$(jq -r '[.budgetFailures[] | select(.failure == "scanner-sort") | .belowUnit] | unique | tostring' <<<"$(status_of "$WORK/e2.small-sort")")" == "[true]" ]]
+# (3) The clean-table evidence is a SEPARATE labelled observation: the bloated probe is never replaced by it, each says which schema it read, both tables are described, the clean copy says it was vacuumed and analyzed.
+mut clean-gone "$BPR then del(.scannerProbeClean) else . end"; expect_invalid clean-gone scanner-probe-missing
+mut clean-tables-gone "$BPR then del(.tables) else . end"; expect_invalid clean-tables-gone clean-table-missing
+mut clean-notvac "$BPR then .tables.clean.vacuumed = false else . end"; expect_invalid clean-notvac clean-table-missing
+mut clean-noanalyze "$BPR then .tables.clean.analyzed = null else . end"; expect_invalid clean-noanalyze clean-table-missing
+mut clean-nopages "$BPR then del(.tables.bloated.relpages) else . end"; expect_invalid clean-nopages clean-table-missing
+mut clean-str "$BPR then .tables.clean = \"x\" else . end"; expect_invalid clean-str clean-table-missing
+mut clean-schema "$BPR then .scannerProbeClean.schema = \"public\" else . end"; expect_invalid clean-schema scanner-probe-table
+mut clean-scan-schema "$BPR then .scannerProbeClean.executions[3].scan.schema = \"public\" else . end"; expect_invalid clean-scan-schema scanner-probe-table
+mut bloated-schema "$BPR then .scannerProbe.executions[0].scan.schema = \"qc1_clean\" else . end"; expect_invalid bloated-schema scanner-probe-table
+mut clean-shape "$BPR then .scannerProbeClean.executions |= map(select(.mode != \"auto\" or .percent != 85)) else . end"; expect_invalid clean-shape scanner-probe-missing
+mut clean-disagree "$BPR then .scannerProbeClean.executions |= map(if .mode == \"force_generic_plan\" and .percent == 55 then .scan.rows = 1 else . end) else . end"; expect_invalid clean-disagree scanner-mode-disagreement
+# a miss on the bloated table is kept when the clean copy is healthy (the original measurement is not erased), and the reverse is reported as the clean table's own
+mut bloated-miss "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
+st="$(status_of "$WORK/e2.bloated-miss")"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .variant]' <<<"$st")" == '["bloated"]' ]]
+mut clean-miss "$BPR then .scannerProbeClean.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
+st="$(status_of "$WORK/e2.clean-miss")"; [[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .variant]' <<<"$st")" == '["clean"]' ]]
+# the reading list: every scanner and plan miss grouped for review, nothing demoted (budgetFailures still has each one)
+mut disp "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and (.percent == 25 or .percent == 40) then .hasSort = true else . end) | .scannerProbeClean.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
+st="$(status_of "$WORK/e2.disp")"
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort")] | length' <<<"$st")" == 3 && "$(jq -c '.dispositions | map([.finding, .variant, .count])' <<<"$st")" == '[["scanner-sort","bloated",2],["scanner-sort","clean",1]]' ]]
+[[ "$(jq -r '.dispositions[0].status' <<<"$st")" == "open: a measured miss, retained; it needs a reviewed engineering disposition (not demoted at any table size)" && "$(jq -r '.dispositions[0].belowUnit' <<<"$st")" == true ]]
+[[ "$(jq -c '.dispositions' <<<"$(status_of "$WORK/e2.jsonl")")" == '[]' ]]
+# the tables are recorded by the runner, the clean copy in a scratch schema the original is never touched through
+cc_body="$(sed -n '/^make_clean_copy() {/,/^}/p' "$RUNNER_SRC")"
+for pat in 'CREATE SCHEMA qc1_clean' 'LIKE public.contact_requests INCLUDING ALL' 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' 'VACUUM (ANALYZE) qc1_clean.contact_requests'; do grep -qF -- "$pat" <<<"$cc_body" || { echo "qc1: make_clean_copy lost: $pat" >&2; exit 1; }; done
+if grep -E 'VACUUM|ALTER|TRUNCATE|DELETE|UPDATE|DROP TABLE' <<<"$cc_body" | grep -v 'qc1_clean' | grep -v 'CLEAN_COPY_JSON' | grep -v '^ *#'; then echo 'qc1: make_clean_copy touches the original table' >&2; exit 1; fi
+grep -qF "scanner_probe public; probe_bloated=" <<<"$cp_body"; grep -qF 'scanner_probe qc1_clean; probe_clean=' <<<"$cp_body"; grep -qF "DROP SCHEMA qc1_clean CASCADE" <<<"$cp_body"
+grep -qF 'tables:{bloated:$sb, clean:($sc + $copy)}' <<<"$cp_body"
+l_pb="$(grep -n 'scanner_probe public' <<<"$cp_body" | cut -d: -f1)"; l_cc="$(grep -n '^  make_clean_copy' <<<"$cp_body" | cut -d: -f1)"; l_pc="$(grep -n 'scanner_probe qc1_clean' <<<"$cp_body" | cut -d: -f1)"; l_dr="$(grep -n 'DROP SCHEMA qc1_clean' <<<"$cp_body" | cut -d: -f1)"; l_ds="$(grep -n '^  drop_scenarios$' <<<"$cp_body" | tail -n 1 | cut -d: -f1)"
+[[ -n "$l_pb$l_cc$l_pc$l_dr$l_ds" && "$l_pb" -lt "$l_cc" && "$l_cc" -lt "$l_pc" && "$l_pc" -lt "$l_dr" && "$l_dr" -lt "$l_ds" ]]
+grep -qF "'schema', n.nspname, 'relpages', c.relpages, 'actualPages'" "$RUNNER_SRC"
+# (4) Top statements per operation, and the delete order control.
+mut top-gone 'if .item == 3 and .case == "discovery-requester-100" then del(.traversal.topStatements) else . end'; expect_invalid top-gone metric-missing
+mut top-str 'if .item == 6 and .case == "delete-subject-100-mixed" then .delete.topStatements = "x" else . end'; expect_invalid top-str metric-missing
+mut top-win "$BP then del(.window.topStatements) else . end"; expect_invalid top-win metric-missing
+mut top-put 'if .item == 5 and .case == "legacy-put" then del(.put.topStatements) else . end'; [[ "$(legacy_pending "$WORK/e2.top-put")" == 1 ]]
+ts_sql="$HERE/qc1/top-statements.sql"
+for pat in 'pg_stat_statements' 'total_exec_time DESC' 'LIMIT 8' 'cluster-wide' 'NOT attributed'; do grep -qF -- "$pat" "$ts_sql" || { echo "qc1: top-statements.sql lost: $pat" >&2; exit 1; }; done
+if grep -v '^--' "$ts_sql" | grep -Eiq 'reset|insert|update |delete|truncate|alter|create|drop|vacuum'; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
+ins_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
+[[ "$(grep -c 'pg_stat_statements_reset' <<<"$ins_body")" == 1 ]]   # one reset, at the start of the window, as before: the COMMIT timing is read from the same window
+l_reset="$(grep -n 'pg_stat_statements_reset' <<<"$ins_body" | cut -d: -f1)"; l_end="$(grep -n 'OP_END="\$(ms)"' <<<"$ins_body" | cut -d: -f1)"; l_commit="$(grep -n 'COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX' <<<"$ins_body" | cut -d: -f1)"; l_top="$(grep -n 'TOP_STATEMENTS="\$(top_statements)"' <<<"$ins_body" | cut -d: -f1)"
+[[ -n "$l_reset$l_end$l_commit$l_top" && "$l_reset" -lt "$l_end" && "$l_end" -lt "$l_commit" && "$l_commit" -lt "$l_top" ]]   # after the window and after the COMMIT figures
+grep -qF 'topStatements:$top, topStatementsNote:' "$RUNNER_SRC"; grep -qF 'not attributed to this operation; read after the window, nothing reset' "$RUNNER_SRC"
+# the delete order control: a deletion of an account with no reasons at the START and at the END of each size's run, in the matrix, judged like any deletion (table rows, outcome), compared in the evidence
+os_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER_SRC")"
+l_start="$(grep -n 'order_control_delete "\$n" start' <<<"$os_body" | cut -d: -f1)"; l_unrel="$(grep -n '(2) every reason belongs to someone else' <<<"$os_body" | cut -d: -f1)"; l_oc="$(grep -n 'order-control-requester-10' <<<"$os_body" | head -n 1 | cut -d: -f1)"; l_endc="$(grep -n 'order_control_delete "\$n" end' <<<"$os_body" | cut -d: -f1)"; l_sparse="$(grep -n 'blanking background reasons for the sparse case' <<<"$os_body" | cut -d: -f1)"
+[[ -n "$l_start$l_unrel$l_oc$l_endc$l_sparse" && "$l_start" -lt "$l_unrel" && "$l_oc" -lt "$l_endc" && "$l_endc" -lt "$l_sparse" ]]
+grep -qF 'record 6 "order-control-delete-$which"' "$RUNNER_SRC"
+for w in start end; do
+  grep -v "\"case\":\"order-control-delete-$w\",\"size\":100," "$WORK/e2.jsonl" >"$WORK/e2.no-oc"
+  [[ "$(jq -c --arg c "order-control-delete-$w@100" '[.missing[] | .case + "@" + (.size | tostring)] | index($c) != null' <<<"$(status_of "$WORK/e2.no-oc")")" == true ]] || { echo "order-control-delete-$w is not required" >&2; exit 1; }
+done
+mut oc-rows 'if .item == 6 and .case == "order-control-delete-end" and .size == 100 then .delete.tableRowsBefore = 1010 else . end'; expect_invalid oc-rows table-rows-mismatch
+mut oc-reasons 'if .item == 6 and .case == "order-control-delete-start" then .reasons = 5 else . end'; expect_invalid oc-reasons label-mismatch
+mut oc-outcome 'if .item == 6 and .case == "order-control-delete-end" and .size == 10 then .outcome.accountDeleted = "false" else . end'; expect_invalid oc-outcome outcome-unverified
+mut oc-ms 'if .item == 6 and .case == "order-control-delete-end" and .size == 100 then .delete.ms = 250 | .delete.gateTicks = 200 | .delete.dbMemSamples = 200 | .delete.gateHolders = 1 else . end'
+st="$(status_of "$WORK/e2.oc-ms")"
+[[ "$(jq -c '.confounding.deleteOrderControls | map(select(.size == 100) | [.startMs, .endMs, .ratio])' <<<"$st")" == '[[100,250,2.5]]' && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+[[ "$(jq -c '.confounding.deleteOrderControls | map([.size, .ratio])' <<<"$(status_of "$WORK/e2.jsonl")")" == '[[10,1],[100,1]]' ]]
+
 # --- statements: the markers are still the Go source's ------------------------------------
 for which in "${QC1_PLAN_KINDS[@]}"; do
   marker="$(qc1_source_marker "$which")"
@@ -1300,7 +1438,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # another revision is refused. The runner runs from a clean copy of its own files
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
+cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
 cp "$ROOT/api_profile.go" "$ROOT/main.go" "$CLONE/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null

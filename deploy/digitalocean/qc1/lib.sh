@@ -42,7 +42,7 @@ QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are 
 QC1_PENDING_5='the legacy PUT body is T07B-3a; its route is not in this tree'
 # Files whose bytes decide what is measured; each must equal HEAD's blob.
 QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/scenario.sql
-  deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
+  deploy/digitalocean/qc1/top-statements.sql deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
   deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json)
 # The statements whose plans must be present for every size.
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
@@ -340,16 +340,96 @@ qc1_judge_defs() { cat <<'JQ'
       elif $m.item == 1 or $m.item == 2 then 0
       elif $m.item == 3 and $m.case == "order-control-requester-10" then 10
       elif $m.item == 3 and ($m.case | startswith("discovery-")) then ($m.case | split("-") | .[2] | tonumber? // null)
+      elif $m.item == 6 and ($m.case == "order-control-delete-start" or $m.case == "order-control-delete-end") then 0
       elif $m.item == 6 and ($m.case | startswith("delete-")) then ($m.case | split("-") | .[2] | tonumber? // null)
       elif $m.item == 10 and ($m.case | startswith("browser-panel-")) then ($m.case | ltrimstr("browser-panel-") | split("-") | .[0] | tonumber? // null)
       elif $m.item == 9 then ($m.reasons | numz)
       elif $m.item == 5 and $m.case == "request-size" then ($m.request.largest.reasons | numz)
       elif $m.item == 8 and $m.case == "plans" then (if ($m.size | type) == "number" then ([$m.size, 1000] | min) else null end)
       else null end;
+    # The scanner probe (the REAL statements, one session, eight executions per plan cache mode, at the prescribed cursor positions). The collector promises exactly this
+    # shape and the judge holds it to it: both modes, each with exactly one initial unit and seven continuations at 0, 10, 25, 40, 55, 70 and 85 per cent of the table, at
+    # strictly increasing cursor ids, the same ids in both modes, every execution with its child scan's rows, loops and buffers. Anything else is invalid, never partial credit.
+    # $variant says which table the probe ran against ("bloated": the table as the matrix left it; "clean": a VACUUM (ANALYZE)d copy).
+    def probe_structure($p; $variant):
+      (
+          ( [0, 10, 25, 40, 55, 70, 85] ) as $pcts
+          | ( if ($p | type) != "object" or ($p.executions | type) != "array" or $p.sameSession != true or $p.executionsPerMode != 8 then
+                inv("scanner-probe-missing"; {why:"the scanner probe is absent, not a single session, or does not promise eight executions per mode"})
+              else
+                ( [ $p.executions[] | .mode ] | unique ) as $modes
+                | ( [ $p.executions[] | select((.scan | type) != "object" or (.scan.rows | type) != "number" or (.scan.loops | type) != "number" or (.scan.sharedHit | type) != "number" or (.scan.sharedRead | type) != "number" or (.hasSort | type) != "boolean" or (.topRows | type) != "number") ] | length) as $bare
+                | if $modes != ["auto", "force_generic_plan"] or ($p.executions | length) != 16 then inv("scanner-probe-missing"; {why:"exactly the two plan cache modes auto and force_generic_plan, eight executions each (sixteen)", modes:$modes, executions:($p.executions | length)})
+                  elif $bare > 0 then inv("scanner-probe-missing"; {why:"every execution carries its child scan rows, loops and shared blocks, its top node rows and whether a Sort is in the plan", executionsMissingData:$bare})
+                  elif ((if $variant == "clean" then "qc1_clean" else "public" end) as $want | $p.schema != $want or ([ $p.executions[] | select(.scan.schema != $want) ] | length) > 0) then inv("scanner-probe-table"; {why:"every execution of the probe read the schema it is labelled with (public for the table as the matrix left it, qc1_clean for the vacuumed copy), so one cannot be taken for the other", schema:$p.schema})
+                  else
+                    ( [ $modes[] as $mode | [ $p.executions[] | select(.mode == $mode) ] as $ex
+                        | { mode: $mode,
+                            mix: ([ $ex[] | .kind ] == ["initial","continuation","continuation","continuation","continuation","continuation","continuation","continuation"]),
+                            percents: ([ $ex[] | select(.kind == "continuation") | .percent ] == $pcts),
+                            ids: [ $ex[] | select(.kind == "continuation") | .afterId ],
+                            initialId: ($ex[0].afterId) } ] ) as $per
+                    | if ($per | any(.mix | not)) then inv("scanner-probe-missing"; {why:"each mode is one initial unit followed by seven continuations, in that order", per:$per})
+                      elif ($per | any(.percents | not)) then inv("scanner-probe-missing"; {why:"the continuations are at the prescribed cursor positions 0, 10, 25, 40, 55, 70 and 85 per cent", per:$per})
+                      elif ($per | any(.initialId != null)) then inv("scanner-probe-missing"; {why:"the initial unit has no cursor"})
+                      elif ($per | any([.ids[] | numbers] | length != 7)) or ($per | any(.ids != (.ids | sort) or (.ids | unique | length) != 7)) then inv("scanner-probe-positions"; {why:"the seven cursor ids of a mode are distinct and strictly increasing (a table that cannot give seven distinct positions is not measured)", per:$per})
+                      elif $per[0].ids != $per[1].ids then inv("scanner-probe-positions"; {why:"both modes are probed at the same cursor ids", per:$per})
+                      else empty end
+                  end
+              end ),
+          # The two modes are compared position by position: the same data must come back (equal rows at every position, initial unit included). A difference is the state having
+          # changed between the modes, or a plan that is not the same query; neither can be read as proof of the index path.
+          ( if ($p.executions | type) == "array" and ([ $p.executions[] | .mode ] | unique) == ["auto", "force_generic_plan"] then
+              ( [ $p.executions[] | select(.mode == "auto") ] ) as $a
+              | ( [ $p.executions[] | select(.mode == "force_generic_plan") ] ) as $g
+              | if ($a | length) == ($g | length) and ([ range(0; $a | length) | select(($a[.].scan.rows) != ($g[.].scan.rows) or ($a[.].kind) != ($g[.].kind) or ($a[.].afterId) != ($g[.].afterId)) ] | length) > 0
+                then inv("scanner-mode-disagreement"; {why:"the same cursor must read the same rows in both plan cache modes"}) else empty end
+            else empty end )
+      ) | . + {variant: $variant};
+    # What the design (t07b-scaling-design3 R3) requires of the scanner statements, quoted in every finding so each miss is reviewable on its own.
+    def r3: "R3 (t07b-scaling-design3): the initial unit is a Limit over the primary-key index with no Sort; the continuation unit has the id predicate as an Index Cond";
+    # The plan an execution actually had, in words: the child scan, the index under a bitmap scan, and whether a Sort sits above it.
+    def shape($e):
+      ($e.scan) as $s
+      | (if $s.nodeType == "Bitmap Heap Scan" then "Bitmap Heap Scan over Bitmap Index Scan on " + ($s.bitmapIndex.indexName // "an unreported index") + " (Index Cond " + ($s.bitmapIndex.indexCond // "unreported") + ")"
+         elif $s.nodeType == "Seq Scan" then "Seq Scan" + (if ($s.filter | type) == "string" then " with Filter " + $s.filter else "" end)
+         else ($s.nodeType // "unknown scan") + (if ($s.indexName | type) == "string" then " using " + $s.indexName else "" end) + (if ($s.indexCond | type) == "string" then " (Index Cond " + $s.indexCond + ")" else "" end) end)
+        + (if $e.hasSort then " + Sort" else " (no Sort)" end);
+    # Per-execution findings of one probe. Every finding keeps the plan in words, the requirement, the table it ran against, the size of the table against the unit, what it cost, and
+    # says it is OPEN: a miss is retained as a budget finding at every table size for a reviewed disposition, whatever it cost; nothing is demoted for being cheap or for the table
+    # being smaller than the 50,000-row unit (belowUnit is recorded as a fact beside the finding, not as a reason to drop it).
+    def probe_findings($m; $p; $variant):
+      if ($p.executions | type) == "array" then
+        ( $p.executions[] | select((.scan | type) == "object") as $e
+          | { mode:$e.mode, kind:$e.kind, percent:$e.percent, afterId:$e.afterId, variant:$variant, plan:shape($e), requirement:r3,
+              tableRows:($m.table.actualRows // null), unitRows:$unitrows, belowUnit:((($m.table.actualRows // 0) <= $unitrows)),
+              measured:{ rows:$e.scan.rows, loops:$e.scan.loops, sharedBlocks:(($e.scan.sharedHit // 0) + ($e.scan.sharedRead // 0)) },
+              disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition" } as $ctx
+          | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows, variant:$variant}) else empty end ),
+            ( if $e.hasSort then bud("scanner-sort"; $ctx + {why:"a Sort in a scanner unit means the rows are not read in primary-key order from the index: the whole remainder is read and sorted before the first row is returned"}) else empty end ),
+            ( if (($e.scan.nodeType | type) != "string") or (($e.scan.nodeType | startswith("Index")) | not) then
+                bud("scanner-not-indexed"; $ctx + {nodeType:$e.scan.nodeType,
+                  why:(if $e.scan.nodeType == "Bitmap Heap Scan" then "the id predicate IS an Index Cond (on the Bitmap Index Scan, not on the parent), but the rows are fetched through a bitmap heap scan and need a Sort: not an ordered Index Scan on the primary key"
+                       elif $e.scan.nodeType == "Seq Scan" then "a sequential scan of contact_requests: the whole heap is read, not the primary-key index"
+                       else "not an Index Scan on the primary key" end)}) else empty end ),
+            ( if ($e.scan.filter | type) == "string" and ($e.scan.filter | test("(^|[^a-z_])id[ )]")) then bud("scanner-id-filter"; $ctx + {filter:$e.scan.filter, why:"the id predicate is a Filter over a scan, not an Index Cond"}) else empty end ),
+            ( if $e.kind == "continuation" and ($e.scan.idIndexCond | type) != "string" then bud("scanner-continuation-cond"; $ctx + {why:"no Index Cond on id anywhere in the plan (neither on the scan nor on a Bitmap Index Scan beneath it)"}) else empty end ),
+            ( if $e.scan.loops != 1 then bud("scanner-loops"; $ctx + {loops:$e.scan.loops}) else empty end ) )
+      else empty end;
+    # Buffer growth across cursor positions (an engineering proposal, like the interaction budgets): a bounded unit should touch a similar number of blocks wherever the cursor is, so a
+    # continuation that touches more than twice what the first position did is a finding. The figures are recorded either way.
+    def probe_growth($p; $variant):
+      if ($p.executions | type) == "array" then
+        ( [ "auto", "force_generic_plan" ][] as $mode
+          | [ $p.executions[] | select(.mode == $mode and .kind == "continuation" and (.scan | type) == "object") | (.scan.sharedHit + .scan.sharedRead) ] as $b
+          | if ($b | length) > 1 and $b[0] > 0 and (($b | max) > 2 * $b[0]) then bud("scanner-buffer-growth"; {mode:$mode, variant:$variant, firstPosition:$b[0], max:($b | max), blocks:$b, proposal:"more than twice the first position"}) else empty end )
+      else empty end;
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","probe","legacy") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
+       | (.loggedShapes |= (if type == "object" then reduce ("initial","continuation") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
+       | (.tables |= (if type == "object" then reduce ("bloated","clean") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
        | (.browser |= (if type == "object" then reduce ("pages","digest","phases","press","reload","clicks","navigation","firstPage","gate") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
        | (if .put != null then .put |= (reduce ("workload","effects","countRefusal") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) | .effects |= (if type == "object" then reduce ("markers","audits") as $c (.; if (.[$c] | type) == "object" then . else .[$c] = null end) | (.markers |= (if type == "object" then (if (.byAction | type) == "object" then . else .byAction = {} end) else . end)) else . end)) else . end)
        | (if .probe != null then .probe |= (reduce ("workload","marker") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end)) else . end)
@@ -474,7 +554,7 @@ qc1_judge_rules() { cat <<'JQ'
       ( ran($m)[] | . as $o
         | ( [ ["walBytes", $o.walBytes], ["appPeakKb", $o.appPeakKb], ["dbPeakKb", $o.dbPeakKb], ["gateTicks", $o.gateTicks],
               ["commitCalls", $o.commitCalls], ["commitMsMax", $o.commitMsMax], ["commitMsTotal", $o.commitMsTotal], ["dbMemSamples", $o.dbMemSamples],
-              ["gateMaxGapMs", $o.gateMaxGapMs], ["auditRowsBefore", $o.auditRowsBefore], ["auditRowsAfter", $o.auditRowsAfter], ["auditBytesBefore", $o.auditBytesBefore], ["auditBytesAfter", $o.auditBytesAfter], ["tableRowsBefore", $o.tableRowsBefore], ["tableRowsAfter", $o.tableRowsAfter], ["auditActionsBefore", $o.auditActionsBefore], ["auditActionsAfter", $o.auditActionsAfter], ["auditActionsDelta", $o.auditActionsDelta] ] | map(select(.[1] == null) | .[0]) ) as $missing
+              ["gateMaxGapMs", $o.gateMaxGapMs], ["auditRowsBefore", $o.auditRowsBefore], ["auditRowsAfter", $o.auditRowsAfter], ["auditBytesBefore", $o.auditBytesBefore], ["auditBytesAfter", $o.auditBytesAfter], ["topStatements", (if ($o.topStatements | type) == "array" then 1 else null end)], ["tableRowsBefore", $o.tableRowsBefore], ["tableRowsAfter", $o.tableRowsAfter], ["auditActionsBefore", $o.auditActionsBefore], ["auditActionsAfter", $o.auditActionsAfter], ["auditActionsDelta", $o.auditActionsDelta] ] | map(select(.[1] == null) | .[0]) ) as $missing
         | if ($missing | length) > 0 then inv("metric-missing"; {metrics:$missing}) else empty end ),
       ( ran($m)[] | select(.appHwmReset != true) | inv("peak-reset-failed"; {}) ),
       ( ran($m)[] | . as $o | (($o.ms // $o.totalMs // 0) / 100 | floor) as $want
@@ -509,58 +589,29 @@ qc1_judge_rules() { cat <<'JQ'
             or ($m.executions.scannerContinuation.rows | length) != $m.executions.scannerContinuation.count or ($m.executions.scannerContinuation.sharedBlocks | length) != $m.executions.scannerContinuation.count
             or ([$m.executions.scannerInitial.rows[], $m.executions.scannerInitial.sharedBlocks[], $m.executions.scannerContinuation.rows[], $m.executions.scannerContinuation.sharedBlocks[]] | any(type != "number"))) then inv("plan-executions-missing"; {why:"rows and buffers of every scanner execution must be read from the logged plans"}) else empty end ),
       ( if $m.item == 8 and ([$m.executions.scannerInitial.rows[]?, $m.executions.scannerContinuation.rows[]?] | any(type == "number" and . > $unitrows)) then inv("scanner-unit-overrun"; {unitRows:$unitrows}) else empty end ),
-      # The scanner probe (the REAL statements, one session, eight executions per plan cache mode, at the prescribed cursor positions). The collector promises exactly this
-      # shape and the judge holds it to it: both modes, each with exactly one initial unit and seven continuations at 0, 10, 25, 40, 55, 70 and 85 per cent of the table, at
-      # strictly increasing cursor ids, the same ids in both modes, every execution with its child scan's rows, loops and buffers. Anything else is invalid, never partial credit.
-      ( if $m.item == 8 then
-          ( [0, 10, 25, 40, 55, 70, 85] ) as $pcts
-          | ( if ($m.scannerProbe | type) != "object" or ($m.scannerProbe.executions | type) != "array" or $m.scannerProbe.sameSession != true or $m.scannerProbe.executionsPerMode != 8 then
-                inv("scanner-probe-missing"; {why:"the scanner probe is absent, not a single session, or does not promise eight executions per mode"})
-              else
-                ( [ $m.scannerProbe.executions[] | .mode ] | unique ) as $modes
-                | ( [ $m.scannerProbe.executions[] | select((.scan | type) != "object" or (.scan.rows | type) != "number" or (.scan.loops | type) != "number" or (.scan.sharedHit | type) != "number" or (.scan.sharedRead | type) != "number" or (.hasSort | type) != "boolean" or (.topRows | type) != "number") ] | length) as $bare
-                | if $modes != ["auto", "force_generic_plan"] or ($m.scannerProbe.executions | length) != 16 then inv("scanner-probe-missing"; {why:"exactly the two plan cache modes auto and force_generic_plan, eight executions each (sixteen)", modes:$modes, executions:($m.scannerProbe.executions | length)})
-                  elif $bare > 0 then inv("scanner-probe-missing"; {why:"every execution carries its child scan rows, loops and shared blocks, its top node rows and whether a Sort is in the plan", executionsMissingData:$bare})
-                  else
-                    ( [ $modes[] as $mode | [ $m.scannerProbe.executions[] | select(.mode == $mode) ] as $ex
-                        | { mode: $mode,
-                            mix: ([ $ex[] | .kind ] == ["initial","continuation","continuation","continuation","continuation","continuation","continuation","continuation"]),
-                            percents: ([ $ex[] | select(.kind == "continuation") | .percent ] == $pcts),
-                            ids: [ $ex[] | select(.kind == "continuation") | .afterId ],
-                            initialId: ($ex[0].afterId) } ] ) as $per
-                    | if ($per | any(.mix | not)) then inv("scanner-probe-missing"; {why:"each mode is one initial unit followed by seven continuations, in that order", per:$per})
-                      elif ($per | any(.percents | not)) then inv("scanner-probe-missing"; {why:"the continuations are at the prescribed cursor positions 0, 10, 25, 40, 55, 70 and 85 per cent", per:$per})
-                      elif ($per | any(.initialId != null)) then inv("scanner-probe-missing"; {why:"the initial unit has no cursor"})
-                      elif ($per | any([.ids[] | numbers] | length != 7)) or ($per | any(.ids != (.ids | sort) or (.ids | unique | length) != 7)) then inv("scanner-probe-positions"; {why:"the seven cursor ids of a mode are distinct and strictly increasing (a table that cannot give seven distinct positions is not measured)", per:$per})
-                      elif $per[0].ids != $per[1].ids then inv("scanner-probe-positions"; {why:"both modes are probed at the same cursor ids", per:$per})
-                      else empty end
-                  end
-              end ),
-          # The two modes are compared position by position: the same data must come back (equal rows at every position, initial unit included). A difference is the state having
-          # changed between the modes, or a plan that is not the same query; neither can be read as proof of the index path.
-          ( if ($m.scannerProbe.executions | type) == "array" and ([ $m.scannerProbe.executions[] | .mode ] | unique) == ["auto", "force_generic_plan"] then
-              ( [ $m.scannerProbe.executions[] | select(.mode == "auto") ] ) as $a
-              | ( [ $m.scannerProbe.executions[] | select(.mode == "force_generic_plan") ] ) as $g
-              | if ($a | length) == ($g | length) and ([ range(0; $a | length) | select(($a[.].scan.rows) != ($g[.].scan.rows) or ($a[.].kind) != ($g[.].kind) or ($a[.].afterId) != ($g[.].afterId)) ] | length) > 0
-                then inv("scanner-mode-disagreement"; {why:"the same cursor must read the same rows in both plan cache modes"}) else empty end
-            else empty end )
-        else empty end ),
-      ( if $m.item == 8 and ($m.scannerProbe.executions | type) == "array" then
-          ( $m.scannerProbe.executions[] | select((.scan | type) == "object") as $e
-            | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows}) else empty end ),
-              ( if $e.hasSort then bud("scanner-sort"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, why:"a Sort in a scanner unit means the unit is not read in primary-key order"}) else empty end ),
-              ( if (($e.scan.nodeType | type) != "string") or (($e.scan.nodeType | startswith("Index")) | not) then bud("scanner-not-indexed"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, nodeType:$e.scan.nodeType}) else empty end ),
-              ( if ($e.scan.filter | type) == "string" and ($e.scan.filter | test("(^|[^a-z_])id[ )]")) then bud("scanner-id-filter"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, filter:$e.scan.filter, why:"the id predicate must be an Index Cond, not a Filter over a scan"}) else empty end ),
-              ( if $e.kind == "continuation" and (($e.scan.indexCond | type) != "string" or ($e.scan.indexCond | test("id >") | not)) then bud("scanner-continuation-cond"; {mode:$e.mode, afterId:$e.afterId, indexCond:$e.scan.indexCond}) else empty end ),
-              ( if $e.scan.loops != 1 then bud("scanner-loops"; {mode:$e.mode, kind:$e.kind, afterId:$e.afterId, loops:$e.scan.loops}) else empty end ) ),
-          # Buffer growth across cursor positions (an engineering proposal, like the interaction budgets): a bounded unit should touch a similar number of blocks wherever
-          # the cursor is, so a continuation that touches more than twice what the first position did is a finding. The figures are recorded either way.
-          ( [ "auto", "force_generic_plan" ][] as $mode
-            | [ $m.scannerProbe.executions[] | select(.mode == $mode and .kind == "continuation" and (.scan | type) == "object") | (.scan.sharedHit + .scan.sharedRead) ] as $b
-            | if ($b | length) > 1 and $b[0] > 0 and (($b | max) > 2 * $b[0]) then bud("scanner-buffer-growth"; {mode:$mode, firstPosition:$b[0], max:($b | max), blocks:$b, proposal:"more than twice the first position"}) else empty end )
-        else empty end ),
+      # The scanner probes: the table as the matrix left it ("bloated") and a VACUUM (ANALYZE)d copy of the same rows ("clean"), each held to the same exact shape and each with its
+      # findings. The bloated probe is the original measurement and is never replaced by the clean one; the clean one says what the same statements do on a table without the churn.
+      ( if $m.item == 8 then probe_structure($m.scannerProbe; "bloated"), probe_structure($m.scannerProbeClean; "clean") else empty end ),
+      ( if $m.item == 8 then probe_findings($m; $m.scannerProbe; "bloated"), probe_findings($m; $m.scannerProbeClean; "clean"), probe_growth($m.scannerProbe; "bloated"), probe_growth($m.scannerProbeClean; "clean") else empty end ),
+      # Both tables are described (pages, tuples, dead tuples, bytes) and the clean copy says it was vacuumed and analyzed: the bloat is a number, not a guess.
+      ( if $m.item == 8 and (($m.tables | type) != "object"
+            or ([ $m.tables.bloated, $m.tables.clean ] | any(type != "object" or (.relpages | type) != "number" or (.reltuples | type) != "number" or (.heapBytes | type) != "number" or (.indexBytes | type) != "number"))
+            or $m.tables.clean.vacuumed != true or $m.tables.clean.analyzed != true or (($m.tables.clean.kind | type) != "string"))
+        then inv("clean-table-missing"; {why:"the plan row describes the table as the matrix left it and a vacuumed, analyzed copy of its rows (relpages, reltuples, heap and index bytes)"}) else empty end ),
       ( if $m.item == 8 and $m.generic.scannerInitial.idIndexScan == false then bud("plan-initial"; {why:"the first scanner unit must read the table in id order from the primary key index; the generic plan of the real statement does not"}) else empty end ),
-      ( if $m.item == 8 and ($m.generic.scannerContinuation.indexCondOnId == false or $m.continuationPlanIndexCond == false) then bud("plan-continuation"; {genericPlanHasIndexCond:$m.generic.scannerContinuation.indexCondOnId, loggedPlanHasIndexCond:$m.continuationPlanIndexCond, why:"the continuation unit must be bounded by an id Index Cond (design R3); a plan without one can rescan from the start and a large traversal is quadratic"}) else empty end ),
+      # The application's OWN logged executions (auto_explain), read as shapes: how many continuation executions had the id predicate as an Index Cond (on an Index Scan, or on the Bitmap
+      # Index Scan beneath a Bitmap Heap Scan), which had it only as a Filter on a Seq Scan, how many had a Sort above the scan. Absent when the log held none of that kind.
+      ( if $m.item == 8 and ($m.plans["scanner-continuation"] // 0) > 0 and (($m.loggedShapes.continuation | type) != "object" or ($m.loggedShapes.continuation.executions | type) != "number") then inv("logged-shapes-missing"; {why:"the logged continuation executions are read as shapes (qc1_plan_shapes)"}) else empty end ),
+      ( if $m.item == 8 and ($m.loggedShapes.continuation | type) == "object" and ($m.loggedShapes.continuation.executions // 0) > 0 and ($m.loggedShapes.continuation.withIdIndexCond != $m.loggedShapes.continuation.executions) then
+          bud("plan-continuation"; {requirement:r3, loggedContinuation:$m.loggedShapes.continuation, genericPlanHasIndexCond:$m.generic.scannerContinuation.indexCondOnId,
+            why:("of " + ($m.loggedShapes.continuation.executions | tostring) + " logged continuation executions " + ($m.loggedShapes.continuation.withIdIndexCond | tostring) + " had the id predicate as an Index Cond (on an Index Scan, or beneath a Bitmap Heap Scan); the others (executions "
+                 + ($m.loggedShapes.continuation.withoutIdIndexCond | map(tostring) | join(", ")) + ") had it only as a Filter on a Seq Scan. " + ($m.loggedShapes.continuation.withSort | tostring) + " had a Sort above the scan."),
+            disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition"}) else empty end ),
+      ( if $m.item == 8 and $m.generic.scannerContinuation.indexCondOnId == false then bud("plan-continuation"; {requirement:r3, genericPlanHasIndexCond:false, why:"the generic plan of the real continuation statement has no Index Cond on id", disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition"}) else empty end ),
+      ( if $m.item == 8 and ($m.loggedShapes.initial | type) == "object" and ($m.loggedShapes.initial.executions // 0) > 0 and (($m.loggedShapes.initial.withSort // 0) > 0 or ($m.loggedShapes.initial.indexScan // 0) < $m.loggedShapes.initial.executions) then
+          bud("plan-initial-logged"; {requirement:r3, loggedInitial:$m.loggedShapes.initial,
+            why:("of " + ($m.loggedShapes.initial.executions | tostring) + " logged initial executions " + ($m.loggedShapes.initial.indexScan | tostring) + " were an Index Scan on the primary key and " + ($m.loggedShapes.initial.withSort | tostring) + " had a Sort above the scan"),
+            disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition"}) else empty end ),
       ( if $m.item == 10 then
           ( [ ["renderReadyMs", $m.browser.renderReadyMs], ["walkEndMs", $m.browser.walkEndMs], ["firstInteractiveMs", $m.browser.firstPage.firstInteractiveMs], ["firstPageItems", $m.browser.firstPage.itemsRendered],
               ["heapAfterGcBytes", $m.browser.heapAfterGcBytes], ["domNodes", $m.browser.domNodes], ["longTaskMs", $m.browser.longTaskMs], ["secureContext", $m.browser.secureContext],
@@ -627,7 +678,7 @@ qc1_want_json() { # sizes counts dense(optional, may be empty)
         {item:1,size:$s,case:"sparse"}, {item:2,size:$s,case:"unrelated"},
         ($counts[] as $k | select($k <= $s) | ("requester","subject") as $d | {item:3,size:$s,case:("discovery-" + $d + "-" + ($k|tostring))}),
         ($dense[] as $k | select($k <= $s) | ("requester","subject") as $d | {item:3,size:$s,case:("discovery-" + $d + "-" + ($k|tostring))}),
-        {item:3,size:$s,case:"order-control-requester-10"},
+        {item:3,size:$s,case:"order-control-requester-10"}, {item:6,size:$s,case:"order-control-delete-start"}, {item:6,size:$s,case:"order-control-delete-end"},
         {item:5,size:$s,case:"request-size"}, {item:7,size:$s,case:"human-progress"}, {item:8,size:$s,case:"plans"},
         (($bc + $dense)[] as $k | select($k <= $s) | {item:10,size:$s,case:("browser-panel-" + ($k|tostring))}),
         (($dc + $dense)[] as $k | select($k <= $s) | ("requester","subject") as $d | ("keep","remove","mixed") as $m
@@ -719,6 +770,13 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                    + [ $dups[] | {class:"invalid", failure:"duplicate-row"} + . ]
                    + (if $judgeOk then [] else [{class:"invalid", failure:"judge-failed"}] end) ),
         budgetFailures: [ $judged[] | select(.class == "budget") ],
+        # Every scanner and plan miss against R3, grouped for review, with what it was (the plan in words), what it cost and the table it ran against. Nothing here is a demotion:
+        # budgetFailures above still lists every finding; this is the reading list for the engineering disposition each miss needs, whatever it cost and however small the table.
+        dispositions: ( [ $judged[] | select(.class == "budget" and ((.failure | startswith("scanner-")) or (.failure | startswith("plan-")))) ]
+                        | group_by([.failure, (.variant // "")])
+                        | map({finding: .[0].failure, variant: (.[0].variant // null), count: length, requirement: (.[0].requirement // null), tableRows: (.[0].tableRows // null), unitRows: (.[0].unitRows // null), belowUnit: (.[0].belowUnit // null),
+                               plans: ([ .[] | .plan // empty ] | unique), maxSharedBlocks: ([ .[] | .measured.sharedBlocks // empty ] | if length == 0 then null else max end),
+                               status: "open: a measured miss, retained; it needs a reviewed engineering disposition (not demoted at any table size)"}) ),
         confounding: (
           [ $rows[] | select((type == "object") and (.status == "measured" or .status == "observation")) | (.traversal |= (if type == "object" then . else null end)) | (.delete |= (if type == "object" then . else null end)) ] as $ms
           | [ $ms[] | (.traversal, .delete) | select(type == "object") ] as $ran
@@ -730,7 +788,13 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                 | ($ms | map(select(.item == 3 and .size == $c.size and .case == "discovery-requester-10")) | .[0]) as $f
                 | {size: $c.size, firstSeq: $f.seq, controlSeq: $c.seq, firstTotalMs: $f.traversal.totalMs, controlTotalMs: $c.traversal.totalMs,
                    ratio: (if (($f.traversal.totalMs | type) == "number") and (($c.traversal.totalMs | type) == "number") and $f.traversal.totalMs > 0 then ((($c.traversal.totalMs / $f.traversal.totalMs) * 100 | round) / 100) else null end),
-                   auditRowsFirst: $f.traversal.auditRowsBefore, auditRowsControl: $c.traversal.auditRowsBefore} ] } ),
+                   auditRowsFirst: $f.traversal.auditRowsBefore, auditRowsControl: $c.traversal.auditRowsBefore} ],
+              # The same deletion (an account with no reasons) at the start and at the end of a size run: what the run did to the cost of a deletion. Recorded, never judged.
+              deleteOrderControls: [ $ms[] | select(.item == 6 and .case == "order-control-delete-start") as $s
+                | ($ms | map(select(.item == 6 and .size == $s.size and .case == "order-control-delete-end")) | .[0]) as $e
+                | {size: $s.size, startSeq: $s.seq, endSeq: $e.seq, startMs: $s.delete.ms, endMs: $e.delete.ms,
+                   ratio: (if (($s.delete.ms | type) == "number") and (($e.delete.ms | type) == "number") and $s.delete.ms > 0 then ((($e.delete.ms / $s.delete.ms) * 100 | round) / 100) else null end),
+                   auditRowsStart: $s.delete.auditRowsBefore, auditRowsEnd: $e.delete.auditRowsBefore} ] } ),
         coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
     | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}' "$1"
@@ -793,12 +857,19 @@ qc1_scanner_probe_parse() { # meta-json (stdin: the EXPLAIN documents)
     [ range(0; length) as $i | .[$i][0].Plan as $p | ($meta[$i] // {}) as $m
       | ($p | nodes) as $ns
       | ([ $ns[] | select((.["Node Type"] | test("Scan$")) and ((.["Relation Name"] // "") == "contact_requests")) ] | .[0]) as $scan
+      # Everything beneath the child scan (and the scan itself): the index nodes. A Bitmap Heap Scan carries NO Index Cond of its own; the id condition is on the Bitmap Index Scan under it.
+      | (if $scan == null then [] else [ $scan | .. | objects | select(has("Node Type")) ] end) as $sub
+      | ([ $sub[] | select(.["Node Type"] == "Bitmap Index Scan") ] | .[0]) as $bix
+      | ([ $sub[] | select((.["Index Cond"] | type) == "string" and (.["Index Cond"] | contains("(id >"))) ] | .[0]["Index Cond"]) as $idc
       | $m + { topRows: $p["Actual Rows"],
                hasSort: ($ns | any(.["Node Type"] == "Sort" or .["Node Type"] == "Incremental Sort")),
                scan: (if $scan == null then null else
                  { nodeType: $scan["Node Type"], indexName: $scan["Index Name"], indexCond: $scan["Index Cond"], filter: $scan["Filter"],
                    rows: $scan["Actual Rows"], loops: $scan["Actual Loops"], sharedHit: $scan["Shared Hit Blocks"], sharedRead: $scan["Shared Read Blocks"],
-                   rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0) } end) } ]'
+                   rowsRemovedByFilter: ($scan["Rows Removed by Filter"] // 0),
+                   schema: $scan["Schema"],
+                   bitmapIndex: (if $bix == null then null else { nodeType: $bix["Node Type"], indexName: $bix["Index Name"], indexCond: $bix["Index Cond"], rows: $bix["Actual Rows"], sharedHit: $bix["Shared Hit Blocks"], sharedRead: $bix["Shared Read Blocks"] } end),
+                   idIndexCond: $idc } end) } ]'
 }
 
 # The page summary rebuilt from the observations the measurement process persisted (QC1_OUT.pages.jsonl, one JSON object a line): what a run that died before it could write
@@ -827,6 +898,34 @@ qc1_pages_from_jsonl() { # file
     | if ($obs | length) == 0 then null else
         ($obs | summary) + { walks: ($obs | group_by(.walk // 1) | map({walk: (.[0].walk // 1)} + summary)), parseKind: "rebuilt from the persisted observations: the page-side read and parse times are not in them" }
       end' "$1"
+}
+
+# Does any plan of this kind in the log contain this text? The extraction is CAPTURED, then searched in the shell: never `extract | grep -q`. Under `set -o pipefail`, a `grep -q`
+# that matches in the first block closes the pipe while the extraction is still writing the later ones (a 1 MB log yields hundreds of plans); the writer dies of SIGPIPE, the pipeline
+# is reported as FAILED, and a plan that plainly contains the text is called a plan that does not. The pilot's `plan-continuation` finding (loggedPlanHasIndexCond=false beside nine
+# `Index Cond: (id >` lines in its own log) is suspected to be this; the fixtures reproduce the pipe failure with a large log and show this function immune to it.
+qc1_plan_has() { # log which text -> status 0 when found, 1 when not found, 2 when the log could not be read
+  local out
+  out="$(qc1_extract_plans "$1" "$2")" || return 2
+  [[ "$out" == *"$3"* ]]
+}
+
+# What the application's own LOGGED executions of one statement kind looked like, as one JSON object: how many, and how many had the id predicate as an Index Cond (on an Index Scan, or
+# on the Bitmap Index Scan beneath a Bitmap Heap Scan), how many were an Index Scan, a bitmap scan, a Seq Scan (with the id predicate only as a Filter) or had a Sort above them.
+qc1_plan_shapes() { # log which
+  local out
+  out="$(qc1_extract_plans "$1" "$2")" || return 2
+  awk '
+    function flush() { if (!inb) return; n++; if (idcond) c++; if (idx) ix++; if (bit) bm++; if (seq) sq++; if (seqf) sf++; if (srt) st++; if (!idcond) { if (nocond != "") nocond = nocond ","; nocond = nocond n } }
+    function reset() { idcond = idx = bit = seq = seqf = srt = 0 }
+    /duration: .* plan:/ { flush(); inb = 1; reset(); next }
+    inb && /Index Cond: \(id >/ { idcond = 1 }
+    inb && /Index Scan using/ { idx = 1 }
+    inb && /Bitmap Index Scan/ { bit = 1 }
+    inb && /Seq Scan on contact_requests/ { seq = 1 }
+    inb && /Filter: \(id >/ { seqf = 1 }
+    inb && /^[ \t]*(->[ \t]+)?(Incremental )?Sort[ \t]+\(cost/ { srt = 1 }
+    END { flush(); printf "{\"executions\":%d,\"withIdIndexCond\":%d,\"indexScan\":%d,\"bitmapIndexScan\":%d,\"seqScan\":%d,\"seqScanFilterOnId\":%d,\"withSort\":%d,\"withoutIdIndexCond\":[%s]}\n", n, c, ix, bm, sq, sf, st, nocond }' <<<"$out"
 }
 
 # The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a

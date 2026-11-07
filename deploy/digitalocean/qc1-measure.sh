@@ -431,6 +431,7 @@ instrumented() {
   read -r COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX <<<"$(psql_db -c "SELECT coalesce(sum(calls), 0) || ' ' || coalesce(round(sum(total_exec_time)), 0) || ' ' || coalesce(round(max(max_exec_time)), 0) FROM pg_stat_statements WHERE query ~* '^commit'")"
   read -r AUDIT_ROWS1 AUDIT_BYTES1 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
   AUDIT_ACTIONS1="$(audit_actions)"
+  TOP_STATEMENTS="$(top_statements)"   # after the window, before the next reset: costs the operation nothing and resets nothing
   TABLE_ROWS1="$(table_rows)"
   SCHEDULER_OVERLAP="$(qc1_scheduler_overlap "$OP_START" "$OP_END" "$APP_STARTED_MS")"
   SCHEDULER_ROWS="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at >= to_timestamp($OP_START / 1000.0) - interval '1 second' AND created_at <= to_timestamp($OP_END / 1000.0) AND unique_key ~ '^[a-z_.]+:[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2})?\$'")"
@@ -439,18 +440,21 @@ instrumented() {
 # attributed to their kind (a view audit per nonempty page, a decision audit per reason) and not only counted.
 # The rows contact_requests holds right now, as a number (null when unreadable). Taken immediately BEFORE each operation, by instrumented and by the cases that are not instrumented.
 table_rows() { local c; c="$(psql_db -c 'SELECT count(*) FROM contact_requests' 2>/dev/null || true)"; if [[ "$c" =~ ^[0-9]+$ ]]; then printf "%s" "$c"; else printf null; fi; }
+# The statements that cost the most database time in the window just measured (qc1/top-statements.sql): cluster-wide, filtered by text, NOT attributed to the operation.
+top_statements() { local t; t="$(docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 -f - <"$HERE/qc1/top-statements.sql" 2>/dev/null)" && [[ "$t" == \[* ]] && printf "%s" "$t" || printf null; }
 audit_actions() { psql_db -c "SELECT coalesce(jsonb_object_agg(action, c), '{}'::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s"; }
 instr_json() {
   jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
-    --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
+    --argjson top "${TOP_STATEMENTS:-null}" --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
     '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
-      auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, tableRowsBefore:$tr0, tableRowsAfter:$tr1, auditActionsBefore:$aa0, auditActionsAfter:$aa1,
+      auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, tableRowsBefore:$tr0, tableRowsAfter:$tr1,
+      topStatements:$top, topStatementsNote:"pg_stat_statements top 8 by total time over the window, cluster-wide and filtered by text: not attributed to this operation; read after the window, nothing reset", auditActionsBefore:$aa0, auditActionsAfter:$aa1,
       auditActionsDelta:(if ($aa0|type) == "object" and ($aa1|type) == "object" then ([$aa0, $aa1] | (.[0] | keys) + (.[1] | keys) | unique | map(. as $k | {key:$k, value:(($aa1[$k] // 0) - ($aa0[$k] // 0))}) | from_entries) else null end),
       attribution:"WAL, commit and gate figures are cluster-wide counters, not attributed to this operation; they are attributable only if no invalid finding names a competitor"}'
 }
@@ -767,34 +771,51 @@ measure_request_size() { # n
 # The scanner probe (see qc1_scanner_probe_parse): the REAL scanner statements out of the Go source, prepared once and executed eight times per mode in one
 # session (one initial unit and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
 # application's plan_cache_mode (auto: the sixth and later executions of a prepared statement may switch to a generic plan) and forced generic. Read-only.
-# Run while the scenario rows are still in the table. Sets SCANNER_PROBE_JSON.
-scanner_probe() {
-  local unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont
+# Run while the scenario rows are still in the table. `schema` is where contact_requests is found first: "public" for the table exactly as the matrix left it
+# ("bloated": autovacuum is off and every scenario was loaded and dropped), "qc1_clean" for a VACUUM (ANALYZE)d copy of the same rows. Each execution says which
+# schema its scan read (EXPLAIN VERBOSE), so a probe cannot be taken for the other. Sets SCANNER_PROBE_JSON.
+scanner_probe() { # schema
+  local schema="$1" unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont
   local -a pcts=(0 10 25 40 55 70 85) afters=()
   sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
   [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
-  total="$(psql_db -c 'SELECT count(*) FROM contact_requests')"
+  total="$(psql_db -q -c "SET search_path = $schema, public" -c 'SELECT count(*) FROM contact_requests')"
   for pct in "${pcts[@]}"; do
     off=$(( total * pct / 100 ))
-    id="$(psql_db -c "SELECT id FROM contact_requests ORDER BY id OFFSET $off LIMIT 1")"
+    id="$(psql_db -q -c "SET search_path = $schema, public" -c "SELECT id FROM contact_requests ORDER BY id OFFSET $off LIMIT 1")"
     [[ "$id" =~ ^[0-9]+$ ]] || id=0
     afters+=("$id")
   done
   for mode in auto force_generic_plan; do
     meta="$(jq -nc --arg mode "$mode" --argjson pcts "$(printf '%s\n' "${pcts[@]}" | jq -sc 'map(tonumber)')" --argjson ids "$(printf '%s\n' "${afters[@]}" | jq -sc 'map(tonumber)')" \
       '[{mode:$mode, kind:"initial", percent:null, afterId:null}] + [range(0; $pcts | length) | {mode:$mode, kind:"continuation", percent:$pcts[.], afterId:$ids[.]}]')"
-    script="SET plan_cache_mode = $mode;
+    script="SET search_path = $schema, public;
+SET plan_cache_mode = $mode;
 PREPARE qi (bigint) AS $sql_init;
 PREPARE qc (bigint, bigint) AS $sql_cont;
-EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qi($unit);"
-    for id in "${afters[@]}"; do script+=$'\n'"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qc($id, $unit);"; done
+EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($unit);"
+    for id in "${afters[@]}"; do script+=$'\n'"EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $unit);"; done
     out="$(psql_db -q -f - <<<"$script")" || { echo "qc1: the scanner probe failed in mode $mode" >&2; exit 1; }
     parsed="$(qc1_scanner_probe_parse "$meta" <<<"$out")"
     all="$(jq -c --argjson more "$parsed" '. + $more' <<<"$all")"
   done
-  SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --argjson ex "$all" \
-    '{unit:$unit, tableRows:$total, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex,
-      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS); child scan node, index condition, filter, rows, loops and shared blocks as the plan reports them"}')"
+  SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --arg schema "$schema" --argjson ex "$all" \
+    '{unit:$unit, tableRows:$total, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex,
+      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS, VERBOSE); child scan node, the index condition on it or on the Bitmap Index Scan beneath it, filter, rows, loops and shared blocks as the plan reports them"}')"
+}
+# The table behind a probe, in numbers: pages the planner believes in (relpages), pages the file really has, tuples, live and dead tuples, heap and index bytes. Prints one JSON object.
+table_stats() { # schema
+  psql_db -q -c "SELECT json_build_object('schema', n.nspname, 'relpages', c.relpages, 'actualPages', pg_relation_size(c.oid) / 8192, 'reltuples', c.reltuples::bigint, 'heapBytes', pg_relation_size(c.oid), 'indexBytes', pg_indexes_size(c.oid),
+    'nLiveTup', s.n_live_tup, 'nDeadTup', s.n_dead_tup, 'autovacuumCount', s.autovacuum_count, 'lastAnalyze', coalesce(s.last_analyze, s.last_autoanalyze))::text
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid WHERE n.nspname = '$1' AND c.relname = 'contact_requests'"
+}
+# A clean copy of contact_requests in a scratch schema: the same constraints and indexes (LIKE ... INCLUDING ALL), the same rows inserted in id order into a fresh heap, then VACUUM (ANALYZE).
+# The original table is NOT touched (vacuuming it would change every later case), and the copy is dropped when the probe has run. Sets CLEAN_COPY_JSON (what was done, never assumed).
+make_clean_copy() {
+  psql_db -q -c 'DROP SCHEMA IF EXISTS qc1_clean CASCADE' -c 'CREATE SCHEMA qc1_clean' -c 'CREATE TABLE qc1_clean.contact_requests (LIKE public.contact_requests INCLUDING ALL)' \
+    -c 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' -c 'VACUUM (ANALYZE) qc1_clean.contact_requests' >/dev/null \
+    || { echo 'qc1: the clean copy of contact_requests could not be made' >&2; exit 1; }
+  CLEAN_COPY_JSON="$(jq -nc '{kind:"a copy of the same rows in a scratch schema: LIKE public.contact_requests INCLUDING ALL, INSERT ... SELECT ORDER BY id into a fresh heap, then VACUUM (ANALYZE); the original table is untouched", vacuumed:true, analyzed:true}')"
 }
 
 # auto_explain on for one scanner walk, one page of items and one mixed deletion, then off again; the plans of the application's own
@@ -803,7 +824,7 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE qi($unit);"
 # The continuation's shape (an Index Cond on id, not a filter over a scan) is also recorded from EXPLAIN (GENERIC_PLAN) of the same
 # statement text, typed by the harness and labelled as such; the application's own logged plan is the evidence that counts.
 capture_plans() { # n
-  local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged sql_init sql_cont exec_json actual_rows idx=false initidx=false
+  local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged logged_cont logged_init sql_init sql_cont exec_json actual_rows probe_bloated probe_clean stats_bloated stats_clean idx=false initidx=false
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration 0 || exit 1   # the capture is really on before anything is run for it
@@ -822,7 +843,12 @@ capture_plans() { # n
   await_setting auto_explain.log_min_duration -1 || exit 1  # and off again before the next measured row
   docker logs --since "$since" "$DB_CID" >"$WORK/pglog-$n.txt" 2>&1
   # The probe runs AFTER the capture is off and its log is taken (its own EXPLAINs must not be counted as the application's executions) and BEFORE the scenario is dropped.
-  scanner_probe
+  # The same statements on the table as the matrix left it (bloated: autovacuum is off and every scenario was loaded and dropped) and, as a SEPARATE labelled observation, on a
+  # VACUUM (ANALYZE)d copy of the same rows. The first is the original measurement and is kept as it is; the second is never substituted for it.
+  scanner_probe public; probe_bloated="$SCANNER_PROBE_JSON"; stats_bloated="$(table_stats public)"
+  make_clean_copy
+  scanner_probe qc1_clean; probe_clean="$SCANNER_PROBE_JSON"; stats_clean="$(table_stats qc1_clean)"
+  psql_db -q -c 'DROP SCHEMA qc1_clean CASCADE' >/dev/null
   drop_scenarios
   : >"$out"
   for which in "${QC1_PLAN_KINDS[@]}"; do
@@ -838,10 +864,13 @@ capture_plans() { # n
   # must be read in id order from an index (it has no id predicate to be an Index Cond).
   if [[ "$gen_cont" == *"Index Cond: (id >"* ]]; then idx=true; fi
   if [[ "$gen_init" == *"Index Scan"* || "$gen_init" == *"Index Only Scan"* ]]; then initidx=true; fi
-  cont_logged=null
+  cont_logged=null logged_cont=null logged_init=null
   if jq -e '."scanner-continuation" >= 1' <<<"$counts" >/dev/null; then
-    if qc1_extract_plans "$WORK/pglog-$n.txt" scanner-continuation | grep -q 'Index Cond: (id >'; then cont_logged=true; else cont_logged=false; fi
+    # Captured, then searched (qc1_plan_shapes): never `extract | grep -q`, which under pipefail reports a plan that contains the text as one that does not.
+    logged_cont="$(qc1_plan_shapes "$WORK/pglog-$n.txt" scanner-continuation)" || { echo 'qc1: the logged plans could not be read' >&2; exit 1; }
+    cont_logged="$(jq -r '.withIdIndexCond == .executions' <<<"$logged_cont")"
   fi
+  logged_init="$(qc1_plan_shapes "$WORK/pglog-$n.txt" scanner-initial)" || { echo 'qc1: the logged plans could not be read' >&2; exit 1; }
   # Across executions: the actual rows and shared blocks of every logged scanner execution, in order.
   exec_json="$(for which in scanner-initial scanner-continuation; do
     qc1_plan_executions "$WORK/pglog-$n.txt" "$which" | jq -Rsc --arg w "$which" '[split("\n")[] | select(length > 0) | split(" ") | {rows:(.[0] | tonumber? // null), blocks:(.[1] | tonumber? // null)}] | {key:$w, value:{count:length, rows:map(.rows), sharedBlocks:map(.blocks)}}'
@@ -849,8 +878,8 @@ capture_plans() { # n
                   note:"rows and shared blocks (hit + read) of the top plan node of every logged execution, from auto_explain with log_analyze and log_buffers; recorded in execution order, not judged against a ceiling"}')"
   need="$(jq -nc --argjson n "$actual_rows" --argjson unit "$QC1_SCANNER_UNIT_ROWS" '["scanner-initial","page-items","delete-set","blank-batch"] + (if $n > $unit then ["scanner-continuation"] else [] end)')"
   if jq -e --argjson need "$need" '. as $c | $need | all(. as $k | $c[$k] >= 1)' <<<"$counts" >/dev/null; then RECORD_STATUS=measured; else RECORD_STATUS=failed; fi
-  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson probe "$SCANNER_PROBE_JSON" --argjson actual "$actual_rows" --argjson bg "$n" \
-    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe,
+  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson probe "$probe_bloated" --argjson probec "$probe_clean" --argjson sb "$stats_bloated" --argjson sc "$stats_clean" --argjson copy "$CLEAN_COPY_JSON" --argjson lcont "$logged_cont" --argjson linit "$logged_init" --argjson actual "$actual_rows" --argjson bg "$n" \
+    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe, scannerProbeClean:$probec, tables:{bloated:$sb, clean:($sc + $copy)}, loggedShapes:{initial:$linit, continuation:$lcont},
       generic:{source:"go-source", scannerContinuation:{sql:$sc, text:$gc, indexCondOnId:$idx}, scannerInitial:{sql:$si, text:$gi, idIndexScan:$initidx}},
       note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text read from account_erasure_reasons.go; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
   unset RECORD_STATUS
@@ -939,6 +968,19 @@ SH
   fi
 }
 
+# A deletion of an account with no reasons, recorded as item 6 "order-control-delete-<start|end>" (reasons 0): the same work at the start and the end of the size's run. The cost
+# of an operation is not constant over a run (the audit table grows, dead tuples pile up with autovacuum off, the cache changes), and these two rows say by how much for the one
+# operation that has no reason-dependent work. Recorded with the instrument set and the top statements (cluster-wide, not attributed); nothing is judged against them.
+order_control_delete() { # n which
+  local n="$1" which="$2" t
+  drop_scenarios
+  t="$(fresh_user)"
+  echo '[]' >"$WORK/items-order-delete.json"
+  delete_with "$t" keep "$WORK/items-order-delete.json"
+  record 6 "order-control-delete-$which" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --arg which "$which" \
+    '{delete:$del, reasons:0, bodyBytes:$bytes, expect:$expect, outcome:$outcome, control:{of:"a deletion of an account with no reasons", position:$which, note:"the same deletion at the start and at the end of one size run; the distance between the two is the order effect on a deletion, recorded and not judged"}}')"
+}
+
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
   note "size $n: loading background rows"
@@ -954,6 +996,10 @@ measure_size() { # n
   # with its own session bookkeeping.
   instrumented ctl_request
   CONTROL_WAL="$WAL_BYTES"
+
+  # The delete order control, START: a deletion of an account with no reasons, before any other case of this size has run. The same deletion is repeated at the END of the
+  # matrix (order_control_delete end): the distance between the two is what the run itself did to the cost of a deletion (audit rows, dead tuples, cache), recorded and not judged.
+  order_control_delete "$n" start
 
   # (2) every reason belongs to someone else.
   t="$(fresh_user)"
@@ -1016,6 +1062,8 @@ measure_size() { # n
   instrumented traverse "$t" "$WORK/items-control.json"
   record 3 order-control-requester-10 "$n" "$(jq -nc --argjson tr "$(traversal_json)" '{traversal:$tr, reasons:10, expect:{items:10}, control:{of:"discovery-requester-10", note:"the same case as discovery-requester-10, run last at this size: the distance between the two is the order effect of the audit rows and the table the run itself leaves behind"}}')"
   drop_scenarios
+
+  order_control_delete "$n" end
 
   # (1) sparse: the same table with every background reason blanked (many
   # requests, almost no reasons), an account with none.
