@@ -2,16 +2,15 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminUsers, ApiError } from "../api";
-import { reloadStarted, reloadSucceeded } from "../lib/deleteReload";
+import { reloadStarted, reloadSucceeded, requireReload } from "../lib/deleteReload";
 import { ERROR_COPY } from "../lib/errors";
-import type { AttemptSettleResponse, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
+import type { AttemptSettleResponse, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
 import { DeleteUserPanel } from "./DeleteUserPanel";
-import panelSource from "./DeleteUserPanel.tsx?raw";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1, name: "Grier" } }) }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
-  AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn() },
+  AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() },
 }));
 
 const target: User = {
@@ -57,6 +56,7 @@ beforeEach(() => {
   vi.mocked(AdminUsers.soleHostEvents).mockResolvedValue(hosted([], []));
   vi.mocked(AdminUsers.mintAttempt).mockImplementation(async () => ({ attemptId: `attempt-${++minted}` }));
   vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: noErasure });
+  vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValue({ items: [], next: null });
 });
 afterEach(() => {
   cleanup();
@@ -773,12 +773,6 @@ describe("DeleteUserPanel after the panel closes", () => {
   });
 });
 
-describe("DeleteUserPanel wording", () => {
-  it("the panel source carries no reason-review wording in this release", () => {
-    expect(panelSource).not.toMatch(/reason[\s_-]*review|needs_reason|reviewHash/i);
-  });
-});
-
 // ---- review fixes: the real fetch wrapper, a changed action or person, and the reload requirement ----
 
 describe("DeleteUserPanel through the real fetch wrapper", () => {
@@ -1163,5 +1157,476 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
     reopen();
     expect(await screen.findByRole("alert")).toHaveTextContent(RESTORE);
     expect(deleteButton()).toBeDisabled();
+  });
+});
+
+// ---- the reason review (T07B-2c) ----
+
+describe("DeleteUserPanel reason review", () => {
+  const hashOf = (c: string) => c.repeat(64);
+  const reason = (id: string, h: string, over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
+    requestId: id, reviewHash: hashOf(h), role: "subject", purpose: "contact", status: "pending", createdAt: "2026-11-01T12:00:00Z",
+    counterpartName: "Lee Leader", counterpartDeleted: false, reviewerIsParty: false, reason: `Reason text ${id}`, ...over,
+  });
+  const page = (items: ErasureReasonItem[], next: string | null = null): ErasureReasonPage => ({ ...(items.length ? { reviewRequired: true } : {}), items, next });
+  // Serves pages by cursor: "start" is the first (after = null).
+  function serve(pages: Record<string, ErasureReasonPage>) {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockImplementation(async (_id, after) => {
+      const found = pages[after ?? "start"];
+      if (!found) throw new Error(`no page for ${after}`);
+      return found;
+    });
+  }
+  const cursors = () => vi.mocked(AdminUsers.erasureReasonsPage).mock.calls.map((c) => c[1]);
+  const group = (n: number, of: number) => within(screen.getByRole("group", { name: `Reason ${n} of ${of}` }));
+  const choose = async (n: number, of: number, label: "Keep text" | "Blank text") => userEvent.click(group(n, of).getByRole("radio", { name: label }));
+  const reasonsReport = (kept: number, removed: number): ErasureReport => ({ ...noErasure, reasonsKept: kept, reasonsRemoved: removed });
+  const A = reason("1", "a");
+  const B = reason("2", "b");
+  const C = reason("3", "c");
+
+  it("says it is checking, with a Stop control, and keeps Delete off while the first page loads", async () => {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockReturnValue(new Promise<ErasureReasonPage>(() => undefined));
+    open();
+    expect(screen.getByText("Checking their contact-request reasons…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(AdminUsers.erasureReasonsPage).toHaveBeenCalledWith(9, null);
+  });
+
+  it("says there are no reasons, and sends no review, only when the walk ended with none", async () => {
+    serve({ start: page([], "10"), "10": page([], "20"), "20": page([], null) });
+    open();
+    expect(await screen.findByText("No reasons to review.")).toBeInTheDocument();
+    expect(cursors()).toEqual([null, "10", "20"]);
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    await press();
+    await screen.findByText("The account was deleted.");
+    expect(vi.mocked(AdminUsers.remove).mock.calls[0]).toEqual([9, {}, {}, "attempt-1"]);
+    expect(screen.queryByText(/blanked/)).not.toBeInTheDocument();
+  });
+
+  it("shows no 'No reasons' while a later page is still to come, even when the first had none", async () => {
+    let finish!: (p: ErasureReasonPage) => void;
+    vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValueOnce(page([], "10")).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    open();
+    await waitFor(() => expect(cursors()).toEqual([null, "10"]));
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    finish(page([], null));
+    expect(await screen.findByText("No reasons to review.")).toBeInTheDocument();
+  });
+
+  it("walks every page from the cursor each page gave, and lists all the items", async () => {
+    serve({ start: page([A], "5"), "5": page([B], "9"), "9": page([C], null) });
+    open();
+    expect(await screen.findByText("Reason text 3")).toBeInTheDocument();
+    expect(cursors()).toEqual([null, "5", "9"]);
+    expect(screen.getAllByRole("radio")).toHaveLength(6);
+  });
+
+  it("starts no radio checked, offers no choose-all, and keeps Delete off until every item is chosen", async () => {
+    serve({ start: page([A, B, C]) });
+    open();
+    await screen.findByText("Reason text 1");
+    for (const r of screen.getAllByRole("radio")) expect(r).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: /(keep|blank|choose|select) (all|every)/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Choose Keep text or Blank text for 3 more reasons.")).toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    await choose(1, 3, "Keep text");
+    await choose(2, 3, "Blank text");
+    expect(screen.getByText("Choose Keep text or Blank text for 1 more reason.")).toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    await choose(3, 3, "Keep text");
+    expect(screen.getByText("All 3 reasons chosen.")).toBeInTheDocument();
+    expect(deleteButton()).toBeEnabled();
+  });
+
+  it("keeps Delete off until the last page has loaded, even when everything loaded is chosen", async () => {
+    let finish!: (p: ErasureReasonPage) => void;
+    vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValueOnce(page([A], "5")).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Keep text");
+    expect(screen.getByText(/1 reason so far/)).toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    finish(page([B], null));
+    await screen.findByText("Reason text 2");
+    expect(deleteButton()).toBeDisabled();
+    await choose(2, 2, "Blank text");
+    expect(deleteButton()).toBeEnabled();
+  });
+
+  it("says what the reasons are, what is not listed, and where the choices live", async () => {
+    serve({ start: page([A]) });
+    open();
+    await screen.findByText("Reason text 1");
+    expect(screen.getByText("Before you delete this account, choose for each contact-request reason below whether Fold keeps the text or blanks it. Reasons can mention other people. Blanking removes only the text; the request and its decisions stay.")).toBeInTheDocument();
+    expect(screen.getByText("Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here.")).toBeInTheDocument();
+    expect(screen.getByText("Your choices stay on this page only until you delete or close it.")).toBeInTheDocument();
+  });
+
+  it("sends exactly the loaded items, in order, each with its hash and the choice made", async () => {
+    serve({ start: page([A, B], "5"), "5": page([C]) });
+    open();
+    await screen.findByText("Reason text 3");
+    await choose(1, 3, "Blank text");
+    await choose(2, 3, "Keep text");
+    await choose(3, 3, "Blank text");
+    await press();
+    await screen.findByText(/The account was deleted/);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[0]).toEqual([9, {}, {}, "attempt-1", [
+      { requestId: "1", reviewHash: hashOf("a"), choice: "remove" },
+      { requestId: "2", reviewHash: hashOf("b"), choice: "keep" },
+      { requestId: "3", reviewHash: hashOf("c"), choice: "remove" },
+    ]]);
+  });
+
+  it("changing a choice before the press sends the last one", async () => {
+    serve({ start: page([A]) });
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Blank text");
+    await choose(1, 1, "Keep text");
+    await press();
+    await screen.findByText(/The account was deleted/);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[0][4]).toEqual([{ requestId: "1", reviewHash: hashOf("a"), choice: "keep" }]);
+  });
+
+  it("summarizes the delete before the press, and says blanked text can't come back only when something is blanked", async () => {
+    serve({ start: page([A, B]) });
+    open();
+    await screen.findByText("Reason text 1");
+    expect(screen.queryByText(/^Delete this account\./)).not.toBeInTheDocument();
+    await choose(1, 2, "Keep text");
+    await choose(2, 2, "Keep text");
+    expect(screen.getByText("Delete this account. Keep 2 reasons and blank 0.")).toBeInTheDocument();
+    expect(screen.queryByText(/can't be brought back in Fold/)).not.toBeInTheDocument();
+    await choose(2, 2, "Blank text");
+    expect(screen.getByText("Delete this account. Keep 1 reason and blank 1.")).toBeInTheDocument();
+    expect(screen.getByText("Blanked text can't be brought back in Fold. Backups made before now still contain it.")).toBeInTheDocument();
+  });
+
+  it("states the result from the 200 body only", async () => {
+    serve({ start: page([A, B, C]) });
+    vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: reasonsReport(1, 2) });
+    open();
+    await screen.findByText("Reason text 3");
+    await choose(1, 3, "Keep text");
+    await choose(2, 3, "Blank text");
+    await choose(3, 3, "Blank text");
+    await press();
+    expect(await screen.findByText("The account was deleted. 2 reasons were blanked and 1 kept.")).toBeInTheDocument();
+  });
+
+  it("uses the singular for one blanked reason, and says nothing about reasons when the body counts none", async () => {
+    serve({ start: page([A]) });
+    vi.mocked(AdminUsers.remove).mockResolvedValueOnce({ erasure: reasonsReport(2, 1) });
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Blank text");
+    await press();
+    expect(await screen.findByText("The account was deleted. 1 reason was blanked and 2 kept.")).toBeInTheDocument();
+    cleanup();
+    vi.mocked(AdminUsers.remove).mockResolvedValueOnce({ erasure: noErasure });
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Keep text");
+    await press();
+    expect(await screen.findByText("The account was deleted.")).toBeInTheDocument();
+    expect(screen.queryByText(/blanked/)).not.toBeInTheDocument();
+  });
+
+  it("settle applied never mentions reasons, though the panel had some", async () => {
+    serve({ start: page([A]) });
+    vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(500, "delete_outcome_unknown"));
+    vi.mocked(AdminUsers.settleAttempt).mockResolvedValue(settleResult("applied"));
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Blank text");
+    await press();
+    expect(await screen.findByText("The account was deleted.")).toBeInTheDocument();
+    expect(screen.queryByText(/blanked|kept\./)).not.toBeInTheDocument();
+    expect(AdminUsers.settleAttempt).toHaveBeenCalledWith("attempt-1", 9);
+  });
+
+  it("an unknown answer keeps the choices and the same id, and shows no retry", async () => {
+    serve({ start: page([A]) });
+    vi.mocked(AdminUsers.remove).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    vi.mocked(AdminUsers.settleAttempt).mockResolvedValue(settleResult("not_applied"));
+    open();
+    await screen.findByText("Reason text 1");
+    await choose(1, 1, "Blank text");
+    await press();
+    expect(await screen.findByText(NOTHING)).toBeInTheDocument();
+    expect(group(1, 1).getByRole("radio", { name: "Blank text" })).toBeChecked();
+    expect(deleteButton()).toBeEnabled();
+    await press();
+    await screen.findByText(/The account was deleted/);
+    expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
+    expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual([{ requestId: "1", reviewHash: hashOf("a"), choice: "remove" }]);
+  });
+
+  it("Stop leaves Delete off, and Keep checking continues from the cursor it stopped at", async () => {
+    let second!: (p: ErasureReasonPage) => void;
+    vi.mocked(AdminUsers.erasureReasonsPage)
+      .mockResolvedValueOnce(page([A], "5"))
+      .mockReturnValueOnce(new Promise((resolve) => (second = resolve)))
+      .mockResolvedValueOnce(page([B], null));
+    open();
+    await screen.findByText("Reason text 1");
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.getByText(/You stopped checking/)).toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    second(page([C], null)); // the page that was in flight arrives late and is ignored
+    await choose(1, 1, "Keep text");
+    expect(deleteButton()).toBeDisabled();
+    expect(screen.queryByText("Reason text 3")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Keep checking" }));
+    await screen.findByText("Reason text 2");
+    expect(cursors()).toEqual([null, "5", "5"]);
+    expect(group(1, 2).getByRole("radio", { name: "Keep text" })).toBeChecked();
+    expect(deleteButton()).toBeDisabled();
+  });
+
+  it("retries a failed unit from its own cursor, never from the start, and never reads it as empty", async () => {
+    vi.mocked(AdminUsers.erasureReasonsPage)
+      .mockResolvedValueOnce(page([A], "5"))
+      .mockRejectedValueOnce(coded(503, "reason_review_busy"))
+      .mockResolvedValueOnce(page([B], null));
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_busy);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByText("Reason text 2");
+    expect(cursors()).toEqual([null, "5", "5"]);
+    expect(screen.getAllByRole("radio")).toHaveLength(4);
+  });
+
+  it("a failed first unit is retried from the start, and a network failure is not 'no reasons'", async () => {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockRejectedValueOnce(new TypeError("offline")).mockResolvedValueOnce(page([], null));
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_busy);
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("No reasons to review.")).toBeInTheDocument();
+    expect(cursors()).toEqual([null, null]);
+    expect(deleteButton()).toBeEnabled();
+  });
+
+  it.each([
+    ["a page that is not a page", {}],
+    ["an item without a hash", { items: [{ ...A, reviewHash: undefined }], next: null }],
+    ["a next that is not a cursor", { items: [], next: 5 }],
+  ])("treats %s as a failed unit, not as an empty one", async (_name, bad) => {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValue(bad as unknown as ErasureReasonPage);
+    open();
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(deleteButton()).toBeDisabled();
+  });
+
+  it("a cursor that does not advance fails the unit instead of looping", async () => {
+    serve({ start: page([A], "5"), "5": page([B], "5") });
+    open();
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(cursors()).toEqual([null, "5"]);
+  });
+
+  it("an admin who may not review sees the not-allowed copy and no reason text, and Delete stays off", async () => {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockRejectedValue(coded(403, "reason_review_not_allowed", { reviewRequired: true }));
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Only an adult admin can review these reasons. Ask another admin to delete this account.");
+    expect(deleteButton()).toBeDisabled();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["401", coded(401, "signed_out"), ERROR_COPY.signed_out],
+    ["a plain 403", coded(403, "not_allowed"), ERROR_COPY.not_allowed],
+    ["restore_detected", coded(503, "restore_detected"), ERROR_COPY.restore_detected],
+    ["a 404", coded(404, "not_found"), "This account no longer exists."],
+    ["your own account", coded(400, "not_yourself"), ERROR_COPY.not_yourself],
+  ])("%s on a page ends the review with its copy and keeps Delete off", async (_name, failure, copy) => {
+    vi.mocked(AdminUsers.erasureReasonsPage).mockRejectedValue(failure);
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent(copy);
+    expect(deleteButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  it("a Disable asks for no reasons and shows no review", async () => {
+    open("disable");
+    await waitFor(() => expect(AdminUsers.soleLeaderGroups).toHaveBeenCalled());
+    expect(AdminUsers.erasureReasonsPage).not.toHaveBeenCalled();
+    expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disable account" })).toBeEnabled();
+  });
+
+  it("a panel held off until a reload asks for no reasons either", async () => {
+    requireReload(target.id);
+    open();
+    expect(screen.getByRole("button", { name: "Delete account" })).toBeDisabled();
+    expect(AdminUsers.erasureReasonsPage).not.toHaveBeenCalled();
+    expect(AdminUsers.soleLeaderGroups).not.toHaveBeenCalledWith(0);
+  });
+
+  it("asks for nothing more once the panel is closed", async () => {
+    let first!: (p: ErasureReasonPage) => void;
+    vi.mocked(AdminUsers.erasureReasonsPage).mockReturnValueOnce(new Promise((resolve) => (first = resolve)));
+    const { close } = openClosable();
+    close();
+    first(page([A], "5"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cursors()).toEqual([null]);
+  });
+
+  it("tells two deleted counterparts apart by reference and never names them", async () => {
+    serve({
+      start: page([
+        reason("1", "a", { counterpartDeleted: true, counterpartName: "Deleted account", counterpartRef: "41" }),
+        reason("2", "b", { counterpartDeleted: true, counterpartName: "Deleted account", counterpartRef: "52" }),
+      ]),
+    });
+    open();
+    expect(await screen.findByText(/Deleted account · ref 41/)).toBeInTheDocument();
+    expect(screen.getByText(/Deleted account · ref 52/)).toBeInTheDocument();
+  });
+
+  describe("when the reasons changed or were never reviewed", () => {
+    it("reason_review_changed reloads every page, keeps unchanged choices, marks changed and new ones, drops vanished ones", async () => {
+      const B2 = reason("2", "z"); // same request, different hash
+      const D = reason("4", "d"); // new
+      serve({ start: page([A, B], "5"), "5": page([C]) });
+      open();
+      await screen.findByText("Reason text 3");
+      await choose(1, 3, "Keep text");
+      await choose(2, 3, "Blank text");
+      await choose(3, 3, "Keep text");
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "reason_review_changed"));
+      serve({ start: page([A, B2], "7"), "7": page([D]) }); // C is gone
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_changed);
+      await waitFor(() => expect(screen.getAllByRole("radio")).toHaveLength(6));
+      expect(cursors().slice(2)).toEqual([null, "7"]);
+      expect(screen.queryByText("Reason text 3")).not.toBeInTheDocument();
+      expect(group(1, 3).getByRole("radio", { name: "Keep text" })).toBeChecked();
+      expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(2);
+      expect(group(2, 3).getByRole("radio", { name: "Blank text" })).not.toBeChecked();
+      expect(group(2, 3).getByRole("radio", { name: "Keep text" })).not.toBeChecked();
+      expect(deleteButton()).toBeDisabled();
+      expect(screen.getByText("Choose Keep text or Blank text for 2 more reasons.")).toBeInTheDocument();
+      expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
+      // focus goes to the first thing to choose again
+      await waitFor(() => expect(group(2, 3).getByRole("radio", { name: "Keep text" })).toHaveFocus());
+
+      await choose(2, 3, "Keep text");
+      expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(1);
+      await choose(3, 3, "Blank text");
+      expect(screen.queryByText("Changed since you looked: choose again")).not.toBeInTheDocument();
+      await press();
+      await screen.findByText(/The account was deleted/);
+      expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
+      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toEqual([
+        { requestId: "1", reviewHash: hashOf("a"), choice: "keep" },
+        { requestId: "2", reviewHash: hashOf("z"), choice: "keep" },
+        { requestId: "4", reviewHash: hashOf("d"), choice: "remove" },
+      ]);
+    });
+
+    it("a reload that finds the set unchanged leaves every choice and a ready Delete", async () => {
+      serve({ start: page([A, B]) });
+      open();
+      await screen.findByText("Reason text 2");
+      await choose(1, 2, "Keep text");
+      await choose(2, 2, "Blank text");
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "reason_review_changed"));
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_changed);
+      await waitFor(() => expect(deleteButton()).toBeEnabled());
+      expect(screen.queryByText("Changed since you looked: choose again")).not.toBeInTheDocument();
+      expect(group(2, 2).getByRole("radio", { name: "Blank text" })).toBeChecked();
+    });
+
+    it("needs_reason_review on a panel that saw none reloads the review and marks every item", async () => {
+      serve({ start: page([]) });
+      open();
+      await screen.findByText("No reasons to review.");
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "needs_reason_review"));
+      serve({ start: page([A, B]) });
+      await press();
+      expect(await screen.findByText(/have contact-request reasons to review|has contact-request reasons to review/)).toBeInTheDocument();
+      await screen.findByText("Reason text 2");
+      expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();
+      expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(2);
+      expect(deleteButton()).toBeDisabled();
+      await choose(1, 2, "Blank text");
+      await choose(2, 2, "Keep text");
+      await press();
+      await screen.findByText(/The account was deleted/);
+      expect(removedIds()).toEqual(["attempt-1", "attempt-2"]);
+      expect(vi.mocked(AdminUsers.remove).mock.calls[1][4]).toHaveLength(2);
+    });
+
+    it("a reload that fails part way offers Try again from its cursor and keeps the set-aside choices", async () => {
+      serve({ start: page([A], "5"), "5": page([B]) });
+      open();
+      await screen.findByText("Reason text 2");
+      await choose(1, 2, "Keep text");
+      await choose(2, 2, "Blank text");
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "reason_review_changed"));
+      vi.mocked(AdminUsers.erasureReasonsPage)
+        .mockResolvedValueOnce(page([A], "5"))
+        .mockRejectedValueOnce(coded(503, "reason_review_busy"))
+        .mockResolvedValueOnce(page([B], null));
+      await press();
+      await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+      await screen.findByText("Reason text 2");
+      expect(cursors().slice(2)).toEqual([null, "5", "5"]);
+      expect(group(1, 2).getByRole("radio", { name: "Keep text" })).toBeChecked();
+      expect(group(2, 2).getByRole("radio", { name: "Blank text" })).toBeChecked();
+      expect(screen.queryByText("Changed since you looked: choose again")).not.toBeInTheDocument();
+    });
+
+    it("reason_review_not_allowed from the DELETE shows its copy and turns Delete off for good", async () => {
+      serve({ start: page([A]) });
+      vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(403, "reason_review_not_allowed"));
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Keep text");
+      await press();
+      expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.reason_review_not_allowed);
+      expect(deleteButton()).toBeDisabled();
+      expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
+      expect(screen.queryByText(NOTHING)).not.toBeInTheDocument();
+    });
+
+    it("mints a fresh id after each definitive reason answer, and the same id across a settle", async () => {
+      serve({ start: page([A]) });
+      vi.mocked(AdminUsers.remove)
+        .mockRejectedValueOnce(coded(409, "reason_review_changed"))
+        .mockRejectedValueOnce(new TypeError("offline"))
+        .mockResolvedValueOnce({ erasure: reasonsReport(1, 0) });
+      vi.mocked(AdminUsers.settleAttempt).mockResolvedValue(settleResult("not_applied"));
+      open();
+      await screen.findByText("Reason text 1");
+      await choose(1, 1, "Keep text");
+      await press();
+      await waitFor(() => expect(cursors()).toHaveLength(2));
+      await waitFor(() => expect(deleteButton()).toBeEnabled());
+      await press(); // lost answer: settles attempt-2, not a third id
+      expect(await screen.findByText(NOTHING)).toBeInTheDocument();
+      expect(AdminUsers.settleAttempt).toHaveBeenCalledTimes(1);
+      expect(AdminUsers.settleAttempt).toHaveBeenCalledWith("attempt-2", 9);
+      await press();
+      await screen.findByText("The account was deleted. 0 reasons were blanked and 1 kept.");
+      expect(removedIds()).toEqual(["attempt-1", "attempt-2", "attempt-3"]);
+    });
   });
 });

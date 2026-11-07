@@ -112,6 +112,21 @@ describe("AdminUsers attempt calls", () => {
     expect(JSON.parse((del?.[1] as RequestInit).body as string)).toEqual({ successors: {}, hostSuccessors: {}, attemptId: ID });
   });
 
+  it("sends a reason review as reasonReview.items in the DELETE body, and none when there is none", async () => {
+    const { AdminUsers } = await import("./api");
+    const report = { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0, reasonsKept: 1, reasonsRemoved: 1 };
+    const fetcher = stub(() => new Response(JSON.stringify({ erasure: report }), { status: 200 }));
+    const items = [
+      { requestId: "-9223372036854775808", reviewHash: "a".repeat(64), choice: "remove" as const },
+      { requestId: "7", reviewHash: "b".repeat(64), choice: "keep" as const },
+    ];
+    await AdminUsers.remove(9, {}, {}, ID, items);
+    await AdminUsers.remove(9, {}, {}, ID);
+    const bodies = fetcher.mock.calls.filter(([, opts]) => opts?.method === "DELETE").map(([, opts]) => JSON.parse((opts as RequestInit).body as string));
+    expect(bodies[0]).toEqual({ successors: {}, hostSuccessors: {}, attemptId: ID, reasonReview: { items } });
+    expect(bodies[1]).not.toHaveProperty("reasonReview");
+  });
+
   it.each([
     ["an HTML page", () => new Response("<html>proxy</html>", { status: 200, headers: { "Content-Type": "text/html" } })],
     ["an empty body", () => new Response("", { status: 200 })],
