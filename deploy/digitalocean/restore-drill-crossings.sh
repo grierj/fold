@@ -1195,7 +1195,9 @@ real_current_release_restore() {
   jq -e '.attemptId == null' "$cdir/panel-$t1.json" "$cdir/panel-$t2.json" >/dev/null
   crossing_panel_mint "$t3" "$cdir/panel-$t3.json"
   crossing_panel_mint "$t4" "$cdir/panel-$t4.json"
-  dc exec -T db pg_dump -U church -Fc fold >"$dump"
+  # The archive the full drill's lifecycle cases use: the sentinel row reads "archive" in the dump and "live" in the database it replaces. reset_case left the
+  # live marker ("live", capture_original) in place, so a raw pg_dump here would carry "live" and assert_private (archive) would rightly refuse the restored copy.
+  dump_current_fixture_archive "$dump"
   [[ -s "$dump" ]]
   # A fenced commit this process sees acknowledged and the dump lacks.
   api DELETE "/admin/users/$j1" '{}' >/dev/null

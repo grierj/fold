@@ -3,7 +3,7 @@
 # proofs from git, migration differences, table-set differences, migration
 # ownership, refusal judging for both level pairs, evidence completeness and
 # the restore drill's wiring. No Docker, network or SQL server.
-# shellcheck disable=SC2016 # jq and child-shell programs keep their variables literal.
+# shellcheck disable=SC2016,SC2031 # jq and child-shell programs keep their variables literal.
 set -Eeuo pipefail
 exec </dev/null
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
@@ -571,4 +571,50 @@ rc=0
 # ...and its state file still lets the EXIT trap put the identity back
 jq -e '.applied == true' "$WORK/crossings/os-release-standin.json" >/dev/null
 isolation_os_restore "$WORK/crossings/os-release-standin.json"; [[ -L "$CXO/etc/os-release" ]]
+
+# --- the current-release archive carries the fixture's "archive" marker (crossings1: assert_private refused a raw pg_dump that read "live") ----------------------------
+# reset_case ends with capture_original, which sets drill_sentinel id=2 to "live" in the database; assert_private requires the restored copy to read "archive". So a dump
+# of the live database taken after a reset is not an archive. The one place that makes a dump the drill restores from is dump_current_fixture_archive.
+CASES="$ROOT/deploy/digitalocean/restore-drill-cases.sh"; CROSS="$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
+grep -q "UPDATE drill_sentinel SET value='live' WHERE id=2" <(sed -n '/^capture_original() {$/,/^}$/p' "$CASES")          # the cause: every reset leaves "live" behind
+grep -qF "[[ \"\$(pg fold -c 'SELECT value FROM drill_sentinel WHERE id=2')\" == archive ]]" "$RUNNER"                    # the assertion stays exactly as strict as it was
+sed -n '/^assert_private() {$/,/^}$/p' "$RUNNER" | grep -qF "drill_sentinel WHERE id=2')\" == archive ]]"
+# No crossing case dumps the live database with a raw pg_dump (the older-archive case dumps its own fixture database, which has no sentinel)
+if grep -vE '^[[:space:]]*#' "$CROSS" | grep -nE 'pg_dump -U church -Fc fold( |>|$)' | grep -v 'CROSSING_FORBID_UP'; then echo 'a crossing case dumps the live database without the archive marker' >&2; exit 1; fi
+cur_body="$(sed -n '/^real_current_release_restore() {$/,/^}$/p' "$CROSS")"
+d_l="$(grep -n 'dump_current_fixture_archive "\$dump"' <<<"$cur_body" | head -n 1 | cut -d: -f1)"; r_l="$(grep -n 'current-release/live-pg_restore' <<<"$cur_body" | head -n 1 | cut -d: -f1)"
+p_l="$(grep -n 'crossing_panel_mint "\$t4"' <<<"$cur_body" | head -n 1 | cut -d: -f1)"; x_l="$(grep -n "restore --dump \"\$dump\"" <<<"$cur_body" | head -n 1 | cut -d: -f1)"
+del_l="$(grep -n "api DELETE \"/admin/users/\$j1\"" <<<"$cur_body" | head -n 1 | cut -d: -f1)"
+[[ -n "$d_l$r_l$p_l$x_l$del_l" && "$p_l" -lt "$d_l" && "$d_l" -lt "$del_l" && "$del_l" -lt "$r_l" && "$r_l" -lt "$x_l" ]]       # panels first, then the archive, then the commit the dump lacks
+# Behaviour of the helper the case now uses, against a stub database that models the sentinel row: the dump reads "archive", the database reads "live" again afterwards.
+# shellcheck source=deploy/digitalocean/restore-drill-cases.sh
+source "$CASES"
+SENT="$WORK/sentinel"; printf 'live\n' >"$SENT"          # what reset_case leaves
+pg() { # database -c sql
+  case "${3:-}" in
+    "UPDATE drill_sentinel SET value='archive' WHERE id=2") printf 'archive\n' >"$SENT" ;;
+    "UPDATE drill_sentinel SET value='live' WHERE id=2") printf 'live\n' >"$SENT" ;;
+    "SELECT value FROM drill_sentinel WHERE id=2") cat "$SENT" ;;
+    *) echo "unexpected sql: $3" >&2; return 1 ;;
+  esac
+}
+dc() { # exec -T db pg_dump ... : the dump is the sentinel as it is right now
+  [[ "$*" == 'exec -T db pg_dump -U church -Fc fold' ]] || { echo "unexpected dc: $*" >&2; return 1; }
+  printf 'sentinel=%s\n' "$(cat "$SENT")"
+}
+capture_original() { printf 'live\n' >"$SENT"; }   # the real one updates the row to "live" (checked above); the rest of it needs a database
+validate_deploy_drill() { return 0; }
+(
+  set -Eeuo pipefail
+  DIR="$WORK/site"; PROJECT="fold-deploy-drill-x"; DEPLOY_DRILL=1; mkdir -p "$WORK/crossings"
+  # a raw dump after a reset is the "live" copy that assert_private refused
+  dc exec -T db pg_dump -U church -Fc fold >"$WORK/crossings/raw.dump"; grep -qx 'sentinel=live' "$WORK/crossings/raw.dump"
+  dump_current_fixture_archive "$WORK/crossings/current-release.dump"
+  grep -qx 'sentinel=archive' "$WORK/crossings/current-release.dump"          # the restored copy will read "archive"
+  [[ "$(cat "$SENT")" == live ]]                                              # and the database it replaces reads "live" again, so a swap stays observable
+  # the helper still refuses outside the drill's own directory and project
+  rc=0; dump_current_fixture_archive "/tmp/elsewhere.dump" >/dev/null 2>&1 || rc=$?; [[ "$rc" != 0 ]]
+  rc=0; PROJECT=owner dump_current_fixture_archive "$WORK/crossings/x.dump" >/dev/null 2>&1 || rc=$?; [[ "$rc" != 0 ]]
+)
+unset -f pg dc capture_original validate_deploy_drill
 echo 'restore crossing fixtures: ok'
