@@ -60,6 +60,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
   (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
   `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
+  Staged `00007` (T07B-2a, local, no caller) adds a licence for a reason-only blank on non-contact,
+  non-pending rows with a soft-deleted party; contact and pending rows keep the baseline.
 - Optional email uses one effective-choice reader, `readEmailOff` in `email_optouts.go`: the account's
   latest email choice or the actual destination address's retained opt-out can turn a category off.
   `email_address_optouts` is written only by `exportEmailOptOutsIn` during erasure with a held address,
@@ -346,7 +348,10 @@ The migration chain is the generated baseline (M7.7, DEC-138) plus additive numb
 (`00005_email_address_optouts.sql` adds the address-level optional-email opt-out table, R4-2d2-1,
 owner decision 8; R4-2d2-2a through -3 activate its local behavior, inventory 7.6 and 15.8)
 (`00006_admin_operation_attempts.sql` stages dormant receipt storage, T07B-1a: a 16-byte nonce and
-timestamp only, with no behavior or cleanup yet; inventory T39 records the planned 24-hour cleanup).
+timestamp only, with no behavior or cleanup yet; inventory T39 records the planned 24-hour cleanup)
+(`00007_reason_review_erasure_scrub.sql` adds a dormant reason-blank branch to both `contact_requests` trigger
+functions, T07B-2a: non-contact, non-pending rows with a soft-deleted party only, ages-note branches intact,
+no caller; local, verification and landing pending, inventory 15.4).
 `TestBaselineFileShape` checks the chain
 through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
 and Down). `scripts/baseline-proof.sh generate`
