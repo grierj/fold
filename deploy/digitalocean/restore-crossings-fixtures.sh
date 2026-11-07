@@ -473,9 +473,20 @@ fi
 grep -q 'CROSSING_CANDIDATE_LEVEL=2' "$CROSS"
 # --- the panel scenarios (V-01) -----------------------------------------------------------------------
 # An open panel holds no attempt id; a press mints one; only the retained cases mint ahead.
-printf '%s\n' '{"target":7,"attemptId":null,"items":[{"requestId":"10","reviewHash":"aa"},{"requestId":"11","reviewHash":"bb"}]}' >"$WORK/panel.json"
-[[ "$(crossing_panel_body "$WORK/panel.json" ID1 | jq -c '.attemptId, [.reasonReview.items[].choice]' | paste -sd' ')" == '"ID1" ["remove","keep"]' ]]
-[[ "$(crossing_panel_body "$WORK/panel.json" ID1 | jq -c '.reasonReview.items[0]')" == '{"requestId":"10","reviewHash":"aa","choice":"remove"}' ]]
+# The set-v1 wire (T07B-2 scaling): count, digest and two-bit choices, no per-reason items. The expected digest is computed here with xxd and
+# sha256sum from the format alone (label, 0x00, uint64 count, then int64 id and raw 32-byte hash per item), so the helper is checked against an
+# implementation that shares none of its code.
+h1="$(printf '1%.0s' {1..64})"; h2="$(printf 'b%.0s' {1..64})"
+printf '{"target":7,"attemptId":null,"items":[{"requestId":"10","reviewHash":"%s"},{"requestId":"11","reviewHash":"%s"}]}\n' "$h1" "$h2" >"$WORK/panel.json"
+want_digest="$({ printf '%s' 'fold:erasure-reason-set:v1' | xxd -p | tr -d '\n'; printf '00%016x%016x%s%016x%s' 2 10 "$h1" 11 "$h2"; } | xxd -r -p | sha256sum | cut -d' ' -f1)"
+[[ "$(crossing_panel_body "$WORK/panel.json" ID1 | jq -c '[.attemptId, .reasonReview]')" == '["ID1",{"format":"set-v1","count":"2","digest":"'"$want_digest"'","choices":"Bg=="}]' ]]
+[[ "$(crossing_panel_body "$WORK/panel.json" ID1 | jq -c 'keys_unsorted')" == '["successors","hostSuccessors","attemptId","reasonReview"]' ]]
+[[ "$(crossing_panel_body "$WORK/panel.json" "" | jq -c 'has("attemptId")')" == false ]]
+# No old-form per-reason list anywhere in the crossing bodies.
+if crossing_panel_body "$WORK/panel.json" ID1 | grep -q '"items"'; then echo 'crossing: a panel body carries the old items envelope' >&2; exit 1; fi
+if grep -n 'reasonReview:{items' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"; then echo 'crossing: the crossings still build the old items envelope' >&2; exit 1; fi
+# The helper's byte-for-byte contract is the product's shared vectors.
+node "$ROOT/deploy/digitalocean/qc1/set-v1.mjs" selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json" >/dev/null
 CROSS="$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
 body="$(sed -n '/^real_current_release_restore() {/,/^}/p' "$CROSS")"
 grep -q "jq -e '.attemptId == null' \"\$cdir/panel-\$t1.json\" \"\$cdir/panel-\$t2.json\"" <<<"$body"

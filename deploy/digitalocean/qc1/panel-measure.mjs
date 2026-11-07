@@ -1,27 +1,33 @@
-// QC-1 item 10: the rendered delete panel in a real browser against the real
-// API. Opens Admin -> Users -> the account's Delete, and measures how long the
-// reason review takes to render completely (every reason an <li data-reason-id>
-// and the "Checking" line gone) and what the page holds afterwards: JS heap
-// before and after a forced collection, DOM nodes, long-task time, and the page
-// requests the walk made. Nothing is mocked: no route is intercepted, and the
-// figures are discarded unless every page response came from the stack's own
-// origin with status 200 and every body could be read.
+// QC-1 item 10: the rendered deletion panel in a real browser against the real API. Opens Admin -> Users -> the account's Delete and
+// measures, for a dense history seeded by the harness (qc1-measure.sh):
+//   - readiness: max(the whole review read with the displayed total equal to the seeded count and the Checking line gone, the first
+//     50-reason page rendered and its first radio accepting a real click within 200 ms), see panel-core.mjs;
+//   - 30 real clicks (first page while the walk runs, mid-list, last page, after the walk) and the navigation controls, timed in the page;
+//   - heap before and after a forced collection, DOM nodes and long tasks after the walk and after the interactions;
+//   - the page requests the walk made, every one answered 200 from the stack's own origin with its decoded body read;
+//   - whether the page is a secure context, whether crypto.subtle exists and so which digest path ran (inferred: the product exposes none);
+//   - the changed-reason path (when QC1_CHANGE_CMD names a script): every reason chosen with the panel's own handler, one reason changed
+//     behind the page, Delete pressed (the real server refuses with reason_review_changed, nothing is deleted), the review read again, the
+//     DELETE body's size and the time from the press to the request, and "Next changed reason".
+// Nothing is mocked: no route is intercepted. The figures are discarded unless every page response came from the stack's own origin with
+// status 200 and every body could be read (apiOrigin is "real" only then).
 //
-// Environment: QC1_URL (http://127.0.0.1:PORT), QC1_WEB_DIR (the repo's web/,
-// where `npm ci` installed @playwright/test), QC1_CHROMIUM (an installed
-// Chromium, see browser.mjs), QC1_ADMIN_EMAIL, QC1_ADMIN_PASSWORD,
-// QC1_TARGET_EMAIL, QC1_EXPECT (reasons the account holds), QC1_OUT (file for the
-// JSON result). Exit 3 when the browser tooling is not usable, 4 when sign-in
-// fails, 5 when the panel does not finish; nothing is written then, and the
-// runner leaves the row missing (the run stays incomplete). browser-preflight.mjs
-// proves the tooling with the same launch before anything is measured.
+// Environment: QC1_URL (http://127.0.0.1:PORT), QC1_WEB_DIR (the repo's web/, where `npm ci` installed @playwright/test), QC1_CHROMIUM (an
+// installed Chromium, see browser.mjs), QC1_ADMIN_EMAIL, QC1_ADMIN_PASSWORD, QC1_TARGET_EMAIL, QC1_EXPECT (reasons the account holds), QC1_OUT
+// (file for the JSON result). Optional: QC1_CHANGE_CMD (an executable called with one request id: it changes that reason behind the page),
+// QC1_NO_SUBTLE=1 (remove crypto.subtle before the page loads, as a plain-http LAN address lacks it, so the bundled SHA-256 runs), QC1_CLICKS
+// (default 30), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
+// interactions-end, press-start, press-end). Exit 3 when the browser tooling is not usable, 4 when sign-in fails, 5 when the run breaks before any
+// measurement; nothing is written then, and the runner leaves the row missing (the run stays incomplete). Exit 6 when a PHASE failed after the run
+// started: the file is written with `failed` naming the phase and every figure measured before it (including any budget already crossed); the runner
+// records it as a PARTIAL row, which the judge keeps for its budget findings and calls invalid as incomplete. browser-preflight.mjs proves the tooling with the same launch.
 //
-// Timing is the Node clock around Playwright calls: it includes the protocol
-// round trips of each call (a millisecond or two), not a paint-timing API. The
-// "ready" point is the one a person waits for before they can choose.
+// Timing is the Node clock around Playwright calls for readiness, and the page's own clock for clicks and navigation (panel-driver.mjs).
 import { writeFileSync } from "node:fs";
 import { launchOptions, resolvePlaywright } from "./browser.mjs";
 import { totalBodyBytes, walkOrigin } from "./response-accounting.mjs";
+import { measurePanel, CLICKS_DEFAULT } from "./panel-core.mjs";
+import { playwrightDriver, INIT_SCRIPT, NO_SUBTLE_SCRIPT } from "./panel-driver.mjs";
 
 const env = process.env;
 for (const k of ["QC1_URL", "QC1_WEB_DIR", "QC1_ADMIN_EMAIL", "QC1_ADMIN_PASSWORD", "QC1_TARGET_EMAIL", "QC1_EXPECT", "QC1_OUT"]) {
@@ -49,13 +55,8 @@ try {
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
-  await page.addInitScript(() => {
-    window.__longTaskMs = 0;
-    window.__longTasks = 0;
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) { window.__longTaskMs += e.duration; window.__longTasks++; }
-    }).observe({ type: "longtask", buffered: true });
-  });
+  await page.addInitScript(INIT_SCRIPT);
+  if (env.QC1_NO_SUBTLE === "1") await page.addInitScript(NO_SUBTLE_SCRIPT);
   // Sign in through the JSON API on the page's own cookie jar, as the e2e specs do.
   const csrf = async () => (await (await page.request.get(`${url}/api/v1/auth/csrf`)).json()).csrfToken;
   const login = await page.request.post(`${url}/api/v1/auth/login`, {
@@ -64,55 +65,62 @@ try {
   });
   if (!login.ok()) { process.stderr.write(`panel-measure: sign-in answered ${login.status()}\n`); process.exit(4); }
 
+  // What the first walk's responses add up to; read when the walk has ended (a later walk, after the refused press, is not part of it).
   const walk = { requests: 0, bad: 0, foreignOrigin: 0, bytes: null };
-  const responseBodies = [];
+  const bodies = [];
+  let counting = true;
+  let allPageResponses = 0; // every review page response this page receives, from the start and never reset: a fresh traversal shows as this growing
   page.on("response", (r) => {
     if (!new URL(r.url()).pathname.endsWith("/erasure-reasons/page")) return;
+    allPageResponses++;
+    if (!counting) return;
     walk.requests++;
     if (r.status() !== 200) walk.bad++;
     if (new URL(r.url()).origin !== origin) walk.foreignOrigin++;
-    responseBodies.push(r.body().then((body) => body.length).catch(() => null));
+    // Per page: the decoded body size, the request time (Playwright's own timing) and JSON.parse of that body alone in Node.
+    bodies.push(
+      r.body().then(
+        (body) => {
+          const t = r.request().timing();
+          const p0 = performance.now();
+          let ok = true;
+          try { JSON.parse(body.toString("utf8")); } catch { ok = false; }
+          const nodeParseMs = ok ? Math.round((performance.now() - p0) * 100) / 100 : null;
+          const requestMs = t && t.responseEnd >= 0 && t.startTime >= 0 ? Math.round((t.responseEnd) * 100) / 100 : null;
+          return { bytes: body.length, requestMs, nodeParseMs };
+        },
+        () => ({ bytes: null, requestMs: null, nodeParseMs: null }),
+      ),
+    );
   });
+  const walkStats = async () => {
+    counting = false;
+    const list = await Promise.all(bodies);
+    const sizes = list.map((p) => p.bytes);
+    walk.bytes = totalBodyBytes(sizes);
+    return { pageRequests: walk.requests, pageResponseBytes: walk.bytes, apiOrigin: walkOrigin(walk, walk.bytes, sizes.length), pageList: list };
+  };
 
-  await page.goto(`${url}/admin?tab=users`);
-  await page.getByRole("searchbox", { name: "Search by name or email" }).fill(env.QC1_TARGET_EMAIL);
-  const row = page.getByRole("row").filter({ hasText: env.QC1_TARGET_EMAIL });
-  await row.getByRole("button", { name: /^More for/ }).first().click();
-  const items = page.locator('ul[aria-label="Contact-request reasons"] > li[data-reason-id]');
-
-  const started = performance.now();
-  await row.getByRole("menuitem", { name: "Delete" }).click();
-  await page.waitForFunction(
-    (n) => document.querySelectorAll('ul[aria-label="Contact-request reasons"] > li[data-reason-id]').length >= n,
+  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", walk: walkStats, pageResponses: () => allPageResponses });
+  const result = await measurePanel(driver, {
     expected,
-    { timeout: 900000, polling: "raf" },
-  );
-  await row.getByText("Checking their contact-request reasons…").waitFor({ state: "detached", timeout: 900000 });
-  const renderReadyMs = Math.round(performance.now() - started);
-  const itemsRendered = await items.count();
-
-  const cdp = await context.newCDPSession(page);
-  await cdp.send("Performance.enable");
-  const metric = async (name) => (await cdp.send("Performance.getMetrics")).metrics.find((m) => m.name === name)?.value ?? null;
-  const heapUsedBytes = await metric("JSHeapUsedSize");
-  await cdp.send("HeapProfiler.enable");
-  await cdp.send("HeapProfiler.collectGarbage");
-  const heapAfterGcBytes = await metric("JSHeapUsedSize");
-  const domNodes = await metric("Nodes");
-  const long = await page.evaluate(() => ({ ms: window.__longTaskMs, count: window.__longTasks }));
-
-  const bodySizes = await Promise.all(responseBodies);
-  walk.bytes = totalBodyBytes(bodySizes);
-  const apiOrigin = walkOrigin(walk, walk.bytes, bodySizes.length);
+    now: () => performance.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    clicksTotal: Number(env.QC1_CLICKS ?? CLICKS_DEFAULT),
+  });
+  // A run that failed part-way is WRITTEN anyway, with `failed` naming the phase: the phases that finished keep their figures (and any budget already
+  // crossed). The runner records such a file as a partial row and the judge keeps its budget findings; the exit status is 6 so it is never mistaken for a
+  // clean run.
   writeFileSync(env.QC1_OUT, JSON.stringify({
-    apiOrigin,
+    ...result,
     browser: `chromium ${browser.version()}`,
-    renderReadyMs, itemsRendered, expected,
-    heapUsedBytes, heapAfterGcBytes, domNodes,
-    longTaskMs: Math.round(long.ms), longTaskCount: long.count,
-    pageRequests: walk.requests, pageResponseBytes: walk.bytes, pageResponseBytesKind: "decoded response body bytes",
-    note: "Node clock around Playwright calls, headless Chromium, 1280x900, the app's own embedded bundle; ready = every reason rendered and the Checking line gone",
+    noSubtle: env.QC1_NO_SUBTLE === "1",
+    note: "readiness and walk times are the Node clock around Playwright calls; click and navigation latencies are the page's own clock from the pointerdown to the frame after the commit; headless Chromium, 1280x900, the app's own embedded bundle, a runner where the browser shares the machine with the stack",
   }) + "\n");
+  if (result.failed) {
+    process.stderr.write(`panel-measure: stopped in ${result.failed.phase}: ${result.failed.error}\n`);
+    process.exitCode = 6;
+  }
 } catch (e) {
   process.stderr.write(`panel-measure: ${e && e.message ? e.message : e}\n`);
   process.exit(5);

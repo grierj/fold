@@ -101,7 +101,7 @@ api() { # method path [data]
   case "$1 $2" in
     "POST /groups") echo '{"group":{"id":5}}' ;;
     "POST /admin/users/"*"/erasure-reasons/page")
-      jq -nc --arg a "$(printf 'a%.0s' {1..64})" --arg b "$(printf 'b%.0s' {1..64})" '{reviewRequired:true,next:null,items:[{requestId:11,reviewHash:$a},{requestId:12,reviewHash:$b}]}' ;;
+      jq -nc --arg a "$(printf 'a%.0s' {1..64})" --arg b "$(printf 'b%.0s' {1..64})" '{reviewRequired:true,next:null,items:[{requestId:"11",reviewHash:$a},{requestId:"12",reviewHash:$b}]}' ;;
     "DELETE /admin/users/"*) echo $(( $(cat "$S/fence") + 1 )) >"$S/fence"; echo '{"erasure":{"reasonsKept":1,"reasonsRemoved":1}}' ;;
     *) echo "unexpected api $1 $2" >&2; return 1 ;;
   esac

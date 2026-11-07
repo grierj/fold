@@ -70,7 +70,7 @@ RDS="$HERE/restore-drill.sh"
 grep -q 'RESTORE_BROWSER_LAUNCH="\$ROOT/deploy/digitalocean/qc1/browser-launch.cjs"' "$RDS"
 grep -q 'restoreLaunchOptions(process.env)' "$HERE/testdata/restore-browser.cjs"
 if command -v node >/dev/null; then
-  for m in browser.mjs browser-preflight.mjs response-accounting.mjs panel-measure.mjs; do node --check "$HERE/qc1/$m"; done
+  for m in browser.mjs browser-preflight.mjs response-accounting.mjs panel-measure.mjs panel-core.mjs panel-driver.mjs set-v1.mjs; do node --check "$HERE/qc1/$m"; done
   node --check "$HERE/qc1/browser-launch.cjs"; node --check "$HERE/testdata/restore-browser.cjs"
   nodet() { node --input-type=module -e "$1"; }
   imp="import * as b from '$HERE/qc1/browser.mjs'; import * as r from '$HERE/qc1/response-accounting.mjs'; import { createRequire } from 'node:module'; import assert from 'node:assert/strict'; const cjs = createRequire('$HERE/qc1/x.mjs')('./browser-launch.cjs');"
@@ -117,8 +117,8 @@ if command -v node >/dev/null; then
   assert.equal(r.walkOrigin({ ...ok, requests: 0 }, 0, 0), 'unverified');
   " >/dev/null
 
-  if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs"; then echo 'panel-measure.mjs reads Content-Length' >&2; exit 1; fi
-  grep -q 'responseBodies.push(r.body().then((body) => body.length).catch(() => null))' "$HERE/qc1/panel-measure.mjs"
+  if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-driver.mjs" "$HERE/qc1/panel-core.mjs"; then echo 'the panel measurement reads Content-Length' >&2; exit 1; fi
+  grep -qF 'r.body().then(' "$HERE/qc1/panel-measure.mjs"; grep -qF 'bytes: body.length' "$HERE/qc1/panel-measure.mjs"; grep -qF 'bytes: null, requestMs: null' "$HERE/qc1/panel-measure.mjs"   # an unreadable body is null, never zero
   grep -q 'walk = { requests: 0, bad: 0, foreignOrigin: 0, bytes: null }' "$HERE/qc1/panel-measure.mjs"
 
   # --- the preflight against a fake Playwright: module resolution is real, the browser is not ------------------------------
@@ -502,9 +502,9 @@ STUB
 fi
 
 # --- the runner: browser preflight before anything is created -------------------------------------------------------------
-CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web"
+CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web/src/lib"
 cp "$HERE/qc1-measure.sh" "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$CLONE/deploy/digitalocean/qc1/"
+cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
 cp "$ROOT/api_profile.go" "$ROOT/main.go" "$CLONE/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
@@ -548,6 +548,8 @@ STUB
 cat >"$WORK/stubbin/node" <<'STUB'
 #!/usr/bin/env bash
 printf 'node %s | QC1_WEB_DIR=%s\n' "$*" "${QC1_WEB_DIR-}" >>"$STUB_NODE_LOG"
+# The body builder's self-test against the shared vectors runs before the preflight; the stub answers it as the real one does.
+case "$*" in *set-v1.mjs*selftest*) echo 'ok 4'; exit 0 ;; esac
 case "${STUB_NODE_MODE:-ok}" in
   ok) echo '{"ok":true,"chromium":"140.0.7339.0","playwright":"1.64.1"}' ;;
   notok) echo '{"ok":false}' ;;
@@ -566,9 +568,9 @@ grep -q "node $CLONE/deploy/digitalocean/qc1/browser-preflight.mjs | QC1_WEB_DIR
 # Passing the preflight, the run goes on to the image checks (a label that is not HEAD stops it there).
 : >"$WORK/stub.log"; rc=0; LABEL=0000000000000000000000000000000000000000 rrun --dir "$WORK/pf3" --image qc1-supplied:latest >"$WORK/pf3.out" 2>&1 || rc=$?
 [[ "$rc" == 1 ]] && grep -q 'is labelled revision' "$WORK/pf3.out"
-# --no-browser never calls node.
+# --no-browser never calls the browser tooling (node still runs the body builder's self-test).
 : >"$WORK/node.log"; : >"$WORK/stub.log"; rc=0; LABEL=0000000000000000000000000000000000000000 rrun --dir "$WORK/pf4" --no-browser --image qc1-supplied:latest >"$WORK/pf4.out" 2>&1 || rc=$?
-[[ "$rc" == 1 && ! -s "$WORK/node.log" ]]
+[[ "$rc" == 1 ]] && ! grep -q "browser-preflight\|panel-measure" "$WORK/node.log"   # node is still the body builder's (set-v1 selftest), never the browser
 # The preflight comes before any directory, image work or container.
 RUNNER="$HERE/qc1-measure.sh"
 pf_line="$(grep -n 'qc1/browser-preflight.mjs' "$RUNNER" | head -n 1 | cut -d: -f1)"; mk_line="$(grep -n '^mkdir -p "\$WORK"$' "$RUNNER" | cut -d: -f1)"; img_line="$(grep -n '^IMAGE_ID=' "$RUNNER" | head -n 1 | cut -d: -f1)"

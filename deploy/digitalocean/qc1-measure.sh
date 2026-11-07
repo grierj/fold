@@ -24,8 +24,18 @@
 #
 #   deploy/digitalocean/qc1-measure.sh --dir NEW_SCRATCH_PATH [--image IMG]
 #        [--sizes 10000,100000,1000000] [--counts 0,10,100,1000,10000]
-#        [--layout spread|tail|head] [--reason-len N] [--droplet 2gb|1gb]
-#        [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--keep]
+#        [--layout spread|tail|head] [--reason-len N] [--target-reason-len N] [--droplet 2gb|1gb]
+#        [--dense-counts 100000|none] [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--browser-fallback-digest] [--keep]
+#
+# --dense-counts: reasons in ONE account at the tables that can hold them, additive to --counts (the scaling design's R5: 100,000 at the 100k and 1M
+# tables, judged against the same budgets). "none" leaves them out (a pilot); a run without them is complete only for the sizes it names.
+# --reason-len: the length of the BACKGROUND rows (default 200). --target-reason-len: the length of the dense TARGET histories (the account being discovered,
+# deleted or opened in the browser; default 1000, the contact-reason maximum), so page sizes are measured at the largest reason the product accepts.
+# A run is FULL only when its environment record names the whole matrix (sizes 10k/100k/1M, counts 0..10k, deletion counts 0..10k, the dense 100,000, the
+# browser, 1,000-rune targets); anything less is a PILOT, said in evidence-status.json (coverage) and in the verdict. A pilot's complete means only that
+# every row it asked for exists and is clean.
+# --browser-fallback-digest: one extra rendered-panel case at the largest browser count of the first size with crypto.subtle removed, so the bundled
+# SHA-256 runs (not required by the matrix).
 #
 # Results under --dir: measurements.jsonl, environment.json, explain-<size>.log,
 # failures.jsonl, evidence-status.json (complete only when every measurement,
@@ -39,8 +49,8 @@ source "$HERE/qc1/lib.sh"
 # shellcheck source=deploy/digitalocean/isolation.sh
 source "$HERE/isolation.sh"
 
-WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread REASON_LEN=200 DROPLET=2gb KEEP=0
-SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1
+WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
+SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
@@ -49,22 +59,26 @@ while (( $# )); do
     --counts) COUNTS="${2:?comma list required}"; shift 2 ;;
     --layout) LAYOUT="${2:?spread, tail or head}"; shift 2 ;;
     --reason-len) REASON_LEN="${2:?length required}"; shift 2 ;;
+    --target-reason-len) TARGET_REASON_LEN="${2:?length required}"; shift 2 ;;
     --droplet) DROPLET="${2:?2gb or 1gb}"; shift 2 ;;
     --seconds-per-reason) SECONDS_PER_REASON="${2:?whole seconds required}"; shift 2 ;;
     --sitting-minutes) SITTING_MINUTES="${2:?whole minutes required}"; shift 2 ;;
     --shared-daemon) SHARED=1; shift ;;
     --no-browser) BROWSER=0; shift ;;
+    --dense-counts) DENSE="${2:?comma list or none}"; shift 2 ;;
+    --browser-fallback-digest) BROWSER_NOSUBTLE=1; shift ;;
     --keep) KEEP=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
 done
-for tool in docker git jq curl awk sha256sum; do command -v "$tool" >/dev/null || { echo "qc1: $tool is required" >&2; exit 1; }; done
+for tool in docker git jq curl awk sha256sum node; do command -v "$tool" >/dev/null || { echo "qc1: $tool is required" >&2; exit 1; }; done
 [[ -n "$WORK" ]] || { echo 'qc1: --dir NEW_SCRATCH_PATH is required' >&2; exit 1; }
 WORK="$(realpath -m "$WORK")"
 [[ "$WORK" == /* && "$WORK" != /opt/fold && "$WORK" != /opt/fold/* && ! -e "$WORK" ]] || { echo 'qc1: --dir must be a new scratch path outside /opt/fold' >&2; exit 1; }
 [[ "$LAYOUT" =~ ^(spread|tail|head)$ ]] || { echo 'qc1: --layout is spread, tail or head' >&2; exit 1; }
 if [[ ! "$REASON_LEN" =~ ^[0-9]+$ ]] || (( REASON_LEN < 1 || REASON_LEN > 1000 )); then echo 'qc1: --reason-len is 1..1000' >&2; exit 1; fi
+if [[ ! "$TARGET_REASON_LEN" =~ ^[0-9]+$ ]] || (( TARGET_REASON_LEN < 1 || TARGET_REASON_LEN > 1000 )); then echo 'qc1: --target-reason-len is 1..1000' >&2; exit 1; fi
 [[ "$SECONDS_PER_REASON" =~ ^[1-9][0-9]*$ && "$SITTING_MINUTES" =~ ^[1-9][0-9]*$ ]] || { echo 'qc1: --seconds-per-reason and --sitting-minutes are whole numbers above 0' >&2; exit 1; }
 case "$DROPLET" in
   2gb) DB_MEMORY=1200m; APP_MEMORY=600m ;;
@@ -74,6 +88,12 @@ esac
 mapfile -t SIZE_LIST < <(qc1_list "$SIZES")
 mapfile -t COUNT_LIST < <(qc1_list "$COUNTS")
 mapfile -t DELETE_COUNT_LIST < <(qc1_list "$QC1_DELETE_COUNTS")
+DENSE_LIST=()
+if [[ "$DENSE" != none ]]; then mapfile -t DENSE_LIST < <(qc1_list "$DENSE"); fi
+# The discovery and deletion matrices run over the counts plus the dense targets; the browser panel over its counts plus the dense targets.
+mapfile -t ALL_COUNT_LIST < <(printf '%s\n' "${COUNT_LIST[@]}" "${DENSE_LIST[@]}" | sort -n -u)
+mapfile -t ALL_DELETE_LIST < <(printf '%s\n' "${DELETE_COUNT_LIST[@]}" "${DENSE_LIST[@]}" | sort -n -u)
+mapfile -t ALL_BROWSER_LIST < <(printf '%s\n' "$(qc1_list "$QC1_BROWSER_COUNTS")" "${DENSE_LIST[@]}" | sort -n -u)
 (( ${#SIZE_LIST[@]} > 0 && ${#COUNT_LIST[@]} > 0 )) || { echo "qc1: --sizes and --counts need whole numbers" >&2; exit 1; }
 MAX_SIZE="$(printf '%s\n' "${SIZE_LIST[@]}" | sort -n | tail -n 1)"
 
@@ -96,6 +116,8 @@ DAEMON_JSON="$(jq -c --argjson running "$RUNNING_AT_START" --argjson shared "$([
 [[ -z "$(git --no-optional-locks -C "$ROOT" status --porcelain)" ]] || { echo 'qc1: the tree is dirty; commit first (what is measured must be exactly HEAD)' >&2; exit 1; }
 REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCES="$(qc1_source_hashes "$ROOT")" || { echo 'qc1: a measurement source differs from HEAD' >&2; exit 1; }
+# The body builder is held to the shared vectors before anything is measured with it (its SHA-256 and base64 are independent of the product's).
+SETV1_SELFTEST="$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" || { echo 'qc1: the set-v1 builder disagrees with the shared vectors' >&2; exit 1; }
 MAX_REQUEST_BYTES="$(qc1_max_request_bytes "$ROOT")"
 # The browser the item-10 measurement drives: found, launchable and exercised before
 # a stack is built (browser-preflight.mjs, with the same launch the measurement
@@ -370,6 +392,10 @@ instrumented() {
     sleep "$(awk -v w="$wait" 'BEGIN { printf "%.3f", w / 1000 }')"
   fi
   quiesce
+  # The audit table as the operation finds it (rows and bytes), read before the window opens: every earlier case left view and decision audits
+  # behind, so a later case runs against a larger audit_logs than an earlier one. Recorded per case, with the case's seq, never corrected for.
+  read -r AUDIT_ROWS0 AUDIT_BYTES0 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
+  AUDIT_ACTIONS0="$(audit_actions)"
   psql_db -c 'SELECT pg_stat_statements_reset()' >/dev/null
   psql_db -c 'CHECKPOINT' >/dev/null
   lsn0="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
@@ -402,18 +428,26 @@ instrumented() {
   DB_MEM_SAMPLES="$(grep -c '^[0-9][0-9]*$' "$WORK/mem.db" || true)"
   read -r GATE_SPAN_MS GATE_GRANTS _ _ GATE_HOLDERS GATE_AV GATE_MC GATE_TICKS GATE_MAXGAP GATE_MEANGAP GATE_HOLES <<<"$(qc1_gate_hold "$WORK/gate.samples" "$OP_START" "$OP_END")"
   read -r COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX <<<"$(psql_db -c "SELECT coalesce(sum(calls), 0) || ' ' || coalesce(round(sum(total_exec_time)), 0) || ' ' || coalesce(round(max(max_exec_time)), 0) FROM pg_stat_statements WHERE query ~* '^commit'")"
+  read -r AUDIT_ROWS1 AUDIT_BYTES1 <<<"$(psql_db -c "SELECT count(*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs")"
+  AUDIT_ACTIONS1="$(audit_actions)"
   SCHEDULER_OVERLAP="$(qc1_scheduler_overlap "$OP_START" "$OP_END" "$APP_STARTED_MS")"
   SCHEDULER_ROWS="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at >= to_timestamp($OP_START / 1000.0) - interval '1 second' AND created_at <= to_timestamp($OP_END / 1000.0) AND unique_key ~ '^[a-z_.]+:[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2})?\$'")"
 }
+# audit_logs rows by action, as one JSON object {action: count}: read before and after each instrumented operation, so the rows an operation wrote are
+# attributed to their kind (a view audit per nonempty page, a decision audit per reason) and not only counted.
+audit_actions() { psql_db -c "SELECT coalesce(jsonb_object_agg(action, c), '{}'::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s"; }
 instr_json() {
   jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
+    --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
     '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
+      auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, auditActionsBefore:$aa0, auditActionsAfter:$aa1,
+      auditActionsDelta:(if ($aa0|type) == "object" and ($aa1|type) == "object" then ([$aa0, $aa1] | (.[0] | keys) + (.[1] | keys) | unique | map(. as $k | {key:$k, value:(($aa1[$k] // 0) - ($aa0[$k] // 0))}) | from_entries) else null end),
       attribution:"WAL, commit and gate figures are cluster-wide counters, not attributed to this operation; they are attributable only if no invalid finding names a competitor"}'
 }
 
@@ -508,10 +542,17 @@ do_delete() { # target bodyfile
 }
 ctl_request() { api GET /auth/me >/dev/null; }
 # record item case size extra-json   (RECORD_STATUS: measured, observation or failed)
+# Every row carries seq, the order the cases ran in (a later case runs against the audit rows and the dirtied table the earlier ones left).
+CASE_SEQ=0
 record() {
+  CASE_SEQ=$((CASE_SEQ + 1))
+  local actual_rows
+  actual_rows="$(psql_db -c 'SELECT count(*) FROM contact_requests' 2>/dev/null || true)"
+  [[ "$actual_rows" =~ ^[0-9]+$ ]] || actual_rows=null
   jq -nc --arg status "${RECORD_STATUS:-measured}" --argjson item "$1" --arg case "$2" --argjson size "$3" --argjson extra "$4" --arg layout "$LAYOUT" \
-    --argjson reasonLen "$REASON_LEN" --argjson workers "$CURRENT_WORKERS" \
-    '{status:$status, item:$item, case:$case, size:$size, layout:$layout, reasonLen:$reasonLen, workers:$workers} + $extra' >>"$MEASUREMENTS"
+    --argjson reasonLen "$REASON_LEN" --argjson targetLen "$TARGET_REASON_LEN" --argjson workers "$CURRENT_WORKERS" --argjson seq "$CASE_SEQ" --argjson actual "$actual_rows" \
+    '{status:$status, item:$item, case:$case, size:$size, seq:$seq, layout:$layout, reasonLen:$reasonLen, targetReasonLen:$targetLen, workers:$workers,
+      table:{backgroundRows:$size, actualRows:$actual, note:"size is the background row count; actualRows is what contact_requests held when the case was recorded (background plus the scenario rows, n + k)"}} + $extra' >>"$MEASUREMENTS"
 }
 
 load_filler() { # n reasons
@@ -521,7 +562,7 @@ load_filler() { # n reasons
 }
 load_scenario() { # n k target direction counterparts [layout]
   docker exec -i "$DB_CID" psql -X -U church -d fold -v ON_ERROR_STOP=1 -v n="$1" -v k="$2" -v target="$3" -v direction="$4" -v layout="${6:-$LAYOUT}" \
-    -v counterparts="$5" -v group_id="$GROUP" -v reason_len="$REASON_LEN" -f - <"$HERE/qc1/scenario.sql" >/dev/null
+    -v counterparts="$5" -v group_id="$GROUP" -v reason_len="$TARGET_REASON_LEN" -f - <"$HERE/qc1/scenario.sql" >/dev/null
   psql_db -c 'ANALYZE contact_requests' >/dev/null
 }
 drop_scenarios() { psql_db -c 'SET session_replication_role = replica' -c 'DELETE FROM contact_requests WHERE id % 2 = 1' >/dev/null; }
@@ -586,91 +627,139 @@ delete_with() { # target mode items-file
   unset DEL_KEPT DEL_REMOVED
 }
 
-# (5) request size: real, valid DELETE bodies in the full envelope the panel sends
-# ({successors, hostSuccessors, attemptId, reasonReview}, see qc1_delete_body_n and
-# web/src/api.ts), built from the entries the server issued, at the largest count
-# whose body fits maxRequestBytes and one entry more. A valid DELETE names every
-# reason the account has, so each case is its own account holding exactly that many
-# (tail layout: ids beyond the background rows, so the count does not depend on the
-# table size). The parse-refusal case is the real fitting body with only its last
-# choice changed, sent first; the id it uses ends (rolled back) and a second id
-# sends the real body. Sizes are recorded.
-measure_request_size() { # n
-  local n="$1" cap="$MAX_REQUEST_BYTES" probe t pid fit E at next probe_tr fit_delete fit_outcome fit_expect fit_bytes over_bytes over_status over_ms
-  local over_unchanged=false parse_unchanged=false refusal_bytes refusal_status refusal_ms refusal_app fixed_bytes id1 s20 h20 E20 at20 nrows
-  probe="$(qc1_probe_entries "$cap")"
-  drop_scenarios
-  t="$(fresh_user)"
-  load_scenario "$n" "$probe" "$t" both "$CPS" tail
-  QC1_NEED_MS=900000 instrumented traverse "$t" "$WORK/probe-items.json"
-  probe_tr="$(traversal_json)"
-  pid="$(mint_attempt "$t")"
-  fit="$(qc1_fit_entries mixed "$WORK/probe-items.json" "$cap" "$pid")" || { echo 'qc1: no entry fits the cap' >&2; exit 1; }
-  read -r E at next <<<"$fit"
-  (( E < probe && E > 0 )) || { echo "qc1: the probe of $probe entries did not pass the cap (fit $E)" >&2; exit 1; }
-  [[ -n "$next" ]] || { echo 'qc1: no body one entry larger was built' >&2; exit 1; }
-  fixed_bytes="$(qc1_delete_body_n mixed "$WORK/probe-items.json" 0 "$pid" | wc -c)"
-  # The same fit with 20 sole-led groups and 20 sole-hosted events in the envelope: the
-  # capacity a larger envelope leaves (computed from the same real entries, not sent).
-  s20="$(jq -nc '[range(0; 20) | {key: ((1000 + .) | tostring), value: (2000 + .)}] | from_entries')"
-  h20="$(jq -nc '[range(0; 20) | {key: ((3000 + .) | tostring), value: (4000 + .)}] | from_entries')"
-  read -r E20 at20 _ <<<"$(qc1_fit_entries mixed "$WORK/probe-items.json" "$cap" "$pid" "$s20" "$h20")"
-
-  # E reasons: refuse the changed-choice body (400), then send the real fitting body (200).
-  drop_scenarios
-  t="$(fresh_user)"
-  load_scenario "$n" "$E" "$t" both "$CPS" tail
-  traverse "$t" "$WORK/fit-items.json"
-  id1="$(mint_attempt "$t")"
-  qc1_delete_body_n mixed "$WORK/fit-items.json" "$E" "$id1" >"$WORK/fit.body"
-  qc1_final_choice_body "$WORK/fit.body" maybe >"$WORK/delete.body"
-  refusal_bytes="$(wc -c <"$WORK/delete.body")"
+# (5) request size, for the compact set-v1 envelope. A body is {successors, hostSuccessors, attemptId, reasonReview:{format, count, digest, choices}}:
+# its size is set by the vector (two bits a reason, base64: a third of a byte), not by one entry per reason, so the old 52,760-entry limit is gone by
+# construction. What is measured, truthfully:
+#   - the REAL bodies the matrix reaches: built from the entries the server issued for every discovery case of this size (not sent here; the
+#     deletion cases send them) with the 80-hex attempt id a press mints, and the exact byte length of each;
+#   - the largest valid body SENT: the account with the most reasons this table holds (the largest deletion or dense count), through the whole
+#     path, plus its refusals, each leaving the account as it was: a vector with no valid choice (400), a count one too high (400), a set that does
+#     not match the server's (409 reason_review_changed; this one costs the streamed read and compare the real delete costs, rolled back), each with its
+#     time and the app's peak memory;
+#   - the capacity: the most reasons whose body fits maxRequestBytes, computed exactly from the format. A body of that size is not sent: it would take
+#     that many reasons. A syntactically valid body ONE REASON OVER it is sent (413 before any row is read, account unchanged);
+#   - the OLD items envelope as a comparison only: its capacity at the id width actually seen (the pilots' 52,760 / 52,761), a fitting synthetic old
+#     body (409 reason_review_outdated on a nonempty set, nothing applied) and one entry over (413). The entries are synthetic and labelled so.
+# The capacity is FINITE and is reported, never presented as a limit the design set or as no limit: 18,873,540 reasons at the default cap with EMPTY
+# successor and host-successor maps, fewer when the maps hold entries (populatedCapacity gives labelled examples, not bounds). A valid history whose body
+# would exceed maxRequestBytes is a budget finding (qc1_judge, "body"), never hidden and never turned into a ceiling.
+# The legacy PUT half stays T07B-3a's.
+refusal_case() { # kind target items-file k   (sets REFUSAL_JSON)
+  local kind="$1" t="$2" file="$3" k="$4" id bytes unchanged=false code
+  id="$(mint_attempt "$t")"
+  qc1_delete_body_n mixed "$file" "$k" "$id" >"$WORK/refusal.base"
+  case "$kind" in
+    parse) qc1_final_choice_body "$WORK/refusal.base" maybe >"$WORK/delete.body" ;;
+    count) qc1_extra_count_body "$WORK/refusal.base" >"$WORK/delete.body" ;;
+    changed) qc1_changed_set_body "$WORK/refusal.base" >"$WORK/delete.body" ;;
+    *) echo "qc1: unknown refusal $kind" >&2; return 1 ;;
+  esac
+  bytes="$(wc -c <"$WORK/delete.body")"
   instrumented do_delete "$t" "$WORK/delete.body"
-  refusal_status="$DEL_STATUS"; refusal_ms="$DEL_MS"; refusal_app="$APP_PEAK_KB"
-  if [[ "$(psql_db -c "SELECT (SELECT deleted_at IS NULL FROM users WHERE id = $t) AND (SELECT count(*) FROM contact_requests WHERE reason = '' AND (requester_id = $t OR subject_user_id = $t)) = 0")" == t ]]; then parse_unchanged=true; fi
-  delete_with "$t" mixed "$WORK/fit-items.json"
-  fit_delete="$DELETE_JSON"; fit_outcome="$OUTCOME_JSON"; fit_expect="$EXPECT_JSON"; fit_bytes="$BODY_BYTES"
-  (( fit_bytes <= cap && fit_bytes == at )) || { echo "qc1: the fitting body is $fit_bytes bytes; the probe said $at (cap $cap)" >&2; exit 1; }
+  code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
+  if [[ "$(account_untouched "$t")" == t ]]; then unchanged=true; fi
+  REFUSAL_JSON="$(jq -nc --arg status "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson app "$APP_PEAK_KB" --argjson bytes "$bytes" --argjson unchanged "$unchanged" --arg code "$code" \
+    '{status:$status, ms:$ms, appPeakKb:$app, bodyBytes:$bytes, unchanged:$unchanged, code:$code}')"
+}
+# The account is as it was: not deleted, and none of its reasons blanked.
+account_untouched() { psql_db -c "SELECT (SELECT deleted_at IS NULL FROM users WHERE id = $1) AND (SELECT count(*) FROM contact_requests WHERE reason = '' AND (requester_id = $1 OR subject_user_id = $1)) = 0"; }
+measure_request_size() { # n
+  local n="$1" cap="$MAX_REQUEST_BYTES" id80 K k d f t id cap_n cap_at cap_next populated fixed bodies="[]" bytes probe_tr fit_bytes want_bytes
+  local parse_json count_json changed_json over_bytes over_status over_ms over_code over_unchanged=false digits old_n old_at old_next legacy_json
+  local fit_status fit_code fit_unchanged=false over_old_status old_over_bytes over_old_unchanged=false fit_delete fit_outcome fit_expect
+  id80="$(printf 'a%.0s' {1..80})"
+  K=0
+  for k in "${ALL_DELETE_LIST[@]}"; do if (( k <= n && k > K )); then K=$k; fi; done
+  (( K > 0 )) || { echo "qc1: no deletion count fits a table of $n rows" >&2; exit 1; }
+  read -r cap_n cap_at cap_next <<<"$(qc1_body_capacity "$cap" "$id80")"
+  # Populated envelopes shrink the capacity: examples with N sole-led groups and N sole-hosted events (ids and targets of the widths real rows have).
+  populated="$(for m in 20 200 2000; do
+    s_map="$(jq -nc --argjson m "$m" '[range(0; $m) | {key: ((100000 + .) | tostring), value: (200000 + .)}] | from_entries')"
+    h_map="$(jq -nc --argjson m "$m" '[range(0; $m) | {key: ((300000 + .) | tostring), value: (400000 + .)}] | from_entries')"
+    read -r pn pat pnext <<<"$(qc1_body_capacity "$cap" "$id80" "$s_map" "$h_map")"
+    jq -nc --argjson m "$m" --argjson n "$pn" --argjson at "$pat" --argjson next "$pnext" '{groupsAndEvents:$m, reasons:$n, bytesAt:$at, bytesNext:$next}'
+  done | jq -sc '{examples:., note:"capacity with N sole-led groups and N sole-hosted events in the envelope (examples of how the maps reduce it, not bounds); computed from the format, never sent"}')"
+  fixed="$(qc1_body_length 0 "$id80")"
+  # The real bodies the matrix reaches at this size, built from the entries the server issued (and kept by the discovery cases).
+  for d in "${QC1_DIRECTIONS[@]}"; do
+    for k in "${ALL_DELETE_LIST[@]}"; do
+      f="$WORK/items-$d-$k.json"
+      (( k <= n )) && [[ -f "$f" ]] || continue
+      bytes="$(qc1_delete_body_n mixed "$f" "$k" "$id80" | wc -c)"
+      bodies="$(jq -c --arg d "$d" --argjson k "$k" --argjson b "$bytes" '. + [{direction:$d, reasons:$k, bodyBytes:$b, perReasonBytes:((($b - '"$fixed"') / $k) * 1000 | round / 1000)}]' <<<"$bodies")"
+    done
+  done
 
-  # E + 1 reasons: a valid history whose body is one entry over the cap.
+  # The largest account: discovery, then the refusals, then the real delete.
   drop_scenarios
   t="$(fresh_user)"
-  load_scenario "$n" "$((E + 1))" "$t" both "$CPS" tail
-  traverse "$t" "$WORK/over-items.json"
-  id1="$(mint_attempt "$t")"
-  qc1_delete_body_n mixed "$WORK/over-items.json" "$((E + 1))" "$id1" >"$WORK/delete.body"
+  load_scenario "$n" "$K" "$t" both "$CPS" tail
+  QC1_NEED_MS=900000 instrumented traverse "$t" "$WORK/req-items.json"
+  probe_tr="$(traversal_json)"
+  refusal_case parse "$t" "$WORK/req-items.json" "$K"; parse_json="$REFUSAL_JSON"
+  refusal_case count "$t" "$WORK/req-items.json" "$K"; count_json="$REFUSAL_JSON"
+  refusal_case changed "$t" "$WORK/req-items.json" "$K"; changed_json="$REFUSAL_JSON"
+  id="$(mint_attempt "$t")"
+  qc1_oversize_body "$cap" "$id" >"$WORK/delete.body"
   over_bytes="$(wc -c <"$WORK/delete.body")"
   (( over_bytes > cap )) || { echo 'qc1: the over-cap body is not over the cap' >&2; exit 1; }
   do_delete "$t" "$WORK/delete.body"
-  over_status="$DEL_STATUS"; over_ms="$DEL_MS"
-  nrows="$(psql_db -c "SELECT count(*) FROM contact_requests WHERE reason = '' AND (requester_id = $t OR subject_user_id = $t)")"
-  if [[ "$(psql_db -c "SELECT deleted_at IS NULL FROM users WHERE id = $t")" == t && "$nrows" == 0 ]]; then over_unchanged=true; fi
+  over_status="$DEL_STATUS"; over_ms="$DEL_MS"; over_code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
+  if [[ "$(account_untouched "$t")" == t ]]; then over_unchanged=true; fi
+  delete_with "$t" mixed "$WORK/req-items.json"
+  fit_delete="$DELETE_JSON"; fit_outcome="$OUTCOME_JSON"; fit_expect="$EXPECT_JSON"; fit_bytes="$BODY_BYTES"
+  want_bytes="$(qc1_body_length "$K" "$id80")"
+  (( fit_bytes <= cap && fit_bytes == want_bytes )) || { echo "qc1: the sent body is $fit_bytes bytes; the format says $want_bytes for $K reasons (cap $cap)" >&2; exit 1; }
 
-  record 5 request-size "$n" "$(jq -nc --argjson E "$E" --argjson at "$at" --argjson next "$next" --argjson cap "$cap" --arg overStatus "$over_status" --argjson overMs "$over_ms" \
-    --argjson overBytes "$over_bytes" --argjson overUnchanged "$over_unchanged" --arg refusalStatus "$refusal_status" --argjson refusalMs "$refusal_ms" --argjson refusalApp "$refusal_app" \
-    --argjson refusalBytes "$refusal_bytes" --argjson parseUnchanged "$parse_unchanged" --argjson probe "$probe" --argjson fixed "$fixed_bytes" --argjson fitBytes "$fit_bytes" \
-    --argjson fit "$fit_delete" --argjson probeTr "$probe_tr" --argjson fitOutcome "$fit_outcome" --argjson fitExpect "$fit_expect" \
-    --argjson e20 "$E20" --argjson at20 "$at20" \
-    '{request:{maxEntriesInBudget:$E, maxRequestBytes:$cap,
-               envelope:{keys:["successors","hostSuccessors","attemptId","reasonReview"], attemptIdLength:80, successors:"{}", hostSuccessors:"{}", fixedBytesWithEmptyReview:$fixed},
-               fitBodyBytes:$fitBytes, probeFitBytes:$at, nextBodyBytes:$next, headroomBytes:($cap - $fitBytes), perEntryBytes:((($fitBytes - $fixed) / $E) * 100 | round / 100),
-               overEntries:($E + 1), overBodyBytes:$overBytes, overStatus:$overStatus, overMs:$overMs, overUnchanged:$overUnchanged,
-               parseRefusalStatus:$refusalStatus, parseRefusalMs:$refusalMs, parseRefusalAppPeakKb:$refusalApp, parseRefusalBodyBytes:$refusalBytes, parseUnchanged:$parseUnchanged,
-               probeEntries:$probe, fitExpect:$fitExpect, fitOutcome:$fitOutcome,
-               capacityWithTwentyGroupsAndTwentyEventsInTheEnvelope:{maxEntries:$e20, bodyBytes:$at20, note:"computed from the same real entries; not sent"},
-               source:"entries are the ids and hashes the server issued for accounts holding exactly that many reasons (tail layout), sent in the panel envelope with a minted 80-hex attempt id",
-               refusal:"the real fitting body with only the last choice changed to \"maybe\"; sent first, then the unchanged body with a fresh id",
-               workflowOverflow:{reasons:($E + 1), bodyBytes:$overBytes, status:$overStatus, note:"an account with more reasons than this cannot be deleted through the review workflow; the 413 comes from limitBody before any row is read"}},
+  # The old items envelope, for the comparison only.
+  drop_scenarios
+  t="$(fresh_user)"
+  load_scenario "$n" 10 "$t" both "$CPS" tail
+  digits="$(jq -r '[.[].requestId | length] | max' "$WORK/req-items.json")"
+  read -r old_n old_at old_next <<<"$(qc1_legacy_capacity "$cap" "$digits" "$id80")"
+  id="$(mint_attempt "$t")"
+  qc1_legacy_body "$old_n" "$digits" "$id" >"$WORK/delete.body"
+  do_delete "$t" "$WORK/delete.body"
+  fit_status="$DEL_STATUS"; fit_code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
+  if [[ "$(account_untouched "$t")" == t ]]; then fit_unchanged=true; fi
+  id="$(mint_attempt "$t")"
+  qc1_legacy_body "$((old_n + 1))" "$digits" "$id" >"$WORK/delete.body"
+  old_over_bytes="$(wc -c <"$WORK/delete.body")"
+  do_delete "$t" "$WORK/delete.body"
+  over_old_status="$DEL_STATUS"
+  if [[ "$(account_untouched "$t")" == t ]]; then over_old_unchanged=true; fi
+  legacy_json="$(jq -nc --argjson digits "$digits" --argjson n "$old_n" --argjson at "$old_at" --argjson next "$old_next" --arg fitStatus "$fit_status" --arg fitCode "$fit_code" \
+    --argjson fitUnchanged "$fit_unchanged" --argjson over "$((old_n + 1))" --argjson overBytes "$old_over_bytes" --arg overStatus "$over_old_status" --argjson overUnchanged "$over_old_unchanged" \
+    '{synthetic:true, idDigits:$digits, capacityEntries:$n, fitBytes:$at, nextBytes:$next, fitStatus:$fitStatus, fitCode:$fitCode, fitUnchanged:$fitUnchanged,
+      entriesOver:$over, overBytes:$overBytes, overStatus:$overStatus, overUnchanged:$overUnchanged,
+      note:"the OLD items envelope, measured as a comparison only: synthetic entries of the stated id width. The pilots found 52,760 entries within maxRequestBytes and 52,761 not (413); the old form has a limit that is a function of the entry count; the set-v1 capacity is reported under request.capacity and request.populatedCapacity"}')"
+
+  record 5 request-size "$n" "$(jq -nc --argjson cap "$cap" --argjson capN "$cap_n" --argjson capAt "$cap_at" --argjson capNext "$cap_next" --argjson populated "$populated" --argjson K "$K" --argjson fitBytes "$fit_bytes" \
+    --argjson fixed "$fixed" --argjson bodies "$bodies" --argjson parse "$parse_json" --argjson count "$count_json" --argjson changed "$changed_json" --argjson overBytes "$over_bytes" \
+    --arg overStatus "$over_status" --argjson overMs "$over_ms" --arg overCode "$over_code" --argjson overUnchanged "$over_unchanged" --argjson legacy "$legacy_json" \
+    --argjson fit "$fit_delete" --argjson fitExpect "$fit_expect" --argjson fitOutcome "$fit_outcome" --argjson probeTr "$probe_tr" \
+    '{request:{format:"set-v1", maxRequestBytes:$cap,
+               envelope:{keys:["successors","hostSuccessors","attemptId","reasonReview"], attemptIdLength:80, successors:"{}", hostSuccessors:"{}", fixedBytesWithEmptyReview:$fixed,
+                         reasonReview:{keys:["format","count","digest","choices"], digestHexLength:64, choicesBitsPerReason:2, encoding:"standard base64 with padding"}},
+               populatedCapacity:$populated,
+               capacity:{reasons:$capN, bytesAt:$capAt, bytesNext:$capNext, note:"the most reasons whose body fits maxRequestBytes, computed exactly from the format; a body of that size is not sent (it would take that many reasons)"},
+               bodies:$bodies, largest:{reasons:$K, bodyBytes:$fitBytes, sent:true}, headroomBytes:($cap - $fitBytes),
+               parseRefusal:$parse, countMismatch:$count, changedSet:$changed,
+               overCap:{reasons:($capN + 1), bodyBytes:$overBytes, status:$overStatus, ms:$overMs, code:$overCode, unchanged:$overUnchanged, note:"a syntactically valid set-v1 body one reason over the capacity, with a synthetic digest: refused (413) before any row is read"},
+               legacyComparison:$legacy, fitExpect:$fitExpect, fitOutcome:$fitOutcome,
+               source:"bodies are built from the ids and hashes the server issued for the discovery cases of this size; the sent body is the largest of them, in the panel envelope with a minted 80-hex attempt id",
+               refusals:"the real largest body with only the last choice code replaced by 3 (400), with the count one higher (400), and with one digest digit changed (409 reason_review_changed, the streamed read and compare, rolled back); each leaves the account as it was"},
       delete:$fit, traversal:$probeTr}')"
   drop_scenarios
 }
 
-# auto_explain on for one page traversal and one mixed deletion, then off
-# again; the plans of the application's own statements are kept in
-# explain-<size>.log (statements found by their text, qc1_plan_marker). A size
-# has its plans only when every statement kind was found.
+# auto_explain on for one scanner walk, one page of items and one mixed deletion, then off again; the plans of the application's own
+# statements are kept in explain-<size>.log (statements found by their text, qc1_plan_marker). A size has its plans only when every statement
+# kind that run must reach was found: the scanner-continuation is reached only when the table holds more rows than one scanner unit (50,000).
+# The continuation's shape (an Index Cond on id, not a filter over a scan) is also recorded from EXPLAIN (GENERIC_PLAN) of the same
+# statement text, typed by the harness and labelled as such; the application's own logged plan is the evidence that counts.
 capture_plans() { # n
-  local n="$1" t since which out="$WORK/explain-$1.log" counts id
+  local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged sql_init sql_cont exec_json actual_rows idx=false initidx=false
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
   await_setting auto_explain.log_min_duration 0 || exit 1   # the capture is really on before anything is run for it
@@ -682,6 +771,8 @@ capture_plans() { # n
   id="$(mint_attempt "$t")"
   qc1_delete_body_n mixed "$WORK/plan-items.json" "$(jq 'length' "$WORK/plan-items.json")" "$id" >"$WORK/delete.body"
   do_delete "$t" "$WORK/delete.body"
+  # The table the statements ran against: background plus the scenario rows (n + k), counted before the scenario is dropped.
+  actual_rows="$(psql_db -c 'SELECT count(*) FROM contact_requests')"
   drop_scenarios
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
@@ -692,8 +783,30 @@ capture_plans() { # n
     { printf '=== %s (size %s)\n' "$which" "$n"; qc1_extract_plans "$WORK/pglog-$n.txt" "$which"; } >>"$out"
   done
   counts="$(qc1_plan_counts "$WORK/pglog-$n.txt")"
-  if jq -e 'to_entries | all(.value >= 1)' <<<"$counts" >/dev/null; then RECORD_STATUS=measured; else RECORD_STATUS=failed; fi
-  record 8 plans "$n" "$(jq -nc --argjson c "$counts" '{plans:$c, file:"explain-log"}')"
+  # The generic plans are of the REAL statements: the text is read out of account_erasure_reasons.go (qc1_go_sql), with its real projection, not typed here.
+  sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
+  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
+  gen_cont="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_cont" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
+  gen_init="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_init" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
+  # The continuation must be bounded by an Index Cond on id, in the application's own logged plan and in the generic plan of the same text; the first unit
+  # must be read in id order from an index (it has no id predicate to be an Index Cond).
+  if [[ "$gen_cont" == *"Index Cond: (id >"* ]]; then idx=true; fi
+  if [[ "$gen_init" == *"Index Scan"* || "$gen_init" == *"Index Only Scan"* ]]; then initidx=true; fi
+  cont_logged=null
+  if jq -e '."scanner-continuation" >= 1' <<<"$counts" >/dev/null; then
+    if qc1_extract_plans "$WORK/pglog-$n.txt" scanner-continuation | grep -q 'Index Cond: (id >'; then cont_logged=true; else cont_logged=false; fi
+  fi
+  # Across executions: the actual rows and shared blocks of every logged scanner execution, in order.
+  exec_json="$(for which in scanner-initial scanner-continuation; do
+    qc1_plan_executions "$WORK/pglog-$n.txt" "$which" | jq -Rsc --arg w "$which" '[split("\n")[] | select(length > 0) | split(" ") | {rows:(.[0] | tonumber? // null), blocks:(.[1] | tonumber? // null)}] | {key:$w, value:{count:length, rows:map(.rows), sharedBlocks:map(.blocks)}}'
+  done | jq -sc '{scannerInitial:(.[0].value), scannerContinuation:(.[1].value),
+                  note:"rows and shared blocks (hit + read) of the top plan node of every logged execution, from auto_explain with log_analyze and log_buffers; recorded in execution order, not judged against a ceiling"}')"
+  need="$(jq -nc --argjson n "$actual_rows" --argjson unit "$QC1_SCANNER_UNIT_ROWS" '["scanner-initial","page-items","delete-set","blank-batch"] + (if $n > $unit then ["scanner-continuation"] else [] end)')"
+  if jq -e --argjson need "$need" '. as $c | $need | all(. as $k | $c[$k] >= 1)' <<<"$counts" >/dev/null; then RECORD_STATUS=measured; else RECORD_STATUS=failed; fi
+  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson actual "$actual_rows" --argjson bg "$n" \
+    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex,
+      generic:{source:"go-source", scannerContinuation:{sql:$sc, text:$gc, indexCondOnId:$idx}, scannerInitial:{sql:$si, text:$gi, idIndexScan:$initidx}},
+      note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text read from account_erasure_reasons.go; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
   unset RECORD_STATUS
 }
 
@@ -719,26 +832,58 @@ observe_workers_on() { # n
   login
 }
 
-# (10) the rendered panel in a real browser against the real API: how long the
-# review takes to render in full for a dense history, and what the page holds
-# afterwards (qc1/panel-measure.mjs). Needs Node, @playwright/test and its
-# Chromium under web/ on the machine running this script, reaching the stack's
-# published loopback port. Without them the row is not written, the evidence
-# says it is missing and the run is not complete; --no-browser says so up front.
-measure_browser_panel() { # n k
-  local n="$1" k="$2" rc=0 out="$WORK/browser-$1-$2.json"
+# (10) the rendered panel in a real browser against the real API (qc1/panel-measure.mjs): the whole review read (the walk) and the first
+# interactive page of 50 reasons, the 30 timed real clicks, the navigation controls, heap/DOM/long tasks, the per-page response bytes, request time,
+# read and JSON parse time (F7), the digest path that actually ran and its time, and the changed-reason path (every reason chosen with the panel's
+# own handler, one reason changed behind the page by change-reason.sh, Delete pressed: the server refuses with reason_review_changed and deletes
+# nothing, the review is read again). The whole run is one instrumented window (WAL, commits, SAMPLED gate, audit_logs rows by action, memory), and
+# phase-mark.sh reads the WAL position and audit_logs at each phase boundary (open, walk end, interactions end, press start, press end), so each phase
+# carries its own WAL and audit-by-action figures. Needs Node, @playwright/test and its Chromium under web/ on the machine running this script,
+# reaching the stack's published loopback port. Without them the row is not written, the evidence says it is missing and the run is not complete;
+# --no-browser says so up front. A run that fails part-way (exit 6) leaves a PARTIAL row: the phases that finished keep their figures and their budget
+# findings; it is invalid as incomplete and never counts as the measured case. suffix: "" or "-nosubtle" (crypto.subtle removed, so the bundled SHA-256 runs).
+# change-reason.sh edits ONE seeded reason with the triggers off in a throwaway session, standing in for a second person editing it; the product
+# has no such path and the script is the harness's, not the application's. phase-mark.sh only reads.
+run_panel_measure() { # sets PANEL_RC
+  PANEL_RC=0
+  QC1_URL="$URL" QC1_WEB_DIR="$ROOT/web" QC1_ADMIN_EMAIL=admin@example.invalid QC1_ADMIN_PASSWORD=qc1-drill-password \
+    QC1_TARGET_EMAIL="$USER_EMAIL" QC1_EXPECT="$PANEL_K" QC1_OUT="$PANEL_OUT" QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE" \
+    QC1_NO_SUBTLE="${QC1_NO_SUBTLE:-0}" QC1_CLICKS="$QC1_CLICKS_PER_CASE" \
+    node "$HERE/qc1/panel-measure.mjs" || PANEL_RC=$?
+}
+measure_browser_panel() { # n k [suffix]
+  local n="$1" k="$2" suffix="${3:-}" window
+  PANEL_K="$k"; PANEL_OUT="$WORK/browser-$1-$2${3:-}.json"; PANEL_HOOK="$WORK/change-reason.sh"; PANEL_PHASE="$WORK/phase-mark.sh"
   (( BROWSER )) || return 0
   drop_scenarios
   make_user
   load_scenario "$n" "$k" "$USER_ID" both "$CPS"
-  QC1_URL="$URL" QC1_WEB_DIR="$ROOT/web" QC1_ADMIN_EMAIL=admin@example.invalid QC1_ADMIN_PASSWORD=qc1-drill-password \
-    QC1_TARGET_EMAIL="$USER_EMAIL" QC1_EXPECT="$k" QC1_OUT="$out" node "$HERE/qc1/panel-measure.mjs" || rc=$?
+  printf '#!/bin/sh\nset -eu\ncase "$1" in *[!0-9]*|"") exit 2 ;; esac\nexec docker exec -i %s psql -X -U church -d fold -v ON_ERROR_STOP=1 -c "SET session_replication_role = replica" -c "UPDATE contact_requests SET reason = reason || '"'"'!'"'"' WHERE id = $1 AND reason <> '"''"'"\n' "$DB_CID" >"$PANEL_HOOK"
+  cat >"$PANEL_PHASE" <<SH
+#!/bin/sh
+set -eu
+exec docker exec -i $DB_CID psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -c "SELECT json_build_object('wal', pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint, 'auditRows', (SELECT count(*) FROM audit_logs), 'auditBytes', pg_total_relation_size('audit_logs'), 'auditActions', (SELECT coalesce(json_object_agg(action, c), '{}'::json) FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s))::text"
+SH
+  chmod 755 "$PANEL_HOOK" "$PANEL_PHASE"
+  rm -f "$PANEL_OUT"
+  # The whole run is one window; the scheduler's edges are waited past for as long as the dense walk and the second walk can take.
+  QC1_NEED_MS=$(( k >= 100000 ? 1500000 : 600000 )) instrumented run_panel_measure
+  window="$(instr_json | jq -c --argjson ms "$((OP_END - OP_START))" '. + {ms:$ms, what:"the whole rendered-panel run: walk, clicks, navigation, the refused press and the second walk. The gate figures are SAMPLED, not a hold time"}')"
   drop_scenarios
-  if (( rc != 0 )); then
-    note "the browser measurement for $k reasons at size $n did not run (exit $rc); the row is missing and the run is not complete"
+  if [[ ! -s "$PANEL_OUT" ]]; then
+    note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
     return 0
   fi
-  record 10 "browser-panel-$k" "$n" "$(jq -nc --slurpfile b "$out" --argjson k "$k" '{reasons:$k, browser:$b[0]}')"
+  if (( PANEL_RC == 0 )); then
+    record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --slurpfile b "$PANEL_OUT" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" \
+      '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:$b[0], window:$window}')"
+  elif (( PANEL_RC == 6 )); then
+    note "the browser measurement for $k reasons at size $n$suffix stopped part-way; its finished phases are kept as a PARTIAL row"
+    RECORD_STATUS=partial record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --slurpfile b "$PANEL_OUT" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" \
+      '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:$b[0], failed:$b[0].failed, window:$window}')"
+  else
+    note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
+  fi
 }
 
 measure_size() { # n
@@ -768,19 +913,20 @@ measure_size() { # n
   # every reason kept, removed, or half and half. Each deletion destroys its
   # account, so every mode gets a fresh user carrying the same rows.
   for d in "${QC1_DIRECTIONS[@]}"; do
-    for k in "${COUNT_LIST[@]}"; do
+    for k in "${ALL_COUNT_LIST[@]}"; do
       (( k <= n )) || continue
       for mode in "${QC1_MODES[@]}"; do
         drop_scenarios
         t="$(fresh_user)"
         (( k == 0 )) || load_scenario "$n" "$k" "$t" "$d" "$CPS"
         if [[ "$mode" == keep ]]; then
-          instrumented traverse "$t" "$WORK/items-$d-$k.json"
+          # A dense walk (100,000 reasons is a thousand pages) is measured against the 2-minute line, so its window must clear the scheduler's edges for longer.
+          QC1_NEED_MS=$(( k >= 100000 ? 600000 : 60000 )) instrumented traverse "$t" "$WORK/items-$d-$k.json"
           record 3 "discovery-$d-$k" "$n" "$(jq -nc --argjson tr "$(traversal_json)" --argjson k "$k" '{traversal:$tr, reasons:$k, expect:{items:$k}}')"
         else
           traverse "$t" "$WORK/items-$d-$k.json"
         fi
-        if ! printf '%s\n' "${DELETE_COUNT_LIST[@]}" | grep -qx "$k"; then continue; fi
+        if ! printf '%s\n' "${ALL_DELETE_LIST[@]}" | grep -qx "$k"; then continue; fi
         delete_with "$t" "$mode" "$WORK/items-$d-$k.json"
         record 6 "delete-$d-$k-$mode" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson k "$k" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" \
           '{delete:$del, reasons:$k, bodyBytes:$bytes, expect:$expect, outcome:$outcome}')"
@@ -798,9 +944,23 @@ measure_size() { # n
   capture_plans "$n"
 
   # The rendered panel for dense histories, in a real browser.
-  for bk in $(qc1_list "$QC1_BROWSER_COUNTS"); do measure_browser_panel "$n" "$bk"; done
+  for bk in "${ALL_BROWSER_LIST[@]}"; do (( bk <= n )) && measure_browser_panel "$n" "$bk"; done
+  # One extra case, not part of the matrix: crypto.subtle removed, so the bundled SHA-256 makes the digest (a plain-http LAN address has none).
+  if (( BROWSER_NOSUBTLE )) && [[ "$n" == "${SIZE_LIST[0]}" ]]; then
+    bk="${ALL_BROWSER_LIST[-1]}"; (( bk <= n )) && QC1_NO_SUBTLE=1 measure_browser_panel "$n" "$bk" "-nosubtle"
+  fi
 
   if [[ "$n" == "$MAX_SIZE" ]]; then observe_workers_on "$n"; fi
+
+  # The order control: the first discovery case again, now that this size's run has left its audit rows and a dirtier table behind. It is recorded
+  # beside the first (seq says which ran when; evidence-status.json confounding gives the ratio) and is not judged against anything.
+  note "size $n: order control (the first discovery case again)"
+  drop_scenarios
+  t="$(fresh_user)"
+  load_scenario "$n" 10 "$t" requester "$CPS"
+  instrumented traverse "$t" "$WORK/items-control.json"
+  record 3 order-control-requester-10 "$n" "$(jq -nc --argjson tr "$(traversal_json)" '{traversal:$tr, reasons:10, expect:{items:10}, control:{of:"discovery-requester-10", note:"the same case as discovery-requester-10, run last at this size: the distance between the two is the order effect of the audit rows and the table the run itself leaves behind"}}')"
+  drop_scenarios
 
   # (1) sparse: the same table with every background reason blanked (many
   # requests, almost no reasons), an account with none.
@@ -841,13 +1001,13 @@ jq -n --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" 
   --arg dbCid "$DB_CID" --arg dbImage "$(docker inspect --format '{{.Image}}' "$DB_CID")" --argjson dbMemLimit "$(docker inspect --format '{{.HostConfig.Memory}}' "$DB_CID")" \
   --arg appCid "$FIRST_APP_CID" --argjson appContainers "$APP_CONTAINERS" --argjson daemon "$DAEMON_JSON" --argjson sources "$SOURCES" \
   --argjson calibration "$(cat "$WORK/calibration.json")" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson spr "$SECONDS_PER_REASON" --argjson sit "$SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$BROWSER_RUNTIME" \
+  --argjson targetLen "$TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$SECONDS_PER_REASON" --argjson sit "$SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$BROWSER_RUNTIME" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
     appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
     postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
     limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
     daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
-    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, reasonLen:$reasonLen, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts},
+    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, wire:"set-v1", setV1Selftest:$setv1Selftest},
     maxRequestBytes:$maxRequestBytes,
     labels:{
       competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
@@ -863,9 +1023,9 @@ jq -n --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" 
 
 JUDGE_OK=true
 qc1_judge "$MEASUREMENTS" "$MAX_REQUEST_BYTES" >"$WORK/failures.jsonl" || JUDGE_OK=false
-qc1_evidence_status "$MEASUREMENTS" "$SIZES" "$COUNTS" "$WORK/environment.json" "$REVISION" "$MAX_REQUEST_BYTES" >"$WORK/evidence-status.json"
+qc1_evidence_status "$MEASUREMENTS" "$SIZES" "$COUNTS" "$WORK/environment.json" "$REVISION" "$MAX_REQUEST_BYTES" "$(IFS=,; printf "%s" "${DENSE_LIST[*]}")" >"$WORK/evidence-status.json"
 jq -n --slurpfile env "$WORK/environment.json" --slurpfile status "$WORK/evidence-status.json" --argjson judgeOk "$JUDGE_OK" \
   '{environment:$env[0], evidence:$status[0], judgeRan:$judgeOk,
-    nextStep:"budgetFailures need a reviewed engineering disposition (written design and independent review in state.json) before any release containing T07B-2 is planned; a run is complete evidence only when evidence.complete is true"}' \
+    nextStep:"budgetFailures need a reviewed engineering disposition (written design and independent review in state.json) before any release containing T07B-2 is planned; a run is release evidence only when evidence.releaseEvidence is true (complete AND full coverage); a pilot run being complete means only that the rows it asked for exist and are clean; evidence.notMeasured lists what this harness does not measure"}' \
   >"$WORK/summary.json"
-note "measurements: $(wc -l <"$MEASUREMENTS") rows; budget failures: $(jq '.budgetFailures | length' "$WORK/evidence-status.json"); invalid findings: $(jq '.invalid | length' "$WORK/evidence-status.json"); evidence complete: $(jq -r .complete "$WORK/evidence-status.json")"
+note "measurements: $(wc -l <"$MEASUREMENTS") rows; budget failures: $(jq '.budgetFailures | length' "$WORK/evidence-status.json"); invalid findings: $(jq '.invalid | length' "$WORK/evidence-status.json"); evidence complete: $(jq -r .complete "$WORK/evidence-status.json"); coverage: $(jq -r .coverage.kind "$WORK/evidence-status.json")"

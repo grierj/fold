@@ -1121,11 +1121,24 @@ crossing_panel_mint() { # target file: a press that minted its id (and kept it)
   local id; id="$(crossing_mint "$1")" || return 1
   jq --arg id "$id" '.attemptId = $id' "$2" >"$2.next" && mv "$2.next" "$2"
 }
-# file attempt-id: the DELETE body the panel sends: the first item removed, the
-# rest kept, each with the hash it came with.
+# items-json [attempt-id]: the set-v1 DELETE body the panel sends for a review's
+# items: the first removed, the rest kept (two bits a reason, a digest over the
+# ids and hashes it came with). It is built by qc1/set-v1.mjs, an implementation
+# independent of the browser's and held to the shared vectors by its selftest
+# (restore-crossings-fixtures.sh). No attempt id: a body without attemptId.
+crossing_set_body() {
+  local items="$1" id="${2-}" n codes
+  n="$(jq 'length' <<<"$items")"
+  codes="$(jq -r '[range(0; length) | if . == 0 then 2 else 1 end] | join(",")' <<<"$items")"
+  if [[ -n "$id" ]]; then
+    node "$ROOT/deploy/digitalocean/qc1/set-v1.mjs" body --items <(printf '%s' "$items") --mode mixed --n "$n" --codes "$codes" --attempt "$id"
+  else
+    node "$ROOT/deploy/digitalocean/qc1/set-v1.mjs" body --items <(printf '%s' "$items") --mode mixed --n "$n" --codes "$codes"
+  fi
+}
+# file attempt-id: the DELETE body the panel sends, from the panel's items.
 crossing_panel_body() {
-  jq -c --arg id "$2" '{attemptId:$id, reasonReview:{items:[.items | to_entries[]
-    | {requestId:.value.requestId, reviewHash:.value.reviewHash, choice:(if .key == 0 then "remove" else "keep" end)}]}}' "$1"
+  crossing_set_body "$(jq -c '.items' "$1")" "$2"
 }
 # A press: a fresh id is minted (the panel does this on every press) and the
 # panel's choices are sent with it. Prints the HTTP status; the answer is in out.
@@ -1472,7 +1485,7 @@ ARCHIVE
     || { echo "crossing: the reopened app did not serve the two-item review: $page" >&2; return 1; }
   first="$(jq -er '.items[0].requestId' <<<"$page")"
   kept="$(jq -er '.items[1].requestId' <<<"$page")"
-  body="$(jq -c '{reasonReview:{items:[.items | to_entries[] | {requestId:.value.requestId, reviewHash:.value.reviewHash, choice:(if .key == 0 then "remove" else "keep" end)}]}}' <<<"$page")"
+  body="$(crossing_set_body "$(jq -c '.items' <<<"$page")" "")"
   # Blanking a reason on a soft-deleted party is the migration's own branch: it
   # succeeds only if the trigger functions are the candidate's.
   api DELETE "/admin/users/$a_member" "$body" >"$cdir/older-archive-$id-delete.json"
