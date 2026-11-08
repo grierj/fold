@@ -38,7 +38,7 @@ func TestVAPIDKeysAreMadeOnceOnBoot(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := ensureVAPIDKeys(app.DB, secret)
+			err := ensureVAPIDKeys(app.DB, secret)
 			errs <- err
 		}()
 	}
@@ -64,8 +64,8 @@ func TestVAPIDKeysAreMadeOnceOnBoot(t *testing.T) {
 	// Another boot keeps the pair, devices and all.
 	u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
 	newPushDevice(t, app, u, "phone")
-	if notices, err := ensureVAPIDKeys(app.DB, secret); err != nil || len(notices) != 0 {
-		t.Fatalf("second boot: %v %v", notices, err)
+	if err := ensureVAPIDKeys(app.DB, secret); err != nil {
+		t.Fatalf("second boot: %v", err)
 	}
 	if p, e := vapidRows(t, app); p != public || e != enc || pushDeviceCount(app) != 1 {
 		t.Fatal("a second boot changed the keys or removed devices")
@@ -103,7 +103,7 @@ func TestVAPIDKeySealIsBoundToTheSecret(t *testing.T) {
 
 func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 	app := testApp(t)
-	if _, err := ensureVAPIDKeys(app.DB, []byte("the old secret, long enough for prod")); err != nil {
+	if err := ensureVAPIDKeys(app.DB, []byte("the old secret, long enough for prod")); err != nil {
 		t.Fatal(err)
 	}
 	oldPublic, _ := vapidRows(t, app)
@@ -113,7 +113,7 @@ func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 	newPushDevice(t, app, admin, "laptop")
 
 	newSecret := []byte("the new secret, long enough for prod")
-	notices, err := ensureVAPIDKeys(app.DB, newSecret)
+	err := ensureVAPIDKeys(app.DB, newSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +129,9 @@ func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 	}
 	var rows []models.Notification
 	app.DB.Where("kind = ?", notify.PushKeysReset).Find(&rows)
-	if len(rows) != 1 || rows[0].UserID != admin.ID || len(notices) != 1 || notices[0] != rows[0].ID ||
+	if len(rows) != 1 || rows[0].UserID != admin.ID ||
 		rows[0].Title != "Notifications on devices were reset" || !strings.Contains(rows[0].Body, "Members need to turn them on again") {
-		t.Fatalf("admin notice: %+v (%v)", rows, notices)
+		t.Fatalf("admin notice: %+v", rows)
 	}
 	if auditCount(t, app, audit.PushKeysReset) != 1 {
 		t.Fatal("no audit row")
@@ -142,8 +142,8 @@ func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 		t.Fatalf("email %q", m.Subject)
 	}
 	// Booting again with the new secret changes nothing.
-	if again, err := ensureVAPIDKeys(app.DB, newSecret); err != nil || len(again) != 0 {
-		t.Fatalf("second boot: %v %v", again, err)
+	if err := ensureVAPIDKeys(app.DB, newSecret); err != nil {
+		t.Fatalf("second boot: %v", err)
 	}
 	if p, _ := vapidRows(t, app); p != public {
 		t.Fatal("the second boot made keys again")
@@ -152,7 +152,7 @@ func TestSessionSecretChangeResetsPushKeys(t *testing.T) {
 
 func TestRotateRemovesDevicesAndARunningServerUsesTheNewKey(t *testing.T) {
 	app := testApp(t)
-	if _, err := ensureVAPIDKeys(app.DB, app.Config.SessionSecret); err != nil {
+	if err := ensureVAPIDKeys(app.DB, app.Config.SessionSecret); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -217,7 +217,7 @@ func TestVAPIDSubject(t *testing.T) {
 func TestPushKeysResetNoticeSerializesWithAdminErasure(t *testing.T) {
 	runErasureBarriers(t, 7402003, func(t *testing.T) erasureScene {
 		app := testApp(t)
-		if _, err := ensureVAPIDKeys(app.DB, []byte("the old secret, long enough for prod")); err != nil {
+		if err := ensureVAPIDKeys(app.DB, []byte("the old secret, long enough for prod")); err != nil {
 			t.Fatal(err)
 		}
 		kept := newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
@@ -225,7 +225,7 @@ func TestPushKeysResetNoticeSerializesWithAdminErasure(t *testing.T) {
 		newSecret := []byte("the new secret, long enough for prod")
 		return erasureScene{app: app, victim: victim,
 			run: func() error {
-				_, err := ensureVAPIDKeys(app.DB, newSecret)
+				err := ensureVAPIDKeys(app.DB, newSecret)
 				return err
 			},
 			told: func(t *testing.T) {

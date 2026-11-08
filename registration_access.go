@@ -240,76 +240,74 @@ func grantRegistrationAccess(tx *gorm.DB, registrationID uint, scope accessScope
 // endRegistrationAccess ends a live grant (irreversibly) and writes its ended
 // snapshot, then sends the recipient notice when asked. It reloads *row. A grant
 // that is not live is a no-op, which makes a retry add nothing.
-func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string, sendNotice bool) ([]uint, error) {
+func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string, sendNotice bool) error {
 	if row.AccessOrigin == "" || row.UserID == nil {
-		return nil, nil
+		return nil
 	}
 	now = accessInstant(now)
 	res := tx.Model(&models.Registration{}).Where("id = ? AND "+registrationAccessLiveSQL, row.ID).UpdateColumns(map[string]any{
 		"access_ended_at": now, "access_end_reason": reason, "access_ended_by": optionalUint(actor),
 	})
 	if res.Error != nil {
-		return nil, res.Error
+		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return nil, nil
+		return nil
 	}
 	if err := tx.First(row, row.ID).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if err := writeAccessSnapshot(tx, audit.OccurrenceAccessEnded, actor, *row, scope, true, ip); err != nil {
-		return nil, err
+		return err
 	}
 	if !sendNotice {
-		return nil, nil
+		return nil
 	}
 	var subject models.User
 	if err := tx.Where("id = ? AND status = ? AND password_hash IS NOT NULL", *row.UserID, models.UserActive).Limit(1).Find(&subject).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if subject.ID == 0 {
-		return nil, nil
+		return nil
 	}
 	var occ models.EventOccurrence
 	if err := tx.Where("id = ?", row.OccurrenceID).Limit(1).Find(&occ).Error; err != nil {
-		return nil, err
+		return err
 	}
 	// Deleted dates have no valid navigation target; the retained audit is enough.
 	if occ.ID == 0 {
-		return nil, nil
+		return nil
 	}
-	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: accessTargetType, SubjectID: row.ID,
+	_, err := notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: accessTargetType, SubjectID: row.ID,
 		Link: occurrenceDatePath(scope.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: accessEndedKey(*row)})
+	return err
 }
 
 // endLiveAccessOnDates ends every live grant on the given dates with an explicit
 // reason before the caller hard-deletes the registrations, so the delete trigger
 // finds an ended grant and its snapshots. Rows already ended keep their original
 // reason. It runs while the dates still exist, so the scope can be read.
-func endLiveAccessOnDates(tx *gorm.DB, occurrenceIDs []uint, reason string, now time.Time, sendNotice bool) ([]uint, error) {
+func endLiveAccessOnDates(tx *gorm.DB, occurrenceIDs []uint, reason string, now time.Time, sendNotice bool) error {
 	if len(occurrenceIDs) == 0 {
-		return nil, nil
+		return nil
 	}
 	var rows []models.Registration
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("occurrence_id IN ? AND user_id IS NOT NULL AND "+registrationAccessLiveSQL, occurrenceIDs).Order("id").Find(&rows).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if len(rows) == 0 {
-		return nil, nil
+		return nil
 	}
 	scopes, err := accessScopesIn(tx, occurrenceIDs)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	for i := range rows {
-		ids, err := endRegistrationAccess(tx, &rows[i], scopes[rows[i].OccurrenceID], reason, nil, now, "", sendNotice)
-		if err != nil {
-			return nil, err
+		if err := endRegistrationAccess(tx, &rows[i], scopes[rows[i].OccurrenceID], reason, nil, now, "", sendNotice); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return mailed, nil
+	return nil
 }
 
 // accessHistory is what the validated snapshots say about one subject and date,

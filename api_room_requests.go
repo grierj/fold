@@ -74,18 +74,19 @@ func openRoomRequest(tx *gorm.DB, eventID, roomID uint, by *uint, series bool) (
 }
 
 // notifyRoomRequested gives every admin the request as a task.
-func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event, room *models.Room, dates int, actor *uint) ([]uint, error) {
+func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event, room *models.Room, dates int, actor *uint) error {
 	change := room.Name + " for 1 date"
 	if dates != 1 {
 		change = fmt.Sprintf("%s for %d dates", room.Name, dates)
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RoomRequested, To: adminIDs(tx), Actor: actor,
 		SubjectType: "room_request", SubjectID: req.ID, Link: roomRequestsLink,
 		Vars:      notify.Vars{Actor: askerName(tx, actor), Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
 		Data:      map[string]any{"requestId": req.ID, "eventId": ev.ID},
 		DedupeKey: fmt.Sprintf("room.requested:%d", req.ID),
 	})
+	return err
 }
 
 func askerName(tx *gorm.DB, id *uint) string {
@@ -431,7 +432,7 @@ func (a *App) requestFailed(c *gin.Context, id uint, err error) bool {
 // first, and whoever gets it finishes before the other needs anything else.
 // Keep the send before the resolve.
 func settleRoomDecision(tx *gorm.DB, ev *models.Event, requestID, actor uint, change, note, resolution string) error {
-	if _, err := notifyRoomDecided(tx, ev, actor, change, note); err != nil {
+	if err := notifyRoomDecided(tx, ev, actor, change, note); err != nil {
 		return err
 	}
 	_, err := notify.Resolve(tx, notify.RoomRequested, requestID, &actor, resolution)
@@ -440,19 +441,20 @@ func settleRoomDecision(tx *gorm.DB, ev *models.Event, requestID, actor uint, ch
 
 // notifyRoomDecided tells the event's leaders (or hosts) what an admin
 // decided; the admin is the actor and isn't told.
-func notifyRoomDecided(tx *gorm.DB, ev *models.Event, actor uint, change, note string) ([]uint, error) {
+func notifyRoomDecided(tx *gorm.DB, ev *models.Event, actor uint, change, note string) error {
 	var to []uint
 	if ev.GroupID != nil {
 		to = leaderIDs(tx, *ev.GroupID)
 	} else {
 		to = hostIDs(tx, ev.ID)
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RoomRequestDecided, To: to, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change, Note: note}, // group-ok: the event's own leaders and hosts
 		Data: map[string]any{"eventId": ev.ID},
 	})
+	return err
 }
 
 func dateCount(n int) string {

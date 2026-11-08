@@ -1391,7 +1391,7 @@ func TestErasureHouseholdStagedTeen(t *testing.T) {
 		t.Errorf("completeTeenConversionIfReady on the erased pair: %v, want nil (neither an error nor a revival)", err)
 	}
 	err = db.Transaction(func(tx *gorm.DB) error {
-		_, err := f.s.app.changeTeenConsent(tx, nil, &teen, f.parent, teenConsentChange{Scope: models.TeenConsentAccount, Status: models.ConsentGranted, ConfirmedGuardian: true})
+		err := f.s.app.changeTeenConsent(tx, nil, &teen, f.parent, teenConsentChange{Scope: models.TeenConsentAccount, Status: models.ConsentGranted, ConfirmedGuardian: true})
 		return err
 	})
 	if !errors.Is(err, errConsentTeen) {

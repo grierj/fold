@@ -454,7 +454,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		}
 		askedAccount = signup.CreateAccount
 		if signup.CreateAccount {
-			_, err := createGuestUpgradeRequest(tx, &signup)
+			err := createGuestUpgradeRequest(tx, &signup)
 			if err != nil {
 				return err
 			}
@@ -529,12 +529,12 @@ func claimGuestSignup(tx *gorm.DB, signup *models.GuestSignup, at time.Time) err
 // createGuestUpgradeRequest opens the guest_upgrade account request a
 // guest asked for on the form (5.10). A still-pending request for the
 // same address is left alone: the admins already have the task.
-func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint, error) {
+func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) error {
 	var pending int64
 	tx.Model(&models.AccountRequest{}).
 		Where("email = ? AND status = ?", signup.Email, models.RequestPending).Count(&pending)
 	if pending > 0 {
-		return nil, nil
+		return nil
 	}
 	req := models.AccountRequest{
 		Name: signup.Name, Email: signup.Email,
@@ -543,14 +543,14 @@ func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint,
 		ExpiresAt: time.Now().UTC().Add(requestLifetime),
 	}
 	if err := tx.Create(&req).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if err := audit.Write(tx, audit.Entry{Action: audit.AccountRequested,
 		TargetType: "account_request", TargetID: req.ID,
 		Meta: map[string]any{"source": models.RequestGuestUpgrade,
 			"accountType": models.AccountAdult, "hasWarnings": false},
 		IP: signup.IP}); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyAccountRequested(tx, &req, models.RequestFlags{})
 }
@@ -762,7 +762,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			return err
 		}
 		if before == models.RegGoing {
-			_, err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
+			err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
 			if err != nil {
 				return err
 			}

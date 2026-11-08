@@ -377,11 +377,11 @@ func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 // waitlist. The email carries the rotated manage link with the one-click
 // "I can't come" cancel; the bell never shows the token.
 func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	reg models.Registration, manageRaw string, actor *uint, app *App) ([]uint, error) {
+	reg models.Registration, manageRaw string, actor *uint, app *App) error {
 	userID := registrationHolder(reg)
 	accesses, err := occurrenceNoticeAccesses(tx, []uint{o.ID})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.ID == reg.ID {
 		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano), nil)
@@ -402,18 +402,19 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 		vars.VideoURL = video
 	}
 	end := noticeEnd(o)
-	return notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationPromoted, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
+	return err
 }
 
 // notifyWaitlistCutoff tells the leaders or hosts that a seat opened
 // inside the 2-hour cutoff, so they can promote by hand. Admins get it
 // only when they also lead or host.
-func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, actor *uint) ([]uint, error) {
+func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, actor *uint) error {
 	var to []uint
 	if ev.GroupID != nil {
 		to = leaderIDs(tx, *ev.GroupID)
@@ -421,7 +422,7 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		to = hostIDs(tx, ev.ID)
 	}
 	if len(to) == 0 {
-		return nil, nil
+		return nil
 	}
 	// Vars are per recipient: the time renders in each leader's own zone.
 	var groupIDs []uint
@@ -430,13 +431,12 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	}
 	facts := loadNoticeFacts(tx, groupIDs, to)
 	end := noticeEnd(o)
-	var ids []uint
 	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), not one lock
 	// query per leader or host.
-	err := notify.WithRecipients(tx, to, func(scope *notify.Scope) error {
+	return notify.WithRecipients(tx, to, func(scope *notify.Scope) error {
 		for _, uid := range to {
 			vars, link := eventNoticeVars(ev, o, uid, facts)
-			sent, err := notify.Send(tx, notify.Msg{
+			_, err := notify.Send(tx, notify.Msg{
 				Kind: notify.WaitlistCutoff, To: []uint{uid}, Actor: actor,
 				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 				Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
@@ -445,24 +445,19 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 			if err != nil {
 				return err
 			}
-			ids = append(ids, sent...)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 // notifyEventChanged tells everyone going or waitlisted on one occurrence
 // that its time or place changed. One item per person per occurrence per
 // change; the item is never batched.
-func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, variant string, actor uint) ([]uint, error) {
+func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, variant string, actor uint) error {
 	if o.Status != models.OccurrenceScheduled {
 		// No fan-out into a cancelled date: nobody is going, and the
 		// waitlist must not be mailed about a dead event.
-		return nil, nil
+		return nil
 	}
 	var userIDs []uint
 	if err := tx.Table("registrations").Distinct("users.id").
@@ -470,7 +465,7 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		Where("registrations.occurrence_id = ? AND registrations.status IN ?",
 			o.ID, []string{models.RegGoing, models.RegWaitlisted}).
 		Order("users.id").Pluck("users.id", &userIDs).Error; err != nil {
-		return nil, err
+		return err
 	}
 	var groupIDs []uint
 	if ev.GroupID != nil {
@@ -479,25 +474,22 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 	facts := loadNoticeFacts(tx, groupIDs, userIDs)
 	accesses, err := occurrenceNoticeAccesses(tx, []uint{o.ID})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var ids []uint
 	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), shared by the
 	// invited and the ordinary notices below, not one lock query per person.
-	err = notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
+	return notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
 		for _, uid := range userIDs {
 			if invitation, ok := accesses[o.ID][uid]; ok {
-				sent, err := sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "", scope)
-				if err != nil {
+				if err := sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "", scope); err != nil {
 					return err
 				}
-				ids = append(ids, sent...)
 				continue
 			}
 			vars, link := eventNoticeVars(ev, o, uid, facts)
 			vars.Change = variant
 			end := noticeEnd(o)
-			sent, err := notify.Send(tx, notify.Msg{
+			_, err := notify.Send(tx, notify.Msg{
 				Kind: notify.EventChanged, To: []uint{uid}, Actor: &actor,
 				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 				Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate), "change": variant},
@@ -506,20 +498,15 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 			if err != nil {
 				return err
 			}
-			ids = append(ids, sent...)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 // notifyRegistrationRemoved tells a pruned person they were removed. The
 // note reaches only them.
 func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	reg models.Registration, note string, actor uint) ([]uint, error) {
+	reg models.Registration, note string, actor uint) error {
 	var actorID *uint
 	if actor != 0 {
 		actorID = &actor
@@ -527,7 +514,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	userID := registrationHolder(reg)
 	u := userIn(tx, userID)
 	if u == nil || u.Status == models.UserDisabled {
-		return nil, nil
+		return nil
 	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
@@ -535,29 +522,31 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	}
 	vars.Note = note
 	end := noticeEnd(o)
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: actorID,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
+	return err
 }
 
 // notifyRegistrationNotRestored tells a re-enabled person their
 // registration was dropped from a full occurrence (DEC-47).
-func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) ([]uint, error) {
+func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) error {
 	userID := registrationHolder(reg)
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
 	end := noticeEnd(o)
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
 		ExpiresAt: &end,
 	})
+	return err
 }
 
 // promoteLocked promotes waitlisted registrations that fit, in line
@@ -565,19 +554,18 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 // pass time.Now().UTC(), tests pass a fixed clock. Inside the 2-hour
 // cutoff nobody is promoted; the leaders or hosts get one cutoff notice
 // instead. A promoted row becomes going, keeps waitlisted_at as history,
-// and gets a rotated manage token for the "I can't come" link. Returns the
-// notification ids written.
-func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, now time.Time, actor *uint) ([]uint, error) {
+// and gets a rotated manage token for the "I can't come" link.
+func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, now time.Time, actor *uint) error {
 	if o.Status != models.OccurrenceScheduled {
 		// Nobody is promoted into a cancelled date.
-		return nil, nil
+		return nil
 	}
 	wl, err := loadWaitlist(tx, o.ID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(wl) == 0 {
-		return nil, nil
+		return nil
 	}
 	// One waitlist, two pools: each entry keeps its mode and is filled
 	// from its own pool in line order (M1.8 slice 2).
@@ -585,7 +573,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	for _, mode := range []string{models.AttendanceInPerson, models.AttendanceRemote} {
 		used, err := seatsUsedForMode(tx, o.ID, mode)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		pools[mode] = events.Pool{Capacity: capacityForMode(ev, o, mode), Used: used}
 	}
@@ -593,7 +581,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	if ev.ChildcareAvailable && ev.ChildcareCapacity != nil {
 		used, err := childcareUsedFor(tx, o.ID, 0)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
 	}
@@ -607,7 +595,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		line = append(line, entryOf(r))
 	}
 	if len(events.PickPromotionsByPool(line, pools, childcare)) == 0 {
-		return nil, nil
+		return nil
 	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
@@ -625,11 +613,11 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		if len(events.PickPromotionsByPool(entries, pools, childcare)) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
-		return nil, nil
+		return nil
 	}
 	picks := events.PickPromotionsByPool(entries, pools, childcare)
 	if len(picks) == 0 {
-		return nil, nil
+		return nil
 	}
 	byID := make(map[uint]models.Registration, len(wl))
 	for _, r := range wl {
@@ -643,12 +631,11 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 }
 
 func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	rows []models.Registration, now time.Time, actor *uint) ([]uint, error) {
-	var emailed []uint
+	rows []models.Registration, now time.Time, actor *uint) error {
 	for _, r := range rows {
 		raw, hash, err := createInvitationToken()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status = ?", r.ID, models.RegWaitlisted).
@@ -656,7 +643,7 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 				"status": models.RegGoing, "promoted_at": now, "manage_token_hash": hash,
 			})
 		if res.Error != nil {
-			return nil, res.Error
+			return res.Error
 		}
 		if res.RowsAffected == 0 {
 			continue // lost a race with another seat-changing write
@@ -668,15 +655,13 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 			actorID = *actor
 		}
 		if err := auditRegistration(tx, actorID, audit.RegistrationChanged, ev.ID, r, next, ""); err != nil {
-			return nil, err
+			return err
 		}
-		ids, err := notifyRegistrationPromoted(tx, ev, o, r, raw, actor, a)
-		if err != nil {
-			return nil, err
+		if err := notifyRegistrationPromoted(tx, ev, o, r, raw, actor, a); err != nil {
+			return err
 		}
-		emailed = append(emailed, ids...)
 	}
-	return emailed, nil
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -773,13 +758,13 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 
 // applyRegistrationBatch releases resources before filling new requests so
 // existing waiters can use those releases first. Every write rolls back together.
-func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, changes []registrationChange, now time.Time, actor uint, ip string) ([]uint, error) {
+func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, changes []registrationChange, now time.Time, actor uint, ip string) error {
 	released, editedWaiter := false, false
 	for i := range changes {
 		ch := &changes[i]
 		if ch.old.Status == models.RegWaitlisted && ch.next.Status == models.RegWaitlisted {
 			if err := saveRegistration(tx, &ch.next); err != nil {
-				return nil, err
+				return err
 			}
 			editedWaiter = true
 		}
@@ -789,7 +774,7 @@ func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.Ev
 				interim.Status = models.RegDeclined
 			}
 			if err := saveRegistration(tx, &interim); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		if ch.old.Status != models.RegGoing {
@@ -816,35 +801,32 @@ func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.Ev
 		}
 		released = true
 		if err := saveRegistration(tx, &interim); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	var ids []uint
 	if released || editedWaiter {
-		sent, err := a.promoteLocked(tx, ev, o, now, nil)
-		if err != nil {
-			return nil, err
+		if err := a.promoteLocked(tx, ev, o, now, nil); err != nil {
+			return err
 		}
-		ids = append(ids, sent...)
 	}
 	for i := range changes {
 		ch := &changes[i]
 		if ch.old.Status == models.RegWaitlisted && ch.next.Status == models.RegWaitlisted {
 			if err := tx.First(&ch.next, ch.next.ID).Error; err != nil {
-				return nil, err
+				return err
 			}
 		} else if err := a.registerLocked(tx, ev, o, ch, now); err != nil {
-			return nil, err
+			return err
 		}
 		action := ch.auditAction
 		if action == "" {
 			action = audit.RegistrationChanged
 		}
 		if err := auditRegistration(tx, actor, action, ev.ID, ch.old, ch.next, ip); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return ids, nil
+	return nil
 }
 
 func auditRegistration(tx *gorm.DB, actor uint, action string, eventID uint, old, next models.Registration, ip string) error {
@@ -1219,12 +1201,12 @@ func (a *App) apiRegister(c *gin.Context) {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
-		_, err = a.applyRegistrationBatch(tx, ev, locked, changes, now, holder.ID, c.ClientIP())
+		err = a.applyRegistrationBatch(tx, ev, locked, changes, now, holder.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
 		if hasInvitation && body.Status == models.RegDeclined {
-			_, err := endOccurrenceAccessIn(tx, &ownRow, accessScopeOf(ev), policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP())
+			err := endRegistrationAccess(tx, &ownRow, accessScopeOf(ev), policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP(), true)
 			if err != nil {
 				return err
 			}
@@ -1404,16 +1386,16 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 				return err
 			}
 			for i := range pending {
-				_, err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, time.Now().UTC())
+				err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, time.Now().UTC())
 				if err != nil {
 					return err
 				}
 			}
 		}
 		if hadGrant {
-			_, err = endOccurrenceAccessIn(tx, &r, accessScopeOf(ev), policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP())
+			err = endRegistrationAccess(tx, &r, accessScopeOf(ev), policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP(), true)
 		} else {
-			_, err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
+			err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
 		}
 		if err != nil {
 			return err
@@ -1422,7 +1404,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		// promoteLocked checks remaining attendance/childcare room and cutoff;
 		// being at or over capacity after removal never seats another party.
 		if priorStatus == models.RegGoing {
-			_, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1516,7 +1498,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		}); err != nil {
 			return err
 		}
-		_, err = a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
+		err = a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
 		if err != nil {
 			return err
 		}
@@ -1718,7 +1700,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if holder.Status != models.UserGuest && (!f.Subject.Active || (f.Subject.AgeYears != nil && *f.Subject.AgeYears < 18)) {
 			return refuse(errDateAddApproval)
 		}
-		registration, _, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, time.Now().UTC(), c.ClientIP())
+		registration, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, time.Now().UTC(), c.ClientIP())
 		if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) || errors.Is(err, errChildcareUnavailable) || errors.Is(err, errRemoteNotAvailable) {
 			return refuse(err)
 		}
@@ -1726,7 +1708,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			return err
 		}
 		if holder.Status == models.UserActive {
-			_, err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, time.Now().UTC(), c.ClientIP())
+			err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, time.Now().UTC(), c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -1783,57 +1765,53 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 // notifyInsideCutoff is false for tombstone maintenance: deleted accounts
 // already do not count, so revisiting their registrations must not announce
 // another newly opened seat. Admin disable/delete keeps its usual notices.
-func (a *App) promoteOnDisable(tx *gorm.DB, userID uint, notifyInsideCutoff bool) ([]uint, error) {
+func (a *App) promoteOnDisable(tx *gorm.DB, userID uint, notifyInsideCutoff bool) error {
 	var occIDs []uint
 	if err := tx.Model(&models.Registration{}).
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Where("(registrations.user_id = ? OR registrations.registered_by = ?) AND registrations.status = ? AND event_occurrences.status = ? AND event_occurrences.starts_at > ?",
 			userID, userID, models.RegGoing, models.OccurrenceScheduled, time.Now().UTC()).
 		Distinct().Order("registrations.occurrence_id").Pluck("registrations.occurrence_id", &occIDs).Error; err != nil {
-		return nil, err
+		return err
 	}
-	var emailed []uint
 	now := time.Now().UTC()
 	for _, id := range occIDs {
 		o, err := lockOccurrence(tx, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		var ev models.Event
 		if err := tx.First(&ev, o.EventID).Error; err != nil {
-			return nil, err
+			return err
 		}
 		if !notifyInsideCutoff && events.InCutoff(now, o.StartsAt) {
 			continue
 		}
-		ids, err := a.promoteLocked(tx, &ev, o, now, nil)
-		if err != nil {
-			return nil, err
+		if err := a.promoteLocked(tx, &ev, o, now, nil); err != nil {
+			return err
 		}
-		emailed = append(emailed, ids...)
 	}
-	return emailed, nil
+	return nil
 }
 
 // restoreRegistrations checks future answers in occurrence/registration ID
 // order while the holder is disabled. Accepted going rows accumulate usage
 // across both seat pools and care; ineligible or non-fitting rows are
 // audited and dropped. Eligible waiters retain their original place.
-func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus string, actor uint, ip string, now time.Time) ([]uint, error) {
+func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus string, actor uint, ip string, now time.Time) error {
 	var actorID *uint
 	if actor != 0 {
 		actorID = &actor
 	}
 	var holder models.User
 	if err := tx.First(&holder, userID).Error; err != nil {
-		return nil, err
+		return err
 	}
 	holder.Status = intendedStatus
 	var regs []models.Registration
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").Where("(registrations.user_id = ? OR registrations.registered_by = ?) AND registrations.status IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at > ?", userID, userID, []string{models.RegGoing, models.RegWaitlisted}, models.OccurrenceScheduled, now).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	var currentID uint
 	var o *models.EventOccurrence
 	var ev models.Event
@@ -1846,23 +1824,23 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 			var err error
 			o, err = lockOccurrence(tx, r.OccurrenceID)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			currentID = r.OccurrenceID
 			ev = models.Event{}
 			if err := tx.First(&ev, o.EventID).Error; err != nil {
-				return nil, err
+				return err
 			}
 			for _, mode := range []string{models.AttendanceInPerson, models.AttendanceRemote} {
 				n, err := seatsUsedForMode(tx, o.ID, mode)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				used[mode] = n
 			}
 			n, err := childcareUsedFor(tx, o.ID, 0)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			careUsed = n
 			currentRegs := []models.Registration{}
@@ -1893,7 +1871,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 				careUsed += demand
 			}
 			if err := auditRegistration(tx, actor, audit.RegistrationRestored, ev.ID, r, r, ip); err != nil {
-				return nil, err
+				return err
 			}
 			continue
 		}
@@ -1901,25 +1879,21 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 		// explicit reason and the normal notice, so the delete trigger finds an
 		// ended grant and the snapshots that outlive the row.
 		if r.AccessOrigin != "" {
-			ids, err := endRegistrationAccess(tx, &r, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, now, ip, true)
-			if err != nil {
-				return nil, err
+			if err := endRegistrationAccess(tx, &r, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, now, ip, true); err != nil {
+				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if err := tx.Delete(&r).Error; err != nil {
-			return nil, err
+			return err
 		}
 		if err := auditRegistration(tx, actor, audit.RegistrationNotRestored, ev.ID, r, r, ip); err != nil {
-			return nil, err
+			return err
 		}
-		ids, err := notifyRegistrationNotRestored(tx, &ev, o, r, actorID)
-		if err != nil {
-			return nil, err
+		if err := notifyRegistrationNotRestored(tx, &ev, o, r, actorID); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return mailed, nil
+	return nil
 }
 
 // lockRegistrationHolder binds the row to this occurrence before locking its
@@ -2049,7 +2023,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 			return err
 		}
 		if old.Status == models.RegGoing && (attendanceModeOf(r.AttendanceMode) != attendanceModeOf(old.AttendanceMode) || effectiveChildcare(ev, r) < effectiveChildcare(ev, old)) {
-			_, err = a.promoteLocked(tx, ev, locked, now, &actor.ID)
+			err = a.promoteLocked(tx, ev, locked, now, &actor.ID)
 			return err
 		}
 		return nil
@@ -2099,28 +2073,27 @@ type managerRegistrationOptions struct {
 // occurrence locks, and has revalidated current management and target authority.
 // Teen/out-of-visibility authority must come from a reloaded approved request,
 // never an HTTP boolean. This core neither grants access nor commits or mails.
-func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked *models.EventOccurrence, targetID, actor uint, options managerRegistrationOptions, now time.Time, ip string) (models.Registration, []uint, error) {
+func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked *models.EventOccurrence, targetID, actor uint, options managerRegistrationOptions, now time.Time, ip string) (models.Registration, error) {
 	if locked.Status != models.OccurrenceScheduled || locked.EventID != ev.ID {
-		return models.Registration{}, nil, errOccurrenceNotFound
+		return models.Registration{}, errOccurrenceNotFound
 	}
 	if options.guests < 0 || options.guests > ev.GuestsAllowed {
-		return models.Registration{}, nil, errPeopleAddForbidden
+		return models.Registration{}, errPeopleAddForbidden
 	}
 	if options.mode == models.AttendanceRemote && !ev.RemoteAvailable {
-		return models.Registration{}, nil, errRemoteNotAvailable
+		return models.Registration{}, errRemoteNotAvailable
 	}
 
-	var mailed []uint
 	var r models.Registration
 	lookup := tx.Where("user_id = ? AND occurrence_id = ?", targetID, locked.ID).First(&r)
 	if lookup.Error != nil && !errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
-		return models.Registration{}, nil, lookup.Error
+		return models.Registration{}, lookup.Error
 	}
 	found := lookup.RowsAffected == 1
 	before := r
 	count, ages := options.care.values(r)
 	if err := checkChildcare(tx, ev, locked.ID, r.ID, count); err != nil {
-		return models.Registration{}, nil, err
+		return models.Registration{}, err
 	}
 	mode := models.AttendanceInPerson
 	if found {
@@ -2130,22 +2103,22 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 		mode = options.mode
 	}
 	if mode == models.AttendanceRemote && !ev.RemoteAvailable {
-		return models.Registration{}, nil, errRemoteNotAvailable
+		return models.Registration{}, errRemoteNotAvailable
 	}
 	if options.care.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable {
-		return models.Registration{}, nil, errChildcareUnavailable
+		return models.Registration{}, errChildcareUnavailable
 	}
 	var subject models.User
 	if err := tx.First(&subject, targetID).Error; err != nil {
-		return models.Registration{}, nil, err
+		return models.Registration{}, err
 	}
 	if options.approved != nil || policy.TeenAddNeedsApproval(asPerson(&subject)) || !a.canRegisterIn(tx, &subject, dateEvent(ev, locked)) {
 		approved, err := a.verifiedOccurrenceAddIn(tx, options.approved, actor, targetID, ev.ID, locked.ID, policy.AddOptions{OverCapacity: options.overCapacity, AttendanceMode: mode, GuestCount: options.guests, ChildcareCount: count, ChildcareAgesNote: ages})
 		if err != nil {
-			return models.Registration{}, nil, err
+			return models.Registration{}, err
 		}
 		if !approved {
-			return models.Registration{}, nil, errPeopleAddForbidden
+			return models.Registration{}, errPeopleAddForbidden
 		}
 	}
 
@@ -2154,7 +2127,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	cap := capacityForMode(ev, locked, mode)
 	used, err := seatsUsedForMode(tx, locked.ID, mode)
 	if err != nil {
-		return models.Registration{}, nil, err
+		return models.Registration{}, err
 	}
 	if found && r.Status == models.RegGoing && attendanceModeOf(r.AttendanceMode) == mode {
 		used -= 1 + r.GuestCount
@@ -2162,7 +2135,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	seats := 1 + options.guests
 	over := !events.Fits(cap, used, seats)
 	if over && !options.overCapacity {
-		return models.Registration{}, nil, errEventFull
+		return models.Registration{}, errEventFull
 	}
 	updates := map[string]any{
 		"status": models.RegGoing, "guest_count": options.guests, "attendance_mode": mode,
@@ -2171,7 +2144,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	}
 	if found {
 		if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(updates).Error; err != nil {
-			return models.Registration{}, nil, err
+			return models.Registration{}, err
 		}
 	} else {
 		r = models.Registration{
@@ -2180,7 +2153,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 			AttendanceMode: mode,
 		}
 		if err := tx.Create(&r).Error; err != nil {
-			return models.Registration{}, nil, err
+			return models.Registration{}, err
 		}
 	}
 	action := audit.RegistrationAdded
@@ -2202,14 +2175,12 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	if err := audit.Write(tx, audit.Entry{Actor: &actor, Action: action,
 		TargetType: "event", TargetID: ev.ID, Meta: meta, IP: ip,
 	}); err != nil {
-		return models.Registration{}, nil, err
+		return models.Registration{}, err
 	}
 	if found && before.Status == models.RegGoing && (mode != attendanceModeOf(before.AttendanceMode) || options.guests < before.GuestCount || count < before.ChildcareCount) {
-		ids, err := a.promoteLocked(tx, ev, locked, now, &actor)
-		if err != nil {
-			return models.Registration{}, nil, err
+		if err := a.promoteLocked(tx, ev, locked, now, &actor); err != nil {
+			return models.Registration{}, err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return after, mailed, nil
+	return after, nil
 }

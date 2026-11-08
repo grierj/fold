@@ -107,13 +107,12 @@ func dateImpactOf(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, ne
 
 // Caller holds the contact gate, event and occurrence locks. Cancellation,
 // audit and stored notices share the same transaction as the date edit.
-func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) ([]uint, error) {
+func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) error {
 	old := occ.VisibilityOverride
 	if !keep && ((old == nil && value == nil) || (old != nil && value != nil && *old == *value)) {
-		return nil, nil
+		return nil
 	}
 	before, after := policy.EffectiveVisibility(ev.Visibility, old), policy.EffectiveVisibility(ev.Visibility, value)
-	var mailed []uint
 
 	f := eventFactsIn(tx, apiUser(c), ev)
 	if f.group != nil && len(groupVisibility) > 0 {
@@ -128,29 +127,25 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 		meta["groupVisibility"] = f.group.Visibility
 	}
 	if err := audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: action, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
-		return nil, err
+		return err
 	}
 	occ.VisibilityOverride = value
 	if err := tx.Model(occ).Update("visibility_override", value).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if policy.MoreOpen(before, after) && !keep {
-		ids, err := a.cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID)
-		if err != nil {
-			return nil, err
+		if err := a.cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
 	if action == audit.VisibilityOverride && f.group != nil {
 		date := *ev
 		date.Title = ev.Title + " · " + models.FormatCalendarDate(occ.OriginalDate)
-		ids, err := notifyVisibilityOverride(tx, apiUser(c).ID, &date, f.group, after, reason)
-		if err != nil {
-			return nil, err
+		if err := notifyVisibilityOverride(tx, apiUser(c).ID, &date, f.group, after, reason); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return mailed, nil
+	return nil
 }
 
 func (a *App) apiDateVisibilityImpact(c *gin.Context) {

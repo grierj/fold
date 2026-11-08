@@ -391,7 +391,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 			return err
 		}
 		// Church-wide events are created by admins, whose bookings never wait.
-		_, err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
+		err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
 		return err
 	})
 	if hostWriteFailed(c, err) || createRoomFailed(c, err) {
@@ -480,7 +480,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.Openness(vis) < policy.Openness(oldVis) {
-			_, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+			err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -491,7 +491,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 				return err
 			}
 			for i := range dates {
-				_, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
 				if err != nil {
 					return err
 				}
@@ -517,7 +517,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			return err
 		}
 		if action == audit.VisibilityOverride && f.group != nil {
-			_, err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
+			err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
 			return err
 		}
 		return nil

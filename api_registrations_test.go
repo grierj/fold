@@ -2512,9 +2512,9 @@ func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
 						return app.DB.Transaction(func(tx *gorm.DB) error {
 							var err error
 							if fan == "event changed" {
-								_, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+								err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
 							} else {
-								_, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+								err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
 							}
 							return err
 						})
@@ -2582,19 +2582,17 @@ func TestSiblingFanOutsLockRecipientsOncePerBatch(t *testing.T) {
 					}
 				}
 				locks := countRecipientLocks(t, app.DB)
-				var ids []uint
+				before := maxNoticeID(t, app.DB)
 				err := app.DB.Transaction(func(tx *gorm.DB) error {
-					var err error
 					if fan == "event changed" {
-						ids, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
-					} else {
-						ids, err = notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
+						return notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
 					}
-					return err
+					return notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
+				ids := noticeIDsAfter(t, app.DB, before)
 				if len(ids) != tc.people {
 					t.Fatalf("%d notices, want %d", len(ids), tc.people)
 				}

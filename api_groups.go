@@ -163,7 +163,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 			return err
 		}
 		if g.Status == models.GroupPending {
-			_, err := notifyGroupPending(tx, &g, u.ID)
+			err := notifyGroupPending(tx, &g, u.ID)
 			return err
 		}
 		return nil
@@ -458,7 +458,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		if body.Visibility != nil {
 			var err error
-			if impact, _, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
 		}
@@ -475,7 +475,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			// Only an admin's decision is news to the leaders; a leader
 			// archiving their own pending group is not "an admin decided".
 			if policy.IsAdmin(asPerson(u)) {
-				if _, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, ""); err != nil {
+				if err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, ""); err != nil {
 					return err
 				}
 			}
@@ -857,7 +857,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		}
 		return nil
 	}
-	_, err := auditAndNotifyLeadership(tx, audit.Entry{
+	err := auditAndNotifyLeadership(tx, audit.Entry{
 		Actor: &actor.ID, Action: audit.RoleChanged,
 		TargetType: "group", TargetID: g.ID,
 		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
@@ -980,7 +980,7 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error // already requested: the admins already have the task
 		}
-		_, err := notifyDeletionRequested(tx, g, u.ID)
+		err := notifyDeletionRequested(tx, g, u.ID)
 		return err
 	})
 	if err != nil {
@@ -1027,10 +1027,9 @@ func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string)
 
 // auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
 // tells the other admins about a leadership change in the same transaction.
-// It returns the notification IDs.
-func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
+func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	if err := audit.Write(tx, e); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyLeadership(tx, e)
 }

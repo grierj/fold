@@ -130,26 +130,26 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	return f, nil
 }
 
-func (a *App) reconcileOccurrenceAsk(tx *gorm.DB, r *models.ContactRequest, now time.Time) ([]uint, error) {
+func (a *App) reconcileOccurrenceAsk(tx *gorm.DB, r *models.ContactRequest, now time.Time) error {
 	if r.Status != policy.ContactPending {
-		return nil, nil
+		return nil
 	}
 	if policy.AddRequestExpired(addRequestPolicy(*r), now) {
 		return finishContactRequest(tx, r, policy.ContactExpired, "", now)
 	}
 	f, err := a.loadOccurrenceAddFacts(tx, *r, now)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if reason := policy.AddIneligibility(addRequestPolicy(*r).AddScope, f, r.NeedsAdmin); reason != "" {
 		return finishContactRequest(tx, r, policy.ContactEnded, reason, now)
 	}
-	return nil, nil
+	return nil
 }
 
 // Accepted attendance deliberately does not reload issuer authority or blocks.
 // Only the recipient and the exact live domain/provenance rows can end it.
-func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change contactChange) ([]uint, error) {
+func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change contactChange) error {
 	q := tx.Where("registrations.user_id IS NOT NULL AND " + registrationAccessLiveSQL)
 	switch {
 	case change.UserID != 0:
@@ -161,14 +161,14 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 	}
 	var rows []models.Registration
 	if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("registrations.id").Find(&rows).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if len(rows) == 0 {
-		return nil, nil
+		return nil
 	}
 	facts, err := loadOccurrenceInvitationFacts(tx, rows, now)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	occurrenceIDs := make([]uint, 0, len(rows))
 	for _, row := range rows {
@@ -176,34 +176,26 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 	}
 	scopes, err := accessScopesIn(tx, occurrenceIDs)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	for i := range rows {
 		row := &rows[i]
 		reason := facts.endReason(*row, now)
 		if reason == "" {
 			continue
 		}
-		ids, err := endOccurrenceAccessIn(tx, row, scopes[row.OccurrenceID], reason, nil, now, "")
-		if err != nil {
-			return nil, err
+		if err := endRegistrationAccess(tx, row, scopes[row.OccurrenceID], reason, nil, now, "", true); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return mailed, nil
-}
-
-func endOccurrenceAccessIn(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) ([]uint, error) {
-	return endRegistrationAccess(tx, row, scope, reason, actor, now, ip, true)
+	return nil
 }
 
 // endOccurrenceAccessWithoutNoticeIn is for a larger summarized operation,
 // such as group departure. It preserves the irreversible end stamp and its audit
 // snapshot without generating one recipient notice per date.
 func endOccurrenceAccessWithoutNoticeIn(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
-	_, err := endRegistrationAccess(tx, row, scope, reason, actor, now, ip, false)
-	return err
+	return endRegistrationAccess(tx, row, scope, reason, actor, now, ip, false)
 }
 
 // liveOccurrenceInvitationIn is transaction authority only while the contact
@@ -351,12 +343,12 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		_, err = a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, actor.ID, c.ClientIP())
+		err = a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, actor.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
 		if reason != "" {
-			_, err = endOccurrenceAccessIn(tx, &reg, scope, reason, &actor.ID, now, c.ClientIP())
+			err = endRegistrationAccess(tx, &reg, scope, reason, &actor.ID, now, c.ClientIP(), true)
 			if err != nil {
 				return err
 			}
@@ -366,7 +358,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			if scope.Organizer.Type == policy.ContactGroup {
 				change = contactChange{GroupID: scope.Organizer.ID}
 			}
-			_, err = a.reconcileContacts(tx, now, change)
+			err = a.reconcileContacts(tx, now, change)
 			if err != nil {
 				return err
 			}
@@ -500,7 +492,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	// The domain locks may have waited across expiry or a birthday. Refresh
 	// completion time and eligibility here, not just when the gate was taken.
 	op.now = time.Now().UTC().Truncate(time.Microsecond)
-	if _, err := a.reconcileOccurrenceAsk(tx, r, op.now); err != nil {
+	if err := a.reconcileOccurrenceAsk(tx, r, op.now); err != nil {
 		return err
 	}
 	facts, err = a.loadOccurrenceAddFacts(tx, *r, op.now)
@@ -517,7 +509,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "options_changed", ip)
 	}
 	count, ages := r.AddChildcareCount, r.AddChildcareAgesNote
-	registration, _, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, r.RequesterID,
+	registration, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, r.RequesterID,
 		managerRegistrationOptions{approved: &verifiedOccurrenceAdd{requestID: r.ID}, mode: r.AddAttendanceMode, guests: r.AddGuestCount, overCapacity: r.AddOverCapacity, care: childcareRequest{ChildcareCount: &count, ChildcareAgesNote: &ages}}, op.now, ip)
 	if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) {
 		op.completionProblem = "capacity"
@@ -533,7 +525,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	if err := tx.Save(r).Error; err != nil {
 		return err
 	}
-	if _, err := a.recordManagerOccurrenceAdd(tx, &ev, locked, registration, r.RequesterID, &r.ID, r.NeedsAdmin, op.now, ip); err != nil {
+	if err := a.recordManagerOccurrenceAdd(tx, &ev, locked, registration, r.RequesterID, &r.ID, r.NeedsAdmin, op.now, ip); err != nil {
 		return err
 	}
 	if err := contactAudit(tx, &op.actor.ID, audit.ContactGranted, *r, "", ip); err != nil {
@@ -542,13 +534,13 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	if err := resolveContactTasks(tx, *r, &op.actor.ID, r.Status); err != nil {
 		return err
 	}
-	_, err = contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID}, "completed")
+	err = contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID}, "completed")
 	return err
 }
 
-func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, reg models.Registration, issuer uint, request *uint, teen bool, now time.Time, ip string) ([]uint, error) {
+func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, reg models.Registration, issuer uint, request *uint, teen bool, now time.Time, ip string) error {
 	if reg.UserID == nil {
-		return nil, nil
+		return nil
 	}
 	// The grant is a write to the registration row that already seats the
 	// person, so a live grant is the same "already added" answer as before: no
@@ -556,23 +548,24 @@ func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *mod
 	// trigger decides whether this add may do so.
 	row, granted, err := grantRegistrationAccess(tx, reg.ID, accessScopeOf(ev), accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer, RequestID: request}, &issuer, now, ip)
 	if err != nil || !granted {
-		return nil, err
+		return err
 	}
 	// A new account invitation is fresh authority, not a revival of a
 	// previous promotion link. Existing invitations and guest/proxy rows
 	// never pass this new-provenance boundary.
 	if err := tx.Model(&models.Registration{}).Where("id = ? AND user_id = ?", row.ID, *row.UserID).Update("manage_token_hash", "").Error; err != nil {
-		return nil, err
+		return err
 	}
 	recipients := []uint{*row.UserID}
 	if teen {
 		guardians, err := contactGuardians(tx, *row.UserID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		recipients = append(recipients, guardians...)
 	}
-	return notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: accessAddedKey(row)})
+	_, err = notify.Send(tx, notify.Msg{Kind: notify.OccurrenceAdded, To: recipients, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: accessAddedKey(row)})
+	return err
 }
 
 // occurrenceNoticeAccesses maps date -> person -> that person's live grant row,
@@ -594,8 +587,9 @@ func occurrenceNoticeAccesses(tx *gorm.DB, occurrenceIDs []uint) (map[uint]map[u
 
 // sendOccurrenceNotice tells one access holder. A fan-out passes the scope it
 // locked its recipients with (notify.WithRecipients); a single send passes nil.
-func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.EventOccurrence, kind, key string, scope *notify.Scope) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{Kind: kind, To: []uint{*row.UserID}, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(occ.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key, Scope: scope})
+func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.EventOccurrence, kind, key string, scope *notify.Scope) error {
+	_, err := notify.Send(tx, notify.Msg{Kind: kind, To: []uint{*row.UserID}, SubjectType: accessTargetType, SubjectID: row.ID, Link: occurrenceDatePath(occ.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: key, Scope: scope})
+	return err
 }
 
 // Unlike the general manager loader, this entry point must audit every

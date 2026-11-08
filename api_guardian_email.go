@@ -153,7 +153,7 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 			return err
 		}
 		c.Set("apiUser", guardian)
-		_, err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: payload.Scope, Status: payload.Status, ConfirmedGuardian: true})
+		err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: payload.Scope, Status: payload.Status, ConfirmedGuardian: true})
 		return err
 	})
 	if err != nil {

@@ -1025,15 +1025,13 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 }
 
 // createGuardianLink writes a pending link for a child or teen person
-// and asks the admins to confirm it, all in tx (DEC-32). It returns the
-// notification ids to deliver email for after the commit.
-func createGuardianLink(tx *gorm.DB, guardianID uint, person *models.HouseholdPerson) (*models.GuardianLink, []uint, error) {
+// and asks the admins to confirm it, all in tx (DEC-32).
+func createGuardianLink(tx *gorm.DB, guardianID uint, person *models.HouseholdPerson) (*models.GuardianLink, error) {
 	link := models.GuardianLink{GuardianUserID: guardianID, PersonID: &person.ID, Status: models.GuardianPending}
 	if err := tx.Create(&link).Error; err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	ids, err := notifyGuardianLinkPending(tx, &link, person)
-	return &link, ids, err
+	return &link, notifyGuardianLinkPending(tx, &link, person)
 }
 
 // revokeGuardianLinks ends every live (pending or confirmed) link to a
@@ -1295,7 +1293,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		}
 		meta := map[string]any{"personId": person.ID, "kind": person.Kind}
 		if policy.NeedsGuardianLink(person.Kind) {
-			link, _, err := createGuardianLink(tx, fresh.ID, &person)
+			link, err := createGuardianLink(tx, fresh.ID, &person)
 			if err != nil {
 				return err
 			}
@@ -1497,12 +1495,12 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 				return err
 			}
 		case !policy.NeedsGuardianLink(oldKind) && policy.NeedsGuardianLink(newKind):
-			_, _, err := createGuardianLink(tx, me.ID, person)
+			_, err := createGuardianLink(tx, me.ID, person)
 			if err != nil {
 				return err
 			}
 		}
-		_, err = a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
+		err = a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
@@ -1575,7 +1573,7 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
 			return err
 		}
-		_, err = a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
+		err = a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}

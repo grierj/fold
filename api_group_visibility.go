@@ -216,12 +216,12 @@ func (a *App) apiGroupVisibilityImpact(c *gin.Context) {
 // group row is locked and before it is saved. oldVis is the stored value.
 // decisions maps event id to keep or tighten; a leader-opened event without
 // one returns errNeedDecision and impact, and nothing is written.
-func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, newVis string, decisions map[string]string) (visibilityImpactJSON, []uint, error) {
+func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, newVis string, decisions map[string]string) (visibilityImpactJSON, error) {
 	before := *g
 	before.Visibility = oldVis
 	impact, auto, opened, err := impactOf(tx, &before, newVis, true)
 	if err != nil || impact.empty() {
-		return impact, nil, err
+		return impact, err
 	}
 	for _, row := range impact.LeaderOpened {
 		key := row.DecisionKey
@@ -229,20 +229,17 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 			key = strconv.FormatUint(uint64(row.ID), 10)
 		}
 		if d := decisions[key]; d != openedKeep && d != openedTighten {
-			return impact, nil, errNeedDecision
+			return impact, errNeedDecision
 		}
 	}
 	actor := apiUser(c)
 	now := time.Now().UTC()
-	var emailed []uint
 	tighten := func(ev *models.Event, reason string) error {
 		old, oldOpened := ev.Visibility, ev.LeaderOpened
 		if err := tx.Model(ev).Updates(map[string]any{"visibility": newVis, "leader_opened": false}).Error; err != nil {
 			return err
 		}
-		ids, err := a.cancelLosers(c, tx, ev, newVis, now)
-		emailed = append(emailed, ids...)
-		if err != nil {
+		if err := a.cancelLosers(c, tx, ev, newVis, now); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.VisibilityChanged, TargetType: "event", TargetID: ev.ID,
@@ -252,14 +249,14 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 	}
 	for i := range auto {
 		if err := tighten(&auto[i], "group_more_private"); err != nil {
-			return impact, nil, err
+			return impact, err
 		}
 	}
 	for i := range opened {
 		ev := &opened[i]
 		if decisions[strconv.FormatUint(uint64(ev.ID), 10)] == openedTighten {
 			if err := tighten(ev, "group_more_private_leader_chose_tighten"); err != nil {
-				return impact, nil, err
+				return impact, err
 			}
 			continue
 		}
@@ -269,19 +266,17 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 				"oldLeaderOpened": true, "leaderOpened": true,
 				"reason": "Kept open when the group became " + visWord(newVis) + "."},
 			IP: c.ClientIP()}); err != nil {
-			return impact, nil, err
+			return impact, err
 		}
 		kept := *g
 		kept.Visibility = newVis
-		ids, err := notifyVisibilityOverride(tx, actor.ID, ev, &kept, ev.Visibility, "Kept open when the group became "+visWord(newVis)+".")
-		emailed = append(emailed, ids...)
-		if err != nil {
-			return impact, nil, err
+		if err := notifyVisibilityOverride(tx, actor.ID, ev, &kept, ev.Visibility, "Kept open when the group became "+visWord(newVis)+"."); err != nil {
+			return impact, err
 		}
 	}
 	dates, evs, err := openedDates(tx, g.ID, oldVis, newVis, true)
 	if err != nil {
-		return impact, nil, err
+		return impact, err
 	}
 	for i := range dates {
 		date := &dates[i]
@@ -290,23 +285,21 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 		if !keep {
 			value = &newVis
 		}
-		ids, err := a.changeDateVisibility(c, tx, evs[date.EventID], date, value, "group_more_private", keep, newVis)
-		if err != nil {
-			return impact, nil, err
+		if err := a.changeDateVisibility(c, tx, evs[date.EventID], date, value, "group_more_private", keep, newVis); err != nil {
+			return impact, err
 		}
-		emailed = append(emailed, ids...)
 	}
-	return impact, emailed, nil
+	return impact, nil
 }
 
 // cancelLosers cancels upcoming registrations of people who could not see
 // ev at newVis, writing one registration.cancelled audit row per person;
-// the person gets a stored notification. It returns the notification IDs.
-func (a *App) cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) ([]uint, error) {
+// the person gets a stored notification.
+func (a *App) cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) error {
 	return a.cancelDateLosers(c, tx, ev, newVis, now, 0)
 }
 
-func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time, occurrenceID uint) ([]uint, error) {
+func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time, occurrenceID uint) error {
 	// Lock all affected occurrences before re-reading losers, so a concurrent
 	// batch either sees the tightened visibility or is included here.
 	var occIDs []uint
@@ -315,23 +308,22 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 		q = q.Where("id = ?", occurrenceID)
 	}
 	if err := q.Order("id").Pluck("id", &occIDs).Error; err != nil {
-		return nil, err
+		return err
 	}
 	dates := map[uint]*models.EventOccurrence{}
 	for _, id := range occIDs {
 		o, err := lockOccurrence(tx, id)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		dates[id] = o
 	}
 	var rows []models.Registration
 	if err := losersForDate(tx, ev, newVis, now, occurrenceID).Select("registrations.*").Order("registrations.id").Scan(&rows).Error; err != nil {
-		return nil, err
+		return err
 	}
 	actor := apiUser(c)
 	holders := map[string]bool{}
-	var mailed []uint
 	affected := map[uint]bool{}
 	for _, r := range rows {
 		affected[r.OccurrenceID] = true
@@ -339,13 +331,13 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 		// a retained history row must not expose later private date edits.
 		// Ordinary self-cancellation keeps its separate idempotent token path.
 		if err := tx.Model(&r).Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil}).Error; err != nil {
-			return nil, err
+			return err
 		}
 		meta := registrationMeta(r)
 		meta["newVisibility"] = newVis
 		meta["reason"] = "event_more_private"
 		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.RegistrationCancelled, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
-			return nil, err
+			return err
 		}
 		holder := registrationHolder(r)
 		title := effectiveOccurrenceTitle(ev, dates[r.OccurrenceID])
@@ -360,24 +352,20 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 			date := dates[occurrenceID]
 			noticeEvent.Title = effectiveOccurrenceTitle(ev, date) + " · " + models.FormatCalendarDate(date.OriginalDate)
 		}
-		ids, err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder)
-		if err != nil {
-			return nil, err
+		if err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
 	// All losers are cancelled before any survivor competes for the freed seats.
 	for _, id := range occIDs {
 		if !affected[id] {
 			continue
 		}
-		ids, err := a.promoteLocked(tx, ev, dates[id], now, &actor.ID)
-		if err != nil {
-			return nil, err
+		if err := a.promoteLocked(tx, ev, dates[id], now, &actor.ID); err != nil {
+			return err
 		}
-		mailed = append(mailed, ids...)
 	}
-	return mailed, nil
+	return nil
 }
 
 // eventImpactOf is what setting one event to newVis would do, in the same

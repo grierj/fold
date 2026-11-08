@@ -379,7 +379,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 }
 
 // createConversionApprovalRequest holds adult credentials until approval.
-func createConversionApprovalRequest(tx *gorm.DB, person *models.HouseholdPerson, inv *models.Invitation, hash *string, ip string) ([]uint, error) {
+func createConversionApprovalRequest(tx *gorm.DB, person *models.HouseholdPerson, inv *models.Invitation, hash *string, ip string) error {
 	req := models.AccountRequest{
 		Name: person.FullName(), Email: inv.Email, BirthDate: person.BirthDate,
 		PasswordHash: hash, HouseholdPersonID: &person.ID, InvitationID: &inv.ID,
@@ -388,11 +388,11 @@ func createConversionApprovalRequest(tx *gorm.DB, person *models.HouseholdPerson
 		ExpiresAt: time.Now().UTC().Add(requestLifetime),
 	}
 	if err := tx.Create(&req).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if err := audit.Write(tx, audit.Entry{Action: audit.AccountRequested, TargetType: "account_request", TargetID: req.ID,
 		Meta: map[string]any{"source": models.RequestHouseholdConversion, "accountType": person.Kind, "hasWarnings": false, "personId": person.ID}, IP: ip}); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyAccountRequested(tx, &req, models.RequestFlags{})
 }
@@ -562,7 +562,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
 				return err
 			}
-			_, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
+			err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -735,7 +735,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 			if guardian == nil || guardian.Status != models.UserActive || guardian.AccountType == models.AccountTeen || guardian.DeletedAt.Valid {
 				continue
 			}
-			_, err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", c.ClientIP())
+			err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", c.ClientIP())
 			if err != nil {
 				return 0, err
 			}

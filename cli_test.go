@@ -231,7 +231,7 @@ func TestPushKeysShowAndRotate(t *testing.T) {
 		t.Fatalf("show before boot: %d %q", code, errOut.String())
 	}
 	secret := "a session secret that is long enough for prod"
-	if _, err := ensureVAPIDKeys(db, []byte(secret)); err != nil {
+	if err := ensureVAPIDKeys(db, []byte(secret)); err != nil {
 		t.Fatal(err)
 	}
 	public, _, _ := readVAPID(db)

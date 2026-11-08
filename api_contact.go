@@ -273,7 +273,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 			}
 			return refuseContact(tx, op, r, "invalid_request", c.ClientIP())
 		}
-		_, err := a.reconcileContacts(tx, op.now, contactChange{UserID: op.actor.ID})
+		err := a.reconcileContacts(tx, op.now, contactChange{UserID: op.actor.ID})
 		if err != nil {
 			return err
 		}
@@ -304,7 +304,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
 			return err
 		}
-		_, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
+		err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
 		if err != nil {
 			return err
 		}
@@ -313,7 +313,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			_, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
+			err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
 			if err != nil {
 				return err
 			}
@@ -381,7 +381,7 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
@@ -436,7 +436,7 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 			}
 			recipients = append(recipients, guardians...)
 		}
-		_, err = contactNotice(tx, r, notify.ContactUpdated, recipients, "decision:"+body.Party)
+		err = contactNotice(tx, r, notify.ContactUpdated, recipients, "decision:"+body.Party)
 		if err != nil {
 			return err
 		}
@@ -457,7 +457,7 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
@@ -477,7 +477,7 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 		if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
 			return err
 		}
-		_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
+		err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
 		return err
 	})
 	if !c.Writer.Written() {
@@ -536,7 +536,7 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 		if err != nil {
 			return err
 		}
-		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: discovered.LeaderID})
+		err = a.reconcileContacts(tx, op.now, contactChange{UserID: discovered.LeaderID})
 		if err != nil {
 			return err
 		}
@@ -578,7 +578,7 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 		if reason == "" {
 			return refuseContact(tx, op, r, "revoke", c.ClientIP())
 		}
-		_, err = endContactGrant(tx, &g, r, reason, &op.actor.ID, op.now, c.ClientIP())
+		err = endContactGrant(tx, &g, r, reason, &op.actor.ID, op.now, c.ClientIP())
 		return err
 	})
 	// The transaction (including contact.reveal audit) has COMMITTED here. No
@@ -815,7 +815,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		} else if body.OccurrenceID != 0 || body.OverCapacity || body.AttendanceMode != nil || body.GuestCount != nil || body.ChildcareCount != nil || body.ChildcareAgesNote != nil {
 			return refuseAdd(tx, op, r, "options", c.ClientIP())
 		}
-		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
@@ -849,7 +849,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
 			return err
 		}
-		_, err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
+		err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
 		if err != nil {
 			return err
 		}
@@ -858,7 +858,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			_, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
+			err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
 			if err != nil {
 				return err
 			}
@@ -971,7 +971,7 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 		}
 		recipients = append(recipients, guardians...)
 	}
-	_, err = contactNotice(tx, *r, notify.ContactUpdated, recipients, "completed")
+	err = contactNotice(tx, *r, notify.ContactUpdated, recipients, "completed")
 	return err
 }
 func (a *App) apiDecideAddRequest(c *gin.Context)   { a.mutateAddRequest(c, "decision") }
@@ -995,7 +995,7 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		_, err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
+		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
 		if err != nil {
 			return err
 		}
@@ -1039,7 +1039,7 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 					return err
 				}
 			}
-			_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
+			err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
 			if err != nil {
 				return err
 			}
@@ -1060,7 +1060,7 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 			if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
 				return err
 			}
-			_, err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
+			err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
 			if err != nil {
 				return err
 			}

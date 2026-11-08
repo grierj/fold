@@ -144,10 +144,9 @@ func writeVAPIDKeys(tx *gorm.DB, secret []byte) (int64, error) {
 // ensureVAPIDKeys runs at boot: it makes the pair if it is missing, and
 // makes it again if the private half no longer decrypts (SESSION_SECRET
 // changed), removing every device and telling the admins in the same
-// transaction. It returns the IDs of the notices written.
-func ensureVAPIDKeys(db *gorm.DB, secret []byte) ([]uint, error) {
-	var notices []uint
-	err := db.Transaction(func(tx *gorm.DB) error {
+// transaction.
+func ensureVAPIDKeys(db *gorm.DB, secret []byte) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		if err := lockVAPID(tx); err != nil {
 			return err
 		}
@@ -180,13 +179,9 @@ func ensureVAPIDKeys(db *gorm.DB, secret []byte) ([]uint, error) {
 		if err != nil {
 			return err
 		}
-		notices, err = notify.Send(tx, notify.Msg{Kind: notify.PushKeysReset, To: admins, SubjectType: "setting", Link: "/admin?tab=system"})
+		_, err = notify.Send(tx, notify.Msg{Kind: notify.PushKeysReset, To: admins, SubjectType: "setting", Link: "/admin?tab=system"})
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return notices, nil
 }
 
 // errRotateOtherSecret: `fold push keys rotate` was given a SESSION_SECRET

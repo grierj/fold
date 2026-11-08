@@ -283,7 +283,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
-		if _, err := notifyAccountRequested(tx, &req, flags); err != nil {
+		if err := notifyAccountRequested(tx, &req, flags); err != nil {
 			return err
 		}
 		// A duplicate of a pending request is stored and flagged on the bell,
@@ -587,7 +587,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if upgraded {
 				meta["upgradedGuest"] = true
 			}
-			if _, err := nominateTeenGuardian(tx, req, userID); err != nil {
+			if err := nominateTeenGuardian(tx, req, userID); err != nil {
 				return err
 			}
 		}
@@ -601,7 +601,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if err := tx.First(&teen, userID).Error; err != nil {
 				return err
 			}
-			if _, err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
+			if err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
 				Scope: models.TeenConsentAccount, Status: models.ConsentGranted, EvidenceText: *consentEvidence,
 			}); err != nil {
 				return err

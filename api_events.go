@@ -859,7 +859,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 				return err
 			}
 			if ev.LeaderOpened {
-				_, err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
+				err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
 				if err != nil {
 					return err
 				}
@@ -868,7 +868,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
 			return err
 		}
-		_, err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
+		err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
 		return err
 	})
 	if createRoomFailed(c, err) {
@@ -1013,7 +1013,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				added = append(added, row.ID)
 			}
 		}
-		_, err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
+		err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
 		if err != nil {
 			return err
 		}
@@ -1023,11 +1023,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := releaseRoomBookings(tx, cancelled); err != nil {
 			return err
 		}
-		_, err = settleDateRooms(tx, &locked, moved, append(added, restored...), &me.ID)
+		err = settleDateRooms(tx, &locked, moved, append(added, restored...), &me.ID)
 		if err != nil {
 			return err
 		}
-		_, err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
+		err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
 		if err != nil {
 			return err
 		}
@@ -1060,7 +1060,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			_, err := notifyEventChanged(tx, &locked, o, variant, me.ID)
+			err := notifyEventChanged(tx, &locked, o, variant, me.ID)
 			if err != nil {
 				return err
 			}
@@ -1092,7 +1092,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					// combined notice above.
 					continue
 				}
-				_, err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
+				err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
 				if err != nil {
 					return err
 				}
@@ -1132,7 +1132,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				if err != nil {
 					return err
 				}
-				_, err = a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
+				err = a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
 				if err != nil {
 					return err
 				}
@@ -1204,7 +1204,7 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 		// with its snapshots: end any live grant as event_deleted, no notices
 		// (the dates are about to disappear). Already-ended grants keep their
 		// own reason.
-		if _, err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC(), false); err != nil {
+		if err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC(), false); err != nil {
 			return err
 		}
 		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.Registration{}).Error; err != nil {
@@ -1263,7 +1263,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 			}
 			return res.Error
 		}
-		_, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
+		err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
 		if err != nil {
 			return err
 		}
@@ -1427,7 +1427,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		// Cancellation and promotion use the final title, time and seat pools
 		// even when this request edits visibility and capacity together.
 		if visibilitySet {
-			_, err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
+			err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
 			if err != nil {
 				return err
 			}
@@ -1439,7 +1439,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		placeChanged := newPlace != oldPlace
 		if timeChanged {
 			// The date's room moves with it, or is lost to a conflict (9.2).
-			_, err := settleDateRooms(tx, ev, []uint{o.ID}, nil, &me.ID)
+			err := settleDateRooms(tx, ev, []uint{o.ID}, nil, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1452,7 +1452,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			if timeChanged && placeChanged {
 				variant = "time and place"
 			}
-			_, err := notifyEventChanged(tx, ev, &o, variant, me.ID)
+			err := notifyEventChanged(tx, ev, &o, variant, me.ID)
 			if err != nil {
 				return err
 			}
@@ -1467,7 +1467,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			!intPtrEqual(events.EffectiveRemoteCapacity(ev.RemoteCapacity, oldRemoteOverride),
 				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
-			_, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
+			err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1538,18 +1538,18 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 // the people signed up for them. It runs in the series edit's transaction,
 // after the rows are scheduled again, so the audit row, the notices and the
 // change commit together. Nothing here touches registrations.
-func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, occIDs []uint) ([]uint, error) {
+func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, occIDs []uint) error {
 	if len(occIDs) == 0 {
-		return nil, nil
+		return nil
 	}
 	var dates []string
 	if err := tx.Model(&models.EventOccurrence{}).Where("id IN ?", occIDs).Order("original_date").
 		Pluck("to_char(original_date, 'YYYY-MM-DD')", &dates).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if err := audit.Write(tx, audit.Entry{Actor: &actor, Action: audit.EventDatesRestored, TargetType: "event", TargetID: ev.ID,
 		Meta: map[string]any{"dates": dates, "occurrenceIds": occIDs}, IP: ip}); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyOccurrencesRestored(tx, actor, occIDs)
 }
