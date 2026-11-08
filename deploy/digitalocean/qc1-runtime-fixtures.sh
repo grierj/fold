@@ -747,6 +747,8 @@ exec >>"$WORK/harness.log" 2>&1
 KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
 SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
 IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
+SECONDS_PER_REASON=10; SITTING_MINUTES=15; PG_REPO_DIGESTS='["pg-digest"]'; APP_REPO_DIGESTS='["app-digest"]'
+APP_CONTAINERS='[{"imageId":"sha256:test","memoryLimitBytes":1024}]'; DAEMON_JSON='{"rootless":false}'; SOURCES='["source"]'; BROWSER_RUNTIME='{"ok":true}'
 sleep() { :; }
 src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
 for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db; do eval "$(src "$fn")"; done
@@ -808,7 +810,9 @@ fin_run finfail; [[ "$rc" == 7 ]]; grep -qx 'qc1 evidence=aborted-incomplete' "$
 # (4) It runs once: a second finalization writes nothing new.
 fin_run idem; [[ "$rc" == 5 ]]; cmp "$FD/first.sha" "$FD/second.sha"; cmp "$FD/first.calls" "$FD/second.calls"   # the second call reads nothing from the daemon or the database
 # (5) A finished run finalizes through the same function and is not marked aborted; a run that exits 0 without having started measuring leaves nothing behind.
-fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-status.json" >/dev/null; jq -e '.incomplete == false' "$FD/environment.json" >/dev/null; [[ ! -e "$FD/abort.json" ]]
+fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-status.json" >/dev/null
+jq -e '.incomplete == false and .recoveryPolicy == 2 and .maxRequestBytes == 6291456 and .settings.reasonLen == 200 and .settings.targetReasonLen == 1000 and .settings.secondsPerReason == 10 and .settings.sittingMinutes == 15 and .appImageId == "sha256:test" and .limits.appMemoryLimitBytes == 1024 and .daemon.rootless == false and .sources == ["source"] and .browserRuntime.ok == true and .postgresRepoDigests == ["pg-digest"] and .appRepoDigests == ["app-digest"]' "$FD/environment.json" >/dev/null
+[[ ! -e "$FD/abort.json" ]]
 fin_run early; [[ "$rc" == 0 && ! -e "$FD/abort.json" ]]
 # (6) Static: cleanup finalizes after the auto_explain reset and before any removal, from the original status, and the normal end calls the same function.
 cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"

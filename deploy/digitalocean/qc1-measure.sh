@@ -202,11 +202,11 @@ write_environment() { # incomplete(true|false) reason
   local incomplete="$1" ireason="${2:-}" pg dbImage dbMem calib database
   local IMAGE="${IMAGE:-}" IMAGE_ID="${IMAGE_ID:-}" REVISION="${REVISION:-}" DROPLET="${DROPLET:-}" DB_MEMORY="${DB_MEMORY:-}" APP_MEMORY="${APP_MEMORY:-}" CPUSET="${CPUSET:-}" LAYOUT="${LAYOUT:-}"
   local PG_IMAGE="${PG_IMAGE:-}" PG_IMAGE_ID="${PG_IMAGE_ID:-}" DB_CID="${DB_CID:-}" FIRST_APP_CID="${FIRST_APP_CID:-}" SIZES="${SIZES:-}" COUNTS="${COUNTS:-}" SETV1_SELFTEST="${SETV1_SELFTEST:-}" DENSE="${DENSE:-}" BROWSER="${BROWSER:-0}"
-  local LEVEL REASON_LEN MAX_REQUEST_BYTES TARGET_REASON_LEN SECONDS_PER_REASON SITTING_MINUTES PG_REPO_DIGESTS APP_REPO_DIGESTS APP_CONTAINERS DAEMON_JSON SOURCES BROWSER_RUNTIME
-  LEVEL="$(jnum "${LEVEL:-}")"; REASON_LEN="$(jnum "${REASON_LEN:-}")"; MAX_REQUEST_BYTES="$(jnum "${MAX_REQUEST_BYTES:-}")"; TARGET_REASON_LEN="$(jnum "${TARGET_REASON_LEN:-}")"
-  SECONDS_PER_REASON="$(jnum "${SECONDS_PER_REASON:-}")"; SITTING_MINUTES="$(jnum "${SITTING_MINUTES:-}")"
-  PG_REPO_DIGESTS="$(jraw "${PG_REPO_DIGESTS:-}")"; APP_REPO_DIGESTS="$(jraw "${APP_REPO_DIGESTS:-}")"; APP_CONTAINERS="$(jraw "${APP_CONTAINERS:-}" '[]')"
-  DAEMON_JSON="$(jraw "${DAEMON_JSON:-}")"; SOURCES="$(jraw "${SOURCES:-}")"; BROWSER_RUNTIME="$(jraw "${BROWSER_RUNTIME:-}")"
+  local env_LEVEL env_REASON_LEN env_MAX_REQUEST_BYTES env_TARGET_REASON_LEN env_SECONDS_PER_REASON env_SITTING_MINUTES env_PG_REPO_DIGESTS env_APP_REPO_DIGESTS env_APP_CONTAINERS env_DAEMON_JSON env_SOURCES env_BROWSER_RUNTIME
+  env_LEVEL="$(jnum "${LEVEL:-}")" env_REASON_LEN="$(jnum "${REASON_LEN:-}")" env_MAX_REQUEST_BYTES="$(jnum "${MAX_REQUEST_BYTES:-}")" env_TARGET_REASON_LEN="$(jnum "${TARGET_REASON_LEN:-}")"
+  env_SECONDS_PER_REASON="$(jnum "${SECONDS_PER_REASON:-}")" env_SITTING_MINUTES="$(jnum "${SITTING_MINUTES:-}")"
+  env_PG_REPO_DIGESTS="$(jraw "${PG_REPO_DIGESTS:-}")" env_APP_REPO_DIGESTS="$(jraw "${APP_REPO_DIGESTS:-}")" env_APP_CONTAINERS="$(jraw "${APP_CONTAINERS:-}" '[]')"
+  env_DAEMON_JSON="$(jraw "${DAEMON_JSON:-}")" env_SOURCES="$(jraw "${SOURCES:-}")" env_BROWSER_RUNTIME="$(jraw "${BROWSER_RUNTIME:-}")"
   local -a adl=()
   if declare -p ALL_DELETE_LIST >/dev/null 2>&1; then adl=("${ALL_DELETE_LIST[@]}"); fi
   local -a ALL_DELETE_LIST=("${adl[@]}")
@@ -215,13 +215,13 @@ write_environment() { # incomplete(true|false) reason
   dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "${DB_CID:-none}" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
   calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
   database="$(db_settings_json)"
-jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
-  --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --argjson reasonLen "$REASON_LEN" --argjson maxRequestBytes "$MAX_REQUEST_BYTES" \
-  --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$PG_REPO_DIGESTS" --argjson appDigests "$APP_REPO_DIGESTS" \
+jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
+  --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \
+  --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$env_PG_REPO_DIGESTS" --argjson appDigests "$env_APP_REPO_DIGESTS" \
   --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
-  --arg appCid "$FIRST_APP_CID" --argjson appContainers "$APP_CONTAINERS" --argjson daemon "$DAEMON_JSON" --argjson sources "$SOURCES" \
+  --arg appCid "$FIRST_APP_CID" --argjson appContainers "$env_APP_CONTAINERS" --argjson daemon "$env_DAEMON_JSON" --argjson sources "$env_SOURCES" \
   --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson targetLen "$TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$SECONDS_PER_REASON" --argjson sit "$SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$BROWSER_RUNTIME" \
+  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
     appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
     postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
