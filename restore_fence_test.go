@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -584,12 +585,71 @@ func waitFor(t *testing.T, within time.Duration, what string, ok func() bool) {
 // Restores while the process keeps running (pg_dump -Fc, pg_restore).
 // ---------------------------------------------------------------------------
 
+// pgClients maps a client tool to the command that runs it: the tool itself, or
+// scripts/pg-client.sh running it from the server's own image.
+var pgClients = map[string][]string{}
+
+var pgMajorRE = regexp.MustCompile(`\) (\d+)(?:\.\d+)?`)
+
+// fenceTools finds a pg_dump and a pg_restore of the SERVER's major version. A
+// newer client writes settings an older server rejects (a PostgreSQL 18
+// pg_restore sends "SET transaction_timeout" to a server 16), and the restore
+// then fails. The errors stay errors: the tests never ignore them. Order:
+//   - FOLD_PG_BIN, a directory of tools (alone, no fallback);
+//   - the tool on PATH, if its major matches;
+//   - scripts/pg-client.sh, which runs the tool from the postgres:<major> image
+//     (needs Docker, which CI and make dev already use for Postgres).
+//
+// With nothing usable the test skips locally and fails under CI; a client that
+// exists but does not match always fails, with what to do.
 func fenceTools(t *testing.T) {
 	t.Helper()
+	var num int
+	if err := testdb.Shared(t).Raw("SHOW server_version_num").Scan(&num).Error; err != nil {
+		t.Fatal(err)
+	}
+	major := num / 10000
+	_, thisFile, _, _ := runtime.Caller(0)
+	wrapper := filepath.Join(filepath.Dir(thisFile), "scripts", "pg-client.sh")
 	for _, tool := range []string{"pg_dump", "pg_restore"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is not installed; the restore tests need the PostgreSQL client tools", tool)
+		if pgClients[tool] != nil {
+			continue // found by an earlier test of this process
 		}
+		var candidates [][]string
+		if dir := os.Getenv("FOLD_PG_BIN"); dir != "" {
+			candidates = append(candidates, []string{filepath.Join(dir, tool)})
+		} else {
+			if p, err := exec.LookPath(tool); err == nil {
+				candidates = append(candidates, []string{p})
+			}
+			if _, err := exec.LookPath("docker"); err == nil {
+				candidates = append(candidates, []string{wrapper, strconv.Itoa(major), tool})
+			}
+		}
+		var notes []string
+		for _, argv := range candidates {
+			out, err := exec.Command(argv[0], append(argv[1:len(argv):len(argv)], "--version")...).CombinedOutput()
+			m := pgMajorRE.FindSubmatch(out)
+			switch {
+			case err != nil:
+				notes = append(notes, fmt.Sprintf("%s: %v: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out))))
+			case m == nil || string(m[1]) != strconv.Itoa(major):
+				notes = append(notes, fmt.Sprintf("%s reports %q, not PostgreSQL %d", strings.Join(argv, " "), strings.TrimSpace(string(out)), major))
+			default:
+				pgClients[tool] = argv
+			}
+			if pgClients[tool] != nil {
+				break
+			}
+		}
+		if pgClients[tool] != nil {
+			continue
+		}
+		if len(candidates) == 0 && os.Getenv("CI") == "" {
+			t.Skipf("%s is not installed and Docker is not available; the restore tests need PostgreSQL %d client tools", tool, major)
+		}
+		t.Fatalf("no %s of PostgreSQL %d (the server's version) is usable; set FOLD_PG_BIN to a directory of PostgreSQL %d client tools, or make Docker available for scripts/pg-client.sh:\n%s",
+			tool, major, major, strings.Join(notes, "\n"))
 	}
 }
 
@@ -617,7 +677,8 @@ func fenceDatabaseURL(t *testing.T, db *gorm.DB) string {
 
 func fenceRun(t *testing.T, args ...string) {
 	t.Helper()
-	cmd := exec.Command(args[0], args[1:]...)
+	argv := append(append([]string{}, pgClients[args[0]]...), args[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", strings.Join(args[:2], " "), err, out)

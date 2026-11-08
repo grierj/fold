@@ -130,6 +130,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The deploy drill fixtures require the real pre-scrub history
+          # (a278962 and its descendants) and fail without it, so no shallow clone.
+          fetch-depth: 0
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make lint-sh

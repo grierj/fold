@@ -194,6 +194,10 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   `internal/testdb` (reuse the cookie-jar + CSRF-dance in `testhelpers_test.go`). `testdb.Shared`
   clears the database before each test, which needs a superuser (dev and CI have one); other roles
   fall back to slower TRUNCATE. Test sessions use `synchronous_commit=off`.
+  The restore tests (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`) need `pg_dump` and `pg_restore` of the
+  server's major version, because a newer client sends settings an older server rejects: `FOLD_PG_BIN` (a directory of
+  tools), else a matching one on `PATH`, else `scripts/pg-client.sh` (Docker, `postgres:<major>`). A mismatched client fails
+  the test, it never skips; with no client and no Docker the test skips locally and fails under `CI`.
 - Frontend tests: `cd web && npm test` (Vitest). `make e2e` runs Playwright against the real
   binary (first run: `cd web && npx playwright install chromium`). `web/e2e/run.sh` splits specs
   across shards (`E2E_SHARDS`), each with its own server, database and seed; never rely on another
