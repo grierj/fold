@@ -42,12 +42,9 @@ var (
 
 type reasonScanMode int
 
-const (
-	// reasonScanSingle is the original one-statement unit.
-	reasonScanSingle reasonScanMode = iota
-	// reasonScanBatched is the bounded-batch unit of the live pages.
-	reasonScanBatched
-)
+// reasonScanBatched is the bounded-batch unit of the live pages. Other modes
+// retain the original one-statement scan for future legacy callers.
+const reasonScanBatched reasonScanMode = 1
 
 // scanReasonUnit reads one unit in the given mode. The live page route passes
 // reasonScanBatched; nothing else is batched.

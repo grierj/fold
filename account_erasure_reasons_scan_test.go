@@ -71,6 +71,10 @@ func TestBatchedScanMatchesTheSingleStatementOnPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The explicit positive boundary must not collide with later generated IDs.
+	if err := s.app.DB.Exec("SELECT setval(pg_get_serial_sequence('contact_requests', 'id'), 1000, true)").Error; err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 9; i++ {
 		s.contactRequest(t, 100+i)
 		s.fillerRequest(t)
