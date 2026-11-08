@@ -558,7 +558,7 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 			}
 			return errAdminRule{msg: msg}
 		}
-		unit, err := scanReasonItems(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests)
+		unit, err := scanReasonUnit(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests, reasonScanBatched)
 		if err != nil {
 			return err
 		}

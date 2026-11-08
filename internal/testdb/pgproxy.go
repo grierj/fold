@@ -88,6 +88,14 @@ type Faults struct {
 	Rollback RollbackFault
 	Cancel   CancelFault
 	Close    CloseFault
+	// CutAfterDataRows, when positive, cuts the connection (both sides) right after
+	// this many DataRow frames of a statement containing Match were forwarded to
+	// the client: a result stream that fails part-way, after the client has read
+	// some rows and while it may still be reading the rest. The server never
+	// delivers a CommandComplete for such a statement; the TagEvent says how many
+	// frames the proxy saw and nothing else (the server's own total is unknown,
+	// and nothing is claimed about work the server did after the connection broke).
+	CutAfterDataRows int
 }
 
 // What happened to a logged message.
@@ -120,6 +128,21 @@ type Event struct {
 	Action string
 }
 
+// TagEvent is the end of one statement's result as the proxy saw it: the
+// CommandComplete tag the server sent (for example "SELECT 256") and the number
+// of DataRow frames forwarded for the statement. A statement whose stream was
+// cut has no tag (Tag is empty and Cut is true); Rows is then only what the
+// proxy observed, never the statement's total.
+type TagEvent struct {
+	Conn int
+	PID  uint32
+	Time time.Time
+	SQL  string // the statement that was executing
+	Tag  string
+	Rows int
+	Cut  bool
+}
+
 type gate struct {
 	once sync.Once
 	ch   chan struct{}
@@ -136,6 +159,7 @@ type Proxy struct {
 
 	mu      sync.Mutex
 	events  []Event
+	tags    []TagEvent
 	byPID   map[uint32]*proxyConn
 	conns   []*proxyConn
 	pending *Faults
@@ -255,6 +279,21 @@ func (p *Proxy) Events() []Event {
 	return append([]Event(nil), p.events...)
 }
 
+// Tags returns a copy of the statement-result log (CommandComplete tags and cut
+// streams) in the order it was written.
+func (p *Proxy) Tags() []TagEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]TagEvent(nil), p.tags...)
+}
+
+func (p *Proxy) recordTag(e TagEvent) {
+	e.Time = time.Now()
+	p.mu.Lock()
+	p.tags = append(p.tags, e)
+	p.mu.Unlock()
+}
+
 // Find returns the events of kind (and action, unless empty) in order.
 func (p *Proxy) Find(kind, action string) []Event {
 	var out []Event
@@ -310,6 +349,11 @@ type proxyConn struct {
 	client   net.Conn
 	upstream net.Conn
 	pid      atomic.Uint32
+
+	// dataRows counts the DataRow frames of the statement now running; lastRun is
+	// its SQL. Both are for TagEvents and CutAfterDataRows.
+	dataRows atomic.Int64
+	lastRun  atomic.Value
 
 	mu             sync.Mutex
 	faults         *Faults
@@ -609,6 +653,9 @@ func (c *proxyConn) fromClient() {
 			sql, runs = c.stmts[c.portals[portal]], true
 			c.claim(sql)
 		}
+		if runs {
+			c.lastRun.Store(sql)
+		}
 		f := c.f()
 		switch typ {
 		case 'X':
@@ -734,6 +781,22 @@ func (c *proxyConn) fromServer() {
 			c.p.byPID[pid] = c
 			c.p.mu.Unlock()
 		}
+		switch typ {
+		case 'D':
+			n := c.dataRows.Add(1)
+			if cut := c.f().CutAfterDataRows; cut > 0 && int(n) >= cut && c.runMatches() {
+				if !c.clientClosed.Load() {
+					writeMsg(c.client, typ, body)
+				}
+				c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Rows: int(n), Cut: true})
+				c.closeClient()
+				c.upstream.Close()
+				return
+			}
+		case 'C':
+			tag, _ := cstring(body)
+			c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Tag: tag, Rows: int(c.dataRows.Swap(0))})
+		}
 		if c.holdReply.Load() {
 			select {
 			case <-c.p.replyGate.ch:
@@ -752,4 +815,15 @@ func (c *proxyConn) fromServer() {
 			c.closeUpstream()
 		}
 	}
+}
+
+func (c *proxyConn) lastRunSQL() string {
+	s, _ := c.lastRun.Load().(string)
+	return s
+}
+
+// runMatches says whether the statement now running contains the armed fault's
+// Match, so a cut applies to the statement it was armed for and no other.
+func (c *proxyConn) runMatches() bool {
+	return strings.Contains(strings.ToLower(c.lastRunSQL()), strings.ToLower(c.f().Match))
 }
