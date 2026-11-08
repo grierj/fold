@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +26,8 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -118,12 +124,29 @@ func testApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("upload store: %v", err)
 	}
-	return &App{
+	app := &App{
 		DB:      db,
 		Store:   store,
 		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes"), SetupToken: strings.Repeat("a", 64)},
 		Uploads: uploads,
 		Mailer:  mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>")),
+	}
+	// The same start-up steps serve runs: the per-process attempt key and the
+	// restore barrier's boot (the database was just emptied, so the counter row
+	// is made here). A test that restarts passes through bootFence itself.
+	bootFence(t, app)
+	return app
+}
+
+// bootFence runs serve's start-up steps for the barrier and the attempt key on
+// app, the way a new process would, and records any restart request.
+func bootFence(t *testing.T, app *App) {
+	t.Helper()
+	if err := app.initAttempts(); err != nil {
+		t.Fatalf("attempt key: %v", err)
+	}
+	if err := app.bootRestoreFence(); err != nil {
+		t.Fatalf("restore barrier boot: %v", err)
 	}
 }
 
@@ -201,6 +224,118 @@ type apiClient struct {
 	ip          string          // client address for requests; empty uses httptest's default
 	ua          string          // User-Agent for requests; empty sends none
 	ctx         context.Context // request context; nil uses httptest's background context
+	// autoReview makes a DELETE of an account (DELETE /api/v1/admin/users/:id)
+	// carry a "keep" choice for every contact-request reason that account has,
+	// read through the real review pages, unless the body already has a
+	// reasonReview. It lets the erasure tests that predate the reason review
+	// (T07B-2b) keep deleting accounts whose requests hold reasons. Tests of the
+	// review itself leave it off.
+	autoReview bool
+}
+
+var deleteUserPath = regexp.MustCompile(`^/api/v1/admin/users/\d+$`)
+
+// withKeptReasons returns body with a keep-all reasonReview added when the
+// account in path has reasons to review and the body names no review. Any
+// failure to read the pages leaves the body alone, so the DELETE answers as it
+// would have.
+func (c *apiClient) withKeptReasons(path string, body any) any {
+	return c.withChosenReasons(path, body, "keep")
+}
+
+// withChosenReasons is withKeptReasons with one choice ("keep" or "remove")
+// for every reason.
+func (c *apiClient) withChosenReasons(path string, body any, choice string) any {
+	m := map[string]any{}
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil || json.Unmarshal(raw, &m) != nil || m == nil {
+			return body
+		}
+	}
+	if _, has := m["reasonReview"]; has {
+		return body
+	}
+	var items []reviewEntry
+	var after any
+	for i := 0; i < 1000; i++ {
+		w := c.do("POST", path+"/erasure-reasons/page", map[string]any{"after": after}, true)
+		if w.Code != http.StatusOK {
+			return body
+		}
+		var page reasonPageJSON
+		if json.Unmarshal(w.Body.Bytes(), &page) != nil {
+			return body
+		}
+		for _, it := range page.Items {
+			id, _ := parseRequestID(it.RequestID)
+			items = append(items, reviewEntry{ID: id, Hash: it.ReviewHash, Choice: choice})
+		}
+		if page.Next == nil {
+			break
+		}
+		after = *page.Next
+	}
+	if len(items) == 0 {
+		return body
+	}
+	m["reasonReview"] = envelopeOf(items)
+	return m
+}
+
+// reviewEntry is one item of a review a test builds: the id and hash a page
+// served, and the choice ("keep", "remove", or anything else for a code the
+// server refuses).
+type reviewEntry struct {
+	ID     int64
+	Hash   string
+	Choice string
+}
+
+// envelopeOf builds the set-v1 envelope of entries the way the browser does,
+// from the wire spec and not from production code: entries sorted by ascending
+// signed id, the digest over prefix, 0x00, the count, then each id and raw hash,
+// and a two-bit code per item (1 keep, 2 remove, 0 otherwise).
+func envelopeOf(entries []reviewEntry) map[string]any {
+	sorted := append([]reviewEntry(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	return envelopeInOrder(sorted)
+}
+
+// envelopeInOrder is envelopeOf without the sort, so a test can make the
+// ordering mistake on purpose.
+func envelopeInOrder(sorted []reviewEntry) map[string]any {
+	var pre bytes.Buffer
+	pre.WriteString("fold:erasure-reason-set:v1")
+	pre.WriteByte(0)
+	var u8 [8]byte
+	binary.BigEndian.PutUint64(u8[:], uint64(len(sorted)))
+	pre.Write(u8[:])
+	choices := make([]byte, (len(sorted)+3)/4)
+	for i, e := range sorted {
+		binary.BigEndian.PutUint64(u8[:], uint64(e.ID))
+		pre.Write(u8[:])
+		raw, err := hex.DecodeString(e.Hash)
+		if err != nil || len(raw) != 32 {
+			panic("envelopeOf: not a review hash: " + e.Hash)
+		}
+		pre.Write(raw)
+		code := byte(0)
+		switch e.Choice {
+		case "keep":
+			code = 1
+		case "remove":
+			code = 2
+		}
+		choices[i/4] |= code << (2 * uint(i%4))
+	}
+	sum := sha256.Sum256(pre.Bytes())
+	return map[string]any{
+		"format":  "set-v1",
+		"count":   strconv.Itoa(len(sorted)),
+		"digest":  hex.EncodeToString(sum[:]),
+		"choices": base64.StdEncoding.EncodeToString(choices),
+	}
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -230,9 +365,19 @@ func (c *apiClient) fetchCSRF() {
 	c.token = body.CSRFToken
 }
 
+// rawJSON is a request body sent byte for byte: json.Marshal would refuse (or
+// rewrite) a body that is not valid JSON, and a test of the server's refusal of
+// one needs it exactly as written.
+type rawJSON []byte
+
 func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.ResponseRecorder {
+	if c.autoReview && method == "DELETE" && deleteUserPath.MatchString(path) {
+		jsonBody = c.withKeptReasons(path, jsonBody)
+	}
 	var rdr *bytes.Reader
-	if jsonBody != nil {
+	if raw, ok := jsonBody.(rawJSON); ok {
+		rdr = bytes.NewReader(raw)
+	} else if jsonBody != nil {
 		b, err := json.Marshal(jsonBody)
 		if err != nil {
 			c.t.Fatalf("marshal: %v", err)

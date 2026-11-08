@@ -62,6 +62,7 @@ func newCoreErasureScene(t *testing.T) coreErasureScene {
 	s.admin = newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
 	s.second = newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
 	s.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	s.ac.autoReview = true
 	return s
 }
 
@@ -247,7 +248,8 @@ func TestAccountErasureScrubsTheTombstone(t *testing.T) {
 }
 
 // Everything that lets someone act as the person goes; another person's rows
-// and a living guardian's token naming the person stay.
+// and a living guardian's used token naming the person stay (an unused one
+// naming the erased teen is deleted by the household step, R4-3b-2).
 func TestAccountErasureDeletesEveryCredential(t *testing.T) {
 	s := newCoreErasureScene(t)
 	db := s.app.DB
@@ -262,9 +264,10 @@ func TestAccountErasureDeletesEveryCredential(t *testing.T) {
 	newPushDevice(t, s.app, u, "u-tablet")
 	newPushDevice(t, s.app, v, "v-phone")
 	newPushDevice(t, s.app, v, "v-tablet")
+	guardianUsed := time.Now().Add(-time.Hour)
 	guardianTok := models.AccountToken{
 		Kind: models.TokenTeenConsent, UserID: g.ID, TokenHash: hashToken("guardian-token"),
-		Payload: fmt.Sprintf(`{"teenId":%d}`, u.ID), ExpiresAt: time.Now().Add(time.Hour),
+		Payload: fmt.Sprintf(`{"teenId":%d}`, u.ID), ExpiresAt: time.Now().Add(time.Hour), UsedAt: &guardianUsed,
 	}
 	if err := db.Create(&guardianTok).Error; err != nil {
 		t.Fatal(err)
@@ -307,7 +310,7 @@ func TestAccountErasureDeletesOnlyOwnedThrottleKeys(t *testing.T) {
 	v := newTestUser(t, s.app, "throttle-v", erasurePW, models.RoleMember)
 	seedErasureTokens(t, db, u.ID, "u", pendingAddr)
 
-	owned := ownedThrottleKeys(u.ID, addr)
+	owned := ownedThrottleKeys(u.ID, heldAddress{value: addr, ok: true})
 	lockedUntil := time.Now().Add(time.Hour)
 	seedThrottleRows(t, db, owned)
 	if err := db.Model(&models.LoginThrottle{}).Where("key = ?", string(loginEmailKey(addr))).
@@ -514,7 +517,7 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	seedErasureCalendar(t, db, u.ID, "rollback-calendar")
 	newPushDevice(t, s.app, u, "rollback-phone")
 	newPushDevice(t, s.app, u, "rollback-tablet")
-	owned := ownedThrottleKeys(u.ID, addr)
+	owned := ownedThrottleKeys(u.ID, heldAddress{value: addr, ok: true})
 	seedThrottleRows(t, db, owned)
 	before := erasureSnapshot(t, db, u.ID, owned)
 
@@ -558,6 +561,13 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 	// pending and on a terminal row.
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactPending, l.ID, u.ID, groupID, eventID, occ.ID, 1, "rollback pending note")
 	erasureMakeRequest(t, db, policy.RequestOccurrenceAdd, policy.ContactDenied, l.ID, u.ID, groupID, eventID, occ.ID, 2, "rollback denied note")
+	// The two requests above hold reasons, so the deletion needs a review. Read
+	// it now: the pages write a view audit, which must be in the snapshots below.
+	review := s.ac.withKeptReasons("/api/v1/admin/users/"+itoa(u.ID), nil)
+	// Both rows must change on success, so the late-failure snapshot proves
+	// that the audit scrub participates in the handler's transaction.
+	actorAudit := auditErasureLog(t, db, audit.UserCreated, "user", l.ID, &u.ID, map[string]any{"role": "member"})
+	metadataAudit := auditErasureLog(t, db, audit.RegistrationRemoved, "event", eventID, &l.ID, map[string]any{"userId": u.ID, "note": "rollback sentinel"})
 	tables := []string{"account_requests", "notifications", "invitations", "guest_signups", "mail_outboxes", "messages", "message_recipients",
 		"audit_logs", "series_undo_receipts", "manager_add_blocks", "registrations", "notification_deliveries", "consents", "contact_requests", "users"}
 	writeSet := func() string {
@@ -565,17 +575,23 @@ func TestAccountErasureRollsBackWhole(t *testing.T) {
 		for _, table := range tables {
 			out += table + dumpRows(t, db, table, "id", "true")
 		}
+		out += "email_address_optouts" + dumpRows(t, db, "email_address_optouts", "address_hash, r.scope", "true")
 		return out
 	}
 	whole := writeSet()
 	stopThrottle := erasureTestFailThrottleDelete(t, db)
-	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusInternalServerError {
+	if r := deleteAccount(s.ac, u.ID, review); r.code != http.StatusInternalServerError {
 		t.Fatalf("delete with a failing last statement answered %d %s, want 500", r.code, r.body)
 	}
 	stopThrottle()
 	if got := writeSet(); got != whole {
 		t.Errorf("a failed erasure left a change in the tables R4-2a touches:\n%s\n%s", whole, got)
 	}
+	if r := deleteAccount(s.ac, u.ID, review); r.code != http.StatusOK {
+		t.Fatalf("delete after removing failure answered %d %s, want 200", r.code, r.body)
+	}
+	wantRetainedEmailChoice(t, s.app, addr, "groups", true)
+	assertAuditErasureRows(t, db, []models.AuditLog{actorAudit, metadataAudit}, map[uint]bool{actorAudit.ID: true}, map[uint][]string{metadataAudit.ID: {"note"}})
 }
 
 // erasureSeedConsentEvidence gives uid six consent rows the way the writers
@@ -638,7 +654,7 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	}
 	otherBefore := dumpRows(t, db, "consents", "id", "user_id = ?", other.ID)
 	teenBefore := dumpRows(t, db, "teen_consents", "id", "true")
-	optOutsBefore, err := emailOptOuts(db, []uint{u.ID})
+	optOutsBefore, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,12 +662,12 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !optOutsBefore[u.ID]["category:groups"] || !pushOnBefore || !pushOffBefore {
+	if !optOutsBefore.Off(u.ID, u.Email, "category:groups") || !pushOnBefore || !pushOffBefore {
 		t.Fatalf("seed: readers see email opt-outs %v, push on %v, push groups off %v", optOutsBefore, pushOnBefore, pushOffBefore)
 	}
 
-	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK || strings.TrimSpace(r.body) != "{}" {
-		t.Fatalf("delete answered %d %s, want 200 {}", r.code, r.body)
+	if r := deleteAccount(s.ac, u.ID, nil); r.code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(r.body), `{"erasure":{`) {
+		t.Fatalf("delete answered %d %s, want 200 with the erasure report", r.code, r.body)
 	}
 
 	if n := countRows(t, db, "consents", "user_id = ? AND "+nonEmpty, u.ID); n != 0 {
@@ -676,7 +692,7 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if got := dumpRows(t, db, "teen_consents", "id", "true"); got != teenBefore {
 		t.Errorf("teen_consents changed:\n%s\n%s", teenBefore, got)
 	}
-	optOutsAfter, err := emailOptOuts(db, []uint{u.ID})
+	optOutsAfter, err := readEmailOff(db, []emailDest{{UserID: u.ID, Address: u.Email}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +700,12 @@ func TestAccountErasureScrubsConsentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(optOutsAfter, optOutsBefore) || pushOnAfter != pushOnBefore || pushOffAfter != pushOffBefore {
+	sameEmailChoice := true
+	for _, category := range notify.OptionalEmailCategories() {
+		scope := categoryScope(category)
+		sameEmailChoice = sameEmailChoice && optOutsAfter.Off(u.ID, u.Email, scope) == optOutsBefore.Off(u.ID, u.Email, scope)
+	}
+	if !sameEmailChoice || pushOnAfter != pushOnBefore || pushOffAfter != pushOffBefore {
 		t.Errorf("the readers decide differently after the scrub: email opt-outs %v then %v, push on %v then %v, push groups off %v then %v",
 			optOutsBefore, optOutsAfter, pushOnBefore, pushOnAfter, pushOffBefore, pushOffAfter)
 	}
@@ -726,6 +747,9 @@ func TestErasedPersonRendersAsMember(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The contact request holds a reason, so the deletion needs a review (T07B-2b);
+	// this test is about names, so it keeps it.
+	f.admin.autoReview = true
 	if r := deleteAccount(f.admin, u.ID, nil); r.code != http.StatusOK {
 		t.Fatalf("delete: %d %s", r.code, r.body)
 	}
@@ -1205,6 +1229,55 @@ func TestErasureStatementTimeoutContract(t *testing.T) {
 			}
 			if got := show(t, conn); got != "7s" {
 				t.Errorf("after commit = %q, want 7s", got)
+			}
+		})
+
+		t.Run("a timeout already in force is never raised", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			if err := tx.Exec("SET LOCAL statement_timeout = '1s'").Error; err != nil {
+				t.Fatal(err)
+			}
+			var inside string
+			if err := withStatementTimeout(tx, 5*time.Second, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inside != "1s" {
+				t.Errorf("inside = %q, want the 1s already in force", inside)
+			}
+			if got := show(t, tx); got != "1s" {
+				t.Errorf("after the call = %q, want 1s", got)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		})
+
+		t.Run("no timeout in force takes the one asked for", func(t *testing.T) {
+			tx := conn.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			if err := tx.Exec("SET LOCAL statement_timeout = 0").Error; err != nil {
+				t.Fatal(err)
+			}
+			var inside string
+			if err := withStatementTimeout(tx, 5*time.Second, func() error {
+				inside = show(t, tx)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inside != "5s" {
+				t.Errorf("inside = %q, want 5s", inside)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
 			}
 		})
 
@@ -2805,6 +2878,7 @@ func erasureTestRecipientSeed(t *testing.T, app *App) *erasureRecipientSeed {
 	e.s.admin = newTestUser(t, app, "erase-admin", erasurePW, models.RoleAdmin)
 	e.s.second = newTestUser(t, app, "erase-second", erasurePW, models.RoleAdmin)
 	e.s.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	e.s.ac.autoReview = true
 	e.s.ac.holdNotices = true
 	db := app.DB
 	e.u = newTestUser(t, app, "rs-u", erasurePW, models.RoleMember)
@@ -2838,7 +2912,7 @@ func erasureTestRecipientSeed(t *testing.T, app *App) *erasureRecipientSeed {
 		ExpiresAt: expires, IP: "203.0.113.7", Timezone: "UTC"}
 	erasureMustCreate(t, db, &signup)
 	erasureMustCreate(t, db, &models.MailOutbox{ToAddress: e.address, Subject: "seed", Body: "seed"})
-	seedThrottleRows(t, db, ownedThrottleKeys(e.u.ID, e.address))
+	seedThrottleRows(t, db, ownedThrottleKeys(e.u.ID, heldAddress{value: e.address, ok: true}))
 	seedErasureTokens(t, db, e.u.ID, "rs", "rs.pending@example.com")
 	// Credentials and a registration of U, so the comparison covers every
 	// kind of row an erasure deletes or scrubs.
@@ -3134,15 +3208,16 @@ func erasureWaitSnapshot(t *testing.T, db *gorm.DB) string {
 
 func erasureTestAssertTimeout(t *testing.T, r *erasureWaitRun, res httpResult) {
 	t.Helper()
-	// DEC-52: a failure a person cannot act on reaches the client as the generic
-	// server error. The handler's own "could not delete user" text is only
-	// logged, and neither it nor the SQLSTATE or statement text reaches the body.
-	if res.code != http.StatusInternalServerError || !strings.Contains(res.body, `"code":"server_error"`) {
-		t.Fatalf("erasure: %d %s, want the generic 500 server_error", res.code, res.body)
+	// R4-CTX: the statement timeout is a timed-out deletion, which the contact
+	// transaction classifies (classifyContactErr): 503 delete_timed_out, nothing
+	// deleted. Neither the handler's own "could not delete user" text nor the
+	// SQLSTATE or statement text reaches the body.
+	if res.code != http.StatusServiceUnavailable || !strings.Contains(res.body, `"code":"delete_timed_out"`) {
+		t.Fatalf("erasure: %d %s, want 503 delete_timed_out", res.code, res.body)
 	}
 	for _, leak := range []string{"57014", "statement timeout", "message_recipients", "could not delete user"} {
 		if strings.Contains(res.body, leak) {
-			t.Errorf("the 500 body leaks %q: %s", leak, res.body)
+			t.Errorf("the 503 body leaks %q: %s", leak, res.body)
 		}
 	}
 	e := r.states.Only("57014")
@@ -3420,7 +3495,10 @@ func TestAccountErasureCancelsScheduledMessages(t *testing.T) {
 	failed := mk(author, models.MessageFailed, "Failed")
 	theirs := mk(other, models.MessageScheduled, "Someone else's")
 	erasureMustCreate(t, db, &models.AuditLog{ActorID: &author.ID, Action: audit.MessageScheduled, TargetType: "message", TargetID: scheduled.ID, IP: "198.51.100.4"})
-	scheduledAudit := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled)
+	var scheduledAudit []models.AuditLog
+	if err := db.Where("action = ?", audit.MessageScheduled).Find(&scheduledAudit).Error; err != nil {
+		t.Fatal(err)
+	}
 	untouched := func() string {
 		return dumpRows(t, db, "messages", "id", "id IN ?", []uint{draft.ID, sent.ID, failed.ID, theirs.ID})
 	}
@@ -3450,9 +3528,7 @@ func TestAccountErasureCancelsScheduledMessages(t *testing.T) {
 	if now := untouched(); now != before {
 		t.Errorf("other messages changed:\nbefore %s\nafter  %s", before, now)
 	}
-	if now := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.MessageScheduled); now != scheduledAudit {
-		t.Errorf("the message.scheduled row changed")
-	}
+	assertAuditErasureRows(t, db, scheduledAudit, map[uint]bool{scheduledAudit[0].ID: true}, nil)
 	var rows []models.AuditLog
 	db.Where("action = ?", audit.MessageCancelled).Find(&rows)
 	var deleted models.AuditLog
@@ -4265,6 +4341,42 @@ type erasureRun struct {
 	EventID   uint // the event of Reg
 	IssuerID  uint // who granted the access
 	RequestID uint // the add request the access names
+	// Reasons are the reasoned requests that name Subject, read just before the
+	// DELETE: the review keeps each, so each writes one decision audit row.
+	Reasons []erasureReasonWant
+}
+
+// erasureReasonWant is one reasoned request the deletion's review decides.
+type erasureReasonWant struct {
+	ID              uint
+	Purpose, Status string
+	Role            string // the erased person's part: requester or subject
+	ReviewerIsParty bool
+}
+
+// erasureReasonWants reads the reasoned requests of subject as the review will
+// see them, for admin.
+func erasureReasonWants(t *testing.T, db *gorm.DB, subject, admin uint) []erasureReasonWant {
+	t.Helper()
+	var rows []struct {
+		ID            uint
+		Purpose       string
+		Status        string
+		RequesterID   uint
+		SubjectUserID uint
+	}
+	if err := db.Raw("SELECT id, purpose, status, requester_id, subject_user_id FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY id", subject, subject).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	var out []erasureReasonWant
+	for _, r := range rows {
+		role := "subject"
+		if r.RequesterID == subject {
+			role = "requester"
+		}
+		out = append(out, erasureReasonWant{ID: r.ID, Purpose: r.Purpose, Status: r.Status, Role: role, ReviewerIsParty: r.RequesterID == admin || r.SubjectUserID == admin})
+	}
+	return out
 }
 
 // erasureLedgerFacts is what checkErasureLedger saw, for the checks that span
@@ -4473,13 +4585,39 @@ func checkErasurePairs(t *testing.T, erased, twin uint, twinOf map[uint]uint, be
 	}
 }
 
+// The contact/ages-note ledger fixtures use signed-in actors for these actions.
+// Keep this expectation independent of auditIPAttribution. It is deliberately
+// limited to these fixtures, not a second implementation of the IP selector.
+// With gone = 0 it only normalizes JSON for comparison after key removal.
+func erasureFixtureAuditAfter(t *testing.T, row models.AuditLog, gone uint) models.AuditLog {
+	t.Helper()
+	meta := erasureMetaOf(t, row.MetaJSON)
+	if gone != 0 {
+		if row.ActorID != nil && *row.ActorID == gone {
+			switch row.Action {
+			case audit.AddRequested, audit.AddDecision, audit.AddWithdrawn, audit.AddCompleted, audit.AddRefused, audit.AddEnded,
+				audit.ContactRequested, audit.ContactDecision, audit.ContactWithdrawn, audit.ContactGranted, audit.ContactReveal,
+				audit.ContactRefused, audit.ContactRevoked, audit.ContactEnded, audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded,
+				audit.OccurrenceBlocked, audit.RegistrationAdded, audit.RegistrationRemoved, audit.RegistrationChanged, audit.EventCreated:
+				row.IP = ""
+			}
+		}
+		if row.Action == audit.RegistrationRemoved && meta["userId"] == float64(gone) {
+			delete(meta, "note")
+		}
+	}
+	row.MetaJSON = erasureJSON(t, meta)
+	return row
+}
+
 // checkErasureLedger judges the audit, notification, delivery and job rows of
 // one DELETE against the expected rows stated in full:
 //
 //   - audit: exactly user.deleted, one end row per pending request that named
 //     the person (contact.ended or add.ended, no actor) and one
 //     occurrence_access.ended snapshot of the replacement registration, each
-//     with its complete meta; every earlier row is byte-identical;
+//     with its complete meta; earlier rows keep everything except the erased
+//     actor's IP and the subject's registration removal note (R4-4a);
 //   - the replacement registration changes only its ending columns (reason
 //     "account_disabled", no ender, an end inside the DELETE);
 //   - notices: exactly one contact.updated or add.updated per pending request,
@@ -4519,7 +4657,12 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 
 	// Audit.
 	for id, b := range before.Audit {
-		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+		b = erasureFixtureAuditAfter(t, b, run.Subject)
+		a, ok := after.Audit[id]
+		if ok {
+			a = erasureFixtureAuditAfter(t, a, 0)
+		}
+		if !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
 		}
 	}
@@ -4555,6 +4698,17 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 		"origin": policy.OccurrenceOriginManagerAdd, "grantedAtMicro": accessMicro(*reg.AccessGrantedAt),
 		"issuerId": run.IssuerID, "requestId": run.RequestID,
 		"endedAtMicro": endedMicro, "endReason": policy.ContactAccountDisabled, "outcome": policy.OccurrenceAccessEnded}})
+	// The review's decisions: the reasoned requests that name the person are all
+	// kept, one decision row each, by the deleting admin.
+	for _, r := range run.Reasons {
+		action, targetType := audit.ContactReasonKept, "contact_request"
+		if r.Purpose != policy.RequestContact {
+			action, targetType = audit.AddReasonKept, "add_request"
+		}
+		addAudit(auditKey{targetType, r.ID, action}, wantAudit{Actor: &admin, AnyIP: true, Meta: map[string]any{
+			"erasedUserId": run.Subject, "erasedRole": r.Role, "purpose": r.Purpose, "status": r.Status,
+			"reviewerIsParty": r.ReviewerIsParty, "source": "deletion", "reviewVersion": 1}})
+	}
 	seenAudit := map[auditKey]bool{}
 	for id, a := range after.Audit {
 		if _, old := before.Audit[id]; old {
@@ -5012,6 +5166,7 @@ func newAgesNoteScene(t *testing.T, fresh bool, n int) *agesNoteScene {
 	sc.erased = newTestUser(t, app, "ages-erased", erasurePW, models.RoleMember)
 	sc.other = newTestUser(t, app, "ages-other", erasurePW, models.RoleMember)
 	sc.ac = loginAPI(t, app, "erase-admin", erasurePW)
+	sc.ac.autoReview = true
 	sc.ac.holdNotices = true
 	sc.group = newTestGroup(t, app, sc.leader, "Ages note group", models.GroupActive)
 	for i := range sc.events {
@@ -5214,12 +5369,11 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	}
 
 	before := erasureRequestRows(t, db)
-	var maxAudit uint
-	if err := db.Raw(`SELECT coalesce(max(id), 0) FROM audit_logs`).Scan(&maxAudit).Error; err != nil {
+	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
+	var snapshotsBefore []models.AuditLog
+	if err := db.Where("action IN ?", snapshotActions).Order("id").Find(&snapshotsBefore).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshotActions := []string{audit.OccurrenceAccessAdded, audit.OccurrenceAccessEnded}
-	snapshotsBefore := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit)
 	state := agesNoteStateOf(t, db, erased.ID, nil)
 	if state.SubjectNotes < int64(len(granted)) {
 		t.Fatalf("only %d subject rows with a note were seeded", state.SubjectNotes)
@@ -5234,9 +5388,16 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 		if err := db.First(&regBefore, reg.ID).Error; err != nil {
 			t.Fatal(err)
 		}
+		// The review pages write a view audit row, so they are read before the
+		// state this DELETE is judged against; the DELETE then carries the review.
+		review := f.ac.withKeptReasons("/api/v1/admin/users/"+itoa(person.ID), nil)
+		reasons := erasureReasonWants(t, db, person.ID, f.admin.ID)
+		if len(reasons) == 0 {
+			t.Fatalf("%s: no reasoned request names the person", name)
+		}
 		rowsBefore, ledgerBefore := erasureRequestRows(t, db), erasureLedgerOf(t, db)
 		start := time.Now().UTC()
-		r := deleteAccount(f.ac, person.ID, nil)
+		r := deleteAccount(f.ac, person.ID, review)
 		end := time.Now().UTC()
 		if r.code != http.StatusOK {
 			t.Fatalf("delete %s: %d %s", name, r.code, r.body)
@@ -5245,7 +5406,7 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 			t.Fatal(err)
 		}
 		run := erasureRun{Name: name, Subject: person.ID, Admin: f.admin.ID, Pending: pending, Span: erasureSpan{Start: start, End: end},
-			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID}
+			Reg: regBefore, RegAfter: regAfter, GroupID: f.group.ID, EventID: eventID, IssuerID: leader.ID, RequestID: requestID, Reasons: reasons}
 		checkErasureRequests(t, run, rowsBefore, erasureRequestRows(t, db))
 		return checkErasureLedger(t, run, ledgerBefore, erasureLedgerOf(t, db)), regAfter
 	}
@@ -5311,9 +5472,11 @@ func TestAccountErasureScrubsSubjectAgesNote(t *testing.T) {
 	if len(gotShape) == 0 || !reflect.DeepEqual(gotShape, wantShape) {
 		t.Errorf("case (a): the ended snapshot of B is %v, the erasure before T07 writes %v for the twin", gotShape, wantShape)
 	}
-	if got := dumpRows(t, db, "audit_logs", "id", "action IN ? AND id <= ?", snapshotActions, maxAudit); got != snapshotsBefore {
-		t.Errorf("an access snapshot written before the erasure changed:\n%s\n%s", snapshotsBefore, got)
+	blankedSnapshots := map[uint]bool{}
+	for _, row := range snapshotsBefore {
+		blankedSnapshots[row.ID] = row.ActorID != nil && (*row.ActorID == erased.ID || *row.ActorID == twin.ID)
 	}
+	assertAuditErasureRows(t, db, snapshotsBefore, blankedSnapshots, nil)
 	if st := agesNoteStateOf(t, db, erased.ID, nil); st.SubjectNotes != 0 {
 		t.Errorf("%d subject notes left", st.SubjectNotes)
 	}
@@ -5806,7 +5969,10 @@ func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
 		if n := countRows(t, db, "notifications", "user_id = ? AND kind = ?", f.u.ID, notify.RegistrationRemoved); n != 1 {
 			t.Fatalf("U has %d removal notices before the erasure's notifications delete, want 1", n)
 		}
-		auditBefore := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved)
+		var auditBefore []models.AuditLog
+		if err := db.Where("action = ?", audit.RegistrationRemoved).Find(&auditBefore).Error; err != nil {
+			t.Fatal(err)
+		}
 		releaseErasure()
 		if r := awaitResult(t, del); r.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s", r.code, r.body)
@@ -5825,9 +5991,11 @@ func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
 		if n := countRows(t, db, "notification_deliveries", "user_id = ?", f.u.ID); n != 0 {
 			t.Errorf("%d notification deliveries of U remain", n)
 		}
-		if got := dumpRows(t, db, "audit_logs", "id", "action = ?", audit.RegistrationRemoved); got != auditBefore {
-			t.Errorf("the registration.removed audit row changed:\n%s\n%s", auditBefore, got)
+		removedNotes := map[uint][]string{}
+		for _, row := range auditBefore {
+			removedNotes[row.ID] = []string{"note"}
 		}
+		assertAuditErasureRows(t, db, auditBefore, nil, removedNotes)
 		f.assertWaiterPromotedOnce(t)
 		if n := states.Count("40P01"); n != 0 {
 			t.Errorf("%d deadlocks recorded: %v", n, states.entries)
@@ -6196,6 +6364,10 @@ var scaleSeeds = []scaleSeed{
 	{name: "households", sql: `INSERT INTO households (id, name, created_by) SELECT n, 'Household ' || n, 1 FROM generate_series(1, 1001) n`},
 	{name: "household people of U", sql: `INSERT INTO household_people (id, household_id, first_name, last_name, kind, created_by, converted_user_id)
 		VALUES (1, 1, 'Pat', 'Target', 'adult', 1, 3), (2, 1, 'Sam', 'Target', 'adult', 1, NULL)`},
+	// U is one completed adult conversion: person 1 (converted_user_id = 3), the
+	// approved conversion request and its accepted invitation name person 1.
+	// Person 2 is a sibling who is not U (validatePersIn would abort an
+	// erasure of a user with two different people, R4-3b-2).
 	{name: "household people", sql: `INSERT INTO household_people (id, household_id, first_name, kind, created_by)
 		SELECT 2 + n, 2 + (n - 1) / 2, 'Person ' || n, 'child', 1 FROM generate_series(1, 2000) n`},
 	{name: "invitations", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, created_at)
@@ -6207,7 +6379,7 @@ var scaleSeeds = []scaleSeed{
 			now() + interval '7 days', now() - interval '30 days', now() - interval '31 days'
 		FROM generate_series(4991, 4993) n`},
 	{name: "invitations U household", sql: `INSERT INTO invitations (id, email, name, invited_by, role, account_type, token_hash, expires_at, accepted_at, household_person_id, created_at)
-		VALUES (4994, 'conversion@example.com', 'Sam Target', 1, 'member', 'adult', 'scale-inv-4994', now() + interval '7 days', now() - interval '2 days', 2, now()),
+		VALUES (4994, 'conversion@example.com', 'Pat Target', 1, 'member', 'adult', 'scale-inv-4994', now() + interval '7 days', now() - interval '2 days', 1, now()),
 			(4995, 'conversion-open@example.com', 'Pat Target', 1, 'member', 'adult', 'scale-inv-4995', now() + interval '7 days', NULL, 1, now())`},
 	{name: "invitations at A", sql: `INSERT INTO invitations (id, email, phone, name, invited_by, role, account_type, token_hash, expires_at, created_at)
 		SELECT n, $1::text, '555-0111', 'Scale Target', 1 + n % 4000, 'member', 'adult', 'scale-inv-' || n, now() + interval '7 days', now()
@@ -6228,8 +6400,8 @@ var scaleSeeds = []scaleSeed{
 			'203.0.113.7', now() + interval '30 days', 3
 		FROM generate_series(9961, 9969) n`},
 	{name: "request conversion for U", sql: `INSERT INTO account_requests (id, name, email, phone, message, source, status, decided_at, ip, expires_at, household_person_id, invitation_id, approved_user_id)
-		VALUES (9970, 'Sam Target', 'conversion@example.com', '555-0111', 'Convert me', 'household_conversion', 'approved', now(), '203.0.113.8',
-			now() + interval '30 days', 2, 4994, 3)`},
+		VALUES (9970, 'Pat Target', 'conversion@example.com', '555-0111', 'Convert me', 'household_conversion', 'approved', now(), '203.0.113.8',
+			now() + interval '30 days', 1, 4994, 3)`},
 	{name: "requests pending at A", sql: `INSERT INTO account_requests (id, name, email, phone, birth_date, message, source, status, ip, expires_at, password_hash)
 		SELECT n, 'Scale Target', $1::text, '555-0111', date '1990-01-01', 'Let me in', 'self_signup', 'pending', '203.0.113.9',
 			now() + interval '30 days', '$2a$04$scaleseedscaleseedscaleseedscaleseedscaleseedscalese'
@@ -6422,7 +6594,7 @@ func newScaleScene(t *testing.T, base *App) (*App, *apiClient) {
 // checkScaleFixture fails the test when the fixture is not the shape the
 // plan names, so a typo in the seed cannot quietly measure a smaller church.
 // It also reads the three sets through the real capture, so the selectors the
-// erasure uses see exactly REQ 20, PERS 2 and INV 10.
+// erasure uses see exactly REQ 20, PERS 1 and INV 10.
 func checkScaleFixture(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	want := []struct {
@@ -6507,8 +6679,8 @@ func checkScaleFixture(t *testing.T, db *gorm.DB) {
 	if err := captureErasureSetsIn(db, &s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Requests) != 20 || len(s.People) != 2 || len(s.Invitations) != 10 {
-		t.Fatalf("captured REQ %d, PERS %d, INV %d, want 20, 2 and 10", len(s.Requests), len(s.People), len(s.Invitations))
+	if len(s.Requests) != 20 || len(s.People) != 1 || len(s.Invitations) != 10 {
+		t.Fatalf("captured REQ %d, PERS %d, INV %d, want 20, 1 and 10", len(s.Requests), len(s.People), len(s.Invitations))
 	}
 }
 
@@ -9575,6 +9747,10 @@ func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
 	for _, c := range []*apiClient{f.lc, f.sc, f.ac, f.gc, f.oc} {
 		c.holdNotices = true
 	}
+	// No request here has a reason (see request), so no deletion needs a review
+	// and the admin's DELETE must not make review-page requests of its own inside
+	// a timed race.
+	f.ac.autoReview = false
 	w := &agesRaceWorld{t: t, f: f, app: f.app}
 	w.ev, w.occ = seedEvent(t, f.app, f.group, f.leader.ID, time.Now().UTC().Add(48*time.Hour))
 	// Barriers and sessions are registered on the swapped handle (F4).
@@ -9586,6 +9762,14 @@ func newAgesRaceWorld(t *testing.T) *agesRaceWorld {
 // request inserts one occurrence_add request on the world's date. The caller
 // may adjust the row before it is written (the identity columns cannot be
 // changed afterwards).
+//
+// The row has no reason. These races are about the ages note and the gate, and
+// they end or change the pending row before an erasure that is queued behind
+// them takes the gate; a reason would put a review in front of that erasure,
+// and a review made before the other transaction committed is stale by design
+// (409 reason_review_changed). The review's own races are the TestReasonReview*
+// tests, and TestAccountErasureScrubsSubjectAgesNote keeps reasoned rows through
+// a real review, so reason retention is still judged there.
 func (w *agesRaceWorld) request(requester, subject uint, status, note string, adjust ...func(*models.ContactRequest)) models.ContactRequest {
 	w.t.Helper()
 	w.seq++
@@ -9593,7 +9777,7 @@ func (w *agesRaceWorld) request(requester, subject uint, status, note string, ad
 	occ := w.occ.ID
 	r := models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: requester, SubjectUserID: subject,
 		ContextType: policy.ContactEvent, ContextID: w.ev.ID, OccurrenceID: &occ,
-		Reason: fmt.Sprintf("identifying race reason %d", w.seq), SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
+		SubjectDecision: policy.ContactPending, AdminDecision: policy.ContactNotNeeded,
 		Status: status, AddAttendanceMode: models.AttendanceInPerson, AddChildcareAgesNote: note,
 		CreatedAt: created, ExpiresAt: created.Add(14 * 24 * time.Hour)}
 	if status == policy.ContactWithdrawn {
@@ -10003,8 +10187,9 @@ func agesRaceTask(owner uint, r models.ContactRequest, admin bool, resolution st
 	return agesRaceTaskWant{Owner: owner, Kind: kind, ID: r.ID, Resolution: resolution, By: by}
 }
 
-// agesRaceLedger judges what one step did between two ledgers. Every earlier
-// audit row, delivery and job is byte-identical (Gone's deliveries aside); every
+// agesRaceLedger judges what one step did between two ledgers. Earlier audit
+// rows permit only R4-4a's fixture-specific scrubs; delivery and job rows are
+// byte-identical (Gone's deliveries aside); every
 // earlier notice is byte-identical except the tasks the step closes (resolved
 // inside the step, by the wanted resolver, as the wanted outcome, changing
 // nothing else) and Gone's, which are gone. New rows are exactly the wanted ones,
@@ -10019,7 +10204,12 @@ func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) 
 
 	// Audit.
 	for id, b := range before.Audit {
-		if a, ok := after.Audit[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
+		b = erasureFixtureAuditAfter(t, b, st.Gone)
+		a, ok := after.Audit[id]
+		if ok {
+			a = erasureFixtureAuditAfter(t, a, 0)
+		}
+		if !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: audit row %d (%s) changed or is gone", name, id, b.Action)
 		}
 	}

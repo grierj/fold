@@ -73,8 +73,13 @@ func (a *App) dailyKinds() []jobs.Kind {
 			}
 			return err
 		}),
+		// Daily discovery starts from zero; each continuation keeps this date.
+		{Name: kindTombstoneSweep, Label: "Finding deleted accounts to finish erasing", Daily: true,
+			MaxAttempts: jobs.DefaultMaxAttempts, Run: a.runTombstonePageJob},
 		// Photo folders a crash or a bad upload left behind (R4-5).
 		daily(kindAvatarSweep, "Finding leftover profile photos", a.sweepAvatars),
+		// Receipts of admin deletions older than 24 hours (T07B-1b).
+		daily(kindAttemptSweep, "Clearing old deletion receipts", a.sweepAttemptReceipts),
 		daily("jobs.cleanup", "Clearing finished background tasks", func(_ context.Context, now time.Time) error {
 			_, err := jobs.PruneDone(a.DB, now.Add(-doneJobsKept))
 			return err
@@ -134,7 +139,11 @@ func (a *App) queueDaily(kinds []jobs.Kind, now time.Time, zone *time.Location) 
 	day := now.In(zone).Format("2006-01-02")
 	var first error
 	for _, k := range kinds {
-		if _, err := jobs.Enqueue(a.DB, k.Name, nil, now, k.Name+":"+day, k.MaxAttempts); err != nil && first == nil {
+		var payload any
+		if k.Name == kindTombstoneSweep {
+			payload = tombstonePageJob{Day: day}
+		}
+		if _, err := jobs.Enqueue(a.DB, k.Name, payload, now, k.Name+":"+day, k.MaxAttempts); err != nil && first == nil {
 			first = err
 		}
 	}

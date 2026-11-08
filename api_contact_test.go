@@ -322,6 +322,7 @@ func newContactAPIFixture(t *testing.T, teen bool) *contactAPIFixture {
 	f.lc = loginAPI(t, a, f.leader.Email, "password1234")
 	f.sc = loginAPI(t, a, f.subject.Email, "password1234")
 	f.ac = loginAPI(t, a, f.admin.Email, "password1234")
+	f.ac.autoReview = true // deleting an account with request reasons needs a review (T07B-2b)
 	f.gc = loginAPI(t, a, f.guardian.Email, "password1234")
 	f.oc = loginAPI(t, a, f.outsider.Email, "password1234")
 	return f

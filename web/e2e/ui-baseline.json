@@ -13,5 +13,7 @@
   "admin": 1,
   "admin-users": 1,
   "new-group": 0,
-  "church-event": 0
+  "church-event": 0,
+  "admin-user-delete": 1,
+  "admin-user-delete-reasons": 1
 }

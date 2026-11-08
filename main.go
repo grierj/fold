@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -67,6 +68,42 @@ type App struct {
 	// push.DefaultWindow.
 	pushClock  func() time.Time
 	pushWindow *push.Window
+
+	// fence is the restore barrier (restore_fence.go) and attempts the admin
+	// operation ledger (admin_operation_attempts.go). Both are ready at their
+	// zero value; serve makes the boot floor and the per-process key before it
+	// serves, and exits non-zero when it cannot.
+	fence    fenceState
+	attempts attemptsState
+	// requestRestart asks serve to shut down and exit non-zero once a restore
+	// is detected. serve sets it; tests set a recorder; nil does nothing.
+	requestRestart func()
+
+	// Test seams, all nil in production (T07B-1b). A nil seam sends no
+	// statement and takes no time.
+	//
+	// restoreAckPause runs inside acknowledgeRestoreTicket before it raises the
+	// floor. attemptClock replaces the monotonic time since the process
+	// started. settleBeforeTx runs before settle's first transaction;
+	// settleBeforeFence and settleAfterFence run inside its seal, around the
+	// ledger transition, given the open transaction. deleteBeforeSeal runs in
+	// the deletion's seal just before currentAdminIn, given the open
+	// transaction; deleteBeforeRetry runs between a busy attempt's rollback and
+	// the next attempt, with no transaction open. conversionAfterUserLocks runs
+	// in acceptHouseholdConversion right after its users statement.
+	// readBeforeSeal runs in a reason-review page transaction between its view
+	// audit and the actor seal, given the open transaction (T07B-2b).
+	// sealAttempts counts seal entries of the deletion and settle.
+	restoreAckPause          func()
+	attemptClock             func() time.Duration
+	settleBeforeTx           func()
+	settleBeforeFence        func(*gorm.DB)
+	settleAfterFence         func(*gorm.DB)
+	deleteBeforeSeal         func(*gorm.DB)
+	deleteBeforeRetry        func()
+	readBeforeSeal           func(*gorm.DB)
+	conversionAfterUserLocks func(*gorm.DB)
+	sealAttempts             *atomic.Int64
 }
 
 const sessionName = "fold-session"
@@ -120,6 +157,27 @@ func serve(stderr io.Writer) int {
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
 		Mailer: newMailer(cfg, db),
 	}
+	// The signal context exists this early so a detected database restore can
+	// end the process (T07B-1b): requestRestart cancels it, and serve returns
+	// non-zero after the graceful shutdown below.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	var restarting atomic.Bool
+	app.requestRestart = func() {
+		restarting.Store(true)
+		stop()
+	}
+	if err := app.initAttempts(); err != nil {
+		fmt.Fprintln(stderr, "fold: make the attempt key:", err)
+		return 1
+	}
+	// The restore barrier's restart boundary: after migrations, before anything
+	// serves, in one transaction under the migrations lock. Any failure,
+	// including an unacknowledged COMMIT, exits non-zero.
+	if err := app.bootRestoreFence(); err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
+	}
 	ready, err := app.setupComplete()
 	if err != nil {
 		fmt.Fprintln(stderr, "fold: check setup availability:", err)
@@ -144,8 +202,6 @@ func serve(stderr io.Writer) int {
 	}
 	r := app.setupRouter()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	// Background work runs from the jobs table (M3.1, PLAN 5.5).
 	waitJobs := app.startJobs(ctx)
 	defer waitJobs()
@@ -163,6 +219,12 @@ func serve(stderr io.Writer) int {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Shutdown: %v", err)
+	}
+	if restarting.Load() {
+		// A restored database was detected: leave so the supervisor starts a
+		// new process, which runs the boot step again.
+		log.Printf("Stopping: the database was restored while Fold was running")
+		return 1
 	}
 	return 0
 }

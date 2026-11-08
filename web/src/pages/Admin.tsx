@@ -27,6 +27,7 @@ import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
+import { reloadStarted, reloadSucceeded } from "../lib/deleteReload";
 import { GuardianLinkCard } from "../components/GuardianLinkCard";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { errorCode, errorText } from "../lib/errors";
@@ -1514,10 +1515,14 @@ export function AdminPage() {
   const [snapshotJobs, setSnapshotJobs] = useState<AdminJob[] | null>(null);
 
   const loadUsers = useCallback(async () => {
+    // A delete that must wait for a fresh list (history_unavailable) is released
+    // only by a load that began after it and worked (lib/deleteReload.ts).
+    const started = reloadStarted();
     try {
       const { users } = await AdminUsers.list();
       setUsers(users);
       setUserCount(users.length);
+      reloadSucceeded(started);
     } catch {
       // Users tab shows its own empty state on failure.
     } finally {

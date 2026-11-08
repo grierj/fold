@@ -15,6 +15,13 @@ import (
 	"fold/models"
 )
 
+// heldAddress is available only while erasing a freshly locked account. A
+// legacy tombstone has lost its address; its placeholder is never a selector.
+type heldAddress struct {
+	value string
+	ok    bool
+}
+
 // erasureSubject is what an account erasure needs to remember about the
 // person after their row is scrubbed: the id and the address the account held
 // at erasure, plus the REQ, PERS and INV sets (inventory 3.1) that
@@ -24,7 +31,7 @@ import (
 // audited, queued, serialized, put in an error or returned.
 type erasureSubject struct {
 	ID      uint
-	Address string
+	Address heldAddress
 	// Requests is REQ: account_requests of the person, by the retained
 	// approved_user_id link or, with no link, by the held address.
 	Requests []uint
@@ -40,7 +47,7 @@ type erasureSubject struct {
 // locked FOR UPDATE and reloaded into u (deletionHostPlan), so the address is
 // the one the account holds now and never a past one.
 func captureErasureSubject(u *models.User) erasureSubject {
-	return erasureSubject{ID: u.ID, Address: mail.NormalizeAddress(u.Email)}
+	return erasureSubject{ID: u.ID, Address: heldAddress{value: mail.NormalizeAddress(u.Email), ok: true}}
 }
 
 // captureErasureSetsIn fills REQ, PERS and INV (inventory 3.1) with plain reads,
@@ -52,9 +59,13 @@ func captureErasureSubject(u *models.User) erasureSubject {
 // queries. The sets stay in memory and are never logged or returned.
 func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 	var req []uint
-	if err := tx.Raw(`SELECT id FROM account_requests
-		WHERE approved_user_id = ? OR (approved_user_id IS NULL AND email = ?)
-		ORDER BY id`, s.ID, s.Address).Scan(&req).Error; err != nil {
+	reqSQL := "SELECT id FROM account_requests WHERE approved_user_id = ?"
+	args := []any{s.ID}
+	if s.Address.ok {
+		reqSQL += " OR (approved_user_id IS NULL AND email = ?)"
+		args = append(args, s.Address.value)
+	}
+	if err := tx.Raw(reqSQL+" ORDER BY id", args...).Scan(&req).Error; err != nil {
 		return err
 	}
 	var pers []uint
@@ -99,11 +110,13 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 		add(ids)
 	}
 	// (d) an invitation to the held address that nobody accepted.
-	ids = nil
-	if err := tx.Raw(`SELECT id FROM invitations WHERE email = ? AND accepted_at IS NULL`, s.Address).Scan(&ids).Error; err != nil {
-		return err
+	if s.Address.ok {
+		ids = nil
+		if err := tx.Raw(`SELECT id FROM invitations WHERE email = ? AND accepted_at IS NULL`, s.Address.value).Scan(&ids).Error; err != nil {
+			return err
+		}
+		add(ids)
 	}
-	add(ids)
 
 	s.Requests, s.People, s.Invitations = req, pers, nil
 	sort.Slice(s.People, func(i, j int) bool { return s.People[i] < s.People[j] })
@@ -158,16 +171,28 @@ var erasureRecipientWait = 20 * time.Second
 // limits are per request (Postmark 15 s, SMTP dial 10 s and exchange 30 s) and
 // the batch deadline is only a context handed to Send. The database bound here
 // covers one statement, so successive waits on rows that workers hold can add
-// up past d. The HTTP write timeout bounds the response and no transaction: an
-// erasure can commit after the browser lost its answer.
+// up past d. The HTTP write timeout bounds the response and no transaction; the
+// admin deletion's own deadline and the contact transaction's server bounds
+// (contactMutationCtx) do. Inside that transaction the call never raises the
+// timeout in force: it sets the smaller of d and the current value.
 func withStatementTimeout(tx *gorm.DB, d time.Duration, fn func() error) error {
-	var prior string
-	if err := tx.Raw("SELECT current_setting('statement_timeout')").Scan(&prior).Error; err != nil {
+	// The text is put back as it was; the milliseconds decide the cap. A
+	// timeout already in force (the contact transaction's contactServerCap)
+	// is never raised: the call sets the smaller of the two, and 0 means none.
+	var cur struct {
+		Text string `gorm:"column:text"`
+		MS   int64  `gorm:"column:ms"`
+	}
+	if err := tx.Raw("SELECT current_setting('statement_timeout') AS text, (SELECT setting::bigint FROM pg_settings WHERE name = 'statement_timeout') AS ms").Scan(&cur).Error; err != nil {
 		return err
 	}
+	prior := cur.Text
 	ms := d.Milliseconds()
 	if ms < 1 {
 		ms = 1
+	}
+	if cur.MS > 0 && cur.MS < ms {
+		ms = cur.MS
 	}
 	if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ms)).Error; err != nil {
 		return err
@@ -199,7 +224,13 @@ func withStatementTimeout(tx *gorm.DB, d time.Duration, fn func() error) error {
 // No audit action and no withdrawal mail are added: user.deleted is the
 // record (a documented Consistency exception). It returns the first error
 // unwrapped, issues no further statement after it, and logs nothing.
+// actorID zero resolves waiting tasks as a system action. Already scrubbed
+// requests are not rewritten, including their updated_at.
 func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
+	var actor *uint
+	if actorID != 0 {
+		actor = &actorID
+	}
 	if len(s.Requests) > 0 {
 		var withdrawn []uint
 		if err := tx.Raw(`UPDATE account_requests SET status = 'withdrawn', password_hash = NULL, updated_at = now()
@@ -208,14 +239,17 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 		}
 		sort.Slice(withdrawn, func(i, j int) bool { return withdrawn[i] < withdrawn[j] })
 		for _, id := range withdrawn {
-			if _, err := notify.Resolve(tx, notify.AccountRequested, id, &actorID, "withdrawn"); err != nil {
+			if _, err := notify.Resolve(tx, notify.AccountRequested, id, actor, "withdrawn"); err != nil {
 				return err
 			}
 		}
 		if err := tx.Exec(`UPDATE account_requests SET name = '', email = `+erasedRowAddressSQL("account_requests")+`,
 			phone = '', birth_date = NULL, message = '', guardian_email = '', password_hash = NULL,
 			decision_note = '', ip = CASE WHEN source = 'member_invite' THEN ip ELSE '' END, updated_at = now()
-			WHERE id IN ?`, s.Requests).Error; err != nil {
+			WHERE id IN ? AND (name <> '' OR phone <> '' OR message <> '' OR guardian_email <> ''
+			OR decision_note <> '' OR birth_date IS NOT NULL OR password_hash IS NOT NULL
+			OR email <> `+erasedRowAddressSQL("account_requests")+`
+			OR (source <> 'member_invite' AND ip <> ''))`, s.Requests).Error; err != nil {
 			return err
 		}
 	}
@@ -223,7 +257,10 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 		WHERE source = 'member_invite' AND requested_by = ? AND ip <> ''`, s.ID).Error; err != nil {
 		return err
 	}
-	return tx.Exec(`UPDATE account_requests SET guardian_email = '' WHERE guardian_email = ?`, s.Address).Error
+	if s.Address.ok {
+		return tx.Exec(`UPDATE account_requests SET guardian_email = '' WHERE guardian_email = ? AND guardian_email <> ''`, s.Address.value).Error
+	}
+	return nil
 }
 
 // eraseDependentRecordsIn scrubs the address-keyed rows around the erased
@@ -242,25 +279,30 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 // unwrapped, issues no further statement after it, and logs nothing.
 // actorID and ip are the deleting admin and the request address, used by the
 // message cancellation audit rows.
+// An unavailable held address skips every address-only statement (O-17).
 func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
 	if len(s.Invitations) > 0 {
 		if err := tx.Exec(`UPDATE invitations SET email = `+erasedRowAddressSQL("invitations")+`,
 			phone = '', name = '', token_hash = `+erasedTokenMarkerSQL("invitations")+`,
 			revoked_at = CASE WHEN accepted_at IS NULL AND revoked_at IS NULL THEN now() ELSE revoked_at END
-			WHERE id IN ?`, s.Invitations).Error; err != nil {
+			WHERE id IN ? AND (email <> `+erasedRowAddressSQL("invitations")+`
+			OR phone <> '' OR name <> '' OR token_hash <> `+erasedTokenMarkerSQL("invitations")+`
+			OR (accepted_at IS NULL AND revoked_at IS NULL))`, s.Invitations).Error; err != nil {
 			return err
 		}
 	}
-	if err := tx.Exec(`DELETE FROM guest_signups WHERE email = ? AND confirmed_at IS NULL`, s.Address).Error; err != nil {
-		return err
-	}
-	if err := tx.Exec(`UPDATE guest_signups SET name = '', email = `+erasedRowAddressSQL("guest_signups")+`,
-		ip = '', timezone = '', token_hash = `+erasedTokenMarkerSQL("guest_signups")+`, updated_at = now()
-		WHERE email = ? AND confirmed_at IS NOT NULL`, s.Address).Error; err != nil {
-		return err
-	}
-	if err := tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address).Error; err != nil {
-		return err
+	if s.Address.ok {
+		if err := tx.Exec(`DELETE FROM guest_signups WHERE email = ? AND confirmed_at IS NULL`, s.Address.value).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`UPDATE guest_signups SET name = '', email = `+erasedRowAddressSQL("guest_signups")+`,
+			ip = '', timezone = '', token_hash = `+erasedTokenMarkerSQL("guest_signups")+`, updated_at = now()
+			WHERE email = ? AND confirmed_at IS NOT NULL`, s.Address.value).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`DELETE FROM mail_outboxes WHERE lower(btrim(to_address)) = ?`, s.Address.value).Error; err != nil {
+			return err
+		}
 	}
 	if err := eraseMessagesIn(tx, s, actorID, ip); err != nil {
 		return err
@@ -319,6 +361,10 @@ func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
 // back, and the admin sees a generic server error and can retry. The handler logs
 // "could not delete user".
 func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
+	var actor *uint
+	if actorID != 0 {
+		actor = &actorID
+	}
 	var cancelled []uint
 	if err := tx.Raw(`UPDATE messages SET status = ?, updated_at = now()
 		WHERE author_id = ? AND status = ? RETURNING id`,
@@ -327,7 +373,7 @@ func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) err
 	}
 	sort.Slice(cancelled, func(i, j int) bool { return cancelled[i] < cancelled[j] })
 	for _, id := range cancelled {
-		if err := audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.MessageCancelled,
+		if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.MessageCancelled,
 			TargetType: "message", TargetID: id, IP: ip}); err != nil {
 			return err
 		}
@@ -389,9 +435,21 @@ func eraseOwnedThrottleKeysIn(tx *gorm.DB, s erasureSubject) error {
 // here on consents cannot form a cycle. Nothing else updates consents and
 // readers take no lock. The filter skips rows that are already blank, which
 // keeps a retry idempotent. It returns the error unwrapped and logs nothing.
+//
+// Export the in-force email opt-outs only when the locked account's address
+// is still held. Migration 00003's scrub preserves statuses and choice times,
+// so the export can run before or after it. The user lock prevents a consent
+// append in between. Both statements roll back with the erasure transaction.
+// Tombstones have no held address and issue no export statement.
 func eraseConsentEvidenceIn(tx *gorm.DB, s erasureSubject) error {
-	return tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
-		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error
+	if err := tx.Exec("UPDATE consents SET ip = '', user_agent = '', evidence_text = '' "+
+		"WHERE user_id = ? AND (ip <> '' OR user_agent <> '' OR evidence_text <> '')", s.ID).Error; err != nil {
+		return err
+	}
+	if s.Address.ok && mail.NormalizeAddress(s.Address.value) != "" {
+		return exportEmailOptOutsIn(tx, s.ID, mail.AddressHash(s.Address.value))
+	}
+	return nil
 }
 
 // eraseContactRequestTextIn blanks add_childcare_ages_note on the erased

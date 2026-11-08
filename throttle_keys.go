@@ -164,28 +164,32 @@ func throttleKeyStrings(ks []throttleKey) []string {
 
 // ownedThrottleKeys returns every stored key an erased account owns: each
 // owned builder's key, with both suffixes for the targeted families, sorted
-// and de-duplicated. userID is the account's id and addr the address it holds
+// and de-duplicated. userID is the account's id and held the address it holds
 // at erasure (read inside the erasure transaction and held only in memory).
-// Erasure (R4-1-2) is its only caller. A builder is listed here exactly when
-// its doc line says owned (TestOwnedThrottleKeysCoverEveryOwnedBuilder).
-func ownedThrottleKeys(userID uint, addr string) []string {
+// An unavailable address selects only id keys. Erasure is its only caller.
+// A builder is listed here exactly when its doc line says owned (TestOwnedThrottleKeysCoverEveryOwnedBuilder).
+func ownedThrottleKeys(userID uint, held heldAddress) []string {
 	keys := []throttleKey{
-		loginEmailKey(addr),
 		loginUserKey(userID),
 		peopleSearchUserKey(userID),
 		managerDateAddKey(userID),
 	}
-	for _, k := range []throttleKey{
-		pwresetAddrKey(addr),
-		emailChangeUserKey(userID),
-		emailChangeAddrKey(addr),
-		accountRequestAddrKey(addr),
-		guestHintKey(addr),
-		guardianClaimAddrKey(addr),
-		guardianEmailAddrKey(addr),
-	} {
-		both := k.targeted()
-		keys = append(keys, both[0], both[1])
+	both := emailChangeUserKey(userID).targeted()
+	keys = append(keys, both[0], both[1])
+	if held.ok {
+		addr := held.value
+		keys = append(keys, loginEmailKey(addr))
+		for _, k := range []throttleKey{
+			pwresetAddrKey(addr),
+			emailChangeAddrKey(addr),
+			accountRequestAddrKey(addr),
+			guestHintKey(addr),
+			guardianClaimAddrKey(addr),
+			guardianEmailAddrKey(addr),
+		} {
+			both := k.targeted()
+			keys = append(keys, both[0], both[1])
+		}
 	}
 	out := throttleKeyStrings(keys)
 	sort.Strings(out)

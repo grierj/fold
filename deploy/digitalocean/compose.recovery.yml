@@ -1,0 +1,16 @@
+# Used only by restore.sh with explicit -f and --profile recovery.
+services:
+  recovery:
+    extends:
+      file: docker-compose.yml
+      service: app
+    image: ${FOLD_RECOVERY_IMAGE:?restore.sh must supply the recorded image id}
+    pull_policy: never
+    restart: "no"
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      FOLD_WORKERS: "0"
+    labels:
+      fold.recovery.nonce: ${FOLD_RECOVERY_NONCE:?restore.sh must supply the lock nonce}
+    profiles: [recovery]

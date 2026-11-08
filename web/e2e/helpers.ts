@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 export const PASSWORD = "password1234";
@@ -178,4 +179,38 @@ export async function pickRoom(select: Locator, name: string) {
       throw new Error(`${e.message}\noptions seen: ${JSON.stringify(seen)}`);
     });
   await select.selectOption(values[0]);
+}
+
+// The DELETE body's reasonReview (set-v1) for items an admin read, keeping every
+// one: the count, the SHA-256 over the set in ascending signed id order, and a
+// two-bit choice per item. Built from the wire spec in lib/reasonSetDigest.ts.
+export function keepAllReview(items: Array<{ requestId: string; reviewHash: string }>) {
+  const sorted = [...items].sort((a, b) => (BigInt(a.requestId) < BigInt(b.requestId) ? -1 : 1));
+  const head = Buffer.alloc(35);
+  head.write("fold:erasure-reason-set:v1", 0, "latin1");
+  head.writeBigUInt64BE(BigInt(sorted.length), 27);
+  const parts = [head];
+  const choices = Buffer.alloc(Math.ceil(sorted.length / 4));
+  sorted.forEach((it, i) => {
+    const id = Buffer.alloc(8);
+    id.writeBigInt64BE(BigInt(it.requestId));
+    parts.push(id, Buffer.from(it.reviewHash, "hex"));
+    choices[i >> 2] |= 1 << ((i & 3) * 2);
+  });
+  return { format: "set-v1", count: String(sorted.length), digest: createHash("sha256").update(Buffer.concat(parts)).digest("hex"), choices: choices.toString("base64") };
+}
+
+// Deletes an account through the API the way the panel does when its reasons
+// have been reviewed: read every page of the account's contact-request reasons,
+// keep them all, and send that review with the DELETE. An account with no
+// reasons sends an empty review, which the server ignores.
+export async function deleteAccountKeepingReasons(admin: (method: string, path: string, data?: unknown) => Promise<any>, userId: number) {
+  const items: Array<{ requestId: string; reviewHash: string }> = [];
+  let after: string | null = null;
+  do {
+    const page: { items: Array<{ requestId: string; reviewHash: string }>; next: string | null } = await admin("POST", `/admin/users/${userId}/erasure-reasons/page`, { after });
+    items.push(...page.items.map((it) => ({ requestId: it.requestId, reviewHash: it.reviewHash })));
+    after = page.next;
+  } while (after);
+  return admin("DELETE", `/admin/users/${userId}`, { successors: {}, hostSuccessors: {}, reasonReview: keepAllReview(items) });
 }

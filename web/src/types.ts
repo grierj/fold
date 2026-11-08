@@ -1394,3 +1394,85 @@ export interface MessagePreview {
   subject: string;
   text: string;
 }
+
+/**
+ * POST /admin/operation-attempts answers one id per press of Delete (mirrors
+ * attemptMintJSON in admin_operation_attempts.go). The id is a capability: send
+ * it in the DELETE body and the settle body, never in a URL, and never show it.
+ */
+export interface AttemptMintResponse {
+  attemptId: string;
+}
+
+/**
+ * POST /admin/operation-attempts/settle: what became of an id (mirrors
+ * attemptSettleJSON). "checking" asks the client to check again with the same
+ * id; subjectDeleted is sent, as true, only on "not_applied" when the account is
+ * already deleted (it is absent otherwise) and never says who deleted it.
+ */
+export interface AttemptSettleResponse {
+  result: "applied" | "not_applied" | "history_unavailable" | "checking";
+  subjectDeleted?: boolean;
+}
+
+// What DELETE /admin/users/:id answers under "erasure" (mirrors
+// erasureReportJSON in account_erasure_report.go). Counts only: no names,
+// ids or addresses. householdsKept is households left as they were because
+// other people, or a record that cannot be told apart, still share them.
+export interface ErasureReport {
+  householdsKept: number;
+  householdsScrubbed: number;
+  peopleAnonymized: number;
+  guardianLinksRevoked: number;
+  // Subject-linked retained IP rows plus distinct discovered conversion rows,
+  // including conversions whose IP is already empty. Not proof of IP ownership
+  // or a complete count of personal addresses left in the activity log.
+  activityEntriesKept: number;
+  // Contact-request reasons the admin decided in this deletion (T07B-2b):
+  // counts only, zero when the account had none.
+  reasonsKept: number;
+  reasonsRemoved: number;
+}
+
+// One contact-request reason shown for review before an account is deleted
+// (POST /admin/users/:id/erasure-reasons/page, reasonReview in the DELETE body).
+// requestId and counterpartRef are decimal strings: a request id is a signed
+// 64-bit value. reviewHash goes back unchanged with the admin's choice.
+export interface ErasureReasonItem {
+  requestId: string;
+  reviewHash: string;
+  role: "requester" | "subject";
+  purpose: string;
+  status: string;
+  createdAt: string;
+  // "Deleted account" when the other person was deleted; counterpartRef is then
+  // that account's id, so two deleted people stay distinguishable.
+  counterpartName: string;
+  counterpartDeleted: boolean;
+  counterpartRef?: string;
+  // The signed-in admin is the requester or the subject of this request.
+  reviewerIsParty: boolean;
+  contextLabel?: string;
+  reason: string;
+}
+
+// The DELETE body's reasonReview (format "set-v1", T07B-2): how many reasons
+// the admin reviewed (a decimal string), the SHA-256 over the reviewed set in
+// ascending signed id order (lib/reasonSetDigest.ts) and the admin's explicit
+// choice for each, two bits apiece, as standard base64. No JSON number carries
+// an id or a count.
+export interface ReasonReviewBody {
+  format: "set-v1";
+  count: string;
+  digest: string;
+  choices: string;
+}
+
+// One page of the review. reviewRequired is present only on a page with items:
+// a page without any proves nothing, and the client concludes there are no
+// reasons only when a walk from a null cursor ends (next is null) with none.
+export interface ErasureReasonPage {
+  reviewRequired?: boolean;
+  items: ErasureReasonItem[];
+  next: string | null;
+}

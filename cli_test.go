@@ -42,6 +42,31 @@ func TestVersionNeedsNoEnvironment(t *testing.T) {
 	}
 }
 
+// fold version --json reports the recovery level as an integer (R4-RP), and
+// needs no environment to do it. The level is 2 with the reason review
+// (T07B-2b; 1 was the restore barrier alone, T07B-1b); an older binary has
+// no such field, which the tooling reads as 0.
+func TestVersionJSONReportsRecoveryPolicy(t *testing.T) {
+	for _, k := range []string{"APP_ENV", "SESSION_SECRET", "DATABASE_URL"} {
+		t.Setenv(k, "")
+	}
+	var out bytes.Buffer
+	if code := run([]string{"version", "--json"}, &out, &out); code != 0 {
+		t.Fatalf("version --json: code %d, output %q", code, out.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("version --json is not JSON: %v", err)
+	}
+	level, ok := got["recoveryPolicy"].(float64)
+	if !ok || level != 2 || int(level) != recoveryPolicyLevel {
+		t.Fatalf("recoveryPolicy = %v, want the integer 2", got["recoveryPolicy"])
+	}
+	if _, ok := got["version"].(string); !ok {
+		t.Fatalf("version --json lost its version field: %v", got)
+	}
+}
+
 func TestMigrateStatusNeedsOnlyDatabaseURL(t *testing.T) {
 	testdb.Shared(t) // make sure DATABASE_URL works before touching env
 	url, err := testdb.URL(testdb.Fresh(t, false))
@@ -92,10 +117,6 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO users(id,email,status,role) VALUES(1,'cli-down@example.com','active','member')`); err != nil {
 		t.Fatal(err)
 	}
-	var tablesBefore int
-	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesBefore); err != nil {
-		t.Fatal(err)
-	}
 	url, err := testdb.URL(name)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +142,12 @@ func TestMigrateDownOneRefusesBaselineWithData(t *testing.T) {
 		if !strings.Contains(out.String(), "rolled back") || !strings.Contains(out.String(), files[i]) {
 			t.Fatalf("down-one of %s: stdout %q, want it named as rolled back", files[i], out.String())
 		}
+	}
+	// Additive migrations may create tables that their Down removes. Compare
+	// the refused baseline Down with the schema after those rollbacks.
+	var tablesBefore int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`).Scan(&tablesBefore); err != nil {
+		t.Fatal(err)
 	}
 	out.Reset()
 	errOut.Reset()

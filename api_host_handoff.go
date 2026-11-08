@@ -448,7 +448,7 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 		}
 		return nil, nil, nil, err
 	}
-	if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion {
+	if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion || actor.LogoutVersion != me.LogoutVersion {
 		return nil, nil, nil, errSecuritySession
 	}
 	seats, err := hostSeatsByEvent(tx, u.ID)

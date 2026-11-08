@@ -9,6 +9,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/notify"
+	"fold/internal/testdb"
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
@@ -182,6 +183,117 @@ func TestAdminUserCRUD(t *testing.T) {
 	var gone models.User
 	if err := app.DB.Where("email = ?", testEmail("newbie")).First(&gone).Error; err == nil {
 		t.Fatalf("user still present after delete")
+	}
+}
+
+// Exercise the scrub through the real cookie/CSRF DELETE, with one sentinel
+// for each reachable attribution class and living-party counterparts. There
+// are no RETAIN_ESSENTIAL actions after R4-GR-IP; the aggregation case is
+// covered separately without inventing a production retention exception.
+func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
+	s := newCoreErasureScene(t)
+	db, u, living := s.app.DB, s.second, s.admin
+	teen := newTestUser(t, s.app, "audit-report-teen", erasurePW, models.RoleMember)
+	h := models.Household{Name: "Other household", CreatedBy: living.ID}
+	erasureMustCreate(t, db, &h)
+	p := models.HouseholdPerson{HouseholdID: h.ID, FirstName: "Other person", Kind: models.HouseholdAdult,
+		ConvertedUserID: &teen.ID, CreatedBy: living.ID}
+	erasureMustCreate(t, db, &p)
+	inv := erasureInvitation(t, db, living.ID, u.Email, true, nil)
+	conversionInv := erasureInvitation(t, db, living.ID, teen.Email, true, &p.ID)
+	request := func(source string, user uint, by *uint) models.AccountRequest {
+		r := models.AccountRequest{Name: "Request", Email: "audit-report@example.com", Source: source,
+			Status: "approved", ApprovedUserID: &user, RequestedBy: by, DecidedBy: &u.ID,
+			ExpiresAt: time.Now().Add(time.Hour)}
+		if source == "household_conversion" {
+			r.HouseholdPersonID, r.InvitationID = &p.ID, &conversionInv
+		}
+		erasureMustCreate(t, db, &r)
+		return r
+	}
+	self := request("self_signup", u.ID, nil)
+	request("member_invite", teen.ID, &u.ID)
+	request("household_conversion", teen.ID, nil)
+
+	var before []models.AuditLog
+	blank := map[uint]bool{}
+	removed := map[uint][]string{}
+	add := func(action, target string, id uint, actor *uint, meta map[string]any, clear bool, keys ...string) models.AuditLog {
+		row := auditErasureLog(t, db, action, target, id, actor, meta)
+		before = append(before, row)
+		blank[row.ID], removed[row.ID] = clear, keys
+		return row
+	}
+	// ACTOR, META_USER, TARGET_USER, LINKED, REQUESTER and C_APPROVAL.
+	add(audit.UserCreated, "user", teen.ID, &u.ID, nil, true)
+	add(audit.UserCreated, "user", u.ID, &living.ID, nil, false)
+	add(audit.InvitationAccepted, "invitation", inv, &living.ID, map[string]any{"userId": u.ID}, true)
+	add(audit.InvitationAccepted, "invitation", conversionInv, &u.ID, map[string]any{"userId": teen.ID}, false)
+	add(audit.PasswordResetRequested, "user", u.ID, &living.ID, nil, true)
+	add(audit.PasswordResetRequested, "user", teen.ID, &u.ID, nil, false)
+	add(audit.AccountRequested, "account_request", self.ID, nil, map[string]any{"source": "self_signup"}, true)
+	add(audit.GuardianLinkRequested, "guardian_link", 9001, nil, map[string]any{"source": "signup", "teenUserId": teen.ID}, true)
+	add(audit.GuardianLinkRequested, "guardian_link", 9002, &living.ID, map[string]any{"source": "household_conversion", "teenUserId": teen.ID}, true)
+	// The inviter is the actor on CONVERSION rows, but G-8 keeps both IPs.
+	add(audit.HouseholdPersonConverted, "household", h.ID, &u.ID, map[string]any{
+		"personId": p.ID, "householdId": h.ID, "invitationId": conversionInv, "userId": teen.ID,
+		"accountType": "adult", "transferCount": 1}, false)
+	transfer := add(audit.RegistrationChanged, "registration", 9003, &u.ID, map[string]any{
+		"personId": p.ID, "invitationId": conversionInv, "userId": teen.ID,
+		"formerRegisteredBy": living.ID, "clearedChildcareRequested": false}, false)
+	// Conversion.Retained counts entries, including an already-empty IP.
+	if err := db.Model(&models.AuditLog{}).Where("id = ?", transfer.ID).Update("ip", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	before[len(before)-1].IP = ""
+	// Three subject-linked retained IP rows. The malformed nomination also
+	// appears in its diagnostic count; it must contribute only once.
+	add("legacy.unknown", "user", u.ID, &u.ID, nil, false)
+	add(audit.InvitationAccepted, "invitation", inv, &living.ID, map[string]any{"userId": u.ID, "personId": p.ID}, false)
+	add(audit.GuardianLinkRequested, "guardian_link", 9004, nil,
+		map[string]any{"source": "household_conversion", "teenUserId": itoa(teen.ID)}, false)
+	add("legacy.unknown", "user", teen.ID, &living.ID, nil, false)
+	// NONE and already-blank unattributed rows do not add a retained-IP count.
+	for _, action := range []string{audit.UserTurned18, "legacy.unknown"} {
+		row := add(action, "user", u.ID, nil, nil, false)
+		if err := db.Model(&models.AuditLog{}).Where("id = ?", row.ID).Update("ip", "").Error; err != nil {
+			t.Fatal(err)
+		}
+		before[len(before)-1].IP = ""
+	}
+	// Subject keys are removed even when the IP belongs to a living actor.
+	add(audit.UserEmailChanged, "user", u.ID, &living.ID, map[string]any{"oldEmail": "old@example.com", "newEmail": u.Email}, false, "oldEmail", "newEmail")
+	add(audit.InvitationCreated, "invitation", inv, &living.ID, map[string]any{"email": u.Email, "groupId": 12}, false, "email")
+	add(audit.MemberRemoved, "group", 12, &living.ID, map[string]any{"userId": u.ID, "note": "Subject note"}, false, "note")
+	add(audit.RegistrationRemoved, "event", 13, &living.ID, map[string]any{"userId": u.ID, "note": "Subject note"}, false, "note")
+	add(audit.PushDeviceOn, "user", u.ID, &u.ID, map[string]any{"label": "Subject device", "deviceId": 14}, true, "label")
+	add(audit.GuardianLinkConfirmed, "guardian_link", 9005, &u.ID,
+		map[string]any{"teenUserId": teen.ID, "checkNote": "Keep safeguarding evidence"}, true)
+	add(audit.TeenConsentGranted, "user", teen.ID, &u.ID,
+		map[string]any{"evidenceText": "Keep consent evidence"}, true)
+
+	w := s.ac.do("DELETE", "/api/v1/admin/users/"+itoa(u.ID), nil, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	// Pin the complete public shape too: no class/action diagnostics, IDs or
+	// addresses may escape through the report, even when residue remains.
+	var body struct {
+		Erasure erasureReportJSON `json:"erasure"`
+	}
+	dec := json.NewDecoder(w.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	want := erasureReportJSON{ActivityEntriesKept: 5}
+	if body.Erasure != want {
+		t.Fatalf("report %+v, want %+v", body.Erasure, want)
+	}
+	assertAuditErasureRows(t, db, before, blank, removed)
+	var gone models.User
+	if err := db.Unscoped().First(&gone, u.ID).Error; err != nil || !gone.DeletedAt.Valid {
+		t.Fatalf("subject was not deleted: %+v %v", gone, err)
 	}
 }
 
@@ -2163,5 +2275,362 @@ func TestEraseAdminKeepsRole(t *testing.T) {
 	n, err := adminCountIn(s.app.DB)
 	if err != nil || n != 1 || s.app.adminCount() != 1 {
 		t.Errorf("adminCountIn = %d, %v, adminCount = %d, want 1 and 1", n, err, s.app.adminCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-CTX: what the DELETE route says when the deletion's time runs out or its
+// COMMIT goes unanswered. These tests pass unchanged at every later landing
+// head from R4-3b-V on: only the commit-phase classification may answer
+// delete_outcome_unknown, and nothing here may ever say "nothing was deleted"
+// for a COMMIT that was sent.
+// ---------------------------------------------------------------------------
+
+func setAdminDeleteBounds(t *testing.T, budget, reserve time.Duration) {
+	t.Helper()
+	oldBudget, oldReserve := adminDeleteBudget, contactCommitReserve
+	adminDeleteBudget, contactCommitReserve = budget, reserve
+	t.Cleanup(func() { adminDeleteBudget, contactCommitReserve = oldBudget, oldReserve })
+}
+
+func (r *ctxRig) deletedUser(id uint) bool {
+	r.t.Helper()
+	var n int64
+	if err := r.app.DB.Raw("SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NOT NULL", id).Scan(&n).Error; err != nil {
+		r.t.Fatal(err)
+	}
+	return n == 1
+}
+
+func TestAdminDeleteCommitPhaseAnswersUnknown(t *testing.T) {
+	const claim = "idle_in_transaction_session_timeout"
+	deferredFailure := func(t *testing.T, app *App, target *models.User) {
+		t.Helper()
+		for _, q := range []string{
+			`CREATE FUNCTION fold_test_fail_at_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+				BEGIN RAISE EXCEPTION 'deferred refusal' USING ERRCODE = '23514'; END $$`,
+			fmt.Sprintf(`CREATE CONSTRAINT TRIGGER fold_test_fail_at_commit AFTER UPDATE ON users DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+				WHEN (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL AND OLD.id = %d) EXECUTE FUNCTION fold_test_fail_at_commit()`, target.ID),
+		} {
+			if err := app.DB.Exec(q).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() {
+			app.DB.Exec("DROP TRIGGER IF EXISTS fold_test_fail_at_commit ON users")
+			app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_fail_at_commit()")
+		})
+	}
+	cases := []struct {
+		name    string
+		fault   testdb.Faults
+		setup   func(*testing.T, *App, *models.User)
+		deleted bool
+	}{
+		{name: "a: the reply held past the budget", fault: testdb.Faults{Match: claim, Commit: testdb.CommitHoldReply}, deleted: true},
+		{name: "b: forwarded, client closed before the reply", fault: testdb.Faults{Match: claim, Commit: testdb.CommitForwardThenClose}, deleted: true},
+		{name: "c: closed without forwarding", fault: testdb.Faults{Match: claim, Commit: testdb.CommitCloseUnforwarded}, deleted: false},
+		{name: "d: a deferred constraint fails at COMMIT", setup: deferredFailure, deleted: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setAdminDeleteBounds(t, 4*time.Second, 300*time.Millisecond)
+			app := testApp(t)
+			newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+			target := newTestUser(t, app, "target", "pw", models.RoleMember)
+			r := newCtxRigFor(t, app)
+			c := loginAPI(t, r.papp, "admin", "pw")
+			if tc.setup != nil {
+				tc.setup(t, app, target)
+			}
+			if tc.fault.Match != "" {
+				r.proxy.Arm(tc.fault)
+			}
+			w := c.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true)
+			if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"delete_outcome_unknown"`) {
+				t.Fatalf("delete: %d %s, want 500 delete_outcome_unknown", w.Code, w.Body.String())
+			}
+			for _, wrong := range []string{"delete_timed_out", "server_error", "nothing"} {
+				if strings.Contains(w.Body.String(), wrong) {
+					t.Errorf("the body says %q after a COMMIT that was sent: %s", wrong, w.Body.String())
+				}
+			}
+			if tc.deleted {
+				deadline := time.Now().Add(5 * time.Second)
+				for !r.deletedUser(target.ID) && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if !r.deletedUser(target.ID) || contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, target.ID) != 1 {
+					t.Error("the tombstone and the user.deleted row should be visible: the COMMIT reached the server")
+				}
+				return
+			}
+			if tc.fault.Match != "" {
+				r.awaitReleased(r.pidOf(claim), 10*time.Second)
+			}
+			if r.deletedUser(target.ID) || contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, target.ID) != 0 {
+				t.Error("the deletion was stored although its COMMIT never completed")
+			}
+		})
+	}
+}
+
+func TestAdminDeleteGateWaitAnswersTimedOut(t *testing.T) {
+	setAdminDeleteBounds(t, time.Second, 100*time.Millisecond)
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	target := newTestUser(t, app, "target", "pw", models.RoleMember)
+	c := loginAPI(t, app, "admin", "pw")
+	release, _ := holdAdvisory(t, app.DB, contactLockID)
+	defer release()
+	before := erasureWaitSnapshot(t, app.DB)
+	w := c.do("DELETE", "/api/v1/admin/users/"+itoa(target.ID), nil, true)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"delete_timed_out"`) {
+		t.Fatalf("delete: %d %s, want 503 delete_timed_out", w.Code, w.Body.String())
+	}
+	if after := erasureWaitSnapshot(t, app.DB); after != before {
+		t.Error("a timed-out deletion changed the database")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R4-3b-1: what the DELETE route does when a household row is busy. The
+// erasure takes its households NOWAIT and runs the whole transaction again, at
+// most three attempts inside deleteRetryWindow, sharing the request budget.
+// Every test goes through the proxy so the statements the server really saw
+// (BEGIN, the NOWAIT lock, ROLLBACK) are the evidence. The both-order barriers
+// with real household writers are in account_erasure_households_test.go.
+// ---------------------------------------------------------------------------
+
+// hlRig is the household scene served through the proxy: the admin's client
+// talks to r.papp, the scene and every observer to the server directly.
+func newHLRig(t *testing.T) (*hlScene, *ctxRig, *apiClient) {
+	t.Helper()
+	s := newHLScene(t, models.RoleMember)
+	r := newCtxRigFor(t, s.app)
+	// The route's handle, through the proxy, records the SQLSTATE the server
+	// answered each failed statement with (a statement the proxy logged was only
+	// forwarded, not necessarily executed).
+	var name string
+	if err := s.app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	r.papp.DB, s.states = tracedProxyDB(t, r.proxy, name)
+	pc := loginAPI(t, r.papp, "erase-admin", erasurePW)
+	pc.holdNotices = true
+	// Signing in through the proxy ran transactions of its own (throttle row,
+	// session): the shape below starts after them.
+	s.proxyMark = len(r.proxy.Events())
+	return s, r, pc
+}
+
+func hlDeletePath(s *hlScene) string { return "/api/v1/admin/users/" + itoa(s.victim.ID) }
+
+// hlStatementCount is how many statements the server saw that contain text.
+func hlStatementCount(r *ctxRig, text string) int {
+	n := 0
+	for _, e := range r.statements() {
+		if strings.Contains(e.SQL, text) {
+			n++
+		}
+	}
+	return n
+}
+
+// hlTransactionShape is the order of BEGIN, ROLLBACK and COMMIT the server saw
+// since the admin signed in (s.proxyMark), as letters: "BRBR" is two attempts
+// that each began and rolled back.
+func hlTransactionShape(s *hlScene, r *ctxRig) string {
+	var out strings.Builder
+	events := r.proxy.Events()
+	if s.proxyMark <= len(events) {
+		events = events[s.proxyMark:]
+	}
+	for _, e := range events {
+		switch {
+		case e.Kind == testdb.KindRollback:
+			out.WriteString("R")
+		case e.Kind == testdb.KindCommit:
+			out.WriteString("C")
+		case e.Kind == testdb.KindStatement && strings.HasPrefix(strings.ToLower(strings.TrimSpace(e.SQL)), "begin"):
+			out.WriteString("B")
+		}
+	}
+	return out.String()
+}
+
+func TestAdminDeleteHouseholdBusyExhaustsThreeAttempts(t *testing.T) {
+	setHouseholdRetry(t, 2*time.Second, [2]time.Duration{25 * time.Millisecond, 100 * time.Millisecond})
+	s, r, pc := newHLRig(t)
+	before := hlSnapshot(t, s.app.DB)
+	hold := holdHousehold(t, s.app.DB, s.hid)
+	w := pc.do("DELETE", hlDeletePath(s), nil, true)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"delete_household_busy"`) {
+		t.Fatalf("delete: %d %s, want 409 delete_household_busy", w.Code, w.Body.String())
+	}
+	for _, leak := range []string{"55P03", "NOWAIT", "households", "delete_outcome_unknown", "delete_timed_out"} {
+		if strings.Contains(w.Body.String(), leak) {
+			t.Errorf("the body says %q: %s", leak, w.Body.String())
+		}
+	}
+	if n := hlStatementCount(r, "FOR UPDATE NOWAIT"); n != 3 {
+		t.Errorf("%d household lock attempts, want exactly 3", n)
+	}
+	if n := s.states.Count("55P03"); n != 3 {
+		t.Errorf("the server answered %d lock requests with 55P03, want 3", n)
+	}
+	// Each retried BEGIN follows the previous ROLLBACK, and nothing committed.
+	if got := hlTransactionShape(s, r); got != "BRBRBR" {
+		t.Errorf("transactions %q, want BRBRBR: every attempt rolls back before the next begins", got)
+	}
+	if after := hlSnapshot(t, s.app.DB); after != before {
+		t.Error("an exhausted deletion changed the database (a tombstone, audit row, notice or job)")
+	}
+	// Nothing was half done: once the writer lets go the same request works.
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := pc.do("DELETE", hlDeletePath(s), nil, true); w.Code != http.StatusOK {
+		t.Fatalf("delete after the writer finished: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A rollback the server never acknowledged is not a released lock: the loop
+// ends with the busy answer and sends no further BEGIN.
+func TestAdminDeleteHouseholdBusyRollbackNotAcknowledged(t *testing.T) {
+	setHouseholdRetry(t, 2*time.Second, [2]time.Duration{25 * time.Millisecond, 100 * time.Millisecond})
+	s, r, pc := newHLRig(t)
+	before := hlSnapshot(t, s.app.DB)
+	hold := holdHousehold(t, s.app.DB, s.hid)
+	r.proxy.Arm(testdb.Faults{Match: "FOR UPDATE NOWAIT", Rollback: testdb.RollbackCloseUnforwarded})
+	w := pc.do("DELETE", hlDeletePath(s), nil, true)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"delete_household_busy"`) {
+		t.Fatalf("delete: %d %s, want 409 delete_household_busy", w.Code, w.Body.String())
+	}
+	if n := hlStatementCount(r, "FOR UPDATE NOWAIT"); n != 1 {
+		t.Errorf("%d household lock attempts, want 1: nothing may begin after an unacknowledged rollback", n)
+	}
+	if n := s.states.Count("55P03"); n != 1 {
+		t.Errorf("the server answered %d lock requests with 55P03, want 1", n)
+	}
+	if got := hlTransactionShape(s, r); got != "BR" {
+		t.Errorf("transactions %q, want a single BEGIN and its ROLLBACK", got)
+	}
+	// The server let go of the attempt's locks when its connection closed.
+	r.awaitReleased(r.pidOf("FOR UPDATE NOWAIT"), 10*time.Second)
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if after := hlSnapshot(t, s.app.DB); after != before {
+		t.Error("the deletion changed the database")
+	}
+}
+
+// Attempt 1 is refused with a real 55P03 and its rollback has run on the server;
+// attempt 2 commits but its acknowledgment is lost: the answer is
+// delete_outcome_unknown, nothing runs a third time, and exactly one deletion is
+// stored.
+//
+// The schedule is a barrier, not a delay. Attempt 1 is stopped before its lock
+// request while the test queues for the contact gate behind it, and the
+// household is held until the SQLSTATE 55P03 came back from the server and the
+// test was granted the gate (which only the finished ROLLBACK frees). Only
+// then is the commit fault armed for the next lock request, which is attempt
+// 2's: it is after the gate the test still holds. The household is released
+// and the gate handed back last.
+func TestAdminDeleteHouseholdBusyThenCommitUnknown(t *testing.T) {
+	setHouseholdRetry(t, 2*time.Second, [2]time.Duration{25 * time.Millisecond, 100 * time.Millisecond})
+	s, r, pc := newHLRig(t)
+	hold := holdHousehold(t, s.app.DB, s.hid)
+	reached, release := erasureTestPause(t, r.papp.DB, erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "FOR UPDATE NOWAIT"})
+	ch := bgDo(pc, "DELETE", hlDeletePath(s), nil)
+	awaitDBSignal(t, reached)
+	q := queueForGate(t, s.app)
+	waitContactWaiters(t, s.app, 1)
+	release()
+	awaitStates(t, s.states, "55P03", 1)
+	q.acquired(t)
+	// Attempt 1 is over on the server. The next lock request, attempt 2's, loses
+	// its COMMIT reply.
+	r.proxy.Arm(testdb.Faults{Match: "FOR UPDATE NOWAIT", Commit: testdb.CommitForwardThenClose})
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	q.release()
+	got := awaitResult(t, ch)
+	if got.code != http.StatusInternalServerError || !strings.Contains(got.body, `"code":"delete_outcome_unknown"`) {
+		t.Fatalf("delete: %d %s, want 500 delete_outcome_unknown", got.code, got.body)
+	}
+	for _, wrong := range []string{"delete_household_busy", "delete_timed_out", "nothing"} {
+		if strings.Contains(got.body, wrong) {
+			t.Errorf("the body says %q after a COMMIT that was sent: %s", wrong, got.body)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !r.deletedUser(s.victim.ID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !r.deletedUser(s.victim.ID) {
+		t.Fatal("attempt 2's COMMIT reached the server, so the deletion should be stored")
+	}
+	if n := hlStatementCount(r, "FOR UPDATE NOWAIT"); n != 2 {
+		t.Errorf("%d household lock attempts, want 2: no third attempt after an unknown commit", n)
+	}
+	if n := s.states.Count("55P03"); n != 1 {
+		t.Errorf("the server answered %d lock requests with 55P03, want only attempt 1's", n)
+	}
+	if got := hlTransactionShape(s, r); got != "BRBC" {
+		t.Errorf("transactions %q, want BRBC: one rollback, then a begin that committed", got)
+	}
+	if n := contactCount(t, s.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.UserDeleted, s.victim.ID); n != 1 {
+		t.Errorf("%d user.deleted rows, want exactly one committed deletion", n)
+	}
+}
+
+// Attempts 1 and 2 are busy and attempt 3 starts inside the window but waits on
+// a gate a test holds: the request ends at its budget with delete_timed_out,
+// nothing is stored, and that attempt's server backend is released later,
+// separately, within D + S + I.
+func TestAdminDeleteHouseholdBusyBoundedAttempt(t *testing.T) {
+	const budget = 3 * time.Second
+	setAdminDeleteBounds(t, budget, 100*time.Millisecond)
+	setHouseholdRetry(t, 2*time.Second, [2]time.Duration{50 * time.Millisecond, 700 * time.Millisecond})
+	s, r, pc := newHLRig(t)
+	before := hlSnapshot(t, s.app.DB)
+	hold := holdHousehold(t, s.app.DB, s.hid)
+	start := time.Now()
+	ch := bgDo(pc, "DELETE", hlDeletePath(s), nil)
+	awaitStates(t, s.states, "55P03", 2)
+	// The server refused attempt 2, which is rolling back; the gate is free once
+	// it has. Asking now queues behind attempt 2, ahead of attempt 3, which
+	// begins 700 ms later.
+	gate := holdContactGate(t, s.app)
+	waitContactWaiters(t, s.app, 1)
+	var attempt3 int
+	if err := s.app.DB.Raw(`SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+		AND wait_event = 'advisory' AND query LIKE 'SELECT pg_advisory_xact_lock%'`).Scan(&attempt3).Error; err != nil || attempt3 == 0 {
+		t.Fatalf("no backend waits on the gate: %d %v", attempt3, err)
+	}
+	got := awaitResult(t, ch)
+	elapsed := time.Since(start)
+	if got.code != http.StatusServiceUnavailable || !strings.Contains(got.body, `"code":"delete_timed_out"`) {
+		t.Fatalf("delete: %d %s, want 503 delete_timed_out", got.code, got.body)
+	}
+	if elapsed < budget-500*time.Millisecond || elapsed > budget+5*time.Second {
+		t.Errorf("the request ended after %v, want about its %v budget", elapsed, budget)
+	}
+	if n := hlStatementCount(r, "FOR UPDATE NOWAIT"); n != 2 {
+		t.Errorf("%d household lock attempts, want 2: the third never got past the gate", n)
+	}
+	// The client gave up at D; the server lets go of attempt 3 by D + S + I.
+	r.awaitReleased(attempt3, budget+contactServerCap+budget+2*time.Second)
+	if err := gate.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if after := hlSnapshot(t, s.app.DB); after != before {
+		t.Error("a timed-out deletion changed the database")
 	}
 }

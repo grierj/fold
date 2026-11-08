@@ -1,0 +1,128 @@
+=== scanner-initial (size 10000)
+2026-11-07 20:13:02.539 UTC [11662] LOG:  duration: 23.539 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT $1
+	Query Parameters: $1 = '50000'
+	Limit  (cost=14357.89..14385.39 rows=11000 width=25) (actual time=17.321..18.299 rows=11000 loops=1)
+	  Buffers: shared hit=11654 read=1831 written=2
+	  I/O Timings: shared read=2.306 write=0.030
+	  ->  Sort  (cost=14357.89..14385.39 rows=11000 width=25) (actual time=17.320..17.704 rows=11000 loops=1)
+	        Sort Key: id
+	        Sort Method: quicksort  Memory: 1158kB
+	        Buffers: shared hit=11654 read=1831 written=2
+	        I/O Timings: shared read=2.306 write=0.030
+	        ->  Seq Scan on contact_requests  (cost=0.00..13619.50 rows=11000 width=25) (actual time=0.018..15.407 rows=11000 loops=1)
+	              Buffers: shared hit=11651 read=1831 written=2
+	              I/O Timings: shared read=2.306 write=0.030
+=== scanner-continuation (size 10000)
+2026-11-07 20:13:02.614 UTC [11662] LOG:  duration: 17.622 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '1981', $2 = '50000'
+	Limit  (cost=14302.03..14326.81 rows=9910 width=25) (actual time=12.014..12.955 rows=9910 loops=1)
+	  Buffers: shared hit=11683 read=1799
+	  I/O Timings: shared read=2.100
+	  ->  Sort  (cost=14302.03..14326.81 rows=9910 width=25) (actual time=12.013..12.355 rows=9910 loops=1)
+	        Sort Key: id
+	        Sort Method: quicksort  Memory: 1081kB
+	        Buffers: shared hit=11683 read=1799
+	        I/O Timings: shared read=2.100
+	        ->  Seq Scan on contact_requests  (cost=0.00..13644.27 rows=9910 width=25) (actual time=0.026..10.297 rows=9910 loops=1)
+	              Filter: (id > '1981'::bigint)
+	              Rows Removed by Filter: 1090
+	              Buffers: shared hit=11683 read=1799
+	              I/O Timings: shared read=2.100
+2026-11-07 20:13:02.677 UTC [11662] LOG:  duration: 10.476 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '3981', $2 = '50000'
+	Limit  (cost=13847.18..13869.20 rows=8810 width=25) (actual time=5.605..6.358 rows=8810 loops=1)
+	  Buffers: shared hit=2295
+	  ->  Sort  (cost=13847.18..13869.20 rows=8810 width=25) (actual time=5.605..5.890 rows=8810 loops=1)
+	        Sort Key: id
+	        Sort Method: quicksort  Memory: 1004kB
+	        Buffers: shared hit=2295
+	        ->  Bitmap Heap Scan on contact_requests  (cost=556.56..13269.91 rows=8810 width=25) (actual time=1.222..3.994 rows=8810 loops=1)
+	              Recheck Cond: (id > '3981'::bigint)
+	              Heap Blocks: exact=2165
+	              Buffers: shared hit=2295
+	              ->  Bitmap Index Scan on contact_requests_pkey  (cost=0.00..554.36 rows=8810 width=0) (actual time=1.020..1.020 rows=20205 loops=1)
+	                    Index Cond: (id > '3981'::bigint)
+	                    Buffers: shared hit=130
+2026-11-07 20:13:02.738 UTC [11662] LOG:  duration: 8.983 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '5981', $2 = '50000'
+	Limit  (cost=13089.46..13108.74 rows=7710 width=25) (actual time=5.043..5.708 rows=7710 loops=1)
+	  Buffers: shared hit=2220
+	  ->  Sort  (cost=13089.46..13108.74 rows=7710 width=25) (actual time=5.042..5.296 rows=7710 loops=1)
+	        Sort Key: id
+	        Sort Method: quicksort  Memory: 735kB
+	        Buffers: shared hit=2220
+	        ->  Bitmap Heap Scan on contact_requests  (cost=488.04..12591.69 rows=7710 width=25) (actual time=1.133..3.677 rows=7710 loops=1)
+	              Recheck Cond: (id > '5981'::bigint)
+	              Heap Blocks: exact=2101
+	              Buffers: shared hit=2220
+	              ->  Bitmap Index Scan on contact_requests_pkey  (cost=0.00..486.11 rows=7710 width=0) (actual time=0.935..0.935 rows=19105 loops=1)
+	                    Index Cond: (id > '5981'::bigint)
+	                    Buffers: shared hit=119
+2026-11-07 20:13:02.803 UTC [11662] LOG:  duration: 8.166 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '7981', $2 = '50000'
+	Limit  (cost=12179.53..12196.06 rows=6610 width=25) (actual time=4.623..5.207 rows=6610 loops=1)
+	  Buffers: shared hit=2144
+	  ->  Sort  (cost=12179.53..12196.06 rows=6610 width=25) (actual time=4.623..4.854 rows=6610 loops=1)
+	        Sort Key: id
+	        Sort Method: quicksort  Memory: 657kB
+	        Buffers: shared hit=2144
+	        ->  Bitmap Heap Scan on contact_requests  (cost=419.51..11760.11 rows=6610 width=25) (actual time=1.018..3.343 rows=6610 loops=1)
+	              Recheck Cond: (id > '7981'::bigint)
+	              Heap Blocks: exact=2036
+	              Buffers: shared hit=2144
+	              ->  Bitmap Index Scan on contact_requests_pkey  (cost=0.00..417.86 rows=6610 width=0) (actual time=0.809..0.809 rows=18005 loops=1)
+	                    Index Cond: (id > '7981'::bigint)
+	                    Buffers: shared hit=108
+2026-11-07 20:13:02.863 UTC [11662] LOG:  duration: 7.218 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '9981', $2 = '50000'
+	Limit  (cost=0.29..10681.99 rows=5510 width=25) (actual time=0.027..4.329 rows=5510 loops=1)
+	  Buffers: shared hit=5503 dirtied=12
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..10681.99 rows=5510 width=25) (actual time=0.018..3.974 rows=5510 loops=1)
+	        Index Cond: (id > '9981'::bigint)
+	        Buffers: shared hit=5503 dirtied=12
+2026-11-07 20:13:02.918 UTC [11662] LOG:  duration: 3.792 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '11981', $2 = '50000'
+	Limit  (cost=0.29..733.98 rows=367 width=25) (actual time=0.017..2.166 rows=4410 loops=1)
+	  Buffers: shared hit=1059
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.016..1.932 rows=4410 loops=1)
+	        Index Cond: (id > $1)
+	        Buffers: shared hit=1059
+2026-11-07 20:13:02.976 UTC [11662] LOG:  duration: 3.113 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '13981', $2 = '50000'
+	Limit  (cost=0.29..733.98 rows=367 width=25) (actual time=0.018..1.191 rows=3310 loops=1)
+	  Buffers: shared hit=806
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.017..1.010 rows=3310 loops=1)
+	        Index Cond: (id > $1)
+	        Buffers: shared hit=806
+2026-11-07 20:13:03.032 UTC [11662] LOG:  duration: 2.035 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '15981', $2 = '50000'
+	Limit  (cost=0.29..733.98 rows=367 width=25) (actual time=0.019..1.147 rows=2210 loops=1)
+	  Buffers: shared hit=552
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.018..0.648 rows=2210 loops=1)
+	        Index Cond: (id > $1)
+	        Buffers: shared hit=552
+2026-11-07 20:13:03.087 UTC [11662] LOG:  duration: 1.004 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '17981', $2 = '50000'
+	Limit  (cost=0.29..733.98 rows=367 width=25) (actual time=0.018..0.413 rows=1110 loops=1)
+	  Buffers: shared hit=297
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.018..0.352 rows=1110 loops=1)
+	        Index Cond: (id > $1)
+	        Buffers: shared hit=297
+2026-11-07 20:13:03.140 UTC [11662] LOG:  duration: 0.073 ms  plan:
+	Query Text: SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2
+	Query Parameters: $1 = '19981', $2 = '50000'
+	Limit  (cost=0.29..733.98 rows=367 width=25) (actual time=0.017..0.070 rows=10 loops=1)
+	  Buffers: shared hit=45
+	  ->  Index Scan using contact_requests_pkey on contact_requests  (cost=0.29..7331.24 rows=3667 width=25) (actual time=0.017..0.069 rows=10 loops=1)
+	        Index Cond: (id > $1)
+	        Buffers: shared hit=45

@@ -62,6 +62,7 @@ import (
 	"time"
 
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/testdb"
 	"fold/migrations"
 	"fold/models"
@@ -749,8 +750,8 @@ func TestRegistrationAccessSchemaShape(t *testing.T) {
 	}
 	// The partial unique index lets one request ground one registration only.
 	var tables int
-	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 37 {
-		t.Fatalf("tables = %d (%v), models = %d, want 37", tables, err, len(models.All()))
+	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 39 {
+		t.Fatalf("tables = %d (%v), models = %d, want 39", tables, err, len(models.All()))
 	}
 }
 
@@ -1691,6 +1692,236 @@ func publicTableCount(t *testing.T, db *sql.DB) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// TestEmailAddressOptOutsMigration checks the dormant additive table and proves
+// that its scratch-only Down cannot discard a retained choice.
+func TestEmailAddressOptOutsMigration(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const version int64 = 5
+	if _, err := p.UpTo(ctx, version-1); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.email_address_optouts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table before 00005: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	var columns string
+	if err := db.QueryRow(`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
+		FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'email_address_optouts'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if want := "address_hash:text:NO,scope:text:NO,opted_out_at:timestamp with time zone:NO"; columns != want {
+		t.Fatalf("columns = %q, want %q", columns, want)
+	}
+	var primaryKey, scopeCheck string
+	if err := db.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'email_address_optouts'::regclass AND contype = 'p'`).Scan(&primaryKey); err != nil || primaryKey != "PRIMARY KEY (address_hash, scope)" {
+		t.Fatalf("primary key = %q, err=%v", primaryKey, err)
+	}
+	var indexes int
+	if err := db.QueryRow(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'email_address_optouts'`).Scan(&indexes); err != nil || indexes != 1 {
+		t.Fatalf("indexes = %d, err=%v, want only the primary key", indexes, err)
+	}
+	if err := db.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'email_address_optouts'::regclass AND conname = 'email_address_optouts_scope_check'`).Scan(&scopeCheck); err != nil {
+		t.Fatal(err)
+	}
+	gotScopes := regexp.MustCompile(`category:[a-z]+`).FindAllString(scopeCheck, -1)
+	var wantScopes []string
+	for _, category := range notify.OptionalEmailCategories() {
+		wantScopes = append(wantScopes, "category:"+category)
+	}
+	sort.Strings(gotScopes)
+	sort.Strings(wantScopes)
+	if strings.Join(gotScopes, ",") != strings.Join(wantScopes, ",") {
+		t.Fatalf("scope CHECK = %v, want optional email scopes %v", gotScopes, wantScopes)
+	}
+	const insert = `INSERT INTO email_address_optouts (address_hash, scope, opted_out_at) VALUES ($1, $2, $3)`
+	hash := strings.Repeat("a", 64)
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		hash       any
+		scope      any
+		at         any
+		code       string
+		constraint string
+	}{
+		{"uppercase hash", strings.Repeat("A", 64), "category:admin", at, "23514", "email_address_optouts_hash_check"},
+		{"short hash", strings.Repeat("a", 63), "category:admin", at, "23514", "email_address_optouts_hash_check"},
+		{"nonhex hash", strings.Repeat("g", 64), "category:admin", at, "23514", "email_address_optouts_hash_check"},
+		{"required scope", hash, "category:safety", at, "23514", "email_address_optouts_scope_check"},
+		{"group scope", hash, "group:1", at, "23514", "email_address_optouts_scope_check"},
+		{"unknown scope", hash, "category:unknown", at, "23514", "email_address_optouts_scope_check"},
+		{"null hash", nil, "category:admin", at, "23502", ""},
+		{"null scope", hash, nil, at, "23502", ""},
+		{"null time", hash, "category:admin", nil, "23502", ""},
+	} {
+		_, err := db.Exec(insert, tc.hash, tc.scope, tc.at)
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != tc.code || pgerr.ConstraintName != tc.constraint {
+			t.Fatalf("%s: err=%v, want SQLSTATE %s, constraint %q", tc.name, err, tc.code, tc.constraint)
+		}
+	}
+	// All four scopes can share one address; only the pair is unique.
+	for _, scope := range wantScopes {
+		if _, err := db.Exec(insert, hash, scope, at); err != nil {
+			t.Fatalf("insert %s: %v", scope, err)
+		}
+	}
+	_, err = db.Exec(insert, hash, "category:admin", at.Add(time.Hour))
+	var pgerr *pgconn.PgError
+	if !errors.As(err, &pgerr) || pgerr.Code != "23505" || pgerr.ConstraintName != "email_address_optouts_pkey" {
+		t.Fatalf("duplicate pair: %v, want primary key refusal", err)
+	}
+	// Leave exactly one retained record for the Down guard.
+	if _, err := db.Exec(`DELETE FROM email_address_optouts WHERE scope <> 'category:admin'`); err != nil {
+		t.Fatal(err)
+	}
+	before := appliedRows(t, db)
+	const refusal = "email_address_optouts has retained opt-outs; restore the upgrade.sh dump instead"
+	if _, err := p.Down(ctx); err == nil || !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("Down with a retained opt-out: %v, want %q", err, refusal)
+	}
+	if got := appliedRows(t, db); got != before {
+		t.Fatalf("refused Down changed migration bookkeeping: %s, want %s", got, before)
+	}
+	var keptHash, keptScope string
+	var keptAt time.Time
+	if err := db.QueryRow(`SELECT address_hash, scope, opted_out_at FROM email_address_optouts`).Scan(&keptHash, &keptScope, &keptAt); err != nil || keptHash != hash || keptScope != "category:admin" || !keptAt.Equal(at) {
+		t.Fatalf("refused Down changed retained choice: %q %q %v, err=%v", keptHash, keptScope, keptAt, err)
+	}
+	if _, err := db.Exec(`DELETE FROM email_address_optouts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Down(ctx); err != nil {
+		t.Fatalf("Down on an empty table: %v", err)
+	}
+	if v, err := p.GetDBVersion(ctx); err != nil || v != version-1 {
+		t.Fatalf("version after Down = %d, err=%v, want %d", v, err, version-1)
+	}
+	if err := db.QueryRow(`SELECT to_regclass('public.email_address_optouts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table after Down: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	if v, err := p.GetDBVersion(ctx); err != nil || v != version {
+		t.Fatalf("version after Up = %d, err=%v, want %d", v, err, version)
+	}
+	if _, err := db.Exec(insert, hash, "category:admin", at); err != nil {
+		t.Fatalf("insert after round trip: %v", err)
+	}
+}
+
+// TestAdminOperationAttemptsMigration checks the dormant receipt shape and
+// proves Down discards only receipts and Up recreates the empty table.
+func TestAdminOperationAttemptsMigration(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const version int64 = 6
+	if _, err := p.UpTo(ctx, version-1); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table before 00006: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatal(err)
+	}
+	var columns, primaryKey, defaultValue string
+	if err := db.QueryRow(`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
+		FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'admin_operation_attempts'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if want := "attempt_id:bytea:NO,created_at:timestamp with time zone:NO"; columns != want {
+		t.Fatalf("columns = %q, want %q", columns, want)
+	}
+	if err := db.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'admin_operation_attempts'::regclass AND contype = 'p'`).Scan(&primaryKey); err != nil || primaryKey != "PRIMARY KEY (attempt_id)" {
+		t.Fatalf("primary key = %q, err=%v", primaryKey, err)
+	}
+	if err := db.QueryRow(`SELECT column_default FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'admin_operation_attempts' AND column_name = 'created_at'`).Scan(&defaultValue); err != nil || defaultValue != "now()" {
+		t.Fatalf("created_at default = %q, err=%v", defaultValue, err)
+	}
+	var indexes, foreignKeys int
+	var indexDef string
+	if err := db.QueryRow(`SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'admin_operation_attempts'`).Scan(&indexes); err != nil || indexes != 2 {
+		t.Fatalf("indexes = %d, err=%v, want primary key and created_at", indexes, err)
+	}
+	if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'
+		AND tablename = 'admin_operation_attempts' AND indexname = 'admin_operation_attempts_created_at'`).Scan(&indexDef); err != nil || !strings.HasPrefix(indexDef, "CREATE INDEX ") || !strings.HasSuffix(indexDef, "USING btree (created_at)") {
+		t.Fatalf("created_at index = %q, err=%v", indexDef, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pg_constraint WHERE conrelid = 'admin_operation_attempts'::regclass AND contype = 'f'`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
+		t.Fatalf("foreign keys = %d, err=%v, want none", foreignKeys, err)
+	}
+	const insert = `INSERT INTO admin_operation_attempts (attempt_id) VALUES ($1)`
+	for _, size := range []int{15, 17} {
+		_, err := db.Exec(insert, make([]byte, size))
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != "23514" {
+			t.Fatalf("%d-byte nonce: %v, want CHECK refusal", size, err)
+		}
+	}
+	nonce := make([]byte, 16)
+	var at time.Time
+	if err := db.QueryRow(insert+` RETURNING created_at`, nonce).Scan(&at); err != nil || at.IsZero() {
+		t.Fatalf("16-byte nonce with default time: at=%v, err=%v", at, err)
+	}
+	for _, tc := range []struct {
+		name string
+		q    string
+		arg  any
+		code string
+	}{
+		{"duplicate nonce", insert, nonce, "23505"},
+		{"null nonce", insert, nil, "23502"},
+		{"null time", `INSERT INTO admin_operation_attempts (attempt_id, created_at) VALUES ($1, NULL)`, make([]byte, 16), "23502"},
+	} {
+		_, err := db.Exec(tc.q, tc.arg)
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != tc.code {
+			t.Fatalf("%s: %v, want SQLSTATE %s", tc.name, err, tc.code)
+		}
+	}
+	// Unlike retained opt-outs, receipts may be dropped even when populated.
+	if _, err := p.Down(ctx); err != nil {
+		t.Fatalf("Down with a receipt: %v", err)
+	}
+	if v, err := p.GetDBVersion(ctx); err != nil || v != version-1 {
+		t.Fatalf("version after Down = %d, err=%v, want %d", v, err, version-1)
+	}
+	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("table after Down: exists=%t, err=%v", exists, err)
+	}
+	if _, err := p.UpTo(ctx, version); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	var receipts int
+	if err := db.QueryRow(`SELECT count(*) FROM admin_operation_attempts`).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatalf("receipts after round trip = %d, err=%v, want none", receipts, err)
+	}
+	if _, err := db.Exec(insert, nonce); err != nil {
+		t.Fatalf("insert after round trip: %v", err)
+	}
 }
 
 func TestBaselineDownRefusesWhileAUserExists(t *testing.T) {
@@ -3089,10 +3320,9 @@ func TestConsentScrubKeepsThePreviousWriterWorking(t *testing.T) {
 // skips the historical completion recheck for the deferred event of that same
 // UPDATE on a granted row. Everything else runs the baseline body.
 //
-// Every test that claims the 00004 contract opens a fresh unmigrated database and
-// runs UpTo(agesNoteTriggerTestVersion); none uses the latest version, so a later
-// migration cannot change what these tests prove. The latest-schema checks
-// (TestNoDrift, TestBaselineFileShape and the down/up tests) stay separate.
+// The tests pin 00004 rather than the latest version. The behavioral matrices
+// also run at 00007 to prove T07B preserves the ages-note contract. The latest
+// schema checks (TestNoDrift and TestBaselineFileShape) stay separate.
 //
 // Evidence kinds, as the mutation plan records them. A behavioral kill is a test
 // that fails at run time because the database now does something else. A
@@ -3455,7 +3685,15 @@ const agesNoteBlankSQL = `UPDATE contact_requests SET add_childcare_ages_note = 
 // fails with SQLSTATE 23514 from the identity trigger and writes nothing.
 func TestAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerAllowsOnlyTheErasureBlank(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 	before := a.rows(false)
@@ -3545,7 +3783,15 @@ type agesNoteWant struct{ step, msg string }
 // persisted. A statement after a failing one never runs.
 func TestAgesNoteTriggerDeferredCases(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerDeferredCases(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerDeferredCases(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 
@@ -3659,7 +3905,15 @@ func TestAgesNoteTriggerDeferredCases(t *testing.T) {
 // control for the lookup itself. Registrations and audit snapshots are untouched.
 func TestAgesNoteTriggerHistoricalCompletion(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerHistoricalCompletion(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerHistoricalCompletion(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	a.seedRows()
 	a.tombstone(2)
 	for _, c := range []struct {
@@ -3722,19 +3976,21 @@ func TestAgesNoteMigrationFileHasNoTriggerBypass(t *testing.T) {
 	if got := agesNoteBypassWords("ALTER  TABLE x\nDISABLE TRIGGER y; SELECT set_config('session_replication_role','replica',true);"); len(got) != 4 {
 		t.Fatalf("detector found %q in its fixture, want alter table, disable trigger, session_replication_role and set_config", got)
 	}
-	b, err := migrations.Files.ReadFile(agesNoteMigrationFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	src := string(b)
-	if found := agesNoteBypassWords(src); len(found) > 0 {
-		t.Errorf("%s contains %q", agesNoteMigrationFile, found)
-	}
-	if strings.Contains(strings.ToLower(src), "-- contracts:") {
-		t.Errorf("%s has a contracts line, but nothing is dropped or renamed (DEC-138)", agesNoteMigrationFile)
-	}
-	if !strings.Contains(src, "DEC-138") || strings.Count(src, "-- +goose StatementBegin") != 4 || strings.Count(src, "-- +goose StatementEnd") != 4 {
-		t.Errorf("%s lacks its DEC-138 note or the four statement blocks (two in Up, two in Down)", agesNoteMigrationFile)
+	for _, file := range []string{agesNoteMigrationFile, reasonReviewMigrationFile} {
+		b, err := migrations.Files.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		if found := agesNoteBypassWords(src); len(found) > 0 {
+			t.Errorf("%s contains %q", file, found)
+		}
+		if strings.Contains(strings.ToLower(src), "-- contracts:") {
+			t.Errorf("%s has a contracts line, but nothing is dropped or renamed (DEC-138)", file)
+		}
+		if !strings.Contains(src, "DEC-138") || strings.Count(src, "-- +goose StatementBegin") != 4 || strings.Count(src, "-- +goose StatementEnd") != 4 {
+			t.Errorf("%s lacks its DEC-138 note or the four statement blocks (two in Up, two in Down)", file)
+		}
 	}
 }
 
@@ -4339,7 +4595,15 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 // its own there; it stays covered by the prefix fidelity in TestAgesNoteTriggerShape.
 func TestAgesNoteTriggerCoversAddedColumns(t *testing.T) {
 	t.Parallel()
-	a := newAgesNoteDB(t, agesNoteTriggerTestVersion)
+	for _, version := range []int64{agesNoteTriggerTestVersion, reasonReviewTriggerTestVersion} {
+		t.Run(fmt.Sprintf("version %d", version), func(t *testing.T) {
+			testAgesNoteTriggerCoversAddedColumns(t, version)
+		})
+	}
+}
+
+func testAgesNoteTriggerCoversAddedColumns(t *testing.T, version int64) {
+	a := newAgesNoteDB(t, version)
 	for i, id := range []int{300, 301, 302} {
 		a.addRequest(id, 1, 2, 30+i, "pending", "", fmt.Sprintf("%s (%d)", agesNoteText, id))
 	}

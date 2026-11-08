@@ -120,6 +120,18 @@ describe("MessageComposerPage", () => {
     expect(Messages.test).toHaveBeenCalledWith(5);
   });
 
+  it("explains a test send refused by the notification settings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.test).mockRejectedValue(new ApiError(400, "this kind of email is turned off in your notification settings", { code: "message_test_opted_out" }));
+    open("/messages/5");
+    await editorReady();
+    await user.click(screen.getByRole("button", { name: "Send a test to me" }));
+    const error = await screen.findByText(ERROR_COPY.message_test_opted_out);
+    expect(within(screen.getByRole("region", { name: "What it says" })).getByText(ERROR_COPY.message_test_opted_out)).toBe(error);
+    expect(screen.queryByText(/Sent to you/)).not.toBeInTheDocument();
+    expect(Messages.test).toHaveBeenCalledWith(5);
+  });
+
   it("shows the API's error in words, never its text", async () => {
     const user = userEvent.setup();
     vi.mocked(Messages.test).mockRejectedValue(new ApiError(400, "you've sent 10 tests in the last hour", { code: "message_test_limit" }));

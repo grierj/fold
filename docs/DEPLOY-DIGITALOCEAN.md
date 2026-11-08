@@ -354,23 +354,237 @@ The next backup encrypts with that public key and uploads only the
 the droplet. If `age` is missing or the recipient is empty, nothing is
 uploaded.
 
-Restore the live site only when you mean to replace it. Stop the app,
-load a dump, start the app:
+Practice with `backup.sh --restore-test` before you need a real restore; it
+loads the newest dump into a throwaway database and never touches `fold`. It
+does not rehearse `restore.sh`.
+
+The full `restore-drill.sh` is a development verification, not a routine backup
+check. Run it only when changes have a high chance of altering the restore behavior it checks,
+when the drill itself changed, or when its last run was more than 30 days ago.
+Record the reason and date with the evidence; use targeted checks otherwise.
+
+### Restoring a nightly dump (interim notes)
+
+These notes are interim and the steps are recommended, not a promise. They
+describe `/opt/fold/restore.sh` as written in this tree. Local drills on a
+disposable Compose stack exercised it (the most recent full `restore-drill.sh`
+run, "drill16", passed on an uncommitted candidate whose base was `3a97ff9`;
+that is prior candidate evidence, not a run at the current head). The checks on
+a real droplet in
+[FIRST-CHURCH-CHECKS.md](FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment)
+have not been done. No release that reports `recoveryPolicy` 1 or higher may be
+published until this tooling and these notes are landed and verified. Erasure is
+not finished (M7.4 is incomplete); nothing here says a restore brings back or
+removes every trace of anyone.
+
+**Why a procedure.** A dump knows nothing about people deleted after it was
+taken, so restoring it brings them back as active accounts. `restore.sh` keeps
+the public site closed and queued background deliveries paused while you delete them again from the
+church's own records. It never restores into the live `fold` database
+(`pg_restore --clean` into a live database can leave newer objects behind).
+The old manual `docker compose stop app` plus `pg_restore --clean` block is
+retired; do not use it.
+
+Run the installed `/opt/fold/restore.sh` as root. On its first use it checks
+that the complete tool set sits beside it (otherwise it stops, names the missing
+file and tells you to run the current `provision.sh`), copies the set into a
+root-owned `/opt/fold/recovery-tools`, and re-runs from there. A rejected
+preflight leaves the installed recovery tools unchanged.
+
+**Before you start** (every item is checked before anything stops, unless
+noted):
+
+- The dump is a `pg_dump -Fc` file readable on the droplet. Decrypt offsite
+  `.age` files first (see above). `pg_restore -l` must read it.
+- Free space in the database volume is at least twice the live `fold` database
+  plus ten times the dump.
+- `127.0.0.1:18080` is free, and no `fold_restore_*` or `fold_pre_restore_*`
+  database is left over from another run (it names them and stops; read what it
+  says before you drop anything).
+- `recovery.lock` does not exist. If it does, run `restore.sh --status`.
+- The pinned app image exists in the local Docker store. If it does not, the
+  floor check stops with a message to recover that exact image: pull the pinned
+  release, or rebuild the pinned source commit with its recorded label. Do not
+  guess a tag or commit, edit the floor or change the pin.
+- To restore with a particular release, add `--image REF` (needs a source
+  directory with `docker-compose.yml`, `Caddyfile` and `.env.example`, default
+  `/root/fold`) or `--commit SHA` (needs a clean checkout of that commit in
+  `--source-dir`). With neither, the recovery instance runs the image already
+  pinned and nothing is pinned.
+- A `backup.sh` run in progress delays this preflight for at most 120 seconds;
+  nothing has been stopped yet. If it is still busy the restore exits 75: wait
+  and retry.
+- Keep a current dump if the live data matters. The old database is removed
+  when you reopen, and this tool cannot bring it back.
+
+**Run it:**
 
 ```bash
-cd /opt/fold
-sudo docker compose stop app
-# Decrypt offsite ciphertext on a trusted machine first:
-#   age -d -i fold-backup.key -o fold.dump fold.dump.age
-sudo docker compose exec -T db \
-  pg_restore -U church -d fold --clean --if-exists --no-owner < /var/backups/fold/fold-YYYYMMDD-HHMM.dump
-sudo docker compose start app
-curl -fsS https://groups.example.org/healthz
+sudo /opt/fold/restore.sh --dump /var/backups/fold/fold-YYYYMMDD-HHMM.dump
 ```
 
-Practice that against `backup.sh --restore-test` before you need the
-real one. A Droplet Backup restore is a control-panel action on the
-whole disk; do it when the virtual machine itself is the thing that broke.
+In order, `restore.sh`:
+
+1. Writes `/opt/fold/recovery.lock` (its durable state) before stopping
+   anything. From then until the lock is removed, `backup.sh` and its expiry
+   refuse (see "Backups are suspended" below).
+2. Stops Caddy and the app, then requires that no other client is connected to
+   `fold` (it waits up to 120 seconds for a running `backup.sh` dump to finish,
+   otherwise it stops with the services still stopped).
+3. Restores the dump into a new database, `fold_restore_<id>`, in one
+   transaction. If that fails, `fold` has not been touched. The failed database
+   is dropped and the phase is `collect-failed`; run `--abort` to reopen the
+   original, or `--resume` to try again.
+4. Counts the accounts the dump would bring back: the accounts that are deleted
+   in the stopped live `fold` database and active in the restored copy. The ids
+   are streamed and never written to disk. Selection never uses audit
+   timestamps. An account created and deleted after the dump is not in the dump
+   and is not counted. If the live database cannot be read, the count is
+   `unknown`, and the church's records are the only list.
+5. If you gave `--image` or `--commit`, pins that release (no service start),
+   checks its recovery level and refuses if it is below the host's level.
+6. Swaps the databases whole: `fold` becomes `fold_pre_restore_<id>` (closed to
+   connections) and the restored database becomes `fold`, in one transaction.
+   If the swap fails, `fold` is as it was, and nothing old lingers in the
+   restored one.
+7. Starts a private recovery instance: the pinned image, background work off
+   (queued mail, push and scheduled jobs do not run), restart policy `no`, reachable only at
+   `127.0.0.1:18080` on the droplet. Caddy and the app stay stopped.
+
+Exit codes: 0 means the step finished (a plain `--dump` that exits 0 leaves the
+site **closed**, in private recovery); 1 a refusal or failure. Check `--status`: `cleanup-failed` after a successful smoke check can leave the site open with backups suspended; run `--resume`. If closure failed, closure was not verified: inspect `--status` and resolve the stop or exclusion failure before relying on private recovery;
+3 the dump was restored with `--reopen-if-none` but the site is **closed** in
+private recovery (see below); 75 another maintenance operation holds
+`/opt/fold/ops.lock`.
+
+**Private recovery.** On your own computer:
+
+```bash
+ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
+```
+
+Open `http://localhost:18080` in Chrome or Firefox (they keep the secure
+session cookie on `localhost`; Safari is not recommended), sign in as an admin
+and delete again, in Admin → Users, every account that was deleted after the
+dump, using the church's records. `restore.sh` printed how many; it saves no
+list of names or ids. A list view of previously deleted accounts is not built
+(it waits on an open owner question, R4-6e-R), so for an `unknown` count or a
+nonzero one the church's records are the only source. Stay in this state as
+long as you need while the public site stays closed. Background deliveries are paused, but some actions can send mail or push synchronously. Use this instance only for the account-deletion workflow described here; do not use email changes, composer test sends or push tests.
+
+**Reopen.** When every one is deleted again:
+
+```bash
+sudo /opt/fold/restore.sh --reopen --checked-church-records
+```
+
+`--checked-church-records` is required when the count is above zero or unknown.
+It is your statement that you re-deleted everyone; the script cannot check it.
+It prints the count again. With a count of exactly zero, plain `--reopen`
+works. Reopening removes the recovery instance, starts the app (background work
+starts, still not public) and then Caddy, runs `smoke.sh`, removes the old
+database `fold_pre_restore_<id>` after checking its identity, records the new
+recovery floor (it never goes down) and removes `recovery.lock` last. If any
+step up to smoke fails, Caddy and the app are stopped again, the phase is
+`reopen-failed`, and `--resume` returns to private recovery.
+
+`--reopen-if-none` (used by `upgrade.sh --rollback`) runs the same reopen on its
+own only when the count is exactly zero. Otherwise it stops after the recovery
+instance is running, prints `SITE IS CLOSED` and exits 3.
+
+**Backups are suspended during recovery.** While `recovery.lock` exists,
+`backup.sh` (and the 02:30 cron run) exits 75 without a dump, a restore test,
+expiry or an offsite upload, and nothing retries it. `LAST_OK` goes stale and
+old dumps are not expired until the first backup after reopen. That first
+backup is not automatic: run `sudo /opt/fold/backup.sh` by hand once the site
+is reopened. `backup.sh` uses its own `backup.lock`, never `ops.lock`.
+
+**One operation at a time, and never delete a lock.** Another provision,
+upgrade, rollback or restore exits 75 while one runs; `/opt/fold/ops.owner`
+shows who. Never delete, rename or replace `ops.lock`, `backup.lock` or
+`recovery.lock` to get past a refusal. A killed run frees `ops.lock` by itself;
+`recovery.lock` is the record `--resume` and `--abort` read.
+
+**If something stops partway.**
+
+- `sudo /opt/fold/restore.sh --status` is read-only and takes no lock. It prints
+  the phase, which databases exist (name, oid, size, whether they accept
+  connections), the containers and their restart policies, the ports, the
+  count and the operations holder. Its observations may be mid-change if an
+  operation is running.
+- `--resume` never trusts the recorded phase or a command's exit status. It
+  first observes the databases (by name and oid), the release pin and the
+  containers, and then continues. It needs the dump file again (same
+  checksum) only until the restore has been collected; after that it does not.
+  If a reopen was interrupted before the site became public, `--resume`
+  closes the site first (stops Caddy, the app and any recovery instance,
+  checks the ports and the connections), then returns to private recovery,
+  and you run `--reopen` again. This holds even if the old database had
+  already been removed. Once smoke passed and cleanup began, `--resume`
+  instead finishes the reopen (it reruns smoke); if smoke fails there, it
+  closes again and the next `--resume` returns to private recovery.
+- `--abort` is allowed only before the swap, and only while the release pin is
+  unchanged: from `quiesce` through `swap-intent`, including `collect-failed`
+  and `swap-failed`. It re-enables `fold`, drops the half-built restored
+  database, removes any recovery container, starts the original release and
+  runs smoke. It is refused after the swap, after a pin changed anything, and
+  in `reconcile-needed`. An abort that is interrupted or fails (a failed drop,
+  start or smoke) is finished only by `--abort`; `--resume` is refused during
+  an abort. A drop that fails because a connection still holds the restored
+  database is retried by `--abort` once that connection is gone.
+- `reconcile-needed` means Fold found databases, a release pin or a container
+  in a state it did not record. It changed nothing in any database and started
+  nothing; it closed the site and removed any recovery container. Read
+  `--status`. Never rename or drop `fold` databases by hand. `--resume` only
+  rechecks: when the observations are accepted again it restores the earlier
+  phase and tells you to run `--resume` once more. `--abort` is refused.
+- After a droplet reboot or a Docker daemon restart in private recovery, the
+  app and Caddy stay stopped and the recovery container is stopped (restart
+  policy `no`); `docker compose ps -a` shows it. `--resume` removes and
+  recreates it. If a reboot hits an interrupted reopen, the app and Caddy may
+  come back running; `--resume` closes them before it restarts private
+  recovery. These two droplet cases are listed in
+  FIRST-CHURCH-CHECKS.md and have not been checked on a real droplet.
+
+**A lower recovery level is refused on every scripted path.** `provision.sh`,
+a forward `upgrade.sh --image` or `--commit`, `upgrade.sh --rollback` and
+`restore.sh --image` or `--commit` refuse a target below the host's recovery
+level, before any backup, checkout or pin, and name the restore barrier. There
+is no override. Restore the data with the current release instead (run
+`restore.sh --dump` with no lower `--image` or `--commit`).
+
+**Rollback.** `upgrade.sh --rollback` no longer restores by itself. After its
+own level check it runs `restore.sh --dump <the dump recorded in release.prev>
+--reopen-if-none` with the previous image or commit. It reopens on its own only
+at a count of exactly zero; otherwise it exits 3 with the site closed in private
+recovery, and you finish as above. `--dry-run` prints that hand-off.
+
+**Droplet Backups and snapshots are outside this procedure.** A disk rebuild
+starts Docker with the restored disk, and Caddy, the app and mail start at once
+with the backup's accounts and queued messages before anything on the host can
+stop them. Use `restore.sh --dump` with a `backup.sh` dump as the recommended
+restore. Use a Droplet Backup only when the machine and its dumps are gone; then
+delete again, from the church's records, everyone deleted since that backup.
+Treat the period between the rebuild and that cleanup as unprotected.
+
+**What a dump brings back.** A dump taken after an erasure may restore the
+scrubbed tombstone, which the daily legacy sweep processes again. A dump taken
+before an erasure restores the person as an active account; neither that sweep
+nor a count selects them, so you re-delete during recovery. No sentence here
+promises every copy of anyone's data is gone: dumps, offsite copies, Droplet
+Backups and snapshots keep what they held until they age out or you delete them.
+
+**Gaps in this tooling, stated plainly.**
+
+- `restore.sh` restores the database only. It does not touch the uploads volume
+  or `uploads-*.tgz`; restore uploads yourself if files are missing, and the
+  procedure for that is not covered or drilled here.
+- After the swap there is no way back through this tool: `--abort` is refused.
+  The old database exists only until `--reopen` removes it.
+- Safari, and any browser that drops the secure cookie on `localhost`, is not
+  recommended for the recovery instance.
+- The local drills used a stand-in smoke test and disposable stacks. Caddy and
+  TLS on a real domain, a droplet reboot and the browser steps are hand checks.
 
 ## 6. Upgrades and rollback
 
@@ -378,11 +592,17 @@ Pin every upgrade to an image tag or a git commit. `:latest` is refused.
 Read the release notes first. `README.md` records operator steps (for
 example the `SESSION_SECRET` length).
 
+Run the installed `/opt/fold/upgrade.sh`. It uses its enforcing copy in
+`/opt/fold/deploy-tools`, checks the target before backup or checkout, and
+runs that copy's provisioner. A target checkout supplies build inputs, never
+the provisioner. A script run by hand from an older checkout can bypass these
+checks. Do not use it to recover a deployment.
+
 On a pulled image (this changes `FOLD_VERSION` in `/opt/fold/.env`; there is
 no image to pull until the first release is published):
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh \
+sudo /opt/fold/upgrade.sh \
   --image ghcr.io/grierj/fold:x.y.z \
   --source-dir /root/fold
 ```
@@ -390,7 +610,7 @@ sudo /root/fold/deploy/digitalocean/upgrade.sh \
 On a build-based install, name the commit:
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh \
+sudo /opt/fold/upgrade.sh \
   --commit abcdef1234567 \
   --source-dir /root/fold
 ```
@@ -399,17 +619,114 @@ The script runs `backup.sh`, writes the current tag or commit and the new
 dump path to `/opt/fold/release.prev` (mode 600), then runs `provision.sh`,
 which runs `smoke.sh`. `.env` is left in place.
 
-Roll back to that previous tag or commit and restore the dump it recorded:
+When the previous release meets the host's recovery floor, roll back to that
+tag or commit and restore the dump it recorded:
 
 ```bash
-sudo /root/fold/deploy/digitalocean/upgrade.sh --rollback
+sudo /opt/fold/upgrade.sh --rollback
 ```
 
-Rollback stops the app, runs `pg_restore` of the recorded dump into the
-`fold` database, starts the previous image or commit, and runs `smoke.sh`
-again. Take a Droplet snapshot before a risky upgrade (the paid command
-in section 5). Migrations run when the app starts. A failed migration
-exits non-zero and `smoke.sh` fails; roll back with the command above.
+Rollback does not restore anything itself. After the recovery-level check it
+hands off to `restore.sh --dump <recorded dump> --reopen-if-none` with the
+previous image or commit, so the dump goes into a fresh database and the site
+stays closed while you delete again anyone removed since that dump (see
+"Restoring a nightly dump" in section 5). It reopens by itself only when the
+count is exactly zero. Otherwise it exits 3 with the restore finished and the
+site **closed** in private recovery, and you continue with `restore.sh`.
+`upgrade.sh --rollback --dry-run` prints the hand-off. A Droplet snapshot taken
+before a risky upgrade (the paid command in section 5) is a different, whole-disk
+recovery that is outside this protection. Migrations run when the app starts. A
+failed migration exits non-zero and `smoke.sh` fails. Inspect the failure before
+choosing recovery. Rollback is subject to the recovery floor even after failed
+smoke.
+
+### Recovery refusal and interrupted operations
+
+Every scripted deploy, forward upgrade and rollback refuses a target below
+the host's recovery level. Level 1 requires the restore barrier; level 2 also
+requires reason review. The scripts read integer `recoveryPolicy` from an
+image's `/fold version --json` output, or read the one-line
+`deploy/recovery-policy` file at a source commit. Missing release metadata means level 0;
+malformed metadata refuses. The host floor is the greater of `recovery-policy-floor`
+and the level of the image its current Compose pin names. There is no override.
+The floor file is recorded only after smoke passes and never decreases.
+
+R4-RP is staged locally. Never publish a release reporting `recoveryPolicy >= 1`
+before R4-6c-R's current-release restore tooling and operator procedure land
+and are verified. The local refusal drills do not verify that restore procedure
+or complete the [real-droplet checks](FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment).
+
+If a higher-level image starts but smoke fails, its pin already contributes
+to the floor. `--rollback` to a lower-level previous release is refused even
+if no floor file was written. Keep the current release, inspect service health,
+and repair it or restore data with that release's recovery tooling. Use
+`/opt/fold/restore.sh --dump PATH` and the notes in section 5. If the installed
+set has no `restore.sh`, run the current `provision.sh` to install the complete
+tool set (a copy of `restore.sh` run by hand refuses and names the missing
+file). Do not substitute the older rollback script, edit the floor, or change
+the pin to bypass refusal. The same refusal applies to `restore.sh --image` and
+`--commit`: restore with the current release, not a lower one.
+Provision, upgrade and a new `restore.sh --dump` also exit non-zero before
+changing anything while `/opt/fold/recovery.lock` exists; run `restore.sh --status`.
+
+If the floor check cannot resolve Compose configuration, repair
+`/opt/fold/docker-compose.yml` and `/opt/fold/.env` before retrying. If the
+pinned image is missing locally, recover that exact pinned image first.
+For an image release, pull its pinned reference. For a source build, recover
+the recorded source commit and rebuild it with the recorded image label.
+Do not guess a replacement commit or tag. Version inspection uses the local
+image with `--network none --pull never`; the floor check never pulls an image
+or falls back to the floor file alone.
+
+Exit 76 means the new stack deployed and smoke passed, but writing or syncing
+the floor file failed. Keep the pin and local image. Repair storage or file
+permissions, then rerun the installed `provision.sh` with the same release,
+source directory, domain and deployment options. This retries the durable
+floor write even if the file already contains the level. It is not a rollback
+instruction.
+
+Only one operation can hold `/opt/fold/ops.lock`. Another provision, upgrade
+or rollback exits 75 before reading release or database state. `ops.owner`
+shows an informational pid, mode and start time. Never delete, rename or
+replace `ops.lock`. Its inode must stay the same. File descriptor 9 is inherited
+by the enforcing tool and its children. A surviving helper can therefore keep
+the lock held after the recorded pid exits. If exit 75 persists, run
+`sudo fuser -v /opt/fold/ops.lock`, inspect those processes and stop only a
+verified abandoned operation or helper. Retry after it exits. Do not kill
+every process from `fuser` without checking what it is doing.
+
+The enforcing tool set has an integer `deploy-tools-version`. The new tools
+refuse to replace a higher installed version; missing metadata means version
+0. This orders tool protocols, not commits within the same version. Use the
+installed entry point rather than an older checkout to keep the current tools.
+To install a newer tool set, first update the trusted source checkout, then run
+that checkout's `deploy/digitalocean/upgrade.sh` or `provision.sh`. Its tool
+version must be at least the installed version. An installed upgrade otherwise
+continues to use its existing enforcing copy even when the target checkout is newer.
+If that entry point itself reports an older tool version, use the newer
+installed `/opt/fold/deploy-tools/upgrade.sh` named by the diagnostic.
+The tool swap uses two directory renames, so it has an interruption window.
+On the next installed `upgrade.sh` run, one complete saved
+`.old-deploy-tools.*` set is restored if `deploy-tools` is absent. Stale stages
+and saved sets are removed only after a live set is available. Ambiguous or
+incomplete saved sets refuse with recovery instructions; preserve them and
+restore the verified current tool set before retrying. The script does not
+guess which of several saved sets is current.
+
+`--dry-run` writes no files, takes no lock and never pulls or executes an
+image. It reads a build target's recovery metadata and refuses a level below
+the recorded floor. It explicitly marks the full host floor and image target
+as unverified when they require executing an image. A missing checkout in a
+dry-run rollback is also marked unverified. A successful dry run with these
+messages does not prove that a real run will pass recovery checks.
+
+`DEPLOY_DRILL=1` is test only. The disposable `deploy-drill.sh` harness creates
+a root-owned mode-600 `.deploy-drill` marker bound to its scratch deployment
+path. The scripts reject drill mode without that marker, under `/opt/fold`
+including aliases and children, or beside a `backup.env`. Unset `DEPLOY_DRILL`
+and `DEPLOY_DRILL_PAUSE` before operating a real deployment. Drill mode omits
+host hardening, cron installation and email DNS setup; it uses local test
+smoke and backup tools. It is not a production deployment option.
 
 ### Upgrade notes: suppression address hashes (M7.4 R4-S)
 
@@ -434,10 +751,11 @@ upgrade.
   `suppressions`, so each one waits until the migration commits.
 - **If the lock is not free within 5 seconds** the migration fails, applies
   nothing and the app does not start. That is the failed-migration case above:
-  `smoke.sh` fails and you roll back with `upgrade.sh --rollback`.
-- **Rolling back.** `upgrade.sh --rollback` restores the dump taken before the
-  upgrade (`pg_restore --clean --if-exists`) and starts the previous image or
-  commit, as above. The test
+  `smoke.sh` fails. Use `upgrade.sh --rollback` only if the previous release
+  meets the recovery floor; otherwise follow the recovery instructions above.
+- **Rolling back.** `upgrade.sh --rollback` hands the dump taken before the
+  upgrade to `restore.sh`, which restores it into a fresh database and starts
+  the previous image or commit, as above. The test
   `TestSuppressionExpandKeepsThePreviousBinaryWorking` also records that the
   previous release's migration runner treats the upgraded database (version 2)
   as current: it runs nothing and does not refuse it, so starting the previous

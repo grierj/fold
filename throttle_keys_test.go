@@ -378,7 +378,7 @@ func throttleKeyViolations(sources map[string]string) []string {
 }
 
 // throttleSQLViolations rejects login_throttles SQL and models.LoginThrottle
-// outside the listed functions.
+// outside the listed functions, apart from literal erasure inventory metadata.
 func throttleSQLViolations(sources map[string]string, allowed map[string]map[string]bool) []string {
 	fset := token.NewFileSet()
 	var names []string
@@ -393,6 +393,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			bad = append(bad, name+": does not parse: "+err.Error())
 			continue
 		}
+		inventoryTables := erasureInventoryTableLiterals(name, f)
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && allowed[name][fn.Name.Name] {
 				continue
@@ -411,7 +412,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			ast.Inspect(d, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.BasicLit:
-					if x.Kind != token.STRING || jobKinds[x] {
+					if x.Kind != token.STRING || jobKinds[x] || inventoryTables[x] {
 						return true
 					}
 					v, err := strconv.Unquote(x.Value)
@@ -451,11 +452,42 @@ func throttleCoverageViolations(src string) []string {
 	if owner == nil {
 		return []string{throttleKeysFile + ": ownedThrottleKeys is missing"}
 	}
+	// Address-owned builders may run only inside the available-address arm.
+	// Id-owned builders must remain available even when the address is lost.
+	addressArm := map[*ast.CallExpr]bool{}
+	ast.Inspect(owner.Body, func(n ast.Node) bool {
+		branch, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		condition, ok := branch.Cond.(*ast.SelectorExpr)
+		if !ok || condition.Sel.Name != "ok" {
+			return true
+		}
+		base, ok := condition.X.(*ast.Ident)
+		if !ok || base.Name != "held" {
+			return true
+		}
+		ast.Inspect(branch.Body, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				addressArm[call] = true
+			}
+			return true
+		})
+		return true
+	})
 	called := map[string]bool{}
+	outsideAddressArm := map[string]bool{}
+	insideAddressArm := map[string]bool{}
 	ast.Inspect(owner.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			if id, ok := unparen(call.Fun).(*ast.Ident); ok && builders[id.Name] != nil {
 				called[id.Name] = true
+				if addressArm[call] {
+					insideAddressArm[id.Name] = true
+				} else {
+					outsideAddressArm[id.Name] = true
+				}
 			}
 		}
 		return true
@@ -473,6 +505,15 @@ func throttleCoverageViolations(src string) []string {
 				line = strings.TrimSpace(line)
 				owned = owned || strings.HasPrefix(line, "owned:")
 				shared = shared || strings.HasPrefix(line, "shared:")
+			}
+		}
+		if owned && builders[name].Type.Params != nil && len(builders[name].Type.Params.List) > 0 {
+			parameter, _ := builders[name].Type.Params.List[0].Type.(*ast.Ident)
+			if parameter != nil && parameter.Name == "string" && outsideAddressArm[name] {
+				bad = append(bad, name+" is address-owned but called outside if held.ok")
+			}
+			if parameter != nil && parameter.Name == "uint" && insideAddressArm[name] {
+				bad = append(bad, name+" is id-owned but called inside if held.ok")
 			}
 		}
 		switch {
@@ -676,7 +717,9 @@ func f(v any) { _ = v.(throttleKey) }`, "uses the throttleKey type"},
 	for _, tt := range []struct{ name, src, want string }{
 		{"builder with no owned or shared line", keysSrc + "\nfunc extraKey() throttleKey { return throttleKey(\"extra:x\") }\n", "extraKey needs exactly one doc line"},
 		{"owned builder missing from ownedThrottleKeys", keysSrc + "\n// extraOwnedKey is a test builder.\n// owned: one person's id.\nfunc extraOwnedKey(id uint) throttleKey { return throttleKey(\"extra:\" + strconv.Itoa(int(id))) }\n", "extraOwnedKey is owned but ownedThrottleKeys does not call it"},
-		{"shared builder present in ownedThrottleKeys", mutate("loginUserKey(userID),", "loginUserKey(userID),\n\t\tloginIPKey(addr),"), "loginIPKey is shared but ownedThrottleKeys calls it"},
+		{"address builder without an available address", mutate("keys = append(keys, loginEmailKey(addr))", "keys = append(keys, loginEmailKey(addr))\n\t}\n\tkeys = append(keys, loginEmailKey(held.value))\n\tif held.ok {"), "loginEmailKey is address-owned but called outside if held.ok"},
+		{"id builder behind address availability", mutate("keys = append(keys, loginEmailKey(addr))", "keys = append(keys, loginEmailKey(addr), loginUserKey(userID))"), "loginUserKey is id-owned but called inside if held.ok"},
+		{"shared builder present in ownedThrottleKeys", mutate("loginUserKey(userID),", "loginUserKey(userID),\n\t\tloginIPKey(held.value),"), "loginIPKey is shared but ownedThrottleKeys calls it"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			bad := throttleCoverageViolations(tt.src)
@@ -750,19 +793,16 @@ func TestOwnedThrottleKeysAreExactlyThePersonsKeys(t *testing.T) {
 		"manager-date-add:7",
 	}
 	sort.Strings(want)
-	if got := ownedThrottleKeys(7, "a@x.test"); !reflect.DeepEqual(got, want) {
+	if got := ownedThrottleKeys(7, heldAddress{value: "a@x.test", ok: true}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ownedThrottleKeys(7, a@x.test) = %v\nwant %v", got, want)
 	}
-	// An address is normalized like every other builder input, and an empty
-	// address still yields the id-keyed rows without duplicates.
-	if got := ownedThrottleKeys(7, "  A@X.test "); !reflect.DeepEqual(got, want) {
+	if got := ownedThrottleKeys(7, heldAddress{value: "  A@X.test ", ok: true}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the address must be normalized, got %v", got)
 	}
-	seen := map[string]bool{}
-	for _, k := range ownedThrottleKeys(7, "") {
-		if seen[k] {
-			t.Fatalf("duplicate key %q", k)
+	idOnly := []string{"emailchange:user:7:d", "emailchange:user:7:h", "manager-date-add:7", "people-search:user:7", "user:7"}
+	for _, held := range []heldAddress{{}, {value: "a@x.test"}, {value: "deleted-7@deleted.invalid"}} {
+		if got := ownedThrottleKeys(7, held); !reflect.DeepEqual(got, idOnly) {
+			t.Fatalf("unavailable address selected %v, want only %v", got, idOnly)
 		}
-		seen[k] = true
 	}
 }

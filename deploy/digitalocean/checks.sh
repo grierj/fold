@@ -12,6 +12,15 @@ check_fail() {
   return 1
 }
 
+# Caller holds the operations lock; these are private interrupted pin snapshots.
+remove_stale_pin_saves() {
+  local entry
+  for entry in "$1"/.pin-save.*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    rm -rf -- "$entry" || return 1
+  done
+}
+
 # env_value FILE KEY — prints the value, or returns 1 when the key is absent.
 env_value() {
   local file="$1" want="$2" line key val
@@ -300,4 +309,374 @@ probe_closed_ports() {
       fi
     done
   done
+}
+
+# Levels are small non-negative decimal integers. Bound them before shell
+# arithmetic so malformed or overflowing metadata can never weaken a floor.
+parse_recovery_level() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]{0,8})$ ]] || {
+    check_fail "unparsable recovery policy level '${value}'"; return 1;
+  }
+  printf '%s\n' "$value"
+}
+
+# Preserve line endings across command substitution. A metadata file may have
+# one terminating newline; an extra line is malformed, not legacy level zero.
+read_recovery_level() {
+  local value
+  value="$("$@" && printf .)" || return 1
+  value="${value%.}"
+  parse_recovery_level "${value%$'\n'}"
+}
+
+image_recovery_level() {
+  local json level
+  command -v jq >/dev/null || { check_fail "jq is required to read recoveryPolicy"; return 1; }
+  json="$(docker run --rm --network none --pull never --entrypoint /fold "$1" version --json)" || {
+    check_fail "cannot read recoveryPolicy from image $1"; return 1;
+  }
+  level="$(jq -ers '
+    if length != 1 or (.[0] | type) != "object" then error("expected one object")
+    else .[0] | if has("recoveryPolicy") then .recoveryPolicy else 0 end
+    | if type == "number" and . >= 0 and . == floor then tostring
+      else error("expected integer recoveryPolicy") end end' <<<"$json")" || {
+    check_fail "unparsable recoveryPolicy in image $1"; return 1;
+  }
+  parse_recovery_level "$level"
+}
+
+commit_recovery_level() {
+  local source="$1" sha="$2" paths
+  # ls-tree distinguishes a missing file (legacy level zero) from a broken
+  # object/repository. Do not turn an arbitrary git failure into level zero.
+  paths="$(git -C "$source" ls-tree "$sha" -- deploy/recovery-policy)" || return 1
+  if [[ -z "$paths" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  read_recovery_level git -C "$source" show "$sha:deploy/recovery-policy"
+}
+
+recovery_floor_file() {
+  local dir="$1"
+  if [[ -e "$dir/recovery-policy-floor" ]]; then
+    read_recovery_level cat "$dir/recovery-policy-floor" || {
+      check_fail "cannot read ${dir}/recovery-policy-floor; repair its integer value from deployment records, never lower it"; return 1;
+    }
+  else
+    printf '0\n'
+  fi
+}
+
+host_recovery_floor() {
+  local dir="$1" floor image image_id level ids
+  floor="$(recovery_floor_file "$dir")" || return 1
+  if [[ -f "$dir/docker-compose.yml" && -f "$dir/.env" ]]; then
+    # Compose resolves both explicit image pins and build-mode labels. Inspect
+    # locally: pulling here could silently change the currently deployed pin.
+    ids="$(docker compose --project-directory "$dir" config --format json)" || {
+      check_fail "cannot resolve the deployed pin in ${dir}/docker-compose.yml and ${dir}/.env. Repair Compose configuration, then retry; the recovery floor was not verified"; return 1;
+    }
+    image="$(jq -er '.services.app.image | select(type == "string" and length > 0)' <<<"$ids")" || {
+      check_fail "no valid app image pin in Compose configuration for ${dir}; repair services.app.image, then retry"; return 1;
+    }
+    image_id="$(docker image inspect --format '{{.Id}}' "$image")" || {
+      check_fail "cannot inspect deployed pin ${image} in ${dir}. Recover that exact image in the local store: pull the pinned release, or rebuild the pinned source commit with its recorded build label. Then retry. Do not change the pin or lower the floor to bypass this check"; return 1;
+    }
+    level="$(image_recovery_level "$image_id")" || {
+      check_fail "cannot read recovery level of deployed pin ${image} (${image_id}) in ${dir}; repair or recover that pinned image, then retry"; return 1;
+    }
+    (( level <= floor )) || floor="$level"
+  fi
+  printf '%s\n' "$floor"
+}
+
+# A dry run never pulls or executes an image, even one already local. The
+# persisted floor is a lower bound; a failed smoke may have left a higher pin.
+dry_run_recovery_check() {
+  local dir="$1" mode="$2" source="$3" sha="$4" floor level
+  floor="$(recovery_floor_file "$dir")" || return 1
+  echo "dry-run: recorded host recovery floor ${floor} (absent file means 0)"
+  if [[ -f "$dir/docker-compose.yml" && -f "$dir/.env" ]]; then
+    echo "dry-run: full host floor is unverified; the pinned image may require a higher level. A real run inspects and executes that local image before any release change"
+  fi
+  if [[ "$mode" == image ]]; then
+    echo "dry-run: target image recovery level is unverified; a real run needs a pull and a networkless local version read before backup, checkout or pin changes"
+    return 0
+  fi
+  if ! git -C "$source" rev-parse --verify "${sha}^{commit}" >/dev/null 2>&1; then
+    echo "dry-run: target commit ${sha} recovery level is unverified; restore the git checkout ${source} before a real run"
+    return 0
+  fi
+  level="$(commit_recovery_level "$source" "$sha")" || return 1
+  echo "dry-run: target commit recovery level ${level}; compare with recorded host floor ${floor}"
+  require_recovery_level "$level" "$floor" || return 1
+}
+
+require_recovery_level() {
+  local target="$1" floor="$2" missing=""
+  if (( target < floor )); then
+    if (( target < 1 && floor >= 1 )); then missing="the restore barrier (level 1)"; fi
+    if (( target < 2 && floor >= 2 )); then missing="${missing:+$missing and }reason review (level 2)"; fi
+    if (( floor > 2 )); then missing="${missing:+$missing and }the protection required by level $floor"; fi
+    check_fail "target recovery level ${target} is below host level ${floor}. The older release lacks ${missing}. Restore data with the current release; use restore.sh --dump once installed."
+    return 1
+  fi
+}
+
+write_recovery_floor() {
+  local dir="$1" level old=0 tmp
+  level="$(parse_recovery_level "$2")" || return 1
+  if [[ -e "$dir/recovery-policy-floor" ]]; then
+    old="$(read_recovery_level cat "$dir/recovery-policy-floor")" || return 1
+    (( level > old )) || level="$old"
+  fi
+  [[ "$(id -u)" == 0 ]] || { check_fail "writing the recovery floor requires root"; return 1; }
+  tmp="$(mktemp "$dir/.recovery-policy-floor.XXXXXX")" || return 1
+  if ! { printf '%s\n' "$level" >"$tmp" && chown 0:0 "$tmp" && chmod 644 "$tmp" \
+    && sync -f "$tmp" && mv -f "$tmp" "$dir/recovery-policy-floor" && sync -f "$dir"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# fd 9 stays open through exec and child provision/restore invocations. Never
+# unlink ops.lock: another inode would permit a second maintenance operation.
+ops_lock_acquire() {
+  local dir="$1" mode="$2" path="$1/ops.lock" owner tmp
+  [[ ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || {
+    check_fail "ops.lock must be a regular file, never a symlink"; return 1;
+  }
+  if [[ ! -e /proc/self/fd/9 ]] \
+    || [[ "$(stat -Lc '%d:%i' /proc/self/fd/9)" != "$(stat -Lc '%d:%i' "$path" 2>/dev/null || true)" ]]; then
+    local saved_umask
+    saved_umask="$(umask)"
+    umask 077
+    exec 9>>"$path" || { umask "$saved_umask"; return 1; }
+    umask "$saved_umask"
+  fi
+  if ! flock -n -x 9; then
+    owner="$(cat "$dir/ops.owner" 2>/dev/null || true)"
+    printf 'maintenance busy: %s. Nothing changed.\n' "${owner:-holder unknown}" >&2
+    printf 'If that pid has exited, inspect surviving lock holders with: sudo fuser -v %q. Stop only a verified abandoned operation or helper, then retry. Never delete ops.lock.\n' "$path" >&2
+    return 75
+  fi
+  chown 0:0 "$path" && chmod 600 "$path" || return 1
+  tmp="$(mktemp "$dir/.ops.owner.XXXXXX")" || return 1
+  printf 'pid=%s mode=%s start=%s\n' "$$" "$mode" "$(date -u +%FT%TZ)" >"$tmp" || { rm -f "$tmp"; return 1; }
+  if ! { chmod 600 "$tmp" && chown 0:0 "$tmp" && mv -f "$tmp" "$dir/ops.owner"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# The version orders enforcing tool protocols, not release/image versions.
+# Missing metadata is the first RP tool set, version 0. Never source old code
+# merely to read its version.
+deploy_tools_version() {
+  if [[ -e "$1/deploy-tools-version" ]]; then
+    read_recovery_level cat "$1/deploy-tools-version"
+  else
+    printf '0\n'
+  fi
+}
+
+require_deploy_tools_version() {
+  local source="$1" dir="$2" incoming installed path
+  incoming="$(deploy_tools_version "$source")" || return 1
+  for path in "$dir" "$dir/deploy-tools" "$dir/recovery-tools"; do
+    installed="$(deploy_tools_version "$path")" || return 1
+    if (( incoming < installed )); then
+      check_fail "tool-set version ${incoming} is older than installed version ${installed} in ${path}. Run the newer ${path}/upgrade.sh or the newer provision.sh; no older tools were installed"; return 1
+    fi
+  done
+}
+
+# The two directory renames cannot be atomic together. Under the operations
+# lock, restore the sole saved complete set after interruption. Never discard
+# the only surviving set, or guess between multiple backups.
+deploy_tools_complete() {
+  local name
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  for name in upgrade.sh provision.sh checks.sh backup.sh smoke.sh email-dns.sh backup.env.example; do
+    [[ -f "$1/$name" && ! -L "$1/$name" ]] || return 1
+  done
+}
+
+recover_enforcing_tools() {
+  local dir="$1" path
+  local -a backups=()
+  [[ ! -L "$dir/deploy-tools" ]] || { check_fail "deploy-tools must not be a symlink"; return 1; }
+  if [[ -e "$dir/deploy-tools" ]] && ! deploy_tools_complete "$dir/deploy-tools"; then
+    check_fail "incomplete deploy-tools in ${dir}; keep all saved tool sets and restore the verified current set before retrying"; return 1
+  fi
+  if [[ ! -e "$dir/deploy-tools" ]]; then
+    for path in "$dir"/.old-deploy-tools.*; do
+      [[ -e "$path" ]] || continue
+      backups+=("$path")
+    done
+    if (( ${#backups[@]} > 0 )); then
+      if (( ${#backups[@]} != 1 )) || ! deploy_tools_complete "${backups[0]}"; then
+        check_fail "interrupted tool swap in ${dir}: cannot identify one complete saved set. Keep .old-deploy-tools.* and restore the verified current set to deploy-tools before retrying"; return 1
+      fi
+      mv "${backups[0]}" "$dir/deploy-tools" || {
+        check_fail "cannot restore saved tools ${backups[0]} to ${dir}/deploy-tools; repair directory permissions and retry"; return 1;
+      }
+      echo "upgrade.sh: recovered enforcing tools after interrupted swap" >&2
+    fi
+  fi
+}
+
+validate_deploy_drill() {
+  local dir="$1"
+  if [[ "${DEPLOY_DRILL:-}" == 1 ]]; then
+    # Resolve aliases even for --dry-run, which does not canonicalize DIR.
+    dir="$(realpath -m "$dir")" || return 1
+    if [[ "$dir" == /opt/fold || "$dir" == /opt/fold/* ]]; then
+      check_fail "DEPLOY_DRILL refuses /opt/fold and its children"; return 1
+    fi
+    if [[ -L "$dir/.deploy-drill" || ! -f "$dir/.deploy-drill" ]] \
+      || [[ "$(stat -c '%u:%a' "$dir/.deploy-drill" 2>/dev/null)" != 0:600 ]] \
+      || [[ "$(cat "$dir/.deploy-drill" 2>/dev/null)" != "fold-deploy-drill-v1:$dir" ]]; then
+      check_fail "DEPLOY_DRILL is test only and requires the root-owned mode-600 .deploy-drill marker created by deploy-drill.sh for this directory. Unset DEPLOY_DRILL for a real deployment"; return 1
+    fi
+    if [[ -e "$dir/backup.env" || -L "$dir/backup.env" ]]; then
+      check_fail "DEPLOY_DRILL refuses a directory with backup.env; unset DEPLOY_DRILL for a real deployment"; return 1
+    fi
+  fi
+  [[ -n "${DEPLOY_DRILL_PAUSE:-}" ]] || return 0
+  [[ "${DEPLOY_DRILL:-}" == 1 && "$dir" != /opt/fold ]] || {
+    check_fail "DEPLOY_DRILL_PAUSE requires DEPLOY_DRILL=1 and a directory other than /opt/fold"; return 1;
+  }
+  case "$DEPLOY_DRILL_PAUSE" in
+    after-lock|before-up) ;;
+    *) check_fail "unknown DEPLOY_DRILL_PAUSE point"; return 1 ;;
+  esac
+}
+
+deploy_drill_pause() {
+  local dir="$1" point="$2"
+  [[ "${DEPLOY_DRILL_PAUSE:-}" == "$point" ]] || return 0
+  # The hook itself enforces its boundary, even if a caller omits preflight.
+  validate_deploy_drill "$dir" || return 1
+  [[ -p "$dir/drill.fifo" ]] || { check_fail "missing drill FIFO in $dir"; return 1; }
+  # A re-exec or nested provisioner must not pause at this point again.
+  unset DEPLOY_DRILL_PAUSE
+  # Open read/write before publishing readiness so open cannot block. The
+  # holder itself blocks, so SIGKILL cannot leave a helper retaining fd 9.
+  exec 8<>"$dir/drill.fifo"
+  printf '%s\n' "$point" >"$dir/drill.ready.tmp"
+  mv "$dir/drill.ready.tmp" "$dir/drill.ready"
+  local token=""
+  if ! IFS= read -r -t 180 token <&8; then
+    exec 8>&-
+    check_fail "drill barrier $point timed out or closed"; return 1
+  fi
+  exec 8>&-
+  [[ "$token" == continue ]] || { check_fail "drill barrier cancelled"; return 1; }
+}
+
+# All installed tools move together, including the recovery Compose overlay.
+runtime_tools() {
+  printf '%s\n' backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh backup.env.example restore.sh compose.recovery.yml deploy-tools-version
+}
+
+inherited_ops_lock() {
+  [[ -f "$1/ops.lock" && ! -L "$1/ops.lock" && -e /proc/self/fd/9 ]] \
+    && [[ "$(stat -Lc '%d:%i' /proc/self/fd/9)" == "$(stat -Lc '%d:%i' "$1/ops.lock")" ]] \
+    && flock -n -x 9
+}
+
+# Pure identity classifier. Empty original means a missing original database.
+# Q+ is accepted only before an oid has been recorded for this nonce's R.
+recovery_classify() {
+  local original="$1" restored="$2" fold="$3" r="$4" p="$5"
+  if [[ "$fold" == "$original" && -z "$p" ]]; then
+    if [[ -z "$r" ]]; then echo Q; return; fi
+    if [[ -z "$restored" ]]; then echo Q+; return; fi
+    if [[ "$r" == "$restored" ]]; then echo B; return; fi
+  fi
+  if [[ -n "$restored" && "$fold" == "$restored" && -z "$r" ]]; then
+    if [[ -n "$original" && "$p" == "$original" ]]; then echo A; return; fi
+    if [[ -z "$p" ]]; then
+      # With no original, A and C have identical identities. Cleanup decides.
+      echo C; return
+    fi
+  fi
+  if [[ -n "$original" && -z "$fold" && "$p" == "$original" && -n "$restored" && "$r" == "$restored" ]]; then echo H; return; fi
+  echo invalid
+}
+
+# Keep this table independent of Docker and SQL so fixtures can exhaust it.
+# no_original admits C where A is otherwise required, since there is no P.
+recovery_accepts() {
+  local phase="$1" observation="$2" cleanup="$3" at="${4:-}" no_original="${5:-0}" drop_intent="${6:-0}"
+  case "$phase" in
+    quiesce|create-intent) [[ "$observation" == Q || "$observation" == Q+ ]] ;;
+    created) [[ "$observation" == B ]] ;;
+    collect-drop-intent) [[ "$observation" == B || "$observation" == Q ]] ;;
+    collect-failed) [[ "$observation" == Q ]] ;;
+    collected|pin-intent|pinned|pin-failed|swap-failed) [[ "$observation" == B ]] ;;
+    swap-intent|swap-1) [[ "$observation" == B || "$observation" == H || "$observation" == A || ( "$no_original" == 1 && "$observation" == C ) ]] ;;
+    pre-drop-intent) [[ "$cleanup" == drop-intent && ( "$observation" == A || "$observation" == C ) ]] ;;
+    pre-dropped|floor-written) [[ "$cleanup" == dropped && "$observation" == C ]] ;;
+    restored|recovery-intent|recovering|recovery-failed|reopen-closed|reopen-intent|app-start-intent|caddy-start-intent|smoke-intent|reopen-failed|cleanup-failed)
+      case "$cleanup" in
+        none) [[ "$observation" == A || ( "$no_original" == 1 && "$observation" == C ) ]] ;;
+        drop-intent) [[ "$observation" == A || "$observation" == C ]] ;;
+        dropped) [[ "$observation" == C ]] ;;
+        *) return 1 ;;
+      esac ;;
+    abort-intent) [[ "$observation" == "$at" ]] ;;
+    abort-drop-intent) [[ "$observation" == B || "$observation" == Q+ || ( "$observation" == Q && "$drop_intent" == 1 ) ]] ;;
+    abort-dropped|abort-start-intent|abort-smoke-intent) [[ "$observation" == Q ]] ;;
+    abort-failed)
+      if [[ "$at" == drop ]]; then
+        [[ "$observation" == B || "$observation" == Q+ || ( "$observation" == Q && "$drop_intent" == 1 ) ]]
+      else [[ ( "$at" == start || "$at" == smoke ) && "$observation" == Q ]]; fi ;;
+    *) return 1 ;;
+  esac
+}
+
+recovery_abort_allowed() {
+  [[ "$2" == Q || "$2" == Q+ || "$2" == B ]] || return 1
+  [[ "$3" == previous ]] || return 1
+  case "$1" in
+    quiesce|create-intent|created|collect-drop-intent|collect-failed|collected|pin-intent|pin-failed|swap-failed|swap-intent) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A separate inode coordinates backup/expiry with publication of recovery.lock.
+# Backup never takes ops.lock. Lock order for restore/upgrade is ops (fd 9),
+# then backup (fd 6); a standalone backup takes only fd 6. Never replace it.
+backup_coord_open() {
+  local dir="$1" path="$1/backup.lock" saved_umask
+  [[ -d "$dir" && ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || {
+    check_fail "backup coordination requires an existing deployment and a regular backup.lock"; return 1;
+  }
+  if [[ ! -e /proc/self/fd/6 ]] \
+    || [[ "$(stat -Lc '%d:%i' /proc/self/fd/6)" != "$(stat -Lc '%d:%i' "$path" 2>/dev/null || true)" ]]; then
+    saved_umask="$(umask)"; umask 077
+    exec 6>>"$path" || { umask "$saved_umask"; return 1; }
+    umask "$saved_umask"
+  fi
+  chmod 600 "$path" || return 1
+}
+
+backup_coord_acquire() {
+  backup_coord_open "$1" || return 1
+  if ! flock -x -w "${2:-0}" 6; then
+    case "${3:-maintenance}" in
+      backup) check_fail "backup.lock is held by another operation (backup, restore preflight or provision file copy); this backup was skipped. No dump, restore test, expiry or offsite upload was attempted. Rerun backup.sh later; never delete backup.lock" ;;
+      restore) check_fail "backup coordination busy; no recovery lock published and no services stopped. Let the existing backup finish, then retry. Never delete backup.lock" ;;
+      *) check_fail "backup coordination busy; another operation holds backup.lock. Runtime files were not copied. Retry later; never delete backup.lock" ;;
+    esac
+    return 75
+  fi
+}
+
+backup_coord_release() {
+  flock -u 6 && exec 6>&-
 }

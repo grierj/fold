@@ -81,6 +81,8 @@ var tsContracts = []struct {
 	{contactGrantJSON{}, "ContactGrant"},
 	{contactRevealJSON{}, "ContactReveal"},
 	{userJSON{}, "User"},
+	{attemptMintJSON{}, "AttemptMintResponse"},
+	{attemptSettleJSON{}, "AttemptSettleResponse"},
 	{emailSuppressionJSON{}, "EmailSuppression"},
 	{groupSummaryJSON{}, "GroupSummary"},
 	{groupDetailJSON{}, "GroupDetailResponse"},
@@ -127,6 +129,9 @@ var tsContracts = []struct {
 	{householdPersonJSON{}, "HouseholdPerson"}, // Includes the teen conversion block reason.
 	{householdAccountJSON{}, "HouseholdAccount"},
 	{guardianLinkJSON{}, "GuardianLink"},
+	{erasureReportJSON{}, "ErasureReport"},
+	{reasonItemJSON{}, "ErasureReasonItem"},
+	{reasonPageJSON{}, "ErasureReasonPage"},
 	{guardianNominationJSON{}, "GuardianNomination"},
 	{guardianTeenJSON{}, "GuardianTeen"},
 	{guardianEmailPreviewJSON{}, "GuardianEmailPreview"},
@@ -274,11 +279,12 @@ func TestDependabotCoversEveryEcosystem(t *testing.T) {
 }
 
 // testLayoutAllowed are the only test files with no same-named source file:
-// shared helpers, these repo-wide guards, and the migration drift check.
+// shared helpers, these repo-wide guards, and migration tests.
 var testLayoutAllowed = map[string]bool{
-	"testhelpers_test.go":      true,
-	"guards_test.go":           true,
-	"migrations/drift_test.go": true,
+	"testhelpers_test.go":              true,
+	"guards_test.go":                   true,
+	"migrations/drift_test.go":         true,
+	"migrations/reason_review_test.go": true,
 }
 
 // milestoneNameRe matches a test file named after when it was written
@@ -2721,8 +2727,8 @@ func example() {
 // the hash first and the address only on a NULL-hash row. A second reader that
 // compares `address = ...` or `lower(btrim(...))` again would miss hashed rows
 // the day R4-SC drops the plaintext column. So production source may name the
-// table, or models.Suppression, only inside these helpers; everything else
-// goes through mail.OpenSuppressionReasons.
+// table, or models.Suppression, only inside these helpers, apart from literal
+// erasure inventory metadata; everything else goes through mail.OpenSuppressionReasons.
 //
 // Parse-only, the same stance as the mail guard. Known limits: table names
 // built from non-literal pieces, reflection, SQL sent around GORM, dot-imports
@@ -2736,6 +2742,133 @@ var suppressionSQLAllowed = map[string][]string{
 }
 
 var suppressionTableRe = regexp.MustCompile(`\b(from|join|update|into|table)\s+(public\.)?suppressions\b`)
+
+// erasureInventoryTableLiterals identifies only the Table fields of the root
+// inventory's data-only initializer. Never exempt a whole file or declaration:
+// SQL in another field, an executable initializer or a sibling declaration
+// must still pass through the SQL guards. Inventory coverage stays unchanged.
+func erasureInventoryTableLiterals(path string, tree *ast.File) map[*ast.BasicLit]bool {
+	tables := map[*ast.BasicLit]bool{}
+	if path != "erasure_inventory.go" {
+		return tables
+	}
+	stringLiteral := func(expr ast.Expr) *ast.BasicLit {
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return nil
+		}
+		return lit
+	}
+	for _, decl := range tree.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "erasureColumns" || len(value.Values) != 1 {
+				continue
+			}
+			list, ok := value.Values[0].(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			array, ok := list.Type.(*ast.ArrayType)
+			if !ok || array.Len != nil {
+				continue
+			}
+			elem, ok := array.Elt.(*ast.Ident)
+			if !ok || elem.Name != "erasureColumn" {
+				continue
+			}
+			for _, expr := range list.Elts {
+				row, ok := expr.(*ast.CompositeLit)
+				if !ok || row.Type != nil || len(row.Elts) != 5 {
+					continue
+				}
+				plain := true
+				for _, field := range row.Elts[:4] {
+					plain = plain && stringLiteral(field) != nil
+				}
+				rules, ok := row.Elts[4].(*ast.CompositeLit)
+				if !plain || !ok {
+					continue
+				}
+				ruleType, ok := rules.Type.(*ast.ArrayType)
+				if !ok || ruleType.Len != nil {
+					continue
+				}
+				ruleElem, ok := ruleType.Elt.(*ast.Ident)
+				if !ok || ruleElem.Name != "string" {
+					continue
+				}
+				for _, rule := range rules.Elts {
+					plain = plain && stringLiteral(rule) != nil
+				}
+				if plain {
+					table := stringLiteral(row.Elts[0])
+					name, err := strconv.Unquote(table.Value)
+					if err == nil && (name == "login_throttles" || name == "suppressions" || name == "email_address_optouts") {
+						tables[table] = true
+					}
+				}
+			}
+		}
+	}
+	return tables
+}
+
+func TestSQLGuardsScopeErasureInventoryMetadata(t *testing.T) {
+	for _, guard := range []struct {
+		table, model string
+		check        func(map[string]string) []string
+	}{
+		{"login_throttles", "LoginThrottle", func(sources map[string]string) []string {
+			return throttleSQLViolations(sources, nil)
+		}},
+		{"suppressions", "Suppression", func(sources map[string]string) []string {
+			return suppressionSQLViolations(sources, nil)
+		}},
+		{"email_address_optouts", "EmailAddressOptOut", emailChoiceViolations},
+	} {
+		t.Run(guard.table, func(t *testing.T) {
+			row := fmt.Sprintf(`{%q, "id", "T01", "RET", []string{"T01"}}`, guard.table)
+			declaration := "var erasureColumns = []erasureColumn{" + row + "}\n"
+			sql := "SELECT * FROM " + guard.table
+			for _, tc := range []struct {
+				name, path, source string
+				wantViolation      bool
+			}{
+				{"literal metadata", "erasure_inventory.go", declaration, false},
+				{"same basename in another directory", "internal/erasure_inventory.go", declaration, true},
+				{"another file", "other.go", declaration, true},
+				{"another variable", "erasure_inventory.go", strings.Replace(declaration, "erasureColumns", "other", 1), true},
+				{"another row type", "erasure_inventory.go", strings.Replace(declaration, "[]erasureColumn", "[]other", 1), true},
+				{"SQL in table field", "erasure_inventory.go", strings.Replace(declaration, strconv.Quote(guard.table), strconv.Quote(sql), 1), true},
+				{"SQL in column field", "erasure_inventory.go", strings.Replace(declaration, `"id"`, strconv.Quote(sql), 1), true},
+				{"SQL in rules", "erasure_inventory.go", strings.Replace(declaration, `[]string{"T01"}`, "[]string{"+strconv.Quote(sql)+"}", 1), true},
+				{"Table call beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("func other() { db.Table(%q) }", guard.table), true},
+				{"SQL constant beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("const query = %q", sql), true},
+				{"TableName beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("func (other) TableName() string { return %q }", guard.table), true},
+				{"executable initializer", "erasure_inventory.go", "var erasureColumns = func() []erasureColumn { db.Exec(" + strconv.Quote(sql) + "); return []erasureColumn{" + row + "} }()", true},
+				{"executable row field", "erasure_inventory.go", strings.Replace(declaration, `"id"`, "func() string { db.Exec("+strconv.Quote(sql)+"); return \"id\" }()", 1), true},
+				{"computed table", "erasure_inventory.go", strings.Replace(declaration, strconv.Quote(guard.table), strconv.Quote(guard.table)+` + ""`, 1), true},
+				{"model beside metadata", "erasure_inventory.go", declaration + "func other() { _ = &models." + guard.model + "{} }", true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					src := "package main\nimport \"fold/models\"\n" + tc.source
+					bad := guard.check(map[string]string{tc.path: src})
+					if strings.Contains(strings.Join(bad, "\n"), "parse:") {
+						t.Fatalf("invalid guard fixture: %v", bad)
+					}
+					if (len(bad) != 0) != tc.wantViolation {
+						t.Fatalf("want violation %t, got %v", tc.wantViolation, bad)
+					}
+				})
+			}
+		})
+	}
+}
 
 // suppressionSQLViolations checks parsed sources keyed by slash path from the
 // repository root. A flag outside an allowed top-level function, constant or
@@ -2759,6 +2892,7 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 			bad = append(bad, path+": cannot parse: "+err.Error())
 			continue
 		}
+		inventoryTables := erasureInventoryTableLiterals(path, tree)
 		inModels := strings.HasPrefix(path, "models/")
 		modelNames := map[string]bool{}
 		for _, imp := range tree.Imports {
@@ -2784,7 +2918,7 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 				at := func() string { return fmt.Sprintf("%s:%d", path, positions.Position(n.Pos()).Line) }
 				switch n := n.(type) {
 				case *ast.BasicLit:
-					if n.Kind != token.STRING {
+					if n.Kind != token.STRING || inventoryTables[n] {
 						return true
 					}
 					text, err := strconv.Unquote(n.Value)
@@ -3036,10 +3170,16 @@ type ctgFile struct {
 }
 
 type ctgRun struct {
-	bad          []string
-	eraseCalls   int
-	agesLiteral  bool
-	resetLiteral bool
+	bad         []string
+	eraseCalls  int
+	eraseSites  map[string]int
+	agesLiteral bool
+	// reasonLiteral, reasonCalls and reasonSites are the same for the reason
+	// helper, eraseContactRequestReasonsIn (T07B-2b).
+	reasonLiteral bool
+	reasonCalls   int
+	reasonSites   map[string]int
+	resetLiteral  bool
 }
 
 // ctgObject is the parser's own resolution of a name to its declaration. It
@@ -4162,19 +4302,26 @@ func (run *ctgRun) text(f *ctgFile, n ast.Node, raw string, parents []ast.Node) 
 		return
 	}
 	only := len(writes) == 1 && writes[0].kind == "UPDATE" && ctgSetPart(writes[0].list) == "add_childcare_ages_note = ''"
+	onlyReason := len(writes) == 1 && writes[0].kind == "UPDATE" && ctgSetPart(writes[0].list) == "reason = ''"
 	decl, inLit := ctgEnclosing(parents)
 	site := f.path == "account_erasure.go" && decl != nil && decl.Recv == nil && decl.Name.Name == "eraseContactRequestTextIn" && !inLit && !run.agesLiteral
 	if only && site {
 		run.agesLiteral = true
 		return
 	}
-	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowance is the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = ''", writes[0].kind)
+	reasonSite := f.path == "account_erasure_reasons.go" && decl != nil && decl.Recv == nil && decl.Name.Name == "eraseContactRequestReasonsIn" && !inLit && !run.reasonLiteral
+	if onlyReason && reasonSite {
+		run.reasonLiteral = true
+		return
+	}
+	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowances are the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = '' and the single one in eraseContactRequestReasonsIn (account_erasure_reasons.go) whose SET list is reason = ''", writes[0].kind)
 }
 
-// ident is R-6: eraseContactRequestTextIn is only ever called, once, from the
-// a.contactMutation callback in apiAdminDeleteUser.
+// ident is R-6: exactly one direct call in each of the admin and tombstone
+// a.contactMutationCtx callbacks. Each callback must be the last argument.
 func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
-	if id.Name != "eraseContactRequestTextIn" || len(parents) < 2 {
+	reasons := id.Name == "eraseContactRequestReasonsIn"
+	if (id.Name != "eraseContactRequestTextIn" && !reasons) || len(parents) < 2 {
 		return
 	}
 	switch p := parents[len(parents)-2].(type) {
@@ -4184,19 +4331,32 @@ func (run *ctgRun) ident(f *ctgFile, id *ast.Ident, parents []ast.Node) {
 		}
 	case *ast.CallExpr:
 		if p.Fun == ast.Expr(id) {
-			run.eraseCalls++
-			if why := ctgEraseCallProblem(f.path, parents, p); why != "" {
+			if reasons {
+				run.reasonCalls++
+				if run.reasonSites == nil {
+					run.reasonSites = map[string]int{}
+				}
+				run.reasonSites[f.path]++
+			} else {
+				run.eraseCalls++
+				if run.eraseSites == nil {
+					run.eraseSites = map[string]int{}
+				}
+				run.eraseSites[f.path]++
+			}
+			if why := ctgEraseCallProblem(f, parents, p, reasons); why != "" {
 				run.add(f, "R-6", id, parents, "%s", why)
 			}
 			return
 		}
 	}
-	run.add(f, "R-6", id, parents, "eraseContactRequestTextIn used as a value (assigned, passed, returned, stored or turned into a method value); only a direct call is allowed")
+	run.add(f, "R-6", id, parents, "%s used as a value (assigned, passed, returned, stored or turned into a method value); only a direct call is allowed", id.Name)
 }
 
 // ctgEraseCallProblem checks one call site against R-6. parents ends with the
 // identifier; the call is its parent.
-func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) string {
+func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr, reasons bool) string {
+	path := f.path
 	ci := len(parents) - 2
 	lit := -1
 	for i := ci - 1; i >= 0 && lit < 0; i-- {
@@ -4208,40 +4368,40 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 		}
 	}
 	if lit < 1 {
-		return "called outside the a.contactMutation callback of apiAdminDeleteUser"
+		return "called outside an allowed a.contactMutationCtx callback"
 	}
 	fl, ok := parents[lit].(*ast.FuncLit)
 	if !ok {
-		return "called outside the a.contactMutation callback of apiAdminDeleteUser"
+		return "called outside an allowed a.contactMutationCtx callback"
 	}
 	outer, ok := parents[lit-1].(*ast.CallExpr)
 	if !ok {
-		return "called in a func literal that is not the a.contactMutation callback"
+		return "called in a func literal that is not the a.contactMutationCtx callback"
 	}
 	osel, ok := outer.Fun.(*ast.SelectorExpr)
-	isArg := false
-	for _, a := range outer.Args {
-		if a == ast.Expr(fl) {
-			isArg = true
-		}
-	}
-	if !ok || osel.Sel.Name != "contactMutation" || !isArg {
-		return "called in a func literal that is not the a.contactMutation callback (a nested tx.Transaction body is not allowed)"
+	isArg := len(outer.Args) > 0 && outer.Args[len(outer.Args)-1] == ast.Expr(fl)
+	if !ok || osel.Sel.Name != "contactMutationCtx" || !isArg {
+		return "called in a func literal that is not the last argument of a.contactMutationCtx (a nested tx.Transaction body and the old a.contactMutation are not allowed)"
 	}
 	var decl *ast.FuncDecl
 	for i := lit - 2; i >= 0 && decl == nil; i-- {
 		switch n := parents[i].(type) {
 		case *ast.FuncLit:
-			return "the a.contactMutation call is itself inside a func literal"
+			return "the a.contactMutationCtx call is itself inside a func literal"
 		case *ast.FuncDecl:
 			decl = n
 		}
 	}
-	if decl == nil || decl.Name.Name != "apiAdminDeleteUser" || path != "api_admin.go" {
-		return "called from a function other than apiAdminDeleteUser in api_admin.go"
+	admin := decl != nil && decl.Name.Name == "apiAdminDeleteUser" && path == "api_admin.go"
+	tombstone := decl != nil && decl.Name.Name == "eraseTombstoneOnce" && path == "account_erasure_tombstones.go"
+	if reasons && !admin {
+		return "eraseContactRequestReasonsIn may be called only from apiAdminDeleteUser in api_admin.go (the legacy review adds its own site in T07B-3a)"
+	}
+	if !admin && !tombstone {
+		return "called from a function other than apiAdminDeleteUser in api_admin.go or eraseTombstoneOnce in account_erasure_tombstones.go"
 	}
 	if !ctgIsAppReceiver(decl, osel.X) {
-		return "the callback must be passed to contactMutation on apiAdminDeleteUser's own App receiver, not on another value that has a method of that name"
+		return "the callback must be passed to contactMutationCtx on the allowed method's own App receiver, not on another value that has a method of that name"
 	}
 	viaExpr := false
 	stmt := -1
@@ -4276,6 +4436,9 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 	if arg, ok := ctgFirstArg(call).(*ast.Ident); !ok || param == nil || ctgObj(arg) != param {
 		return "the first argument must be the callback's own *gorm.DB parameter, not a local that reuses its name"
 	}
+	if tombstone {
+		return ctgTombstoneLockProblem(f, fl, param, parents[stmt])
+	}
 	callAt, deleteAt := -1, -1
 	for i, s := range fl.Body.List {
 		if ast.Node(s) == parents[stmt] {
@@ -4307,7 +4470,102 @@ func ctgEraseCallProblem(path string, parents []ast.Node, call *ast.CallExpr) st
 	if callAt <= deleteAt {
 		return "call must come after the statement containing tx.Delete(u)"
 	}
+	if reasons {
+		// Directly after the ages-note scrub: the statement before it holds the
+		// eraseContactRequestTextIn call.
+		prev := callAt - 1
+		// An error check on a separately assigned result sits between them.
+		if prev > 0 && !ctgHasCall(fl.Body.List[prev], "eraseContactRequestTextIn") {
+			if is, ok := fl.Body.List[prev].(*ast.IfStmt); ok && is.Init == nil {
+				prev--
+			}
+		}
+		if prev < 0 || !ctgHasCall(fl.Body.List[prev], "eraseContactRequestTextIn") {
+			return "call must be the statement directly after the eraseContactRequestTextIn call"
+		}
+	}
 	return ""
+}
+
+// ctgHasCall reports whether n contains a call of the package function name.
+func ctgHasCall(n ast.Node, name string) bool {
+	found := false
+	ast.Inspect(n, func(m ast.Node) bool {
+		if c, ok := m.(*ast.CallExpr); ok {
+			if id, ok := c.Fun.(*ast.Ident); ok && id.Name == name {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// The tombstone allowance requires the direct lock assignment and both
+// refusal checks before the scrub. This is a syntactic check of the current
+// production shape, not a claim to prove arbitrary control flow.
+func ctgTombstoneLockProblem(f *ctgFile, fl *ast.FuncLit, param *ctgObject, scrub ast.Node) string {
+	for i, stmt := range fl.Body.List {
+		if ast.Node(stmt) == scrub {
+			break
+		}
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != 2 || len(assign.Rhs) != 1 {
+			continue
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 {
+			continue
+		}
+		tx, txOK := call.Args[0].(*ast.Ident)
+		if !ctgPackageIdent(f, call.Fun, "lockTombstoneIn") || !txOK || ctgObj(tx) != param {
+			continue
+		}
+		found, foundOK := assign.Lhs[0].(*ast.Ident)
+		err, errOK := assign.Lhs[1].(*ast.Ident)
+		if !foundOK || !errOK || ctgObj(found) == nil || ctgObj(err) == nil || i+3 >= len(fl.Body.List) {
+			continue
+		}
+		// Neither a nested check nor an unchecked lock grants this allowance.
+		errCheck, ok := fl.Body.List[i+1].(*ast.IfStmt)
+		if !ok || errCheck.Init != nil || errCheck.Else != nil {
+			continue
+		}
+		cond, ok := errCheck.Cond.(*ast.BinaryExpr)
+		if !ok || cond.Op != token.NEQ || ctgObj(ctgIdent(cond.X)) != ctgObj(err) || ctgIdent(cond.Y) == nil || ctgIdent(cond.Y).Name != "nil" {
+			continue
+		}
+		if len(errCheck.Body.List) != 1 {
+			continue
+		}
+		ret, ok := errCheck.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 || ctgObj(ctgIdent(ret.Results[0])) != ctgObj(err) {
+			continue
+		}
+		foundCheck, ok := fl.Body.List[i+2].(*ast.IfStmt)
+		if !ok || foundCheck.Init != nil || foundCheck.Else != nil || len(foundCheck.Body.List) != 1 {
+			continue
+		}
+		absent, ok := foundCheck.Cond.(*ast.UnaryExpr)
+		if !ok || absent.Op != token.NOT || ctgObj(ctgIdent(absent.X)) != ctgObj(found) {
+			continue
+		}
+		ret, ok = foundCheck.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 || !ctgPackageIdent(f, ret.Results[0], "errTombstoneNoop") {
+			continue
+		}
+		for _, later := range fl.Body.List[i+3:] {
+			if ast.Node(later) == scrub {
+				return ""
+			}
+		}
+	}
+	return "call must follow lockTombstoneIn on the callback's own transaction and checks returning its error or errTombstoneNoop when absent"
+}
+
+func ctgPackageIdent(f *ctgFile, expr ast.Expr, name string) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name && (ctgObj(id) == nil || ctgObj(id) == f.tree.Scope.Lookup(name))
 }
 
 // ctgIsAppReceiver reports whether x is the receiver of decl, a method on App
@@ -4359,8 +4617,11 @@ func ctgViolations(sources map[string]string) []string {
 		run.imports(f)
 		run.file(f)
 	}
-	if run.eraseCalls != 1 {
-		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly one call, in apiAdminDeleteUser's a.contactMutation callback (api_admin.go)", run.eraseCalls))
+	if run.eraseCalls != 2 || run.eraseSites["api_admin.go"] != 1 || run.eraseSites["account_erasure_tombstones.go"] != 1 {
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly two calls, one in apiAdminDeleteUser (api_admin.go) and one in eraseTombstoneOnce (account_erasure_tombstones.go), each in its own a.contactMutationCtx callback", run.eraseCalls))
+	}
+	if run.reasonCalls != 1 || run.reasonSites["api_admin.go"] != 1 {
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestReasonsIn is called %d times, want exactly one call, in apiAdminDeleteUser (api_admin.go), in its a.contactMutationCtx callback directly after eraseContactRequestTextIn", run.reasonCalls))
 	}
 	sort.Strings(run.bad)
 	return run.bad
@@ -4384,7 +4645,7 @@ func TestContactRequestTextChangesStayInTheirHelpers(t *testing.T) {
 }
 
 // The clean fixture tree holds each allowed site once: the creation functions,
-// the one ages-note UPDATE in its plain batch loop, the single callback call,
+// the one ages-note UPDATE in its plain batch loop, the two callback calls,
 // the testdb reset literal, and the statement_timeout set_config calls. Each
 // bypass below changes it in one way.
 
@@ -4395,6 +4656,30 @@ const ctgErasureLoop = "res := tx.Exec(" + ctgAgesUpdate + ", chunk, s.ID)\n\t\t
 const ctgEraseCall = "if err := eraseContactRequestTextIn(tx, s); err != nil {\n\t\t\treturn err\n\t\t}"
 
 const ctgResetCall = `b.WriteString("SET LOCAL session_replication_role = replica;")`
+
+// The reason helper's one UPDATE literal, its one call (directly after the
+// ages-note call, in the admin callback) and its file (T07B-2b).
+const ctgReasonUpdate = `"UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)"`
+
+const ctgReasonLoop = "res := tx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID)\n\t\ttotal += res.RowsAffected"
+
+const ctgReasonCall = "if err := eraseContactRequestReasonsIn(tx, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"
+
+func ctgReasonsFile(loop string) string {
+	return `package main
+
+import "gorm.io/gorm"
+
+func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan) error {
+	var total int64
+	for _, batch := range plan.batches {
+		` + loop + `
+	}
+	_ = total
+	return nil
+}
+`
+}
 
 func ctgErasureFile(loop string) string {
 	return `package main
@@ -4422,6 +4707,17 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 }
 
 func ctgAdminFile(before, after string) string {
+	return ctgAdminFileShape("err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, ", ")", before, after)
+}
+
+// ctgAdminFileShape builds the admin fixture with the call's head (up to the
+// callback) and the text after the callback's closing brace.
+func ctgAdminFileShape(head, tail, before, after string) string {
+	// Every fixture that calls the ages-note helper gets the reason helper's call
+	// directly after it, as the production callback has, unless it brings its own.
+	if strings.Contains(after, "eraseContactRequestTextIn") && !strings.Contains(after, "eraseContactRequestReasonsIn") && !strings.Contains(after, "// no reasons call") {
+		after += "\n\t\t" + ctgReasonCall
+	}
 	return `package main
 
 import (
@@ -4431,7 +4727,9 @@ import (
 )
 
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
-	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), adminDeleteBudget)
+	defer cancel()
+	` + head + `func(tx *gorm.DB) error {
 		` + before + `
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
@@ -4441,8 +4739,33 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		}
 		` + after + `
 		return nil
-	})
+	}` + tail + `
 	_ = err
+}
+`
+}
+
+const ctgTombstoneLock = `found, err := lockTombstoneIn(tx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errTombstoneNoop
+		}`
+
+func ctgTombstoneFile(before, after string) string {
+	return `package main
+
+import "gorm.io/gorm"
+
+func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tombstoneReport, error) {
+	err := a.contactMutationCtx(ctx, contactChange{UserID: id}, func(tx *gorm.DB) error {
+		` + before + `
+		` + ctgTombstoneLock + `
+		` + after + `
+		return nil
+	})
+	return tombstoneReport{}, err
 }
 `
 }
@@ -4543,6 +4866,15 @@ func withStatementTimeout(tx *gorm.DB) error {
 }
 `
 
+const ctgLifecycleFile = `package main
+
+import "gorm.io/gorm"
+
+func (a *App) contactMutationCtx(tx *gorm.DB, remaining string) error {
+	return tx.Exec("SELECT set_config('statement_timeout', ?, true), set_config('idle_in_transaction_session_timeout', ?, true)", "20000ms", remaining).Error
+}
+`
+
 const ctgModelsFile = `package models
 
 type ContactRequest struct {
@@ -4555,13 +4887,16 @@ func All() []any { return []any{&ContactRequest{}} }
 
 func ctgClean() map[string]string {
 	return map[string]string{
-		"account_erasure.go":        ctgErasureFile(ctgErasureLoop),
-		"api_admin.go":              ctgAdminFile("", ctgEraseCall),
-		"api_contact.go":            ctgContactFile,
-		"internal/testdb/testdb.go": ctgTestdbFile(""),
-		"statement_timeout.go":      ctgTimeoutFile,
-		"models/models.go":          ctgModelsFile,
-		"other.go":                  "package main\n\nfunc other() {}\n",
+		"account_erasure.go":            ctgErasureFile(ctgErasureLoop),
+		"account_erasure_reasons.go":    ctgReasonsFile(ctgReasonLoop),
+		"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall),
+		"api_admin.go":                  ctgAdminFile("", ctgEraseCall),
+		"api_contact.go":                ctgContactFile,
+		"contact_lifecycle.go":          ctgLifecycleFile,
+		"internal/testdb/testdb.go":     ctgTestdbFile(""),
+		"statement_timeout.go":          ctgTimeoutFile,
+		"models/models.go":              ctgModelsFile,
+		"other.go":                      "package main\n\nfunc other() {}\n",
 	}
 }
 
@@ -4885,7 +5220,76 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		}),
 	)
 
-	// R-6: the one call site.
+	// T07B-2b: the reason column is blanked by one literal in
+	// eraseContactRequestReasonsIn and nowhere else.
+	reasons := ctgAdminFile("", ctgEraseCall)
+	cases = append(cases,
+		ctgSource("a second reason literal in the helper", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile(ctgReasonLoop + "\n\t\ttx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID)"),
+		}),
+		ctgSource("the reason literal in a func literal", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("func() { tx.Exec(" + ctgReasonUpdate + ", batch, s.ID, s.ID) }()"),
+		}),
+		ctgSource("the reason literal in another function of the file", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile(ctgReasonLoop) + "\nfunc blankElsewhere(tx *gorm.DB) { tx.Exec(" + ctgReasonUpdate + ", 1, 2, 3) }\n",
+		}),
+		ctgSource("the reason literal in another file", "R-5", "api_other.go", map[string]string{
+			"api_other.go": "package main\n\nfunc blank(tx *gorm.DB) { tx.Exec(" + ctgReasonUpdate + ", 1, 2, 3) }\n",
+		}),
+		ctgSource("the reason literal with the ages note in its SET list", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("res := tx.Exec(\"UPDATE contact_requests SET reason = '', add_childcare_ages_note = '' WHERE id = ANY(?::bigint[])\", batch)\n\t\ttotal += res.RowsAffected"),
+		}),
+		ctgSource("the reason literal setting another column too", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": ctgReasonsFile("res := tx.Exec(\"UPDATE contact_requests SET reason = '', status = 'x' WHERE id = ANY(?::bigint[])\", batch)\n\t\ttotal += res.RowsAffected"),
+		}),
+		ctgSource("the reason helper's call twice", "R-6", "production tree", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t"+ctgReasonCall+"\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("no call of the reason helper", "R-6", "production tree", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t// no reasons call"),
+		}),
+		ctgSource("the reason call before the ages-note call", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgReasonCall+"\n\t\t"+ctgEraseCall),
+		}),
+		ctgSource("a statement between the two calls", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\t_ = plan\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("the reason call before tx.Delete(u)", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile(ctgReasonCall, ctgEraseCall),
+		}),
+		ctgSource("the reason call passing a.DB", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tif err := eraseContactRequestReasonsIn(a.DB, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"),
+		}),
+		ctgSource("the reason call nested in a block", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tif true {\n\t\t\t_ = eraseContactRequestReasonsIn(tx, s, plan)\n\t\t}"),
+		}),
+		ctgSource("the reason call in a go statement", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tgo eraseContactRequestReasonsIn(tx, s, plan)"),
+		}),
+		ctgSource("the reason call from another function", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": strings.Replace(reasons, "apiAdminDeleteUser", "apiAdminOtherThing", 1),
+		}),
+		ctgSource("the reason call from the tombstone callback", "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall+"\n\t\t"+ctgReasonCall),
+		}),
+		ctgSource("the reason helper declared as a method", "R-5", "account_erasure_reasons.go", map[string]string{
+			"account_erasure_reasons.go": strings.Replace(ctgReasonsFile(ctgReasonLoop), "func eraseContactRequestReasonsIn(", "func (a *App) eraseContactRequestReasonsIn(", 1),
+		}),
+		ctgSource("the reason call on a copy of the callback's tx", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\ttx2 := tx\n\t\tif err := eraseContactRequestReasonsIn(tx2, s, plan); err != nil {\n\t\t\treturn err\n\t\t}"),
+		}),
+		ctgSource("the reason call inside a closure of the callback", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tfunc() { _ = eraseContactRequestReasonsIn(tx, s, plan) }()"),
+		}),
+		ctgSource("the reason call in a defer statement", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFile("", ctgEraseCall+"\n\t\tdefer eraseContactRequestReasonsIn(tx, s, plan)"),
+		}),
+		ctgSource("the reason helper used as a value", "R-6", "other.go", map[string]string{
+			"other.go": "package main\n\nfunc other() {\n\tf := eraseContactRequestReasonsIn\n\t_ = f\n}\n",
+		}),
+	)
+
+	// R-6: each of the two named call sites, with no extra sites.
 	call := func(statement string) string { return ctgAdminFile("", statement) }
 	cases = append(cases,
 		ctgSource("a second call", "R-6", "production tree", map[string]string{"api_admin.go": call(ctgEraseCall + "\n\t\t" + ctgEraseCall)}),
@@ -4922,18 +5326,26 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		// transaction-and-gate wrapper, whether it is a different variable or a local
 		// that reuses the receiver's name.
 		ctgSource("contactMutation on another receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(admin, "err := a.contactMutation(", "runner := directRunner{db: a.DB}\n\terr := runner.contactMutation(", 1),
+			"api_admin.go": strings.Replace(admin, "err := a.contactMutationCtx(", "runner := directRunner{db: a.DB}\n\terr := runner.contactMutationCtx(", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutation(_ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a local that shadows the receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.contactMutation(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.contactMutation(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
+			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.contactMutationCtx(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.contactMutationCtx(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutation(_ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a parameter, not the receiver", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(strings.Replace(admin, "(a *App) apiAdminDeleteUser(c *gin.Context)", "(a *App) apiAdminDeleteUser(c *gin.Context, runner directRunner)", 1),
-				"err := a.contactMutation(", "err := runner.contactMutation(", 1),
+				"err := a.contactMutationCtx(", "err := runner.contactMutationCtx(", 1),
+		}),
+		// R4-CTX: the callback is the last argument of a.contactMutationCtx; the
+		// old call shape fails at the admin site.
+		ctgSource("the old a.contactMutation at the admin site", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFileShape("err := a.contactMutation(contactChange{UserID: u.ID}, ", ")", "", ctgEraseCall),
+		}),
+		ctgSource("a callback that is not the last argument", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgAdminFileShape("err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, ", ", nil)", "", ctgEraseCall),
 		}),
 		ctgSource("apiAdminDeleteUser as a function, not an App method", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(admin, "func (a *App) apiAdminDeleteUser(", "func apiAdminDeleteUser(a *App, ", 1),
@@ -4952,6 +5364,49 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		}),
 		ctgSource("a tx.Delete(u) on a local that shadows the callback tx", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(admin, "if err := tx.Delete(u).Error; err != nil {", "if tx := a.DB; tx.Delete(u).Error != nil {", 1),
+		}),
+	)
+	tombstone := ctgTombstoneFile("", ctgEraseCall)
+	tombstoneBad := []struct{ name, source string }{
+		{"a tombstone call before its lock", ctgTombstoneFile(ctgEraseCall, "")},
+		{"a tombstone call in another function", strings.Replace(tombstone, "eraseTombstoneOnce(", "other(", 1)},
+		{"a tombstone call in runSweepPage", strings.Replace(tombstone, "eraseTombstoneOnce(", "runSweepPage(", 1)},
+		{"a tombstone call in a nested transaction", ctgTombstoneFile("", "return tx.Transaction(func(tx2 *gorm.DB) error { return eraseContactRequestTextIn(tx2, s) })")},
+		{"a tombstone call passing a.DB", strings.Replace(tombstone, "eraseContactRequestTextIn(tx, s)", "eraseContactRequestTextIn(a.DB, s)", 1)},
+		{"a tombstone method on another type", strings.Replace(tombstone, "(a *App)", "(a *Other)", 1)},
+		{"a tombstone callback not last", strings.Replace(tombstone, "\n\t})", "\n\t}, nil)", 1)},
+		{"a tombstone call on another receiver", strings.Replace(tombstone, "a.contactMutationCtx", "runner.contactMutationCtx", 1)},
+		{"a tombstone call in a job handler", strings.Replace(tombstone, ctgEraseCall, "return func(ctx context.Context) error { "+ctgEraseCall+"; return nil }(ctx)", 1)},
+		{"a tombstone call nested in a block", ctgTombstoneFile("", "if true { "+ctgEraseCall+" }")},
+		{"a tombstone go call", ctgTombstoneFile("", "go eraseContactRequestTextIn(tx, s)")},
+		{"a tombstone deferred call", ctgTombstoneFile("", "defer eraseContactRequestTextIn(tx, s)")},
+		{"a tombstone call with shadowed tx", ctgTombstoneFile("", "if tx := a.DB; eraseContactRequestTextIn(tx, s) != nil { return gorm.ErrInvalidDB }")},
+		{"a tombstone lock on a.DB", strings.Replace(tombstone, "lockTombstoneIn(tx, id)", "lockTombstoneIn(a.DB, id)", 1)},
+		{"a tombstone lock without error check", strings.Replace(tombstone, "if err != nil {\n\t\t\treturn err\n\t\t}", "", 1)},
+		{"a tombstone lock without found check", strings.Replace(tombstone, "if !found {\n\t\t\treturn errTombstoneNoop\n\t\t}", "", 1)},
+		{"a tombstone lock with reversed found check", strings.Replace(tombstone, "if !found", "if found", 1)},
+		{"a tombstone lock with a swallowed error", strings.Replace(tombstone, "return err\n", "return nil\n", 1)},
+		{"a shadowed tombstone lock helper", ctgTombstoneFile("lockTombstoneIn := otherLock", ctgEraseCall)},
+		{"a shadowed tombstone no-op sentinel", ctgTombstoneFile("errTombstoneNoop := otherError", ctgEraseCall)},
+	}
+	for _, tc := range tombstoneBad {
+		cases = append(cases, ctgSource(tc.name, "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": tc.source,
+		}))
+	}
+	cases = append(cases,
+		ctgSource("a second tombstone callback call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ctgEraseCall+"\n"+ctgEraseCall),
+		}),
+		ctgSource("no tombstone call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ""),
+		}),
+		ctgSource("two admin calls cannot replace the tombstone call", "R-6", "production tree", map[string]string{
+			"account_erasure_tombstones.go": ctgTombstoneFile("", ""),
+			"api_admin.go":                  call(ctgEraseCall + "\n" + ctgEraseCall),
+		}),
+		ctgSource("a third site in the tombstone file", "R-6", "account_erasure_tombstones.go", map[string]string{
+			"account_erasure_tombstones.go": tombstone + "\nfunc other(tx *gorm.DB, s erasureSubject) error { return eraseContactRequestTextIn(tx, s) }\n",
 		}),
 	)
 
@@ -5089,6 +5544,15 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		cases = append(cases, ctgCase{name: b, files: map[string]string{"other.go": ctgBodyFile(b)}})
 	}
 	cases = append(cases,
+		ctgCase{name: "tombstone package declarations resolve in their own file", files: map[string]string{
+			"account_erasure_tombstones.go": tombstone + "\nfunc lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) { return true, nil }\nvar errTombstoneNoop = errors.New(\"no work\")\n",
+		}},
+		ctgCase{name: "tombstone renamed callback parameter", files: map[string]string{
+			"account_erasure_tombstones.go": strings.NewReplacer("func(tx *gorm.DB)", "func(tombTx *gorm.DB)", "lockTombstoneIn(tx,", "lockTombstoneIn(tombTx,", "eraseContactRequestTextIn(tx,", "eraseContactRequestTextIn(tombTx,").Replace(tombstone),
+		}},
+		ctgCase{name: "tombstone renamed lock results", files: map[string]string{
+			"account_erasure_tombstones.go": strings.NewReplacer("found", "locked", "err :=", "lockErr :=", "err !=", "lockErr !=", "return err\n", "return lockErr\n", "{}, err", "{}, lockErr").Replace(tombstone),
+		}},
 		ctgCase{name: "an assignment call in the callback body", files: map[string]string{
 			"api_admin.go": ctgAdminFile("", "err = eraseContactRequestTextIn(tx, s)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}"),
 		}},
@@ -5139,7 +5603,7 @@ func TestContactRequestTextGuardReadsTheRealTree(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"account_erasure.go", "api_admin.go", "api_contact.go", "internal/testdb/testdb.go"} {
+	for _, path := range []string{"account_erasure.go", "account_erasure_tombstones.go", "api_admin.go", "api_contact.go", "internal/testdb/testdb.go"} {
 		if _, ok := sources[path]; !ok {
 			t.Errorf("walkProductionGo no longer reads %s, which the contact-request text guard binds its allowances to", path)
 		}
@@ -5148,5 +5612,1353 @@ func TestContactRequestTextGuardReadsTheRealTree(t *testing.T) {
 		if strings.HasSuffix(path, "_test.go") {
 			t.Errorf("walkProductionGo returned the test file %s", path)
 		}
+	}
+}
+
+// emailChoiceViolations is parse-only. It cannot see SQL assembled from
+// non-literal pieces, reflection, SQL sent around GORM, dot-imports of
+// fold/models, or cross-package helpers. Inventory Table literals are data,
+// not queries, and use the same narrowly parsed exception as suppression SQL.
+func emailChoiceViolations(sources map[string]string) []string {
+	var bad []string
+	positions := token.NewFileSet()
+	for path, src := range sources {
+		if filepath.Dir(path) != "." && !strings.HasPrefix(path, "internal/") {
+			continue
+		}
+		tree, err := parser.ParseFile(positions, path, src, 0)
+		if err != nil {
+			bad = append(bad, err.Error())
+			continue
+		}
+		names := emailGuardImports(tree)
+		inventory := erasureInventoryTableLiterals(path, tree)
+		for _, decl := range tree.Decls {
+			owner := ""
+			if f, ok := decl.(*ast.FuncDecl); ok {
+				owner = f.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				flagged := false
+				switch n := n.(type) {
+				case *ast.BasicLit:
+					if n.Kind == token.STRING && !inventory[n] {
+						s, _ := strconv.Unquote(n.Value)
+						flagged = strings.Contains(strings.ToLower(s), "email_address_optouts") && path != "email_optouts.go"
+					}
+				case *ast.SelectorExpr:
+					id, ok := n.X.(*ast.Ident)
+					if !ok || names[id.Name] != "fold/models" {
+						break
+					}
+					switch n.Sel.Name {
+					case "EmailAddressOptOut":
+						flagged = path != "email_optouts.go"
+					case "ConsentEmail":
+						flagged = path != "email_optouts.go" && !(path == "email_unsubscribe.go" && owner == "setEmailConsent") && !(path == "api_notifications.go" && owner == "apiUpdateNotificationSettings")
+					}
+				}
+				if flagged {
+					bad = append(bad, positions.Position(n.Pos()).String()+": email choices must use readEmailOff")
+				}
+				return true
+			})
+		}
+	}
+	return bad
+}
+
+func emailGuardImports(tree *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, imp := range tree.Imports {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		name := filepath.Base(path)
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		out[name] = path
+	}
+	return out
+}
+
+func emailGuardSources(t *testing.T) map[string]string {
+	t.Helper()
+	sources := map[string]string{}
+	if err := walkProductionGo(".", func(path string, src []byte) error { sources[path] = string(src); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return sources
+}
+
+func TestEmailChoiceSQLStaysInOneHelper(t *testing.T) {
+	for _, bad := range emailChoiceViolations(emailGuardSources(t)) {
+		t.Error(bad)
+	}
+}
+
+func TestEmailChoiceGuardCatchesBypasses(t *testing.T) {
+	for name, src := range map[string]string{
+		"table":    `package main; func x() { _ = "SELECT * FROM email_address_optouts" }`,
+		"model":    `package main; import m "fold/models"; func x() { _ = m.EmailAddressOptOut{} }`,
+		"consents": `package main; import "fold/models"; func x() { _ = models.ConsentEmail }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := "messages_send.go"
+			if name == "model" {
+				path = "api_admin_suppressions.go"
+			}
+			if bad := emailChoiceViolations(map[string]string{path: src}); len(bad) == 0 {
+				t.Fatal("bypass accepted")
+			}
+		})
+	}
+	if bad := emailChoiceViolations(map[string]string{"email_optouts.go": `package main; import "fold/models"; func readEmailOff() { _ = models.ConsentEmail; _ = "SELECT * FROM email_address_optouts" }`}); len(bad) != 0 {
+		t.Fatal(bad)
+	}
+}
+
+// optionalMailViolations is parse-only. It cannot see messages built in other
+// packages, reflection, values copied through untyped containers, or a sender
+// that ignores Optional. Elided literals such as []mail.Message{{Optional: true}}
+// are not matched. It checks send-boundary call locations, the batch's lexical
+// claim/read/render order, and a notification .Off call, as well as explicit
+// optional/broadcast constructors and assignments, following import aliases.
+// Lexical order does not prove execution order, that the SQL literal claims a
+// row, or that the choice result controls sending; behavioral tests cover those.
+func optionalMailViolations(sources map[string]string) []string {
+	positions := token.NewFileSet()
+	var bad []string
+	functions := map[string]*ast.FuncDecl{}
+	allowed := map[string]string{"api_notifications.go": "notificationEmailMessage", "messages_send.go": "messageEmail", "api_message_preview.go": "apiTestMessage"}
+	for path, src := range sources {
+		dir := filepath.Dir(path)
+		if dir != "." && (!strings.HasPrefix(path, "internal/") || strings.HasPrefix(path, "internal/mail/") || strings.HasPrefix(path, "internal/providers/")) {
+			continue
+		}
+		tree, err := parser.ParseFile(positions, path, src, 0)
+		if err != nil {
+			bad = append(bad, err.Error())
+			continue
+		}
+		names := emailGuardImports(tree)
+		isFalse := func(e ast.Expr) bool { id, ok := e.(*ast.Ident); return ok && id.Name == "false" }
+		isBroadcast := func(e ast.Expr) bool {
+			s, ok := e.(*ast.SelectorExpr)
+			if !ok {
+				return false
+			}
+			id, ok := s.X.(*ast.Ident)
+			return ok && names[id.Name] == "fold/internal/providers" && s.Sel.Name == "StreamBroadcast"
+		}
+		inspect := func(node ast.Node, owner string, appMethod bool) {
+			ast.Inspect(node, func(n ast.Node) bool {
+				flagged := false
+				switch n := n.(type) {
+				case *ast.CompositeLit:
+					sel, ok := n.Type.(*ast.SelectorExpr)
+					if !ok {
+						break
+					}
+					id, ok := sel.X.(*ast.Ident)
+					if !ok || names[id.Name] != "fold/internal/mail" || sel.Sel.Name != "Message" {
+						break
+					}
+					for _, elt := range n.Elts {
+						kv, ok := elt.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						key, ok := kv.Key.(*ast.Ident)
+						if !ok {
+							continue
+						}
+						flagged = flagged || key.Name == "Optional" && !isFalse(kv.Value) || key.Name == "Stream" && isBroadcast(kv.Value)
+					}
+				case *ast.AssignStmt:
+					for i, lhs := range n.Lhs {
+						sel, ok := lhs.(*ast.SelectorExpr)
+						if !ok || i >= len(n.Rhs) {
+							continue
+						}
+						flagged = flagged || sel.Sel.Name == "Optional" && !isFalse(n.Rhs[i]) || sel.Sel.Name == "Stream" && isBroadcast(n.Rhs[i])
+					}
+				}
+				if flagged && (allowed[path] != owner || !appMethod) {
+					bad = append(bad, positions.Position(n.Pos()).String()+": optional mail needs an effective-choice send boundary")
+				}
+				return true
+			})
+		}
+		for _, decl := range tree.Decls {
+			f, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				inspect(decl, "", false)
+				continue
+			}
+			appMethod := false
+			if f.Recv != nil && len(f.Recv.List) == 1 {
+				if p, ok := f.Recv.List[0].Type.(*ast.StarExpr); ok {
+					if id, ok := p.X.(*ast.Ident); ok {
+						appMethod = id.Name == "App"
+					}
+				}
+			}
+			functions[path+":"+f.Name.Name] = f
+			inspect(f, f.Name.Name, appMethod)
+		}
+	}
+	hasCall := func(node ast.Node, name string) bool {
+		found := false
+		ast.Inspect(node, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := c.Fun.(*ast.Ident); ok && id.Name == name {
+				found = true
+			}
+			return true
+		})
+		return found
+	}
+	for _, edge := range [][3]string{
+		{"api_notifications.go:readEmailRecipients", "readEmailOff", "effective recipient choices"},
+		{"api_notifications.go:readEmailRecipient", "readEmailRecipients", "effective recipient read"},
+		{"notify_deliver.go:sendHeldNotification", "readEmailRecipient", "notification boundary"},
+	} {
+		if f := functions[edge[0]]; f == nil || !hasCall(f, edge[1]) {
+			bad = append(bad, edge[0]+": missing "+edge[2])
+		}
+	}
+	if f := functions["notify_deliver.go:sendHeldNotification"]; f != nil {
+		usesChoice := false
+		ast.Inspect(f, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Off" {
+					usesChoice = true
+				}
+			}
+			return true
+		})
+		if !usesChoice {
+			bad = append(bad, "notify_deliver.go:sendHeldNotification: missing effective-choice .Off call")
+		}
+	}
+	for _, key := range []string{"messages_send.go:deliverMessageBatchOnce", "api_message_preview.go:apiTestMessage"} {
+		f := functions[key]
+		if f == nil {
+			bad = append(bad, key+": missing send boundary")
+			continue
+		}
+		var stack []ast.Node
+		inside, outside := 0, 0
+		ast.Inspect(f, func(n ast.Node) bool {
+			if n == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, n)
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "readEmailOff" {
+				return true
+			}
+			inRange := false
+			var claimTransaction *ast.FuncLit
+			for i, parent := range stack {
+				if _, ok := parent.(*ast.RangeStmt); ok {
+					inRange = true
+				}
+				literal, ok := parent.(*ast.FuncLit)
+				if !ok || i == 0 {
+					continue
+				}
+				transaction, ok := stack[i-1].(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				sel, ok := transaction.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Transaction" {
+					continue
+				}
+				for _, arg := range transaction.Args {
+					if arg == literal {
+						claimTransaction = literal
+					}
+				}
+			}
+			if claimTransaction != nil && (key != "messages_send.go:deliverMessageBatchOnce" || inRange) {
+				inside++
+				if key == "messages_send.go:deliverMessageBatchOnce" {
+					claimedBefore, renderedAfter := false, false
+					ast.Inspect(claimTransaction.Body, func(n ast.Node) bool {
+						// A nested closure cannot supply this transaction's claim
+						// or rendering evidence merely by containing the tokens.
+						if _, ok := n.(*ast.FuncLit); ok {
+							return false
+						}
+						if literal, ok := n.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+							text, err := strconv.Unquote(literal.Value)
+							if err == nil && strings.Contains(text, "FOR UPDATE SKIP LOCKED") && literal.End() < call.Pos() {
+								claimedBefore = true
+							}
+						}
+						if render, ok := n.(*ast.CallExpr); ok {
+							if sel, ok := render.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "messageEmail" && render.Pos() > call.End() {
+								renderedAfter = true
+							}
+						}
+						return true
+					})
+					if !claimedBefore || !renderedAfter {
+						bad = append(bad, key+": readEmailOff must follow the claim and precede messageEmail in the same transaction")
+					}
+				}
+			} else {
+				outside++
+			}
+			return true
+		})
+		if inside == 0 || outside != 0 {
+			bad = append(bad, key+": readEmailOff must run only inside each claim transaction")
+		}
+	}
+	return bad
+}
+
+func TestOptionalMailChecksTheEffectiveChoice(t *testing.T) {
+	for _, bad := range optionalMailViolations(emailGuardSources(t)) {
+		t.Error(bad)
+	}
+}
+
+func cleanOptionalMailSources() map[string]string {
+	return map[string]string{
+		"api_notifications.go": `package main
+func readEmailRecipients() { readEmailOff() }
+func readEmailRecipient() { readEmailRecipients() }
+func (a *App) notificationEmailMessage() {}`,
+		"notify_deliver.go":      `package main; func (a *App) sendHeldNotification() { readEmailRecipient(); off.Off() }`,
+		"messages_send.go":       `package main; func (a *App) deliverMessageBatchOnce() { for range rows { db.Transaction(func() { tx.Raw("FOR UPDATE SKIP LOCKED"); readEmailOff(); a.messageEmail() }) } }`,
+		"api_message_preview.go": `package main; func (a *App) apiTestMessage() { db.Transaction(func() { readEmailOff() }) }`,
+		"mail_jobs.go":           `package main; func sendDirect() { msg.Optional = false }`,
+	}
+}
+
+func TestOptionalMailGuardCatchesBypasses(t *testing.T) {
+	if bad := optionalMailViolations(cleanOptionalMailSources()); len(bad) != 0 {
+		t.Fatal(bad)
+	}
+	for name, src := range map[string]string{
+		"optional constructor":         `package main; import m "fold/internal/mail"; func other() { _ = m.Message{Optional: true} }`,
+		"broadcast constructor":        `package main; import m "fold/internal/mail"; import p "fold/internal/providers"; func other() { _ = m.Message{Stream: p.StreamBroadcast} }`,
+		"optional assignment":          `package main; func other() { msg.Optional = true }`,
+		"broadcast assignment":         `package main; import p "fold/internal/providers"; func other() { msg.Stream = p.StreamBroadcast }`,
+		"batch cache":                  `package main; func (a *App) deliverMessageBatchOnce() { readEmailOff(); for range rows { db.Transaction(func() {}) } }`,
+		"batch choice before claim":    `package main; func (a *App) deliverMessageBatchOnce() { for range rows { db.Transaction(func() { readEmailOff(); tx.Raw("FOR UPDATE SKIP LOCKED"); a.messageEmail() }) } }`,
+		"batch choice after render":    `package main; func (a *App) deliverMessageBatchOnce() { for range rows { db.Transaction(func() { tx.Raw("FOR UPDATE SKIP LOCKED"); a.messageEmail(); readEmailOff() }) } }`,
+		"batch claim in other closure": `package main; func (a *App) deliverMessageBatchOnce() { for range rows { db.Transaction(func() { _ = func() { tx.Raw("FOR UPDATE SKIP LOCKED") }; readEmailOff(); a.messageEmail() }) } }`,
+		"notification ignores choice":  `package main; func (a *App) sendHeldNotification() { readEmailRecipient() }`,
+		"missing composer choice":      `package main; func (a *App) apiTestMessage() { db.Transaction(func() {}) }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sources := cleanOptionalMailSources()
+			path := "other.go"
+			if strings.HasPrefix(name, "batch ") {
+				path = "messages_send.go"
+			}
+			if name == "notification ignores choice" {
+				path = "notify_deliver.go"
+			}
+			if name == "missing composer choice" {
+				path = "api_message_preview.go"
+			}
+			sources[path] = src
+			if bad := optionalMailViolations(sources); len(bad) == 0 {
+				t.Fatal("bypass accepted")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T07B-1b guards. Parse-only: they read syntax, not types, and bind names with
+// go/parser's object resolution inside one file.
+// ---------------------------------------------------------------------------
+
+// fenceNamed lists the functions that run a fenced a.contactMutationCtx: every
+// call in them takes a restore ticket first in its callback, abandons it by a
+// defer before the call and acknowledges it in the very next statement.
+var fenceNamed = []struct{ file, fn string }{
+	{"api_admin.go", "apiAdminDeleteUser"},
+	{"admin_operation_attempts.go", "apiAdminSettleOperationAttempt"},
+}
+
+func fenceIsSel(e ast.Expr, name string) (*ast.SelectorExpr, bool) {
+	sel, ok := e.(*ast.SelectorExpr)
+	return sel, ok && sel.Sel.Name == name
+}
+
+func fenceSameVar(a, b *ast.Ident) bool {
+	return a != nil && b != nil && a.Obj != nil && a.Obj == b.Obj
+}
+
+// fenceRefOf returns the identifier in &x.
+func fenceRefOf(e ast.Expr) *ast.Ident {
+	u, ok := e.(*ast.UnaryExpr)
+	if !ok || u.Op != token.AND {
+		return nil
+	}
+	id, _ := u.X.(*ast.Ident)
+	return id
+}
+
+func fenceCallOf(s ast.Stmt) (*ast.CallExpr, bool) {
+	es, ok := s.(*ast.ExprStmt)
+	if !ok {
+		return nil, false
+	}
+	c, ok := es.X.(*ast.CallExpr)
+	return c, ok
+}
+
+// fenceProblems checks every a.contactMutationCtx call of the named functions.
+func fenceProblems(sources map[string]string) []string {
+	var bad []string
+	fset := token.NewFileSet()
+	for _, n := range fenceNamed {
+		src, ok := sources[n.file]
+		if !ok {
+			bad = append(bad, n.file+": the file is gone; update fenceNamed")
+			continue
+		}
+		tree, err := parser.ParseFile(fset, n.file, src, 0)
+		if err != nil {
+			bad = append(bad, n.file+": cannot parse: "+err.Error())
+			continue
+		}
+		var decl *ast.FuncDecl
+		for _, d := range tree.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && fd.Name.Name == n.fn {
+				decl = fd
+			}
+		}
+		if decl == nil {
+			bad = append(bad, n.file+": "+n.fn+" no longer exists; update fenceNamed")
+			continue
+		}
+		calls := 0
+		var stack []ast.Node
+		ast.Inspect(decl.Body, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, node)
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, ok := fenceIsSel(call.Fun, "contactMutationCtx"); !ok {
+				return true
+			}
+			calls++
+			if why := fenceCallProblem(append([]ast.Node(nil), stack...)); why != "" {
+				bad = append(bad, fmt.Sprintf("%s: %s: %s", n.file, n.fn, why))
+			}
+			return true
+		})
+		if calls == 0 {
+			bad = append(bad, n.file+": "+n.fn+" has no a.contactMutationCtx call; update fenceNamed")
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// fenceCallProblem checks one call; stack ends with the call.
+func fenceCallProblem(stack []ast.Node) string {
+	call := stack[len(stack)-1].(*ast.CallExpr)
+	for _, n := range stack[:len(stack)-1] {
+		switch n.(type) {
+		case *ast.FuncLit, *ast.GoStmt, *ast.DeferStmt:
+			return "the call sits inside a func literal, go or defer"
+		}
+	}
+	if len(stack) < 3 {
+		return "the call is not a statement of a block"
+	}
+	var result *ast.Ident
+	stmt := stack[len(stack)-2]
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		if len(s.Lhs) != 1 || len(s.Rhs) != 1 || s.Rhs[0] != ast.Expr(call) {
+			return "the call's result must be assigned to one variable"
+		}
+		result, _ = s.Lhs[0].(*ast.Ident)
+	case *ast.ExprStmt:
+		return "the call's result is not captured, so it cannot be acknowledged"
+	default:
+		return "the call must be a whole statement of a block"
+	}
+	block, ok := stack[len(stack)-3].(*ast.BlockStmt)
+	if !ok {
+		return "the call's statement must sit directly in a block"
+	}
+	at := -1
+	for i, s := range block.List {
+		if ast.Node(s) == stmt {
+			at = i
+		}
+	}
+	lit, ok := call.Args[len(call.Args)-1].(*ast.FuncLit)
+	if !ok {
+		return "the callback must be a func literal (a non-literal callback hides the ticket)"
+	}
+	if lit.Type.Params == nil || len(lit.Type.Params.List) != 1 || len(lit.Type.Params.List[0].Names) != 1 {
+		return "the callback must take one named *gorm.DB parameter"
+	}
+	param := lit.Type.Params.List[0].Names[0]
+	if len(lit.Body.List) == 0 {
+		return "the callback is empty"
+	}
+	var take *ast.AssignStmt
+	switch first := lit.Body.List[0].(type) {
+	case *ast.AssignStmt:
+		take = first
+	case *ast.IfStmt:
+		take, _ = first.Init.(*ast.AssignStmt)
+	}
+	if take == nil || take.Tok != token.ASSIGN || len(take.Lhs) != 2 || len(take.Rhs) != 1 {
+		return "the callback's first statement must assign the ticket with = from a.takeRestoreTicket"
+	}
+	tc, ok := take.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return "the callback's first statement must assign from a.takeRestoreTicket"
+	}
+	if _, ok := fenceIsSel(tc.Fun, "takeRestoreTicket"); !ok || len(tc.Args) != 1 {
+		return "the callback's first statement must assign from a.takeRestoreTicket(tx)"
+	}
+	if arg, ok := tc.Args[0].(*ast.Ident); !ok || !fenceSameVar(arg, param) {
+		return "the ticket must be taken on the callback's own *gorm.DB parameter, not a.DB or a local that reuses its name"
+	}
+	tk, ok := take.Lhs[0].(*ast.Ident)
+	if !ok || tk.Obj == nil || tk.Obj.Pos() >= lit.Pos() {
+		return "the ticket variable must be declared before the call, outside the callback"
+	}
+	// The abandon defer comes before the call, in the same block.
+	abandoned := false
+	for _, s := range block.List[:at] {
+		d, ok := s.(*ast.DeferStmt)
+		if !ok {
+			continue
+		}
+		if _, ok := fenceIsSel(d.Call.Fun, "abandonRestoreTicket"); ok && len(d.Call.Args) == 1 && fenceSameVar(fenceRefOf(d.Call.Args[0]), tk) {
+			abandoned = true
+		}
+	}
+	if !abandoned {
+		return "defer a.abandonRestoreTicket(&ticket) must come before the call"
+	}
+	// The acknowledgment is the very next statement, with the call's result.
+	if at+1 >= len(block.List) {
+		return "a.acknowledgeRestoreTicket must be the statement right after the call"
+	}
+	ac, ok := fenceCallOf(block.List[at+1])
+	if !ok {
+		return "a.acknowledgeRestoreTicket must be a plain statement right after the call (not deferred, not a goroutine)"
+	}
+	if _, ok := fenceIsSel(ac.Fun, "acknowledgeRestoreTicket"); !ok || len(ac.Args) != 2 {
+		return "the statement right after the call must be a.acknowledgeRestoreTicket(&ticket, err)"
+	}
+	if !fenceSameVar(fenceRefOf(ac.Args[0]), tk) {
+		return "a.acknowledgeRestoreTicket must acknowledge the ticket the callback took"
+	}
+	if r, ok := ac.Args[1].(*ast.Ident); !ok || !fenceSameVar(r, result) {
+		return "a.acknowledgeRestoreTicket must receive the call's own result"
+	}
+	// Neither acknowledgment nor abandon belongs inside the callback.
+	inside := false
+	ast.Inspect(lit.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			if _, ok := fenceIsSel(c.Fun, "acknowledgeRestoreTicket"); ok {
+				inside = true
+			}
+			if _, ok := fenceIsSel(c.Fun, "abandonRestoreTicket"); ok {
+				inside = true
+			}
+		}
+		return true
+	})
+	if inside {
+		return "the callback must not acknowledge or abandon its ticket"
+	}
+	return ""
+}
+
+const fenceBase = `package main
+
+func (a *App) apiAdminDeleteUser(c *gin.Context) {
+	var err error
+	for {
+		var tk restoreTicket
+		var terr error
+		defer a.abandonRestoreTicket(&tk)
+		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
+				return terr
+			}
+			return nil
+		})
+		a.acknowledgeRestoreTicket(&tk, err)
+	}
+}
+
+func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
+	var err error
+	for {
+		var tk restoreTicket
+		var terr error
+		defer a.abandonRestoreTicket(&tk)
+		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
+				return terr
+			}
+			return nil
+		})
+		a.acknowledgeRestoreTicket(&tk, err)
+	}
+}
+`
+
+func fenceSources(src string) map[string]string {
+	// Both named functions live in the one fixture; each file entry parses it.
+	return map[string]string{"api_admin.go": src, "admin_operation_attempts.go": src}
+}
+
+func TestFencedTransactionsTakeTheTicketFirst(t *testing.T) {
+	sources := map[string]string{}
+	for _, n := range fenceNamed {
+		b, err := os.ReadFile(n.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[n.file] = string(b)
+	}
+	for _, v := range fenceProblems(sources) {
+		t.Error(v)
+	}
+	if bad := fenceProblems(fenceSources(fenceBase)); len(bad) != 0 {
+		t.Fatalf("the positive fixture failed: %v", bad)
+	}
+}
+
+func TestFencedTransactionsGuardCatchesBypasses(t *testing.T) {
+	// Every case changes the clean fixture in one way (both named functions
+	// carry the change, because the replacement applies to every occurrence).
+	with := func(old, replacement string) map[string]string {
+		if !strings.Contains(fenceBase, old) {
+			t.Fatalf("fixture anchor %q is missing", old)
+		}
+		return fenceSources(strings.ReplaceAll(fenceBase, old, replacement))
+	}
+	take := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n"
+	ack := "a.acknowledgeRestoreTicket(&tk, err)\n"
+	cases := []struct {
+		name    string
+		sources map[string]string
+	}{
+		{"ticket not first", with(take, "x := 1\n\t\t\t_ = x\n\t\t\t"+take)},
+		{"taken with a.DB", with("a.takeRestoreTicket(tx)", "a.takeRestoreTicket(a.DB)")},
+		{"taken on a shadowing local", with("func(tx *gorm.DB) error {", "func(db *gorm.DB) error {")},
+		{"no ticket", with(take, "terr = nil\n\t\t\t")},
+		{"ticket declared inside the callback", with("if tk, terr = ", "if tk, terr := ")},
+		{"acknowledge missing", with(ack, "")},
+		{"acknowledge not next", with(ack, "x := 1\n\t\t_ = x\n\t\t"+ack)},
+		{"acknowledge deferred", with(ack, "defer "+ack)},
+		{"acknowledge in a goroutine", with(ack, "go "+ack)},
+		{"acknowledge on another variable", with(ack, "var other restoreTicket\n\t\ta.acknowledgeRestoreTicket(&other, err)\n")},
+		{"acknowledge with another result", with(ack, "a.acknowledgeRestoreTicket(&tk, terr)\n")},
+		{"acknowledge inside the callback", with("return nil\n\t\t})", "a.acknowledgeRestoreTicket(&tk, nil)\n\t\t\treturn nil\n\t\t})")},
+		{"abandon missing", with("defer a.abandonRestoreTicket(&tk)\n", "")},
+		{"non-literal callback", with("func(tx *gorm.DB) error {\n\t\t\tif tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n\t\t\treturn nil\n\t\t})", "callback)")},
+		{"result not captured", with("err = a.contactMutationCtx", "a.contactMutationCtx")},
+		{"call in a goroutine", with("err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "go a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {")},
+		{"listed function gone", fenceSources(strings.ReplaceAll(fenceBase, "apiAdminSettleOperationAttempt", "renamed"))},
+		{"no call in a listed function", fenceSources(strings.Replace(fenceBase, "err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "err = other(ctx, change, func(tx *gorm.DB) error {", 2))},
+	}
+	for _, tc := range cases {
+		if bad := fenceProblems(tc.sources); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
+	}
+	// R-6 stays satisfied by the ticket statement before the soft delete: the
+	// admin callback with the ticket first and eraseContactRequestTextIn after
+	// the soft delete passes both guards.
+	ticket := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\treturn terr\n\t\t}"
+	head := "var tk restoreTicket\n\tvar terr error\n\tvar err error\n\tdefer a.abandonRestoreTicket(&tk)\n\terr = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, "
+	tail := ")\n\ta.acknowledgeRestoreTicket(&tk, err)"
+	admin := ctgAdminFileShape(head, tail, ticket, ctgEraseCall)
+	clean := ctgClean()
+	clean["api_admin.go"] = admin
+	if bad := ctgViolations(clean); len(bad) != 0 {
+		t.Errorf("R-6 rejected the fenced admin callback: %v", bad)
+	}
+	if bad := fenceProblems(map[string]string{"api_admin.go": admin, "admin_operation_attempts.go": fenceBase}); len(bad) != 0 {
+		// The fixture file holds no settle function, so only that is allowed to complain.
+		for _, b := range bad {
+			if !strings.Contains(b, "apiAdminSettleOperationAttempt") && !strings.Contains(b, "admin_operation_attempts.go") {
+				t.Errorf("the fenced admin callback failed the ticket guard: %s", b)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// R5-C01 and R6-C01: the actor seal is NOWAIT, loads what CanSignIn needs and
+// is the last locking statement of the transactions that run it.
+// ---------------------------------------------------------------------------
+
+const sealSQL = "SELECT id, status, deleted_at, role, account_type, birth_date, password_hash, session_version, logout_version FROM users WHERE id = ? FOR SHARE NOWAIT"
+
+var sealForRe = regexp.MustCompile(`\bFOR\b`)
+
+// sealForbiddenCalls are never called inside a seal body: a seal reads and
+// decides, it writes nothing and sends nothing.
+var sealForbiddenCalls = map[string]bool{
+	"Exec": true, "Create": true, "Save": true, "Update": true, "Updates": true, "Delete": true,
+	"Send": true, "Write": true, "WriteAll": true, "Resolve": true, "Clauses": true, "Locking": true,
+}
+
+// sealAfterTransition are the only names that may follow the ledger
+// transition inside settle's seal: plain reads of the receipt and the subject,
+// the seam and the facts being filled in.
+var sealAfterTransition = map[string]bool{
+	"Raw": true, "Scan": true, "Error": true, "settleAfterFence": true,
+	"receipt": true, "subjectDeleted": true, "state": true,
+}
+
+func sealNormalize(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func sealCallName(c *ast.CallExpr) string {
+	switch f := c.Fun.(type) {
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	case *ast.Ident:
+		return f.Name
+	}
+	return ""
+}
+
+func sealFuncDecl(tree *ast.File, name string) *ast.FuncDecl {
+	for _, d := range tree.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {
+			return fd
+		}
+	}
+	return nil
+}
+
+// sealRunLiteral reports whether lit is the value of the run field of a
+// contactSeal composite literal, given lit's ancestors (outermost first).
+func sealRunLiteral(parents []ast.Node, lit *ast.FuncLit) bool {
+	if len(parents) < 2 {
+		return false
+	}
+	kv, ok := parents[len(parents)-1].(*ast.KeyValueExpr)
+	if !ok || kv.Value != ast.Expr(lit) {
+		return false
+	}
+	if k, ok := kv.Key.(*ast.Ident); !ok || k.Name != "run" {
+		return false
+	}
+	cl, ok := parents[len(parents)-2].(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	t, ok := cl.Type.(*ast.Ident)
+	return ok && t.Name == "contactSeal"
+}
+
+// sealProblems checks the seal's contract over admin_operation_attempts.go,
+// contact_lifecycle.go and api_host_handoff.go.
+func sealProblems(sources map[string]string) []string {
+	var bad []string
+	fset := token.NewFileSet()
+	trees := map[string]*ast.File{}
+	for _, name := range []string{"admin_operation_attempts.go", "contact_lifecycle.go", "api_host_handoff.go"} {
+		src, ok := sources[name]
+		if !ok {
+			bad = append(bad, name+": missing")
+			continue
+		}
+		tree, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			bad = append(bad, name+": cannot parse: "+err.Error())
+			continue
+		}
+		trees[name] = tree
+	}
+	if len(bad) > 0 {
+		return bad
+	}
+
+	// currentAdminIn itself.
+	attempts := trees["admin_operation_attempts.go"]
+	cur := sealFuncDecl(attempts, "currentAdminIn")
+	if cur == nil {
+		return append(bad, "admin_operation_attempts.go: currentAdminIn is gone")
+	}
+	var names []string
+	for _, p := range cur.Type.Params.List {
+		for _, n := range p.Names {
+			names = append(names, n.Name)
+		}
+	}
+	if strings.Join(names, ",") != "tx,me,pred" {
+		bad = append(bad, "currentAdminIn must take exactly tx, me and pred")
+	}
+	literals := 0
+	var actorDeclared, scanned, canSignIn bool
+	ast.Inspect(cur.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.BasicLit:
+			if x.Kind == token.STRING {
+				if s, err := strconv.Unquote(x.Value); err == nil && strings.HasPrefix(s, "SELECT") {
+					literals++
+					if sealNormalize(s) != sealSQL {
+						bad = append(bad, "currentAdminIn's SQL is not the sealed statement: "+sealNormalize(s))
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			if gd, ok := x.Decl.(*ast.GenDecl); ok {
+				for _, sp := range gd.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == "actor" {
+						if sel, ok := vs.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "User" {
+							actorDeclared = true
+						}
+					}
+				}
+			}
+		case *ast.CallExpr:
+			if sealCallName(x) == "Scan" && len(x.Args) == 1 {
+				if u, ok := x.Args[0].(*ast.UnaryExpr); ok && u.Op == token.AND {
+					if id, ok := u.X.(*ast.Ident); ok && id.Name == "actor" {
+						scanned = true
+					}
+				}
+			}
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSignIn" {
+				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "actor" {
+					canSignIn = true
+				}
+			}
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				if sel, ok := l.(*ast.SelectorExpr); ok && sel.Sel.Name == "PasswordHash" {
+					bad = append(bad, "currentAdminIn assigns a PasswordHash")
+				}
+			}
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok && id.Name == "me" && x.Sel.Name != "ID" && x.Sel.Name != "SessionVersion" && x.Sel.Name != "LogoutVersion" {
+				bad = append(bad, "currentAdminIn reads me."+x.Sel.Name+"; only the id and the two versions come from the session")
+			}
+		}
+		return true
+	})
+	if literals != 1 {
+		bad = append(bad, fmt.Sprintf("currentAdminIn must hold exactly one SELECT literal, found %d", literals))
+	}
+	if !actorDeclared || !scanned {
+		bad = append(bad, "currentAdminIn must scan into a models.User declared inside it")
+	}
+	if !canSignIn {
+		bad = append(bad, "currentAdminIn must decide sign-in with actor.CanSignIn()")
+	}
+
+	// Every call of currentAdminIn sits in a contactSeal run literal; seal
+	// bodies hold no write, lock or notice.
+	var stack []ast.Node
+	ast.Inspect(attempts, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "currentAdminIn" {
+			return true
+		}
+		inSeal := false
+		for i := len(stack) - 2; i >= 0; i-- {
+			if lit, ok := stack[i].(*ast.FuncLit); ok {
+				inSeal = sealRunLiteral(stack[:i], lit)
+				break
+			}
+			if _, ok := stack[i].(*ast.FuncDecl); ok {
+				break
+			}
+		}
+		if !inSeal {
+			bad = append(bad, fmt.Sprintf("admin_operation_attempts.go:%d: currentAdminIn is called outside a contactSeal run function", fset.Position(call.Pos()).Line))
+		}
+		return true
+	})
+	stack = nil
+	ast.Inspect(attempts, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		lit, ok := n.(*ast.FuncLit)
+		if !ok || !sealRunLiteral(stack[:len(stack)-1], lit) {
+			return true
+		}
+		transition := -1
+		for i, s := range lit.Body.List {
+			ast.Inspect(s, func(m ast.Node) bool {
+				switch x := m.(type) {
+				case *ast.CallExpr:
+					if sealForbiddenCalls[sealCallName(x)] {
+						bad = append(bad, "a seal body calls "+sealCallName(x))
+					}
+					if sealCallName(x) == "settleTransition" && transition < 0 {
+						transition = i
+					}
+				case *ast.BasicLit:
+					if x.Kind == token.STRING && sealForRe.MatchString(x.Value) {
+						bad = append(bad, "a seal body holds SQL with FOR: "+x.Value)
+					}
+				case *ast.SelectorExpr:
+					if x.Sel.Name == "Locking" {
+						bad = append(bad, "a seal body names clause.Locking")
+					}
+				}
+				return true
+			})
+		}
+		if transition >= 0 {
+			for _, s := range lit.Body.List[transition+1:] {
+				ast.Inspect(s, func(m ast.Node) bool {
+					switch x := m.(type) {
+					case *ast.SelectorExpr:
+						if !sealAfterTransition[x.Sel.Name] {
+							bad = append(bad, "after the ledger transition the seal may only read plainly; it uses ."+x.Sel.Name)
+						}
+					case *ast.BasicLit:
+						if x.Kind == token.STRING && sealForRe.MatchString(x.Value) {
+							bad = append(bad, "a locking read follows the ledger transition: "+x.Value)
+						}
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+
+	// contactMutationOn: reconcileContacts, the seal, then the reserve check,
+	// with nothing between.
+	lc := sealFuncDecl(trees["contact_lifecycle.go"], "contactMutationOn")
+	if lc == nil {
+		bad = append(bad, "contact_lifecycle.go: contactMutationOn is gone")
+	} else {
+		at := -1
+		for i, s := range lc.Body.List {
+			is, ok := s.(*ast.IfStmt)
+			if !ok || is.Init == nil {
+				continue
+			}
+			found := false
+			ast.Inspect(is.Init, func(m ast.Node) bool {
+				if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "reconcileContacts" {
+					found = true
+				}
+				return true
+			})
+			if found {
+				at = i
+			}
+		}
+		okShape := at >= 0 && at+2 < len(lc.Body.List)
+		if okShape {
+			seal, sok := lc.Body.List[at+1].(*ast.IfStmt)
+			reserve, rok := lc.Body.List[at+2].(*ast.IfStmt)
+			okShape = sok && rok
+			if okShape {
+				hasSeal, hasReserve := false, false
+				ast.Inspect(seal, func(m ast.Node) bool {
+					if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "run" {
+						hasSeal = true
+					}
+					return true
+				})
+				ast.Inspect(reserve, func(m ast.Node) bool {
+					if id, ok := m.(*ast.Ident); ok && id.Name == "errCommitReserve" {
+						hasReserve = true
+					}
+					return true
+				})
+				okShape = hasSeal && hasReserve
+			}
+		}
+		if !okShape {
+			bad = append(bad, "contactMutationOn must run reconcileContacts, then change.Seal.run, then the commit-reserve check, with no statement between")
+		}
+	}
+
+	// deletionHostPlan's actor read takes no lock.
+	dp := sealFuncDecl(trees["api_host_handoff.go"], "deletionHostPlan")
+	if dp == nil {
+		bad = append(bad, "api_host_handoff.go: deletionHostPlan is gone")
+	} else {
+		reads := 0
+		ast.Inspect(dp.Body, func(m ast.Node) bool {
+			c, ok := m.(*ast.CallExpr)
+			if !ok || sealCallName(c) != "First" || len(c.Args) < 1 {
+				return true
+			}
+			u, ok := c.Args[0].(*ast.UnaryExpr)
+			if !ok {
+				return true
+			}
+			if id, ok := u.X.(*ast.Ident); !ok || id.Name != "actor" {
+				return true
+			}
+			reads++
+			ast.Inspect(c.Fun, func(k ast.Node) bool {
+				if kc, ok := k.(*ast.CallExpr); ok && (sealCallName(kc) == "Clauses") {
+					bad = append(bad, "deletionHostPlan's actor read takes a lock")
+				}
+				return true
+			})
+			return true
+		})
+		if reads != 1 {
+			bad = append(bad, fmt.Sprintf("deletionHostPlan must read the actor once with tx.First(&actor, ...), found %d", reads))
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+func sealRealSources(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, name := range []string{"admin_operation_attempts.go", "contact_lifecycle.go", "api_host_handoff.go"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[name] = string(b)
+	}
+	return out
+}
+
+func TestActorSealIsLast(t *testing.T) {
+	real := sealRealSources(t)
+	for _, v := range sealProblems(real) {
+		t.Error(v)
+	}
+	with := func(file, old, replacement string) map[string]string {
+		if strings.Count(real[file], old) != 1 {
+			t.Fatalf("fixture anchor %q must occur once in %s, found %d", old, file, strings.Count(real[file], old))
+		}
+		out := map[string]string{}
+		for k, v := range real {
+			out[k] = v
+		}
+		out[file] = strings.Replace(real[file], old, replacement, 1)
+		return out
+	}
+	const aops = "admin_operation_attempts.go"
+	cases := []struct {
+		name    string
+		sources map[string]string
+	}{
+		{"FOR SHARE without NOWAIT", with(aops, "users WHERE id = ? FOR SHARE NOWAIT\"", "users WHERE id = ? FOR SHARE\"")},
+		{"a projection without password_hash", with(aops, "birth_date, password_hash, session_version", "birth_date, session_version")},
+		{"a password_hash IS NOT NULL projection", with(aops, "birth_date, password_hash, session_version", "birth_date, (password_hash IS NOT NULL) AS password_hash, session_version")},
+		{"a deleted_at IS NULL filter", with(aops, "FROM users WHERE id = ? FOR SHARE NOWAIT\"", "FROM users WHERE id = ? AND deleted_at IS NULL FOR SHARE NOWAIT\"")},
+		{"a PasswordHash copied from another value", with(aops, "\tvar actor models.User\n\terr := tx.Raw(", "\tvar actor models.User\n\tactor.PasswordHash = me.PasswordHash\n\terr := tx.Raw(")},
+		{"a sign-in check other than CanSignIn", with(aops, "!actor.CanSignIn()", "actor.Status != models.UserActive")},
+		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
+		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
+		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, *pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, *pred)\n\t}}")},
+		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
+		{"a Locking clause on deletionHostPlan's actor read", with("api_host_handoff.go", "tx.First(&actor, me.ID)", "tx.Clauses(clause.Locking{Strength: \"SHARE\"}).First(&actor, me.ID)")},
+	}
+	for _, tc := range cases {
+		if bad := sealProblems(tc.sources); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T07B-2b: the reason-review page is an ungated read that ends with the actor
+// seal, like the settle and deletion transactions (R5-C01).
+// ---------------------------------------------------------------------------
+
+// reasonPageSealProblems checks account_erasure_reasons.go: currentAdminIn is
+// called once, as the return of the reasonPageTx callback in reasonPageAttempt,
+// right after the readBeforeSeal seam, so nothing locks after it.
+func reasonPageSealProblems(src string) []string {
+	fset := token.NewFileSet()
+	tree, err := parser.ParseFile(fset, "account_erasure_reasons.go", src, 0)
+	if err != nil {
+		return []string{"account_erasure_reasons.go: cannot parse: " + err.Error()}
+	}
+	var bad []string
+	calls := 0
+	ast.Inspect(tree, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "currentAdminIn" {
+			calls++
+		}
+		return true
+	})
+	if calls != 1 {
+		bad = append(bad, fmt.Sprintf("account_erasure_reasons.go: currentAdminIn must be called exactly once, found %d", calls))
+	}
+	fd := sealFuncDecl(tree, "reasonPageAttempt")
+	if fd == nil {
+		return append(bad, "account_erasure_reasons.go: reasonPageAttempt is gone")
+	}
+	var lit *ast.FuncLit
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "reasonPageTx" && len(c.Args) == 2 {
+			lit, _ = c.Args[1].(*ast.FuncLit)
+		}
+		return true
+	})
+	if lit == nil || len(lit.Body.List) < 2 {
+		return append(bad, "account_erasure_reasons.go: reasonPageAttempt must pass a function literal to a.reasonPageTx")
+	}
+	last := lit.Body.List[len(lit.Body.List)-1]
+	ret, ok := last.(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return append(bad, "account_erasure_reasons.go: the page transaction must end with return currentAdminIn(tx, me, pred)")
+	}
+	if c, ok := ret.Results[0].(*ast.CallExpr); !ok || sealCallName(c) != "currentAdminIn" || len(c.Args) != 3 {
+		bad = append(bad, "account_erasure_reasons.go: the page transaction's last statement must be return currentAdminIn(tx, me, pred)")
+	}
+	seam, ok := lit.Body.List[len(lit.Body.List)-2].(*ast.IfStmt)
+	seamCalled := false
+	if ok {
+		ast.Inspect(seam, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "readBeforeSeal" {
+				seamCalled = true
+			}
+			return true
+		})
+	}
+	if !seamCalled {
+		bad = append(bad, "account_erasure_reasons.go: the readBeforeSeal seam must be the statement just before the seal")
+	}
+	return bad
+}
+
+func TestReasonPageSealIsLast(t *testing.T) {
+	b, err := os.ReadFile("account_erasure_reasons.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := string(b)
+	for _, v := range reasonPageSealProblems(real) {
+		t.Error(v)
+	}
+	with := func(old, replacement string) string {
+		if strings.Count(real, old) != 1 {
+			t.Fatalf("fixture anchor %q must occur once, found %d", old, strings.Count(real, old))
+		}
+		return strings.Replace(real, old, replacement, 1)
+	}
+	seal := "\t\t// Last statement: nothing locks after it.\n\t\treturn currentAdminIn(tx, me, pred)"
+	for _, tc := range []struct{ name, src string }{
+		{"no seal", with(seal, "\t\treturn nil")},
+		{"a statement after the seal", with(seal, "\t\tif err := currentAdminIn(tx, me, pred); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn tx.Exec(\"SELECT 1\").Error")},
+		{"a locking statement after the seam", with(seal, "\t\ttx.Exec(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+		{"a second seal call", with("// --- the scanner -", "func (a *App) otherPage(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- the scanner -")},
+		{"the seam moved", with("\t\tif a.readBeforeSeal != nil {\n\t\t\ta.readBeforeSeal(tx)\n\t\t}\n", "")},
+	} {
+		if bad := reasonPageSealProblems(tc.src); len(bad) == 0 {
+			t.Errorf("%s: the guard accepted it", tc.name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Signed request-id order (T07B-2 scaling, F1).
+// ---------------------------------------------------------------------------
+
+// reasonSQLOrderProblems parses src and checks every SQL string built from
+// reasonSelect or reasonProjection() that orders its rows. reasonProjection
+// casts the bigint id with id::text and no alias, so the output column is also
+// called id and a bare ORDER BY id binds to that text: -1 sorts before -2 and
+// 10 before 2, while the scanner's cursor (which selects the real bigint)
+// follows signed order. The statement must say ORDER BY contact_requests.id,
+// which binds to the table's bigint column. Parse-only: it joins the string
+// literals of a + chain that names one of the two identifiers; it does not see
+// a statement assembled from variables, a constant in another file or SQL sent
+// around GORM.
+func reasonSQLOrderProblems(path, src string) []string {
+	fset := token.NewFileSet()
+	tree, err := parser.ParseFile(fset, path, src, 0)
+	if err != nil {
+		return []string{path + ": cannot parse: " + err.Error()}
+	}
+	var bad []string
+	inner := map[ast.Node]bool{}
+	ast.Inspect(tree, func(n ast.Node) bool {
+		be, ok := n.(*ast.BinaryExpr)
+		if !ok || be.Op != token.ADD || inner[be] {
+			return true
+		}
+		var parts []ast.Expr
+		var flatten func(e ast.Expr)
+		flatten = func(e ast.Expr) {
+			if b, ok := e.(*ast.BinaryExpr); ok && b.Op == token.ADD {
+				inner[b] = true
+				flatten(b.X)
+				flatten(b.Y)
+				return
+			}
+			parts = append(parts, e)
+		}
+		flatten(be)
+		var sql strings.Builder
+		names := false
+		for _, p := range parts {
+			switch v := p.(type) {
+			case *ast.BasicLit:
+				if v.Kind == token.STRING {
+					if s, err := strconv.Unquote(v.Value); err == nil {
+						sql.WriteString(s)
+					}
+				}
+			case *ast.Ident:
+				if v.Name == "reasonSelect" {
+					names = true
+					sql.WriteString(" ")
+				}
+			case *ast.CallExpr:
+				if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "reasonProjection" {
+					names = true
+					sql.WriteString(" ")
+				}
+			}
+		}
+		text := sql.String()
+		if names && strings.Contains(strings.ToUpper(text), "ORDER BY") && !strings.Contains(text, "ORDER BY contact_requests.id") {
+			bad = append(bad, fmt.Sprintf("%s:%d: a statement that selects the review projection orders by something other than contact_requests.id: %q", path, fset.Position(be.Pos()).Line, strings.TrimSpace(text)))
+		}
+		return true
+	})
+	return bad
+}
+
+func TestReasonSQLOrderGuard(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "reasonSelect") || strings.Contains(string(b), "reasonProjection") {
+			found++
+		}
+		for _, v := range reasonSQLOrderProblems(name, string(b)) {
+			t.Error(v)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no production file names reasonSelect: the guard reads nothing")
+	}
+	wrap := func(clause string) string {
+		return "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT \"+reasonSelect+\" FROM contact_requests WHERE reason <> '' " + clause + "\")\n}\n"
+	}
+	for name, src := range map[string]string{
+		"ORDER BY id":                     wrap("ORDER BY id"),
+		"ORDER BY id FOR UPDATE":          wrap("ORDER BY id FOR UPDATE"),
+		"ORDER BY 1":                      wrap("ORDER BY 1"),
+		"lower case":                      wrap("order by id"),
+		"a projection call, not a select": "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT \" + reasonProjection() + \" FROM contact_requests ORDER BY id\")\n}\n",
+	} {
+		if len(reasonSQLOrderProblems("fixture.go", src)) == 0 {
+			t.Errorf("%s: the guard accepted it", name)
+		}
+	}
+	for name, src := range map[string]string{
+		"qualified":           wrap("ORDER BY contact_requests.id"),
+		"qualified, locked":   wrap("ORDER BY contact_requests.id FOR UPDATE"),
+		"no ordering":         wrap(""),
+		"another select list": "package main\n\nfunc f() {\n\ttx.Raw(\"SELECT id FROM contact_requests ORDER BY id\")\n}\n",
+	} {
+		if bad := reasonSQLOrderProblems("fixture.go", src); len(bad) != 0 {
+			t.Errorf("%s: the guard refused it: %v", name, bad)
+		}
+	}
+}
+
+// The scanner's statements carry no NULL-or-condition: a generic plan cannot
+// serve "$1 IS NULL OR id > $1" from the primary key, so a continuation would
+// rescan from the start (F5). Source-level check; TestReasonScanSQLShape
+// proves the plans.
+func TestReasonScanSQLHasNoNullOrCondition(t *testing.T) {
+	for name, sql := range map[string]string{"initial": reasonScanInitialSQL, "continuation": reasonScanContinuationSQL} {
+		up := strings.ToUpper(sql)
+		if strings.Contains(up, " IS NULL") || strings.Contains(up, " OR ") {
+			t.Errorf("the %s scanner statement has a NULL-or condition: %s", name, sql)
+		}
+		if !strings.Contains(up, "ORDER BY ID LIMIT") {
+			t.Errorf("the %s scanner statement must order by id and limit: %s", name, sql)
+		}
+	}
+	if strings.Contains(strings.ToUpper(reasonScanInitialSQL), "WHERE") {
+		t.Error("the initial scanner statement must have no id predicate")
+	}
+	if !strings.Contains(reasonScanContinuationSQL, "WHERE id > ?::bigint") {
+		t.Error("the continuation must filter on id > the cursor")
+	}
+}
+
+// The probe for "is there any reason" asks the server for one row. LIMIT 1
+// bounds what comes back and what is locked, not what is read to find it; this
+// pins that the probe is not a Go-side early break over a full read.
+func TestReasonProbeUsesLimitOne(t *testing.T) {
+	if !strings.Contains(strings.ToUpper(reasonProbeSQL), "LIMIT 1") || strings.Contains(strings.ToUpper(reasonProbeSQL), "FOR UPDATE") {
+		t.Errorf("the probe must be a plain LIMIT 1 statement: %s", reasonProbeSQL)
+	}
+	b, err := os.ReadFile("account_erasure_reasons.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, "func reasonSetExistsIn(")
+	if i < 0 {
+		t.Fatal("reasonSetExistsIn is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, "reasonProbeSQL") || strings.Count(body, "rows.Next()") != 1 {
+		t.Errorf("the probe must run reasonProbeSQL and read at most one row:\n%s", body)
 	}
 }

@@ -91,7 +91,7 @@ Current backups use commands or the DigitalOcean host-cron helper. A portable
 backup container is planned in M5.2, not installed.
 
 ```bash
-docker compose exec -T db pg_dump -U church fold > fold.sql
+docker compose exec -T db pg_dump -U church -Fc fold > fold.dump
 ```
 
 The upload volume's name is `<project>_uploads` (`docker volume ls` prints
@@ -102,8 +102,7 @@ docker run --rm -v fold_uploads:/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/uploads.tgz -C /data .
 ```
 
-Restore by loading the SQL dump with `psql` and extracting the archive onto
-the same volume while the app is stopped.
+For a droplet restore, follow the [interim recovery procedure](docs/DEPLOY-DIGITALOCEAN.md#restoring-a-nightly-dump-interim-notes). It keeps the restored site private while you check the church records and delete accounts again. The uploads archive requires the separate manual step described there.
 
 On a droplet, `/opt/fold/backup.sh` does the nightly `pg_dump` and an
 optional encrypted offsite copy. See `docs/DEPLOY-DIGITALOCEAN.md`.

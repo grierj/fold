@@ -312,11 +312,18 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 	if !k.AllowEmail {
 		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, emailKindStopped, "")
 	}
-	u, optedOut, suppressions, footer, err := readEmailRecipient(tx, n.UserID)
+	u, off, suppressions, footer, err := readEmailRecipient(tx, n.UserID, !k.Required)
 	if err != nil {
 		return nil, err
 	}
-	if !k.Required && optedOut[categoryScope(k.Category)] {
+	// D11: read optional choices per notification after the claim, before rendering and dispatch.
+	// A choice committed before this statement starts is honored; a later change
+	// may not stop this one in-flight send. Every later delivery rechecks.
+	address := ""
+	if u != nil {
+		address = u.Email
+	}
+	if !k.Required && off.Off(n.UserID, address, categoryScope(k.Category)) {
 		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, "optional email turned off", "")
 	}
 	if u == nil || (u.Status != models.UserActive && u.Status != models.UserGuest) {

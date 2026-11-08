@@ -72,6 +72,10 @@ const (
 	// "account_deleted" (DEC-36).
 	UserDeleted = "user.deleted"
 
+	// UserErasureSwept records a committed, versioned tombstone scrub. Actor
+	// and IP are empty; metadata contains only version and residue counts.
+	UserErasureSwept = "user.erasure_swept"
+
 	// UserDisabled: an admin disabled an account (handoff rows use reason
 	// "account_disabled").
 	UserDisabled = "user.disabled"
@@ -364,6 +368,23 @@ const (
 	// PushTestSent: a person sent a test notification to their own device;
 	// counted to limit tests to 10 an hour (DEC-129). Target is the user.
 	PushTestSent = "push.test_sent"
+
+	// ContactReasonKept and ContactReasonRemoved: an admin deciding, during an
+	// account deletion, whether to keep or blank one contact-request reason
+	// (M7.4 T07B, owner decision 6). AddReasonKept and AddReasonRemoved are the
+	// same for a group or date add request. Target is the request (a signed
+	// id, written by WriteAll); the actor is the deciding admin. Meta holds
+	// erasedUserId, erasedRole, purpose, status, reviewerIsParty, source and
+	// reviewVersion; never the text, a hash or an attempt id.
+	ContactReasonKept    = "contact.reason_kept"
+	ContactReasonRemoved = "contact.reason_removed"
+	AddReasonKept        = "add.reason_kept"
+	AddReasonRemoved     = "add.reason_removed"
+
+	// UserErasureReasonsViewed: an admin was served one nonempty page of an
+	// account's contact-request reasons for review (T07B). Target is the
+	// reviewed account; no IP; meta has count and source.
+	UserErasureReasonsViewed = "user.erasure_reasons_viewed"
 )
 
 // Entry is one audit record. Actor is nil for system actions.
@@ -393,4 +414,66 @@ func Write(db *gorm.DB, e Entry) error {
 		MetaJSON:   string(meta),
 		IP:         e.IP,
 	}).Error
+}
+
+// SignedEntry is Entry with a signed 64-bit target: the contact_requests ids
+// the reason review decides are bigint and are not assumed positive (T07B
+// R4-C04), so they never pass through models.AuditLog or Entry, whose TargetID
+// is a uint.
+type SignedEntry struct {
+	Actor      *uint
+	Action     string
+	TargetType string
+	TargetID   int64
+	Meta       map[string]any
+	IP         string
+}
+
+// WriteBatchSize is how many rows WriteAll sends in one statement.
+const WriteBatchSize = 1000
+
+type signedRow struct {
+	Ord        int             `json:"ord"`
+	ActorID    *uint           `json:"actor_id"`
+	Action     string          `json:"action"`
+	TargetType string          `json:"target_type"`
+	TargetID   int64           `json:"target_id"`
+	Meta       json.RawMessage `json:"meta_json"`
+	IP         string          `json:"ip"`
+}
+
+// WriteAll stores entries using db, which must be the caller's transaction: it
+// serializes metadata as Write does, sends batches of WriteBatchSize rows in
+// entry order with one INSERT each, and returns the first failure. It writes
+// nothing outside the caller's transaction, so a failure in a later batch
+// leaves no row once the caller rolls back, which every caller does on error.
+// The batch travels as one jsonb document, because GORM expands a slice
+// argument into a list of values; a signed id round-trips through jsonb
+// exactly.
+func WriteAll(db *gorm.DB, entries []SignedEntry) error {
+	for start := 0; start < len(entries); start += WriteBatchSize {
+		end := min(start+WriteBatchSize, len(entries))
+		rows := make([]signedRow, 0, end-start)
+		for _, e := range entries[start:end] {
+			meta := []byte("{}")
+			if len(e.Meta) > 0 {
+				var err error
+				if meta, err = json.Marshal(e.Meta); err != nil {
+					return err
+				}
+			}
+			rows = append(rows, signedRow{Ord: len(rows), ActorID: e.Actor, Action: e.Action, TargetType: e.TargetType, TargetID: e.TargetID, Meta: meta, IP: e.IP})
+		}
+		doc, err := json.Marshal(rows)
+		if err != nil {
+			return err
+		}
+		if err := db.Exec(`INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip)
+SELECT r.actor_id, r.action, r.target_type, r.target_id, r.meta_json, r.ip
+FROM jsonb_to_recordset(?::jsonb) AS r(actor_id bigint, action text, target_type text, target_id bigint, meta_json jsonb, ip text, ord bigint)
+ORDER BY r.ord`, string(doc)).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
