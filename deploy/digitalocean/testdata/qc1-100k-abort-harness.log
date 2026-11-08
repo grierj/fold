@@ -1,0 +1,18 @@
+qc1: setting up the wizard, an admin, counterparts and a group
+qc1: calibrating the instruments
+{"gate":{"ok":true,"spanMs":380,"holders":1,"grants":20,"ticks":22,"maxGapMs":21,"meanGapMs":20,"holes":0,"expected":"one backend holding the gate continuously for 400 ms"},"dbMemory":{"ok":true,"samples":10,"source":"container cgroup file /sys/fs/cgroup/memory.current, sampled through docker exec; samples is the count in half a second"},"appMemory":{"ok":true,"hwmReset":true,"source":"/proc/1/status VmHWM of the app, read from a helper sharing its pid namespace"},"wal":{"ok":true,"source":"pg_current_wal_lsn difference (cluster-wide)"},"commit":{"ok":true,"source":"pg_stat_statements COMMIT entries (cluster-wide)"}}
+qc1: size 100000: loading background rows
+qc1: waiting 6 s so the scheduler's start-up or hourly edge stays out of the window
+qc1: size 100000: request size near and across maxRequestBytes
+qc1: size 100000: plans (auto_explain)
+NOTICE:  schema "qc1_clean" does not exist, skipping
+NOTICE:  drop cascades to table qc1_clean.contact_requests
+qc1: waiting 1380 s so the scheduler's start-up or hourly edge stays out of the window
+qc1: size 100000: end-to-end observation with FOLD_WORKERS=2
+qc1: warning: the database did not quiesce within 30 s; the next row may carry a competitor
+qc1: size 100000: order control (the first discovery case again)
+qc1: waiting 7 s so the scheduler's start-up or hourly edge stays out of the window
+qc1: size 100000: blanking background reasons for the sparse case
+ERROR:  could not resize shared memory segment "/PostgreSQL.4254608656" to 67145952 bytes: No space left on device
+qc1 autoexplain_reset=not-needed
+qc1 result=1 artifacts=/work/out retained_stack=0

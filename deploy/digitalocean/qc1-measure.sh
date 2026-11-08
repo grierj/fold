@@ -166,12 +166,127 @@ autoexplain_reset() {
   return 1
 }
 
+# --- evidence that survives a run that stops ---------------------------------------------------------------------------------------------------------------------
+# finalize_evidence writes environment.json, failures.jsonl, evidence-status.json and summary.json. The normal end of a run calls it once; cleanup calls it, before any
+# container is removed, for a run that ended any other way (an error, a signal, --keep) and has not finalized. It is idempotent (FINALIZED), it only writes files, it
+# never touches the exit status, and every external read is bounded and may fail: an unreadable source is recorded as null with the environment marked incomplete. For an
+# aborted run abort.json says how it ended, evidence-status.json carries it as `aborted` and is forced to complete:false and releaseEvidence:false, and the rows measured
+# so far are judged exactly as a finished run's are: their budget failures stay findings and every case not reached is listed as missing. Nothing is continued, repaired,
+# re-measured or dropped.
+FINALIZED=0 CURRENT_STEP="" CURRENT_SIZE="" ERR_CMD="" ERR_LINE="" ERR_FUNC="" ERR_CALL_LINE="" ERR_CALL_SRC=""
+trap 'ERR_CMD=$BASH_COMMAND; ERR_LINE=$LINENO; ERR_FUNC=${FUNCNAME[0]:-}; ERR_CALL_LINE=${BASH_LINENO[0]:-}; ERR_CALL_SRC=${BASH_SOURCE[1]:-}' ERR
+
+# JSON-safe values for an environment record written from whatever state a failed run reached.
+jnum() { if [[ "${1:-}" =~ ^-?[0-9]+$ ]]; then printf '%s' "$1"; else printf null; fi; }
+jraw() { if [[ -n "${1:-}" ]] && jq -e . <<<"$1" >/dev/null 2>&1; then printf '%s' "$1"; else printf '%s' "${2:-null}"; fi; }
+# One bounded read from the runner's own database container (a hung daemon cannot hold an exit).
+fin_psql() { timeout 15 docker exec -i "${DB_CID:-none}" psql -X -U church -d "${QC1_DB:-fold}" -At -c "$1" </dev/null 2>/dev/null; }
+
+# The settings that decide dynamic shared memory and parallel work, and /dev/shm as the database container has it. The container keeps the daemon's default /dev/shm
+# (64 MiB with Docker's default), as the shipped Compose file runs it; a parallel VACUUM or query that needs more fails with ENOSPC, which is how the 100k pilot's sparse
+# fixture stopped. The fixture vacuums are not parallel (PARALLEL 0), the container is not changed.
+db_settings_json() {
+  local s shm total used shmbytes
+  s="$(fin_psql "SELECT json_object_agg(name, setting)::text FROM pg_settings WHERE name IN ('dynamic_shared_memory_type', 'min_dynamic_shared_memory', 'max_parallel_maintenance_workers', 'max_parallel_workers_per_gather', 'max_parallel_workers', 'maintenance_work_mem', 'work_mem', 'shared_buffers')" || true)"
+  s="$(jraw "$s")"
+  shm="$(timeout 15 docker exec "${DB_CID:-none}" sh -c 'df -k /dev/shm | tail -n 1' </dev/null 2>/dev/null || true)"
+  total="$(awk '{ print $2 }' <<<"$shm")"; used="$(awk '{ print $3 }' <<<"$shm")"
+  shmbytes="$(timeout 15 docker inspect --format '{{.HostConfig.ShmSize}}' "${DB_CID:-none}" 2>/dev/null || true)"
+  jq -nc --argjson s "$s" --argjson total "$(jnum "$total")" --argjson used "$(jnum "$used")" --argjson bytes "$(jnum "$shmbytes")" \
+    '{settings:$s, devShm:{totalKb:$total, usedKb:$used, note:"df -k /dev/shm inside the database container, read when the record was written"}, hostConfigShmSizeBytes:$bytes,
+      note:"the database container keeps the daemon default /dev/shm (not changed by this harness), as the shipped Compose file runs it; the fixture vacuums run with PARALLEL 0"}'
+}
+
+# The environment record. incomplete=true (an aborted run) marks it and records every source that could not be read as null.
+write_environment() { # incomplete(true|false) reason
+  local incomplete="$1" ireason="${2:-}" pg dbImage dbMem calib database
+  local IMAGE="${IMAGE:-}" IMAGE_ID="${IMAGE_ID:-}" REVISION="${REVISION:-}" DROPLET="${DROPLET:-}" DB_MEMORY="${DB_MEMORY:-}" APP_MEMORY="${APP_MEMORY:-}" CPUSET="${CPUSET:-}" LAYOUT="${LAYOUT:-}"
+  local PG_IMAGE="${PG_IMAGE:-}" PG_IMAGE_ID="${PG_IMAGE_ID:-}" DB_CID="${DB_CID:-}" FIRST_APP_CID="${FIRST_APP_CID:-}" SIZES="${SIZES:-}" COUNTS="${COUNTS:-}" SETV1_SELFTEST="${SETV1_SELFTEST:-}" DENSE="${DENSE:-}" BROWSER="${BROWSER:-0}"
+  local LEVEL REASON_LEN MAX_REQUEST_BYTES TARGET_REASON_LEN SECONDS_PER_REASON SITTING_MINUTES PG_REPO_DIGESTS APP_REPO_DIGESTS APP_CONTAINERS DAEMON_JSON SOURCES BROWSER_RUNTIME
+  LEVEL="$(jnum "${LEVEL:-}")"; REASON_LEN="$(jnum "${REASON_LEN:-}")"; MAX_REQUEST_BYTES="$(jnum "${MAX_REQUEST_BYTES:-}")"; TARGET_REASON_LEN="$(jnum "${TARGET_REASON_LEN:-}")"
+  SECONDS_PER_REASON="$(jnum "${SECONDS_PER_REASON:-}")"; SITTING_MINUTES="$(jnum "${SITTING_MINUTES:-}")"
+  PG_REPO_DIGESTS="$(jraw "${PG_REPO_DIGESTS:-}")"; APP_REPO_DIGESTS="$(jraw "${APP_REPO_DIGESTS:-}")"; APP_CONTAINERS="$(jraw "${APP_CONTAINERS:-}" '[]')"
+  DAEMON_JSON="$(jraw "${DAEMON_JSON:-}")"; SOURCES="$(jraw "${SOURCES:-}")"; BROWSER_RUNTIME="$(jraw "${BROWSER_RUNTIME:-}")"
+  local -a adl=()
+  if declare -p ALL_DELETE_LIST >/dev/null 2>&1; then adl=("${ALL_DELETE_LIST[@]}"); fi
+  local -a ALL_DELETE_LIST=("${adl[@]}")
+  pg="$(fin_psql 'SHOW server_version' || true)"
+  dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "${DB_CID:-none}" 2>/dev/null || true)"
+  dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "${DB_CID:-none}" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
+  calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
+  database="$(db_settings_json)"
+jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
+  --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --argjson reasonLen "$REASON_LEN" --argjson maxRequestBytes "$MAX_REQUEST_BYTES" \
+  --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$PG_REPO_DIGESTS" --argjson appDigests "$APP_REPO_DIGESTS" \
+  --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
+  --arg appCid "$FIRST_APP_CID" --argjson appContainers "$APP_CONTAINERS" --argjson daemon "$DAEMON_JSON" --argjson sources "$SOURCES" \
+  --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
+  --argjson targetLen "$TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$SECONDS_PER_REASON" --argjson sit "$SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$BROWSER_RUNTIME" \
+  '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
+    appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
+    postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
+    limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
+    daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
+    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, wire:"set-v1", setV1Selftest:$setv1Selftest},
+    maxRequestBytes:$maxRequestBytes, database:$database, incomplete:$incomplete, incompleteReason:$ireason,
+    labels:{
+      competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
+      cluster:"walBytes, the commit figures and the gate figures are cluster-wide counters of the whole database, not attributed to the operation; they are attributable only where no invalid finding names a competitor",
+      walBytes:"cluster-wide pg_current_wal_lsn difference around the operation; walControlBytes is the same for one request that changes nothing",
+      gateSpanMs:"the span from the first to the last sample that saw the exclusive contact gate granted, not a hold time: the gate may have been released and retaken between samples, and a hold shorter than the gap between samples can be missed. The sampler cadence is measured per operation (gateMaxGapMs, gateMeanGapMs, gateHoles); no fixed bound is claimed",
+      commit:"pg_stat_statements COMMIT entries, cluster-wide: commitMsMax is the slowest COMMIT in the window, commitMsTotal their sum, commitCalls their count",
+      appPeakKb:"VmHWM of the app process minus the value right after a clear_refs reset made for this operation; appHwmReset says the reset was verified",
+      dbPeakKb:"peak of the database container cgroup memory.current sampled in a docker exec loop (dbMemSamples samples), minus its first sample; page cache included",
+      totalMs:"wall clock of the harness curl loop around a whole traversal (a shell harness, not a rendered panel); requestMs the page requests alone; clientMs the rest. The rendered panel is item 10",
+      assumptions:"secondsPerReason and sittingMinutes are human assumptions, kept apart from measurements"},
+    limitsApplied:($dbMemLimit > 0 and ($appContainers[0].memoryLimitBytes > 0))}' >"$WORK/environment.json.tmp" && mv "$WORK/environment.json.tmp" "$WORK/environment.json"
+}
+
+# How a run ended, from what the shell knows: the exit status, the signal, the step it was in, the command that failed and the last lines of the log.
+write_abort_record() { # exit-code signal
+  local rc="$1" sig="${2:-}" rows last sha tail calltext=""
+  if [[ -n "${ERR_CALL_SRC:-}" && "${ERR_CALL_LINE:-}" =~ ^[0-9]+$ && -r "$ERR_CALL_SRC" ]]; then calltext="$(sed -n "${ERR_CALL_LINE}p" "$ERR_CALL_SRC" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -c1-400)"; fi
+  rows="$(wc -l <"$MEASUREMENTS" 2>/dev/null || true)"; rows="$(jnum "${rows// /}")"; [[ "$rows" != null ]] || rows=0
+  last="$(tail -n 1 "$MEASUREMENTS" 2>/dev/null | jq -c '{seq, item, case, size, status}' 2>/dev/null || true)"; last="$(jraw "$last")"
+  sha="$(sha256sum "$MEASUREMENTS" 2>/dev/null | cut -d' ' -f1 || true)"
+  tail="$(tail -n 40 "$WORK/harness.log" 2>/dev/null | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || true)"; tail="$(jraw "$tail" '[]')"
+  jq -nc --argjson rc "$rc" --arg sig "$sig" --arg step "${CURRENT_STEP:-}" --arg size "${CURRENT_SIZE:-}" --arg cmd "${ERR_CMD:-}" --arg line "${ERR_LINE:-}" --arg fn "${ERR_FUNC:-}" --arg cline "${ERR_CALL_LINE:-}" --arg ctext "$calltext" \
+    --argjson rows "$rows" --argjson last "$last" --arg sha "$sha" --argjson tail "$tail" \
+    '{outcome:"aborted", exitCode:$rc, signal:(if $sig == "" then null else $sig end), step:(if $step == "" then null else $step end), sizeInProgress:($size | tonumber? // null),
+      failingCommand:(if $cmd == "" then null else $cmd end), failingLine:($line | tonumber? // null), failingFunction:(if $fn == "" then null else $fn end), calledFrom:(if $ctext == "" then null else {line:($cline | tonumber? // null), text:$ctext} end), rowsMeasured:$rows, lastRow:$last, measurementsSha256:$sha, harnessLogTail:$tail,
+      note:"this run did not finish: evidence-status.json is forced to complete:false and releaseEvidence:false; the rows in measurements.jsonl are as they were measured, judged as a finished run is judged; nothing was continued, repaired or re-measured; failingCommand is the last command that failed before the exit, harnessLogTail the last lines of harness.log as the log had them"}' \
+    >"$WORK/abort.json.tmp" && mv "$WORK/abort.json.tmp" "$WORK/abort.json"
+}
+
+finalize_evidence() { # complete|aborted exit-code [signal]
+  local outcome="$1" rc="${2:-0}" sig="${3:-}" status=0 judge_ok=true abort="" incomplete=false
+  (( FINALIZED )) && return 0
+  FINALIZED=1
+  [[ -n "${WORK:-}" && -d "$WORK" && -n "${MEASUREMENTS:-}" && -e "$MEASUREMENTS" && -n "${SIZES:-}" ]] || return 0
+  if [[ "$outcome" == aborted ]]; then
+    incomplete=true
+    write_abort_record "$rc" "$sig" || { echo 'qc1: WARNING: abort.json could not be written' >&2; status=1; }
+    [[ -s "$WORK/abort.json" ]] && abort="$WORK/abort.json"
+  fi
+  write_environment "$incomplete" "$([[ "$incomplete" == true ]] && echo 'the run ended before it finished; sources that could not be read are null' || true)" || { echo 'qc1: WARNING: environment.json could not be written' >&2; status=1; }
+  qc1_judge "$MEASUREMENTS" "${MAX_REQUEST_BYTES:-0}" >"$WORK/failures.jsonl" || judge_ok=false
+  qc1_evidence_status "$MEASUREMENTS" "$SIZES" "${COUNTS:-}" "$WORK/environment.json" "${REVISION:-}" "${MAX_REQUEST_BYTES:-0}" "$(IFS=,; printf '%s' "${DENSE_LIST[*]:-}")" "$abort" >"$WORK/evidence-status.json" \
+    || { echo 'qc1: WARNING: evidence-status.json could not be written' >&2; status=1; }
+  jq -n --slurpfile env "$WORK/environment.json" --slurpfile status "$WORK/evidence-status.json" --argjson judgeOk "$judge_ok" \
+    '{environment:$env[0], evidence:$status[0], judgeRan:$judgeOk,
+      nextStep:"budgetFailures need a reviewed engineering disposition (written design and independent review in state.json) before any release containing T07B-2 is planned; a run is release evidence only when evidence.releaseEvidence is true (complete AND full coverage); a pilot run being complete means only that the rows it asked for exist and are clean; evidence.notMeasured lists what this harness does not measure"}' \
+    >"$WORK/summary.json" || { echo 'qc1: WARNING: summary.json could not be written' >&2; status=1; }
+  return "$status"
+}
+
 # Everything this run made is removed by id; nothing else on the daemon is touched.
 # Preserve an existing failure; a reset that cannot be verified also fails a successful run.
 # shellcheck disable=SC2329 # EXIT trap.
 cleanup() {
-  local rc=$? p id reset=not-needed
+  local rc=$? p id reset=not-needed fin=not-needed sig=""
+  local orig=$rc
   trap - EXIT
+  trap - ERR   # ERR_CMD is the last command that failed before the exit; cleanup must not overwrite it
   trap '' INT TERM HUP   # a second signal must not cut the reset or the removals short
   for p in "${SAMPLERS[@]}"; do kill "$p" 2>/dev/null || true; done
   if (( AUTOEXPLAIN_DIRTY )); then
@@ -186,6 +301,13 @@ cleanup() {
       [[ -z "${WORK:-}" || ! -d "$WORK" ]] || echo "auto_explain reset failed; runner database container ${DB_CID:-?}; retained_stack=$KEEP" >"$WORK/autoexplain-reset-failed" 2>/dev/null || true
     fi
   fi
+  # A run that stops before it finalized still leaves its evidence: the rows measured, their budget findings, what is missing, how it ended. Before any container is
+  # removed (the environment record reads the database and the daemon), after the auto_explain reset, and never changing the exit status.
+  if (( FINALIZED )); then fin=finalized
+  elif (( orig != 0 )) && [[ -n "${MEASUREMENTS:-}" ]]; then
+    case "$orig" in 129) sig=HUP ;; 130) sig=INT ;; 143) sig=TERM ;; esac
+    if finalize_evidence aborted "$orig" "$sig"; then fin=aborted; else fin=aborted-incomplete; echo "qc1: WARNING: the evidence of this aborted run could not be fully written; see $WORK" >&2; fi
+  fi
   if (( ! KEEP )); then
     for id in "${CONTAINERS[@]}"; do docker rm -fv "$id" >/dev/null 2>&1 || true; done
     [[ -z "$NET_ID" ]] || docker network rm "$NET_ID" >/dev/null 2>&1 || true
@@ -194,6 +316,7 @@ cleanup() {
     fi
   fi
   echo "qc1 autoexplain_reset=$reset"
+  echo "qc1 evidence=$fin"
   echo "qc1 result=$rc artifacts=$WORK retained_stack=$KEEP"
   exit "$rc"
 }
@@ -202,7 +325,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-note() { printf 'qc1: %s\n' "$*"; }
+note() { CURRENT_STEP="$*"; printf 'qc1: %s\n' "$*"; }
 ms() { date +%s%3N; }
 psql_db() { docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 "$@"; }
 
@@ -815,16 +938,22 @@ planner_settings() {
 }
 
 # The scanner probe (see qc1_scanner_probe_parse): the REAL scanner statements out of the Go source, prepared once and executed eight times per mode in one
-# session (one initial unit and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
+# session (one initial statement and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
 # application's plan_cache_mode (auto: the sixth and later executions of a prepared statement may switch to a generic plan) and forced generic. Read-only.
+# Production reads a scanner unit in batches (internal/reasonscan: reasonScanBatchFirst, doubling, clipped to reasonUnitRows), so the LIMITs are the ones production sends:
+# the FIRST batch, which almost every page is, and the LARGEST batch of the schedule (both read out of the Go source by qc1_scan_schedule, not typed here). Each (mode, LIMIT)
+# is its own eight executions; every execution says which LIMIT it ran. The probe does not run one 50,000-row statement, because production does not send one.
 # Run while the scenario rows are still in the table. `schema` is where contact_requests is found first: "public" for the table exactly as the matrix left it
 # ("bloated": autovacuum is off and every scenario was loaded and dropped), "qc1_clean" for a VACUUM (ANALYZE)d copy of the same rows. Each execution says which
 # schema its scan read (EXPLAIN VERBOSE), so a probe cannot be taken for the other. Sets SCANNER_PROBE_JSON.
 scanner_probe() { # schema
-  local schema="$1" unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont
-  local -a pcts=(0 10 25 40 55 70 85) afters=()
+  local schema="$1" unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont limit
+  local -a pcts=(0 10 25 40 55 70 85) afters=() sched=() limits=()
   sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
   [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
+  mapfile -t sched < <(qc1_scan_schedule "$ROOT")
+  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the Go source' >&2; exit 1; }
+  limits=("${sched[0]}"); if (( ${#sched[@]} > 1 )); then limits+=("${sched[${#sched[@]}-1]}"); fi
   total="$(psql_db -q -c "SET search_path = $schema, public" -c 'SELECT count(*) FROM contact_requests')"
   for pct in "${pcts[@]}"; do
     off=$(( total * pct / 100 ))
@@ -832,23 +961,26 @@ scanner_probe() { # schema
     [[ "$id" =~ ^[0-9]+$ ]] || id=0
     afters+=("$id")
   done
-  for mode in auto force_generic_plan; do
-    meta="$(jq -nc --arg mode "$mode" --argjson pcts "$(printf '%s\n' "${pcts[@]}" | jq -sc 'map(tonumber)')" --argjson ids "$(printf '%s\n' "${afters[@]}" | jq -sc 'map(tonumber)')" \
-      '[{mode:$mode, kind:"initial", percent:null, afterId:null}] + [range(0; $pcts | length) | {mode:$mode, kind:"continuation", percent:$pcts[.], afterId:$ids[.]}]')"
-    script="SET search_path = $schema, public;
+  for limit in "${limits[@]}"; do
+    for mode in auto force_generic_plan; do
+      meta="$(jq -nc --arg mode "$mode" --argjson limit "$limit" --argjson pcts "$(printf '%s\n' "${pcts[@]}" | jq -sc 'map(tonumber)')" --argjson ids "$(printf '%s\n' "${afters[@]}" | jq -sc 'map(tonumber)')" \
+        '[{mode:$mode, kind:"initial", percent:null, afterId:null, limit:$limit}] + [range(0; $pcts | length) | {mode:$mode, kind:"continuation", percent:$pcts[.], afterId:$ids[.], limit:$limit}]')"
+      script="SET search_path = $schema, public;
 SET plan_cache_mode = $mode;
 PREPARE qi (bigint) AS $sql_init;
 PREPARE qc (bigint, bigint) AS $sql_cont;
-EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($unit);"
-    for id in "${afters[@]}"; do script+=$'\n'"EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $unit);"; done
-    out="$(psql_db -q -f - <<<"$script")" || { echo "qc1: the scanner probe failed in mode $mode" >&2; exit 1; }
-    parsed="$(qc1_scanner_probe_parse "$meta" <<<"$out")"
-    all="$(jq -c --argjson more "$parsed" '. + $more' <<<"$all")"
+EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($limit);"
+      for id in "${afters[@]}"; do script+=$'\n'"EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $limit);"; done
+      out="$(psql_db -q -f - <<<"$script")" || { echo "qc1: the scanner probe failed in mode $mode at LIMIT $limit" >&2; exit 1; }
+      parsed="$(qc1_scanner_probe_parse "$meta" <<<"$out")"
+      all="$(jq -c --argjson more "$parsed" '. + $more' <<<"$all")"
+    done
   done
   planner="$(planner_settings)"
   SCANNER_PROBE_JSON="$(jq -nc --argjson unit "$unit" --argjson total "$total" --arg schema "$schema" --argjson ex "$all" --argjson planner "$planner" \
-    '{unit:$unit, tableRows:$total, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex, plannerSettings:$planner, estimates:true,
-      note:"the real scanner statements, prepared once per mode and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS, VERBOSE); child scan node, the index condition on it or on the Bitmap Index Scan beneath it, filter, rows, loops and shared blocks as the plan reports them; estimates:true says every execution also carries the planner ESTIMATES (startup and total cost, planned rows and width of the top node and of the child scan, and of the Bitmap Index Scan beneath it), recorded beside what happened and never judged as a measurement: they are beliefs of the planner, which depend on the statistics of the table the probe ran against (see tables) and on plannerSettings"}')"
+    --argjson limits "$(printf '%s\n' "${limits[@]}" | jq -sc 'map(tonumber)')" --argjson schedule "$(printf '%s\n' "${sched[@]}" | jq -sc 'map(tonumber)')" \
+    '{unit:$unit, limits:$limits, schedule:$schedule, tableRows:$total, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, executions:$ex, plannerSettings:$planner, estimates:true,
+      note:"the real scanner statements at the LIMITs production sends (the first batch and the largest batch of the schedule read from the Go source), prepared once per mode and LIMIT and executed eight times in one session at table offsets 0, 10, 25, 40, 55, 70 and 85 per cent, each under EXPLAIN (ANALYZE, BUFFERS, VERBOSE); child scan node, the index condition on it or on the Bitmap Index Scan beneath it, filter, rows, loops and shared blocks as the plan reports them; estimates:true says every execution also carries the planner ESTIMATES (startup and total cost, planned rows and width of the top node and of the child scan, and of the Bitmap Index Scan beneath it), recorded beside what happened and never judged as a measurement: they are beliefs of the planner, which depend on the statistics of the table the probe ran against (see tables) and on plannerSettings"}')"
 }
 # The table behind a probe, in numbers: pages the planner believes in (relpages), pages the file really has, tuples, live and dead tuples, heap and index bytes. Prints one JSON object.
 table_stats() { # schema
@@ -860,7 +992,7 @@ table_stats() { # schema
 # The original table is NOT touched (vacuuming it would change every later case), and the copy is dropped when the probe has run. Sets CLEAN_COPY_JSON (what was done, never assumed).
 make_clean_copy() {
   psql_db -q -c 'DROP SCHEMA IF EXISTS qc1_clean CASCADE' -c 'CREATE SCHEMA qc1_clean' -c 'CREATE TABLE qc1_clean.contact_requests (LIKE public.contact_requests INCLUDING ALL)' \
-    -c 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' -c 'VACUUM (ANALYZE) qc1_clean.contact_requests' >/dev/null \
+    -c 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' -c 'VACUUM (ANALYZE, PARALLEL 0) qc1_clean.contact_requests' >/dev/null \
     || { echo 'qc1: the clean copy of contact_requests could not be made' >&2; exit 1; }
   CLEAN_COPY_JSON="$(jq -nc '{kind:"a copy of the same rows in a scratch schema: LIKE public.contact_requests INCLUDING ALL, INSERT ... SELECT ORDER BY id into a fresh heap, then VACUUM (ANALYZE); the original table is untouched", vacuumed:true, analyzed:true}')"
 }
@@ -871,7 +1003,8 @@ make_clean_copy() {
 # The continuation's shape (an Index Cond on id, not a filter over a scan) is also recorded from EXPLAIN (GENERIC_PLAN) of the same
 # statement text, typed by the harness and labelled as such; the application's own logged plan is the evidence that counts.
 capture_plans() { # n
-  local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged logged_cont logged_init sql_init sql_cont exec_json actual_rows probe_bloated probe_clean stats_bloated stats_clean idx=false initidx=false
+  local n="$1" t since which out="$WORK/explain-$1.log" counts id need gen_cont gen_init cont_logged logged_cont logged_init sql_init sql_cont exec_json actual_rows probe_bloated probe_clean stats_bloated stats_clean idx=false initidx=false bsched
+  local -a sched=()
   AUTOEXPLAIN_DIRTY=1   # owed a reset from here until both are proven off (cleanup does it on any exit)
   psql_db -c "ALTER SYSTEM SET auto_explain.log_min_duration = 0" >/dev/null
   psql_db -c 'SELECT pg_reload_conf()' >/dev/null
@@ -907,6 +1040,13 @@ capture_plans() { # n
   # The generic plans are of the REAL statements: the text is read out of account_erasure_reasons.go (qc1_go_sql), with its real projection, not typed here.
   sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
   [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
+  # The scanner the application runs reads a unit in batches: the schedule is read from the Go source (the same function the probe uses), recorded in the row, and every
+  # logged execution's LIMIT is held to it by the judge. Nothing here expects one 50,000-row statement.
+  mapfile -t sched < <(qc1_scan_schedule "$ROOT")
+  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the Go source' >&2; exit 1; }
+  bsched="$(jq -nc --argjson u "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" --argjson f "$(qc1_go_int "$ROOT" account_erasure_reasons_scan.go reasonScanBatchFirst)" \
+    --argjson g "$(qc1_go_int "$ROOT" account_erasure_reasons_scan.go reasonScanBatchGrowth)" --argjson l "$(printf '%s\n' "${sched[@]}" | jq -sc 'map(tonumber)')" \
+    '{unitRows:$u, first:$f, growth:$g, limits:$l, source:"reasonUnitRows (account_erasure_reasons.go) and reasonScanBatchFirst, reasonScanBatchGrowth (account_erasure_reasons_scan.go): a unit is read in statements of these LIMITs; a page stops earlier, after the batch that holds its 100th request"}')"
   gen_cont="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_cont" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
   gen_init="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_init" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
   # The continuation must be bounded by an Index Cond on id, in the application's own logged plan and in the generic plan of the same text; the first unit
@@ -922,13 +1062,13 @@ capture_plans() { # n
   logged_init="$(qc1_plan_shapes "$WORK/pglog-$n.txt" scanner-initial)" || { echo 'qc1: the logged plans could not be read' >&2; exit 1; }
   # Across executions: the actual rows and shared blocks of every logged scanner execution, in order.
   exec_json="$(for which in scanner-initial scanner-continuation; do
-    qc1_plan_executions "$WORK/pglog-$n.txt" "$which" | jq -Rsc --arg w "$which" '[split("\n")[] | select(length > 0) | split(" ") | {rows:(.[0] | tonumber? // null), blocks:(.[1] | tonumber? // null)}] | {key:$w, value:{count:length, rows:map(.rows), sharedBlocks:map(.blocks)}}'
+    qc1_plan_executions "$WORK/pglog-$n.txt" "$which" | jq -Rsc --arg w "$which" '[split("\n")[] | select(length > 0) | split(" ") | {rows:(.[0] | tonumber? // null), blocks:(.[1] | tonumber? // null), limit:(.[2] | tonumber? // null)}] | {key:$w, value:{count:length, rows:map(.rows), sharedBlocks:map(.blocks), limits:map(.limit)}}'
   done | jq -sc '{scannerInitial:(.[0].value), scannerContinuation:(.[1].value),
                   note:"rows and shared blocks (hit + read) of the top plan node of every logged execution, from auto_explain with log_analyze and log_buffers; recorded in execution order, not judged against a ceiling"}')"
   need="$(jq -nc --argjson n "$actual_rows" --argjson unit "$QC1_SCANNER_UNIT_ROWS" '["scanner-initial","page-items","delete-set","blank-batch"] + (if $n > $unit then ["scanner-continuation"] else [] end)')"
   if jq -e --argjson need "$need" '. as $c | $need | all(. as $k | $c[$k] >= 1)' <<<"$counts" >/dev/null; then RECORD_STATUS=measured; else RECORD_STATUS=failed; fi
-  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson probe "$probe_bloated" --argjson probec "$probe_clean" --argjson statsb "$stats_bloated" --argjson statsc "$stats_clean" --argjson copy "$CLEAN_COPY_JSON" --argjson lcont "$logged_cont" --argjson linit "$logged_init" --argjson actual "$actual_rows" --argjson bg "$n" \
-    '{plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe, scannerProbeClean:$probec, tables:{bloated:$statsb, clean:($statsc + $copy)}, loggedShapes:{initial:$linit, continuation:$lcont},
+  record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson bsched "$bsched" --argjson probe "$probe_bloated" --argjson probec "$probe_clean" --argjson statsb "$stats_bloated" --argjson statsc "$stats_clean" --argjson copy "$CLEAN_COPY_JSON" --argjson lcont "$logged_cont" --argjson linit "$logged_init" --argjson actual "$actual_rows" --argjson bg "$n" \
+    '{batchSchedule:$bsched, plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe, scannerProbeClean:$probec, tables:{bloated:$statsb, clean:($statsc + $copy)}, loggedShapes:{initial:$linit, continuation:$lcont},
       generic:{source:"go-source", scannerContinuation:{sql:$sc, text:$gc, indexCondOnId:$idx}, scannerInitial:{sql:$si, text:$gi, idIndexScan:$initidx}},
       note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text read from account_erasure_reasons.go; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
   unset RECORD_STATUS
@@ -1100,6 +1240,7 @@ explained_order_control_delete() { # n which
 
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
+  CURRENT_SIZE="$n"
   note "size $n: loading background rows"
   # TRUNCATE of the whole referencing set (contact_grants, registrations), each proved empty first: see qc1_reset_contact_requests. The seeded admin, the
   # counterparts and the group are in other tables and must survive it; the scenarios below are built on them.
@@ -1188,7 +1329,7 @@ measure_size() { # n
   # requests, almost no reasons), an account with none.
   note "size $n: blanking background reasons for the sparse case"
   psql_db -c 'SET session_replication_role = replica' -c "UPDATE contact_requests SET reason = ''" >/dev/null
-  psql_db -c 'VACUUM ANALYZE contact_requests' >/dev/null
+  psql_db -c 'VACUUM (ANALYZE, PARALLEL 0) contact_requests' >/dev/null   # not parallel: a parallel vacuum of the churned heap asks for 64 MiB of dynamic shared memory and the container keeps the daemon's 64 MiB /dev/shm
   t="$(fresh_user)"
   instrumented traverse "$t" "$WORK/items.json"
   tr_json="$(traversal_json)"
@@ -1216,38 +1357,7 @@ for n in "${SIZE_LIST[@]}"; do measure_size "$n"; done
 jq -nc --arg reason "$QC1_PENDING_4" '{status:"pending", item:4, case:"legacy-discovery", size:null, reason:$reason}' >>"$MEASUREMENTS"
 jq -nc --arg reason "$QC1_PENDING_5" '{status:"pending", item:5, case:"legacy-put", size:null, reason:$reason}' >>"$MEASUREMENTS"
 
-# --- the environment record, written last so it holds every container used ------------------------------
-jq -n --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
-  --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --argjson reasonLen "$REASON_LEN" --argjson maxRequestBytes "$MAX_REQUEST_BYTES" \
-  --arg pg "$(psql_db -c 'SHOW server_version')" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$PG_REPO_DIGESTS" --argjson appDigests "$APP_REPO_DIGESTS" \
-  --arg dbCid "$DB_CID" --arg dbImage "$(docker inspect --format '{{.Image}}' "$DB_CID")" --argjson dbMemLimit "$(docker inspect --format '{{.HostConfig.Memory}}' "$DB_CID")" \
-  --arg appCid "$FIRST_APP_CID" --argjson appContainers "$APP_CONTAINERS" --argjson daemon "$DAEMON_JSON" --argjson sources "$SOURCES" \
-  --argjson calibration "$(cat "$WORK/calibration.json")" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson targetLen "$TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$SECONDS_PER_REASON" --argjson sit "$SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$BROWSER_RUNTIME" \
-  '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
-    appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
-    postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
-    limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
-    daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
-    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, wire:"set-v1", setV1Selftest:$setv1Selftest},
-    maxRequestBytes:$maxRequestBytes,
-    labels:{
-      competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
-      cluster:"walBytes, the commit figures and the gate figures are cluster-wide counters of the whole database, not attributed to the operation; they are attributable only where no invalid finding names a competitor",
-      walBytes:"cluster-wide pg_current_wal_lsn difference around the operation; walControlBytes is the same for one request that changes nothing",
-      gateSpanMs:"the span from the first to the last sample that saw the exclusive contact gate granted, not a hold time: the gate may have been released and retaken between samples, and a hold shorter than the gap between samples can be missed. The sampler cadence is measured per operation (gateMaxGapMs, gateMeanGapMs, gateHoles); no fixed bound is claimed",
-      commit:"pg_stat_statements COMMIT entries, cluster-wide: commitMsMax is the slowest COMMIT in the window, commitMsTotal their sum, commitCalls their count",
-      appPeakKb:"VmHWM of the app process minus the value right after a clear_refs reset made for this operation; appHwmReset says the reset was verified",
-      dbPeakKb:"peak of the database container cgroup memory.current sampled in a docker exec loop (dbMemSamples samples), minus its first sample; page cache included",
-      totalMs:"wall clock of the harness curl loop around a whole traversal (a shell harness, not a rendered panel); requestMs the page requests alone; clientMs the rest. The rendered panel is item 10",
-      assumptions:"secondsPerReason and sittingMinutes are human assumptions, kept apart from measurements"},
-    limitsApplied:($dbMemLimit > 0 and ($appContainers[0].memoryLimitBytes > 0))}' >"$WORK/environment.json"
-
-JUDGE_OK=true
-qc1_judge "$MEASUREMENTS" "$MAX_REQUEST_BYTES" >"$WORK/failures.jsonl" || JUDGE_OK=false
-qc1_evidence_status "$MEASUREMENTS" "$SIZES" "$COUNTS" "$WORK/environment.json" "$REVISION" "$MAX_REQUEST_BYTES" "$(IFS=,; printf "%s" "${DENSE_LIST[*]}")" >"$WORK/evidence-status.json"
-jq -n --slurpfile env "$WORK/environment.json" --slurpfile status "$WORK/evidence-status.json" --argjson judgeOk "$JUDGE_OK" \
-  '{environment:$env[0], evidence:$status[0], judgeRan:$judgeOk,
-    nextStep:"budgetFailures need a reviewed engineering disposition (written design and independent review in state.json) before any release containing T07B-2 is planned; a run is release evidence only when evidence.releaseEvidence is true (complete AND full coverage); a pilot run being complete means only that the rows it asked for exist and are clean; evidence.notMeasured lists what this harness does not measure"}' \
-  >"$WORK/summary.json"
+# --- the evidence: environment record, judge, status and summary. The same function finalizes a run that stops early (cleanup); a finished run calls it here, and a
+# finalization that could not write a file is a failed run.
+finalize_evidence complete 0 || { echo 'qc1: the evidence of this run could not be written completely' >&2; exit 1; }
 note "measurements: $(wc -l <"$MEASUREMENTS") rows; budget failures: $(jq '.budgetFailures | length' "$WORK/evidence-status.json"); invalid findings: $(jq '.invalid | length' "$WORK/evidence-status.json"); evidence complete: $(jq -r .complete "$WORK/evidence-status.json"); coverage: $(jq -r .coverage.kind "$WORK/evidence-status.json")"

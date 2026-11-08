@@ -23,7 +23,7 @@ QC1_MODES=(keep remove mixed)
 QC1_UNIT_BUDGET_MS=10000
 QC1_DELETE_BUDGET_MS=40000
 QC1_TRAVERSAL_BUDGET_MS=120000
-QC1_SCANNER_UNIT_ROWS=50000   # rows one scanner unit reads; a continuation unit exists only when the table holds more
+QC1_SCANNER_UNIT_ROWS=50000   # rows one page attempt reads at most (reasonUnitRows), now in batches; tableRows above it is the "belowUnit" fact; a continuation exists only when the table holds more
 # The rendered panel's budgets. These three are ENGINEERING PROPOSALS of the scaling design (F7, R5), not owner decisions, and are judged as hard
 # failures exactly like the three above: a miss is a recorded failure for a reviewed disposition, never a cap, never waived. The browser's 120 s is
 # QC1_TRAVERSAL_BUDGET_MS applied to the panel's readiness (the existing "full traversal above 2 minutes" line). No heap or DOM ceiling is set here:
@@ -351,7 +351,7 @@ qc1_judge_defs() { cat <<'JQ'
     # shape and the judge holds it to it: both modes, each with exactly one initial unit and seven continuations at 0, 10, 25, 40, 55, 70 and 85 per cent of the table, at
     # strictly increasing cursor ids, the same ids in both modes, every execution with its child scan's rows, loops and buffers. Anything else is invalid, never partial credit.
     # $variant says which table the probe ran against ("bloated": the table as the matrix left it; "clean": a VACUUM (ANALYZE)d copy).
-    def probe_structure($p; $variant):
+    def probe_structure1($p; $variant):
       (
           ( [0, 10, 25, 40, 55, 70, 85] ) as $pcts
           | ( if ($p | type) != "object" or ($p.executions | type) != "array" or $p.sameSession != true or $p.executionsPerMode != 8 then
@@ -395,6 +395,16 @@ qc1_judge_defs() { cat <<'JQ'
                 then inv("scanner-mode-disagreement"; {why:"the same cursor must read the same rows in both plan cache modes"}) else empty end
             else empty end )
       ) | . + {variant: $variant};
+    # The production scanner reads a unit in batches (internal/reasonscan: a first LIMIT, doubling, clipped to the 50,000-row unit), so the probe runs the real statements at the LIMITs
+    # production sends: the first batch (the statement almost every page is) and the largest batch of the schedule. It states the LIMITs it ran, every execution carries its own, and
+    # each LIMIT is held to the same eight-per-mode shape. A probe that does not state its LIMITs is invalid, not assumed to be one 50,000-row statement.
+    def probe_structure($p; $variant):
+      if ($p | type) == "object" and ($p.limits | type) == "array" and ($p.limits | length) >= 1 and ($p.limits | all(type == "number" and . >= 1))
+         and (($p.limits | unique | length) == ($p.limits | length)) and ($p.executions | type) == "array"
+         and (([ $p.executions[] | .limit ] | unique) == ($p.limits | sort))
+      then ( $p.limits[] as $L | probe_structure1($p | .executions |= map(select(.limit == $L)); $variant) | . + {limit: $L} )
+      else inv("scanner-probe-missing"; {why:"the scanner probe states the LIMITs it ran (the production batch schedule: its first and its largest batch) and every execution carries its LIMIT", variant:$variant})
+      end;
     # What the design (t07b-scaling-design3 R3) requires of the scanner statements, quoted in every finding so each miss is reviewable on its own.
     def r3: "R3 (t07b-scaling-design3): the initial unit is a Limit over the primary-key index with no Sort; the continuation unit has the id predicate as an Index Cond";
     # The plan an execution actually had, in words: the child scan, the index under a bitmap scan, and whether a Sort sits above it.
@@ -410,12 +420,13 @@ qc1_judge_defs() { cat <<'JQ'
     def probe_findings($m; $p; $variant):
       if ($p.executions | type) == "array" then
         ( $p.executions[] | select((.scan | type) == "object") as $e
-          | { mode:$e.mode, kind:$e.kind, percent:$e.percent, afterId:$e.afterId, variant:$variant, plan:shape($e), requirement:r3,
+          | { mode:$e.mode, kind:$e.kind, percent:$e.percent, afterId:$e.afterId, limit:($e.limit // null), variant:$variant, plan:shape($e), requirement:r3,
               tableRows:($m.table.actualRows // null), unitRows:$unitrows, belowUnit:((($m.table.actualRows // 0) <= $unitrows)),
               measured:{ rows:$e.scan.rows, loops:$e.scan.loops, sharedBlocks:(($e.scan.sharedHit // 0) + ($e.scan.sharedRead // 0)) },
               estimated:{ scanTotalCost:$e.scan.totalCost, scanRows:$e.scan.planRows, topTotalCost:$e.top.totalCost, topRows:$e.top.planRows, note:"the planner estimates for this execution (cost units and planned rows), beside what it measured: estimates, not measurements" },
               disposition:"open: measured miss against R3, retained as a budget finding at every table size; needs a reviewed engineering disposition" } as $ctx
           | ( if $e.rows > $unitrows or $e.scan.rows > $unitrows then inv("scanner-unit-overrun"; {mode:$e.mode, afterId:$e.afterId, rows:$e.scan.rows, variant:$variant}) else empty end ),
+            ( if ($e.limit | type) == "number" and ((($e.topRows | numbers) // 0) > $e.limit or $e.scan.rows > $e.limit) then inv("scanner-limit-overrun"; {mode:$e.mode, afterId:$e.afterId, limit:$e.limit, rows:$e.scan.rows, variant:$variant}) else empty end ),
             ( if $e.hasSort then bud("scanner-sort"; $ctx + {why:"a Sort in a scanner unit means the rows are not read in primary-key order from the index: the whole remainder is read and sorted before the first row is returned"}) else empty end ),
             ( if (($e.scan.nodeType | type) != "string") or (($e.scan.nodeType | startswith("Index")) | not) then
                 bud("scanner-not-indexed"; $ctx + {nodeType:$e.scan.nodeType,
@@ -428,11 +439,16 @@ qc1_judge_defs() { cat <<'JQ'
       else empty end;
     # Buffer growth across cursor positions (an engineering proposal, like the interaction budgets): a bounded unit should touch a similar number of blocks wherever the cursor is, so a
     # continuation that touches more than twice what the first position did is a finding. The figures are recorded either way.
-    def probe_growth($p; $variant):
+    def probe_growth1($p; $variant):
       if ($p.executions | type) == "array" then
         ( [ "auto", "force_generic_plan" ][] as $mode
           | [ $p.executions[] | select(.mode == $mode and .kind == "continuation" and (.scan | type) == "object") | (.scan.sharedHit + .scan.sharedRead) ] as $b
           | if ($b | length) > 1 and $b[0] > 0 and (($b | max) > 2 * $b[0]) then bud("scanner-buffer-growth"; {mode:$mode, variant:$variant, firstPosition:$b[0], max:($b | max), blocks:$b, proposal:"more than twice the first position"}) else empty end )
+      else empty end;
+    # Buffer growth is judged within one LIMIT (a 17,488-row batch always touches more blocks than a 256-row one).
+    def probe_growth($p; $variant):
+      if ($p | type) == "object" and ($p.limits | type) == "array" and ($p.executions | type) == "array"
+      then ( $p.limits[] as $L | probe_growth1($p | .executions |= map(select(.limit == $L)); $variant) | . + {limit: $L} )
       else empty end;
     # The EXPLAINED deletion of an account with no reasons (item 6, order-control-delete-<start|end>-explained): a separate extra deletion that ran with auto_explain on for that one
     # operation only. It holds the report statement the application runs once per erasure, with its plan (actual rows, timing and buffers) read from the server log, and the proof that the
@@ -492,7 +508,7 @@ qc1_judge_defs() { cat <<'JQ'
                 then inv("audit-caveats-missing"; {why:"the row must say the statement takes no row locks, that log_lock_waits was on with the count it logged, and carry the scan, lock and cluster caveats"}) else empty end )
           end );
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain","batchSchedule") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.loggedShapes |= (if type == "object" then reduce ("initial","continuation") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
@@ -657,6 +673,18 @@ qc1_judge_rules() { cat <<'JQ'
             or ($m.executions.scannerContinuation.rows | length) != $m.executions.scannerContinuation.count or ($m.executions.scannerContinuation.sharedBlocks | length) != $m.executions.scannerContinuation.count
             or ([$m.executions.scannerInitial.rows[], $m.executions.scannerInitial.sharedBlocks[], $m.executions.scannerContinuation.rows[], $m.executions.scannerContinuation.sharedBlocks[]] | any(type != "number"))) then inv("plan-executions-missing"; {why:"rows and buffers of every scanner execution must be read from the logged plans"}) else empty end ),
       ( if $m.item == 8 and ([$m.executions.scannerInitial.rows[]?, $m.executions.scannerContinuation.rows[]?] | any(type == "number" and . > $unitrows)) then inv("scanner-unit-overrun"; {unitRows:$unitrows}) else empty end ),
+      # The production scanner reads a unit in batches (a first LIMIT, doubling, clipped to the unit). The plan row states the schedule it read from the Go source and the LIMIT each logged execution
+      # carried; a LIMIT outside the schedule, or more rows than the LIMIT, means the harness did not measure the scanner production runs. Nothing here requires one 50,000-row statement.
+      ( if $m.item == 8 and (($m.batchSchedule | type) != "object" or ($m.batchSchedule.limits | type) != "array" or ($m.batchSchedule.limits | length) < 1 or ($m.batchSchedule.limits | any(type != "number" or . < 1))
+            or ($m.batchSchedule.unitRows | type) != "number" or ($m.batchSchedule.limits | add) != $m.batchSchedule.unitRows)
+        then inv("batch-schedule-missing"; {why:"the plan row states the production batch schedule read from the Go source: the LIMIT of each statement of a unit read to its end, summing to the unit"}) else empty end ),
+      ( if $m.item == 8 and ($m.batchSchedule | type) == "object" and ($m.batchSchedule.limits | type) == "array" then
+          ( [ $m.executions.scannerInitial, $m.executions.scannerContinuation ][] | select(type == "object") ) as $x
+          | if ($x.limits | type) != "array" or ($x.limits | length) != $x.count or ($x.limits | any(type != "number")) then inv("plan-executions-missing"; {why:"each logged scanner execution carries the LIMIT it was sent"})
+            elif ($x.limits | any(. as $l | ($m.batchSchedule.limits | index($l)) == null)) then inv("scanner-limit-unexpected"; {limits:($x.limits | unique), schedule:$m.batchSchedule.limits})
+            elif ([ range(0; $x.count) | select(($x.rows[.] | type) == "number" and $x.rows[.] > $x.limits[.]) ] | length) > 0 then inv("scanner-limit-overrun"; {limits:($x.limits | unique), why:"a logged execution returned more rows than its LIMIT"})
+            else empty end
+        else empty end ),
       # The scanner probes: the table as the matrix left it ("bloated") and a VACUUM (ANALYZE)d copy of the same rows ("clean"), each held to the same exact shape and each with its
       # findings. The bloated probe is the original measurement and is never replaced by the clean one; the clean one says what the same statements do on a table without the churn.
       ( if $m.item == 8 then probe_structure($m.scannerProbe; "bloated"), probe_structure($m.scannerProbeClean; "clean") else empty end ),
@@ -785,8 +813,8 @@ JSON
 #                     alone never make a run full; a disagreement between them and the arguments or the rows is an invalid finding.
 #   releaseEvidence   complete AND full.
 # Budget failures are reported for disposition and do not make a run incomplete.
-qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts]
-  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson
+qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts] [abort.json]
+  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson abortjson=null
   # Lines that are not JSON cannot be judged or counted: the whole file is invalid evidence.
   if ! jq -e . "$1" >/dev/null 2>&1; then
     printf '%s\n' '{"complete":false,"missing":[],"pending":[],"invalid":[{"class":"invalid","failure":"unparsable-measurements"}],"budgetFailures":[]}'
@@ -801,8 +829,9 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
   judged="$(qc1_judge "$1" "$6")" || judge_ok=false
   env_problems="$(qc1_environment_problems "$4" "$5" | jq -R . | jq -sc .)" || env_problems='["environment record unreadable"]'
   envjson="$(jq -c . "$4" 2>/dev/null || printf null)"
+  if [[ -n "${8:-}" && -s "${8:-}" ]]; then abortjson="$(jq -c . "$8" 2>/dev/null || printf null)"; fi   # an aborted run: how it ended, carried into the status
   jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
-    --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
+    --argjson aborted "$abortjson" --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
     --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --argjson judged "$(jq -sc . <<<"$judged")" '
     def nums($x): if $x == null then null else ($x | tostring | split(",") | map(tonumber? // empty) | unique) end;
     def same($a; $b): ($a | unique) == ($b | unique);
@@ -878,7 +907,8 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                      lockWaitsLogged: $a.lockWaits.count} ]) } ),
         coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
-    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}' "$1"
+    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}
+    | if $aborted != null then . + {aborted: $aborted, complete: false, releaseEvidence: false} else . end' "$1"
 }
 
 # The statements whose plans QC-1 records. Plans come from auto_explain's log
@@ -1203,13 +1233,29 @@ qc1_go_sql() { # repo-root const-name
   }' "$1/account_erasure_reasons.go"
 }
 
+# An integer package variable of a Go source file ("name = 123", any spacing); nothing when it is not there.
+qc1_go_int() { # repo-root file name
+  awk -v n="$3" '$1 == n && $2 == "=" && $3 ~ /^[0-9]+$/ { print $3; exit }' "$1/$2"
+}
+# The LIMIT of each statement of a scanner unit read to its end, one number per line: reasonScanBatchFirst, then reasonScanBatchGrowth times as many, the last clipped so the
+# sum is reasonUnitRows (account_erasure_reasons_scan.go, account_erasure_reasons.go; internal/reasonscan.Batches is the same rule). A page that fills earlier sends a prefix.
+# Fails when the Go source does not state the three numbers, so the harness never falls back to a schedule it made up.
+qc1_scan_schedule() { # repo-root
+  local unit first growth
+  unit="$(qc1_go_int "$1" account_erasure_reasons.go reasonUnitRows)"; first="$(qc1_go_int "$1" account_erasure_reasons_scan.go reasonScanBatchFirst)"
+  growth="$(qc1_go_int "$1" account_erasure_reasons_scan.go reasonScanBatchGrowth)"
+  [[ -n "$unit" && -n "$first" && -n "$growth" ]] && (( unit >= 1 && first >= 1 && growth >= 1 )) || return 1
+  awk -v u="$unit" -v f="$first" -v g="$growth" 'BEGIN { b = f; while (u > 0) { n = (b > u ? u : b); print n; u -= n; b *= g } }'
+}
+
 # Per logged execution of one statement kind: "<actual rows of the top node> <shared blocks hit+read of the top node>", one line each, in log order
 # ("null" when a figure is not in the plan). This is the across-executions evidence (rows a unit returned, buffers a unit touched); it needs
 # auto_explain.log_analyze and log_buffers, which the runner sets.
 qc1_plan_executions() { # log which
   qc1_extract_plans "$1" "$2" | awk '
-    function emit() { print (rows == "" ? "null" : rows), (blocks == "" ? "null" : blocks) }
-    /duration: .* plan:/ { if (inb) emit(); inb = 1; rows = ""; blocks = ""; next }
+    function emit() { print (rows == "" ? "null" : rows), (blocks == "" ? "null" : blocks), (lim == "" ? "null" : lim) }
+    /duration: .* plan:/ { if (inb) emit(); inb = 1; rows = ""; blocks = ""; lim = ""; next }
+    inb && /^[ \t]*Query Parameters: / { v = $0; n = split(v, a, /\$[0-9]+ = /); v = a[n]; gsub(/[, \t]/, "", v); gsub("\047", "", v); lim = (v ~ /^-?[0-9]+$/ ? v : "") }
     inb && rows == "" && match($0, /actual time=[0-9.]+\.\.[0-9.]+ rows=[0-9]+/) { s = substr($0, RSTART, RLENGTH); sub(/.*rows=/, "", s); rows = s }
     inb && blocks == "" && /Buffers: shared/ { b = 0; line = $0; while (match(line, /(hit|read)=[0-9]+/)) { v = substr(line, RSTART, RLENGTH); sub(/.*=/, "", v); b += v; line = substr(line, RSTART + RLENGTH) } blocks = b }
     END { if (inb) emit() }'

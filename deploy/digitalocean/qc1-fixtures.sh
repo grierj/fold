@@ -356,15 +356,15 @@ QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows
 # The scanner probe of a healthy run: eight executions per mode (one initial unit, seven continuations at cursor positions 0 to 85 per cent), each an index scan in
 # primary-key order with its id predicate as an Index Cond, no Sort, one loop, the unit's rows and a flat number of shared blocks.
 probe_json() { # [schema]
-  jq -nc --arg schema "${1:-public}" '{unit:50000, tableRows:1000, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, estimates:true,
+  jq -nc --arg schema "${1:-public}" '{unit:50000, tableRows:1000, schema:$schema, sameSession:true, modes:["auto","force_generic_plan"], executionsPerMode:8, estimates:true, limits:[256], schedule:[256,512,1024,2048,4096,8192,16384,17488],
     plannerSettings:{jit:"on", jit_above_cost:"100000", jit_inline_above_cost:"500000", jit_optimize_above_cost:"500000", random_page_cost:"4", seq_page_cost:"1", effective_cache_size:"524288", work_mem:"4096", plan_cache_mode:"auto"},
     executions:[("auto","force_generic_plan") as $m
-      | ({mode:$m, kind:"initial", percent:null, afterId:null, topRows:50000, hasSort:false,
-          top:{nodeType:"Limit", startupCost:0.29, totalCost:1850.5, planRows:50000, planWidth:25, actualRows:50000, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, idIndexCond:null, bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:1850.5, planRows:50000, planWidth:25, actualTotalMs:12}},
-         ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), topRows:50000, hasSort:false,
-          top:{nodeType:"Limit", startupCost:0.29, totalCost:(1850.5 + .key), planRows:50000, planWidth:25, actualRows:50000, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
-          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", idIndexCond:"(id > $1)", bitmapIndex:null, schema:$schema, filter:null, rows:50000, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:(1850.5 + .key), planRows:50000, planWidth:25, actualTotalMs:12}}))]}'
+      | ({mode:$m, kind:"initial", percent:null, afterId:null, limit:256, topRows:256, hasSort:false,
+          top:{nodeType:"Limit", startupCost:0.29, totalCost:1850.5, planRows:256, planWidth:25, actualRows:256, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:null, idIndexCond:null, bitmapIndex:null, schema:$schema, filter:null, rows:256, loops:1, sharedHit:900, sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:1850.5, planRows:256, planWidth:25, actualTotalMs:12}},
+         ([0,10,25,40,55,70,85] | to_entries[] | {mode:$m, kind:"continuation", percent:.value, afterId:(.value * 10 + 1), limit:256, topRows:256, hasSort:false,
+          top:{nodeType:"Limit", startupCost:0.29, totalCost:(1850.5 + .key), planRows:256, planWidth:25, actualRows:256, actualTotalMs:12.5}, planningMs:0.2, executionMs:13, jit:null,
+          scan:{nodeType:"Index Scan", indexName:"contact_requests_pkey", indexCond:"(id > $1)", idIndexCond:"(id > $1)", bitmapIndex:null, schema:$schema, filter:null, rows:256, loops:1, sharedHit:(900 + .key), sharedRead:5, rowsRemovedByFilter:0, startupCost:0.29, totalCost:(1850.5 + .key), planRows:256, planWidth:25, actualTotalMs:12}}))]}'
 }
 # The two tables behind the plans row (bloated as the matrix left it, clean copy vacuumed and analyzed) and the shapes of the application's own logged executions of a healthy run.
 tables_json() { printf '{"bloated":{"schema":"public","relpages":13500,"actualPages":13500,"reltuples":11000,"heapBytes":110592000,"indexBytes":2000000,"nLiveTup":11000,"nDeadTup":90000,"autovacuumCount":0},"clean":{"schema":"qc1_clean","relpages":560,"actualPages":560,"reltuples":11000,"heapBytes":4587520,"indexBytes":400000,"nLiveTup":11000,"nDeadTup":0,"kind":"a copy of the same rows in a scratch schema, vacuumed and analyzed","vacuumed":true,"analyzed":true}}'; }
@@ -404,8 +404,8 @@ gen() { # sizes counts [dense]
     printf '{"status":"measured","item":5,"case":"request-size","size":%s,"workers":0,"request":{"format":"set-v1","maxRequestBytes":6291456,"capacity":{"reasons":18873540,"bytesAt":6291455,"bytesNext":6291459},"largest":{"reasons":%s,"bodyBytes":%s,"sent":true},"parseRefusal":{"status":"400","unchanged":true,"tableRowsBefore":%s},"countMismatch":{"status":"400","unchanged":true,"tableRowsBefore":%s},"changedSet":{"status":"409","unchanged":true,"tableRowsBefore":%s},"overCap":{"reasons":18873541,"bodyBytes":6291459,"status":"413","unchanged":true,"tableRowsBefore":%s},"legacyComparison":{"synthetic":true,"capacityEntries":52802,"entriesOver":52803,"overStatus":"413","fitStatus":"409","fitUnchanged":true,"tableRowsBefore":{"fit":%s,"over":%s}},"fitExpect":{"kept":%s,"removed":%s},"fitOutcome":%s},"delete":%s,"traversal":%s}\n' \
       "$s" "$K" "$(( 400 + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + K ))" "$(( s + 10 ))" "$(( s + 10 ))" "$(( K / 2 ))" "$(( K - K / 2 ))" "$(outc "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(dele "$(( s + K ))" "$(( K / 2 ))" "$(( K - K / 2 ))")" "$(trav "$(( s + K ))" "$K")"
     printf '{"status":"measured","item":7,"case":"human-progress","size":%s,"workers":0,"assessment":{"perCount":[{"reasons":10}]}}\n' "$s"
-    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"executions":{"scannerInitial":{"count":1,"rows":[50000],"sharedBlocks":[900]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s,"scannerProbeClean":%s,"tables":%s,"loggedShapes":%s}\n' \
-      "$s" "$s" "$act" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[50000,50000]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$probe" "$probec" "$(tables_json)" "$(shapes_json "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))")"
+    printf '{"status":"measured","item":8,"case":"plans","size":%s,"workers":0,"table":{"backgroundRows":%s,"actualRows":%s},"plans":{"scanner-initial":1,"scanner-continuation":%s,"page-items":1,"delete-set":1,"blank-batch":1},"continuationPlanIndexCond":%s,"batchSchedule":{"unitRows":50000,"first":256,"growth":2,"limits":[256,512,1024,2048,4096,8192,16384,17488]},"executions":{"scannerInitial":{"count":1,"rows":[256],"sharedBlocks":[900],"limits":[256]},"scannerContinuation":{"count":%s,"rows":%s,"sharedBlocks":%s,"limits":%s}},"generic":{"source":"go-source","scannerContinuation":{"indexCondOnId":true},"scannerInitial":{"idIndexScan":true}},"scannerProbe":%s,"scannerProbeClean":%s,"tables":%s,"loggedShapes":%s}\n' \
+      "$s" "$s" "$act" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$ci" "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[256,256]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[880,900]' || echo '[]')" "$( (( act > QC1_SCANNER_UNIT_ROWS )) && echo '[256,256]' || echo '[]')" "$probe" "$probec" "$(tables_json)" "$(shapes_json "$(( act > QC1_SCANNER_UNIT_ROWS ? 2 : 0 ))")"
     for bc in $(qc1_list "$QC1_BROWSER_COUNTS") $dlist; do
       (( bc <= s )) || continue
       np=$(( (bc + 99) / 100 )); pre=$(( 35 + 40 * bc ))
@@ -628,7 +628,7 @@ mut plans-nocont-small 'if .item == 8 and .size == 100 then .plans["scanner-cont
 # min(size, 1,000) reasons, so 49,000 + 1,000 = 50,000 rows is within one unit and 49,001 + 1,000 = 50,001 is not.
 plans_one() { # size continuation-count   (a single plans row whose label, size and table agree)
   jq -c --argjson s "$1" --argjson c "$2" 'select(.item == 8 and .size == 100) | .size = $s | .table = {backgroundRows:$s, actualRows:($s + (if $s < 1000 then $s else 1000 end))} | .plans["scanner-continuation"] = $c | .continuationPlanIndexCond = (if $c > 0 then true else null end)
-    | .executions.scannerContinuation = (if $c > 0 then {count:$c, rows:[range(0; $c) | 50000], sharedBlocks:[range(0; $c) | 880]} else {count:0, rows:[], sharedBlocks:[]} end)' "$WORK/e2.jsonl"
+    | .executions.scannerContinuation = (if $c > 0 then {count:$c, rows:[range(0; $c) | 256], sharedBlocks:[range(0; $c) | 880], limits:[range(0; $c) | 256]} else {count:0, rows:[], sharedBlocks:[], limits:[]} end)' "$WORK/e2.jsonl"
 }
 plans_one 49000 0 >"$WORK/plans.small"; [[ -z "$(qc1_judge "$WORK/plans.small" 6291456)" ]] || { qc1_judge "$WORK/plans.small" 6291456 >&2; exit 1; }
 plans_one 49001 0 >"$WORK/plans.big"; [[ "$(qc1_judge "$WORK/plans.big" 6291456 | jq -r '.failure' | paste -sd,)" == plans-missing ]]
@@ -761,7 +761,7 @@ st="$(status_of "$WORK/e2.init-noidx")"; [[ "$(jq -r '[.budgetFailures[] | selec
 mut ex-gone 'if .item == 8 then del(.executions) else . end'; expect_invalid ex-gone plan-executions-missing
 mut ex-nobuf 'if .item == 8 then .executions.scannerInitial.sharedBlocks = [null] else . end'; expect_invalid ex-nobuf plan-executions-missing
 mut ex-count 'if .item == 8 then .executions.scannerInitial.count = 2 else . end'; expect_invalid ex-count plan-executions-missing
-mut ex-cont 'if .item == 8 and .size == 100 then .executions.scannerContinuation = {count:1, rows:[10], sharedBlocks:[1]} else . end'
+mut ex-cont 'if .item == 8 and .size == 100 then .executions.scannerContinuation = {count:1, rows:[10], sharedBlocks:[1], limits:[256]} else . end'
 [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ex-cont")")" == true ]]
 mut ex-overrun 'if .item == 8 then .executions.scannerInitial.rows = [50001] else . end'; expect_invalid ex-overrun scanner-unit-overrun
 # The continuation is judged on the rows the table really held (n + k), not only on the size asked for.
@@ -964,9 +964,23 @@ cat >"$WORK/pg.exec" <<LOG
 	  Buffers: shared hit=40
 2026-11-07 14:31:04.000 UTC [1] LOG:  received SIGHUP, reloading configuration files
 LOG
-[[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-initial | paste -sd'|')" == '50000 900' ]]
-[[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-continuation | paste -sd'|')" == '50000 905|12 40' ]]
+[[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-initial | paste -sd'|')" == '50000 900 null' ]]
+[[ "$(qc1_plan_executions "$WORK/pg.exec" scanner-continuation | paste -sd'|')" == '50000 905 null|12 40 null' ]]
 [[ -z "$(qc1_plan_executions "$WORK/pg.exec" blank-batch)" ]]
+# The LIMIT each logged execution carried is the last bind of its Query Parameters (a missing line is null, never guessed).
+cat >"$WORK/pg.limits" <<LOG
+2026-11-07 14:31:01.100 UTC [71] LOG:  duration: 3.0 ms  plan:
+	Query Text: SELECT id FROM contact_requests $(qc1_plan_marker scanner-continuation)
+	Query Parameters: \$1 = '5', \$2 = '256'
+	Limit  (cost=0.29..10.1 rows=256 width=8) (actual time=0.02..9.0 rows=256 loops=1)
+	  Buffers: shared hit=40 read=2
+2026-11-07 14:31:02.100 UTC [71] LOG:  duration: 3.0 ms  plan:
+	Query Text: SELECT id FROM contact_requests $(qc1_plan_marker scanner-continuation)
+	Query Parameters: \$1 = '-9223372036854775808', \$2 = '17488'
+	Limit  (cost=0.29..10.1 rows=17488 width=8) (actual time=0.02..9.0 rows=17488 loops=1)
+	  Buffers: shared hit=900
+LOG
+[[ "$(qc1_plan_executions "$WORK/pg.limits" scanner-continuation | paste -sd'|')" == '256 42 256|17488 900 17488' ]]
 
 # --- the recheck's findings, each as a regression ----------------------------------------------------------------------------------------------------
 # (1) A zero-reason deletion has no per-reason size: null with the explanation, not a division by zero.
@@ -1026,7 +1040,7 @@ pp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":5
 # The runner: it runs the REAL statements prepared, eight times per mode in one session, in both plan cache modes, read-only, AFTER the logged capture is off and BEFORE the scenario is dropped.
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
 for pat in 'qc1_go_sql "$ROOT" reasonScanInitialSQL' 'qc1_go_sql "$ROOT" reasonScanContinuationSQL' 'for mode in auto force_generic_plan' 'SET plan_cache_mode = $mode' 'PREPARE qi (bigint) AS $sql_init' 'PREPARE qc (bigint, bigint) AS $sql_cont' \
-  'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($unit)' 'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $unit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
+  'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($limit)' 'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $limit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
   grep -qF -- "$pat" <<<"$sp_body" || { echo "qc1: scanner_probe lost: $pat" >&2; exit 1; }
 done
 if grep -Eiq 'INSERT|UPDATE|DELETE|TRUNCATE' <<<"$(grep -v '^ *#' <<<"$sp_body" | grep -v 'sameSession\|note:')"; then echo 'qc1: the scanner probe writes' >&2; exit 1; fi
@@ -1244,8 +1258,8 @@ pj="$(qc1_judge "$WORK/pilot-plans.jsonl" 6291456)"
 [[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .belowUnit] | unique' <<<"$pj")" == '[true]' ]]   # recorded as a FACT beside the finding (11,000 rows < the 50,000 unit), never as a reason to drop it
 [[ "$(jq -sc '[.[] | select(.failure == "scanner-sort") | .tableRows] | unique' <<<"$pj")" == '[11000]' ]]
 [[ "$(jq -sc '[.[] | select(.failure == "plan-continuation") | .why]' <<<"$pj")" == '["of 10 logged continuation executions 9 had the id predicate as an Index Cond (on an Index Scan, or beneath a Bitmap Heap Scan); the others (executions 1) had it only as a Filter on a Seq Scan. 4 had a Sort above the scan."]' ]]
-# nothing else about the pilot row went wrong, except what the pilot predates (a clean probe, the tables and the planner estimates, which pilot1 did not record: the old row is judged invalid on exactly those and nothing else)
-[[ "$(jq -sc '[.[] | select(.class == "invalid") | .failure] | unique' <<<"$pj")" == '["clean-table-missing","scanner-probe-estimates-missing","scanner-probe-missing"]' ]]
+# nothing else about the pilot row went wrong, except what the pilot predates (a clean probe, the tables, the planner estimates and the batch schedule with the LIMITs, which pilot1 did not record: the old row is judged invalid on exactly those and nothing else)
+[[ "$(jq -sc '[.[] | select(.class == "invalid") | .failure] | unique' <<<"$pj")" == '["batch-schedule-missing","clean-table-missing","scanner-probe-missing"]' ]]
 # The parser reads the id Index Cond from beneath a Bitmap Heap Scan, and the schema the scan read.
 cat >"$WORK/bitmap.json" <<'JSON'
 [{"Plan":{"Node Type":"Limit","Actual Rows":8810,"Plans":[{"Node Type":"Sort","Plans":[{"Node Type":"Bitmap Heap Scan","Relation Name":"contact_requests","Schema":"qc1_clean","Recheck Cond":"(id > '3981'::bigint)","Actual Rows":8810,"Actual Loops":1,"Shared Hit Blocks":2295,"Shared Read Blocks":0,"Plans":[{"Node Type":"Bitmap Index Scan","Index Name":"contact_requests_pkey","Index Cond":"(id > '3981'::bigint)","Actual Rows":20205,"Shared Hit Blocks":130}]}]}]}}]
@@ -1294,7 +1308,7 @@ st="$(status_of "$WORK/e2.disp")"
 [[ "$(jq -c '.dispositions' <<<"$(status_of "$WORK/e2.jsonl")")" == '[]' ]]
 # the tables are recorded by the runner, the clean copy in a scratch schema the original is never touched through
 cc_body="$(sed -n '/^make_clean_copy() {/,/^}/p' "$RUNNER_SRC")"
-for pat in 'CREATE SCHEMA qc1_clean' 'LIKE public.contact_requests INCLUDING ALL' 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' 'VACUUM (ANALYZE) qc1_clean.contact_requests'; do grep -qF -- "$pat" <<<"$cc_body" || { echo "qc1: make_clean_copy lost: $pat" >&2; exit 1; }; done
+for pat in 'CREATE SCHEMA qc1_clean' 'LIKE public.contact_requests INCLUDING ALL' 'INSERT INTO qc1_clean.contact_requests SELECT * FROM public.contact_requests ORDER BY id' 'VACUUM (ANALYZE, PARALLEL 0) qc1_clean.contact_requests'; do grep -qF -- "$pat" <<<"$cc_body" || { echo "qc1: make_clean_copy lost: $pat" >&2; exit 1; }; done
 if grep -E 'VACUUM|ALTER|TRUNCATE|DELETE|UPDATE|DROP TABLE' <<<"$cc_body" | grep -v 'qc1_clean' | grep -v 'CLEAN_COPY_JSON' | grep -v '^ *#'; then echo 'qc1: make_clean_copy touches the original table' >&2; exit 1; fi
 grep -qF "scanner_probe public; probe_bloated=" <<<"$cp_body"; grep -qF 'scanner_probe qc1_clean; probe_clean=' <<<"$cp_body"; grep -qF "DROP SCHEMA qc1_clean CASCADE" <<<"$cp_body"
 grep -qF 'tables:{bloated:$statsb, clean:($statsc + $copy)}' <<<"$cp_body"
@@ -1375,7 +1389,10 @@ run_rec8() { # statement-text -> row in $WORK/rec8.json (empty when the construc
     need='["scanner-initial","page-items","delete-set","blank-batch"]'
     gen_cont="$(jq -r '.generic.scannerContinuation.text' "$PLANS_ROW")"; gen_init="$(jq -r '.generic.scannerInitial.text' "$PLANS_ROW")"
     sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"; sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"
-    exec_json="$(jq -c '.executions' "$PLANS_ROW")"
+    # The logged execution figures are the pilot's, given the LIMIT production sends (the pilot predates batches): only the construction of the row is under test here.
+    exec_json="$(jq -c '.executions | .scannerInitial.rows |= map(if . > 256 then 256 else . end) | .scannerContinuation.rows |= map(if . > 256 then 256 else . end) | .scannerInitial.limits = (.scannerInitial.rows | map(256)) | .scannerContinuation.limits = (.scannerContinuation.rows | map(256))' "$PLANS_ROW")"
+    # shellcheck disable=SC2034  # read by the statement under test, which is eval'd below
+    bsched="$(jq -nc --argjson l "$(qc1_scan_schedule "$ROOT" | jq -sc "map(tonumber)")" '{unitRows:50000, first:256, growth:2, limits:$l}')"
     probe_bloated="$(probe_json public)"; probe_clean="$(probe_json qc1_clean)"
     stats_bloated="$(tables_json | jq -c '.bloated')"; stats_clean="$(tables_json | jq -c '.clean | del(.kind, .vacuumed, .analyzed)')"
     eval "$clean_copy_stmt"
@@ -1617,7 +1634,7 @@ sed -n "$obs_start,/^}/p" "$RUNNER" | tail -n 4 | grep -q 'start_app 0'
 for label in cluster-wide 'not a hold time' 'commitMsMax is the slowest COMMIT' walControlBytes 'not attributable' 'FOLD_WORKERS=0 turns the job workers off'; do grep -qF -- "$label" "$RUNNER"; done
 # The verdict never hides a failed judge or an incomplete run.
 if grep -nE 'qc1_judge .*\|\| true' "$RUNNER"; then echo 'qc1: a judge failure is swallowed' >&2; exit 1; fi
-grep -q 'JUDGE_OK=false' "$RUNNER"; grep -q 'qc1_evidence_status "\$MEASUREMENTS" "\$SIZES" "\$COUNTS" "\$WORK/environment.json" "\$REVISION" "\$MAX_REQUEST_BYTES"' "$RUNNER"
+grep -q 'judge_ok=false' "$RUNNER"; grep -q 'qc1_evidence_status "\$MEASUREMENTS" "\$SIZES" "\${COUNTS:-}" "\$WORK/environment.json" "\${REVISION:-}" "\${MAX_REQUEST_BYTES:-0}"' "$RUNNER"   # now inside finalize_evidence, the one place the status is written
 # It measures; it does not gate.
 grep -q "ALTER SYSTEM SET auto_explain.log_min_duration = -1" "$RUNNER"
 grep -q '"pending", item:4\|status:"pending", item:4' "$RUNNER"
@@ -2012,7 +2029,7 @@ mut est-bitmap "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" a
 expect_invalid est-bitmap scanner-probe-estimates-missing      # a Bitmap Index Scan beneath the scan needs its estimates too
 # the findings carry the estimates beside the measurement
 mut est-miss "$BPR then .scannerProbe.executions |= map(if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end) else . end"
-[[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .estimated | [.scanTotalCost, .scanRows, .topTotalCost, .topRows]]' <<<"$(status_of "$WORK/e2.est-miss")")" == '[[1852.5,50000,1852.5,50000]]' ]]
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .estimated | [.scanTotalCost, .scanRows, .topTotalCost, .topRows]]' <<<"$(status_of "$WORK/e2.est-miss")")" == '[[1852.5,256,1852.5,256]]' ]]
 # the parser: a synthetic EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) document shaped like the probe's gives the top node's and the scan's estimates, the planning and execution times and a JIT section when there is one
 cat >"$WORK/est.json" <<'JSON'
 [{"Plan":{"Node Type":"Limit","Startup Cost":0.29,"Total Cost":733.98,"Plan Rows":367,"Plan Width":25,"Actual Rows":10999,"Actual Total Time":12.5,"Plans":[{"Node Type":"Index Scan","Relation Name":"contact_requests","Schema":"public","Index Name":"contact_requests_pkey","Index Cond":"(contact_requests.id > $1)","Startup Cost":0.29,"Total Cost":7331.24,"Plan Rows":3667,"Plan Width":25,"Actual Rows":10999,"Actual Loops":1,"Actual Total Time":12.0,"Shared Hit Blocks":2579,"Shared Read Blocks":0}]},"Planning Time":0.4,"Execution Time":13.1,"JIT":{"Functions":4,"Timing":{"Total":55.5}}}]
@@ -2146,4 +2163,48 @@ mut jt-null-ok "$EX then .auditRetention.plan.jit = null else . end"; [[ "$(jq -
 [[ "$(jq -r '[.invalid[] | select(.failure == "audit-jit-malformed")] | length > 0 and (map(.failure) | unique | length) == 1' <<<"$(status_of "$WORK/e2.ev-j-sum")")" == true ]]
 # the runner records the account it deleted beside the evidence, and hands the same id to the evidence function, so the judge can tie the two together
 grep -qF 'explained:{targetUserId:$tid,' <<<"$ex_body"; grep -qF -- '--argjson tid "$t"' <<<"$ex_body"; grep -qF 'qc1_audit_report_evidence "$log" "$ROOT" "$t" true' <<<"$ex_body"
+# === the harness measures the scanner production runs: batches of the pinned schedule, not one 50,000-row statement ================================================================
+# The schedule is read out of the Go source (the same numbers internal/reasonscan and the page route use); nothing here types 256 or 17488.
+[[ "$(qc1_scan_schedule "$ROOT" | paste -sd' ')" == '256 512 1024 2048 4096 8192 16384 17488' ]]
+[[ "$(qc1_scan_schedule "$ROOT" | awk '{ s += $1 } END { print s }')" == "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" && "$QC1_SCANNER_UNIT_ROWS" == "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" ]]
+mkdir "$WORK/nosched"; printf 'var (\n\treasonUnitRows = 50000\n)\n' >"$WORK/nosched/account_erasure_reasons.go"; printf 'var reasonScanBatchFirst = 256\n' >"$WORK/nosched/account_erasure_reasons_scan.go"
+refused '' qc1_scan_schedule "$WORK/nosched"                                  # a Go source that does not state the growth: no invented schedule
+printf 'var (\n\treasonScanBatchFirst  = 100\n\treasonScanBatchGrowth = 3\n)\n' >"$WORK/nosched/account_erasure_reasons_scan.go"; printf 'var (\n\treasonUnitRows = 1000\n)\n' >"$WORK/nosched/account_erasure_reasons.go"
+[[ "$(qc1_scan_schedule "$WORK/nosched" | paste -sd' ')" == '100 300 600' ]]  # first, three times, the last clipped so the sum is the unit
+# the runner reads the schedule for the probe and the plan row, and the probe runs the first and the largest batch, each its own eight executions per mode
+sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
+grep -qF 'mapfile -t sched < <(qc1_scan_schedule "$ROOT")' <<<"$sp_body"; grep -qF 'limits=("${sched[0]}")' <<<"$sp_body"; grep -qF 'limits+=("${sched[${#sched[@]}-1]}")' <<<"$sp_body"
+grep -qF 'EXECUTE qi($limit)' <<<"$sp_body"; grep -qF 'EXECUTE qc($id, $limit)' <<<"$sp_body"; ! grep -qF 'EXECUTE qi($unit)' <<<"$sp_body"
+cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
+grep -qF 'bsched="$(jq -nc' <<<"$cp_body"; grep -qF 'batchSchedule:$bsched' <<<"$cp_body"; grep -qF 'limits:map(.limit)' <<<"$cp_body"
+# a healthy plans row states the schedule, the probe its LIMITs and each execution its own
+[[ "$(jq -c 'select(.item == 8 and .size == 100) | [.batchSchedule.limits[0], .batchSchedule.limits[-1], .scannerProbe.limits, .scannerProbeClean.limits, (.scannerProbe.executions | map(.limit) | unique), .executions.scannerContinuation.limits]' "$WORK/e2.jsonl")" == '[256,17488,[256],[256],[256],[]]' ]]
+BP='if .item == 8 and .size == 100'
+# both representative LIMITs (the first and the largest batch) in both probes: still clean, each LIMIT its own group
+mut lim-two "$BP then .scannerProbe.limits = [256, 17488] | .scannerProbe.executions += (.scannerProbe.executions | map(.limit = 17488 | .topRows = 17488 | .scan.rows = 17488 | .top.actualRows = 17488)) | .scannerProbeClean.limits = [256, 17488] | .scannerProbeClean.executions += (.scannerProbeClean.executions | map(.limit = 17488 | .topRows = 17488 | .scan.rows = 17488 | .top.actualRows = 17488)) else . end"
+st="$(status_of "$WORK/e2.lim-two")"; [[ "$(jq -r '.complete' <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]] || { echo "two LIMITs: $st" >&2; exit 1; }
+# a probe is invalid, not assumed to be one 50,000-row statement, when it does not state its LIMITs, one LIMIT lacks its eight, or an execution's LIMIT is not among them
+mut lim-gone "$BP then del(.scannerProbe.limits) else . end"; expect_invalid lim-gone scanner-probe-missing
+mut lim-gone-clean "$BP then del(.scannerProbeClean.limits) else . end"; expect_invalid lim-gone-clean scanner-probe-missing
+mut lim-exec-gone "$BP then .scannerProbe.executions |= map(del(.limit)) else . end"; expect_invalid lim-exec-gone scanner-probe-missing
+mut lim-empty "$BP then .scannerProbe.limits = [] else . end"; expect_invalid lim-empty scanner-probe-missing
+mut lim-dup "$BP then .scannerProbe.limits = [256, 256] else . end"; expect_invalid lim-dup scanner-probe-missing
+mut lim-unrun "$BP then .scannerProbe.limits = [256, 17488] else . end"; expect_invalid lim-unrun scanner-probe-missing         # a LIMIT named but never run
+mut lim-short "$BP then .scannerProbeClean.limits = [256, 17488] | .scannerProbeClean.executions += (.scannerProbeClean.executions | map(select(.mode == \"auto\") | .limit = 17488)) else . end"; expect_invalid lim-short scanner-probe-missing   # one LIMIT without its eight per mode
+mut lim-rows "$BP then .scannerProbe.executions[3].scan.rows = 300 else . end"; expect_invalid lim-rows scanner-limit-overrun    # more rows than the LIMIT it ran at
+mut lim-toprows "$BP then .scannerProbeClean.executions[4].topRows = 257 else . end"; expect_invalid lim-toprows scanner-limit-overrun
+# the same findings are produced at either LIMIT and say which LIMIT (a miss at the largest batch is not hidden behind the first)
+mut lim-miss "$BP then .scannerProbe.limits = [256, 17488] | .scannerProbe.executions += (.scannerProbe.executions | map(.limit = 17488 | .topRows = 17488 | .scan.rows = 17488 | .top.actualRows = 17488 | if .mode == \"auto\" and .percent == 25 then .hasSort = true else . end)) else . end"
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "scanner-sort") | .limit]' <<<"$(status_of "$WORK/e2.lim-miss")")" == '[17488]' ]]
+# the logged executions: the plan row states the schedule it read, every LIMIT is one of its batches, none returned more rows than its LIMIT
+mut sch-gone 'if .item == 8 then del(.batchSchedule) else . end'; expect_invalid sch-gone batch-schedule-missing
+mut sch-sum 'if .item == 8 then .batchSchedule.limits = [256, 512] else . end'; expect_invalid sch-sum batch-schedule-missing       # the schedule must add up to the unit
+mut sch-empty 'if .item == 8 then .batchSchedule.limits = [] else . end'; expect_invalid sch-empty batch-schedule-missing
+mut sch-lim-gone 'if .item == 8 then del(.executions.scannerInitial.limits) else . end'; expect_invalid sch-lim-gone plan-executions-missing
+mut sch-lim-len 'if .item == 8 and .size == 100 then .executions.scannerContinuation.limits = [256] else . end'; expect_invalid sch-lim-len plan-executions-missing
+mut sch-lim-null 'if .item == 8 then .executions.scannerInitial.limits = [null] else . end'; expect_invalid sch-lim-null plan-executions-missing
+mut sch-lim-other 'if .item == 8 then .executions.scannerInitial.limits = [50000] | .executions.scannerInitial.rows = [50000] else . end'; expect_invalid sch-lim-other scanner-limit-unexpected   # one 50,000-row statement is not in the schedule
+mut sch-lim-rows 'if .item == 8 then .executions.scannerInitial.rows = [300] else . end'; expect_invalid sch-lim-rows scanner-limit-overrun
+mut sch-lim-last 'if .item == 8 and .size == 100 then .executions.scannerContinuation = {count:2, rows:[17488, 256], sharedBlocks:[900, 40], limits:[17488, 256]} else . end'
+[[ "$(jq -r '.complete' <<<"$(status_of "$WORK/e2.sch-lim-last")")" == true ]]                                                        # the largest batch is a legitimate production statement
 echo 'qc1 fixtures: ok'

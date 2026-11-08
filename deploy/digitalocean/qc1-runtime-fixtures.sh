@@ -625,10 +625,15 @@ case "$1" in
         "ALTER SYSTEM SET "*) k="${sql#ALTER SYSTEM SET }"; printf '%s' "${k#* = }" >"$S/pending.${k%% = *}" ;;
         "ALTER SYSTEM RESET "*) n="${sql#ALTER SYSTEM RESET }"; printf '%s' "$(dflt "$n")" >"$S/pending.$n" ;;
         "SELECT pg_reload_conf()") if [[ -z "${STUB_NO_RELOAD:-}" ]]; then for p in "$S"/pending.*; do [[ -e "$p" ]] && cp "$p" "$S/active.${p##*/pending.}"; done; fi ;;
+        *json_object_agg*) echo '{"dynamic_shared_memory_type":"posix","min_dynamic_shared_memory":"0","max_parallel_maintenance_workers":"2","maintenance_work_mem":"65536","shared_buffers":"16384"}' ;;
+        "SHOW server_version") echo 16.4 ;;
+        df\ -k*) echo 'tmpfs 65536 12 65524 1% /dev/shm' ;;
+        *VACUUM*) if [[ -n "${STUB_VACUUM_NEEDS_PARALLEL0:-}" && "$sql" != *"PARALLEL 0"* ]]; then echo 'ERROR:  could not resize shared memory segment "/PostgreSQL.4254608656" to 67145952 bytes: No space left on device' >&2; exit 1; fi ;;
         "SHOW "*) n="${sql#SHOW }"; if [[ -e "$S/active.$n" ]]; then cat "$S/active.$n"; echo; else dflt "$n"; fi ;;
         *max\(id\)*) echo 0 ;;
       esac
     done ;;
+  inspect) case "$*" in *HostConfig.ShmSize*) echo 67108864 ;; *HostConfig.Memory*) echo 2147483648 ;; *.Image*) echo sha256:dddd ;; esac ;;
   rm|network|volume) : ;;
 esac
 exit 0
@@ -645,6 +650,7 @@ sleep() { :; }
 src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
 for fn in autoexplain_reset cleanup await_setting psql_db autoexplain_on autoexplain_off capture_plans explained_order_control_delete; do eval "$(src "$fn")"; done
 eval "$(grep -E '^AUTOEXPLAIN_DIRTY=0$' "$RUNNER" | head -n 1)"
+eval "$(grep -E '^FINALIZED=0 CURRENT_STEP=' "$RUNNER")"; MEASUREMENTS=""   # no rows in this driver: cleanup finalizes nothing
 eval "$(grep -E "^trap (cleanup EXIT|'exit (130|143|129)' (INT|TERM|HUP))\$" "$RUNNER")"
 fresh_user() { echo 5; }; load_scenario() { :; }; traverse() { :; }; mint_attempt() { echo id; }; qc1_delete_body_n() { :; }; drop_scenarios() { :; }
 qc1_scheduler_wait() { echo 0; }; quiesce() { :; }; ms() { echo 1; }; table_rows() { echo 5; }; do_delete() { return 1; }
@@ -720,4 +726,94 @@ ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER")"; [[ "$(sed -n 2p <<<
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER")"; l_f="$(grep -n 'AUTOEXPLAIN_DIRTY=1' <<<"$cp_body" | cut -d: -f1)"; l_a="$(grep -n 'ALTER SYSTEM SET auto_explain.log_min_duration = 0' <<<"$cp_body" | cut -d: -f1)"
 l_w="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_c="$(grep -n 'AUTOEXPLAIN_DIRTY=0' <<<"$cp_body" | cut -d: -f1)"; [[ -n "$l_f$l_a$l_w$l_c" && "$l_f" -lt "$l_a" && "$l_w" -lt "$l_c" ]]
 [[ "$(grep -c 'AUTOEXPLAIN_DIRTY=1' "$RUNNER")" == 2 && "$(grep -c '^  AUTOEXPLAIN_DIRTY=0' "$RUNNER")" == 2 ]]    # exactly the two places that turn it on and the two that prove it off
+
+# --- a run that stops still leaves its evidence (abort finalization), and the fixture vacuums are not parallel -----------------------------------------------------------------
+# The runner's own functions (finalize_evidence and the writers it calls, cleanup, autoexplain_reset, note, psql_db) are taken out of the script as they are and run against the
+# stub `docker` above, in a work directory holding four REAL rows of the 100k pilot that stopped at the sparse fixture (testdata/qc1-100k-abort-rows.jsonl: the request-size
+# row with its 142,675 ms shell walk and the 100,000-reason browser row with its 138,918.7 ms walk, among them) and that run's real harness.log. The stub fails a VACUUM
+# that is not PARALLEL 0 with the pilot's own error, so the statement the runner sends is what decides whether the run goes on.
+cat >"$WORK/fin-driver.sh" <<'DRV'
+set -Eeuo pipefail
+exec </dev/null
+RUNNER="$1"; MODE="$2"; HERE="$3"
+export PATH="$AEB:$PATH"
+source "$HERE/qc1/lib.sh"
+OUT="$FIN_DIR"; mkdir -p "$OUT"
+cp "$HERE/testdata/qc1-100k-abort-rows.jsonl" "$OUT/measurements.jsonl"
+cp "$HERE/testdata/qc1-100k-abort-harness.log" "$OUT/harness.log"
+echo '{"gate":{"ok":true}}' >"$OUT/calibration.json"
+WORK="$OUT"; MEASUREMENTS="$OUT/measurements.jsonl"
+exec >>"$WORK/harness.log" 2>&1
+KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
+SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
+IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
+sleep() { :; }
+src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
+for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db; do eval "$(src "$fn")"; done
+eval "$(grep -E '^FINALIZED=0 CURRENT_STEP=' "$RUNNER")"
+eval "$(grep -E "^trap 'ERR_CMD=" "$RUNNER")"
+eval "$(grep -E "^trap (cleanup EXIT|'exit (130|143|129)' (INT|TERM|HUP))\$" "$RUNNER")"
+sparse() { sed -n '/note "size \$n: blanking background reasons for the sparse case"/{n;p;n;p}' "$RUNNER"; }
+case "$MODE" in
+  sparse-real)  note "size 100000: blanking background reasons for the sparse case"; sparse >"$WORK/sparse-step.sh"; source "$WORK/sparse-step.sh"; exit 0 ;;
+  sparse-old)   note "size 100000: blanking background reasons for the sparse case"; CURRENT_SIZE=100000; sparse | sed "s/VACUUM (ANALYZE, PARALLEL 0)/VACUUM ANALYZE/" >"$WORK/sparse-step.sh"; source "$WORK/sparse-step.sh" ;;
+  fail7)        note "size 100000: a step"; exit 7 ;;
+  term)         note "size 100000: a step"; kill -TERM $$; : ;;
+  int)          note "size 100000: a step"; kill -INT $$; : ;;
+  hup)          note "size 100000: a step"; kill -HUP $$; : ;;
+  finfail)      note "size 100000: a step"; mkdir "$WORK/evidence-status.json"; exit 7 ;;
+  idem)         note "size 100000: a step"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/first.sha"; wc -l <"$STUB_LOG" >"$WORK/first.calls"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/second.sha"; wc -l <"$STUB_LOG" >"$WORK/second.calls"; exit 5 ;;
+  complete)     finalize_evidence complete 0; exit 0 ;;
+  early)        exit 0 ;;
+esac
+DRV
+fin_run() { # mode [env...]  -> rc, FD (the work directory), the stub log
+  local mode="$1"; shift
+  FD="$WORK/fin"; rm -rf "$FD"; mkdir -p "$WORK/fin-state"; : >"$WORK/fin-stub.log"
+  rc=0; env --default-signal=INT,HUP,TERM "$@" AEB="$AEB" FIN_DIR="$FD" STUB_LOG="$WORK/fin-stub.log" STUB_STATE="$WORK/fin-state" STUB_VACUUM_NEEDS_PARALLEL0=1 bash "$WORK/fin-driver.sh" "$RUNNER" "$mode" "$HERE" >/dev/null 2>&1 || rc=$?
+}
+# (1) The fixture vacuums are not parallel: every VACUUM the runner sends carries PARALLEL 0, the sparse step is UPDATE then VACUUM, and the runner's real statement does not stop the run.
+[[ "$(grep -c 'VACUUM' <(grep -v '^ *#' "$RUNNER" | grep -E "psql_db|-c '" ) )" -ge 2 ]]
+if grep -E "'VACUUM[^']*'" "$RUNNER" | grep -v 'PARALLEL 0' | grep -v '^ *#'; then echo 'a fixture VACUUM that can run in parallel' >&2; exit 1; fi
+sp="$(sed -n '/note "size \$n: blanking background reasons for the sparse case"/{n;p;n;p}' "$RUNNER")"
+[[ "$(sed -n 1p <<<"$sp")" == *"UPDATE contact_requests SET reason = ''"* && "$(sed -n 2p <<<"$sp")" == *"VACUUM (ANALYZE, PARALLEL 0) contact_requests"* ]]
+grep -qF "VACUUM (ANALYZE, PARALLEL 0) qc1_clean.contact_requests" "$RUNNER"
+fin_run sparse-real; [[ "$rc" == 0 ]]; grep -qF 'VACUUM (ANALYZE, PARALLEL 0) contact_requests' "$WORK/fin-stub.log"
+[[ ! -e "$FD/abort.json" && ! -e "$FD/evidence-status.json" ]]; grep -qx 'qc1 evidence=not-needed' "$FD/harness.log"        # nothing to finalize when the run is not failing
+# (2) The statement the pilot died on (a bare VACUUM against the 64 MiB /dev/shm): the run stops, the exit status is the failure's own (1), and the evidence is left.
+fin_run sparse-old; [[ "$rc" == 1 ]]
+jq -e '.outcome == "aborted" and .exitCode == 1 and .signal == null and (.step | test("sparse case")) and .sizeInProgress == 100000 and .failingFunction == "psql_db" and (.calledFrom.text | test("VACUUM ANALYZE contact_requests")) and (.failingCommand | test("docker exec")) and .rowsMeasured == 4 and .lastRow.case == "browser-panel-100000"
+  and (.harnessLogTail | map(test("could not resize shared memory segment")) | any) and (.note | test("did not finish"))' "$FD/abort.json" >/dev/null
+jq -e '.complete == false and .releaseEvidence == false and .aborted.exitCode == 1 and .aborted.step == "size 100000: blanking background reasons for the sparse case" and .coverage.kind == "pilot"' "$FD/evidence-status.json" >/dev/null
+# the findings the retained rows already contain are kept exactly: the shell walk and the browser walk, with their figures, and nothing else
+[[ "$(jq -c '[.budgetFailures[] | .failure] | sort' "$FD/evidence-status.json")" == '["browser-traversal","browser-walk","traversal"]' ]]
+[[ "$(jq -c '[.budgetFailures[] | select(.failure == "traversal" or .failure == "browser-traversal") | .ms] | sort' "$FD/evidence-status.json")" == '[138918.7,142675]' ]]
+# and what was not reached is listed as missing, the legacy rows as pending; the only invalid findings are about the incomplete environment record
+jq -e '([.missing[] | select(.item == 1 and .size == 100000 and .case == "sparse")] | length) == 1 and ([.pending[] | select(.item == 4)] | length) > 0 and ([.invalid[] | select(.failure != "environment")] | length) == 0' "$FD/evidence-status.json" >/dev/null
+jq -e '.incomplete == true and (.incompleteReason | test("before it finished")) and .database.devShm.totalKb == 65536 and .database.hostConfigShmSizeBytes == 67108864 and .database.settings.maintenance_work_mem == "65536" and .database.settings.max_parallel_maintenance_workers == "2" and .postgresVersion == "16.4" and (.database.note | test("not changed"))' "$FD/environment.json" >/dev/null
+jq -e '.evidence.aborted.exitCode == 1 and .judgeRan == true' "$FD/summary.json" >/dev/null
+[[ "$(jq -c '[.[] | .failure] | sort' <(jq -s . "$FD/failures.jsonl") 2>/dev/null)" == *traversal* ]]                                   # the judge's output is kept too
+grep -qx 'qc1 evidence=aborted' "$FD/harness.log"; grep -qx 'qc1 result=1 artifacts=.* retained_stack=0' "$FD/harness.log"
+# the evidence is written before any container is removed (the environment record reads the daemon), and the removals still happen
+i_l="$(grep -n '^inspect ' "$WORK/fin-stub.log" | head -n 1 | cut -d: -f1)"; r_l="$(grep -n '^rm -fv ' "$WORK/fin-stub.log" | head -n 1 | cut -d: -f1)"
+[[ -n "$i_l" && -n "$r_l" && "$i_l" -lt "$r_l" && "$(grep -c '^rm -fv ' "$WORK/fin-stub.log")" == 2 ]]
+# --keep: the same evidence, nothing removed
+fin_run sparse-old KEEP=1; [[ "$rc" == 1 && -s "$FD/evidence-status.json" ]]; if grep -q '^rm -fv\|^network rm' "$WORK/fin-stub.log"; then echo '--keep removed something' >&2; exit 1; fi
+# (3) The exit status is the original one, whatever the evidence does: another failure's own status, each signal's, and a finalization that cannot write a file.
+fin_run fail7; [[ "$rc" == 7 ]]; jq -e '.exitCode == 7 and .failingCommand == null' "$FD/abort.json" >/dev/null
+fin_run term; [[ "$rc" == 143 ]]; jq -e '.exitCode == 143 and .signal == "TERM"' "$FD/abort.json" >/dev/null; jq -e '.complete == false and .aborted.signal == "TERM"' "$FD/evidence-status.json" >/dev/null
+fin_run int; [[ "$rc" == 130 ]]; jq -e '.signal == "INT"' "$FD/abort.json" >/dev/null
+fin_run hup KEEP=1; [[ "$rc" == 129 ]]; jq -e '.signal == "HUP"' "$FD/abort.json" >/dev/null
+fin_run finfail; [[ "$rc" == 7 ]]; grep -qx 'qc1 evidence=aborted-incomplete' "$FD/harness.log"; grep -q 'WARNING: the evidence of this aborted run could not be fully written' "$FD/harness.log"; [[ -s "$FD/abort.json" ]]
+# (4) It runs once: a second finalization writes nothing new.
+fin_run idem; [[ "$rc" == 5 ]]; cmp "$FD/first.sha" "$FD/second.sha"; cmp "$FD/first.calls" "$FD/second.calls"   # the second call reads nothing from the daemon or the database
+# (5) A finished run finalizes through the same function and is not marked aborted; a run that exits 0 without having started measuring leaves nothing behind.
+fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-status.json" >/dev/null; jq -e '.incomplete == false' "$FD/environment.json" >/dev/null; [[ ! -e "$FD/abort.json" ]]
+fin_run early; [[ "$rc" == 0 && ! -e "$FD/abort.json" ]]
+# (6) Static: cleanup finalizes after the auto_explain reset and before any removal, from the original status, and the normal end calls the same function.
+cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
+l_r="$(grep -n 'autoexplain_reset;' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_f="$(grep -n 'finalize_evidence aborted' <<<"$cl_body" | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"
+[[ -n "$l_r$l_f$l_d" && "$l_r" -lt "$l_f" && "$l_f" -lt "$l_d" ]]; grep -qF 'local orig=$rc' <<<"$cl_body"; grep -qF 'trap - ERR' <<<"$cl_body"; grep -qF 'exit "$rc"' <<<"$cl_body"
+grep -qx 'finalize_evidence complete 0 || { echo '"'"'qc1: the evidence of this run could not be written completely'"'"' >&2; exit 1; }' "$RUNNER"
+! grep -qE '^qc1_judge "\$MEASUREMENTS"|^jq -n --arg image' "$RUNNER"                       # the end of the script no longer carries a second copy of the finalization
 echo 'qc1 runtime fixtures: ok'
