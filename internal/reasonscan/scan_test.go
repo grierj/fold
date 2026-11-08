@@ -36,11 +36,12 @@ type source struct {
 	rows []Row // committed rows, ascending by ID
 	log  []stmt
 
-	failQuery   map[int]error // batch index (query call number, 0-based) -> error returned by the query
-	failDrain   map[int]int   // call number -> cut the stream after this many rows were sent (a drain failure after the page is full)
-	failScanAt  map[int]int   // call number -> the Nth row (1-based) fails to scan
-	failCloseOK map[int]error // call number -> Close fails although the stream completed
-	calls       int
+	failQuery    map[int]error // batch index (query call number, 0-based) -> error returned by the query
+	failDrain    map[int]int   // call number -> cut the stream after this many rows were sent (a drain failure after the page is full)
+	failScanAt   map[int]int   // call number -> the Nth row (1-based) fails to scan
+	failCloseOK  map[int]error // call number -> Close fails although the stream completed
+	postCloseErr map[int]error // call number -> Err reports failure after a successful Close
+	calls        int
 }
 
 func newSource(rows []Row) *source {
@@ -118,7 +119,12 @@ func (r *fakeRows) Scan() (Row, error) {
 	return r.data[r.pos], nil
 }
 
-func (r *fakeRows) Err() error { return nil }
+func (r *fakeRows) Err() error {
+	if r.closed {
+		return r.s.postCloseErr[r.call]
+	}
+	return nil
+}
 
 // Close drains: like pgx, it reads every row the server still sends. A cut
 // stream fails here and leaves the total unknown.
@@ -676,6 +682,14 @@ func TestFailuresNeverMakeAPageAndRetryAtTheSameCursor(t *testing.T) {
 	s.failCloseOK = map[int]error{0: errors.New("deferred error")}
 	if u, err := run(s, nil, p, Hooks{}); err == nil || len(u.Requests) != 0 {
 		t.Errorf("close failure: %s %v", fmtUnit(u), err)
+	}
+
+	// A context cancellation may close database/sql rows asynchronously. A
+	// later Close can return nil even though Err still reports the failure.
+	s = newSource(rows)
+	s.postCloseErr = map[int]error{5: context.Canceled}
+	if u, err := run(s, nil, p, Hooks{}); !errors.Is(err, context.Canceled) || len(u.Requests) != 0 || u.Next != nil {
+		t.Errorf("post-close cancellation made a page: %s %v", fmtUnit(u), err)
 	}
 }
 

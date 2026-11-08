@@ -147,6 +147,70 @@ func TestProxyForwardsUnchanged(t *testing.T) {
 	}
 }
 
+// A server error after DataRows has no CommandComplete. The next result on the
+// same connection must not inherit the failed statement's observed frames.
+func TestProxyCountsFailedPartialResults(t *testing.T) {
+	r := newProxyRig(t)
+	db, err := r.via.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.QueryContext(context.Background(), "SELECT CASE WHEN x = 4 THEN 1 / (x - 4) ELSE x END FROM generate_series(1, 5) x")
+	if err == nil {
+		for rows.Next() {
+			var n int
+			if err = rows.Scan(&n); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+	}
+	if err == nil {
+		t.Fatal("expected a partial-result error")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRowContext(context.Background(), "SELECT 42").Scan(&n); err != nil || n != 42 {
+		t.Fatalf("subsequent query: %d, %v", n, err)
+	}
+	var failed, rollback, next *TagEvent
+	for _, tag := range r.proxy.Tags() {
+		tag := tag
+		if strings.Contains(tag.SQL, "generate_series") && tag.Failed {
+			failed = &tag
+		}
+		if strings.EqualFold(strings.TrimSpace(tag.SQL), "rollback") {
+			rollback = &tag
+		}
+		if strings.Contains(tag.SQL, "SELECT 42") && tag.Tag != "" {
+			next = &tag
+		}
+	}
+	if failed == nil || failed.Tag != "" || failed.Rows != 3 || failed.Forwarded != 3 {
+		t.Fatalf("failed result: %+v", failed)
+	}
+	if rollback == nil || rollback.Rows != 0 || rollback.Forwarded != 0 {
+		t.Fatalf("rollback result: %+v", rollback)
+	}
+	if next == nil || next.Rows != 1 || next.Forwarded != 1 || next.Conn != failed.Conn || rollback.Conn != failed.Conn {
+		t.Fatalf("subsequent result: %+v", next)
+	}
+}
+
 func TestProxyCommitModes(t *testing.T) {
 	t.Run("a: reply held", func(t *testing.T) {
 		r := newProxyRig(t)

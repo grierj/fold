@@ -136,7 +136,7 @@ func Scan(q Query, qualifies func(Row) bool, after *int64, p Params, h Hooks) (U
 		// Close drains what the server still sends. Its error is a failed
 		// stream and fails the page; it is never dropped.
 		closeErr := rows.Close()
-		ev.Err = errors.Join(iterErr, closeErr)
+		ev.Err = errors.Join(iterErr, closeErr, rows.Err())
 		ev.Short = !ev.Stopped && ev.Err == nil && ev.Consumed < n
 		if h.After != nil {
 			h.After(ev)

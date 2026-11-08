@@ -130,17 +130,19 @@ type Event struct {
 
 // TagEvent is the end of one statement's result as the proxy saw it: the
 // CommandComplete tag the server sent (for example "SELECT 256") and the number
-// of DataRow frames forwarded for the statement. A statement whose stream was
-// cut has no tag (Tag is empty and Cut is true); Rows is then only what the
-// proxy observed, never the statement's total.
+// of DataRow frames observed and forwarded for the statement. A cut or failed
+// stream has no command tag; Rows is only what the proxy observed, not the
+// statement's total.
 type TagEvent struct {
-	Conn int
-	PID  uint32
-	Time time.Time
-	SQL  string // the statement that was executing
-	Tag  string
-	Rows int
-	Cut  bool
+	Conn      int
+	PID       uint32
+	Time      time.Time
+	SQL       string // the statement that was executing
+	Tag       string
+	Rows      int
+	Forwarded int
+	Cut       bool
+	Failed    bool
 }
 
 type gate struct {
@@ -352,8 +354,9 @@ type proxyConn struct {
 
 	// dataRows counts the DataRow frames of the statement now running; lastRun is
 	// its SQL. Both are for TagEvents and CutAfterDataRows.
-	dataRows atomic.Int64
-	lastRun  atomic.Value
+	dataRows      atomic.Int64
+	forwardedRows atomic.Int64
+	lastRun       atomic.Value
 
 	mu             sync.Mutex
 	faults         *Faults
@@ -786,16 +789,20 @@ func (c *proxyConn) fromServer() {
 			n := c.dataRows.Add(1)
 			if cut := c.f().CutAfterDataRows; cut > 0 && int(n) >= cut && c.runMatches() {
 				if !c.clientClosed.Load() {
-					writeMsg(c.client, typ, body)
+					if writeMsg(c.client, typ, body) == nil {
+						c.forwardedRows.Add(1)
+					}
 				}
-				c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Rows: int(n), Cut: true})
+				c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Rows: int(n), Forwarded: int(c.forwardedRows.Swap(0)), Cut: true})
 				c.closeClient()
 				c.upstream.Close()
 				return
 			}
 		case 'C':
 			tag, _ := cstring(body)
-			c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Tag: tag, Rows: int(c.dataRows.Swap(0))})
+			c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Tag: tag, Rows: int(c.dataRows.Swap(0)), Forwarded: int(c.forwardedRows.Swap(0))})
+		case 'E':
+			c.p.recordTag(TagEvent{Conn: c.id, PID: c.pid.Load(), SQL: c.lastRunSQL(), Rows: int(c.dataRows.Swap(0)), Forwarded: int(c.forwardedRows.Swap(0)), Failed: true})
 		}
 		if c.holdReply.Load() {
 			select {
@@ -809,7 +816,9 @@ func (c *proxyConn) fromServer() {
 				c.suppressedReady.Add(1)
 			}
 		} else if !c.clientClosed.Load() {
-			writeMsg(c.client, typ, body)
+			if writeMsg(c.client, typ, body) == nil && typ == 'D' {
+				c.forwardedRows.Add(1)
+			}
 		}
 		if typ == 'Z' && c.closeAfterReady.Load() {
 			c.closeUpstream()
