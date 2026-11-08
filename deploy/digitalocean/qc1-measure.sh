@@ -149,15 +149,15 @@ AUTOEXPLAIN_DIRTY=0
 # Succeeds only when both read back as off; says nothing itself, the caller reports.
 # shellcheck disable=SC2329 # called from cleanup.
 autoexplain_reset() {
-  local i a="" b=""
+  local i cur_min="" cur_lock=""
   [[ -n "$DB_CID" ]] || return 1
   for i in 1 2 3; do
     if timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 \
          -c "ALTER SYSTEM SET auto_explain.log_min_duration = -1" -c "ALTER SYSTEM RESET log_lock_waits" -c 'SELECT pg_reload_conf()' </dev/null >/dev/null 2>&1; then
       for _ in 1 2 3 4 5 6 7 8 9 10; do
-        a="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW auto_explain.log_min_duration' </dev/null 2>/dev/null || true)"
-        b="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW log_lock_waits' </dev/null 2>/dev/null || true)"
-        [[ "$a" == -1 && "$b" == off ]] && return 0
+        cur_min="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW auto_explain.log_min_duration' </dev/null 2>/dev/null || true)"
+        cur_lock="$(timeout 20 docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -c 'SHOW log_lock_waits' </dev/null 2>/dev/null || true)"
+        [[ "$cur_min" == -1 && "$cur_lock" == off ]] && return 0
         sleep 0.5
       done
     fi
@@ -1122,6 +1122,7 @@ measure_browser_panel() { # n k [suffix]
   drop_scenarios
   make_user
   load_scenario "$n" "$k" "$USER_ID" both "$CPS"
+  # shellcheck disable=SC2016  # the single quotes are the written hook's own text; $1 expands when the hook runs
   printf '#!/bin/sh\nset -eu\ncase "$1" in *[!0-9]*|"") exit 2 ;; esac\nexec docker exec -i %s psql -X -U church -d fold -v ON_ERROR_STOP=1 -c "SET session_replication_role = replica" -c "UPDATE contact_requests SET reason = left(reason, 999) || CASE WHEN right(reason, 1) = chr(33) THEN chr(63) ELSE chr(33) END WHERE id = $1 AND reason <> '"''"'"\n' "$DB_CID" >"$PANEL_HOOK"
   cat >"$PANEL_PHASE" <<SH
 #!/bin/sh

@@ -286,12 +286,12 @@ body keep "$WORK/real-items.json" 0 "$ID80" >"$WORK/b0.json"
 [[ "$(tail -c 1 "$WORK/b0.json")" == "}" ]]
 # --- reasons per sitting (item 7) ----------------------------------------------------------------------
 rows='[{"direction":"requester","reasons":10,"pageLoadMs":2000},{"direction":"requester","reasons":100,"pageLoadMs":5000},{"direction":"requester","reasons":1000,"pageLoadMs":20000},{"direction":"subject","reasons":10,"pageLoadMs":2000},{"direction":"subject","reasons":50,"pageLoadMs":3000}]'
-a="$(qc1_sitting_assessment "$rows" 10 15)"
-[[ "$(jq -r '.reasonsPerSitting' <<<"$a")" == 90 ]]
-[[ "$(jq -c '.firstLongerThanSitting' <<<"$a")" == '{"requester":100,"subject":null}' ]]
-[[ "$(jq -r '.perCount[0].estimatedMinutes' <<<"$a")" == 1.7 ]]
-[[ "$(jq -c '[.perCount[] | .longerThanSitting]' <<<"$a")" == '[false,true,true,false,false]' ]]
-[[ "$(jq -r '.assumption' <<<"$a")" == *'assumptions, not measurements'* && "$(jq -r '.secondsPerReason, .sittingMinutes' <<<"$a" | paste -sd,)" == 10,15 ]]
+sitting="$(qc1_sitting_assessment "$rows" 10 15)"
+[[ "$(jq -r '.reasonsPerSitting' <<<"$sitting")" == 90 ]]
+[[ "$(jq -c '.firstLongerThanSitting' <<<"$sitting")" == '{"requester":100,"subject":null}' ]]
+[[ "$(jq -r '.perCount[0].estimatedMinutes' <<<"$sitting")" == 1.7 ]]
+[[ "$(jq -c '[.perCount[] | .longerThanSitting]' <<<"$sitting")" == '[false,true,true,false,false]' ]]
+[[ "$(jq -r '.assumption' <<<"$sitting")" == *'assumptions, not measurements'* && "$(jq -r '.secondsPerReason, .sittingMinutes' <<<"$sitting" | paste -sd,)" == 10,15 ]]
 # Faster reading or a longer sitting moves the limit; the measured page load alone can cross it.
 [[ "$(qc1_sitting_assessment "$rows" 1 15 | jq -c '.firstLongerThanSitting')" == '{"requester":1000,"subject":null}' ]]
 [[ "$(qc1_sitting_assessment "$rows" 1 60 | jq -c '.firstLongerThanSitting')" == '{"requester":null,"subject":null}' ]]
@@ -1381,9 +1381,10 @@ rec8_stmt="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC" | sed -n '/^  rec
 clean_copy_stmt="$(sed -n '/^make_clean_copy() {/,/^}/p' "$RUNNER_SRC" | grep '^  CLEAN_COPY_JSON=')"; [[ -n "$clean_copy_stmt" ]]
 run_rec8() { # statement-text -> row in $WORK/rec8.json (empty when the construction failed), jq's complaints in $WORK/rec8.err
   : >"$WORK/rec8.json"; : >"$WORK/rec8.err"
+  # shellcheck disable=SC2034,SC2329  # everything set below is read by the statement under test, which is eval'd
   (
+    # shellcheck disable=SC2329  # invoked by the statement under test, which is eval'd below
     record() { printf '%s' "$4" >"$WORK/rec8.json"; }
-    # shellcheck disable=SC2034  # read by the statement under test, which is eval'd below
     n=100 actual_rows=200 idx=true initidx=true cont_logged=false
     counts='{"scanner-initial":1,"scanner-continuation":10,"page-items":10,"delete-set":1,"blank-batch":1}'
     need='["scanner-initial","page-items","delete-set","blank-batch"]'
@@ -1391,7 +1392,6 @@ run_rec8() { # statement-text -> row in $WORK/rec8.json (empty when the construc
     sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"; sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"
     # The logged execution figures are the pilot's, given the LIMIT production sends (the pilot predates batches): only the construction of the row is under test here.
     exec_json="$(jq -c '.executions | .scannerInitial.rows |= map(if . > 256 then 256 else . end) | .scannerContinuation.rows |= map(if . > 256 then 256 else . end) | .scannerInitial.limits = (.scannerInitial.rows | map(256)) | .scannerContinuation.limits = (.scannerContinuation.rows | map(256))' "$PLANS_ROW")"
-    # shellcheck disable=SC2034  # read by the statement under test, which is eval'd below
     bsched="$(jq -nc --argjson l "$(qc1_scan_schedule "$ROOT" | jq -sc "map(tonumber)")" '{unitRows:50000, first:256, growth:2, limits:$l}')"
     probe_bloated="$(probe_json public)"; probe_clean="$(probe_json qc1_clean)"
     stats_bloated="$(tables_json | jq -c '.bloated')"; stats_clean="$(tables_json | jq -c '.clean | del(.kind, .vacuumed, .analyzed)')"
@@ -1416,7 +1416,7 @@ rj="$(qc1_judge "$WORK/rec8.row.jsonl" 6291456)"
 old_stmt="${rec8_stmt//--argjson statsb/--argjson sb}"; old_stmt="${old_stmt//--argjson statsc/--argjson sc}"; old_stmt="${old_stmt//\$statsb/\$sb}"; old_stmt="${old_stmt//\$statsc/\$sc}"
 [[ "$old_stmt" == *'--arg sc "$sql_cont"'*'--argjson sc "$stats_clean"'* && "$old_stmt" == *'clean:($sc + $copy)'* ]]
 run_rec8 "$old_stmt"
-[[ ! -s "$WORK/rec8.json" ]] && grep -qF 'string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added' "$WORK/rec8.err" || { echo "the pilot2 construction did not fail the way pilot2 did: $(cat "$WORK/rec8.err")" >&2; exit 1; }
+if ! { [[ ! -s "$WORK/rec8.json" ]] && grep -qF 'string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added' "$WORK/rec8.err"; }; then echo "the pilot2 construction did not fail the way pilot2 did: $(cat "$WORK/rec8.err")" >&2; exit 1; fi
 # the guard flags that very version of the runner
 printf '%s\n' "$old_stmt" >"$WORK/old-stmt.sh"; [[ -n "$(jq_arg_duplicates "$WORK/old-stmt.sh")" ]]
 # the other rows pilot2 wrote before it stopped are judged clean by the current judge, and carry what the follow-up added: the delete order control, top statements, table rows
@@ -1945,7 +1945,7 @@ sed '/^\t\(JIT:\|  Functions:\|  Options:\|  Timing:\)/d' "$PILOT3_AUDIT_LOG" >"
 [[ "$(aud "$WORK/aud.lockwait" | jq -c '[.lockWaits.count, (.lockWaits.samples | length)]')" == '[1,1]' ]]
 # the helper never runs, re-runs or types a statement: no psql and no EXPLAIN in it
 aeb="$(sed -n '/^qc1_audit_report_evidence() {/,/^}/p' "$HERE/qc1/lib.sh")"
-! grep -qE 'psql|EXPLAIN|docker' <<<"$aeb"
+grep -qE 'psql|EXPLAIN|docker' <<<"$aeb" && exit 1
 # (2) THE JUDGE on the explained rows (size 100): a missing plan, an unproven statement, an incomplete plan and unlabelled caveats are each INVALID; nothing is partial credit.
 EX='if .item == 6 and .case == "order-control-delete-end-explained" and .size == 100'
 exinv() { mut "$1" "$EX then $2 else . end"; expect_invalid "$1" "$3"; }
@@ -1995,20 +1995,20 @@ ex_body="$(sed -n '/^explained_order_control_delete() {/,/^}/p' "$RUNNER_SRC")"
 l_on="$(grep -n '^  autoexplain_on$' <<<"$ex_body" | cut -d: -f1)"; l_since="$(grep -n '^  since="' <<<"$ex_body" | cut -d: -f1)"; l_del="$(grep -n '^  do_delete "\$t"' <<<"$ex_body" | cut -d: -f1)"
 l_off="$(grep -n '^  autoexplain_off' <<<"$ex_body" | cut -d: -f1)"; l_logs="$(grep -n 'docker logs --since "\$since"' <<<"$ex_body" | cut -d: -f1)"; l_ver="$(grep -n '^  verify_outcome' <<<"$ex_body" | cut -d: -f1)"; l_evd="$(grep -n 'qc1_audit_report_evidence "\$log" "\$ROOT" "\$t" true' <<<"$ex_body" | cut -d: -f1)"
 [[ -n "$l_on$l_since$l_del$l_off$l_logs$l_ver$l_evd" && "$l_on" -lt "$l_since" && "$l_since" -lt "$l_del" && "$l_del" -lt "$l_off" && "$l_off" -lt "$l_logs" && "$l_logs" -lt "$l_ver" && "$l_ver" -lt "$l_evd" ]]
-! grep -qE 'instrumented|delete_with|psql_db -c .EXPLAIN' <<<"$ex_body"        # not inside the instrument window (its samplers are sessions that would fill the log), and no typed EXPLAIN
+grep -qE 'instrumented|delete_with|psql_db -c .EXPLAIN' <<<"$ex_body" && exit 1        # not inside the instrument window (its samplers are sessions that would fill the log), and no typed EXPLAIN
 grep -qF 'record 6 "order-control-delete-$which-explained"' <<<"$ex_body"
 grep -qF 'NOT comparable with the unexplained controls' <<<"$ex_body"; grep -qF 'log_lock_waits reports only waits longer than deadlock_timeout' <<<"$ex_body"
-oc_body="$(sed -n '/^order_control_delete() {/,/^}/p' "$RUNNER_SRC")"; ! grep -qiE 'autoexplain|auto_explain' <<<"$oc_body"          # the original controls are untouched
+oc_body="$(sed -n '/^order_control_delete() {/,/^}/p' "$RUNNER_SRC")"; grep -qiE 'autoexplain|auto_explain' <<<"$oc_body" && exit 1          # the original controls are untouched
 [[ "$(grep -c '^  autoexplain_on$' "$RUNNER_SRC")" == 1 && "$(grep -c 'autoexplain_off' "$RUNNER_SRC")" -ge 2 ]]
 [[ "$(grep -c 'auto_explain.log_min_duration = 0' "$RUNNER_SRC")" == 2 ]]                                                   # capture_plans and autoexplain_on, nowhere else
-! grep -qE -- '-c auto_explain.log_min_duration|-c log_lock_waits' "$RUNNER_SRC"                                          # never on the command line (it would outrank ALTER SYSTEM and be on for the whole matrix)
+grep -qE -- '-c auto_explain.log_min_duration|-c log_lock_waits' "$RUNNER_SRC" && exit 1                                          # never on the command line (it would outrank ALTER SYSTEM and be on for the whole matrix)
 ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'await_setting auto_explain.log_min_duration 0' <<<"$ao_body"; grep -qF 'await_setting log_lock_waits on' <<<"$ao_body"
 af_body="$(sed -n '/^autoexplain_off() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'await_setting auto_explain.log_min_duration -1' <<<"$af_body"; grep -qF 'await_setting log_lock_waits off' <<<"$af_body"
 os_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER_SRC")"
 l_a="$(grep -n '^  order_control_delete "\$n" start$' <<<"$os_body" | cut -d: -f1)"; l_b="$(grep -n '^  explained_order_control_delete "\$n" start$' <<<"$os_body" | cut -d: -f1)"; l_c="$(grep -n '^  order_control_delete "\$n" end$' <<<"$os_body" | cut -d: -f1)"; l_d="$(grep -n '^  explained_order_control_delete "\$n" end$' <<<"$os_body" | cut -d: -f1)"
 [[ -n "$l_a$l_b$l_c$l_d" && "$l_b" == "$((l_a + 1))" && "$l_d" == "$((l_c + 1))" ]]                                             # each right after its unexplained control, so the controls are exactly as before
 # the audit statement is found in the log by its text, in the same marker list the plans use; it is not one of the plan kinds the capture requires
-[[ "$(qc1_plan_marker audit-report)" == 'SELECT class, action, count(*) FROM (SELECT action, ' ]]; ! grep -q 'audit-report' <<<"$QC1_PLAN_KINDS"
+[[ "$(qc1_plan_marker audit-report)" == 'SELECT class, action, count(*) FROM (SELECT action, ' ]]; grep -q 'audit-report' <<<"${QC1_PLAN_KINDS[*]}" && exit 1
 grep -qF 'SELECT class, action, count(*) FROM (SELECT action, ' "$ROOT/account_erasure_audit.go"
 # (4) PLANNER ESTIMATES of BOTH scanner probes (the table as the matrix left it and the vacuumed copy). Costs and planned rows are numbers on every execution, the probe names the planner
 # settings, and a probe without them is invalid; the findings carry them beside what was measured. They are estimates: recorded, never judged as time.
@@ -2174,7 +2174,7 @@ printf 'var (\n\treasonScanBatchFirst  = 100\n\treasonScanBatchGrowth = 3\n)\n' 
 # the runner reads the schedule for the probe and the plan row, and the probe runs the first and the largest batch, each its own eight executions per mode
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
 grep -qF 'mapfile -t sched < <(qc1_scan_schedule "$ROOT")' <<<"$sp_body"; grep -qF 'limits=("${sched[0]}")' <<<"$sp_body"; grep -qF 'limits+=("${sched[${#sched[@]}-1]}")' <<<"$sp_body"
-grep -qF 'EXECUTE qi($limit)' <<<"$sp_body"; grep -qF 'EXECUTE qc($id, $limit)' <<<"$sp_body"; ! grep -qF 'EXECUTE qi($unit)' <<<"$sp_body"
+grep -qF 'EXECUTE qi($limit)' <<<"$sp_body"; grep -qF 'EXECUTE qc($id, $limit)' <<<"$sp_body"; grep -qF 'EXECUTE qi($unit)' <<<"$sp_body" && exit 1
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
 grep -qF 'bsched="$(jq -nc' <<<"$cp_body"; grep -qF 'batchSchedule:$bsched' <<<"$cp_body"; grep -qF 'limits:map(.limit)' <<<"$cp_body"
 # a healthy plans row states the schedule, the probe its LIMITs and each execution its own

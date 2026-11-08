@@ -721,7 +721,7 @@ if ! grep -qF '(( rc != 0 )) || rc=1' <<<"$cl_body"; then
   exit 1
 fi
 grep -qx "trap 'exit 129' HUP" "$RUNNER"
-ar_body="$(sed -n '/^autoexplain_reset() {/,/^}/p' "$RUNNER")"; [[ "$(grep -c 'timeout 20 docker exec -i "\$DB_CID"' <<<"$ar_body")" -ge 3 ]]; ! grep -qE 'docker (rm|volume|network)|DROP|DELETE|TRUNCATE' <<<"$ar_body"
+ar_body="$(sed -n '/^autoexplain_reset() {/,/^}/p' "$RUNNER")"; [[ "$(grep -c 'timeout 20 docker exec -i "\$DB_CID"' <<<"$ar_body")" -ge 3 ]]; grep -qE 'docker (rm|volume|network)|DROP|DELETE|TRUNCATE' <<<"$ar_body" && exit 1
 ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER")"; [[ "$(sed -n 2p <<<"$ao_body")" == "  AUTOEXPLAIN_DIRTY=1"* ]]                  # the first statement of the enable
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER")"; l_f="$(grep -n 'AUTOEXPLAIN_DIRTY=1' <<<"$cp_body" | cut -d: -f1)"; l_a="$(grep -n 'ALTER SYSTEM SET auto_explain.log_min_duration = 0' <<<"$cp_body" | cut -d: -f1)"
 l_w="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_c="$(grep -n 'AUTOEXPLAIN_DIRTY=0' <<<"$cp_body" | cut -d: -f1)"; [[ -n "$l_f$l_a$l_w$l_c" && "$l_f" -lt "$l_a" && "$l_w" -lt "$l_c" ]]
@@ -819,5 +819,5 @@ cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
 l_r="$(grep -n 'autoexplain_reset;' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_f="$(grep -n 'finalize_evidence aborted' <<<"$cl_body" | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"
 [[ -n "$l_r$l_f$l_d" && "$l_r" -lt "$l_f" && "$l_f" -lt "$l_d" ]]; grep -qF 'local orig=$rc' <<<"$cl_body"; grep -qF 'trap - ERR' <<<"$cl_body"; grep -qF 'exit "$rc"' <<<"$cl_body"
 grep -qx 'finalize_evidence complete 0 || { echo '"'"'qc1: the evidence of this run could not be written completely'"'"' >&2; exit 1; }' "$RUNNER"
-! grep -qE '^qc1_judge "\$MEASUREMENTS"|^jq -n --arg image' "$RUNNER"                       # the end of the script no longer carries a second copy of the finalization
+grep -qE '^qc1_judge "\$MEASUREMENTS"|^jq -n --arg image' "$RUNNER" && exit 1                       # the end of the script no longer carries a second copy of the finalization
 echo 'qc1 runtime fixtures: ok'
