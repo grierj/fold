@@ -235,6 +235,10 @@ if (( rc != 0 )); then
   exit "$rc"
 fi
 
+# The fixtures run node helpers (qc1/set-v1.mjs, the crossing panel body) and xxd (the digest oracles); a bare Ubuntu image has neither.
+# This is the distro package, only for those helpers (the product's Node stays .nvmrc). The real apt-get, not idempotency's stub.
+DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y --no-install-recommends nodejs xxd >/dev/null
+
 rc=0
 bash deploy/digitalocean/dry-run-test.sh --fixtures || rc=$?
 if (( rc != 0 )); then

@@ -1,8 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
-import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
-import { apiAs, email, fromMore, nextFrames, PASSWORD, signInTo } from "./helpers";
+import { apiAs, email, fromMore, keepAllReview, nextFrames, PASSWORD, signInTo } from "./helpers";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
@@ -138,25 +137,6 @@ async function makeManyReasoned(request: APIRequestContext, suffix: string, aske
   }
   made.sort((a, b) => a.requestId - b.requestId);
   return { subject, reasons: made };
-}
-
-// The DELETE body's reasonReview (set-v1) for items an admin read, keeping every
-// one: the count, the SHA-256 over the set in ascending signed id order, and a
-// two-bit choice per item. Built from the wire spec in lib/reasonSetDigest.ts.
-function keepAllReview(items: Array<{ requestId: string; reviewHash: string }>) {
-  const sorted = [...items].sort((a, b) => (BigInt(a.requestId) < BigInt(b.requestId) ? -1 : 1));
-  const head = Buffer.alloc(35);
-  head.write("fold:erasure-reason-set:v1", 0, "latin1");
-  head.writeBigUInt64BE(BigInt(sorted.length), 27);
-  const parts = [head];
-  const choices = Buffer.alloc(Math.ceil(sorted.length / 4));
-  sorted.forEach((it, i) => {
-    const id = Buffer.alloc(8);
-    id.writeBigInt64BE(BigInt(it.requestId));
-    parts.push(id, Buffer.from(it.reviewHash, "hex"));
-    choices[i >> 2] |= 1 << ((i & 3) * 2);
-  });
-  return { format: "set-v1", count: String(sorted.length), digest: createHash("sha256").update(Buffer.concat(parts)).digest("hex"), choices: choices.toString("base64") };
 }
 
 // The reason a contact request holds now, as the admin reads it.

@@ -1416,7 +1416,8 @@ rj="$(qc1_judge "$WORK/rec8.row.jsonl" 6291456)"
 old_stmt="${rec8_stmt//--argjson statsb/--argjson sb}"; old_stmt="${old_stmt//--argjson statsc/--argjson sc}"; old_stmt="${old_stmt//\$statsb/\$sb}"; old_stmt="${old_stmt//\$statsc/\$sc}"
 [[ "$old_stmt" == *'--arg sc "$sql_cont"'*'--argjson sc "$stats_clean"'* && "$old_stmt" == *'clean:($sc + $copy)'* ]]
 run_rec8 "$old_stmt"
-if ! { [[ ! -s "$WORK/rec8.json" ]] && grep -qF 'string ("SELECT id, requester_id,...") and object ({"kind":"a copy of the sa...}) cannot be added' "$WORK/rec8.err"; }; then echo "the pilot2 construction did not fail the way pilot2 did: $(cat "$WORK/rec8.err")" >&2; exit 1; fi
+# jq truncates the two operands in its message differently between releases (1.7 and 1.8): match the type error and both operands, not the excerpt.
+if ! { [[ ! -s "$WORK/rec8.json" ]] && grep -qE 'string \("SELECT id,.*\) and object \({"kind":"a .*\) cannot be added' "$WORK/rec8.err"; }; then echo "the pilot2 construction did not fail the way pilot2 did: $(cat "$WORK/rec8.err")" >&2; exit 1; fi
 # the guard flags that very version of the runner
 printf '%s\n' "$old_stmt" >"$WORK/old-stmt.sh"; [[ -n "$(jq_arg_duplicates "$WORK/old-stmt.sh")" ]]
 # the other rows pilot2 wrote before it stopped are judged clean by the current judge, and carry what the follow-up added: the delete order control, top statements, table rows

@@ -586,7 +586,12 @@ bash deploy/digitalocean/provision.sh \
 # lower or higher, and nothing is started. (The stub models the mismatch; the
 # check under test is provision.sh's, unchanged.)
 mismatch_dir=/tmp/fold-build-mismatch
-for wrong_level in 0 2; do
+# The level the source declares moves with each recovery change; derive it, never hard-code it.
+declared_level="$(tr -d "[:space:]" </src/deploy/recovery-policy)"
+[[ "$declared_level" =~ ^[0-9]+$ ]]
+wrong_levels=("$((declared_level + 1))")
+if (( declared_level > 0 )); then wrong_levels+=("$((declared_level - 1))"); fi
+for wrong_level in "${wrong_levels[@]}"; do
   DOCKER_STUB_BUILT_LEVEL="$wrong_level" expect_fail 'differs from checked target' bash deploy/digitalocean/provision.sh \
     --domain groups.example.org \
     --admin-user deploy \
@@ -609,9 +614,9 @@ build_cur="$(bash deploy/digitalocean/upgrade.sh --dry-run \
 grep -qF 'mode=build' <<<"$build_cur"
 
 # Moving that deploy to a pulled release drops the override and COMPOSE_FILE.
-# The source built above declares level 1, so the pulled release it moves to
-# must be at least level 1 (a lower one is refused by the recovery floor).
-DOCKER_STUB_IMAGE_LEVEL=1 bash deploy/digitalocean/provision.sh \
+# The source built above declares $declared_level, so the pulled release it moves to
+# must be at least that level (a lower one is refused by the recovery floor).
+DOCKER_STUB_IMAGE_LEVEL="$declared_level" bash deploy/digitalocean/provision.sh \
   --domain groups.example.org \
   --admin-user deploy \
   --ssh-pubkey-file "$pub" \

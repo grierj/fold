@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { apiAs, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
+import { apiAs, deleteAccountKeepingReasons, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
 import type { ContactHistoryResponse } from "../src/types";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
@@ -160,7 +160,7 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   await capture(page, "error");
 
   // Retention uses the manual field, not a live-account lookup or test route.
-  await (await apiAs(request, adminName))("DELETE", `/admin/users/${adult.id}`);
+  await deleteAccountKeepingReasons(await apiAs(request, adminName), adult.id);
   await page.goto("/admin/contact-history");
   await (await soon(page.getByText("Look up a deleted account", { exact: true }))).click();
   const savedPersonID = page.getByLabel("Saved person ID", { exact: true });
