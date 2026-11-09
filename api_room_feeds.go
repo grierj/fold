@@ -25,7 +25,6 @@ import (
 // visibility is public; every other date is titled "Reserved" with nothing
 // that says whose it is.
 
-// roomFeedTitle names a booking the feed doesn't describe.
 const roomFeedTitle = "Reserved"
 
 type roomFeedJSON struct {
@@ -39,7 +38,6 @@ func (a *App) roomFeedURL(roomID uint, raw string) string {
 	return a.emailBaseURL() + "/cal/rooms/" + strconv.FormatUint(uint64(roomID), 10) + "/" + raw + ".ics"
 }
 
-// adminRoom loads the room named in the path, or answers 404.
 func (a *App) adminRoom(c *gin.Context) (*models.Room, bool) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 63)
 	if err != nil {

@@ -731,6 +731,18 @@ func TestRegistrationAccessSchemaShape(t *testing.T) {
 			t.Fatalf("index %s missing", idx)
 		}
 	}
+	// The live-grant readers (attendee provenance, the date page, calendar scope)
+	// filter by occurrence and the live predicate; the partial index only serves
+	// them if it is keyed on the date and covers exactly the not-ended grants.
+	var liveDef string
+	if err := a.db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='idx_registrations_live_access'`).Scan(&liveDef); err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"(occurrence_id)", "access_origin <> ''", "access_ended_at IS NULL"} {
+		if !strings.Contains(liveDef, part) {
+			t.Fatalf("idx_registrations_live_access lacks %q: %s", part, liveDef)
+		}
+	}
 	// The partial unique index lets one request ground one registration only.
 	var tables int
 	if err := a.db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> 'goose_db_version'`).Scan(&tables); err != nil || tables != len(models.All()) || tables != 39 {

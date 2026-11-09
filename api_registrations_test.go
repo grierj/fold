@@ -109,6 +109,22 @@ func countRegs(t *testing.T, app *App, occID uint, status string) int64 {
 	return n
 }
 
+// maxRaceInFlight bounds how many requests of a race test are in the server at
+// once. Each one holds a Postgres connection for its transaction and can take a
+// second for a read outside it, and the test servers allow 100 connections
+// across every test process, so an unbounded 50 or 60 intermittently fail with
+// "too many clients". The cap keeps the requests contending for the same rows.
+const maxRaceInFlight = 12
+
+// inFlight is a counting semaphore: `defer slots.enter()()` runs the rest of a
+// goroutine while holding a slot.
+type inFlight chan struct{}
+
+func (s inFlight) enter() func() {
+	s <- struct{}{}
+	return func() { <-s }
+}
+
 // TestConcurrentGoingRespectsCapacity is the milestone gate: 50 real
 // requests race for 10 seats. Exactly 10 end up going and 40 waitlisted,
 // with no seat overrun.
@@ -132,11 +148,13 @@ func TestConcurrentGoingRespectsCapacity(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	slots := make(inFlight, maxRaceInFlight)
 	codes := make([]int, n)
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			defer slots.enter()()
 			code, _ := registerAs(clients[i], eventID, date, "going", nil)
 			codes[i] = code
 		}(i)
@@ -1038,7 +1056,7 @@ func TestSwitchingModeReRegistersInNewPool(t *testing.T) {
 }
 
 // A waiter who switches pools starts a fresh wait in the new pool, so
-// someone already waiting there stays ahead (Whittler, #105).
+// someone already waiting there stays ahead.
 func TestWaiterSwitchingModeJoinsBackOfNewPool(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "HybridWaitSwitch")
@@ -1688,7 +1706,7 @@ func TestTwoHouseholdAdultsRaceForSamePerson(t *testing.T) {
 // Concurrent household declines on a full event must not deadlock. A
 // decline promotes another holder's waiter and notifies them, which takes a
 // KEY SHARE on that holder's user row; a FOR UPDATE holder lock conflicts
-// with it, FOR NO KEY UPDATE doesn't (Whittler, PR 110).
+// with it, FOR NO KEY UPDATE doesn't.
 func TestHouseholdDeclineStormDoesNotDeadlock(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "DeclineStorm")
@@ -1711,11 +1729,13 @@ func TestHouseholdDeclineStormDoesNotDeadlock(t *testing.T) {
 	const rounds = 10
 	codes := make(chan int, rounds*len(families))
 	var wg sync.WaitGroup
+	slots := make(inFlight, maxRaceInFlight)
 	for r := 0; r < rounds; r++ {
 		for f, fam := range families {
 			wg.Add(1)
 			go func(r, f int, fam family) {
 				defer wg.Done()
+				defer slots.enter()()
 				status := "declined"
 				if (r+f)%2 == 1 {
 					status = "going"
@@ -1739,7 +1759,7 @@ func TestHouseholdDeclineStormDoesNotDeadlock(t *testing.T) {
 	}
 }
 
-// Read budgets for the hot registration paths (Whittler, PR 110). Master
+// Read budgets for the hot registration paths. Master
 // before slice 2: solo PUT 8, GET /events/:id 14. Household facts add a
 // bounded, per-request set; this keeps them from growing per list. Rooms
 // (M2.1b) add one read per list of dates for the booked room, whether rooms
@@ -1788,7 +1808,7 @@ func TestRegistrationReadBudget(t *testing.T) {
 	if n > 22 {
 		t.Fatalf("admin GET read %d times, budget 22", n)
 	}
-	// GET /me/household (Whittler, PR 111): reads don't grow per person or
+	// GET /me/household: reads don't grow per person or
 	// per account (18 before batching, 9 before slice 3; the pending-approval
 	// lookup adds one, DEC-82). A six-person household reads the same.
 	n = 0

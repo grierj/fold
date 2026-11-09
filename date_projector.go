@@ -10,10 +10,10 @@ import (
 
 // The date projector (E1). Every surface that shows one date of an event (the
 // calendar, an event page's dates, a group's list, the date page, its .ics
-// download and the three calendar feeds) used to decide for itself how the date
-// looks to the viewer. Now projectDate decides everything that depends on the
-// viewer, once, from the facts the caller already loaded, and each surface
-// renders the value it gets back:
+// download and the three calendar feeds) gets how the date looks to the viewer
+// from projectDate, which decides everything that depends on the viewer, once,
+// from the facts the caller already loaded. Each surface renders the value it
+// gets back:
 //
 //	calendar row          calendarRow
 //	event / group list    occurrenceJSON (the caller adds counts and seats)
@@ -27,7 +27,6 @@ import (
 // answer and a date's counts are loaded in batches by each surface and handed to
 // its renderer; they are facts about the viewer, not rules about the date.
 
-// dateProjection is one date as one viewer may see it.
 type dateProjection struct {
 	Event *models.Event
 	Occ   *models.EventOccurrence
@@ -78,10 +77,8 @@ func (a *App) projectDate(viewer *models.User, vs visibleSet, occ *models.EventO
 	return p, true
 }
 
-// DateString is the series date, YYYY-MM-DD.
 func (p *dateProjection) DateString() string { return models.FormatCalendarDate(p.Occ.OriginalDate) }
 
-// DateURL is where the viewer reaches the date page.
 func (p *dateProjection) DateURL() string { return occurrenceDatePath(p.Event.ID, p.DateString()) }
 
 // ShowsSeries is whether the date carries the event's own details (description,
@@ -102,7 +99,6 @@ func (p *dateProjection) Eff() *occurrenceJSON {
 	return p.eff
 }
 
-// RemoteOffered is whether remote attendance is on offer for this date.
 func (p *dateProjection) RemoteOffered() bool {
 	e := p.Eff()
 	return events.RemoteOffered(e.RemoteAvailable, e.RemoteCapacity)
@@ -118,7 +114,6 @@ type groupLabel struct {
 	HostedBy   string
 }
 
-// siteNameOnce reads the church's name at most once for one response.
 type siteNameOnce struct {
 	a    *App
 	name string
@@ -265,7 +260,6 @@ func calendarStatus(answer string, personalFeed bool) string {
 	return ""
 }
 
-// feedAudience says whose calendar an entry goes into.
 type feedAudience struct {
 	// Personal is a signed-in person's own feed; the public and group feeds
 	// are for anyone with the link and see what a signed-out visitor sees.
@@ -298,7 +292,6 @@ func (p *dateProjection) feedVideoURL(aud feedAudience) string {
 	return ""
 }
 
-// feedEnv is what an entry needs from outside the date.
 type feedEnv struct {
 	baseURL string
 	rooms   map[uint]*occurrenceRoomJSON

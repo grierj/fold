@@ -30,11 +30,9 @@ func (a *App) registerCalendarFeeds(r *gin.Engine) {
 	r.GET("/cal/public.ics", a.feedPublic)
 	r.GET("/cal/groups/:id", a.feedGroup)
 	r.GET("/cal/u/:token", a.feedPersonal)
-	// Room feeds (M2.2b): an admin-issued link per room.
 	r.GET("/cal/rooms/:roomId/:token", a.feedRoom)
 }
 
-// feedWindow covers 30 days back to 12 months ahead, by occurrence start.
 func feedWindow(now time.Time) (time.Time, time.Time) {
 	return now.AddDate(0, 0, -30), now.AddDate(1, 0, 0)
 }
@@ -236,8 +234,6 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 // every hidden, declined, out-of-window, or differently answered recurrence
 // explicit, so an RRULE can never reintroduce it in a calendar client.
 func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet, rooms map[uint]*occurrenceRoomJSON) (events.Feed, error) {
-	// Only scheduled dates the viewer may see are looked up; the loop below
-	// skips every other date before it reads these facts.
 	ids := visibleOccurrenceIDs(vs, viewer, occs, scoped)
 	facts, err := a.loadCalendarScopeBatch(viewer, ids)
 	if err != nil {
@@ -291,11 +287,9 @@ func laterTime(a, b time.Time) time.Time {
 	return b
 }
 
-// ---------------------------------------------------------------------------
 // Token management under /api/v1. The raw token reaches the client only
 // in the POST response; everything else sees that a link exists and
 // which scope it carries.
-// ---------------------------------------------------------------------------
 
 type calendarFeedJSON struct {
 	HasToken bool   `json:"hasToken"`
@@ -490,7 +484,6 @@ func (a *App) apiAdminRevokeCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not revoke the calendar link")
 		return
 	}
-	// hadLink lets the admin page say whether a link was actually turned off.
 	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(nil), "hadLink": had})
 }
 

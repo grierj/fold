@@ -85,18 +85,21 @@ func holdSeriesOccurrence(t *testing.T, app *App, occurrenceID uint) *gorm.DB {
 	return tx
 }
 
-func waitSeriesOccurrenceWaiter(t *testing.T, app *App) {
+// waitSeriesOccurrenceWaiter returns once some other session is blocked on a
+// lock that gate (from holdSeriesOccurrence) holds.
+func waitSeriesOccurrenceWaiter(t *testing.T, app *App, gate *gorm.DB) {
 	t.Helper()
+	var pid int
+	if err := gate.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		var count int64
-		err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock'
-			AND query ILIKE '%event_occurrences%' AND query ILIKE '%FOR UPDATE%'`).Scan(&count).Error
-		if err != nil {
+		var blocked bool
+		if err := app.DB.Raw("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid)))", pid).Scan(&blocked).Error; err != nil {
 			t.Fatal(err)
 		}
-		if count > 0 {
+		if blocked {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -430,7 +433,7 @@ func TestSeriesRegistrationRefreshesClockAfterContactAndOccurrenceLocks(t *testi
 		response := queueContact(func() *httptest.ResponseRecorder {
 			return client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
 		})
-		waitSeriesOccurrenceWaiter(t, app)
+		waitSeriesOccurrenceWaiter(t, app, gate)
 		clock.Advance(2 * time.Minute)
 		if err := gate.Commit().Error; err != nil {
 			t.Fatal(err)
@@ -527,7 +530,7 @@ func TestSeriesUndoRefreshesClockAfterOccurrenceLock(t *testing.T) {
 	response := queueContact(func() *httptest.ResponseRecorder {
 		return undoSeriesAnswer(client, ev.ID, out.UndoToken, true)
 	})
-	waitSeriesOccurrenceWaiter(t, app)
+	waitSeriesOccurrenceWaiter(t, app, gate)
 	clock.Advance(2 * time.Second)
 	if err := gate.Commit().Error; err != nil {
 		t.Fatal(err)

@@ -26,7 +26,6 @@ type MessageTarget struct {
 	Rel     Rel
 }
 
-// CanMessageTarget: may p message the people of one target?
 func CanMessageTarget(p *Person, t MessageTarget) bool {
 	if p == nil || p.Teen {
 		return false

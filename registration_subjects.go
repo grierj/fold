@@ -123,7 +123,6 @@ func (a *App) loadEligibilityFacts(tx *gorm.DB, regs []models.Registration, now 
 	return f, nil
 }
 
-// eligible is whether r still stands; now is the caller's one reading of the clock.
 func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool, now time.Time) (bool, error) {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
@@ -302,8 +301,8 @@ type subjectFacts struct {
 	// loadedAccounts marks users whose household account was looked up,
 	// found or not.
 	loadedAccounts map[uint]bool
-	// today is the one clock for household ages: the church-local date
-	// (Warden, PR 110 N2). Eligibility and the displayed age both use it.
+	// today is the one clock for household ages
+	// (the church-local date). Eligibility and the displayed age both use it.
 	today time.Time
 	// clock supplies today on first use, so a request that shows no
 	// household person never reads the church time zone.
@@ -329,7 +328,7 @@ func (a *App) requestFacts() *subjectFacts {
 }
 
 // load adds the facts for regs and viewer that aren't loaded yet, so one
-// request can share a single set of facts across its lists (Whittler, PR 110).
+// request can share a single set of facts across its lists.
 func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *models.User) error {
 	var personIDs, userIDs, householdIDs []uint
 	seenUser := map[uint]bool{}
@@ -683,7 +682,6 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 	return nil
 }
 
-// householdSubjectFrom validates a pair already loaded in the household batch.
 func householdSubjectFrom(person *models.HouseholdPerson, acct models.HouseholdAccount) (registrationSubject, error) {
 	if person == nil || person.ID == 0 || person.DeletedAt.Valid || person.ConvertedUserID != nil || acct.UserID == 0 || acct.HouseholdID != person.HouseholdID {
 		return registrationSubject{}, errRegNotFound

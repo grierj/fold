@@ -42,8 +42,6 @@ func (a *App) canRegisterDateIn(tx *gorm.DB, u *models.User, ev *models.Event, o
 	return a.canRegisterDate(tx, u, ev, &occ)
 }
 
-// canRegisterDate is canRegisterDateIn for a caller that already holds the
-// occurrence row.
 func (a *App) canRegisterDate(tx *gorm.DB, u *models.User, ev *models.Event, occ *models.EventOccurrence) bool {
 	if occ.EventID != ev.ID || occ.Status != models.OccurrenceScheduled {
 		return false
@@ -221,8 +219,6 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string) ([]models.Event
 	return out, evs, nil
 }
 
-// futureOverrides selects the upcoming dates of the events that carry their own
-// visibility.
 func futureOverrides(tx *gorm.DB, eventIDs ...uint) *gorm.DB {
 	return tx.Model(&models.EventOccurrence{}).
 		Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", eventIDs, time.Now().UTC())

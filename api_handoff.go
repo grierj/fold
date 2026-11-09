@@ -56,7 +56,6 @@ func successorCandidates(db *gorm.DB, groupID, leaving uint) ([]successorJSON, e
 		Order("name, id").Find(&users).Error; err != nil {
 		return nil, err
 	}
-	// One query for the candidates' memberships in this group, any status.
 	ids := make([]uint, len(users))
 	for i := range users {
 		ids[i] = users[i].ID
@@ -75,7 +74,6 @@ func successorCandidates(db *gorm.DB, groupID, leaving uint) ([]successorJSON, e
 	return out, nil
 }
 
-// apiAdminSoleLedGroups: GET /admin/users/:id/sole-leader-groups.
 func (a *App) apiAdminSoleLedGroups(c *gin.Context) {
 	u, ok := a.adminTargetUser(c)
 	if !ok {
@@ -98,15 +96,12 @@ func (a *App) apiAdminSoleLedGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"groups": out})
 }
 
-// errNeedSuccessors means some sole-led groups have no valid successor.
 type errNeedSuccessors struct{ groups []soleLedGroupJSON }
 
 func (errNeedSuccessors) Error() string { return errNeedsSuccessor.Message }
 
-// Is matches the declared refusal this error answers with.
 func (errNeedSuccessors) Is(target error) bool { return target == errNeedsSuccessor }
 
-// apiAnswer is the 400 with the groups still missing a successor.
 func (e errNeedSuccessors) apiAnswer() *apiError {
 	return errNeedsSuccessor.with(gin.H{"groups": e.groups})
 }

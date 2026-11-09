@@ -25,7 +25,6 @@ func visibleOccurrenceIDs(vs visibleSet, viewer *models.User, occs []models.Even
 	return ids
 }
 
-// householdGoingChunked is householdGoingMap over lists of any length.
 func householdGoingChunked(db *gorm.DB, ids []uint, viewer *models.User, remoteOnly bool) (map[uint]bool, error) {
 	out := map[uint]bool{}
 	err := eachIDChunk(ids, func(chunk []uint) error {

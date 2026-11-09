@@ -467,7 +467,7 @@ func TestTighteningCancelsWaitlistedGuest(t *testing.T) {
 }
 
 // A promoted guest must never get the group's name, place, or link:
-// the guest is a nil viewer in the notice builders, like guestDisplay.
+// the guest is a nil viewer in the notice builders.
 func TestPromotedGuestEmailHidesPrivateGroup(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
