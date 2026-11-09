@@ -154,87 +154,12 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 	return ed, true
 }
 
-// attendanceModeOf is a registration's pool: "" (a row written before
-// the column had a value in Go) reads as in_person, the DB default.
-func attendanceModeOf(mode string) string {
-	if mode == models.AttendanceRemote {
-		return models.AttendanceRemote
-	}
-	return models.AttendanceInPerson
-}
-
-// capacityForMode is the effective cap of one pool on one date: the
-// per-date override wins, nil is unlimited.
-func capacityForMode(ev *models.Event, o *models.EventOccurrence, mode string) *int {
-	if attendanceModeOf(mode) == models.AttendanceRemote {
-		return events.EffectiveCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride)
-	}
-	return events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
-}
-
 // intPtrEqual reports whether two optional ints hold the same value.
 func intPtrEqual(a, b *int) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
 	return *a == *b
-}
-
-// seatsUsedForMode counts seats in one pool on an occurrence: one per
-// going registration of that mode from a listed account plus its
-// guest_count. Disabled and deleted accounts use no seats in either
-// pool (DEC-38). This is the one counted query shape for the lock path
-// and the read path.
-func seatsUsedForMode(db *gorm.DB, occurrenceID uint, mode string) (int, error) {
-	var n int64
-	err := db.Model(&models.Registration{}).
-		Joins(listedRegistrations()).
-		Where("registrations.occurrence_id = ? AND registrations.status = ? AND registrations.attendance_mode = ?",
-			occurrenceID, models.RegGoing, attendanceModeOf(mode)).
-		Select("COALESCE(SUM(1 + registrations.guest_count), 0)").
-		Scan(&n).Error
-	return int(n), err
-}
-
-// seatsUsedMapForMode counts one pool's seats for many occurrences with
-// the same query shape as seatsUsedForMode (GROUP BY instead of one id).
-func seatsUsedMapForMode(db *gorm.DB, occurrenceIDs []uint, mode string) (map[uint]int, error) {
-	out := map[uint]int{}
-	if len(occurrenceIDs) == 0 {
-		return out, nil
-	}
-	type row struct {
-		OccurrenceID uint
-		Seats        int64
-	}
-	var rows []row
-	err := db.Model(&models.Registration{}).
-		Joins(listedRegistrations()).
-		Where("registrations.occurrence_id IN ? AND registrations.status = ? AND registrations.attendance_mode = ?",
-			occurrenceIDs, models.RegGoing, attendanceModeOf(mode)).
-		Select("registrations.occurrence_id, COALESCE(SUM(1 + registrations.guest_count), 0) AS seats").
-		Group("registrations.occurrence_id").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		out[r.OccurrenceID] = int(r.Seats)
-	}
-	return out, nil
-}
-
-// spotsLeftFor is capacity minus used, never below 0; nil when the pool
-// is unlimited.
-func spotsLeftFor(cap *int, used int) *int {
-	if cap == nil {
-		return nil
-	}
-	left := *cap - used
-	if left < 0 {
-		left = 0
-	}
-	return &left
 }
 
 // loadWaitlist returns the waitlisted registrations of listed accounts in

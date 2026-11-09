@@ -7,10 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"fold/internal/events"
 	"fold/models"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 var (
@@ -95,63 +93,4 @@ func (r childcareRequest) values(old models.Registration) (int, string) {
 		ages = strings.TrimSpace(*r.ChildcareAgesNote)
 	}
 	return count, ages
-}
-
-// Use the same DEC-38 account filter as attendance pools, excluding this
-// registration before checking a replacement request under the date lock.
-func childcareUsedFor(db *gorm.DB, occurrenceID, exceptRegistration uint) (int, error) {
-	var n int64
-	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
-		Joins("JOIN event_occurrences AS care_occurrence ON care_occurrence.id = registrations.occurrence_id JOIN events AS care_event ON care_event.id = care_occurrence.event_id AND care_event.childcare_available").
-		Where("registrations.occurrence_id = ? AND registrations.status = ? AND registrations.id <> ?", occurrenceID, models.RegGoing, exceptRegistration).
-		Select("COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0)").Scan(&n).Error
-	return int(n), err
-}
-
-func childcareUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
-	out := map[uint]int{}
-	if len(occurrenceIDs) == 0 {
-		return out, nil
-	}
-	var rows []struct {
-		OccurrenceID uint
-		Children     int
-	}
-	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
-		Joins("JOIN event_occurrences AS care_occurrence ON care_occurrence.id = registrations.occurrence_id JOIN events AS care_event ON care_event.id = care_occurrence.event_id AND care_event.childcare_available").
-		Where("registrations.occurrence_id IN ? AND registrations.status = ?", occurrenceIDs, models.RegGoing).
-		Select("registrations.occurrence_id, COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0) AS children").
-		Group("registrations.occurrence_id").Scan(&rows).Error
-	for _, r := range rows {
-		out[r.OccurrenceID] = r.Children
-	}
-	return out, err
-}
-
-func checkChildcare(tx *gorm.DB, ev *models.Event, occurrenceID, registrationID uint, count int) error {
-	if !ev.ChildcareAvailable || count == 0 || ev.ChildcareCapacity == nil {
-		return nil
-	}
-	used, err := childcareUsedFor(tx, occurrenceID, registrationID)
-	if err != nil {
-		return err
-	}
-	if !events.Fits(ev.ChildcareCapacity, used, count) {
-		return errChildcareFull
-	}
-	return nil
-}
-
-// effectiveChildcare is shared by row decisions and the aggregate above.
-func effectiveChildcare(ev *models.Event, r models.Registration) int {
-	if !ev.ChildcareAvailable {
-		return 0
-	}
-	if r.HouseholdPersonID != nil {
-		if r.ChildcareRequested && r.AttendanceMode != models.AttendanceRemote {
-			return 1
-		}
-		return 0
-	}
-	return r.ChildcareCount
 }
