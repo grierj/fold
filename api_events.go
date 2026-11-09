@@ -23,37 +23,11 @@ import (
 
 // How far a list request may look. Stored occurrences go out 18 months.
 const (
-	maxEventWindow  = 366 * 24 * time.Hour
-	settingTimezone = "timezone"
+	maxEventWindow = 366 * 24 * time.Hour
 )
 
-func (a *App) churchTimezone() string {
-	loc, err := churchLocationIn(a.DB)
-	if err != nil {
-		return "UTC"
-	}
-	return loc.String()
-}
-
-// churchLocationIn keeps the UTC fallback for missing or invalid settings.
-// Database failures return to the caller so mail preparation can retry.
-func churchLocationIn(db *gorm.DB) (*time.Location, error) {
-	var s models.Setting
-	if err := db.Where("key = ?", settingTimezone).First(&s).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return time.UTC, nil
-		}
-		return nil, err
-	}
-	loc, err := events.LoadZone(s.Value)
-	if err != nil {
-		return time.UTC, nil
-	}
-	return loc, nil
-}
-
 func (a *App) apiSite(c *gin.Context) {
-	c.JSON(http.StatusOK, siteJSON{Name: a.siteName(), Timezone: a.churchTimezone(), SelfSignup: a.selfSignupMode(), RoomsEnabled: a.roomsEnabled(), PushEnabled: a.pushEnabled()})
+	c.JSON(http.StatusOK, siteJSON{Name: a.siteName(), Timezone: churchZoneOrUTC(a.DB).String(), SelfSignup: a.selfSignupMode(), RoomsEnabled: a.roomsEnabled(), PushEnabled: a.pushEnabled()})
 }
 
 func (a *App) apiSetTimezone(c *gin.Context) {
@@ -69,9 +43,7 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
 		return
 	}
-	if err := a.DB.Where(models.Setting{Key: settingTimezone}).
-		Assign(models.Setting{Value: tz}).
-		FirstOrCreate(&models.Setting{}).Error; err != nil {
+	if err := setSettingIn(a.DB, settingTimezone, tz); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save timezone")
 		return
 	}
@@ -358,10 +330,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
-	loc, err := time.LoadLocation(ev.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(ev.TZID)
 	dur := ev.DurationMinutes
 	if o.DurationOverride != nil {
 		dur = *o.DurationOverride
@@ -467,7 +436,7 @@ func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
 		Count   int64
 	}
 	a.DB.Model(&models.Membership{}).Select("memberships.group_id, count(*) AS count").Joins(listedUsers("memberships")).
-		Where("memberships.group_id IN ? AND memberships.status = ?", ids, "active").Group("memberships.group_id").Scan(&counts)
+		Where("memberships.group_id IN ? AND memberships.status = ?", ids, models.MembershipActive).Group("memberships.group_id").Scan(&counts)
 	members := make(map[uint]int64, len(counts))
 	for _, row := range counts {
 		members[row.GroupID] = row.Count
@@ -558,7 +527,7 @@ type eventBody struct {
 // those dates. A rule that passes here cannot fail later as a 500 or leave
 // the daily extender stuck.
 func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, []events.When, bool) {
-	spec := events.Spec{TZID: a.churchTimezone()}
+	spec := events.Spec{TZID: churchZoneOrUTC(a.DB).String()}
 	if base != nil {
 		spec.StartsLocal = base.StartsLocal
 		spec.DurationMinutes = base.DurationMinutes

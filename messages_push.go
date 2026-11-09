@@ -240,8 +240,8 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 		return a.deliverReminderPush(ctx, &row, &u, dev, &m, plannedAt)
 	}
 	now := a.pushNow()
-	loc := zoneOrChurch(db, u.Timezone)
-	if inside, opens := a.pushQuietHours().Check(now, "", loc); !inside {
+	loc := userZoneIn(db, u.Timezone)
+	if inside, opens := a.pushQuietHours().Check(now, loc); !inside {
 		if soonest := now.Add(time.Second); opens.Before(soonest) {
 			opens = soonest
 		}

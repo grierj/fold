@@ -1938,7 +1938,7 @@ func TestManagerRegistrationAddRechecksScopeAfterContactGate(t *testing.T) {
 					if err := gate.Where("event_id = ? AND user_id = ?", ev, actor.ID).Delete(&models.EventHost{}).Error; err != nil {
 						t.Fatal(err)
 					}
-				} else if err := gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", memberRemoved).Error; err != nil {
+				} else if err := gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", models.MembershipRemoved).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := gate.Commit().Error; err != nil {

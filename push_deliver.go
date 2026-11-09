@@ -359,7 +359,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	if !ok {
 		return nil
 	}
-	if a.settingValue(settingPushEnabled) == "false" {
+	if !a.pushEnabled() {
 		return a.recordPush(n, models.DeliverySuppressed, pushWhyChurchOff)
 	}
 	var u models.User
@@ -404,10 +404,9 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	case soon:
 		sentWhy = pushSentSoon
 	default:
-		// The zone is resolved as emails resolve it (zoneOrChurch reads
-		// the church's only when the person's own doesn't load), so the
-		// window gets no zone name of its own.
-		if inside, opens := a.pushQuietHours().Check(now, "", zoneOrChurch(a.DB.WithContext(ctx), u.Timezone)); !inside {
+		// The zone is resolved as emails resolve it (userZoneIn reads the
+		// church's only when the person's own doesn't load).
+		if inside, opens := a.pushQuietHours().Check(now, userZoneIn(a.DB.WithContext(ctx), u.Timezone)); !inside {
 			// At least a second out, so the app's clock running a little
 			// behind the database's can't make the job spin.
 			if soonest := now.Add(time.Second); opens.Before(soonest) {

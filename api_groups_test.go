@@ -779,7 +779,7 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	if metas[1].UserID != co.ID || metas[1].OldRole != "leader" {
 		t.Fatalf("co-leader removal row: %+v", metas[1])
 	}
-	if membershipStatus(app, sam, g) != memberRemoved {
+	if membershipStatus(app, sam, g) != models.MembershipRemoved {
 		t.Fatalf("sam's membership: %s", membershipStatus(app, sam, g))
 	}
 
@@ -1095,7 +1095,7 @@ func TestGroupManagerAddRechecksLeaderAfterContactGate(t *testing.T) {
 			waitContactWaiters(t, app, 1)
 			updates := map[string]any{"role": models.MembershipMember}
 			if change == "remove" {
-				updates["status"] = memberRemoved
+				updates["status"] = models.MembershipRemoved
 			}
 			if err := gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, leader.ID).Updates(updates).Error; err != nil {
 				t.Fatal(err)
@@ -1454,7 +1454,7 @@ func TestUpdateGroupRechecksAuthorityAtWrite(t *testing.T) {
 			case "demote-leader":
 				err = gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("role", models.MembershipMember).Error
 			case "remove-leader", "hidden-remove":
-				err = gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", memberRemoved).Error
+				err = gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", models.MembershipRemoved).Error
 			case "session":
 				err = gate.Model(actor).Update("session_version", actor.SessionVersion+1).Error
 				want = http.StatusUnauthorized

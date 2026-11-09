@@ -211,9 +211,13 @@ func (a *App) prepareGuestVerification(tx *gorm.DB, signupID uint) (mail.Message
 	if err != nil {
 		return none, false, err
 	}
-	loc, err := guestMailZone(tx, signup.Timezone)
+	loc, err := events.LoadZone(signup.Timezone)
 	if err != nil {
-		return none, false, err
+		// The guest's own zone is unusable: read the church's. A failed read
+		// retries the job.
+		if loc, err = churchZoneLenient(tx); err != nil {
+			return none, false, err
+		}
 	}
 	raw, err := rotateGuestSignupToken(tx, signup.ID)
 	if errors.Is(err, errTokenInvalid) {
@@ -224,16 +228,6 @@ func (a *App) prepareGuestVerification(tx *gorm.DB, signupID uint) (mail.Message
 	}
 	d := a.guestDisplayWith(func() string { return site }, &models.Registration{Status: models.RegGoing}, &occ, &ev, grp)
 	return a.guestVerificationMessage(&signup, raw, site, d, loc), true, nil
-}
-
-// guestMailZone is the zone a guest reads times in: the one their form sent, else
-// the church's. A failed read of the church zone is returned so the job retries
-// instead of guessing UTC.
-func guestMailZone(tx *gorm.DB, tz string) (*time.Location, error) {
-	if loc, err := events.LoadZone(tz); err == nil {
-		return loc, nil
-	}
-	return churchZoneErr(tx)
 }
 
 func (a *App) guestVerificationMessage(signup *models.GuestSignup, raw, site string, d guestRegistrationJSON, loc *time.Location) mail.Message {

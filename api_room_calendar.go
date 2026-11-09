@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"fold/internal/events"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -87,12 +86,7 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "not found")
 		return
 	}
-	tzName := a.churchTimezone()
-	zone, err := events.LoadZone(tzName)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not load the room calendar")
-		return
-	}
+	zone := churchZoneOrUTC(a.DB)
 	now := a.calendarTime()
 	first, last, ok := roomCalendarWindow(strings.TrimSpace(c.Query("view")), strings.TrimSpace(c.Query("date")), zone, now)
 	if !ok {
@@ -106,7 +100,7 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the room calendar")
 		return
 	}
-	out := roomCalendarJSON{Timezone: tzName, From: first.Format("2006-01-02"), To: last.Format("2006-01-02"), Rooms: []roomCalendarRoomJSON{}}
+	out := roomCalendarJSON{Timezone: zone.String(), From: first.Format("2006-01-02"), To: last.Format("2006-01-02"), Rooms: []roomCalendarRoomJSON{}}
 	index := map[uint]int{}
 	roomIDs := []uint{}
 	for _, r := range rooms {

@@ -954,14 +954,6 @@ func waiting(_, wt string, ok bool) bool { return ok && wt == "Lock" }
 // echoes) in order.
 func (r *ctxRig) statements() []testdb.Event { return r.proxy.Find(testdb.KindStatement, "") }
 
-func pgCode(err error) string {
-	var pe *pgconn.PgError
-	if errors.As(err, &pe) {
-		return pe.Code
-	}
-	return ""
-}
-
 // Gate-wait expiry, no faults: the call returns at its deadline and the
 // server lets go of the gate soon after, by the cancel and Terminate it was
 // sent.

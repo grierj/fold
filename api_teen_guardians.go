@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -82,11 +83,11 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	var body struct {
 		Email string `json:"email"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || !validEmail(normalizeEmail(body.Email)) {
+	if err := c.ShouldBindJSON(&body); err != nil || !validEmail(mail.NormalizeAddress(body.Email)) {
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	hits, err := a.throttleHit(c.Request.Context(), guardianClaimIPKey(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your request")

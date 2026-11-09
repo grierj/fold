@@ -91,11 +91,7 @@ func (a *App) sampleValues(m *models.Message, me *models.User) map[string]string
 		found = a.DB.Select("id, starts_at").Where("event_id = ?", ev.ID).Order("starts_at DESC").First(&occ).Error == nil
 	}
 	if found {
-		loc, err := time.LoadLocation(ev.TZID)
-		if err != nil {
-			loc = time.UTC
-		}
-		vals[content.FieldEventTime] = formatWhen(occ.StartsAt, loc)
+		vals[content.FieldEventTime] = formatWhen(occ.StartsAt, eventZone(ev.TZID))
 	}
 	return vals
 }

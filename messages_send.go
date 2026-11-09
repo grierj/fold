@@ -41,16 +41,6 @@ const (
 	messageBatchAttempts = 8
 )
 
-// Church settings the pipeline reads (5.3).
-const (
-	// settingGuardianCopies: "true" sends each confirmed guardian a marked
-	// email copy of messages to their teen (DEC-19, DEC-29). Default off.
-	settingGuardianCopies = "guardian_copies"
-	// settingReplyTo is where replies to an announcement go until the reply
-	// relay (M3.11): the church office address (DEC-130). Empty: none.
-	settingReplyTo = "reply_to_address"
-)
-
 type messageSendJob struct {
 	MessageID uint `json:"messageId"`
 }
@@ -93,14 +83,6 @@ func enqueueMessageSend(tx *gorm.DB, id uint, when time.Time) error {
 	_, err := jobs.Enqueue(tx, kindMessageSend, messageSendJob{MessageID: id}, when,
 		"message.send:"+historyID(id)+":"+strconv.FormatInt(when.Unix(), 10), messageSendAttempts)
 	return err
-}
-
-func (a *App) settingValue(key string) string {
-	var s models.Setting
-	if a.DB.Select("value").Where("key = ?", key).First(&s).Error != nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Value)
 }
 
 // Failure texts a message's author reads on its page.
@@ -235,7 +217,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	}
 	// 5. Guardian copies (DEC-19): by email only (DEC-29), each guardian
 	// filtered like anyone else.
-	if len(teens) > 0 && a.settingValue(settingGuardianCopies) == "true" {
+	if len(teens) > 0 && boolSettingIn(a.DB, settingGuardianCopies, false) {
 		copies, err := guardianCopyRows(db, m.ID, teens, direct, category)
 		if err != nil {
 			return err
@@ -318,19 +300,21 @@ func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bo
 		DeletedAt *time.Time
 	}
 	live := map[uint]bool{}
-	for len(ids) > 0 {
-		n := min(len(ids), 500)
+	err := eachChunk(ids, 500, func(chunk []uint) error {
 		var got []snapshotUser
-		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", ids[:n]).Order("id").
+		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", chunk).Order("id").
 			Clauses(clause.Locking{Strength: "KEY SHARE"}).Find(&got).Error; err != nil {
-			return nil, err
+			return err
 		}
 		for _, u := range got {
 			if u.DeletedAt == nil {
 				live[u.ID] = true
 			}
 		}
-		ids = ids[n:]
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return live, nil
 }
@@ -367,16 +351,11 @@ func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
 	if gen != "" {
 		prefix += gen + ":"
 	}
-	for len(ids) > 0 {
-		n := min(len(ids), messageBatchSize)
-		batch := ids[:n]
-		ids = ids[n:]
-		if _, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
-			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts); err != nil {
-			return err
-		}
-	}
-	return nil
+	return eachChunk(ids, messageBatchSize, func(batch []uint) error {
+		_, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
+			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts)
+		return err
+	})
 }
 
 // guardianCopyRows are the copy rows for the confirmed guardians of teens:
@@ -599,7 +578,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			msg.FromName, msg.ReplyTo = from, replyTo
 			var providerID string
-			err = mail.Blocked(blocked[normalizeEmail(row.Address)], msg)
+			err = mail.Blocked(blocked[mail.NormalizeAddress(row.Address)], msg)
 			if err == nil {
 				if tracked, ok := sender.(providers.EmailSender); ok {
 					providerID, err = tracked.SendEmail(ctx, msg)
@@ -667,7 +646,7 @@ func (a *App) batchReaders(db *gorm.DB, rows []models.MessageRecipient) (map[uin
 func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string][]string, error) {
 	addrs := make([]string, 0, len(rows))
 	for _, r := range rows {
-		addrs = append(addrs, normalizeEmail(r.Address))
+		addrs = append(addrs, mail.NormalizeAddress(r.Address))
 	}
 	return mail.OpenSuppressionReasons(db, addrs)
 }
@@ -739,10 +718,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; err != nil {
 		return out, nil
 	}
-	loc, err := time.LoadLocation(ev.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(ev.TZID)
 	statuses := au.Statuses
 	if len(statuses) == 0 {
 		statuses = defaultRegStatuses
@@ -858,10 +834,7 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 	if err != nil || len(keys) == 0 {
 		return false, err
 	}
-	loc, err := time.LoadLocation(a.churchTimezone())
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := churchZoneOrUTC(a.DB)
 	local := when.In(loc)
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	var others []models.Message
