@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks shared by provision.sh and smoke.sh. Source this file.
+# Checks and shell helpers shared by the deploy tools. Source this file.
 # A check that cannot be performed fails closed.
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
@@ -11,6 +11,47 @@ check_fail() {
   printf 'check: %s\n' "$1" >&2
   return 1
 }
+
+# die MESSAGE [STATUS]: the tool scripts (backup, email-dns, provision, smoke,
+# upgrade) set TOOL to their own prefix and stop here.
+die() {
+  printf '%s: %s\n' "${TOOL:-${0##*/}}" "$1" >&2
+  exit "${2:-1}"
+}
+
+need_value() {
+  [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 needs a value"
+}
+
+# take_value VAR OPTION [VALUE]...: for `OPTION VALUE` or `OPTION=VALUE` at the
+# head of the arguments, sets VAR and puts the words used (2 or 1) in OPT_SHIFT.
+# Call it from a case arm, then `shift "$OPT_SHIFT"`.
+# shellcheck disable=SC2034 # OPT_SHIFT is read by the caller.
+take_value() {
+  local var="$1"
+  shift
+  if [[ "$1" == *=* ]]; then
+    printf -v "$var" '%s' "${1#*=}"
+    OPT_SHIFT=1
+  else
+    need_value "$@"
+    printf -v "$var" '%s' "$2"
+    OPT_SHIFT=2
+  fi
+}
+
+# compose_in DIR ARGS...: Compose for the stack deployed in DIR.
+compose_in() {
+  local dir="$1"
+  shift
+  docker compose --project-directory "$dir" "$@"
+}
+
+# dc, pg and recovery_ids are for restore.sh and the drills, which set DIR (the
+# deploy directory) and PROJECT (its Compose project). pg DATABASE [psql args].
+dc() { compose_in "$DIR" "$@"; }
+pg() { dc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
+recovery_ids() { docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=recovery; }
 
 # Caller holds the operations lock; these are private interrupted pin snapshots.
 remove_stale_pin_saves() {
@@ -263,7 +304,7 @@ public_port_open() {
 
 assert_published_ports() {
   local deploy_dir="$1" ps line svc rest pubs
-  if ! ps="$(docker compose --project-directory "$deploy_dir" ps --format '{{.Service}}|{{.Status}}|{{.Publishers}}')"; then
+  if ! ps="$(compose_in "$deploy_dir" ps --format '{{.Service}}|{{.Status}}|{{.Publishers}}')"; then
     check_fail "docker compose ps failed in ${deploy_dir}; cannot verify that 5432 and 8080 are private" || return
   fi
   [[ -n "$ps" ]] || { check_fail "no containers in ${deploy_dir}" || return; }
@@ -375,7 +416,7 @@ host_recovery_floor() {
   if [[ -f "$dir/docker-compose.yml" && -f "$dir/.env" ]]; then
     # Compose resolves both explicit image pins and build-mode labels. Inspect
     # locally: pulling here could silently change the currently deployed pin.
-    ids="$(docker compose --project-directory "$dir" config --format json)" || {
+    ids="$(compose_in "$dir" config --format json)" || {
       check_fail "cannot resolve the deployed pin in ${dir}/docker-compose.yml and ${dir}/.env. Repair Compose configuration, then retry; the recovery floor was not verified"; return 1;
     }
     image="$(jq -er '.services.app.image | select(type == "string" and length > 0)' <<<"$ids")" || {

@@ -433,7 +433,7 @@ crossing_evidence_complete() {
 # ---------------------------------------------------------------------------
 
 crossing_emit() { local file="$1"; shift; jq -nc "$@" >>"$(crossing_dir)/$file"; }
-crossing_cdc() { docker compose --project-directory "$CX_DIR" "$@"; }
+crossing_cdc() { compose_in "$CX_DIR" "$@"; }
 crossing_cpg() { crossing_cdc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
 
 crossing_use_main() {

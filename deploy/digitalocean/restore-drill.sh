@@ -149,7 +149,7 @@ cleanup() {
   if (( ! KEEP )); then crossing_cleanup_all || rc=1; else crossing_cleanup_host || rc=1; fi
   # The container-local OS identity the real_* cases presented is put back (and recorded) whether the run passed or failed.
   [[ -z "${CROSSING_OS_STATE:-}" ]] || isolation_os_restore "$CROSSING_OS_STATE" || rc=1
-  if (( ! KEEP )); then docker compose --project-directory "$DIR" down -v --remove-orphans || rc=1; fi
+  if (( ! KEEP )); then compose_in "$DIR" down -v --remove-orphans || rc=1; fi
   drill_emit result "$rc" || rc=1
   echo "restore drill result=$rc artifacts=$WORK retained_stack=$KEEP"
   [[ "$MODE" == full ]] || drill_mode_finish "$rc"
@@ -164,12 +164,9 @@ BASE_CASE="base-proof"
 [[ "$MODE" == full ]] || BASE_CASE="base-prerequisites"
 drill_case_begin "$BASE_CASE"
 
-dc() { docker compose --project-directory "$DIR" "$@"; }
-pg() { dc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
 restore() { drill_note "restore/${1#--}"; RESTORE_DRILL_OPERATION=1 "$DIR/restore.sh" --deploy-dir "$DIR" --drill "$@"; }
 phase() { jq -er .phase "$DIR/recovery.lock"; }
 nonce_db() { jq -r --arg prefix "$1" '$prefix + (.nonce[0:16])' "$DIR/recovery.lock"; }
-recovery_ids() { docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=recovery; }
 port_open() {
   # shellcheck disable=SC2016 # The positional parameter belongs to child Bash.
   timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/"$1"' _ "$1" >/dev/null 2>&1
