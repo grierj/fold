@@ -14,11 +14,12 @@ const MaxPaddingMinutes = 240
 
 // PaddedRange is the one SQL expression for the time a booking holds: its
 // date widened by setup before and teardown after, as a [) range. Each
-// argument is a SQL expression (a column, or a ? placeholder). The
+// argument is a SQL expression (a column, or a ? placeholder), in the order
+// it appears in the SQL text, so a ? list binds start, setup, end, teardown. The
 // room_bookings table's padded_range CHECK compares the stored column
 // against the same formula, and every "is the room busy" question compares
 // against this range through HeldCondition.
-func PaddedRange(start, end, setup, teardown string) string {
+func PaddedRange(start, setup, end, teardown string) string {
 	return "tstzrange(" + start + "::timestamptz - make_interval(mins => " + setup + "::int), " +
 		end + "::timestamptz + make_interval(mins => " + teardown + "::int), '[)')"
 }
@@ -42,6 +43,7 @@ func HeldCondition(b, room, exceptOcc, want string) string {
 // re-picking a series' room never finds it busy with itself. Like the
 // exclusion constraint, it reads booking rows alone: cancelling a date or
 // deleting an event releases its booking, so none is left to count.
+// A room with no busy window is absent from the map: read it as zero.
 func BusyCounts(db *gorm.DB, roomIDs []uint, windows []Window, exceptEvent uint) (map[uint]int, error) {
 	out := map[uint]int{}
 	if len(windows) == 0 || len(roomIDs) == 0 {
@@ -55,7 +57,7 @@ func BusyCounts(db *gorm.DB, roomIDs []uint, windows []Window, exceptEvent uint)
 		RoomID uint
 		Dates  int
 	}
-	want := PaddedRange("w.starts_at", "w.ends_at", "r.default_setup_minutes", "r.default_teardown_minutes")
+	want := PaddedRange("w.starts_at", "r.default_setup_minutes", "w.ends_at", "r.default_teardown_minutes")
 	// Whose bookings are ignored besides the window's own date.
 	except, args := "", []any{pgTimes(starts), pgTimes(ends), pgInts(occs), roomIDs}
 	if exceptEvent != 0 {
