@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { SetPassword } from "./SetPassword";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ refresh: vi.fn() }) }));
+vi.mock("../auth", () => ({ useAuth: () => ({ signedIn: vi.fn().mockResolvedValue("/") }) }));
 
 it("gives the missing-token recovery link a phone-sized target", () => {
   render(<MemoryRouter initialEntries={["/set-password"]}><SetPassword /></MemoryRouter>);

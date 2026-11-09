@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { useSiteName } from "../lib/useSiteName";
+import { churchName, useSite } from "../lib/useSite";
 import { usePageTitle } from "../lib/usePageTitle";
 import { useAuth } from "../auth";
 import { useBadge } from "../lib/notifications";
@@ -27,8 +27,9 @@ const tab = ({ isActive }: { isActive: boolean }) =>
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname, search } = useLocation();
   const { user, loading, logout, isAdmin, canCompose } = useAuth();
-  const site = useSiteName();
-  usePageTitle(site, pathname);
+  const { site: siteInfo, loading: siteLoading } = useSite();
+  const church = churchName(siteInfo);
+  usePageTitle(church, pathname);
   const header = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     const element = header.current;
@@ -56,14 +57,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex items-center gap-3 sm:gap-4">
           <Link
             to="/"
-            aria-label={site === undefined ? "Home" : undefined}
+            aria-label={siteLoading ? "Home" : undefined}
             className="flex flex-1 sm:flex-initial min-h-11 min-w-0 flex-col justify-center leading-tight"
           >
-            {site === undefined ? (
+            {siteLoading ? (
               <span aria-hidden="true" className="bg-sunken rounded-md h-6 w-32" />
-            ) : site && site !== "Fold" ? (
+            ) : church ? (
               <>
-                <span className="text-lg sm:text-xl font-bold text-primary tracking-tight leading-tight line-clamp-2 sm:line-clamp-none">{site}</span>
+                <span className="text-lg sm:text-xl font-bold text-primary tracking-tight leading-tight line-clamp-2 sm:line-clamp-none">{church}</span>
                 <span className="inline-flex items-center gap-1 text-xs text-text-subtle whitespace-nowrap">
                   <FoldMark className="w-3 h-3" />
                   powered by Fold

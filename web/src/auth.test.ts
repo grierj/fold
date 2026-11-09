@@ -84,3 +84,20 @@ describe("logout", () => {
     expect(AuthApi.logout).toHaveBeenCalledWith(undefined);
   });
 });
+
+it("signedIn loads the new session and sends a pending teen to wait, however the server said so", async () => {
+  const teen = { id: 2, status: "pending_consent" } as User;
+  vi.mocked(AuthApi.me).mockResolvedValue({ user: null as unknown as User });
+  const { result } = renderHook(useAuth, { wrapper: AuthProvider });
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  vi.mocked(AuthApi.me).mockResolvedValue({ user: teen });
+  let to = "";
+  // The reset answers with the user alone; account requests and invitations say pendingConsent.
+  await act(async () => { to = await result.current.signedIn({ user: teen }); });
+  expect(to).toBe("/waiting-for-consent");
+  await act(async () => { to = await result.current.signedIn({ pendingConsent: true }); });
+  expect(to).toBe("/waiting-for-consent");
+  await act(async () => { to = await result.current.signedIn({ user: { ...teen, status: "active" }, pendingConsent: false }); });
+  expect(to).toBe("/");
+  expect(AuthApi.me).toHaveBeenCalledTimes(4);
+});

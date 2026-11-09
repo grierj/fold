@@ -26,7 +26,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const { loading: authLoading } = useAuth();
   const [groupName, setGroupName] = useState("");
   const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -180,18 +180,6 @@ export function NewEvent() {
     return (
       <div className="fold-page fold-page-narrow">
         <Skeleton kind="page" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="fold-page fold-page-narrow">
-        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
-        <Link to="/login" state={{ from: `/groups/${id}/events/new` }} className="text-primary font-semibold">
-          Log in
-        </Link>{" "}
-        to schedule an event.
       </div>
     );
   }

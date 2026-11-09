@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { Link, Navigate, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, NavLink, useParams, useSearchParams } from "react-router-dom";
 import { AccountRequests } from "../api/accountRequests";
 import { Profile as ProfileApi } from "../api/profile";
 import { useAuth } from "../auth";
@@ -47,13 +47,9 @@ const sectionGroups: { heading: string; items: Section[] }[] = [
 export function ProfilePage() {
   const { user, loading, logout, isAdmin, canCompose } = useAuth();
   const { section } = useParams();
-  const location = useLocation();
   const [search, setSearch] = useSearchParams();
   if (loading) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" /></div>;
-  if (!user) return <div className="fold-page fold-page-narrow text-center">
-    <h1 className="text-3xl font-bold mb-6">Your profile</h1>
-    <Link to="/login" state={{ from: location.pathname + location.search }} className="text-primary font-semibold">Log in</Link> to view your profile.
-  </div>;
+  if (!user) return null;
 
   const groups = sectionGroups
     .map((group) => ({ ...group, items: group.items.filter((item) => !item.adultOnly || user.accountType !== "teen") }))

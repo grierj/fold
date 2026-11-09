@@ -5,12 +5,12 @@ import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
-import { useSiteName } from "../lib/useSiteName";
+import { churchName, useSite } from "../lib/useSite";
 import { isStandalone, syncAppBadge } from "../lib/push";
 
 export function Login() {
   const { login, user } = useAuth();
-  const site = useSiteName();
+  const { site, loading: siteLoading } = useSite();
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState("");
@@ -53,7 +53,7 @@ export function Login() {
   return (
     <div className="fold-auth wrap-anywhere">
       {/* The church's name, as the header shows it ("Fold" when it has none); plain "Log in" until it loads. */}
-      <h1 className="fold-page-header text-3xl font-bold mb-6">{site === undefined ? "Log in" : `Log in to ${site || "Fold"}`}</h1>
+      <h1 className="fold-page-header text-3xl font-bold mb-6">{siteLoading ? "Log in" : `Log in to ${churchName(site) || "Fold"}`}</h1>
       {homeScreen && <p className="-mt-3 mb-6 text-text-muted">Sign in once here and your notifications will come to this app.</p>}
       <Form noValidate onSubmit={submit} className="fold-form space-y-5">
         {error && (waiting

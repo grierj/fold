@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { DateRooms, type DateRoomInput } from "../api/rooms";
-import { Site } from "../api/site";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
-import type { RoomBooking, RoomPickerItem, RoomSuggestions } from "../types";
+import { useLoad } from "../lib/useLoad";
+import { useRoomsEnabled } from "../lib/useSite";
+import type { RoomBooking, RoomPickerItem } from "../types";
 import { Field, FormError, Input, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Skeleton";
@@ -40,12 +41,9 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   const { isAdmin } = useAuth();
   const id = `${idPrefix}-room`;
   const reasonId = `${id}-reason`;
-  const [enabled, setEnabled] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [rooms, setRooms] = useState<RoomPickerItem[]>([]);
-  const [suggestions, setSuggestions] = useState<RoomSuggestions | null>(null);
-  const [booking, setBooking] = useState<RoomBooking | null>(null);
+  // A church with rooms off, or a site we can't read, sees no rooms control at all.
+  const roomsOn = useRoomsEnabled();
+  const enabled = roomsOn === true;
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,37 +63,14 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
     return () => { alive.current = false; };
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    // A church with rooms off, or a site we can't read, sees no rooms control at all.
-    let site;
-    try {
-      site = await Site.get();
-    } catch {
-      if (alive.current) { setEnabled(false); setLoading(false); }
-      return;
-    }
-    if (!alive.current) return;
-    if (!site.roomsEnabled) {
-      setEnabled(false);
-      setLoading(false);
-      return;
-    }
-    setEnabled(true);
-    try {
-      const res = await DateRooms.list(eventId, date);
-      if (!alive.current) return;
-      setRooms(res.rooms);
-      setBooking(res.booking);
-      setSuggestions(res.suggestions ?? null);
-    } catch (e) {
-      if (alive.current) setLoadError(errorText(e, "We couldn't load the rooms."));
-    } finally {
-      if (alive.current) setLoading(false);
-    }
-  }, [eventId, date]);
-  useEffect(() => { void load(); }, [load]);
+  const list = useLoad(() => DateRooms.list(eventId, date), [eventId, date], { enabled });
+  const loading = roomsOn === null || list.loading;
+  const loadError = list.error ? errorText(list.error, "We couldn't load the rooms.") : null;
+  const rooms = list.data?.rooms ?? [];
+  const suggestions = list.data?.suggestions ?? null;
+  const booking = list.data?.booking ?? null;
+  const { setData } = list;
+  const setBooking = useCallback((b: RoomBooking | null) => setData((old) => old && { ...old, booking: b }), [setData]);
 
   const focused = useRef(false);
   useEffect(() => {
@@ -210,7 +185,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
       {loadError && (
         <div className="space-y-2">
           <FormError>{loadError}</FormError>
-          <Button variant="secondary" onClick={() => void load()}>Try again</Button>
+          <Button variant="secondary" onClick={list.retry}>Try again</Button>
         </div>
       )}
       {!loading && !loadError && (

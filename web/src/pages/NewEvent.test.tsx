@@ -6,7 +6,6 @@ import { Groups } from "../api/groups";
 import { SeriesRooms } from "../api/rooms";
 import { Site } from "../api/site";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
-import { forgetPushEnabled } from "../lib/usePushEnabled";
 import { NewEvent } from "./NewEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
@@ -38,7 +37,6 @@ async function ready() {
 }
 
 beforeEach(() => {
-  forgetPushEnabled();
   vi.clearAllMocks();
   vi.mocked(Groups.get).mockResolvedValue({
     group: { name: "Choir", location: "Hall", visibility: "public" },
