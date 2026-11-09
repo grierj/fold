@@ -16,7 +16,6 @@ import (
 	"gorm.io/gorm"
 )
 
-
 func (a *App) apiPendingGroups(c *gin.Context) {
 	var groups []models.Group
 	if err := a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups).Error; err != nil {
@@ -168,7 +167,6 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	}
 	c.JSON(http.StatusOK, gin.H{})
 }
-
 
 func (a *App) apiAdminListGroups(c *gin.Context) {
 	var groups []models.Group

@@ -22,7 +22,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-
 func (a *App) apiUpdateMe(c *gin.Context) {
 	u := apiUser(c)
 	var body struct {

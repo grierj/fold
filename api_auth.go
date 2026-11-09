@@ -19,7 +19,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-
 func (a *App) apiGetCSRF(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"csrfToken": c.GetString("csrfToken")})
 }
@@ -279,7 +278,6 @@ func (a *App) apiMyGroups(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"groups": list})
 }
-
 
 // resetRequestMessage is the uniform answer: the same for every address,
 // known or not, so the endpoint can't be used to enumerate accounts.
