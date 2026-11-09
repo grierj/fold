@@ -66,8 +66,10 @@ type guestRegistrationJSON struct {
 
 // guestDisplayWith builds the signed-out view of one registration. Group
 // details come only through groupShownTo for a nil viewer, so an opened
-// invite-only event keeps its group hidden. It takes the church name from siteName, called only when the event is the church's own. Mail preparation passes a value it already read in
-// its transaction, so rendering opens no second connection.
+// invite-only event keeps its group hidden. The church name comes from siteName,
+// called only when the event is the church's own; mail preparation passes a
+// value it already read in its transaction, so rendering opens no second
+// connection.
 func (a *App) guestDisplayWith(siteName func() string, reg *models.Registration, occ *models.EventOccurrence,
 	ev *models.Event, grp *models.Group) guestRegistrationJSON {
 	shown := a.groupShownTo(nil, grp, policy.Rel{})
