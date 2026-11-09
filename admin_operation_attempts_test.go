@@ -1597,7 +1597,7 @@ func TestRunningAttemptCrossesTheSubmitWindow(t *testing.T) {
 	// the attempt up and waits on it, with nothing but memory in between, so once
 	// it has run every later statement would be the wait's own.
 	atHandler := make(chan struct{})
-	s.app.settleBeforeTx = func() { close(atHandler) }
+	s.app.hooks.settleBeforeTx = func() { close(atHandler) }
 	go func() { settled <- s.settleAs(c2, id, a.ID) }()
 	select {
 	case <-atHandler:
