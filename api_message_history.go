@@ -195,8 +195,6 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 // historyStatus is a row's status in the history's terms, and for an
 // admin why they missed it, in words.
 func historyStatus(status, reason, errText string, admin bool) (string, string) {
-	why := ""
-	out := historyMissed
 	switch status {
 	case models.RecipientSent:
 		return historySent, ""
@@ -204,28 +202,11 @@ func historyStatus(status, reason, errText string, admin bool) (string, string) 
 		return historyDelivered, ""
 	case models.RecipientQueued, models.DeliveryDeferred:
 		return historyWaiting, ""
-	case models.RecipientSuppressed:
-		why = reason
-	case models.RecipientBounced:
-		why = "bounced"
-		switch reason {
-		case models.BounceHard:
-			why = "bounced: the address doesn't take email"
-		case models.BounceSoft:
-			why = "bounced for now, for example a full mailbox"
-		}
-	case models.RecipientComplained:
-		why = skipComplained
-	case models.RecipientFailed:
-		why = "couldn't send"
-		if errText != "" {
-			why += ": " + errText
-		}
 	}
 	if !admin {
-		why = ""
+		return historyMissed, ""
 	}
-	return out, why
+	return historyMissed, whyFor(status, reason, errText)
 }
 
 // pushHistoryStatus is a person's push in the history's terms: sent,
