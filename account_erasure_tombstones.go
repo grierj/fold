@@ -170,10 +170,13 @@ const (
 	kindTombstonePage     = "erasure.tombstone_page"
 	kindTombstone         = "erasure.tombstone"
 	tombstoneSweepVersion = 1
-	tombstoneSweepPage    = 200
 	tombstonePageTimeout  = 30 * time.Second
 	tombstoneJobTimeout   = 2 * time.Minute
 )
+
+// tombstoneSweepPage is the most subjects one discovery page queues. A var so
+// tests can shorten it; a test that sets it stays serial.
+var tombstoneSweepPage = 200
 
 // The erasure job types; each takes the default attempts.
 var (
@@ -222,10 +225,6 @@ var tombstoneCandidatesSQL = `SELECT u.id FROM users u
  AND u.id > ? AND NOT ` + tombstoneSweptSQL("u.id") + `
  ORDER BY u.id LIMIT ?`
 
-func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {
-	return a.runSweepPageSize(ctx, afterID, day, tombstoneSweepPage)
-}
-
 // One page owns one transaction and one INSERT of at most 201 jobs. Discovery
 // never waits for erasure. A poisoned subject dies alone and alerts on System;
 // until fixed it gets another job, and potentially another alert, each day.
@@ -234,8 +233,9 @@ func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error 
 // unknown per subject: neither this query nor the worker reconstructs O-17.
 // After restore, a tombstone missing its marker is rediscovered under the next
 // date key. An active account restored from a backup is outside this sweep.
-func (a *App) runSweepPageSize(ctx context.Context, afterID uint, day string, pageSize int) error {
-	if _, err := time.Parse("2006-01-02", day); err != nil || pageSize < 1 || pageSize > tombstoneSweepPage {
+func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {
+	pageSize := tombstoneSweepPage
+	if _, err := time.Parse("2006-01-02", day); err != nil {
 		return errors.New("invalid deleted-account discovery task")
 	}
 	ctx, cancel := context.WithTimeout(ctx, tombstonePageTimeout)

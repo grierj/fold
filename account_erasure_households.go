@@ -411,7 +411,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 	}
 	// (6) Each locked household, ascending.
 	for _, h := range households {
-		_, ok, err := householdErasedOwnerIn(tx, h, s, seatHouseholds)
+		ok, err := householdErasedOwnerIn(tx, h, s, seatHouseholds)
 		if err != nil {
 			return counts, err
 		}
@@ -430,7 +430,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 }
 
 // householdErasedOwnerIn decides whether household h now describes only an
-// erased individual (T16, O-9) and whose it is. It is evaluated after the
+// erased individual (T16, O-9). It is evaluated after the
 // subject's seat is deleted and PERS anonymized, with h locked, and reads
 // everything unscoped (soft-deleted people and every user's seat count).
 //
@@ -447,23 +447,23 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 // same. Two erased subjects who each own a person of h leave it shared. No
 // marker is read or written, so every erasure that locks h asks again. It
 // returns database errors unchanged; ok is false for anything it cannot prove.
-func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHouseholds map[uint]bool) (owner uint, ok bool, err error) {
+func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHouseholds map[uint]bool) (bool, error) {
 	var seat []uint
 	if err := tx.Raw(`SELECT id FROM household_accounts WHERE household_id = ? LIMIT 1`, h).Scan(&seat).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(seat) > 0 {
-		return 0, false, nil
+		return false, nil
 	}
 	var people []uint
 	if err := tx.Raw(`SELECT id FROM household_people WHERE household_id = ? ORDER BY id`, h).Scan(&people).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(people) == 0 {
 		if seatHouseholds[h] {
-			return s.ID, true, nil
+			return true, nil
 		}
-		return 0, false, nil
+		return false, nil
 	}
 	mine := make(map[uint]bool, len(s.People))
 	for _, id := range s.People {
@@ -477,7 +477,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		}
 	}
 	if all {
-		return s.ID, true, nil
+		return true, nil
 	}
 	var owned []struct {
 		PersonID uint `gorm:"column:person_id"`
@@ -490,7 +490,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 			SELECT household_person_id, approved_user_id FROM account_requests
 			WHERE household_person_id IN ? AND `+stagedConversionSQL+`
 			AND approved_user_id IS NOT NULL) o`, people, people).Scan(&owned).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	owners := make(map[uint]map[uint]bool, len(people))
 	for _, row := range owned {
@@ -504,7 +504,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		got := owners[id]
 		if len(got) != 1 {
 			// Nobody owns the person (shared), or two users do (ambiguous).
-			return 0, false, nil
+			return false, nil
 		}
 		if candidates == nil {
 			candidates = got
@@ -519,7 +519,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		candidates = next
 	}
 	if len(candidates) != 1 {
-		return 0, false, nil
+		return false, nil
 	}
 	var x uint
 	for u := range candidates {
@@ -527,18 +527,18 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 	}
 	var gone []uint
 	if err := tx.Raw(`SELECT id FROM users WHERE id = ? AND deleted_at IS NOT NULL`, x).Scan(&gone).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(gone) != 1 {
-		return 0, false, nil
+		return false, nil
 	}
 	var whole []uint
 	if err := tx.Raw(persSQL, x, x).Scan(&whole).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	sort.Slice(whole, func(i, j int) bool { return whole[i] < whole[j] })
 	if len(whole) > 1 {
-		return 0, false, nil
+		return false, nil
 	}
-	return x, true, nil
+	return true, nil
 }

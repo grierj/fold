@@ -583,14 +583,24 @@ func emailTaken(err error) bool {
 	return pgConstraint(err, pgUniqueViolation, "uni_users_email")
 }
 
-func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
+// loadTargetUser reads the account the :id route parameter names; nil when it
+// is absent (or cannot be read). It also returns the parsed id.
+func (a *App) loadTargetUser(c *gin.Context) (*models.User, int) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var u models.User
 	if err := a.DB.First(&u, id).Error; err != nil {
+		return nil, id
+	}
+	return &u, id
+}
+
+func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
+	u, _ := a.loadTargetUser(c)
+	if u == nil {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return nil, false
 	}
-	return &u, true
+	return u, true
 }
 
 // adminCount counts admin accounts.
@@ -922,52 +932,58 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
 }
 
+// deleteUserBody is the body of DELETE /admin/users/:id.
+type deleteUserBody struct {
+	// AttemptID is the id minted for this press (POST
+	// /admin/operation-attempts). Old clients send none and keep today's
+	// behavior apart from the deadline and the outcome codes (T07B-1b).
+	AttemptID string `json:"attemptId"`
+	// Successors maps group id to the new leader, for every group this
+	// person leads alone (DEC-36; see GET /admin/users/:id/sole-leader-groups).
+	Successors map[string]uint `json:"successors"`
+	// HostSuccessors maps church-wide event id to the new host, for every
+	// event this person hosts alone (M7.4 owner decision 3; see GET
+	// /admin/users/:id/sole-host-events).
+	HostSuccessors map[string]uint `json:"hostSuccessors"`
+	// ReasonReview is the admin's review of every contact-request reason
+	// they were shown: the set-v1 envelope (format, count, digest, choices)
+	// of account_erasure_reasons_envelope.go. It is kept raw and read by the
+	// strict token scan after the submission check; it matters only when
+	// the account has reasons (T07B-2b).
+	ReasonReview json.RawMessage `json:"reasonReview"`
+}
+
+// readDeleteUserBody reads the body once and decodes it the way gin's binder
+// does (the first JSON value; anything after it is ignored), so the strict key
+// scan sees the same object. An empty body is fine (old clients, and people
+// who lead and host nothing alone); ok is false for a body that does not
+// parse and for an attemptId named twice or in another case, which leaves no
+// single id to claim.
+func readDeleteUserBody(c *gin.Context) (body deleteUserBody, keys topKeys, ok bool) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return body, keys, false
+	}
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
+		return deleteUserBody{}, keys, errors.Is(err, io.EOF)
+	}
+	keys = scanTopKeys(raw)
+	if keys.attemptAmbiguous {
+		return deleteUserBody{}, keys, false
+	}
+	return body, keys, true
+}
+
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	me := apiUser(c)
-	u, ok := a.adminDeletionTarget(c, me)
+	body, keys, bodyOK := readDeleteUserBody(c)
+	u, ok := a.adminDeletionTarget(c, me, body.AttemptID)
 	if !ok {
 		return
 	}
-	var body struct {
-		// AttemptID is the id minted for this press (POST
-		// /admin/operation-attempts). Old clients send none and keep today's
-		// behavior apart from the deadline and the outcome codes (T07B-1b).
-		AttemptID string `json:"attemptId"`
-		// Successors maps group id to the new leader, for every group this
-		// person leads alone (DEC-36; see GET /admin/users/:id/sole-leader-groups).
-		Successors map[string]uint `json:"successors"`
-		// HostSuccessors maps church-wide event id to the new host, for every
-		// event this person hosts alone (M7.4 owner decision 3; see GET
-		// /admin/users/:id/sole-host-events).
-		HostSuccessors map[string]uint `json:"hostSuccessors"`
-		// ReasonReview is the admin's review of every contact-request reason
-		// they were shown: the set-v1 envelope (format, count, digest, choices)
-		// of account_erasure_reasons_envelope.go. It is kept raw and read by the
-		// strict token scan after the submission check; it matters only when
-		// the account has reasons (T07B-2b).
-		ReasonReview json.RawMessage `json:"reasonReview"`
-	}
-	// An empty body is fine (old clients, and people who lead and host
-	// nothing alone); a body that does not parse is not. The body is read once
-	// and decoded the way gin's binder does (the first JSON value; anything
-	// after it is ignored), so the strict key scan below sees the same object.
-	raw, rerr := io.ReadAll(c.Request.Body)
-	if rerr != nil {
-		jsonError(c, http.StatusBadRequest, "invalid body")
-		return
-	}
-	var keys topKeys
-	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
-		if !errors.Is(err, io.EOF) {
-			jsonError(c, http.StatusBadRequest, "invalid body")
-			return
-		}
-	} else {
-		keys = scanTopKeys(raw)
-	}
-	// An attemptId named twice or in another case leaves no single id to claim:
-	// refused here like a body that does not parse, recording nothing.
-	if keys.attemptAmbiguous {
+	// A body that does not parse, or names attemptId ambiguously, is refused
+	// recording nothing.
+	if !bodyOK {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}

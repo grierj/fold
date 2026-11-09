@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,18 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// malformedConversionLinksRetained counts the malformed conversion
+// nominations reported under admin uid that still hold an IP: a subset of
+// RETAIN_UNATTRIBUTED, read here so the erasure itself sends no extra query.
+func malformedConversionLinksRetained(t *testing.T, db *gorm.DB, uid uint) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Raw("SELECT count(*) FROM audit_logs WHERE ip <> '' AND ("+auditMalformedConversionLink+")", sql.Named("uid", uid)).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
 
 func runAuditErasure(t *testing.T, db *gorm.DB, s erasureSubject) auditErasureCounts {
 	t.Helper()
@@ -215,7 +228,7 @@ func removedNonempty(m map[uint][]string) []uint {
 func TestAuditErasureReportRetainedTotals(t *testing.T) {
 	h := householdErasureCounts{HouseholdsKept: 1, HouseholdsScrubbed: 2, PeopleAnonymized: 3, GuardianLinksRevoked: 4}
 	a := auditErasureCounts{
-		IPsBlanked: 90, MetadataRowsScrubbed: 80, MalformedConversionLinksRetained: 2,
+		IPsBlanked: 90, MetadataRowsScrubbed: 80,
 		KeptByClassAndAction: map[auditIPClass]map[string]int64{
 			auditIPRetainEssential:    {"fixture.essential": 3},
 			auditIPRetainUnattributed: {audit.GuardianLinkRequested: 2, "fixture.unknown": 4},
@@ -642,14 +655,41 @@ func editAuditCandidate(t *testing.T, f auditAdultFixture, action string, mutate
 	changeAuditCandidate(t, f, action, false, mutate)
 }
 
+// classifyEstablishedConversion is V4, which production never runs while G-8
+// is disabled: a group that passes V0-V3 is classified by the one converted
+// row's account type. Pure classification; nothing writes rows.
+func classifyEstablishedConversion(r auditConversionRequestRow, rows []models.AuditLog) auditConversionGroupCounts {
+	out := classifyAuditConversion(r, rows)
+	if out.Reason != "history_unestablished" {
+		return out
+	}
+	var accountType string
+	for _, row := range rows {
+		if row.Action == audit.HouseholdPersonConverted {
+			var meta map[string]json.RawMessage
+			_ = json.Unmarshal([]byte(row.MetaJSON), &meta)
+			_ = json.Unmarshal(meta["accountType"], &accountType)
+		}
+	}
+	switch {
+	case accountType == "teen" || (accountType == "adult" && r.Marker):
+		out.Reason = "completion"
+	case accountType != "adult":
+		out.Reason = "unclassified"
+	default:
+		out.Reason = "approval"
+	}
+	return out
+}
+
 func TestAuditConversionV0ThroughV4Classification(t *testing.T) {
 	f := newAuditAdultFixture(t)
 	input := auditGroupInput(f)
 	for _, history := range []bool{false, true} {
-		got := classifyAuditConversion(input, f.rows, history)
+		got := classifyAuditConversion(input, f.rows)
 		want := "history_unestablished"
 		if history {
-			want = "approval"
+			got, want = classifyEstablishedConversion(input, f.rows), "approval"
 		}
 		if got.Reason != want || got.TransferCount != 2 || got.ConvertedFound != 1 || got.TransfersFound != 2 {
 			t.Fatalf("V3/V4: %+v", got)
@@ -688,18 +728,18 @@ func TestAuditConversionV0ThroughV4Classification(t *testing.T) {
 			}
 			r := input
 			r.Marker = tc.marker
-			got := classifyAuditConversion(r, rows, true)
+			got := classifyEstablishedConversion(r, rows)
 			if got.Reason != tc.reason {
 				t.Fatalf("V4 %+v", got)
 			}
-			if got := classifyAuditConversion(r, rows, false); got.Reason != "history_unestablished" {
+			if got := classifyAuditConversion(r, rows); got.Reason != "history_unestablished" {
 				t.Fatalf("V3 must precede V4: %+v", got)
 			}
 		})
 	}
 	// Unknown household skips only arm d, not shape validation or identity arms.
 	input.HouseholdID = nil
-	got := classifyAuditConversion(input, f.rows, false)
+	got := classifyAuditConversion(input, f.rows)
 	if got.HouseholdFallbackSkipped != 1 || got.Reason != "history_unestablished" {
 		t.Fatalf("missing household: %+v", got)
 	}
@@ -806,7 +846,7 @@ func TestAuditErasureTeenRealLifecycles(t *testing.T) {
 			}
 			h := f.person.HouseholdID
 			r := auditConversionRequestRow{PersonID: f.person.ID, InvitationID: *f.request.InvitationID, UserID: f.user.ID, HouseholdID: &h, Marker: lifecycle == "L3" || lifecycle == "L4"}
-			if got := classifyAuditConversion(r, rows, true); got.Reason != "completion" {
+			if got := classifyEstablishedConversion(r, rows); got.Reason != "completion" {
 				t.Fatalf("current-history classification %+v", got)
 			}
 			before := dumpRows(t, app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged)
@@ -1389,19 +1429,19 @@ func TestAuditErasureMalformedConversionNominationSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if out.MalformedConversionLinksRetained != 1 || out.BlankedByClass[auditIPCApproval] != 1 || out.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 1 {
+	if malformedConversionLinksRetained(t, app.DB, d.ID) != 1 || out.BlankedByClass[auditIPCApproval] != 1 || out.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 1 {
 		t.Fatalf("sibling report: %+v", out)
 	}
 	assertAuditErasureRows(t, app.DB, []models.AuditLog{good, bad}, map[uint]bool{good.ID: true}, nil)
 	again := runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if again.IPsBlanked != 0 || again.MalformedConversionLinksRetained != 1 {
+	if again.IPsBlanked != 0 || malformedConversionLinksRetained(t, app.DB, d.ID) != 1 {
 		t.Fatalf("retry sibling counts %+v", again)
 	}
 	if err := app.DB.Model(&bad).Update("ip", "").Error; err != nil {
 		t.Fatal(err)
 	}
 	again = runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if again.MalformedConversionLinksRetained != 0 || again.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 0 {
+	if malformedConversionLinksRetained(t, app.DB, d.ID) != 0 || again.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 0 {
 		t.Fatalf("empty malformed IP still counted: %+v", again)
 	}
 }

@@ -224,8 +224,8 @@ func TestLiveReasonFilter(t *testing.T) {
 		{"blank reason", reasonSource{ID: 1, RequesterID: 5, SubjectUserID: 6}, 0},
 		{"another account's request", reasonSource{ID: 1, RequesterID: 6, SubjectUserID: 7, HasReason: true}, 0},
 	} {
-		if got := f(tc.s); len(got) != tc.want || (tc.want == 1 && got[0] != 5) {
-			t.Errorf("%s: parties %v, want %d", tc.name, got, tc.want)
+		if got := f(tc.s); got != (tc.want == 1) {
+			t.Errorf("%s: item %v, want %d", tc.name, got, tc.want)
 		}
 	}
 }
@@ -325,7 +325,7 @@ func TestReasonProjectionAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []reasonRow
-	if err := scanReasonRows(rows, testReasonKey([]byte("k")), 1, 2, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
+	if err := scanReasonRowsWith(rows, testReasonKey([]byte("k")), 1, 2, true, nil, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 1 || seen[0].ID != int64(r.ID) || seen[0].Purpose != policy.RequestGroupAdd || seen[0].Reason != r.Reason || !validReviewHash(seen[0].Hash) {
@@ -679,7 +679,7 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			var items []reasonItemJSON
-			if err := scanReasonRows(rows, testReasonKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), func(r reasonRow) error {
+			if err := scanReasonRowsWith(rows, testReasonKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), true, nil, func(r reasonRow) error {
 				items = append(items, reasonItemJSON{RequestID: strconv.FormatInt(r.ID, 10), ReviewHash: r.Hash})
 				return nil
 			}); err != nil {
@@ -4448,3 +4448,7 @@ func testReasonKey(secret []byte) []byte {
 	}
 	return k
 }
+
+// reasonHashExcluded are the contact_requests columns the review hash leaves
+// out, and why (see reasonColumns).
+var reasonHashExcluded = []string{"add_childcare_ages_note"}

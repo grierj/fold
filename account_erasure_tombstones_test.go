@@ -1438,10 +1438,19 @@ func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
 	if elapsed >= time.Second {
 		t.Fatalf("page took %s; arbitrate before adding an index or migration", elapsed)
 	}
-	if n := countRows(t, db, "jobs", "kind = ?", kindTombstone); n != tombstoneSweepPage {
+	if n := countRows(t, db, "jobs", "kind = ?", kindTombstone); n != int64(tombstoneSweepPage) {
 		t.Fatalf("measured page queued %d subjects", n)
 	}
 	if n := countRows(t, db, "jobs", "kind = ?", kindTombstonePage); n != 1 {
 		t.Fatalf("measured continuation count %d", n)
 	}
+}
+
+// runSweepPageSize runs one discovery page with the page size shortened to
+// pageSize (tombstoneSweepPage is a var for this; tests stay serial).
+func (a *App) runSweepPageSize(ctx context.Context, afterID uint, day string, pageSize int) error {
+	old := tombstoneSweepPage
+	tombstoneSweepPage = pageSize
+	defer func() { tombstoneSweepPage = old }()
+	return a.runSweepPage(ctx, afterID, day)
 }

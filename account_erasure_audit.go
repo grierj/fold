@@ -220,8 +220,6 @@ var auditIPAttribution = map[string][]auditIPRule{
 type auditErasureCounts struct {
 	IPsBlanked           int64
 	MetadataRowsScrubbed int64
-	// A subset of KeptByClassAndAction, never an additional retained-row total.
-	MalformedConversionLinksRetained int64
 	// Only counts and fixed class/action/reason codes leave the helper. Retention
 	// counts describe remaining nonempty IPs on rows linked to this subject, not
 	// proven IP ownership. Unrelated database-wide residue is not counted.
@@ -231,13 +229,12 @@ type auditErasureCounts struct {
 }
 
 type auditConversionCounts struct {
-	Groups         int64
-	Discovered     int64
-	Retained       int64
-	Blanked        int64
-	ByReason       map[string]int64
-	GroupsByReason map[string]int64
-	Details        []auditConversionGroupCounts
+	Groups     int64
+	Discovered int64
+	Retained   int64
+	Blanked    int64
+	ByReason   map[string]int64
+	Details    []auditConversionGroupCounts
 }
 
 type auditConversionGroupCounts struct {
@@ -326,12 +323,6 @@ func eraseAuditDetailsIn(tx *gorm.DB, s erasureSubject) (auditErasureCounts, err
 		}
 		out.KeptByClassAndAction[row.Class][row.Action] = row.Count
 	}
-	// A malformed conversion nomination is retained on its own, rather than
-	// holding back its valid siblings or being mistaken for the inviter's IP.
-	// This diagnostic overlaps RETAIN_UNATTRIBUTED above; do not sum the two.
-	if err := tx.Raw("SELECT count(*) FROM audit_logs WHERE ip <> '' AND ("+auditMalformedConversionLink+")", args...).Scan(&out.MalformedConversionLinksRetained).Error; err != nil {
-		return auditErasureCounts{}, err
-	}
 	var err error
 	out.Conversion, err = discoverAuditConversionsIn(tx, s.ID)
 	if err != nil {
@@ -362,7 +353,7 @@ type auditConversionCandidate struct {
 // them during validation. Resolve this discovery limit before enabling G-8
 // transfer scrubbing. The malformed-nomination diagnostic has the same limit.
 func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, error) {
-	out := auditConversionCounts{ByReason: map[string]int64{}, GroupsByReason: map[string]int64{}}
+	out := auditConversionCounts{ByReason: map[string]int64{}}
 	const requests = `SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
  EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
  FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
@@ -392,9 +383,7 @@ func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, e
 	discoveredIDs := map[uint]bool{}
 	idsByReason := map[string]map[uint]bool{}
 	for _, r := range reqs {
-		// The false is deliberate, not a setting or an operator assertion. Tests
-		// exercise V4 separately without offering a production bypass of G-8.
-		detail := classifyAuditConversion(r, groups[r.ID], false)
+		detail := classifyAuditConversion(r, groups[r.ID])
 		out.Groups++
 		if idsByReason[detail.Reason] == nil {
 			idsByReason[detail.Reason] = map[uint]bool{}
@@ -403,7 +392,6 @@ func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, e
 			discoveredIDs[row.ID] = true
 			idsByReason[detail.Reason][row.ID] = true
 		}
-		out.GroupsByReason[detail.Reason]++
 		out.Details = append(out.Details, detail)
 	}
 	// A malformed household fallback may belong to several candidate groups.
@@ -416,10 +404,11 @@ func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, e
 	return out, nil
 }
 
-// classifyAuditConversion implements V0-V4 in order. It reads no current kind,
-// account type, IP, timestamp, row adjacency or registration owner. Even the
-// history-established test mode is classification only and cannot write rows.
-func classifyAuditConversion(r auditConversionRequestRow, rows []models.AuditLog, historyEstablished bool) auditConversionGroupCounts {
+// classifyAuditConversion implements V0-V3 in order. It reads no current kind,
+// account type, IP, timestamp, row adjacency or registration owner. V4 needs
+// G-8 (established history), which is disabled: a group that passes V0-V3 is
+// history_unestablished, and nothing can offer a production bypass of G-8.
+func classifyAuditConversion(r auditConversionRequestRow, rows []models.AuditLog) auditConversionGroupCounts {
 	out := auditConversionGroupCounts{TransferCount: -1}
 	if r.HouseholdID == nil {
 		out.HouseholdFallbackSkipped = 1
@@ -467,19 +456,8 @@ func classifyAuditConversion(r auditConversionRequestRow, rows []models.AuditLog
 		out.Reason = "duplicate_converted_row"
 	case out.TransferCount < 0 || out.TransferCount != out.TransfersFound || duplicateTarget:
 		out.Reason = "count_mismatch"
-	case !historyEstablished:
-		out.Reason = "history_unestablished"
 	default:
-		var accountType string
-		_ = json.Unmarshal(converted[0]["accountType"], &accountType)
-		switch {
-		case accountType == "teen" || (accountType == "adult" && r.Marker):
-			out.Reason = "completion"
-		case accountType != "adult":
-			out.Reason = "unclassified"
-		default:
-			out.Reason = "approval"
-		}
+		out.Reason = "history_unestablished"
 	}
 	return out
 }

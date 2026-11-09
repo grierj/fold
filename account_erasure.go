@@ -480,7 +480,6 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	var total int64
 	for start := 0; start < len(ids); start += lookupChunk {
 		chunk := ids[start:min(start+lookupChunk, len(ids))]
 		res := tx.Exec("UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id IN ? AND purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> ''", chunk, s.ID)
@@ -490,10 +489,6 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 		if res.RowsAffected != int64(len(chunk)) {
 			return fmt.Errorf("ages-note scrub changed %d of %d rows", res.RowsAffected, len(chunk))
 		}
-		total += res.RowsAffected
-	}
-	if total != int64(len(ids)) {
-		return fmt.Errorf("ages-note scrub changed %d of %d rows", total, len(ids))
 	}
 	return nil
 }

@@ -187,10 +187,6 @@ var reasonColumns = []reasonColumn{
 	{"completed_target_id", reasonBigint},
 }
 
-// reasonHashExcluded are the contact_requests columns the hash leaves out, and
-// why (see reasonColumns).
-var reasonHashExcluded = []string{"add_childcare_ages_note"}
-
 // reasonColIndex maps a hashed column to its place in reasonColumns.
 var reasonColIndex = func() map[string]int {
 	m := make(map[string]int, len(reasonColumns))
@@ -342,17 +338,12 @@ func internString(m map[string]string, s string) string {
 	return s
 }
 
-// scanReasonRows reads every row of rows with reasonSelect's shape and hashes
-// each for (viewer, party). It calls keep with the row; the caller decides
-// whether to retain it. rows is closed.
-func scanReasonRows(rows *sql.Rows, key []byte, viewer, party int64, keep func(reasonRow) error) error {
-	return scanReasonRowsWith(rows, key, viewer, party, true, nil, keep)
-}
-
-// scanReasonRowsWith is scanReasonRows with two knobs for the streamed consume:
-// wantHex false leaves Hash empty (Raw is always set), and a non-nil intern
-// makes the row carry only the facts of an audit row (see reasonRow.fill). The
-// scan buffers are made once per call and reused for every row (F4).
+// scanReasonRowsWith reads every row of rows with reasonSelect's shape and
+// hashes each for (viewer, party), calling keep with the row; rows is closed.
+// Two knobs serve the streamed consume: wantHex false leaves Hash empty (Raw
+// is always set), and a non-nil intern makes the row carry only the facts of
+// an audit row (see reasonRow.fill). The scan buffers are made once per call
+// and reused for every row (F4).
 func scanReasonRowsWith(rows *sql.Rows, key []byte, viewer, party int64, wantHex bool, intern map[string]string, keep func(reasonRow) error) error {
 	defer rows.Close()
 	fields := make([]sql.NullString, len(reasonColumns))
@@ -389,22 +380,18 @@ type reasonSource struct {
 	HasReason                      bool
 }
 
-// reasonFilter returns the parties of a source row that qualify as items, in
-// the order they are emitted. An empty answer means the row is not an item.
-type reasonFilter func(reasonSource) []int64
+// reasonFilter reports whether a source row is an item.
+type reasonFilter func(reasonSource) bool
 
 // liveReasonFilter qualifies the rows where the live target is a party and
-// the reason is not blank. contact_requests_check keeps requester_id and
-// subject_user_id apart, so there is at most one party.
+// the item is live: the target still has an account (the page reads it as a
+// live row) and the reason is not blank (policy.ErasureReasonItemState).
 func liveReasonFilter(target int64) reasonFilter {
-	return func(s reasonSource) []int64 {
-		if !s.HasReason || (s.RequesterID != target && s.SubjectUserID != target) {
-			return nil
+	return func(s reasonSource) bool {
+		if s.RequesterID != target && s.SubjectUserID != target {
+			return false
 		}
-		if policy.ErasureReasonItemState(policy.ErasureReasonFacts{}) != policy.ReasonItemLive {
-			return nil
-		}
-		return []int64{target}
+		return policy.ErasureReasonItemState(policy.ErasureReasonFacts{ReasonBlank: !s.HasReason}) == policy.ReasonItemLive
 	}
 }
 
@@ -424,55 +411,6 @@ const (
 	reasonScanInitialSQL      = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT ?"
 	reasonScanContinuationSQL = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > ?::bigint ORDER BY id LIMIT ?"
 )
-
-// scanReasonItems reads one unit: at most reasonUnitRows rows by primary key,
-// filtered in Go, stopping right after the pageRequests-th qualifying
-// request, so a request's parties are returned together or not at all
-// (R4-C01). next is that request's id; with fewer qualifying requests it is
-// the last id read when the unit read its whole budget, else nil. No statement
-// scans the table: the first page has no lower bound but still reads at most
-// reasonUnitRows rows. pageRequests is an argument only so a test can shorten
-// it; production passes reasonPageRequests.
-func scanReasonItems(tx *gorm.DB, filter reasonFilter, after *int64, pageRequests int) (reasonUnit, error) {
-	var unit reasonUnit
-	var rows *sql.Rows
-	var err error
-	if after == nil {
-		rows, err = tx.Raw(reasonScanInitialSQL, reasonUnitRows).Rows()
-	} else {
-		rows, err = tx.Raw(reasonScanContinuationSQL, *after, reasonUnitRows).Rows()
-	}
-	if err != nil {
-		return unit, err
-	}
-	defer rows.Close()
-	read := 0
-	var last int64
-	for rows.Next() {
-		var s reasonSource
-		if err := rows.Scan(&s.ID, &s.RequesterID, &s.SubjectUserID, &s.HasReason); err != nil {
-			return unit, err
-		}
-		read++
-		last = s.ID
-		if len(filter(s)) == 0 {
-			continue
-		}
-		unit.Requests = append(unit.Requests, s.ID)
-		if len(unit.Requests) == pageRequests {
-			next := s.ID
-			unit.Next = &next
-			return unit, rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return unit, err
-	}
-	if read >= reasonUnitRows {
-		unit.Next = &last
-	}
-	return unit, nil
-}
 
 // --- the page route ---------------------------------------------------------
 
@@ -550,7 +488,7 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 		if !policy.CanDemoteOrDelete(asPerson(&actor), asPerson(target), admins) {
 			return adminRuleRefusal(adminDelete, target.ID == actor.ID)
 		}
-		unit, err := scanReasonUnit(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests, reasonScanBatched)
+		unit, err := scanReasonItemsBatched(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests)
 		if err != nil {
 			return err
 		}
@@ -609,7 +547,7 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 		return nil, err
 	}
 	var read []reasonRow
-	if err := scanReasonRows(rows, key, int64(actor.ID), int64(target.ID), func(r reasonRow) error {
+	if err := scanReasonRowsWith(rows, key, int64(actor.ID), int64(target.ID), true, nil, func(r reasonRow) error {
 		read = append(read, r)
 		return nil
 	}); err != nil {

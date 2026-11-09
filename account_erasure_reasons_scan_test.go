@@ -8,6 +8,7 @@ package main
 // the deletion.
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"net/http"
@@ -593,4 +594,53 @@ type scanTag struct {
 	tag  string
 	rows int
 	cut  bool
+}
+
+// scanReasonItems reads one unit: at most reasonUnitRows rows by primary key,
+// filtered in Go, stopping right after the pageRequests-th qualifying
+// request, so a request's parties are returned together or not at all
+// (R4-C01). next is that request's id; with fewer qualifying requests it is
+// the last id read when the unit read its whole budget, else nil. No statement
+// scans the table: the first page has no lower bound but still reads at most
+// reasonUnitRows rows. It is the tests' oracle for scanReasonItemsBatched: one statement
+// with LIMIT reasonUnitRows, the shape the live page used before batching.
+func scanReasonItems(tx *gorm.DB, filter reasonFilter, after *int64, pageRequests int) (reasonUnit, error) {
+	var unit reasonUnit
+	var rows *sql.Rows
+	var err error
+	if after == nil {
+		rows, err = tx.Raw(reasonScanInitialSQL, reasonUnitRows).Rows()
+	} else {
+		rows, err = tx.Raw(reasonScanContinuationSQL, *after, reasonUnitRows).Rows()
+	}
+	if err != nil {
+		return unit, err
+	}
+	defer rows.Close()
+	read := 0
+	var last int64
+	for rows.Next() {
+		var s reasonSource
+		if err := rows.Scan(&s.ID, &s.RequesterID, &s.SubjectUserID, &s.HasReason); err != nil {
+			return unit, err
+		}
+		read++
+		last = s.ID
+		if !filter(s) {
+			continue
+		}
+		unit.Requests = append(unit.Requests, s.ID)
+		if len(unit.Requests) == pageRequests {
+			next := s.ID
+			unit.Next = &next
+			return unit, rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return unit, err
+	}
+	if read >= reasonUnitRows {
+		unit.Next = &last
+	}
+	return unit, nil
 }

@@ -40,24 +40,13 @@ var (
 	reasonScanHooks reasonscan.Hooks
 )
 
-type reasonScanMode int
-
-// reasonScanBatched is the bounded-batch unit of the live pages. Other modes
-// retain the original one-statement scan for future legacy callers.
-const reasonScanBatched reasonScanMode = 1
-
-// scanReasonUnit reads one unit in the given mode. The live page route passes
-// reasonScanBatched; nothing else is batched.
-func scanReasonUnit(tx *gorm.DB, filter reasonFilter, after *int64, pageRequests int, mode reasonScanMode) (reasonUnit, error) {
-	if mode == reasonScanBatched {
-		return scanReasonItemsBatched(tx, filter, after, pageRequests)
-	}
-	return scanReasonItems(tx, filter, after, pageRequests)
-}
-
-// scanReasonItemsBatched is scanReasonItems with the unit read in batches. The
-// filter runs per row exactly as there, so a request is returned whole or not
-// at all whatever the batch boundaries.
+// scanReasonItemsBatched reads one unit: at most reasonUnitRows rows by
+// primary key, in batches, filtered in Go per row, stopping right after the
+// pageRequests-th qualifying request, so a request is returned whole or not at
+// all whatever the batch boundaries (R4-C01). next is that request's id; with
+// fewer qualifying requests it is the last id read when the unit read its whole
+// budget, else nil. The tests check it against the one-statement oracle
+// scanReasonItems (account_erasure_reasons_scan_test.go).
 func scanReasonItemsBatched(tx *gorm.DB, filter reasonFilter, after *int64, pageRequests int) (reasonUnit, error) {
 	query := func(cursor *int64, limit int) (reasonscan.Rows, error) {
 		var rows reasonRowsAdapter
@@ -73,7 +62,7 @@ func scanReasonItemsBatched(tx *gorm.DB, filter reasonFilter, after *int64, page
 		return &rows, nil
 	}
 	qualifies := func(r reasonscan.Row) bool {
-		return len(filter(reasonSource{ID: r.ID, RequesterID: r.RequesterID, SubjectUserID: r.SubjectUserID, HasReason: r.HasReason})) > 0
+		return filter(reasonSource{ID: r.ID, RequesterID: r.RequesterID, SubjectUserID: r.SubjectUserID, HasReason: r.HasReason})
 	}
 	u, err := reasonscan.Scan(query, qualifies, after, reasonscan.Params{
 		UnitRows: reasonUnitRows, PageRequests: pageRequests, FirstBatch: reasonScanBatchFirst, Growth: reasonScanBatchGrowth,

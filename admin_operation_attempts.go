@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -456,16 +455,14 @@ func (a *App) deletionSeal(me *models.User, pred func(*models.User) bool) *conta
 // process, a restart, another tuple). A replay of an applied deletion therefore
 // reads as "this attempt was used" and the panel settles it, while a missing
 // target with an unclaimed id of its own tuple still answers 404 and records
-// nothing (nothing ran and the id was never claimed).
-func (a *App) adminDeletionTarget(c *gin.Context, me *models.User) (*models.User, bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var u models.User
-	if err := a.DB.First(&u, id).Error; err != nil {
-		var body struct {
-			AttemptID string `json:"attemptId"`
-		}
-		if c.ShouldBindJSON(&body) == nil && body.AttemptID != "" {
-			nonce, _, ok := a.openAttempt(body.AttemptID, attemptKindAccountDelete, me.ID, uint(max(id, 0)))
+// nothing (nothing ran and the id was never claimed). attemptID is the one id
+// readDeleteUserBody found; a body that did not parse or named it
+// ambiguously gives none, so it answers 404 too.
+func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID string) (*models.User, bool) {
+	u, id := a.loadTargetUser(c)
+	if u == nil {
+		if attemptID != "" {
+			nonce, _, ok := a.openAttempt(attemptID, attemptKindAccountDelete, me.ID, uint(max(id, 0)))
 			if !ok {
 				// Not this process's id for this admin and account: the
 				// submission rule's first step, before any lookup.
@@ -480,7 +477,7 @@ func (a *App) adminDeletionTarget(c *gin.Context, me *models.User) (*models.User
 		jsonError(c, http.StatusNotFound, "user not found")
 		return nil, false
 	}
-	return &u, true
+	return u, true
 }
 
 // --- mint and settle routes --------------------------------------------------
