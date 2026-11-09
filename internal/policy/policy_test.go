@@ -851,44 +851,54 @@ func TestHouseholdRegistrationEligibility(t *testing.T) {
 		{"deleted person", HouseholdPerson{Kind: KindAdult, AgeYears: &age18, Deleted: true}, "household_registration_holder_unavailable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := CanRegisterHouseholdPerson(adult, adult, adultRel, adultRel, tt.person, true, true, true); got != tt.want {
+			holder := HouseholdHolder{Person: adult, Rel: adultRel, Active: true, Access: true}
+			if got := CanRegisterHouseholdPerson(holder, tt.person); got != tt.want {
 				t.Fatalf("got %q want %q", got, tt.want)
 			}
-			if got := CanManageHouseholdRegistration(admin, adult, true, false, adultRel, tt.person, true, true); got != tt.want {
+			if got := CanManageHouseholdRegistration(HouseholdManager{Person: admin, ManagesEvent: true}, holder, tt.person); got != tt.want {
 				t.Fatalf("admin bypassed facts: %q", got)
 			}
 		})
 	}
 	eligible := HouseholdPerson{Kind: KindAdult, AgeYears: &age18}
 	for _, tt := range []struct {
-		name                              string
-		actor, holder                     *Person
-		actorRel, holderRel               HouseholdRel
-		active, actorAccess, holderAccess bool
+		name   string
+		holder HouseholdHolder
 	}{
-		{"unrelated leader", adult2, adult, HouseholdRel{}, adultRel, true, true, true},
-		{"teen actor", teen, adult, adultRel, adultRel, true, true, true},
-		{"guest actor", nil, adult, adultRel, adultRel, true, true, true},
-		{"teen holder", adult, teen, adultRel, adultRel, true, true, true},
-		{"disabled holder", adult, adult, adultRel, adultRel, false, true, true},
-		{"actor cannot see event", adult2, adult, adultRel, adultRel, true, false, true},
-		{"holder cannot see event", admin, adult, adultRel, adultRel, true, true, false},
-		{"holder unrelated", adult, adult, adultRel, HouseholdRel{}, true, true, true},
+		{"guest holder", HouseholdHolder{Rel: adultRel, Active: true, Access: true}},
+		{"teen holder", HouseholdHolder{Person: teen, Rel: adultRel, Active: true, Access: true}},
+		{"disabled holder", HouseholdHolder{Person: adult, Rel: adultRel, Access: true}},
+		{"holder cannot see event", HouseholdHolder{Person: adult, Rel: adultRel, Active: true}},
+		{"holder unrelated", HouseholdHolder{Person: adult, Active: true, Access: true}},
+		{"holder not an adult of the household", HouseholdHolder{Person: adult, Rel: HouseholdRel{Account: true}, Active: true, Access: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if CanRegisterHouseholdPerson(tt.actor, tt.holder, tt.actorRel, tt.holderRel, eligible, tt.active, tt.actorAccess, tt.holderAccess) == "" {
+			if CanRegisterHouseholdPerson(tt.holder, eligible) == "" {
 				t.Fatal("unauthorized registration allowed")
 			}
 		})
 	}
-	if CanRegisterHouseholdPerson(adult2, adult, adultRel, adultRel, eligible, true, true, true) != "" {
-		t.Fatal("second household adult denied")
+	holder := HouseholdHolder{Person: adult, Rel: adultRel, Active: true, Access: true}
+	if CanRegisterHouseholdPerson(holder, eligible) != "" {
+		t.Fatal("household adult denied")
 	}
-	if CanManageHouseholdRegistration(adult2, adult, true, false, adultRel, eligible, true, true) == "" {
-		t.Fatal("manager searched unrelated household")
-	}
-	if CanManageHouseholdRegistration(adult2, adult, true, true, adultRel, eligible, true, true) != "" {
-		t.Fatal("own event recovery denied")
+	for _, tt := range []struct {
+		name    string
+		manager HouseholdManager
+		want    bool
+	}{
+		{"leader searching an unrelated household", HouseholdManager{Person: adult2, ManagesEvent: true}, false},
+		{"leader recovering a person they added", HouseholdManager{Person: adult2, ManagesEvent: true, PreviouslyRegistered: true}, true},
+		{"previously registered but no longer manages", HouseholdManager{Person: adult2, PreviouslyRegistered: true}, false},
+		{"teen manager", HouseholdManager{Person: teen, ManagesEvent: true, PreviouslyRegistered: true}, false},
+		{"guest manager", HouseholdManager{ManagesEvent: true, PreviouslyRegistered: true}, false},
+		{"admin", HouseholdManager{Person: admin}, true},
+	} {
+		t.Run("manage "+tt.name, func(t *testing.T) {
+			if got := CanManageHouseholdRegistration(tt.manager, holder, eligible) == ""; got != tt.want {
+				t.Fatalf("allowed = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

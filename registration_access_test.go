@@ -117,7 +117,7 @@ func endSeededAccess(t testing.TB, db *gorm.DB, registrationID uint, reason stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := endRegistrationAccess(db, &r, scope, reason, actor, at, "", false); err != nil {
+	if err := endRegistrationAccessQuietly(db, &r, scope, reason, actor, at, ""); err != nil {
 		t.Fatal("end exact-date access:", err)
 	}
 	return accessRowOf(r, scope)
@@ -342,7 +342,7 @@ func TestAccessNoticesAreKeyedByRegistrationAndGrantStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = f.app.DB.Transaction(func(tx *gorm.DB) error {
-		return endRegistrationAccess(tx, &reg, scope, policy.OccurrenceRemoved, &f.issuer.ID, time.Now().UTC(), "", true)
+		return endRegistrationAccess(tx, &reg, scope, policy.OccurrenceRemoved, &f.issuer.ID, time.Now().UTC(), "")
 	})
 	if err != nil || auditCount(t, f.app, audit.OccurrenceAccessEnded) != beforeAudits || contactCount(t, f.app, &models.Notification{}, "1 = 1") != beforeNotices {
 		t.Fatalf("a retried end had effects: %v", err)
@@ -386,7 +386,7 @@ func TestHardDeletePathsEndLiveGrantsFirst(t *testing.T) {
 	t.Run("restoration drop", func(t *testing.T) {
 		f := newOccurrenceReadFixture(t)
 		err := f.app.DB.Transaction(func(tx *gorm.DB) error {
-			err := f.app.restoreRegistrations(tx, f.recipient.ID, models.UserActive, f.issuer.ID, "", time.Now().UTC())
+			err := f.app.restoreRegistrations(tx, f.recipient.ID, models.UserActive, &f.issuer.ID, "", time.Now().UTC())
 			return err
 		})
 		if err != nil {

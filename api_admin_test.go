@@ -552,7 +552,7 @@ func TestDisablePromotesWaitlistedParty(t *testing.T) {
 	if r1.Status != models.RegGoing {
 		t.Fatalf("disabled row status = %q, want kept as going", r1.Status)
 	}
-	used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson)
+	used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestDisabledRemoteRegistrationUncountedAndLeftOutWhenFull(t *testing.T) {
 	}
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", eventID).First(&occ)
-	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote, 0); err != nil || used != 1 {
 		t.Fatalf("remote seats before disable = %d (%v), want 1", used, err)
 	}
 
@@ -671,7 +671,7 @@ func TestDisabledRemoteRegistrationUncountedAndLeftOutWhenFull(t *testing.T) {
 	if r1.Status != models.RegGoing || r1.AttendanceMode != models.AttendanceRemote {
 		t.Fatalf("disabled remote row: status=%q mode=%q, want kept going remote", r1.Status, r1.AttendanceMode)
 	}
-	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote, 0); err != nil || used != 1 {
 		t.Fatalf("remote seats after disable = %d (%v), want 1 (only re2; re1 uncounted)", used, err)
 	}
 	var r2 models.Registration
@@ -1027,10 +1027,10 @@ func TestHouseholdRestoreUsesCumulativePools(t *testing.T) {
 	result := batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "attendanceMode": "in_person", "people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": "remote"}, {"personId": child.ID, "status": "going", "childcareRequested": true}}}, http.StatusOK)
 	occurrenceID := result.Registration.OccurrenceID
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
-	if used, err := seatsUsedForMode(app.DB, occurrenceID, models.AttendanceInPerson); err != nil || used != 0 {
+	if used, err := seatsUsedForMode(app.DB, occurrenceID, models.AttendanceInPerson, 0); err != nil || used != 0 {
 		t.Fatalf("disabled seats: %d %v", used, err)
 	}
-	if used, err := seatsUsedForMode(app.DB, occurrenceID, models.AttendanceRemote); err != nil || used != 0 {
+	if used, err := seatsUsedForMode(app.DB, occurrenceID, models.AttendanceRemote, 0); err != nil || used != 0 {
 		t.Fatalf("disabled remote seats: %d %v", used, err)
 	}
 	if used, err := childcareUsedFor(app.DB, occurrenceID, 0); err != nil || used != 0 {
