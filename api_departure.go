@@ -321,10 +321,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 		if !decision.Affected {
 			continue
 		}
-		title := ev.Title
-		if o.TitleOverride != nil {
-			title = *o.TitleOverride
-		}
+		title := effectiveOccurrenceTitle(ev, o)
 		facts.Dates = append(facts.Dates, departureDateFact{
 			OccurrenceID: o.ID, EventID: ev.ID, OriginalDate: models.FormatCalendarDate(o.OriginalDate), Title: title,
 			StartsAt: o.StartsAt.UTC().UnixNano(), EndsAt: o.EndsAt.UTC().UnixNano(), OccurrenceStatus: o.Status,

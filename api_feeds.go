@@ -282,16 +282,13 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		}
 		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
 		ownStatus := facts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, true, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
+		decision := calendarScopeDecision(scope, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
 		// Personal ICS never carries Can't go, even in scope=all.
 		if !decision.Include || ownStatus == models.RegDeclined {
 			continue
 		}
 
-		status := "TENTATIVE"
-		if ownStatus == models.RegGoing {
-			status = "CONFIRMED"
-		}
+		status := calendarStatus(ownStatus, true)
 		if !ordinary {
 			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
 			feed.Singles = append(feed.Singles, events.FeedSingle{
@@ -332,6 +329,21 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		})
 	}
 	return feed, nil
+}
+
+// calendarStatus is the iCalendar STATUS of a date for a person's own answer
+// (DEC-71, DEC-93): Going is CONFIRMED, Maybe and Waitlisted are TENTATIVE.
+// In the personal feed every other date it carries is TENTATIVE too (Not
+// answered); a one-date download omits STATUS for a date the person has not
+// answered, as its page shows no answer.
+func calendarStatus(answer string, personalFeed bool) string {
+	switch {
+	case answer == models.RegGoing:
+		return "CONFIRMED"
+	case personalFeed || answer == models.RegMaybe || answer == models.RegWaitlisted:
+		return "TENTATIVE"
+	}
+	return ""
 }
 
 type feedSeriesDetails struct {

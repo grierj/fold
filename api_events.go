@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -252,13 +253,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
-		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0, "waitlisted": 0}
-		for s, n := range countOf[o.ID] {
-			inst.Registrations[s] = n
-		}
-		if !showDeclined[ev.ID] {
-			delete(inst.Registrations, models.RegDeclined)
-		}
+		inst.Registrations = registrationCounts(countOf[o.ID], showDeclined[ev.ID])
 		used := usedMap[o.ID]
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
@@ -298,22 +293,10 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		}
 		a.presentGroup(&inst, ev, g, me, rel, siteName)
 		if !vs.canSeeSeries(me, ev) {
-			inst.hideSeries = true
-			inst.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(o.OriginalDate))
-			inst.RecurrenceRule = ""
-			inst.RRuleUntil = ""
-			inst.SeriesStartsLocal = ""
-			inst.SeriesTitle = ""
-			inst.SeriesLocation = ""
-			inst.SeriesDurationMinutes = 0
-			inst.SeriesVisibility = ""
 			// Like the exact-date page: a hidden parent contributes no
-			// description or childcare details (PLAN 8.2). The video link
-			// already follows the date page's reveal rule above.
-			inst.Description = ""
-			inst.ChildcareNotes = ""
-			inst.ChildcareAges = ""
-			inst.ChildcareCapacity = nil
+			// series fields, description or childcare details (PLAN 8.2). The
+			// video link already follows the date page's reveal rule above.
+			inst.hideSeriesDetails(occurrenceDatePath(ev.ID, models.FormatCalendarDate(o.OriginalDate)))
 		}
 		out = append(out, inst)
 	}
@@ -350,19 +333,45 @@ func (o *occurrenceJSON) setMine(db *gorm.DB, r *models.Registration) error {
 	return nil
 }
 
+// registrationCounts is a date's row counts by answer. Going, maybe and
+// waitlisted are always present; "can't go" (declined) only for the people who
+// run the event (DEC-64).
+func registrationCounts(counted map[string]int64, withDeclined bool) map[string]int64 {
+	out := map[string]int64{models.RegGoing: 0, models.RegMaybe: 0, models.RegWaitlisted: 0}
+	if withDeclined {
+		out[models.RegDeclined] = 0
+	}
+	for status, n := range counted {
+		if status != models.RegDeclined || withDeclined {
+			out[status] = n
+		}
+	}
+	return out
+}
+
+// effectiveOccurrenceTitle is the date's own title, else its event's.
+func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
+	if o.TitleOverride != nil {
+		return *o.TitleOverride
+	}
+	return ev.Title
+}
+
+// effectiveOccurrenceDuration is the date's own length, else its event's.
+func effectiveOccurrenceDuration(ev *models.Event, o *models.EventOccurrence) int {
+	if o.DurationOverride != nil {
+		return *o.DurationOverride
+	}
+	return ev.DurationMinutes
+}
+
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
 	loc := eventZone(ev.TZID)
-	dur := ev.DurationMinutes
-	if o.DurationOverride != nil {
-		dur = *o.DurationOverride
-	}
+	dur := effectiveOccurrenceDuration(ev, o)
 	start := o.StartsAt.In(loc)
 	end := start.Add(time.Duration(dur) * time.Minute)
-	title := ev.Title
-	if o.TitleOverride != nil {
-		title = *o.TitleOverride
-	}
+	title := effectiveOccurrenceTitle(ev, o)
 	location := ev.Location
 	if o.LocationOverride != nil {
 		location = *o.LocationOverride
@@ -383,7 +392,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
 		Overridden:  o.Customized(),
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
-		Registrations:        map[string]int64{"going": 0, "maybe": 0, "waitlisted": 0},
+		Registrations:        registrationCounts(nil, false),
 		Capacity:             events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
 		WaitlistEnabled:      ev.WaitlistEnabled,
 		GuestsAllowed:        ev.GuestsAllowed,
@@ -1408,10 +1417,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		}
 		oldOverride := o.CapacityOverride
 		oldRemoteOverride := o.RemoteCapacityOverride
-		dur := ev.DurationMinutes
-		if o.DurationOverride != nil {
-			dur = *o.DurationOverride
-		}
+		dur := effectiveOccurrenceDuration(ev, &o)
 		if body.DurationMinutes != nil {
 			dur = *body.DurationMinutes
 			o.DurationOverride = body.DurationMinutes
@@ -1572,7 +1578,7 @@ type occurrenceJSON struct {
 	Date                  string           `json:"date"`
 	DateURL               string           `json:"dateUrl,omitempty"`
 	VisibilityOverride    *string          `json:"visibilityOverride,omitempty"`
-	SeriesVisibility      string           `json:"seriesVisibility,omitempty"`
+	SeriesVisibility      string           `json:"seriesVisibility,omitempty" series:"omit"`
 	GroupVisibility       string           `json:"groupVisibility,omitempty"`
 	StartsAt              time.Time        `json:"startsAt"`
 	EndsAt                time.Time        `json:"endsAt"`
@@ -1582,13 +1588,13 @@ type occurrenceJSON struct {
 	DurationMinutes       int              `json:"durationMinutes"`
 	Location              string           `json:"location"`
 	Title                 string           `json:"title"`
-	Description           string           `json:"description"`
-	RecurrenceRule        string           `json:"recurrenceRule"`
-	RRuleUntil            string           `json:"rruleUntil,omitempty"`
-	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
-	SeriesTitle           string           `json:"seriesTitle"`
-	SeriesLocation        string           `json:"seriesLocation"`
-	SeriesDurationMinutes int              `json:"seriesDurationMinutes"`
+	Description           string           `json:"description" series:"blank"`
+	RecurrenceRule        string           `json:"recurrenceRule" series:"omit"`
+	RRuleUntil            string           `json:"rruleUntil,omitempty" series:"omit"`
+	SeriesStartsLocal     string           `json:"seriesStartsLocal" series:"omit"`
+	SeriesTitle           string           `json:"seriesTitle" series:"omit"`
+	SeriesLocation        string           `json:"seriesLocation" series:"omit"`
+	SeriesDurationMinutes int              `json:"seriesDurationMinutes" series:"omit"`
 	Overridden            bool             `json:"overridden"`
 	Registrations         map[string]int64 `json:"registrations"`
 	MyRegistration        *string          `json:"myRegistration"`
@@ -1627,9 +1633,9 @@ type occurrenceJSON struct {
 	RemoteAvailable     bool    `json:"remoteAvailable"`
 	ChildcareAvailable  bool    `json:"childcareAvailable"`
 	ChildcareFull       bool    `json:"childcareFull"`
-	ChildcareNotes      string  `json:"childcareNotes"`
-	ChildcareCapacity   *int    `json:"childcareCapacity"`
-	ChildcareAges       string  `json:"childcareAges"`
+	ChildcareNotes      string  `json:"childcareNotes" series:"blank"`
+	ChildcareCapacity   *int    `json:"childcareCapacity" series:"blank"`
+	ChildcareAges       string  `json:"childcareAges" series:"blank"`
 	RemoteCapacity      *int    `json:"remoteCapacity"`
 	RemoteSeatsUsed     int     `json:"remoteSeatsUsed"`
 	ChildcareUsed       *int    `json:"childcareUsed,omitempty"`
@@ -1653,6 +1659,44 @@ type occurrenceJSON struct {
 	VideoURL      string `json:"videoUrl,omitempty"`
 	VideoReveal   string `json:"videoReveal"`
 	VideoHidden   bool   `json:"videoHidden,omitempty"`
+}
+
+// hideSeriesDetails withdraws the series from a viewer who may see only this
+// date (an opened date of a hidden series): every field tagged series:"omit"
+// or series:"blank" is cleared, and the "omit" ones are left out of the JSON
+// altogether. dateURL is where that viewer reaches the date. The tags on
+// occurrenceJSON are the one list of what belongs to the series.
+func (o *occurrenceJSON) hideSeriesDetails(dateURL string) {
+	o.hideSeries = true
+	o.DateURL = dateURL
+	v := reflect.ValueOf(o).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		if v.Type().Field(i).Tag.Get("series") != "" {
+			v.Field(i).SetZero()
+		}
+	}
+}
+
+// MarshalJSON preserves the established full-series wire contract for
+// authorized readers, but does not serialize even empty series keys on an
+// opened date of a hidden series.
+func (o occurrenceJSON) MarshalJSON() ([]byte, error) {
+	type wire occurrenceJSON
+	body, err := json.Marshal(wire(o))
+	if err != nil || !o.hideSeries {
+		return body, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	t := reflect.TypeOf(o)
+	for i := 0; i < t.NumField(); i++ {
+		if t.Field(i).Tag.Get("series") == "omit" {
+			delete(fields, strings.Split(t.Field(i).Tag.Get("json"), ",")[0])
+		}
+	}
+	return json.Marshal(fields)
 }
 
 type eventJSON struct {

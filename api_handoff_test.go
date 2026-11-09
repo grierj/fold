@@ -114,3 +114,32 @@ func TestSoleLeaderHandoff(t *testing.T) {
 		})
 	}
 }
+
+// TestSoleLedGroupsMatchLeaderCount keeps soleLedGroups, which states
+// leaderCount's rule in SQL, in step with it: a disabled co-leader does not
+// count, a live one does.
+func TestSoleLedGroupsMatchLeaderCount(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "sole leader", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Sole led", models.GroupActive)
+	co := newTestUser(t, app, "co leader", "password1234", models.RoleMember)
+	addMember(t, app, co, g, models.MembershipLeader)
+	check := func(step string, leaders int) {
+		t.Helper()
+		if got := leadersIn(app.DB, g.ID); got != leaders {
+			t.Fatalf("%s: leaderCount %d, want %d", step, got, leaders)
+		}
+		groups, err := soleLedGroups(app.DB, leader.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sole := len(groups) == 1; sole != (leaders == 1) {
+			t.Fatalf("%s: soleLedGroups lists %d groups with %d leaders", step, len(groups), leaders)
+		}
+	}
+	check("two live leaders", 2)
+	if err := app.DB.Model(co).Update("status", models.UserDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	check("co-leader disabled", 1)
+}

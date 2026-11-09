@@ -23,36 +23,24 @@ import (
 func occurrenceFactsIn(tx *gorm.DB, eventID, occurrenceID uint) (policy.OccurrenceFacts, error) {
 	f := policy.OccurrenceFacts{ID: occurrenceID, EventID: eventID}
 	var ev models.Event
-	if err := tx.First(&ev, eventID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, nil
-		}
+	if err := tx.Where("id = ?", eventID).Limit(1).Find(&ev).Error; err != nil || ev.ID == 0 {
 		return f, err
 	}
-	f.ContextActive = true
-	f.Organizer = policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
+	var group *models.Group
 	if ev.GroupID != nil {
-		f.Organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
-		var g models.Group
-		if err := tx.First(&g, *ev.GroupID).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return f, err
-			}
-			f.ContextActive = false
-		} else {
-			f.ContextActive = g.Status == models.GroupActive
+		groups, err := groupsByID(tx, []uint{*ev.GroupID}, false)
+		if err != nil {
+			return f, err
 		}
+		group = groups[*ev.GroupID]
 	}
 	var occ models.EventOccurrence
-	if err := tx.Where("id = ? AND event_id = ?", occurrenceID, eventID).First(&occ).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, nil
-		}
+	if err := tx.Where("id = ? AND event_id = ?", occurrenceID, eventID).Limit(1).Find(&occ).Error; err != nil {
 		return f, err
 	}
-	f.Scheduled = occ.Status == models.OccurrenceScheduled
-	f.EndsAt = occ.EndsAt
-	return f, nil
+	built := occurrenceFactsOf(&occ, &ev, group)
+	built.ID = occurrenceID // a missing date keeps the id it was asked for
+	return built, nil
 }
 
 // occurrenceAccountIn counts the account's age on the church's calendar, as every
@@ -68,19 +56,9 @@ func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time) (policy.Contac
 // occurrenceAccountInZone is occurrenceAccountIn for a caller that already read
 // the church zone.
 func occurrenceAccountInZone(tx *gorm.DB, userID uint, now time.Time, zone *time.Location) (policy.ContactAccount, error) {
-	u, err := contactUser(tx, userID)
-	if err != nil {
-		return policy.ContactAccount{}, err
-	}
-	account := contactAccount(u, now, zone)
-	if u != nil && u.AccountType == models.AccountTeen {
-		consent, err := latestTeenConsentIn(tx, u.ID, models.TeenConsentAccount)
-		if err != nil {
-			return account, err
-		}
-		account.Active = account.Active && consent
-	}
-	return account, nil
+	// A batch of one: a missing user is the zero account, as in every list.
+	_, accounts, err := occurrenceAccountsInZone(tx, []uint{userID}, now, zone)
+	return accounts[userID], err
 }
 
 func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now time.Time) (policy.AddFacts, error) {

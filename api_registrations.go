@@ -175,13 +175,6 @@ func noticeEnd(o *models.EventOccurrence) time.Time {
 // cannot see the group gets no group name, place, or group link
 // (PR #41). It reads nothing; loadNoticeFacts did the reading once for
 // every recipient.
-func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
-	if o.TitleOverride != nil {
-		return *o.TitleOverride
-	}
-	return ev.Title
-}
-
 func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {

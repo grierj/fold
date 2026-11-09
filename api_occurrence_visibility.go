@@ -238,21 +238,3 @@ func dateDecisionKey(id uint) string { return "date:" + strconv.FormatUint(uint6
 func (vs visibleSet) canSeeSeries(viewer *models.User, ev *models.Event) bool {
 	return vs.canSeeDate(viewer, ev, &models.EventOccurrence{})
 }
-
-// Preserve the established full-series wire contract for authorized readers,
-// but do not serialize even empty series keys on an opened hidden-series date.
-func (o occurrenceJSON) MarshalJSON() ([]byte, error) {
-	type wire occurrenceJSON
-	body, err := json.Marshal(wire(o))
-	if err != nil || !o.hideSeries {
-		return body, err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, err
-	}
-	for _, key := range []string{"recurrenceRule", "rruleUntil", "seriesStartsLocal", "seriesTitle", "seriesLocation", "seriesDurationMinutes", "seriesVisibility"} {
-		delete(fields, key)
-	}
-	return json.Marshal(fields)
-}

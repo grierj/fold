@@ -77,18 +77,25 @@ func occurrenceInvitationReadsIn(tx *gorm.DB, grants []models.Registration, now 
 			continue
 		}
 		scope := accessScopeOf(&ev)
-		live := true
-		if ev.GroupID != nil {
-			g := facts.groups[*ev.GroupID]
-			live = g.ID != 0 && g.Status == models.GroupActive
-		}
-		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: scope.Organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt}
+		f := occurrenceFactsOf(&occ, &ev, facts.group(&ev))
 		access := occurrenceAccessPolicy(row, scope)
 		if policy.CanSeeOccurrence(actor, false, access, f, now) {
 			out[row.ID] = &occurrenceRead{Event: ev, Occurrence: occ, Registration: row, Account: actor, Access: access, Facts: f}
 		}
 	}
 	return out, nil
+}
+
+// occurrenceFactsOf is the one builder of the lifecycle facts policy judges an
+// exact date by, from rows already loaded: the date, its event, and the
+// event's group (nil for a church-wide event, and for a group that is gone).
+func occurrenceFactsOf(occ *models.EventOccurrence, ev *models.Event, group *models.Group) policy.OccurrenceFacts {
+	f := accessScopeOf(ev)
+	live := ev.GroupID == nil || (group != nil && group.Status == models.GroupActive)
+	return policy.OccurrenceFacts{
+		ID: occ.ID, EventID: ev.ID, Organizer: f.Organizer, ContextActive: live,
+		Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt,
+	}
 }
 
 type occurrenceInvitationFacts struct {
@@ -146,6 +153,17 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, no
 	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID}, nil
 }
 
+// group is the loaded group of ev, nil for a church-wide event or a missing group.
+func (f *occurrenceInvitationFacts) group(ev *models.Event) *models.Group {
+	if ev.GroupID == nil {
+		return nil
+	}
+	if g, ok := f.groups[*ev.GroupID]; ok && g.ID != 0 {
+		return &g
+	}
+	return nil
+}
+
 // endReason preserves the scalar lifecycle precedence, including retained past
 // dates. It does not reconsider issuer authority or a recipient's add block.
 // The organizer cannot disagree with the event any more (it is derived from the
@@ -170,16 +188,15 @@ func (f *occurrenceInvitationFacts) endReason(row models.Registration, now time.
 	if ev.ID == 0 {
 		return policy.OccurrenceEventDeleted
 	}
-	if ev.GroupID != nil {
-		g := f.groups[*ev.GroupID]
-		if g.ID == 0 {
-			return policy.OccurrenceGroupDeleted
-		}
-		if g.Status != models.GroupActive {
-			return policy.OccurrenceContextChanged
-		}
+	group := f.group(&ev)
+	if ev.GroupID != nil && group == nil {
+		return policy.OccurrenceGroupDeleted
 	}
-	if occ.Status != models.OccurrenceScheduled {
+	lifecycle := occurrenceFactsOf(&occ, &ev, group)
+	if !lifecycle.ContextActive {
+		return policy.OccurrenceContextChanged
+	}
+	if !lifecycle.Scheduled {
 		return policy.OccurrenceCancelled
 	}
 	if row.AccessOrigin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
@@ -298,12 +315,7 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 	}
 	status := ""
 	if out.MyRegistration != nil {
-		switch *out.MyRegistration {
-		case models.RegGoing:
-			status = "CONFIRMED"
-		case models.RegMaybe, models.RegWaitlisted:
-			status = "TENTATIVE"
-		}
+		status = calendarStatus(*out.MyRegistration, false)
 	}
 	body := events.RenderFeed(events.Feed{
 		Host:        a.feedHost(),

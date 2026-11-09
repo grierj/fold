@@ -35,7 +35,7 @@ type soleLedGroupJSON struct {
 // soleLedGroups lists the groups, in any status, where userID is the only
 // active leader.
 func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
-	// The count is leaderCount's as a correlated subquery: active leaders
+	// The count is leaderCount's (group_members.go) as a correlated subquery: active leaders
 	// whose accounts still exist and aren't disabled.
 	var groups []models.Group
 	err := db.Where(`id IN (SELECT group_id FROM memberships
