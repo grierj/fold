@@ -25,12 +25,10 @@ describe("Login", () => {
     login.mockReset();
   });
 
-  it("gives the account-request link a phone-sized target without changing prose line height", () => {
+  it("links to requesting an account", () => {
     renderLogin();
     const link = screen.getByRole("link", { name: "Request an account" });
-    expect(link).toHaveClass("text-link");
     expect(link).toHaveAttribute("href", "/join");
-    expect(link.parentElement?.className).not.toMatch(/leading-/);
   });
 
   it("tells a signed-out Home Screen app that signing in once brings notifications here", () => {

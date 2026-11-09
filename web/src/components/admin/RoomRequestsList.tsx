@@ -31,7 +31,6 @@ function busyLine(r: RoomRequest): string {
   return `${r.busyDates} of these dates ${r.busyDates === 1 ? "is" : "are"} now taken.`;
 }
 
-// What an approve did, in words.
 function approvedMessage(room: string, title: string, res: { confirmed: number; overlapped: number; lost: string[] }): string {
   const total = res.confirmed + res.overlapped;
   const back = res.lost.length;
@@ -43,7 +42,6 @@ function approvedMessage(room: string, title: string, res: { confirmed: number; 
   return back > 0 ? `${base} ${backText}` : base;
 }
 
-// The server's outcome words, in the verbs of this page.
 const OUTCOME: Record<string, string> = { confirmed: "approved", rejected: "rejected", withdrawn: "withdrawn" };
 
 // One open request: Approve and Reject. A request with busy dates explains

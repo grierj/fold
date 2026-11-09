@@ -1,4 +1,4 @@
-// Token contrast (ENFORCEMENT.md B7): resolves the @theme roles in index.css
+// Token contrast: resolves the @theme roles in index.css
 // and fails when a text pair is under 4.5:1 or a control edge under 3:1.
 // Usage: node scripts/token-contrast.mjs [src/index.css]   (npm run contrast)
 import { readFileSync } from "node:fs";

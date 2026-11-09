@@ -8,7 +8,6 @@ import { leaveWithoutAsking } from "./lib/unsavedChanges";
 import { deviceForLogout, forgetDevice } from "./lib/push";
 import type { User } from "./types";
 
-// clearClientData removes everything the SPA keeps in browser storage.
 /** @public tested directly: what logout wipes. */
 export function clearClientData() {
   try {
@@ -38,7 +37,6 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
-  // A token flow just started a session: load it and say where to go next.
   signedIn: (result: SignInResult) => Promise<string>;
   isAdmin: boolean;
   // The person may write announcements: they lead an approved group, host

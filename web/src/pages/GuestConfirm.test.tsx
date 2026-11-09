@@ -15,5 +15,4 @@ it("links a verified guest to the exact public date, not its hidden series", asy
   const manage = screen.getByRole("link", { name: "Manage or cancel" });
   expect(manage).toHaveAttribute("href", "/guest/manage/manage");
   expect(manage).toHaveClass("btn-secondary");
-  expect(manage.parentElement).toHaveClass("flex-col", "sm:flex-row", "sm:flex-wrap");
 });

@@ -109,6 +109,5 @@ export function reminderDateText(r: MessageReminder, now = new Date(), viewer = 
   return `${r.eventTitle}, ${lowerLead(formatWhenIn(r.startsAt, r.tzid, now, viewer, true))}`;
 }
 
-// Who a reminder goes to, for its To line.
 export const reminderAudience = (r: Pick<MessageReminder, "kind"> | undefined) =>
   r?.kind === "waitlist" ? "Everyone on the waitlist" : r?.kind === "push" ? "Everyone going who turned on notifications" : "Everyone going";

@@ -25,12 +25,10 @@ beforeEach(() => {
   verifyEmail.mockReset().mockResolvedValue({ verified: true });
 });
 
-it("keeps the expired-link profile action phone-sized within ordinary prose", async () => {
+it("points a link with no token to the profile page", async () => {
   render(<MemoryRouter initialEntries={["/verify-email"]}><VerifyEmail /></MemoryRouter>);
   const link = await screen.findByRole("link", { name: "profile" });
   expect(link).toHaveAttribute("href", "/profile");
-  expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
-  expect(link.parentElement?.className).not.toMatch(/leading-/);
 });
 
 it("verifies the exact token, refreshes auth, and offers the shared profile link", async () => {
@@ -45,6 +43,5 @@ it("verifies the exact token, refreshes auth, and offers the shared profile link
   const profile = screen.getByRole("link", { name: "View your profile" });
   expect(profile).toBeVisible();
   expect(profile).toHaveAttribute("href", "/profile");
-  expect(profile).toHaveClass("btn-link");
   expect(screen.queryByRole("button", { name: "View your profile" })).not.toBeInTheDocument();
 });

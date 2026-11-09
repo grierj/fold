@@ -6,7 +6,6 @@ import { count } from "./plural";
 // reads the option label back (" — " separators, "(N seats)"), so a change to
 // the shape of a label changes that helper with it.
 
-// The select value for "no room".
 export const NO_ROOM = "none";
 
 // An admin's reason for double-booking may be this long.

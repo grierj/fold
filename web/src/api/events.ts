@@ -32,7 +32,6 @@ export const Events = {
   addHost: (id: Id, email: string) => api<{ hosts: EventHostRow[] }>(path`/events/${id}/hosts`, { method: "POST", body: { email } }),
   removeHost: (id: Id, userId: Id) => api<{ hosts: EventHostRow[] }>(path`/events/${id}/hosts/${userId}`, { method: "DELETE" }),
   update: (id: Id, data: EventInput) => api<{ event: EventSeries }>(path`/events/${id}`, { method: "PUT", body: data }),
-  // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.
   generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
   register: (id: Id, data: RegistrationCommand) => api<RegistrationBatch>(path`/events/${id}/registrations`, { method: "PUT", body: data }),
   registerSeries: (id: Id, data: {
@@ -46,8 +45,6 @@ export const Events = {
   }) => api<SeriesRegistrationResponse>(path`/events/${id}/series-registrations`, { method: "POST", body: data }),
   undoSeriesRegistration: (id: Id, token: string) =>
     api<SeriesRegistrationResponse>(path`/events/${id}/series-registrations/undo`, { method: "POST", body: { token } }),
-  // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
-  // promote one waitlisted row by hand, or add someone directly.
   removeRegistration: (id: Id, date: string, registrationId: number, note?: string) =>
     api<unknown>(path`/events/${id}/registrations/remove`, { method: "POST", body: { date, registrationId, note } }),
   promoteRegistration: (id: Id, date: string, registrationId: number) =>

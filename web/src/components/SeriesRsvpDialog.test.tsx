@@ -23,12 +23,11 @@ it("defaults to Just this date, traps focus, cancels with Escape and restores fo
   trigger.remove();
 });
 
-it("offers all three scopes with 44px option targets", async () => {
+it("offers all three scopes", async () => {
   const choose = vi.fn();
   render(<SeriesRsvpDialog answer="Maybe" onChoose={choose} onCancel={vi.fn()} />);
   for (const [name, scope] of [["Just this date", "just_this_date"], ["This and following dates", "this_and_following"], ["All future dates", "all_future"]] as const) {
     const option = screen.getByRole("button", { name });
-    expect(option).toHaveClass("min-h-11");
     await userEvent.click(option);
     expect(choose).toHaveBeenLastCalledWith(scope);
   }

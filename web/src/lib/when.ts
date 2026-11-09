@@ -57,9 +57,22 @@ export function formatNextMeeting(iso: string, zone = browserTimeZone(), now = n
   return { soon: true, text: `${lead} · ${time}` };
 }
 
-// The month and day for a date badge, in the viewer's zone.
 export function badgeParts(iso: string, zone = browserTimeZone()): { month: string; day: string } {
   return { month: fmt(iso, zone, { month: "short" }), day: fmt(iso, zone, { day: "numeric" }) };
+}
+
+// Building an Intl.DateTimeFormat is the slow part and formatting with one is
+// cheap. The zone picker names every IANA zone (about 420) each time it mounts,
+// so it reuses one formatter per zone instead of making a few hundred each time.
+const zoneNameFormats = new Map<string, Intl.DateTimeFormat>();
+function zoneNameFormat(locale: string | undefined, tz: string, style: "longGeneric" | "long" | "shortOffset"): Intl.DateTimeFormat {
+  const key = `${locale ?? ""}|${tz}|${style}`;
+  let f = zoneNameFormats.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style });
+    zoneNameFormats.set(key, f);
+  }
+  return f;
 }
 
 // The zone's generic name in the reader's language ("Pacific Time"), the
@@ -68,7 +81,7 @@ export function badgeParts(iso: string, zone = browserTimeZone()): { month: stri
 export function zoneGenericName(tz: string, locale?: string): string {
   for (const style of ["longGeneric", "long"] as const) {
     try {
-      const part = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style })
+      const part = zoneNameFormat(locale, tz, style)
         .formatToParts(new Date())
         .find((p) => p.type === "timeZoneName");
       if (part?.value) return part.value;
@@ -135,7 +148,7 @@ export function zoneNote(tzid: string): string {
 // show and search time zones by offset.
 export function zoneOffset(tz: string, at: Date = new Date()): string {
   try {
-    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+    const part = zoneNameFormat("en-US", tz, "shortOffset")
       .formatToParts(at)
       .find((p) => p.type === "timeZoneName");
     const v = part?.value ?? "";
@@ -254,7 +267,6 @@ export function historyDayBounds(from: string, until: string, zone: string): { f
   }
 }
 
-// --- The event page's "when" line (DEC-92) ---
 // Pieces for "Thursday, Nov 5 · 5:30–8:00 PM" and "Every Wednesday · … · next
 // Nov 4". repeat.ts assembles them; the formatting stays here.
 
@@ -328,7 +340,6 @@ export function formatHour(hour: number): string {
   return fmt(`2026-01-01T${String(hour % 24).padStart(2, "0")}:00:00Z`, "UTC", { hour: "numeric" });
 }
 
-// --- A wall clock in a named zone (the composer's "Pick a date and time") ---
 
 function wallKey(instant: number, zone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {

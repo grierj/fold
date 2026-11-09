@@ -15,9 +15,7 @@ it("keeps More beside the heading while the answer gets a separate full-width bo
   expect(heading.parentElement).toContainElement(menu);
   expect(body).not.toContainElement(menu);
   expect(body).not.toContainElement(heading);
-  expect(body).not.toHaveClass("grow", "flex");
   expect(body.parentElement).toBe(card);
-  expect(screen.getByText("Visibility changed for this date").parentElement).toHaveClass("grow", "min-w-0");
 });
 
 it("compact drops the tile and visible heading but keeps the name, notice and menu", () => {

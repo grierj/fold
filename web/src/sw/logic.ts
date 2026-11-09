@@ -10,9 +10,7 @@ export interface Shown {
   appBadge?: number;
 }
 
-// The icon a notification shows beside its text (the manifest's icon).
 const ICON = "/assets/brand/fold-icon-192.png";
-// The monochrome badge shown where the browser supports one.
 const BADGE = "/assets/brand/fold-badge-96.png";
 
 // FALLBACK is what shows when a push can't be read. Something must show:
