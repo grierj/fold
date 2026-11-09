@@ -234,4 +234,3 @@ func recipientZone(tx *gorm.DB, userID uint) (*time.Location, error) {
 	}
 	return userZoneIn(tx, ""), nil
 }
-
