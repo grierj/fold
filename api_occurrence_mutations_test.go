@@ -554,7 +554,7 @@ func TestOccurrenceRecipientBlockClosesOnlyConflictingPendingAsks(t *testing.T) 
 			t.Fatal(err)
 		}
 		if err := f.app.DB.Transaction(func(tx *gorm.DB) error {
-			err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{subject}, "test")
+			err := contactNotice(tx, r, roleSubjectReview, []uint{subject}, "test")
 			return err
 		}); err != nil {
 			t.Fatal(err)

@@ -183,7 +183,7 @@ var auditIPAttribution = map[string][]auditIPRule{
 	audit.AddReasonKept:            auditIPOrdinary,
 	audit.AddReasonRemoved:         auditIPOrdinary,
 	audit.UserErasureReasonsViewed: auditIPSystem,
-	contactPrivacyChanged:          auditIPOrdinary,
+	audit.ContactPrivacyChanged:    auditIPOrdinary,
 	audit.InvitationAccepted: {
 		{auditIPMetaUser, `target_type = 'invitation' AND jsonb_typeof(meta_json->'userId') = 'number' AND NOT jsonb_exists(meta_json, 'personId')`, `meta_json->'userId' = to_jsonb(CAST(@uid AS bigint))`},
 		{auditIPLinked, `target_type = 'invitation' AND jsonb_typeof(meta_json->'personId') = 'number' AND NOT jsonb_exists(meta_json, 'userId')`, `target_id = ANY(CAST(@invitations AS bigint[]))`},

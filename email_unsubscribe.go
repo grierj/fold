@@ -118,7 +118,7 @@ func (a *App) parseUnsubscribeToken(token string) (unsubscribeLink, error) {
 // validUnsubscribeScope: an optional notification category, the only kind
 // of optional email so far (announcement scopes arrive with M3.4).
 func validUnsubscribeScope(scope string) bool {
-	cat, ok := strings.CutPrefix(scope, "category:")
+	cat, ok := categoryOfScope(scope)
 	if !ok {
 		return false
 	}
@@ -247,12 +247,8 @@ type footerFacts struct{ site, address string }
 func (a *App) optionalEmailFooter(f footerFacts, category, token string) string {
 	footer := "\n\n--\n" + notify.YoureGetting(category, f.site) +
 		". To stop them or change which emails you get, visit " + a.emailBaseURL() + "/email-settings/" + token
-	if addr := strings.TrimSpace(f.address); addr != "" {
-		for _, line := range strings.Split(strings.ReplaceAll(addr, "\r", ""), "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				footer += "\n" + line
-			}
-		}
+	for _, line := range churchAddressLines(f.address) {
+		footer += "\n" + line
 	}
 	return footer
 }

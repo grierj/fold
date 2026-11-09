@@ -1135,7 +1135,7 @@ func TestProfileContactPrivacyPreference(t *testing.T) {
 		}
 	}
 	var count int64
-	if err := app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", contactPrivacyChanged, adult.ID).Count(&count).Error; err != nil {
+	if err := app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.ContactPrivacyChanged, adult.ID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
@@ -1194,7 +1194,7 @@ func TestProfileTeenContactAlwaysHidden(t *testing.T) {
 		}
 	}
 	var count int64
-	app.DB.Model(&models.AuditLog{}).Where("action = ?", contactPrivacyChanged).Count(&count)
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.ContactPrivacyChanged).Count(&count)
 	if count != 0 {
 		t.Fatalf("ignored teen preference audited as change: %d", count)
 	}

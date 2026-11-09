@@ -6,7 +6,6 @@ import (
 	"gorm.io/gorm"
 )
 
-type addRequestPair struct{ user, context uint }
 type addRequestBlockKey struct {
 	user      uint
 	organizer policy.OrganizerScope
@@ -47,7 +46,8 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 	if err != nil {
 		return nil, err
 	}
-	names := map[uint]string{}
+	// A failed name read fails the page; it never becomes a placeholder.
+	names := publicNames{}
 	if len(nameIDs) > 0 {
 		var rows []models.User
 		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", nameIDs).Find(&rows).Error; err != nil {
@@ -56,11 +56,6 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 		for _, u := range rows {
 			names[u.ID] = u.PublicName()
 		}
-	}
-	// Group asks intentionally retain their existing account (not consent) rule.
-	groupAccounts := map[uint]policy.ContactAccount{}
-	for id, u := range users {
-		groupAccounts[id] = contactAccount(u, op.now, op.zone)
 	}
 	evs := map[uint]models.Event{}
 	if len(eventIDs) > 0 {
@@ -85,24 +80,24 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 			groups[rows[i].ID] = &rows[i]
 		}
 	}
-	rels := map[addRequestPair]policy.Rel{}
+	rels := map[userContext]policy.Rel{}
 	if len(groupIDs) > 0 {
 		var rows []models.Membership
 		if err := tx.Where("group_id IN ? AND user_id IN ?", groupIDs, append(userIDs, op.actor.ID)).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, m := range rows {
-			rels[addRequestPair{m.UserID, m.GroupID}] = membershipRel(m)
+			rels[userContext{m.UserID, m.GroupID}] = membershipRel(m)
 		}
 	}
-	hosts := map[addRequestPair]bool{}
+	hosts := map[userContext]bool{}
 	if len(eventIDs) > 0 && len(userIDs) > 0 {
 		var rows []models.EventHost
-		if err := tx.Where("event_id IN ? AND user_id IN ?", eventIDs, userIDs).Find(&rows).Error; err != nil {
+		if err := tx.Where("event_id IN ? AND user_id IN ?", eventIDs, append(userIDs, op.actor.ID)).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, h := range rows {
-			hosts[addRequestPair{h.UserID, h.EventID}] = true
+			hosts[userContext{h.UserID, h.EventID}] = true
 		}
 	}
 	occs := map[uint]models.EventOccurrence{}
@@ -116,7 +111,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 		}
 	}
 	blocks := map[addRequestBlockKey]*policy.ManagerAddBlock{}
-	regRows := map[addRequestPair]models.Registration{}
+	regRows := map[userContext]models.Registration{}
 	var history map[accessKey]accessHistory
 	if len(pendingOccs) > 0 {
 		var bs []models.ManagerAddBlock
@@ -135,25 +130,23 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 			return nil, err
 		}
 		for _, row := range rows {
-			regRows[addRequestPair{*row.UserID, row.OccurrenceID}] = row
+			regRows[userContext{*row.UserID, row.OccurrenceID}] = row
 		}
 		var err error
 		if history, err = loadAccessHistory(tx, pendingSubjects, pendingOccs); err != nil {
 			return nil, err
 		}
 	}
+	contexts := &requestContexts{groups: groups, events: evs, rels: rels, hosts: hosts}
 	actor := contactAccount(op.actor, op.now, op.zone)
 	for _, r := range rs {
 		p := addRequestPolicy(r)
 		f := policy.AddFacts{Now: op.now, ContextType: r.ContextType, ContextID: r.ContextID}
 		if r.Status == policy.ContactPending {
 			if r.Purpose == policy.RequestGroupAdd && r.ContextType == policy.ContactGroup {
-				f.Requester, f.Subject = groupAccounts[r.RequesterID], groupAccounts[r.SubjectUserID]
-				if g := groups[r.ContextID]; g != nil {
-					f.ContextActive = g.Status == models.GroupActive
-					f.Manager = policy.CanManageGroup(asPerson(users[r.RequesterID]), rels[addRequestPair{r.RequesterID, g.ID}])
-					f.OrdinaryEligible = users[r.SubjectUserID] != nil && !policy.TeenAddNeedsApproval(asPerson(users[r.SubjectUserID]))
-				}
+				// Group asks intentionally retain their existing account (not consent) rule.
+				g := groups[r.ContextID]
+				f = groupAddFacts(r, op.now, op.zone, users[r.RequesterID], users[r.SubjectUserID], g, rels[userContext{r.RequesterID, r.ContextID}])
 			} else if r.Purpose == policy.RequestOccurrenceAdd && r.ContextType == policy.ContactEvent && r.OccurrenceID != nil {
 				f.Requester, f.Subject = accounts[r.RequesterID], accounts[r.SubjectUserID]
 				f.Occurrence = policy.OccurrenceFacts{ID: *r.OccurrenceID, EventID: r.ContextID}
@@ -168,8 +161,8 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 						live = g != nil && g.Status == models.GroupActive
 						if g != nil {
 							gp = asGroup(g)
-							requesterRel = rels[addRequestPair{r.RequesterID, g.ID}]
-							subjectRel = rels[addRequestPair{r.SubjectUserID, g.ID}]
+							requesterRel = rels[userContext{r.RequesterID, g.ID}]
+							subjectRel = rels[userContext{r.SubjectUserID, g.ID}]
 						}
 					}
 					f.Occurrence.Organizer, f.Occurrence.ContextActive = organizer, live
@@ -177,9 +170,9 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 						f.Occurrence.Scheduled = occ.Status == models.OccurrenceScheduled
 					}
 					f.ContextActive = live
-					f.Manager = policy.CanManageEvent(asPerson(users[r.RequesterID]), viewOf(&ev, hosts[addRequestPair{r.RequesterID, ev.ID}]), requesterRel)
+					f.Manager = policy.CanManageEvent(asPerson(users[r.RequesterID]), viewOf(&ev, hosts[userContext{r.RequesterID, ev.ID}]), requesterRel)
 					subject := users[r.SubjectUserID]
-					view := viewOf(&ev, hosts[addRequestPair{r.SubjectUserID, ev.ID}])
+					view := viewOf(&ev, hosts[userContext{r.SubjectUserID, ev.ID}])
 					occ := occs[*r.OccurrenceID]
 					view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
 					f.OrdinaryEligible = policy.CanRegisterEvent(asPerson(subject), view, gp, subjectRel)
@@ -187,7 +180,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 						f.OrdinaryEligible = policy.CanRegisterGuest(view, gp)
 					}
 					f.Block = blocks[addRequestBlockKey{r.SubjectUserID, organizer}]
-					f.ExistingAccessActive, f.LatestAccessEndedAt = accessAddFacts(regRows[addRequestPair{r.SubjectUserID, *r.OccurrenceID}], history[accessKey{r.SubjectUserID, *r.OccurrenceID}])
+					f.ExistingAccessActive, f.LatestAccessEndedAt = accessAddFacts(regRows[userContext{r.SubjectUserID, *r.OccurrenceID}], history[accessKey{r.SubjectUserID, *r.OccurrenceID}])
 				}
 			}
 		}
@@ -208,20 +201,23 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 				}
 			}
 		} else if r.Purpose == policy.RequestGroupAdd {
-			if shown := a.groupShownTo(op.actor, groups[r.ContextID], rels[addRequestPair{op.actor.ID, r.ContextID}]); shown != nil {
+			if label, ok := contexts.shown(a, op.actor, contextRef{policy.ContactGroup, r.ContextID}); ok {
 				id := r.ContextID
 				j.ContextID = &id
-				j.GroupName = shown.Name
-				j.RequesterName, j.SubjectName = "Someone", "Someone"
-				if name, ok := names[r.RequesterID]; ok {
-					j.RequesterName = name
-				}
-				if name, ok := names[r.SubjectUserID]; ok {
-					j.SubjectName = name
-				}
+				j.GroupName = label
+				j.RequesterName, j.SubjectName = names.name(r.RequesterID), names.name(r.SubjectUserID)
 			}
 		}
 		out = append(out, j)
 	}
 	return out, nil
+}
+
+// presentAddRequest is the page of one request.
+func (a *App) presentAddRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (addRequestJSON, error) {
+	rows, err := a.presentAddRequests(tx, op, []models.ContactRequest{r})
+	if err != nil {
+		return addRequestJSON{}, err
+	}
+	return rows[0], nil
 }
