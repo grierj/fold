@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -35,6 +36,8 @@ import (
 const (
 	kindMessageSend  = "message.send"
 	kindMessageBatch = "message.deliver_batch"
+	// messageBatchSize is the recipients one message.deliver_batch job sends:
+	// the work a single job holds a worker for.
 	messageBatchSize = 50
 )
 
@@ -244,7 +247,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 			return stillDue(tx, m.ID)
 		}
 		if len(rows) > 0 {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, 500).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, rowBatch).Error; err != nil {
 				return err
 			}
 		}
@@ -709,22 +712,23 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if err := q.Order("COALESCE(r.user_id, r.registered_by), o.starts_at").Scan(&dates).Error; err != nil {
 		return nil, err
 	}
-	title := ev.Title
+	var titleOverride *string
 	if au.Type == policy.AudienceOccurrence {
 		// One date: its own title, when it has one.
 		var occ models.EventOccurrence
 		if err := db.Select("id, title_override").First(&occ, au.OccurrenceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
-		} else if err == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
-			title = *occ.TitleOverride
+		} else if err == nil {
+			titleOverride = occ.TitleOverride
 		}
 	}
+	facts := newMessageEvent(ev, au, titleOverride)
 	for id := range out {
-		a.setEventFields(out[id], ev.ID, title)
+		maps.Copy(out[id], a.eventFields(facts, nil))
 	}
 	for _, d := range dates {
 		if v := out[d.UID]; v != nil {
-			v[content.FieldEventTime] = eventTimeText(d.StartsAt, ev.TZID)
+			v[content.FieldEventTime] = facts.timeText(d.StartsAt)
 			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
 		}
 	}

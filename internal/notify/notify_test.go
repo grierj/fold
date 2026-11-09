@@ -121,6 +121,9 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 			if k.Category == CatSafety && (title != SafePushTitle || body != SafePushBody) {
 				t.Errorf("%s is a safety kind but pushes %q", k.Key, text)
 			}
+			if title == SafePushTitle && body == SafePushBody && !k.PushSafeText {
+				t.Errorf("%s can push the safe text but is not flagged PushSafeText", k.Key)
+			}
 		}
 		if k.AllowPush {
 			pushed++

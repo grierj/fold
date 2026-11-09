@@ -109,6 +109,10 @@ type scopeState struct {
 // before batching, so the whole set is still locked in ascending ID order.
 const recipientLockBatch = userlock.Batch
 
+// deliveryInsertBatch is the rows one multi-row INSERT of delivery intent
+// carries; it bounds a statement's size, not a parameter limit (5 per row).
+const deliveryInsertBatch = 500
+
 // ErrBadScope: a Msg.Scope that is not valid for this Send (see Msg.Scope).
 var ErrBadScope = errors.New("notify: recipient scope is not valid here")
 
@@ -151,7 +155,7 @@ func transactionOf(tx *gorm.DB) (gorm.ConnPool, bool) {
 // WithRecipients locks the live users among ids in tx, runs fn with the Scope
 // that proves it, and closes the Scope when fn returns. Pass the Scope as
 // Msg.Scope to every Send of one fan-out: the lock is then one bulk statement
-// for the whole fan-out (one per 500 ids) instead of one per Send. tx must be a
+// for the whole fan-out (one per userlock.Batch ids) instead of one per Send. tx must be a
 // transaction (ErrNoTransaction otherwise). The locks last until that
 // transaction ends; the Scope itself is good only inside fn.
 //
@@ -229,7 +233,7 @@ func (sc *Scope) check(tx *gorm.DB, ids []uint) error {
 }
 
 // lockRecipients is the statement behind WithRecipients and Send: FOR KEY SHARE
-// on the non-deleted users among ids, ascending, in batches of 500. It returns
+// on the non-deleted users among ids, ascending, in batches of userlock.Batch. It returns
 // the ids it locked. Run on a plain handle, the locks end with the statement.
 func lockRecipients(tx *gorm.DB, ids []uint) (map[uint]bool, error) {
 	return userlock.KeyShareLive(tx, ids)
@@ -444,7 +448,7 @@ func Protect(tx *gorm.DB, rows []models.Notification) ([]models.Notification, er
 // queueProtected writes channel intent and jobs in the caller's transaction
 // for rows that are already protected: written by Send in this transaction, or
 // returned by Protect in it. It takes no locks of its own.
-// A fan-out uses one delivery INSERT and one jobs INSERT per batch of 500.
+// A fan-out uses one delivery INSERT and one jobs INSERT per deliveryInsertBatch rows.
 // Push has no queued ledger row: device outcomes own its aggregate record.
 func queueProtected(tx *gorm.DB, bellOnly bool, rows ...models.Notification) error {
 	now := time.Now().UTC()
@@ -469,7 +473,7 @@ func queueProtected(tx *gorm.DB, bellOnly bool, rows ...models.Notification) err
 		}
 	}
 	for len(values) > 0 {
-		n := min(len(values), 500)
+		n := min(len(values), deliveryInsertBatch)
 		if err := tx.Exec(`INSERT INTO notification_deliveries (notification_id, channel, user_id, status, reason) VALUES `+
 			strings.Join(values[:n], ", ")+` ON CONFLICT (notification_id, channel) DO NOTHING`, args[:5*n]...).Error; err != nil {
 			return err
