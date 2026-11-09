@@ -343,7 +343,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return errEmailTaken
 		}
 		var group *models.Group
-		var count int64
+		var count int
 		if inv.GroupID != nil {
 			var g models.Group
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, *inv.GroupID).Error; err != nil {
@@ -363,7 +363,11 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		leadsTarget, leadsAnywhere := false, false
 		if group != nil {
-			leadsTarget = relIn(tx, inviter.ID, group.ID).Leader
+			rel, err := groupRel(tx, inviter.ID, group.ID)
+			if err != nil {
+				return err
+			}
+			leadsTarget = rel.Leader
 		} else {
 			var err error
 			if leadsAnywhere, err = leadsApprovedGroup(tx, inviter.ID); err != nil {
@@ -374,8 +378,11 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return errTokenInvalid
 		}
 		if group != nil {
-			count = memberCount(tx, group.ID)
-			if !policy.GroupHasRoom(group.MemberLimit, int(count)) && !inv.OverLimit {
+			var err error
+			if count, err = memberCount(tx, group.ID); err != nil {
+				return err
+			}
+			if !policy.GroupHasRoom(group.MemberLimit, count) && !inv.OverLimit {
 				return errGroupFull // the token stays live: this can be retried
 			}
 		}
@@ -436,7 +443,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 				return err
 			}
 			meta["groupId"] = group.ID
-			if !policy.GroupHasRoom(group.MemberLimit, int(count)) {
+			if !policy.GroupHasRoom(group.MemberLimit, count) {
 				// Over the limit by the inviting leader's or admin's
 				// explicit choice (DEC-39).
 				if err := audit.Write(tx, audit.Entry{

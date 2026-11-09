@@ -18,108 +18,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// eventFacts is the policy input for one event and one viewer.
-type eventFacts struct {
-	group *models.Group
-	rel   policy.Rel
-	view  policy.EventView
-}
-
-func viewOf(ev *models.Event, host bool) policy.EventView {
-	if ev.GroupID != nil {
-		host = false
-	}
-	return policy.EventView{
-		ChurchWide: ev.GroupID == nil,
-		Visibility: ev.Visibility,
-		Host:       host,
-	}
-}
-
-func (a *App) groupsByID(ids map[uint]struct{}) (map[uint]*models.Group, error) {
-	out := map[uint]*models.Group{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	list := make([]uint, 0, len(ids))
-	for id := range ids {
-		list = append(list, id)
-	}
-	var gs []models.Group
-	if err := a.DB.Where("id IN ?", list).Find(&gs).Error; err != nil {
-		return nil, err
-	}
-	for i := range gs {
-		out[gs[i].ID] = &gs[i]
-	}
-	return out, nil
-}
-
-func (a *App) relsFor(u *models.User, ids map[uint]struct{}) (map[uint]policy.Rel, error) {
-	out := map[uint]policy.Rel{}
-	if u == nil || len(ids) == 0 {
-		return out, nil
-	}
-	list := make([]uint, 0, len(ids))
-	for id := range ids {
-		list = append(list, id)
-	}
-	var ms []models.Membership
-	if err := a.DB.Where("user_id = ? AND group_id IN ?", u.ID, list).Find(&ms).Error; err != nil {
-		return nil, err
-	}
-	for _, m := range ms {
-		out[m.GroupID] = membershipRel(m)
-	}
-	return out, nil
-}
-
-func (a *App) hostedEventIDs(u *models.User, eventIDs []uint) (map[uint]bool, error) {
-	out := map[uint]bool{}
-	if u == nil || len(eventIDs) == 0 {
-		return out, nil
-	}
-	var rows []models.EventHost
-	if err := a.DB.Where("user_id = ? AND event_id IN ?", u.ID, eventIDs).Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, h := range rows {
-		out[h.EventID] = true
-	}
-	return out, nil
-}
-
-func groupAndRel(ev *models.Event, groups map[uint]*models.Group, rels map[uint]policy.Rel) (*models.Group, policy.Rel) {
-	if ev.GroupID == nil {
-		return nil, policy.Rel{}
-	}
-	return groups[*ev.GroupID], rels[*ev.GroupID]
-}
-
-func eventFactsIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
-	f := eventFacts{}
-	if ev.GroupID != nil {
-		var g models.Group
-		if err := db.First(&g, *ev.GroupID).Error; err == nil {
-			f.group = &g
-			if u != nil {
-				var m models.Membership
-				if db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&m).Error == nil {
-					f.rel = membershipRel(m)
-				}
-			}
-		}
-	}
-	host := false
-	if ev.GroupID == nil && u != nil {
-		var n int64
-		db.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, u.ID).Count(&n)
-		host = n > 0
-	}
-	f.view = viewOf(ev, host)
-	return f
-}
-
 // groupShownTo returns g when the viewer may see the group, else nil.
 // Read a group's name, place or id for event and notice output only through
 // its result (TestGroupDetailsGoThroughGroupShownTo enforces this).
@@ -200,12 +98,12 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, eventFacts{}, false
 	}
-	f := eventFactsIn(a.DB, apiUser(c), &ev)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
+	f, err := eventFactsIn(a.DB, apiUser(c), &ev)
+	if err != nil {
+		fail(c, err)
+		return nil, eventFacts{}, false
 	}
-	if !policy.CanSeeEvent(asPerson(apiUser(c)), f.view, gp, f.rel) {
+	if !f.canSee(apiUser(c)) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, eventFacts{}, false
 	}
@@ -348,7 +246,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
 	}
 	applySpec(&ev, spec, body.eventBody, ed, vid)
-	if !textOK(c, ev.Title, ev.Description, ev.Location) {
+	if !eventTextOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -391,8 +289,8 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	f := eventFactsIn(a.DB, creator, &ev)
-	c.JSON(http.StatusCreated, gin.H{"event": a.presentEvent(&ev, creator, f)})
+	// A new church-wide event has no group, and its creator is a host.
+	c.JSON(http.StatusCreated, gin.H{"event": a.presentEvent(&ev, creator, eventFacts{view: viewOf(&ev, true)})})
 }
 
 // apiSetEventVisibility sets an event's own visibility (DEC-48). On a group
@@ -446,7 +344,10 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		f = eventFactsIn(tx, me, &locked)
+		var err error
+		if f, err = eventFactsIn(tx, me, &locked); err != nil {
+			return err
+		}
 		if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
 			return errDateVisibility
 		}
@@ -456,7 +357,6 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			action = audit.VisibilityOverride
 		}
 		oldVis, oldOpened = locked.Visibility, locked.LeaderOpened
-		var err error
 		impact, err = eventImpactOfReset(tx, &locked, vis, body.ResetOverrides)
 		if err != nil {
 			return err
@@ -681,55 +581,42 @@ type visibleSet struct {
 	Events []models.Event
 	IDs    []uint
 	ByID   map[uint]*models.Event
-	Groups map[uint]*models.Group
-	Rels   map[uint]policy.Rel
-	Hosted map[uint]bool
+	factSet
 }
 
 // dateCandidates loads candidate series facts without granting series rights.
 // Every date list must filter each date through visibleSet.canSeeDate.
 func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.eventCandidates(viewer, q, false)
+	return a.eventCandidates(viewer, q)
 }
 
 // eventCandidates is the shared event loader. It only loads candidates: callers
 // must separately authorize each date, never the series. Events whose group is
-// missing are skipped, and deleted groups stay hidden except for the
-// admin-only withDeleted calendar switch (DEC-68).
-func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
-	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
-	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
+// missing are skipped, and deleted groups stay hidden.
+func (a *App) eventCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	return a.loadCandidates(viewer, q, false)
+}
+
+// deletedEventCandidates is eventCandidates for the admin-only "show deleted
+// events" calendar switch (DEC-68): an admin also gets the events of
+// soft-deleted groups. Anyone else gets the ordinary candidates.
+func (a *App) deletedEventCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	return a.loadCandidates(viewer, q, policy.IsAdmin(asPerson(viewer)))
+}
+
+func (a *App) loadCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
+	vs := visibleSet{ByID: map[uint]*models.Event{}}
 	var evs []models.Event
 	if err := q.Find(&evs).Error; err != nil || len(evs) == 0 {
+		vs.factSet = factSet{Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
 		return vs, err
-	}
-	gset := map[uint]struct{}{}
-	ids := make([]uint, 0, len(evs))
-	for i := range evs {
-		ids = append(ids, evs[i].ID)
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
 	}
 	var err error
-	if withDeleted {
-		vs.Groups, err = a.groupsByIDUnscoped(gset)
-	} else {
-		vs.Groups, err = a.groupsByID(gset)
-	}
-	if err != nil {
-		return vs, err
-	}
-	vs.Rels, err = a.relsFor(viewer, gset)
-	if err != nil {
-		return vs, err
-	}
-	vs.Hosted, err = a.hostedEventIDs(viewer, ids)
-	if err != nil {
+	if vs.factSet, err = loadFactSet(a.DB, viewer, evs, withDeleted); err != nil {
 		return vs, err
 	}
 	for i := range evs {
-		if grp, _ := groupAndRel(&evs[i], vs.Groups, vs.Rels); evs[i].GroupID != nil && grp == nil {
+		if evs[i].GroupID != nil && vs.Groups[*evs[i].GroupID] == nil {
 			continue
 		}
 		vs.Events = append(vs.Events, evs[i])
@@ -739,27 +626,6 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted bool)
 		vs.IDs = append(vs.IDs, vs.Events[i].ID)
 	}
 	return vs, nil
-}
-
-// groupsByIDUnscoped is groupsByID including soft-deleted groups, for the
-// admin "show deleted events" switch only (DEC-68).
-func (a *App) groupsByIDUnscoped(ids map[uint]struct{}) (map[uint]*models.Group, error) {
-	out := map[uint]*models.Group{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	list := make([]uint, 0, len(ids))
-	for id := range ids {
-		list = append(list, id)
-	}
-	var gs []models.Group
-	if err := a.DB.Unscoped().Where("id IN ?", list).Find(&gs).Error; err != nil {
-		return nil, err
-	}
-	for i := range gs {
-		out[gs[i].ID] = &gs[i]
-	}
-	return out, nil
 }
 
 type hostJSON struct {

@@ -210,12 +210,11 @@ func (a *App) contactContextVisible(tx *gorm.DB, u *models.User, r models.Contac
 		if err != nil {
 			return nil, err
 		}
-		f := eventFactsIn(tx, u, &ev)
-		group := policy.Group{}
-		if f.group != nil {
-			group = asGroup(f.group)
+		f, err := eventFactsIn(tx, u, &ev)
+		if err != nil {
+			return nil, err
 		}
-		if !policy.CanSeeEvent(asPerson(u), f.view, group, f.rel) {
+		if !f.canSee(u) {
 			return nil, nil
 		}
 		id := r.ContextID
@@ -228,7 +227,11 @@ func (a *App) contactContextVisible(tx *gorm.DB, u *models.User, r models.Contac
 	if err != nil {
 		return nil, err
 	}
-	if a.groupShownTo(u, &g, relIn(tx, u.ID, g.ID)) == nil {
+	rel, err := groupRel(tx, u.ID, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	if a.groupShownTo(u, &g, rel) == nil {
 		return nil, nil
 	}
 	return &groupID, nil
@@ -737,7 +740,11 @@ func (a *App) presentAddRequest(tx *gorm.DB, op *contactOperation, r models.Cont
 		if err = tx.First(&g, *out.ContextID).Error; err != nil {
 			return out, err
 		}
-		shown := a.groupShownTo(op.actor, &g, relIn(tx, op.actor.ID, g.ID))
+		rel, err := groupRel(tx, op.actor.ID, g.ID)
+		if err != nil {
+			return out, err
+		}
+		shown := a.groupShownTo(op.actor, &g, rel)
 		if shown != nil {
 			out.GroupName = shown.Name
 		} // group-ok: groupShownTo applies current viewer visibility
@@ -949,9 +956,15 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 	if err != nil {
 		return err
 	}
-	if g.DeletionRequested && memberCount(tx, g.ID) > 1 {
-		if err := clearDeletionRequestIn(tx, g.ID, nil, "withdrawn"); err != nil {
+	if g.DeletionRequested {
+		members, err := memberCount(tx, g.ID)
+		if err != nil {
 			return err
+		}
+		if members > 1 {
+			if err := clearDeletionRequestIn(tx, g.ID, nil, "withdrawn"); err != nil {
+				return err
+			}
 		}
 	}
 	var m models.Membership

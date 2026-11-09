@@ -77,8 +77,8 @@ func TestSoleLeaderHandoff(t *testing.T) {
 			for g, want := range map[*models.Group]*models.User{g1: ann, g2: me, shared: ann} {
 				var fresh models.Group
 				app.DB.First(&fresh, g.ID)
-				if !relIn(app.DB, want.ID, g.ID).Leader || fresh.LeaderID != want.ID || leaderCount(app.DB, g.ID) != 1 {
-					t.Fatalf("%s: leader %d, contact %d, leaders %d", g.Name, want.ID, fresh.LeaderID, leaderCount(app.DB, g.ID))
+				if !relIn(app.DB, want.ID, g.ID).Leader || fresh.LeaderID != want.ID || leadersIn(app.DB, g.ID) != 1 {
+					t.Fatalf("%s: leader %d, contact %d, leaders %d", g.Name, want.ID, fresh.LeaderID, leadersIn(app.DB, g.ID))
 				}
 			}
 			// Deletion ends memberships; disabling keeps them as plain member (DEC-38).

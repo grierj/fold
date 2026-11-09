@@ -226,7 +226,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 				return errSeriesUnavailable
 			}
 			gp = asGroup(&lockedGroup)
-			rel = relIn(tx, actor.ID, lockedGroup.ID)
+			var err error
+			if rel, err = groupRel(tx, actor.ID, lockedGroup.ID); err != nil {
+				return err
+			}
 		}
 		var ev models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, eventID).Error; err != nil {
@@ -491,7 +494,11 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, *ev.GroupID).Error; err != nil {
 				return errUndoAuthorityRevoked
 			}
-			gp, rel = asGroup(&group), relIn(tx, actor.ID, group.ID)
+			var err error
+			if rel, err = groupRel(tx, actor.ID, group.ID); err != nil {
+				return err
+			}
+			gp = asGroup(&group)
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, receipt.EventID).Error; err != nil ||
 			!policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {

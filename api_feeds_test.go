@@ -1249,6 +1249,11 @@ func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 	}
 	admin, gid := openGroup(t, app, "Feed read failures")
 	createVideoEvent(t, admin, gid, map[string]any{"remoteAvailable": true, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
+	// A church-wide event is the only kind whose host rows are read.
+	start := videoEventStart().Add(24 * time.Hour)
+	if w := admin.do("POST", "/api/v1/events", map[string]any{"title": "All church", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC"}, true); w.Code != http.StatusCreated {
+		t.Fatalf("create church event: %d %s", w.Code, w.Body.String())
+	}
 	var group models.Group
 	if err := app.DB.First(&group, gid).Error; err != nil {
 		t.Fatal(err)

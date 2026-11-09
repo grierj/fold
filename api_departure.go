@@ -238,13 +238,6 @@ func loadMembership(tx *gorm.DB, userID, groupID uint) (models.Membership, error
 	return m, err
 }
 
-func leaderCountIn(tx *gorm.DB, groupID uint) (int, error) {
-	var n int64
-	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?", groupID, models.MembershipLeader, models.MembershipActive).Count(&n).Error
-	return int(n), err
-}
-
 // loadDepartureFacts reads one repeatable snapshot for either self-leave or
 // removal. The caller supplies the authenticated actor and the subject named by
 // the route; authorization always goes through the pure departure policy.
@@ -287,7 +280,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 	if err != nil {
 		return facts, err
 	}
-	leaders, err := leaderCountIn(tx, group.ID)
+	leaders, err := leaderCount(tx, group.ID)
 	if err != nil {
 		return facts, err
 	}
@@ -578,17 +571,9 @@ func recordDepartureOccurrenceAccess(tx *gorm.DB, facts departureFacts, d depart
 	return err
 }
 
-func departureLeaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
-	var ids []uint
-	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.role = ?", groupID, models.MembershipActive, models.MembershipLeader).
-		Order("memberships.user_id").Pluck("memberships.user_id", &ids).Error
-	return ids, err
-}
-
 func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) error {
 	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
-		leaders, err := departureLeaderIDs(tx, facts.GroupID)
+		leaders, err := leaderIDs(tx, facts.GroupID)
 		if err != nil {
 			return err
 		}

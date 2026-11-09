@@ -1088,25 +1088,16 @@ func (a *App) canRegisterAnyDate(tx *gorm.DB, u *models.User, ev *models.Event) 
 }
 
 func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool {
-	gp := policy.Group{}
-	rel := policy.Rel{}
-	if ev.GroupID != nil {
-		var group models.Group
-		if tx.First(&group, *ev.GroupID).Error != nil {
-			return false
-		}
-		gp = asGroup(&group)
-		// Host facts are irrelevant to visibility. An active public/private group
-		// needs no membership read; invitation-only or inactive contexts do.
-		if u != nil && !policy.IsAdmin(asPerson(u)) && (ev.Visibility == models.VisibilityInviteOnly || group.Status != models.GroupActive) {
-			rel = relIn(tx, u.ID, group.ID)
-		}
+	// Host facts are irrelevant to visibility, and a failed read can only say no.
+	f, err := eventFactsIn(tx, u, ev)
+	if err != nil || (ev.GroupID != nil && f.group == nil) {
+		return false
 	}
-	view := viewOf(ev, false)
+	f.view = viewOf(ev, false)
 	if u != nil && u.Status == models.UserGuest {
-		return policy.CanRegisterGuest(view, gp)
+		return policy.CanRegisterGuest(f.view, asGroup(f.group))
 	}
-	return policy.CanRegisterEvent(asPerson(u), view, gp, rel)
+	return policy.CanRegisterEvent(asPerson(u), f.view, asGroup(f.group), f.rel)
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,8 +1139,11 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1274,8 +1268,11 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1461,8 +1458,11 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return errPeopleAddForbidden
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1755,9 +1755,12 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if err != nil {
 			return err
 		}
-		f := eventFactsIn(tx, actor, ev)
+		f, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
 		acct, found := facts.accounts[holderID]
-		manager := policy.HouseholdManager{Person: asPerson(actor), ManagesEvent: policy.CanManageEvent(asPerson(actor), f.view, f.rel), PreviouslyRegistered: previously}
+		manager := policy.HouseholdManager{Person: asPerson(actor), ManagesEvent: f.canManage(actor), PreviouslyRegistered: previously}
 		holderFacts := householdHolderOf(&holder, acct, found, &person, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
 		if problem := policy.CanManageHouseholdRegistration(manager, holderFacts, householdFacts(&person, facts.links[personID], today)); problem != "" {
 			return householdRegistrationError{code: problem}

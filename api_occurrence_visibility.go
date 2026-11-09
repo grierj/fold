@@ -114,7 +114,10 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 	}
 	before, after := policy.EffectiveVisibility(ev.Visibility, old), policy.EffectiveVisibility(ev.Visibility, value)
 
-	f := eventFactsIn(tx, apiUser(c), ev)
+	f, err := eventFactsIn(tx, apiUser(c), ev)
+	if err != nil {
+		return err
+	}
 	if f.group != nil && len(groupVisibility) > 0 {
 		f.group.Visibility = groupVisibility[0]
 	}

@@ -84,8 +84,8 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 				}
 				ast.Inspect(body, func(m ast.Node) bool {
 					if call, ok := m.(*ast.CallExpr); ok {
-						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
-							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; load candidates with dateCandidates or eventCandidates and filter dates with canSeeDate", fset.Position(call.Pos()), fn.Name.Name)
+						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "CanSeeEvent" || sel.Sel.Name == "canSee") {
+							t.Errorf("%s: %s filters a list with CanSeeEvent (policy.CanSeeEvent or eventFacts.canSee); load candidates with dateCandidates or eventCandidates and filter dates with canSeeDate", fset.Position(call.Pos()), fn.Name.Name)
 						}
 					}
 					return true

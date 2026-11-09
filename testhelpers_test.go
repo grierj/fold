@@ -14,6 +14,7 @@ import (
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/internal/testdb"
 	"fold/models"
 	"fold/storage"
@@ -558,7 +559,7 @@ func setLimit(t *testing.T, c *apiClient, g *models.Group, limit any) {
 	}
 }
 
-func activeCount(app *App, g *models.Group) int64 { return memberCount(app.DB, g.ID) }
+func activeCount(app *App, g *models.Group) int64 { return int64(membersIn(app.DB, g.ID)) }
 
 func boolInt(b bool) int {
 	if b {
@@ -1314,4 +1315,30 @@ func (a *App) useAttemptClock(elapsed func() time.Duration) {
 		}
 		return a.attempts.start.Add(elapsed())
 	}
+}
+
+// relIn, leadersIn and membersIn read group facts for assertions; a failed
+// read is a test panic.
+func relIn(db *gorm.DB, userID, groupID uint) policy.Rel {
+	rel, err := groupRel(db, userID, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return rel
+}
+
+func leadersIn(db *gorm.DB, groupID uint) int {
+	n, err := leaderCount(db, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+func membersIn(db *gorm.DB, groupID uint) int {
+	n, err := memberCount(db, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }

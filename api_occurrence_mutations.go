@@ -117,8 +117,11 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if err != nil {
 		return f, err
 	}
-	facts := eventFactsIn(tx, requester, &ev)
-	f.Manager = policy.CanManageEvent(asPerson(requester), facts.view, facts.rel)
+	facts, err := eventFactsIn(tx, requester, &ev)
+	if err != nil {
+		return f, err
+	}
+	f.Manager = facts.canManage(requester)
 	f.OrdinaryEligible = a.canRegisterDateIn(tx, subject, &ev, *r.OccurrenceID)
 	var block models.ManagerAddBlock
 	if err := tx.Where("subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", r.SubjectUserID, f.Occurrence.Organizer.Type, f.Occurrence.Organizer.ID).Limit(1).Find(&block).Error; err != nil {
@@ -604,16 +607,16 @@ func (a *App) loadManagedDateAddEvent(c *gin.Context) (*models.Event, bool) {
 		a.managerDateAddError(c, 404, "event not found")
 		return nil, false
 	}
-	f := eventFactsIn(a.DB, apiUser(c), &ev)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
+	f, err := eventFactsIn(a.DB, apiUser(c), &ev)
+	if err != nil {
+		a.managerDateAddError(c, http.StatusInternalServerError, "could not load this event")
+		return nil, false
 	}
-	if !policy.CanSeeEvent(asPerson(apiUser(c)), f.view, gp, f.rel) {
+	if !f.canSee(apiUser(c)) {
 		a.managerDateAddError(c, 404, "event not found")
 		return nil, false
 	}
-	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
+	if !f.canManage(apiUser(c)) {
 		a.managerDateAddError(c, 403, "you can't change this event")
 		return nil, false
 	}

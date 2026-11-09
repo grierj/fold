@@ -722,7 +722,7 @@ func TestEventDescription(t *testing.T) {
 
 	apiDo(t, admin, "POST", "/api/v1/events", map[string]any{
 		"title": "Too long", "startsLocal": "2026-12-02T19:00", "durationMinutes": 60,
-		"description": strings.Repeat("a", maxDescriptionLen+1),
+		"description": strings.Repeat("a", descriptionField.max+1),
 	}, http.StatusBadRequest)
 
 	w := admin.do("POST", "/api/v1/events", map[string]any{

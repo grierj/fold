@@ -130,7 +130,11 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if sid != 0 && sid != leaving {
 			// Only a missing user is the caller's mistake (400).
 			if err := tx.First(&s, sid).Error; err == nil {
-				valid = s.Status == models.UserActive && policy.CanBeSuccessor(asPerson(&s), relIn(tx, sid, g.ID))
+				rel, err := groupRel(tx, sid, g.ID)
+				if err != nil {
+					return err
+				}
+				valid = policy.CanBeSuccessor(asPerson(&s), rel)
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
@@ -252,12 +256,16 @@ func restoreMemberships(tx *gorm.DB, userID, actor uint, ip string) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, m.GroupID).Error; err != nil {
 			return err
 		}
-		if !policy.GroupHasRoom(g.MemberLimit, int(memberCount(tx, g.ID))) {
+		members, err := memberCount(tx, g.ID)
+		if err != nil {
+			return err
+		}
+		if !policy.GroupHasRoom(g.MemberLimit, members) {
 			// Full: left out. A leader can add them over the limit (DEC-47).
 			if err := tx.Delete(&m).Error; err != nil {
 				return err
 			}
-			meta := map[string]any{"userId": userID, "count": memberCount(tx, g.ID), "limit": *g.MemberLimit}
+			meta := map[string]any{"userId": userID, "count": members, "limit": *g.MemberLimit}
 			if err := audit.Write(tx, audit.Entry{
 				Actor: actorID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
 				Meta: meta, IP: ip,

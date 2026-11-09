@@ -261,10 +261,13 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := eventFactsIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
+		f, err := eventFactsIn(tx, user, &locked)
+		if err != nil {
+			return err
+		}
+		if !f.canManage(user) {
 			return errNotManager
 		}
-		var err error
 		out, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
 		return err
 	})

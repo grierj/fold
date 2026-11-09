@@ -229,13 +229,6 @@ func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 	return ids, err
 }
 
-func leaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
-	var ids []uint
-	err := tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = ?", groupID, models.MembershipLeader, models.MembershipActive).
-		Pluck("user_id", &ids).Error
-	return ids, err
-}
-
 // publicNames keeps historical display names for one response. Like nameIn,
 // it includes soft-deleted users and never falls back to an email address.
 type publicNames map[uint]string
@@ -304,13 +297,18 @@ func userIn(tx *gorm.DB, id uint) *models.User {
 	return &u
 }
 
-// canSeeGroupIn is canSeeGroup against tx, so it sees the transaction's
-// own changes (a membership just removed, a visibility just changed).
+// canSeeGroupIn reports whether u may see g, read through tx so it sees the
+// transaction's own changes (a membership just removed, a visibility just
+// changed).
 func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
 	if u == nil || g == nil {
 		return false
 	}
-	return policy.CanSeeGroup(asPerson(u), asGroup(g), relIn(tx, u.ID, g.ID))
+	rel, err := groupRel(tx, u.ID, g.ID)
+	if err != nil {
+		return false // a failed read hides the group; it never shows one
+	}
+	return policy.CanSeeGroup(asPerson(u), asGroup(g), rel)
 }
 
 // noticeFacts is everything eventNoticeVars needs for a batch of

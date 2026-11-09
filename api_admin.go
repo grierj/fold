@@ -54,8 +54,8 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 	var tags *string
 	if body.Tags != nil {
 		joined := joinTags(body.Tags)
-		if len(joined) > maxTagsLen {
-			fail(c, errTagsTooLong)
+		if err := tagsField.check(joined); err != nil {
+			fail(c, err)
 			return
 		}
 		tags = &joined

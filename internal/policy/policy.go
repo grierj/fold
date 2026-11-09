@@ -32,6 +32,9 @@ type Person struct {
 	Admin bool
 	// Teen is a 13-17 account (DEC-8).
 	Teen bool
+	// Inactive is an account that is not active (disabled, pending or a
+	// guest). No rule hands such an account a role or a host seat.
+	Inactive bool
 }
 
 // Group is what policy needs to know about a group.
@@ -61,13 +64,21 @@ func CanSeeGroup(p *Person, g Group, r Rel) bool {
 	if g.Status != GroupActive {
 		return p != nil && r.Leader
 	}
-	switch g.Visibility {
+	return visibleTo(g.Visibility, p, r.Member)
+}
+
+// visibleTo is the one visibility rule (DEC-5, DEC-48) for a group or an event
+// whose status already allows being seen: public is open to anyone, private to
+// signed-in people, and anything else (invite_only, or an unexpected value,
+// failing closed) to members only.
+func visibleTo(visibility string, p *Person, member bool) bool {
+	switch visibility {
 	case Public:
 		return true
 	case Private:
 		return p != nil
-	default: // invite_only, and anything unexpected fails closed
-		return p != nil && r.Member
+	default:
+		return p != nil && member
 	}
 }
 
@@ -165,7 +176,7 @@ func CanRemoveMember(p *Person, r Rel, target *Person, targetRel Rel, leaders in
 // leader, the new leader is an adult active member of that group or any
 // admin (DEC-36). Teens never lead (DEC-18).
 func CanBeSuccessor(candidate *Person, candidateRel Rel) bool {
-	return candidate != nil && !candidate.Teen && (candidate.Admin || candidateRel.Member)
+	return candidate != nil && !candidate.Inactive && !candidate.Teen && (candidate.Admin || candidateRel.Member)
 }
 
 // CanLeaveGroup: anyone may leave, except the last leader, who must hand
@@ -222,26 +233,13 @@ func CanSeeEvent(p *Person, ev EventView, g Group, r Rel) bool {
 		return true
 	}
 	if ev.ChurchWide {
-		switch ev.Visibility {
-		case Public:
-			return true
-		case Private:
-			return p != nil
-		default:
-			return false
-		}
+		// No group, so no member: invite_only is closed to everyone but admins.
+		return visibleTo(ev.Visibility, p, false)
 	}
 	if g.Status != GroupActive {
 		return p != nil && r.Leader
 	}
-	switch ev.Visibility {
-	case Public:
-		return true
-	case Private:
-		return p != nil
-	default:
-		return p != nil && r.Member
-	}
+	return visibleTo(ev.Visibility, p, r.Member)
 }
 
 // CanManageEvent: admins, a leader of the event's group, or a host of that
@@ -272,10 +270,10 @@ func CanSetEventVisibility(p *Person, ev EventView, r Rel, visibility string) bo
 	return (p.Admin || r.Leader) && ValidVisibility(visibility)
 }
 
-// CanAssignHost: only an admin assigns a host, and never a teen (DEC-18).
-// The handler also requires the account to be active.
+// CanAssignHost: only an admin assigns a host, never a teen (DEC-18), and
+// only an active account.
 func CanAssignHost(p, target *Person) bool {
-	return p != nil && p.Admin && target != nil && !target.Teen
+	return p != nil && p.Admin && target != nil && !target.Inactive && !target.Teen
 }
 
 // HostSeat is one host row of a church-wide event, as the rule below needs it.

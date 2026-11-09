@@ -108,12 +108,12 @@ func (a *App) loadGuestOccurrence(c *gin.Context, date string) (*models.EventOcc
 		jsonError(c, 404, "event not found")
 		return nil, false
 	}
-	f := eventFactsIn(a.DB, nil, dateEvent(&ev, &occ))
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
+	f, err := eventFactsIn(a.DB, nil, dateEvent(&ev, &occ))
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load this date")
+		return nil, false
 	}
-	if !policy.CanRegisterGuest(f.view, gp) {
+	if !policy.CanRegisterGuest(f.view, asGroup(f.group)) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, false
 	}

@@ -58,30 +58,38 @@ func (a *App) apiListGroups(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, a.viewerRoles(apiUser(c), groups))})
+	roles, err := a.viewerRoles(apiUser(c), groups)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, roles)})
 }
 
 // viewerRoles maps each listed group the viewer actively belongs to onto
 // their role there; nil for a signed-out viewer.
-func (a *App) viewerRoles(me *models.User, groups []models.Group) map[uint]string {
+func (a *App) viewerRoles(me *models.User, groups []models.Group) (map[uint]string, error) {
 	if me == nil || len(groups) == 0 {
-		return nil
+		return nil, nil
 	}
 	ids := make([]uint, len(groups))
 	for i := range groups {
 		ids[i] = groups[i].ID
 	}
-	var rows []models.Membership
-	if err := a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, models.MembershipActive, ids).Find(&rows).Error; err != nil {
-		// The list still works; it just loses its "You're in" labels.
-		log.Printf("group list roles for user %d: %v", me.ID, err)
-		return nil
+	rels, err := groupRels(a.DB, me.ID, ids)
+	if err != nil {
+		return nil, err
 	}
-	roles := make(map[uint]string, len(rows))
-	for _, m := range rows {
-		roles[m.GroupID] = m.Role
+	roles := make(map[uint]string, len(rels))
+	for id, rel := range rels {
+		switch {
+		case rel.Leader:
+			roles[id] = models.MembershipLeader
+		case rel.Member:
+			roles[id] = models.MembershipMember
+		}
 	}
-	return roles
+	return roles, nil
 }
 
 // viewerGroupList is a group list as its viewer browses it (DEC-94): each
@@ -332,8 +340,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			fail(c, errNameRequired)
 			return
 		}
-		if len(name) > maxGroupNameLen {
-			fail(c, errNameTooLong)
+		if err := groupNameField.check(name); err != nil {
+			fail(c, err)
 			return
 		}
 		patch.Name = name
@@ -341,8 +349,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	if body.Description != nil {
 		description := strings.TrimSpace(*body.Description)
-		if len(description) > maxDescriptionLen {
-			fail(c, errDescriptionTooLong)
+		if err := descriptionField.check(description); err != nil {
+			fail(c, err)
 			return
 		}
 		patch.Description = description
@@ -350,8 +358,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	if body.Tags != nil {
 		tags := joinTags(body.Tags)
-		if len(tags) > maxTagsLen {
-			fail(c, errTagsTooLong)
+		if err := tagsField.check(tags); err != nil {
+			fail(c, err)
 			return
 		}
 		patch.Tags = tags
@@ -364,8 +372,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	if body.Location != nil {
 		location := strings.TrimSpace(*body.Location)
-		if len(location) > maxLocationLen {
-			fail(c, errLocationTooLong)
+		if err := locationField.check(location); err != nil {
+			fail(c, err)
 			return
 		}
 		patch.Location = location
@@ -560,11 +568,21 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 // membershipAdded clears a lone leader's deletion request once someone else
 // is in the group, and answers with the membership.
 func (a *App) membershipAdded(c *gin.Context, g *models.Group, userID uint) {
-	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
-		a.clearDeletionRequest(g.ID, nil, "withdrawn")
+	if g.DeletionRequested {
+		members, err := memberCount(a.DB, g.ID)
+		if err == nil && members > 1 {
+			err = a.clearDeletionRequest(g.ID, nil, "withdrawn")
+		}
+		if err != nil {
+			fail(c, err)
+			return
+		}
 	}
 	var m models.Membership
-	a.DB.Where("user_id = ? AND group_id = ?", userID, g.ID).First(&m)
+	if err := a.DB.Where("user_id = ? AND group_id = ?", userID, g.ID).First(&m).Error; err != nil {
+		fail(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
 		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID,
 		"role": m.Role, "status": m.Status,
@@ -590,22 +608,6 @@ func validGroupStatus(s string) bool {
 		return true
 	}
 	return false
-}
-
-func validateGroupText(name, description, location, tags string) error {
-	if len(name) > maxGroupNameLen {
-		return errNameTooLong
-	}
-	if len(description) > maxDescriptionLen {
-		return errDescriptionTooLong
-	}
-	if len(location) > maxLocationLen {
-		return errLocationTooLong
-	}
-	if len(tags) > maxTagsLen {
-		return errTagsTooLong
-	}
-	return nil
 }
 
 // likeContains builds a LIKE pattern that matches the text as a substring.
@@ -778,9 +780,16 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	}
 	actorRel := targetRel
 	if actor.ID != userID {
-		actorRel = relIn(tx, actor.ID, g.ID)
+		var err error
+		if actorRel, err = groupRel(tx, actor.ID, g.ID); err != nil {
+			return err
+		}
 	}
-	if !allow(actor, target, actorRel, targetRel, leaderCount(tx, g.ID)) {
+	leaders, err := leaderCount(tx, g.ID)
+	if err != nil {
+		return err
+	}
+	if !allow(actor, target, actorRel, targetRel, leaders) {
 		return errRoleRefused
 	}
 	if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole {
@@ -799,7 +808,9 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	}
 	count := 0
 	if adding {
-		count = int(memberCount(tx, g.ID))
+		if count, err = memberCount(tx, g.ID); err != nil {
+			return err
+		}
 		if !policy.GroupHasRoom(g.MemberLimit, count) && !overLimit {
 			return errGroupFull
 		}
@@ -847,8 +858,9 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 // fixPrimaryContact keeps Group.LeaderID (display only) on a current
 // leader: the earliest-joined one when the old contact stopped leading.
 func fixPrimaryContact(tx *gorm.DB, g *models.Group) error {
-	if relIn(tx, g.LeaderID, g.ID).Leader {
-		return nil
+	rel, err := groupRel(tx, g.LeaderID, g.ID)
+	if err != nil || rel.Leader {
+		return err
 	}
 	var next models.Membership
 	if err := tx.Where("group_id = ? AND role = ? AND status = ?", g.ID, models.MembershipLeader, models.MembershipActive).
@@ -860,13 +872,6 @@ func fixPrimaryContact(tx *gorm.DB, g *models.Group) error {
 	}
 	g.LeaderID = next.UserID
 	return tx.Model(&models.Group{}).Where("id = ?", g.ID).Update("leader_id", next.UserID).Error
-}
-
-// relIn is relOf on a given handle (a transaction).
-func relIn(tx *gorm.DB, userID, groupID uint) policy.Rel {
-	var m models.Membership
-	tx.Where("user_id = ? AND group_id = ?", userID, groupID).Limit(1).Find(&m)
-	return membershipRel(m)
 }
 
 func roleOrNone(r string) string {
@@ -1034,13 +1039,6 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group, by *uint) error 
 	return nil
 }
 
-func memberCount(db *gorm.DB, groupID uint) int64 {
-	var n int64
-	db.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).Count(&n)
-	return n
-}
-
 type groupSummaryJSON struct {
 	ID                uint       `json:"id"`
 	Name              string     `json:"name"`
@@ -1094,14 +1092,6 @@ func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 	}
 }
 
-// relOf loads u's active membership in a group.
-func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
-	if u == nil {
-		return policy.Rel{}
-	}
-	return relIn(a.DB, u.ID, groupID)
-}
-
 func splitTags(s string) []string {
 	out := []string{}
 	for _, t := range strings.Split(s, ",") {
@@ -1122,17 +1112,12 @@ func joinTags(tags []string) string {
 	return strings.Join(clean, ",")
 }
 
-// Text caps keep a single request from storing an unbounded row.
-// Profile name/display name stay at 100 (see api_profile.go).
-const (
-	maxGroupNameLen   = 200
-	maxLocationLen    = 300
-	maxDescriptionLen = 5000
-	maxTagsLen        = 500
-)
-
-func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
-	return policy.CanSeeGroup(asPerson(u), asGroup(g), a.relOf(u, g.ID))
+// relOf loads u's membership in one group; the zero Rel for a signed-out viewer.
+func (a *App) relOf(u *models.User, groupID uint) (policy.Rel, error) {
+	if u == nil {
+		return policy.Rel{}, nil
+	}
+	return groupRel(a.DB, u.ID, groupID)
 }
 
 // loadGroupFor loads group id for u: 404 when it doesn't exist or u can't
@@ -1141,10 +1126,18 @@ func (a *App) loadGroupFor(c *gin.Context, id uint) (*models.Group, policy.Rel, 
 	u := apiUser(c)
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			jsonError(c, http.StatusNotFound, "group not found")
+		} else {
+			fail(c, err)
+		}
 		return nil, policy.Rel{}, false
 	}
-	rel := a.relOf(u, g.ID)
+	rel, err := a.relOf(u, g.ID)
+	if err != nil {
+		fail(c, err)
+		return nil, policy.Rel{}, false
+	}
 	if !policy.CanSeeGroup(asPerson(u), asGroup(&g), rel) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return nil, policy.Rel{}, false

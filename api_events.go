@@ -687,17 +687,11 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	ev.VideoReveal = vid.reveal
 }
 
-func textOK(c *gin.Context, title, description, location string) bool {
-	if len(title) > maxGroupNameLen {
-		fail(c, errTitleTooLong)
-		return false
-	}
-	if len(description) > maxDescriptionLen {
-		fail(c, errDescriptionTooLong)
-		return false
-	}
-	if len(location) > maxLocationLen {
-		fail(c, errLocationTooLong)
+// eventTextOK answers the first text field that is too long, as the request's
+// refusal.
+func eventTextOK(c *gin.Context, title, description, location string) bool {
+	if err := validateEventText(title, description, location); err != nil {
+		fail(c, err)
 		return false
 	}
 	return true
@@ -739,9 +733,8 @@ type groupEventsJSON struct {
 
 func (a *App) apiListEvents(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil || !a.canSeeGroup(apiUser(c), &g) {
-		jsonError(c, http.StatusNotFound, "group not found")
+	g, _, ok := a.loadGroupFor(c, uint(id))
+	if !ok {
 		return
 	}
 	from, to, ok := parseDateWindow(c)
@@ -798,7 +791,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
 	}
 	applySpec(&ev, spec, body, ed, vid)
-	if !textOK(c, ev.Title, ev.Description, ev.Location) {
+	if !eventTextOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
 	me := apiUser(c)
@@ -905,7 +898,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := eventFactsIn(tx, me, &locked); !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+		f, err := eventFactsIn(tx, me, &locked)
+		if err != nil {
+			return err
+		}
+		if !f.canManage(me) {
 			jsonError(c, http.StatusForbidden, "you can't change this event")
 			return errAnswered
 		}
@@ -923,7 +920,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if body.Location != nil {
 			location = strings.TrimSpace(*body.Location)
 		}
-		if !textOK(c, title, description, location) {
+		if !eventTextOK(c, title, description, location) {
 			return errAnswered
 		}
 		vid, ok := parseVideoEdits(c, body, &locked)
@@ -993,7 +990,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				added = append(added, row.ID)
 			}
 		}
-		err := notifyOccurrences(tx, me.ID, cancelled, notify.OccurrenceCancelled)
+		err = notifyOccurrences(tx, me.ID, cancelled, notify.OccurrenceCancelled)
 		if err != nil {
 			return err
 		}
@@ -1300,8 +1297,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		return
 	}
 	// Validate everything that doesn't need the row before the lock.
-	if body.DurationMinutes != nil &&
-		(*body.DurationMinutes < 1 || *body.DurationMinutes > events.MaxDurationMinutes) {
+	if body.DurationMinutes != nil && !events.ValidDuration(*body.DurationMinutes) {
 		fail(c, errInvalidDuration)
 		return
 	}
@@ -1315,12 +1311,8 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		u := t.UTC()
 		wallStart = &u
 	}
-	if body.Location != nil && len(strings.TrimSpace(*body.Location)) > maxLocationLen {
-		fail(c, errLocationTooLong)
-		return
-	}
-	if body.Title != nil && len(strings.TrimSpace(*body.Title)) > maxGroupNameLen {
-		fail(c, errTitleTooLong)
+	if err := validateEventText(strings.TrimSpace(strOrEmpty(body.Title)), "", strings.TrimSpace(strOrEmpty(body.Location))); err != nil {
+		fail(c, err)
 		return
 	}
 	me := apiUser(c)
@@ -1339,8 +1331,11 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			return err
 		}
 		ev = &current
-		f := eventFactsIn(tx, me, ev)
-		if !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+		f, err := eventFactsIn(tx, me, ev)
+		if err != nil {
+			return err
+		}
+		if !f.canManage(me) {
 			return errOccurrenceNotFound
 		}
 		var o models.EventOccurrence

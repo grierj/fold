@@ -360,18 +360,27 @@ func TestEventCandidatesSkipsDeletedGroups(t *testing.T) {
 	if err := app.DB.Create(&cw).Error; err != nil {
 		t.Fatal(err)
 	}
-	if vs, _ := app.eventCandidates(admin, app.DB, false); vs.ByID[ev.ID] == nil || vs.ByID[cw.ID] == nil {
+	if vs, _ := app.eventCandidates(admin, app.DB); vs.ByID[ev.ID] == nil || vs.ByID[cw.ID] == nil {
 		t.Fatalf("admin should see both before the delete: %v", vs.IDs)
 	}
 	if err := app.DB.Delete(&g).Error; err != nil {
 		t.Fatal(err)
 	}
-	vs, err := app.eventCandidates(admin, app.DB, false)
+	vs, err := app.eventCandidates(admin, app.DB)
 	if err != nil || vs.ByID[ev.ID] != nil {
 		t.Fatalf("deleted group's event listed for an admin: %v %v", vs.IDs, err)
 	}
-	if anon, _ := app.eventCandidates(nil, app.DB, false); anon.ByID[cw.ID] == nil {
+	if anon, _ := app.eventCandidates(nil, app.DB); anon.ByID[cw.ID] == nil {
 		t.Fatalf("public church-wide event missing for a visitor: %v", anon.IDs)
+	}
+	// The admin "show deleted events" switch lists the deleted group's event
+	// for an admin and for nobody else (DEC-68).
+	if withDeleted, err := app.deletedEventCandidates(admin, app.DB); err != nil || withDeleted.ByID[ev.ID] == nil {
+		t.Fatalf("admin with the deleted switch should see the deleted group's event: %v %v", withDeleted.IDs, err)
+	}
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	if other, err := app.deletedEventCandidates(member, app.DB); err != nil || other.ByID[ev.ID] != nil {
+		t.Fatalf("a non-admin must not get deleted groups' events: %v %v", other.IDs, err)
 	}
 }
 
