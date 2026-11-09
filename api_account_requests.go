@@ -525,14 +525,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				// every guest registration stays theirs. From here it
 				// is the created path: a set-password link, not the
 				// already-have-an-account hint.
-				status := models.UserInvited
-				if req.AccountType == models.AccountTeen {
-					status = models.UserPendingConsent
-				}
-				if err := tx.Model(&existing).Updates(map[string]any{
-					"status": status, "name": req.Name, "phone": req.Phone,
-					"account_type": req.AccountType, "birth_date": req.BirthDate,
-				}).Error; err != nil {
+				existing.Status = newAccountStatus(req.AccountType, false)
+				existing.Name, existing.Phone = req.Name, req.Phone
+				existing.AccountType, existing.BirthDate = req.AccountType, req.BirthDate
+				if err := upgradeGuestIn(tx, &existing, "status", "name", "phone", "account_type", "birth_date"); err != nil {
 					return err
 				}
 				userID, upgraded = existing.ID, true
@@ -542,14 +538,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				}
 				userID = existing.ID
 			} else {
-				status := models.UserInvited
-				if req.AccountType == models.AccountTeen {
-					// Ordinary access waits for account consent.
-					status = models.UserPendingConsent
-				}
 				u := models.User{
 					Email: req.Email, Name: req.Name, Phone: req.Phone,
-					Role: models.RoleMember, Status: status,
+					Role: models.RoleMember, Status: newAccountStatus(req.AccountType, false),
 					AccountType: req.AccountType, BirthDate: req.BirthDate,
 				}
 				if err := tx.Create(&u).Error; err != nil {

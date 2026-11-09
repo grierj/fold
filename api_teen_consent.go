@@ -114,32 +114,12 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			status = models.UserActive
 		}
 		if status != teen.Status {
-			// Restore while the row still has disabled status, so its kept
-			// memberships and seats are not counted twice. Pending teens are
-			// already listed, so their initial grant needs no restore.
-			if teen.Status == models.UserDisabled && status != models.UserDisabled {
-				if err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP()); err != nil {
-					return err
-				}
-				if err := a.restoreRegistrations(tx, teen.ID, status, actor.ID, c.ClientIP(), time.Now().UTC()); err != nil {
-					return err
-				}
-			}
-			// Every account-status transition ends old sessions, including
-			// legacy pending cookies. A newly consented teen logs in afresh.
-			updates := map[string]any{"status": status, "session_version": sessionVersionBump()}
-			if err := tx.Model(teen).Updates(updates).Error; err != nil {
+			// setAccountStatusIn ends old sessions (including legacy pending
+			// cookies) and does the seat work in its fixed order; a newly
+			// consented teen logs in afresh.
+			if err := a.setAccountStatusIn(tx, teen, map[string]any{"status": status}, actor.ID, c.ClientIP()); err != nil {
 				return err
 			}
-			if status == models.UserDisabled {
-				if err := revokeAccountTokens(tx, teen.ID); err != nil {
-					return err
-				}
-				if err := a.promoteOnDisable(tx, teen.ID, true); err != nil {
-					return err
-				}
-			}
-			teen.Status = status
 		}
 	}
 	if change.Scope == models.TeenConsentAccount {

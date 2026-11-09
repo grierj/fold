@@ -379,27 +379,21 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 				return errGroupFull // the token stays live: this can be retried
 			}
 		}
-		u := models.User{Email: inv.Email, Name: name, Role: models.RoleMember, Status: models.UserActive}
+		u := models.User{Email: inv.Email, Role: models.RoleMember}
 		if guestRow {
 			u = existing
-			u.Name = name
-			u.Status = models.UserActive
 		}
-		u.AccountType, u.BirthDate = kind, birth
-		if kind == models.AccountTeen {
-			u.Status = models.UserPendingConsent
-		}
+		u.Name, u.AccountType, u.BirthDate = name, kind, birth
+		u.Status = newAccountStatus(kind, true)
 		if err := u.SetPassword(body.Password); err != nil {
 			return err
 		}
 		if guestRow {
-			if err := tx.Save(&u).Error; err != nil {
-				return err
-			}
-			if err := revokeAccountTokens(tx, u.ID); err != nil {
-				return err
-			}
-		} else if err := tx.Create(&u).Error; err != nil {
+			err = upgradeGuestIn(tx, &u, "status", "name", "account_type", "birth_date", "password_hash")
+		} else {
+			err = tx.Create(&u).Error
+		}
+		if err != nil {
 			return err
 		}
 		now := time.Now().UTC()

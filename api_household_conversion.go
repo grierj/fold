@@ -675,7 +675,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	}
 	inv.Email = req.Email
 	if person.Kind == models.HouseholdTeen {
-		user := models.User{Email: req.Email, Name: req.Name, Role: models.RoleMember, Status: models.UserPendingConsent, AccountType: models.AccountTeen, BirthDate: req.BirthDate, PasswordHash: req.PasswordHash}
+		user := models.User{Email: req.Email, Name: req.Name, Role: models.RoleMember, Status: newAccountStatus(models.AccountTeen, req.PasswordHash != nil), AccountType: models.AccountTeen, BirthDate: req.BirthDate, PasswordHash: req.PasswordHash}
 		if err := tx.Create(&user).Error; err != nil {
 			return 0, err
 		}
@@ -698,7 +698,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 		}
 		return user.ID, nil
 	}
-	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: req.PasswordHash}
+	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: newAccountStatus(person.Kind, req.PasswordHash != nil), AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: req.PasswordHash}
 	if err := tx.Create(&user).Error; err != nil {
 		return 0, err
 	}

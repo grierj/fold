@@ -519,7 +519,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		return
 	}
 	u := models.User{
-		Email: email, Role: role, Status: models.UserInvited, AccountType: kind, BirthDate: birth,
+		Email: email, Role: role, AccountType: kind, BirthDate: birth,
 		Name: name, DisplayName: strings.TrimSpace(body.DisplayName), Phone: strings.TrimSpace(body.Phone),
 	}
 	if body.Password != "" {
@@ -527,11 +527,8 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not create user")
 			return
 		}
-		u.Status = models.UserActive
 	}
-	if kind == models.AccountTeen {
-		u.Status = models.UserPendingConsent
-	}
+	u.Status = newAccountStatus(kind, body.Password != "")
 	me := apiUser(c)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
@@ -835,56 +832,33 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if bump {
 				updates["session_version"] = sessionVersionBump()
 			}
-			if updates["status"] == models.UserDisabled {
-				if err := revokeAccountTokens(tx, u.ID); err != nil {
-					return err
-				}
-				if u.Status == models.UserDisabled {
-					if err := tx.Model(u).Updates(updates).Error; err != nil {
-						return err
-					}
-					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled, TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-				}
-				err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
-				if err != nil {
-					return err
-				}
-				// Flip the status before the seat work: the rest of this
-				// transaction (seat counts, the waitlist) must see the
-				// account as disabled, since disabled accounts use no
-				// seats (DEC-38). The handoff above must see it active:
-				// leaderCount counts listed users.
+			status, statusSet := updates["status"].(string)
+			if !statusSet {
 				if err := tx.Model(u).Updates(updates).Error; err != nil {
 					return err
 				}
-				// Disabling keeps registration rows but frees every seat
-				// the account held on future dates, promoting into them.
-				err = a.promoteOnDisable(tx, u.ID, true)
-				if err != nil {
+			} else {
+				wasDisabled := u.Status == models.UserDisabled
+				if status == models.UserDisabled && !wasDisabled {
+					// The handoff must see the account listed (leaderCount
+					// counts listed users), so it runs before the status flips.
+					if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled"); err != nil {
+						return err
+					}
+				}
+				if err := a.setAccountStatusIn(tx, u, updates, me.ID, c.ClientIP()); err != nil {
 					return err
 				}
-				return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
-					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-			}
-			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
-				if err != nil {
-					return err
+				switch {
+				case status == models.UserDisabled:
+					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
+						TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
+				case wasDisabled:
+					if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
+						TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+						return err
+					}
 				}
-				// Registrations come back as they were when they fit;
-				// a row that would overfill is dropped and the person
-				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
-				if err != nil {
-					return err
-				}
-				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
-					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-					return err
-				}
-			}
-			if err := tx.Model(u).Updates(updates).Error; err != nil {
-				return err
 			}
 			today, err := churchClockIn(tx, time.Now().UTC())
 			if err != nil {
