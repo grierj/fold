@@ -5,15 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"fold/internal/content"
 	"fold/internal/jobs"
-	"fold/internal/notify"
 	"fold/internal/push"
 	"fold/models"
 
@@ -38,7 +35,8 @@ import (
 const (
 	// pushWaitPrefix starts a waiting push row's reason; the rest is when
 	// quiet hours end, on the recipient's clock: "outside quiet hours ·
-	// sending at 8:00 AM" (research 2.6). The history counts by it.
+	// sending at 8:00 AM" (research 2.6). Use pushWaitReason and
+	// pushWaitUntil, which write and read it.
 	pushWaitPrefix = "outside quiet hours · sending at "
 	// pushWhyStopped: the daily reaper found a push row still queued with
 	// no job left to send it.
@@ -135,8 +133,8 @@ func enqueueMessagePushes(tx *gorm.DB, messageID uint) error {
 	now := time.Now()
 	specs := make([]jobs.Spec, 0, len(pairs))
 	for _, p := range pairs {
-		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, RunAt: now,
-			UniqueKey: "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID), MaxAttempts: pushDeliverAttempts})
+		specs = append(specs, pushDeliverType.Spec(pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, now,
+			pushRecipientKey(p.RecipientID, p.DeviceID)))
 	}
 	if _, err := jobs.EnqueueMany(tx, specs); err != nil {
 		return err
@@ -184,19 +182,12 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 	if row.Channel != models.DeliveryPush || row.CopyOfUserID != nil {
 		return nil
 	}
-	rec := messagePushRecorder(row.ID)
-	record := func(status, reason string) error { return rec(db, status, reason, a.pushNow()) }
-	if !a.pushEnabled() {
-		return record(models.RecipientSuppressed, pushWhyChurchOff)
-	}
+	t := pushTarget{rec: messagePushRecorder(row.ID)}
 	var u models.User
 	if err := db.Select("id", "name", "display_name", "status", "timezone").First(&u, row.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	} else if err != nil {
 		return err
-	}
-	if u.Status != models.UserActive {
-		return record(models.RecipientSuppressed, pushWhyInactive)
 	}
 	var m models.Message
 	if err := db.Select("id", "status", "category", "subject", "body_text", "audience", "occurrence_id", "reminder_key").First(&m, row.MessageID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -204,16 +195,10 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 	} else if err != nil {
 		return err
 	}
-	category := messageCategory(&m)
-	on, categoryOff, err := pushConsent(db, u.ID, category)
-	if err != nil {
+	if why, err := a.pushHeld(db, &u, messageCategory(&m), false); err != nil {
 		return err
-	}
-	switch {
-	case !on:
-		return record(models.RecipientSuppressed, pushWhyNotOn)
-	case categoryOff:
-		return record(models.RecipientSuppressed, "push turned off for "+notify.CategoryEmailName(category))
+	} else if why != "" {
+		return t.record(a, models.RecipientSuppressed, why)
 	}
 	var dev models.PushSubscription
 	if err := db.First(&dev, deviceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -222,33 +207,29 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 	if dev.ID == 0 || dev.UserID != u.ID {
 		// Turned off, gone, or changed hands since it was queued. Another
 		// device's job decides when the person still has one.
-		var left int64
-		if err := db.Model(&models.PushSubscription{}).Where("user_id = ?", u.ID).Count(&left).Error; err != nil {
+		if left, err := pushDevicesLeft(db, u.ID); err != nil {
 			return err
-		}
-		if left == 0 {
-			return record(models.RecipientSuppressed, pushWhyGone)
+		} else if !left {
+			return t.record(a, models.RecipientSuppressed, pushWhyGone)
 		}
 		return nil
 	}
+	t.dev = dev
 	if m.Status != models.MessageSending && m.Status != models.MessageSent {
-		return record(models.RecipientSuppressed, pushWhyStale)
+		return t.record(a, models.RecipientSuppressed, pushWhyStale)
 	}
 	if m.Category == models.MessageCategoryReminder {
 		// The 2-hour push reminder (M3.13d3) has its own checks; the
 		// sweep timed it, so it neither waits nor meets the hourly limit.
-		return a.deliverReminderPush(ctx, &row, &u, dev, &m, plannedAt)
+		return a.deliverReminderPush(ctx, t, &row, &u, &m, plannedAt)
 	}
 	now := a.pushNow()
 	loc := userZoneIn(db, u.Timezone)
-	if inside, opens := a.pushQuietHours().Check(now, loc); !inside {
-		if soonest := now.Add(time.Second); opens.Before(soonest) {
-			opens = soonest
-		}
+	if opens, wait := a.pushOpensAt(now, loc); wait {
 		// The row stays queued and says when it goes, on the
 		// recipient's clock, for the history.
 		if err := db.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", row.ID, models.RecipientQueued).
-			Updates(map[string]any{"reason": pushWaitPrefix + opens.In(loc).Format("3:04 PM"), "updated_at": time.Now()}).Error; err != nil {
+			Updates(map[string]any{"reason": pushWaitReason(opens, loc), "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
 		return jobs.Later(opens)
@@ -258,24 +239,21 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 		return err
 	}
 	if over {
-		return record(models.RecipientSuppressed, pushWhyHourly)
+		return t.record(a, models.RecipientSuppressed, pushWhyHourly)
 	}
 	vals, err := a.pushValues(db, &m, &u)
 	if err != nil {
 		return err
 	}
 	title, text := messagePushText(&m, vals)
-	what := fmt.Sprintf("message %d recipient %d", m.ID, row.ID)
+	t.what = fmt.Sprintf("message %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
-		Title: title, Body: text, Navigate: a.emailLink(messageReadPath(m.ID)), Tag: "m" + historyID(m.ID),
+		Title: title, Body: text, Navigate: a.emailLink(messageReadPath(m.ID)), Tag: "m" + idString(m.ID),
 	}))
 	if err != nil {
-		log.Printf("push: %s is too large to push: a bug in its push text", what)
-		return record(models.RecipientFailed, pushWhyTooLarge)
+		return t.tooLarge(a)
 	}
-	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	opts := push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "mr" + strconv.FormatUint(uint64(row.ID), 10)}
-	return a.pushOutcome(ctx, what, dev, a.pushClient().Send(ctx, sub, body, opts), "", rec)
+	return a.sendPush(ctx, t, body, recipientPushOptions(row.ID, pushTTL), "")
 }
 
 // pushValues are u's merge values for m's push. The lock screen never
@@ -298,8 +276,17 @@ func (a *App) pushValues(db *gorm.DB, m *models.Message, u *models.User) (map[st
 	return values[u.ID], err
 }
 
+// pushWaitReason is a waiting push row's reason: when quiet hours end on the
+// recipient's clock.
+func pushWaitReason(opens time.Time, loc *time.Location) string {
+	return pushWaitPrefix + opens.In(loc).Format("3:04 PM")
+}
+
+// pushWaitUntil is the time a waiting row's reason names, as the history shows it.
+func pushWaitUntil(reason string) string { return strings.TrimPrefix(reason, pushWaitPrefix) }
+
 // messageReadPath is where a recipient reads an announcement in Fold.
-func messageReadPath(id uint) string { return "/messages/" + historyID(id) + "/read" }
+func messageReadPath(id uint) string { return "/messages/" + idString(id) + "/read" }
 
 var (
 	// A link's address after its text in the plain-text part, as
@@ -406,7 +393,7 @@ func reapMessagePushes(db *gorm.DB, now time.Time) (int64, error) {
 	res := db.Exec(`UPDATE message_recipients r SET status = ?, reason = ?, updated_at = ?
 		WHERE r.channel = 'push' AND r.status = 'queued' AND r.updated_at < ?
 		AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = ? AND j.status IN ('queued', 'running', 'failed')
-			AND (j.payload->>'messageRecipientId')::bigint = r.id)`,
-		models.RecipientSuppressed, pushWhyStopped, now, now.Add(-time.Hour), kindPushDeliver)
+			AND (j.payload->>?)::bigint = r.id)`,
+		models.RecipientSuppressed, pushWhyStopped, now, now.Add(-time.Hour), kindPushDeliver, pushJobRecipientField)
 	return res.RowsAffected, res.Error
 }

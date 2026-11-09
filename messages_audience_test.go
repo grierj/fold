@@ -63,8 +63,8 @@ func TestRecipientFactsReadHashedAndLegacySuppressions(t *testing.T) {
 	}
 	want := map[string]string{
 		"hashed": skipNotWorking, "legacy": skipNotWorking, "cleared": "", "clean": "",
-		"complaintfirst": skipComplained, "bouncefirst": skipComplained,
-		"legacycomplaintfirst": skipComplained, "legacybouncefirst": skipComplained,
+		"complaintfirst": skipNotWorking, "bouncefirst": skipNotWorking,
+		"legacycomplaintfirst": skipNotWorking, "legacybouncefirst": skipNotWorking,
 		"complaintonly": skipComplained,
 	}
 	for name, skip := range want {
@@ -137,15 +137,18 @@ func TestSuppressionsSurviveAddressReuseAndErasure(t *testing.T) {
 }
 
 // snapshotSkip is the label preview and the send snapshot give someone with
-// these rows (recipientFacts): any open complaint gives "marked our email as
-// spam", any other open row "email not working", cleared rows nothing.
+// these rows (recipientFacts): any open row but a complaint gives "email not
+// working" (it stops all mail), a complaint alone "marked our email as spam",
+// cleared rows nothing.
 func (c suppressionCase) snapshotSkip() string {
 	skip := ""
 	for _, sp := range c.specs {
 		switch {
 		case sp.cleared:
 		case sp.reason == models.SuppressComplaint:
-			return skipComplained
+			if skip == "" {
+				skip = skipComplained
+			}
 		default:
 			skip = skipNotWorking
 		}
@@ -154,8 +157,8 @@ func (c suppressionCase) snapshotSkip() string {
 }
 
 // sendTimeSkip is the label announcement send gives when the rows appear after
-// the snapshot: the reason optional mail is refused with, which follows the
-// older row, so a complaint written after a hard bounce says "not working".
+// the snapshot: the reason optional mail is refused with, the strongest open
+// one (mail.StrongestReason), whichever row is older.
 func (c suppressionCase) sendTimeSkip() string {
 	switch c.optional {
 	case "":

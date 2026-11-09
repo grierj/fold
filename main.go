@@ -260,12 +260,8 @@ func chooseMailer(cfg Config, db *gorm.DB) (mail.Sender, error) {
 		return nil, err
 	}
 	log.Printf("email: sending through %s", sender.Capabilities().Name)
-	adapter, ok := sender.(mail.Adapter)
-	if !ok {
-		return nil, fmt.Errorf("the %s adapter can't send mail", name)
-	}
 	// Nothing reaches a suppressed address, whichever adapter runs (DEC-112).
-	return mail.WithSuppressions(db, adapter), nil
+	return mail.WithSuppressions(db, sender), nil
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image

@@ -410,11 +410,12 @@ func (a *App) apiPushTest(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
-	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
 	// A test is for now: if the device is off for ten minutes, drop it.
-	res := a.pushClient().Send(ctx, sub, payload, push.Options{TTL: 10 * time.Minute, Urgency: push.UrgencyHigh, Topic: "test"})
+	res := a.pushClient().Send(ctx, pushSubscription(dev), payload, push.Options{TTL: 10 * time.Minute, Urgency: push.UrgencyHigh, Topic: "test"})
 	switch res.Status {
 	case push.Accepted:
+		// A test is the person's own proof the device works, and the device cap
+		// evicts by last use: stamp it every time, not once a day as deliveries do.
 		if err := a.DB.Model(&models.PushSubscription{}).Where("id = ?", dev.ID).
 			UpdateColumns(map[string]any{"last_used_at": time.Now().UTC(), "failed_at": nil}).Error; err != nil {
 			log.Printf("push: device %d: marking it used: %v", dev.ID, err)

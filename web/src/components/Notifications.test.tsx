@@ -9,7 +9,6 @@ import { NotificationBell, NotificationTab } from "./Notifications";
 const api = vi.hoisted(() => ({
   list: vi.fn(),
   badge: vi.fn(),
-  seen: vi.fn(),
   read: vi.fn(),
   readAll: vi.fn(),
   archive: vi.fn(),
@@ -60,7 +59,6 @@ function renderBell() {
 
 beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
-  api.seen.mockResolvedValue({});
   api.read.mockResolvedValue({});
   api.badge.mockResolvedValue({ badge: { unread: 1, waiting: 1 }, etag: '"1-1"' });
   api.list.mockResolvedValue({ waiting: [task], waitingTotal: 1, notifications: [item({})], next: "" });

@@ -18,6 +18,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/providers"
 	"fold/models"
 )
 
@@ -215,8 +216,12 @@ func TestHouseholdConversionReservationsAndLifecycle(t *testing.T) {
 
 type conversionFailMailer struct{}
 
-func (conversionFailMailer) Send(context.Context, mail.Message) error {
-	return errors.New("test delivery failure")
+func (conversionFailMailer) SendEmail(context.Context, mail.Message) (string, error) {
+	return "", errors.New("test delivery failure")
+}
+
+func (conversionFailMailer) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "conversion-fail"}
 }
 
 func TestHouseholdConversionFailedMailExpiryAndDisabledHolder(t *testing.T) {

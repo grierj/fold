@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +45,8 @@ const (
 	reminderPushKind = "push"
 	// pushReminderLead is how long before the start it is due.
 	pushReminderLead = 2 * time.Hour
+	// pushReminderMinutes is pushReminderLead in the key's unit.
+	pushReminderMinutes = int(pushReminderLead / time.Minute)
 	// pushReminderMaxMove is how much earlier quiet hours may move it.
 	pushReminderMaxMove = 18 * time.Hour
 )
@@ -61,7 +62,7 @@ const (
 // moved date gets a new reminder (and the old one's rows send nothing);
 // 120 keeps the key in the email reminders' four-part shape.
 func pushReminderKey(occID uint, start time.Time) string {
-	return reminderPushKind + ":" + historyID(occID) + ":" + strconv.FormatInt(start.Unix(), 10) + ":" + strconv.Itoa(int(pushReminderLead/time.Minute))
+	return reminderKey{Kind: reminderPushKind, Occ: occID, Start: start.Unix(), Minutes: pushReminderMinutes}.String()
 }
 
 // pushReminderStart is the start a push reminder key names.
@@ -69,12 +70,11 @@ func pushReminderStart(key *string) (int64, bool) {
 	if key == nil {
 		return 0, false
 	}
-	parts := strings.Split(*key, ":")
-	if len(parts) != 4 || parts[0] != reminderPushKind {
+	k, ok := parseReminderKey(*key)
+	if !ok || k.Kind != reminderPushKind {
 		return 0, false
 	}
-	start, err := strconv.ParseInt(parts[2], 10, 64)
-	return start, err == nil
+	return k.Start, true
 }
 
 // pushReminderPlan is when one person's push reminder goes: at At, or
@@ -260,8 +260,8 @@ func enqueuePushReminderJobs(tx *gorm.DB, messageID uint, at map[uint]time.Time)
 	}
 	specs := make([]jobs.Spec, 0, len(pairs))
 	for _, p := range pairs {
-		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID, PlannedAt: at[p.UserID].Unix()}, RunAt: at[p.UserID],
-			UniqueKey: "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID), MaxAttempts: pushDeliverAttempts})
+		specs = append(specs, pushDeliverType.Spec(pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID, PlannedAt: at[p.UserID].Unix()}, at[p.UserID],
+			pushRecipientKey(p.RecipientID, p.DeviceID)))
 	}
 	if _, err := jobs.EnqueueMany(tx, specs); err != nil {
 		return err
@@ -305,10 +305,10 @@ const pushReminderGrace = 15 * time.Minute
 // Unix seconds; a job without one uses the row's updated_at, when the
 // sweep wrote it), it is skipped as "outside quiet hours". The hourly limit
 // never stops a reminder, though a sent one counts toward it (DEC-126).
-func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipient, u *models.User, dev models.PushSubscription, m *models.Message, plannedAt int64) error {
+func (a *App) deliverReminderPush(ctx context.Context, t pushTarget, row *models.MessageRecipient, u *models.User, m *models.Message, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
-	rec := pushReminderRecorder(*row)
-	record := func(status, reason string) error { return rec(db, status, reason, a.pushNow()) }
+	t.rec = pushReminderRecorder(*row)
+	record := func(status, reason string) error { return t.record(a, status, reason) }
 	now := a.pushNow()
 	start, ok := pushReminderStart(m.ReminderKey)
 	if !ok || m.OccurrenceID == nil {
@@ -363,19 +363,17 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 		title = *occ.TitleOverride
 	}
 	head, text := reminderPushText(title, occ.StartsAt, loc, now)
-	what := fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
+	t.what = fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
-		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + historyID(occ.ID),
+		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + idString(occ.ID),
 	}))
 	if err != nil {
-		return record(models.RecipientFailed, pushWhyTooLarge)
+		return t.tooLarge(a)
 	}
 	// Kept by the push service until the date starts, never longer than a
 	// day: a reminder for a date already begun is no use.
 	ttl := min(max(occ.StartsAt.Sub(now), time.Minute), pushTTL)
-	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	opts := push.Options{TTL: ttl, Urgency: push.UrgencyNormal, Topic: "mr" + strconv.FormatUint(uint64(row.ID), 10)}
-	return a.pushOutcome(ctx, what, dev, a.pushClient().Send(ctx, sub, body, opts), "", rec)
+	return a.sendPush(ctx, t, body, recipientPushOptions(row.ID, ttl), "")
 }
 
 // reminderPushText is a push reminder's lock screen (DEC-124, DEC-136):
@@ -420,10 +418,10 @@ func pushReminderCandidates(db *gorm.DB, now time.Time) ([]pushReminderCandidate
 		WHERE o.status = ? AND e.reminder_push AND o.starts_at > ? AND o.starts_at BETWEEN ? AND ?
 		  AND EXISTS (SELECT 1 FROM push_subscriptions d WHERE d.user_id = u.id)
 		  AND NOT EXISTS (SELECT 1 FROM messages m JOIN message_recipients mr ON mr.message_id = m.id AND mr.user_id = u.id AND mr.channel = ?
-			WHERE m.reminder_key = ? || o.id || ':' || extract(epoch FROM o.starts_at)::bigint || ?)
+			WHERE m.reminder_key = `+reminderKeySQL("o", reminderPushKind, pushReminderMinutes)+`)
 		ORDER BY o.starts_at, o.id, u.id`,
 		models.RegGoing, models.UserActive, models.OccurrenceScheduled, now,
 		now.Add(pushReminderLead-reminderLookback), now.Add(pushReminderLead+pushReminderMaxMove+reminderLookahead),
-		models.DeliveryPush, reminderPushKind+":", ":"+strconv.Itoa(int(pushReminderLead/time.Minute))).Scan(&cands).Error
+		models.DeliveryPush).Scan(&cands).Error
 	return cands, err
 }

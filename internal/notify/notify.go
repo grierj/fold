@@ -23,6 +23,7 @@ import (
 
 	"fold/internal/jobs"
 	"fold/internal/txguard"
+	"fold/internal/userlock"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -36,10 +37,31 @@ const (
 	KeepUnread = 180 * 24 * time.Hour
 )
 
-// DeliverKind is the job that sends one stored notice by email and to the
-// recipient's devices. The handler lives in the server; this package only
-// names the kind.
+// DeliverJob is the job that sends one stored notice by email and to the
+// recipient's devices. The handler lives in the server; this package owns the
+// type, its payload and its key. Eight attempts on jobs.Backoff span about an
+// hour, the same as the message batch.
+var DeliverJob = jobs.Type{Name: DeliverKind, MaxAttempts: 8}
+
+// DeliverKind is the name of DeliverJob.
 const DeliverKind = "notify.deliver"
+
+// DeliverPayload is notify.deliver's payload: the notice id and nothing else.
+type DeliverPayload struct {
+	NotificationID uint `json:"notificationId"`
+}
+
+// DeliverKeyPrefix is what a notice's delivery job key starts with; SQL that
+// looks a job up by key appends the notice id to it.
+const DeliverKeyPrefix = DeliverKind + ":"
+
+// DeliverKey identifies a notice's delivery job in any status.
+func DeliverKey(id uint) string { return DeliverKeyPrefix + strconv.FormatUint(uint64(id), 10) }
+
+// DeliverSpec is the delivery job for notice id, to run at at.
+func DeliverSpec(id uint, at time.Time) jobs.Spec {
+	return DeliverJob.Spec(DeliverPayload{NotificationID: id}, at, DeliverKey(id))
+}
 
 // Msg is one notification to write, for every recipient in To.
 type Msg struct {
@@ -89,7 +111,7 @@ type scopeState struct {
 
 // recipientLockBatch bounds one recipient lock statement. IDs are sorted
 // before batching, so the whole set is still locked in ascending ID order.
-const recipientLockBatch = 500
+const recipientLockBatch = userlock.Batch
 
 // ErrBadScope: a Msg.Scope that is not valid for this Send (see Msg.Scope).
 var ErrBadScope = errors.New("notify: recipient scope is not valid here")
@@ -214,28 +236,7 @@ func (sc *Scope) check(tx *gorm.DB, ids []uint) error {
 // on the non-deleted users among ids, ascending, in batches of 500. It returns
 // the ids it locked. Run on a plain handle, the locks end with the statement.
 func lockRecipients(tx *gorm.DB, ids []uint) (map[uint]bool, error) {
-	sorted := make([]uint, 0, len(ids))
-	for _, id := range ids {
-		if id != 0 {
-			sorted = append(sorted, id)
-		}
-	}
-	slices.Sort(sorted)
-	sorted = slices.Compact(sorted)
-	held := make(map[uint]bool, len(sorted))
-	for len(sorted) > 0 {
-		n := min(len(sorted), recipientLockBatch)
-		var got []uint
-		if err := tx.Raw(`SELECT id FROM users WHERE id IN ? AND deleted_at IS NULL ORDER BY id FOR KEY SHARE`,
-			sorted[:n]).Scan(&got).Error; err != nil {
-			return nil, err
-		}
-		for _, id := range got {
-			held[id] = true
-		}
-		sorted = sorted[n:]
-	}
-	return held, nil
+	return userlock.KeyShareLive(tx, ids)
 }
 
 // Send writes (or merges) one row per recipient, skipping the actor. It
@@ -357,9 +358,6 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	return ids, nil
 }
 
-// DeliverKey identifies a notice's delivery job in any status.
-func DeliverKey(id uint) string { return fmt.Sprintf("%s:%d", DeliverKind, id) }
-
 // QueueDelivery is the repair entry point. It queues channel intent and jobs
 // for notices selected earlier, possibly in another transaction: deliver rows
 // get their email ledger row and a delivery job, bellOnly rows only the
@@ -471,12 +469,7 @@ func queueProtected(tx *gorm.DB, bellOnly bool, rows ...models.Notification) err
 			args = append(args, row.ID, models.DeliveryEmail, row.UserID, status, reason)
 		}
 		if !bellOnly && (k.AllowEmail || k.AllowPush) {
-			specs = append(specs, jobs.Spec{
-				Kind: DeliverKind, Payload: struct {
-					NotificationID uint `json:"notificationId"`
-				}{row.ID},
-				RunAt: now, UniqueKey: DeliverKey(row.ID), MaxAttempts: 8,
-			})
+			specs = append(specs, DeliverSpec(row.ID, now))
 		}
 	}
 	for len(values) > 0 {
@@ -538,9 +531,17 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 // zero means someone else got there first, or there was no task.
 func Resolve(tx *gorm.DB, kind string, subjectID uint, by *uint, resolution string) (int64, error) {
 	res := tx.Model(&models.Notification{}).
-		Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", kind, subjectID).
+		Where("kind = ? AND subject_id = ? AND "+sqlTask, kind, subjectID).
 		UpdateColumns(map[string]any{"resolved_at": time.Now().UTC(), "resolved_by_id": by, "resolution": resolution})
 	return res.RowsAffected, res.Error
+}
+
+// OpenTask reports whether a task of kind about subjectID is still waiting
+// for someone, for any recipient.
+func OpenTask(tx *gorm.DB, kind string, subjectID uint) (bool, error) {
+	var n int64
+	err := tx.Model(&models.Notification{}).Where("kind = ? AND subject_id = ? AND "+sqlTask, kind, subjectID).Limit(1).Count(&n).Error
+	return n > 0, err
 }
 
 // LastResolution is the most recent resolution of a task, for the 409 an
@@ -701,16 +702,6 @@ func ArchiveRead(db *gorm.DB, userID uint) error {
 		UpdateColumn("archived_at", gorm.Expr("now()")).Error
 }
 
-// Seen stamps seen_at on the user's rows the panel showed (kept for the
-// M1.2 "email if not seen" escalation; the badge doesn't use it).
-func Seen(db *gorm.DB, userID uint, ids []uint) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	return db.Model(&models.Notification{}).
-		Where("user_id = ? AND id IN ? AND seen_at IS NULL", userID, ids).UpdateColumn("seen_at", gorm.Expr("now()")).Error
-}
-
 // Prune is the daily retention cleanup (DEC-45). Open tasks are kept
 // however old, since they still need someone.
 func Prune(db *gorm.DB, now time.Time) (int64, error) {
@@ -719,4 +710,11 @@ func Prune(db *gorm.DB, now time.Time) (int64, error) {
 		" OR updated_at < ?)", now, now.Add(-KeepRead), now.Add(-KeepUnread)).
 		Delete(&models.Notification{})
 	return res.RowsAffected, res.Error
+}
+
+// Settled reports whether n is past needing anyone: archived, expired, or a
+// task someone resolved. Delivery that waits (a push held for quiet hours) or
+// runs late (a backfill) drops a settled notice.
+func Settled(n *models.Notification, now time.Time) bool {
+	return n.ArchivedAt != nil || (n.ExpiresAt != nil && !n.ExpiresAt.After(now)) || (n.Waiting && n.ResolvedAt != nil)
 }

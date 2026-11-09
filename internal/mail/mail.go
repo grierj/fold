@@ -39,11 +39,9 @@ import (
 // account mail.
 type Message = providers.EmailMessage
 
-// Sender sends one email. Every adapter also implements
-// providers.EmailSender, which reports the provider's message id.
-type Sender interface {
-	Send(ctx context.Context, m Message) error
-}
+// Sender sends one email and returns the provider's id for it. It is the one
+// interface every adapter, the suppression wrapper and NoSender implement.
+type Sender = providers.EmailSender
 
 // checkMessage refuses what no adapter may send: no recipient, a recipient
 // with a newline (which could inject headers) or more than one recipient.
@@ -109,12 +107,6 @@ type DevOutbox struct {
 // NewDevOutbox returns a DevOutbox writing to db.
 func NewDevOutbox(db *gorm.DB, from string) *DevOutbox {
 	return &DevOutbox{DB: db, From: from}
-}
-
-// Send stores m in the mail_outboxes table.
-func (d *DevOutbox) Send(ctx context.Context, m Message) error {
-	_, err := d.SendEmail(ctx, m)
-	return err
 }
 
 // SendEmail stores m; its id is "devoutbox-<row id>".
@@ -256,12 +248,6 @@ func NewSMTP(rawURL, from string) (*SMTPSender, error) {
 // LF, which would let a crafted value inject extra headers.
 func headerSafe(v string) bool {
 	return !strings.ContainsAny(v, "\r\n")
-}
-
-// Send delivers m through the SMTP server.
-func (s *SMTPSender) Send(ctx context.Context, m Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
 }
 
 // Capabilities: plain SMTP has no streams and reports no bounces.
@@ -406,9 +392,6 @@ func Address(from string) string {
 
 // NoSender errors on every send, telling the operator what to set.
 type NoSender struct{}
-
-// Send always fails: there is no sender configured.
-func (NoSender) Send(context.Context, Message) error { return errNoSender }
 
 // SendEmail always fails.
 func (NoSender) SendEmail(context.Context, Message) (string, error) { return "", errNoSender }

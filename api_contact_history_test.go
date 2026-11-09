@@ -160,7 +160,7 @@ func TestContactHistoryContactPathWalkAndDeletionSurvival(t *testing.T) {
 		if e.Purpose != "contact" {
 			continue
 		}
-		if e.RequesterID == "" || e.RequesterID != historyID(f.leader.ID) || e.SubjectUserID == "" || e.SubjectUserID != historyID(f.subject.ID) {
+		if e.RequesterID == "" || e.RequesterID != idString(f.leader.ID) || e.SubjectUserID == "" || e.SubjectUserID != idString(f.subject.ID) {
 			t.Fatalf("attribution %+v", e)
 		}
 	}
@@ -303,7 +303,7 @@ func TestContactHistoryCursorExportBoundsAndTypedAttribution(t *testing.T) {
 	}
 	maxID := uint(9223372036854775807)
 	seedHistoryAudit(t, app, audit.Entry{Action: audit.MemberAdded, TargetType: "group", TargetID: 42, Meta: map[string]any{"userId": maxID}})
-	if entries := getHistory(t, client, maxID, "").Entries; len(entries) != 1 || entries[0].SubjectUserID == "" || entries[0].SubjectUserID != historyID(maxID) {
+	if entries := getHistory(t, client, maxID, "").Entries; len(entries) != 1 || entries[0].SubjectUserID == "" || entries[0].SubjectUserID != idString(maxID) {
 		t.Fatal("retained bigint ID", entries)
 	}
 	seedHistoryAudit(t, app, audit.Entry{Actor: &admin.ID, Action: audit.ContactRefused, TargetType: "contact_request", Meta: map[string]any{"requesterId": 999, "subjectUserId": 11, "contextId": 777, "fields": "email"}})
@@ -586,7 +586,7 @@ func TestContactHistoryExactDecimalStringIDs(t *testing.T) {
 	before := ""
 	for i, want := range []string{"9223372036854775807", "9007199254740993", "9007199254740992"} {
 		p := getHistory(t, client, maxID, "?limit=1"+before)
-		if len(p.Entries) != 1 || p.Entries[0].ID != want || p.Entries[0].ActorID != historyID(maxID) || p.Entries[0].SubjectUserID != historyID(maxID) || p.Entries[0].ContextID != historyID(maxID) {
+		if len(p.Entries) != 1 || p.Entries[0].ID != want || p.Entries[0].ActorID != idString(maxID) || p.Entries[0].SubjectUserID != idString(maxID) || p.Entries[0].ContextID != idString(maxID) {
 			t.Fatal("inexact history IDs", p)
 		}
 		if i < 2 {
