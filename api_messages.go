@@ -86,15 +86,13 @@ func reminderSubject(subject string, d messageReminderJSON) string {
 	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
 }
 
-// reminderKind is going, waitlist or push, from a reminder's key
-// ("<kind>:<occurrence>:<start>:<minutes>", writeReminder and
-// pushReminderKey).
+// reminderKind is going, waitlist or push, from a reminder's key (a
+// reminderKey).
 func reminderKind(m *models.Message) string {
-	switch {
-	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderWaitlist+":"):
-		return reminderWaitlist
-	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderPushKind+":"):
-		return reminderPushKind
+	if m.ReminderKey != nil {
+		if k, ok := parseReminderKey(*m.ReminderKey); ok && (k.Kind == reminderWaitlist || k.Kind == reminderPushKind) {
+			return k.Kind
+		}
 	}
 	return reminderGoing
 }

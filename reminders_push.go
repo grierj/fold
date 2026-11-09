@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +45,8 @@ const (
 	reminderPushKind = "push"
 	// pushReminderLead is how long before the start it is due.
 	pushReminderLead = 2 * time.Hour
+	// pushReminderMinutes is pushReminderLead in the key's unit.
+	pushReminderMinutes = int(pushReminderLead / time.Minute)
 	// pushReminderMaxMove is how much earlier quiet hours may move it.
 	pushReminderMaxMove = 18 * time.Hour
 )
@@ -61,7 +62,7 @@ const (
 // moved date gets a new reminder (and the old one's rows send nothing);
 // 120 keeps the key in the email reminders' four-part shape.
 func pushReminderKey(occID uint, start time.Time) string {
-	return reminderPushKind + ":" + idString(occID) + ":" + strconv.FormatInt(start.Unix(), 10) + ":" + strconv.Itoa(int(pushReminderLead/time.Minute))
+	return reminderKey{Kind: reminderPushKind, Occ: occID, Start: start.Unix(), Minutes: pushReminderMinutes}.String()
 }
 
 // pushReminderStart is the start a push reminder key names.
@@ -69,12 +70,11 @@ func pushReminderStart(key *string) (int64, bool) {
 	if key == nil {
 		return 0, false
 	}
-	parts := strings.Split(*key, ":")
-	if len(parts) != 4 || parts[0] != reminderPushKind {
+	k, ok := parseReminderKey(*key)
+	if !ok || k.Kind != reminderPushKind {
 		return 0, false
 	}
-	start, err := strconv.ParseInt(parts[2], 10, 64)
-	return start, err == nil
+	return k.Start, true
 }
 
 // pushReminderPlan is when one person's push reminder goes: at At, or
@@ -418,10 +418,10 @@ func pushReminderCandidates(db *gorm.DB, now time.Time) ([]pushReminderCandidate
 		WHERE o.status = ? AND e.reminder_push AND o.starts_at > ? AND o.starts_at BETWEEN ? AND ?
 		  AND EXISTS (SELECT 1 FROM push_subscriptions d WHERE d.user_id = u.id)
 		  AND NOT EXISTS (SELECT 1 FROM messages m JOIN message_recipients mr ON mr.message_id = m.id AND mr.user_id = u.id AND mr.channel = ?
-			WHERE m.reminder_key = ? || o.id || ':' || extract(epoch FROM o.starts_at)::bigint || ?)
+			WHERE m.reminder_key = ` + reminderKeySQL("o", reminderPushKind, pushReminderMinutes) + `)
 		ORDER BY o.starts_at, o.id, u.id`,
 		models.RegGoing, models.UserActive, models.OccurrenceScheduled, now,
 		now.Add(pushReminderLead-reminderLookback), now.Add(pushReminderLead+pushReminderMaxMove+reminderLookahead),
-		models.DeliveryPush, reminderPushKind+":", ":"+strconv.Itoa(int(pushReminderLead/time.Minute))).Scan(&cands).Error
+		models.DeliveryPush).Scan(&cands).Error
 	return cands, err
 }

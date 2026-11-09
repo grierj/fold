@@ -6,7 +6,6 @@ import (
 	"errors"
 	"html"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -118,7 +117,7 @@ func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 		if at.Before(now) {
 			at = now
 		}
-		key := kindReminderSend + ":" + idString(r.ID) + ":" + strconv.FormatInt(r.StartsAt.Unix(), 10) + ":" + strconv.Itoa(r.Minutes)
+		key := reminderKey{Kind: kindReminderSend, Occ: r.ID, Start: r.StartsAt.Unix(), Minutes: r.Minutes}.String()
 		if _, err := reminderSendType.Enqueue(a.DB.WithContext(ctx), reminderJob{OccurrenceID: r.ID, StartsAt: r.StartsAt.Unix(), Minutes: r.Minutes}, at, key); err != nil {
 			return err
 		}
@@ -189,7 +188,7 @@ func (a *App) sendReminder(ctx context.Context, p reminderJob, now time.Time) er
 // writeReminder writes one reminder message, or finds the one already
 // written, and returns its id if it still needs preparing (0 if not).
 func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence, p reminderJob, kind string, now time.Time) (uint, error) {
-	key := kind + ":" + idString(occ.ID) + ":" + strconv.FormatInt(p.StartsAt, 10) + ":" + strconv.Itoa(p.Minutes)
+	key := reminderKey{Kind: kind, Occ: occ.ID, Start: p.StartsAt, Minutes: p.Minutes}.String()
 	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{reminderStatus(kind)}})
 	subject, body := reminderText(kind, occurrencePlace(ev, occ), p.Minutes)
 	clean := content.SanitizeHTML(body)
@@ -388,7 +387,7 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 		GROUP BY m.id ORDER BY m.id`,
 		[]string{models.RecipientSent, models.RecipientDelivered},
 		[]string{models.RecipientBounced, models.RecipientComplained, models.RecipientFailed}, models.RecipientSuppressed, models.RecipientQueued,
-		models.DeliveryPush, reminderPushKind+":%",
+		models.DeliveryPush, reminderKeyLike(reminderPushKind),
 		occ.ID, models.MessageCategoryReminder).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -460,7 +459,7 @@ func createEvent(tx *gorm.DB, ev *models.Event) error {
 
 // reminderAlreadyCovers reports whether a reminder of this kind already
 // went for the date at a time still inside the new reminder's lead: its
-// own reminder time (from its key: kind:occ:start:minutes) is less than
+// own reminder time (from its reminderKey) is less than
 // p.Minutes before the new one. A date moved an hour later sends no second
 // email; a date moved a week later does, and so does a changed reminder
 // time (a 1-day reminder shortened to 2 hours sends the 2-hour one too:
@@ -468,7 +467,7 @@ func createEvent(tx *gorm.DB, ev *models.Event) error {
 func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) (bool, error) {
 	var keys []string
 	if err := db.Model(&models.Message{}).Where("occurrence_id = ? AND category = ? AND reminder_key LIKE ? AND status IN ?",
-		occID, models.MessageCategoryReminder, kind+":%", []string{models.MessageSending, models.MessageSent}).
+		occID, models.MessageCategoryReminder, reminderKeyLike(kind), []string{models.MessageSending, models.MessageSent}).
 		Pluck("reminder_key", &keys).Error; err != nil {
 		return false, err
 	}
@@ -481,22 +480,17 @@ func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) 
 }
 
 // reminderKeyCovers compares a reminder already written under key
-// (kind:occ:start:minutes) with the one p would send: same is the very
+// (a reminderKey) with the one p would send: same is the very
 // same reminder (date, start and time alike); covers is another one whose
 // time is less than p.Minutes before p's (reminderAlreadyCovers' rule).
 func reminderKeyCovers(key string, p reminderJob) (same, covers bool) {
-	parts := strings.Split(key, ":")
-	if len(parts) != 4 {
+	k, ok := parseReminderKey(key)
+	if !ok {
 		return false, false
 	}
-	start, err1 := strconv.ParseInt(parts[2], 10, 64)
-	minutes, err2 := strconv.Atoi(parts[3])
-	if err1 != nil || err2 != nil {
-		return false, false
-	}
-	if start == p.StartsAt && minutes == p.Minutes {
+	if k.Start == p.StartsAt && k.Minutes == p.Minutes {
 		return true, false
 	}
-	at, was := p.StartsAt-int64(p.Minutes)*60, start-int64(minutes)*60
+	at, was := p.StartsAt-int64(p.Minutes)*60, k.Start-int64(k.Minutes)*60
 	return false, at-was < int64(p.Minutes)*60
 }
