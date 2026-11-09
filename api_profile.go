@@ -22,12 +22,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
-// Profile endpoints (Phase 2)
-// ---------------------------------------------------------------------------
 
-// apiUpdateMe updates the current user's profile. Fields are pointers so
-// "not provided" is distinct from "set to empty".
 func (a *App) apiUpdateMe(c *gin.Context) {
 	u := apiUser(c)
 	var body struct {

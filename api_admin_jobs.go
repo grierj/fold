@@ -21,7 +21,6 @@ import (
 // attempts, for an admin to retry or set aside. It never shows a job's
 // payload, which can name people.
 
-// adminJobJSON is one dead job as the System page shows it.
 type adminJobJSON struct {
 	ID   uint   `json:"id"`
 	Kind string `json:"kind"`
@@ -42,7 +41,6 @@ type adminDeliverySummaryJSON struct {
 	OldestQueuedAt *time.Time `json:"oldestQueuedAt"`
 }
 
-// maxDeadJobsListed bounds the System page; it says when there are more.
 const maxDeadJobsListed = 100
 
 // jobKinds is every job kind the server runs, by name, for its label and
