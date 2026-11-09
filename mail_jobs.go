@@ -471,9 +471,10 @@ func (a *App) prepareAndSend(ctx context.Context, kind string, subjectID uint, p
 }
 
 // sendDirect uses the configured suppression-aware sender for required account
-// mail. A suppressed address or a permanent refusal finishes quietly. With no
-// email service set up, or on a transient error or cancellation, the runner
-// retries and alerts admins if all attempts fail.
+// mail. A suppressed address, a permanent refusal or no email service set up
+// (mail.NoSender, with a startup warning) finishes quietly, logged; only a
+// transient error or cancellation retries, and the runner alerts admins if
+// all attempts fail.
 func (a *App) sendDirect(ctx context.Context, kind string, subjectID uint, msg mail.Message) error {
 	ctx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
@@ -487,12 +488,9 @@ func (a *App) sendDirect(ctx context.Context, kind string, subjectID uint, msg m
 	}
 	log.Printf("mail: %s #%d: %s", kind, subjectID, jobs.CleanError(res.err))
 	switch res.outcome {
-	case sendSuppressed, sendPermanent:
+	case sendSuppressed, sendPermanent, sendNotConfigured:
 		return nil
 	}
-	// Not configured or transient: the job retries, and after its last
-	// attempt it is dead on the System page, so required mail never
-	// vanishes without someone being told.
 	return res.err
 }
 
