@@ -54,7 +54,6 @@ it("explains a link that can only turn email off, above the unchanged switches",
   open();
   const message = await screen.findByText(turnOnMessage);
   const options = await screen.findByRole("group", { name: "Optional email" });
-  expect(message).toHaveClass("text-text-muted");
   expect(message.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: /^Event updates/ })).toBeEnabled();

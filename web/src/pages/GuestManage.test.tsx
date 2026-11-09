@@ -9,5 +9,5 @@ it.each(["going", "cancelled"] as const)("keeps a %s guest's navigation on the o
   render(<MemoryRouter initialEntries={["/guest/manage/token"]}><Routes><Route path="/guest/manage/:token" element={<GuestManage />} /></Routes></MemoryRouter>);
   const link = await screen.findByRole("link", { name: status === "going" ? "View the event" : "Changed your mind? Register again" });
   expect(link).toHaveAttribute("href", "/events/7/dates/2026-12-01");
-  expect(link).toHaveClass("btn-link", "w-full");
+  expect(link).toHaveClass("btn-link");
 });

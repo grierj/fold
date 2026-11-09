@@ -4,7 +4,6 @@
 // Me → Notifications loads. Nothing here registers the service worker:
 // only the card's "Turn on notifications" does.
 
-// isStandalone: running as a Home Screen or installed app.
 export function isStandalone(): boolean {
   const media = typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches;
   return media || (navigator as Navigator & { standalone?: boolean }).standalone === true;

@@ -191,7 +191,6 @@ export function GroupForm({
   );
 }
 
-// The create form, also used by /groups/new.
 export function CreateGroupForm({ onSaved, onCancel }: {
   onSaved: (data: GroupFormData) => Promise<void>;
   onCancel: () => void;

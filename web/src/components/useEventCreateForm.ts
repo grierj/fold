@@ -58,7 +58,6 @@ export function useEventCreateForm(kind: "group" | "church") {
     return false;
   }
 
-  // Shows a server error, under the option it is about when it names one.
   function reject(err: unknown, fallback: string) {
     const message = errorText(err, fallback);
     const field = optionFieldOfError(err);

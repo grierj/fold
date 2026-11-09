@@ -33,7 +33,6 @@ export interface EmailSettingsChange {
   off: boolean;
 }
 
-// Me > Notifications: the signed-in email switches.
 export const NotificationSettings = {
   get: () => api<{ settings: NotificationSettingsData }>("/me/notification-settings"),
   update: (change: EmailSettingsChange) =>

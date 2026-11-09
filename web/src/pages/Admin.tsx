@@ -59,9 +59,6 @@ type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "setting
 
 const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 
-// ---------------------------------------------------------------------------
-// Approvals
-// ---------------------------------------------------------------------------
 
 type Decision = { kind: "approved" | "rejected"; id: number; name: string; leaderName: string };
 
@@ -433,9 +430,6 @@ function ApprovalsTab({ onCount, onGroupDecided }: { onCount: (n: number) => voi
   );
 }
 
-// ---------------------------------------------------------------------------
-// Groups: list, edit (via group page), manage members
-// ---------------------------------------------------------------------------
 
 function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
   group: GroupSummary;
@@ -731,9 +725,6 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Users: list, create, edit, reset password, delete
-// ---------------------------------------------------------------------------
 
 const EMPTY_USER_FORM = {
   password: "",
@@ -1182,9 +1173,6 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
 
 function ChurchTimezone() {
   const { site, error: siteError, loading, retry } = useSite();

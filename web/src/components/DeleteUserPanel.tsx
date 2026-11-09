@@ -134,7 +134,6 @@ function endingCopy(e: unknown): string | null {
   return null;
 }
 
-// A restore was seen: the whole server, not one person, waits for a fresh list.
 function noteRestore(e: unknown): void {
   if (errorCode(e) === "restore_detected") requireRestoreReload();
 }
@@ -195,7 +194,6 @@ function pageFailureOf(e: unknown): Failure {
 const numbers = new Intl.NumberFormat("en-US");
 const reasonsWord = (n: number) => `${numbers.format(n)} ${n === 1 ? "reason" : "reasons"}`;
 
-// The sentence under the success line, from the 200 body only.
 function reasonCounts(erasure: ErasureReport | null): string | null {
   if (!erasure || erasure.reasonsKept + erasure.reasonsRemoved === 0) return null;
   const { reasonsKept: k, reasonsRemoved: r } = erasure;
@@ -478,7 +476,6 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     });
   }
 
-  // Settles the id of press `press` and shows what the server answers.
   async function settle(id: string, press: number, text = CHECKING_COPY) {
     setPhase({ kind: "checking", text });
     try {
@@ -547,7 +544,6 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     if (review.phase !== "done" || store.getSnapshot().unchosen !== 0 || hashBroken) return;
     const press = ++presses.current;
     attempt.current = null;
-    // 1. Freeze: every radio is disabled (busy) and the store is read once.
     setBusy(true);
     setError(null);
     setPhase({ kind: "idle" });
@@ -630,7 +626,6 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   }
 
   const name = publicName(target);
-  // Delete stays off while an answer is unresolved or the attempt has ended it.
   const canPress = (phase.kind === "idle" || phase.kind === "notApplied") && !hashBroken;
   // Closing reloads the list when the account is gone or may be.
   // The answer is in: the questions above it no longer apply.
@@ -880,7 +875,6 @@ function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTML
   );
 }
 
-// What the two counts mean, in plain words and no further than the server says.
 function KeptNotes() {
   return (
     <ul className="list-disc space-y-1 pl-5 text-text-muted">

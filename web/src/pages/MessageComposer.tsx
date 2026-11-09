@@ -180,7 +180,6 @@ export function MessageComposerPage() {
     showFieldErrors(form.current, () => setErrors(next));
   }
 
-  // What each action needs before it can go to the server.
   function problems(action: Action): Errors {
     const e: Errors = {};
     if (!audience) e.audience = choice.target ? "Choose at least one kind of person." : ERROR_COPY.message_audience;
@@ -217,7 +216,6 @@ export function MessageComposerPage() {
     show({ [field ?? where]: text });
   }
 
-  // save stores the draft (creating it the first time) and answers it.
   async function save(): Promise<Message> {
     if (!audience) throw new Error("save needs an audience");
     const draft = { subject: subject.trim(), bodyHtml: body, audience, pushAlert };

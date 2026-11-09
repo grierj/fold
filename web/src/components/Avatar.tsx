@@ -1,7 +1,5 @@
 import { focalPosition } from "../lib/image";
 
-// Avatar: circular cropped avatar with focal-point-aware object-position.
-// Falls back to the initial letter when there's no image.
 export function Avatar({
   url,
   name,

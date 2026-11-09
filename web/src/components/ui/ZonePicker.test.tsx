@@ -22,7 +22,10 @@ function Harness({ initial = "America/Los_Angeles", church = false }: { initial?
 }
 
 const box = () => screen.getByRole("combobox", { name: "Time zone" });
-const options = () => screen.getAllByRole("option").map((o) => o.textContent);
+// Role queries compute every option's accessibility state (about 420 options in jsdom), which is slow enough to
+// time out under load. Find the one listbox by role, then read its options straight from the DOM.
+const optionEls = () => [...screen.getByRole("listbox", { name: "Time zones" }).querySelectorAll('[role="option"]')];
+const options = () => optionEls().map((o) => o.textContent);
 
 describe("ZonePicker", () => {
   it("shows the current choice in full at rest, wired to its label and hint", () => {
@@ -40,7 +43,7 @@ describe("ZonePicker", () => {
     expect(options()[0]).toMatch(/^Boise \(Mountain\)Yours/);
     expect(options()[2]).toMatch(/^New York \(Eastern\)/);
     expect(box()).toHaveAttribute("aria-expanded", "true");
-    expect(box().getAttribute("aria-activedescendant")).toBe(screen.getAllByRole("option")[1].id);
+    expect(box().getAttribute("aria-activedescendant")).toBe(optionEls()[1].id);
   });
 
   it("filters by region name, picks with the keyboard, and closes", async () => {

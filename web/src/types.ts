@@ -1143,7 +1143,6 @@ export interface AdminJob {
   failedAt: string;
 }
 
-// --- Messages: the composer (M3.4) ---
 
 type MessageStatus = "draft" | "scheduled" | "sending" | "sent" | "failed" | "cancelled";
 type AudienceType = "occurrence" | "event_series" | "events" | "group" | "all_members" | "users";
@@ -1483,7 +1482,7 @@ export interface ErasureReasonPage {
 }
 
 // ---- Response shapes the API modules return, checked against Go by
-// TestWebTypesMatchGoJSON (guards_test.go, tsContracts) ----
+// TestWebTypesMatchGoJSON (guards_web_test.go, tsContracts) ----
 
 // POST /auth/login and GET /auth/me. `user` is null on /auth/me when signed out.
 export interface SessionResponse {

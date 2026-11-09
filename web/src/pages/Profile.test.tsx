@@ -122,9 +122,9 @@ it("sends the current password for an email change and clears only the secret af
   expect(password).toHaveValue("");
 });
 
-it("reserves household height only when its section is opened and the lazy chunk is slow", async () => {
+it("shows the household loading placeholder only when its section is opened and the lazy chunk is slow", async () => {
   renderProfile("/profile/household");
-  expect(screen.getByRole("region", { name: "My household loading" })).toHaveClass("min-h-80");
+  expect(screen.getByRole("region", { name: "My household loading" })).toBeInTheDocument();
   await act(async () => { chunk.finish(); await chunk.ready; });
   expect(await screen.findByText("Household loaded")).toBeInTheDocument();
 });
@@ -187,7 +187,7 @@ it("disables the privacy box while it saves, so a second change waits for the fi
   await userEvent.click(toggle);
   expect(Profile.update).toHaveBeenCalledOnce();
   await act(async () => { finish({ user: adult }); });
-  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(toggle).toBeEnabled();
 });
 

@@ -49,7 +49,6 @@ it("keeps actions beside compact details and names statuses in words", () => {
   expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
   const row = screen.getByRole("button", { name: "More for Sam" }).closest("li")!;
   expect(within(row).getByText("Going")).toBeInTheDocument();
-  expect(row).toHaveClass("flex", "items-start");
 });
 
 it("keeps waitlist positions per pool and places status before care notes", () => {

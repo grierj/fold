@@ -22,10 +22,8 @@ const EARLY_MS = 60_000;
 // The longest single wait for a scheduled time; a later one waits again.
 const MAX_WAIT_MS = 24 * 60 * 60_000;
 
-// When a scheduled message is due to go out, by the browser's clock.
 const dueAt = (m: Message) => (m.status === "scheduled" && m.scheduledAt ? new Date(m.scheduledAt).getTime() - EARLY_MS : null);
 
-// Messages that have a history to show.
 const hasHistory = (m: Message) => m.status === "sending" || m.status === "sent" || m.status === "failed";
 
 // useMessageHistory loads the history of a sent message, and while it is

@@ -209,10 +209,6 @@ function useActorDraftReconciliation(instance: EventOccurrence, seriesFeedback: 
     instance.myGuestCount, instance.myRegistration, seriesFeedback]);
 }
 
-// Registration for one event date, as a Going / Maybe / Can't go
-// segmented control. Knows the M1.5
-// states: going, waitlisted with position, full with no waitlist, and
-// removed. The guest count input appears when the event allows guests.
 function SingleRsvpButtons({
   instance,
   onChange,

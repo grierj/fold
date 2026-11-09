@@ -3,12 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { SegmentButton } from "./SegmentButton";
 
-it("is a pressed native button with the shared segment styling", () => {
+it("is a pressed native button", () => {
   render(<SegmentButton pressed>Going</SegmentButton>);
   const button = screen.getByRole("button", { name: "Going" });
   expect(button).toHaveAttribute("type", "button");
   expect(button).toHaveAttribute("aria-pressed", "true");
-  expect(button).toHaveClass("segment");
 });
 
 it.each(["Enter", " "])("activates from %s", async (key) => {

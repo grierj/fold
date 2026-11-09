@@ -78,9 +78,7 @@ function LocationRow({ location: l, index, rooms, value, onChange, busy, locked,
   rooms: Room[];
   value: string;
   onChange: (roomId: string) => void;
-  // This row's booking is in flight.
   busy: boolean;
-  // Some row's booking is in flight, so none can start.
   locked: boolean;
   error: string | null;
   onBook: () => void;
@@ -124,7 +122,6 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   const has = active.length > 0;
   const [locations, setLocations] = useState<TypedLocation[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The room picked for each typed place, by its text.
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ location: string; text: string } | null>(null);

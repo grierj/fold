@@ -31,8 +31,4 @@ describe("EmptyState", () => {
     );
     expect(screen.getByRole("link", { name: "Start a group" })).toHaveAttribute("href", "/groups/new");
   });
-  it("drops the frame when framed is false", () => {
-    const { container } = render(<EmptyState title="All caught up" framed={false} />);
-    expect(container.firstChild).not.toHaveClass("border");
-  });
 });

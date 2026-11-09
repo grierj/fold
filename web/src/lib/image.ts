@@ -1,7 +1,4 @@
-// Resize an image in the browser before upload, offloading the CPU work
-// from the server. Returns a File ready to POST.
 export async function prepareUpload(file: File, maxDim: number): Promise<File> {
-  // Small enough already — skip the work.
   if (file.size <= 1024 * 1024) return file;
   // Loaded only here: the library is about 20 kB gzip that most visits
   // never need (#77). Vite emits it as a same-origin chunk, so the CSP holds.
@@ -19,7 +16,6 @@ export async function prepareUpload(file: File, maxDim: number): Promise<File> {
   });
 }
 
-// CSS object-position value from a 0-100 focal point.
 export function focalPosition(x: number, y: number): string {
   return `${x}% ${y}%`;
 }

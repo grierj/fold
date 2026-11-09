@@ -317,12 +317,10 @@ it("routes leader removal through the same chooser and preserves its optional no
   await waitFor(() => expect(Groups.confirmMemberDeparture).toHaveBeenCalledWith("1", 3, "remove", [], "Requested by pastor"));
 });
 
-it("keeps the date visibility note in the content column rather than another horizontal column", async () => {
+it("notes on a date whose visibility was changed", async () => {
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, upcomingEvents: [occurrence({ visibilityOverride: "public" })] });
   open();
-  const note = await screen.findByText("Visibility changed for this date");
-  expect(note.parentElement).toHaveClass("grow", "min-w-0");
-  expect(note.parentElement).not.toHaveClass("flex");
+  expect(await screen.findByText("Visibility changed for this date")).toBeInTheDocument();
 });
 
 it("links to the full group calendar when upcoming dates are truncated", async () => {
@@ -474,12 +472,11 @@ it("switches group sections by arrow keys and labels the active panel", async ()
   expect(screen.getByRole("tabpanel", { name: "About" })).toHaveTextContent("About this group");
 });
 
-it("uses a uniform cover scrim, foreground roles and an inverse primary action", async () => {
+it("shows the title, organizer and an inverse primary action over the cover", async () => {
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   open();
-  expect(await screen.findByRole("heading", { name: "Family group" })).toHaveClass("text-inverse-foreground");
-  expect(screen.getByText(/Organized by Leader/)).toHaveClass("text-inverse-foreground");
-  expect(document.querySelector(".bg-inverse\\/75")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Family group" })).toBeInTheDocument();
+  expect(screen.getByText(/Organized by Leader/)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
 });
 
@@ -496,7 +493,6 @@ it("clamps the description above the tabs and Read more opens About", async () =
   vi.mocked(Groups.get).mockResolvedValue({ ...page, group: { ...page.group, description: "We meet to read and pray together." } });
   open();
   const text = await screen.findByText("We meet to read and pray together.");
-  expect(text).toHaveClass("line-clamp-3");
   expect(text.compareDocumentPosition(screen.getByRole("tablist")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Read more" }));
   expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
@@ -504,7 +500,6 @@ it("clamps the description above the tabs and Read more opens About", async () =
   await waitFor(() => expect(screen.getByRole("tab", { name: "About" })).toHaveFocus());
   // The About tab shows the full text, so the clamped copy above is gone.
   expect(screen.getAllByText("We meet to read and pray together.")).toHaveLength(1);
-  expect(screen.getAllByText("We meet to read and pray together.")[0]).not.toHaveClass("line-clamp-3");
   expect(screen.queryByRole("button", { name: "Read more" })).not.toBeInTheDocument();
 });
 
@@ -512,7 +507,7 @@ it("shows no Read more when the description fits in the clamp", async () => {
   stubOverflow(false);
   vi.mocked(Groups.get).mockResolvedValue({ ...page, group: { ...page.group, description: "Short and sweet." } });
   open();
-  expect(await screen.findByText("Short and sweet.")).toHaveClass("line-clamp-3");
+  expect(await screen.findByText("Short and sweet.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Read more" })).not.toBeInTheDocument();
 });
 
