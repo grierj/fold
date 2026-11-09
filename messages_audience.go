@@ -234,6 +234,42 @@ const (
 	skipHidden     = "won't get this"
 )
 
+// Words for a row's email that went out and then came back, beside the skip
+// reasons above: the webhook writes the bounce reason (models.Bounce*) and
+// the sender writes the rest.
+const (
+	wordsBounced     = "bounced"
+	wordsBouncedHard = "bounced: the address doesn't take email"
+	wordsBouncedSoft = "bounced for now, for example a full mailbox"
+	wordsNotSent     = "couldn't send"
+)
+
+// whyFor says, in words, why a message_recipients row missed its email: the
+// one place a row's (status, reason, error) becomes the history's reason.
+// Rows that went or wait have none.
+func whyFor(status, reason, errText string) string {
+	switch status {
+	case models.RecipientSuppressed:
+		return reason
+	case models.RecipientBounced:
+		switch reason {
+		case models.BounceHard:
+			return wordsBouncedHard
+		case models.BounceSoft:
+			return wordsBouncedSoft
+		}
+		return wordsBounced
+	case models.RecipientComplained:
+		return skipComplained
+	case models.RecipientFailed:
+		if errText != "" {
+			return wordsNotSent + ": " + errText
+		}
+		return wordsNotSent
+	}
+	return ""
+}
+
 type audienceRecipientJSON struct {
 	Name string `json:"name"`
 	Teen bool   `json:"teen"`

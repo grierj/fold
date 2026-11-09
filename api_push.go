@@ -408,23 +408,17 @@ func (a *App) apiPushTest(c *gin.Context) {
 	defer cancel()
 	// A test is for now: if the device is off for ten minutes, drop it.
 	res := a.pushClient().Send(ctx, pushSubscription(dev), payload, push.Options{TTL: 10 * time.Minute, Urgency: push.UrgencyHigh, Topic: "test"})
+	// The test has no row of its own to write.
+	target := pushTarget{what: "test", dev: dev, rec: func(*gorm.DB, string, string, time.Time) error { return nil }}
+	if err := a.pushOutcome(ctx, target, res, "", true); err != nil {
+		log.Printf("push: test to device %d for user %d: %v", dev.ID, me.ID, err)
+	}
 	switch res.Status {
 	case push.Accepted:
-		// A test is the person's own proof the device works, and the device cap
-		// evicts by last use: stamp it every time, not once a day as deliveries do.
-		if err := a.DB.Model(&models.PushSubscription{}).Where("id = ?", dev.ID).
-			UpdateColumns(map[string]any{"last_used_at": time.Now().UTC(), "failed_at": nil}).Error; err != nil {
-			log.Printf("push: device %d: marking it used: %v", dev.ID, err)
-		}
 		c.JSON(http.StatusOK, pushTestJSON{Sent: true})
 	case push.Gone:
-		log.Printf("push: test: device gone for user %d (device %d, %d)", me.ID, dev.ID, res.Code)
-		if err := a.DB.Delete(&models.PushSubscription{}, dev.ID).Error; err != nil {
-			log.Printf("push: device %d: deleting it: %v", dev.ID, err)
-		}
 		c.JSON(http.StatusOK, pushTestJSON{Sent: false, Message: pushTestGoneMessage})
 	default:
-		log.Printf("push: test to device %d for user %d: %s (%d)", dev.ID, me.ID, res.Status, res.Code)
 		c.JSON(http.StatusOK, pushTestJSON{Sent: false, Message: pushTestFailMessage})
 	}
 }
