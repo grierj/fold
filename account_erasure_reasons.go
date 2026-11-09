@@ -109,7 +109,6 @@ var (
 	errReasonInvariant = errors.New("the reason review changed an unexpected number of rows")
 )
 
-// --- request ids ------------------------------------------------------------
 
 // parseRequestID reads a canonical signed decimal request id. It refuses a
 // plus sign, a leading zero, "-0", whitespace, an empty string and anything
@@ -138,7 +137,6 @@ func pgBigintArray[T int64 | uint](ids []T) string {
 	return b.String()
 }
 
-// --- the review hash --------------------------------------------------------
 
 type reasonColumn struct{ name, kind string }
 
@@ -280,7 +278,6 @@ func validReviewHash(h string) bool {
 	return true
 }
 
-// --- reading request rows ---------------------------------------------------
 
 // reasonRow is one contact_requests row as the review reads it. Every id is
 // int64 and the row is filled by a raw scan, never through
@@ -329,7 +326,6 @@ func (r *reasonRow) fill(fields []sql.NullString, created time.Time, intern map[
 	return nil
 }
 
-// internString returns one shared copy of s.
 func internString(m map[string]string, s string) string {
 	if v, ok := m[s]; ok {
 		return v
@@ -372,7 +368,6 @@ func scanReasonRowsWith(rows *sql.Rows, key []byte, viewer, party int64, wantHex
 	return rows.Err()
 }
 
-// --- the scanner ------------------------------------------------------------
 
 // reasonSource is the part of a request the scanner decides from.
 type reasonSource struct {
@@ -380,7 +375,6 @@ type reasonSource struct {
 	HasReason                      bool
 }
 
-// reasonFilter reports whether a source row is an item.
 type reasonFilter func(reasonSource) bool
 
 // liveReasonFilter qualifies the rows where the live target is a party and
@@ -412,7 +406,6 @@ const (
 	reasonScanContinuationSQL = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > ?::bigint ORDER BY id LIMIT ?"
 )
 
-// --- the page route ---------------------------------------------------------
 
 type reasonPageBody struct {
 	After *string `json:"after"`
@@ -597,7 +590,6 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 	return out, nil
 }
 
-// reasonCounterpartFacts are the live facts the page shows about the other party.
 type reasonCounterpartFacts struct {
 	name    string
 	deleted bool
@@ -614,7 +606,6 @@ func reasonParties(r reasonRow, actor, target int64) (role string, reviewerIsPar
 	return role, actor == r.RequesterID || actor == r.SubjectUserID
 }
 
-// reasonCounterpart is the other party of a request the target is in.
 func reasonCounterpart(r reasonRow, target int64) int64 {
 	if r.RequesterID == target {
 		return r.SubjectUserID
@@ -708,7 +699,6 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 	}
 }
 
-// --- the deletion's consume step --------------------------------------------
 
 // reasonDecision is one decided item. It holds no text and no hash.
 type reasonDecision struct {
@@ -719,7 +709,6 @@ type reasonDecision struct {
 	ReviewerIsParty bool
 }
 
-// reasonPlan is what the deletion decided about the account's reasons.
 type reasonPlan struct {
 	Decisions []reasonDecision
 	ActorID   uint
