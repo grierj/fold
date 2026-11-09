@@ -1212,7 +1212,7 @@ erases no identity data, which is later M7.4 work, and M7.4 is not complete.
   Deleting an event locks its events `FOR UPDATE` before deleting any child
   row. Co-host safety under deletion depends on every path that removes a host
   being gated.
-- Notices to an event's hosts (`hostIDs`) no longer name deleted accounts.
+- Notices to an event's hosts (`eventRunnerIDs`) no longer name deleted accounts.
 - Safety limits. A pick who is disabled in the instant between the check and
   the commit stays a (disabled) host, because disabling is gated and so
   serializes with the delete. Rules that mention "adult" mean `CanAssignHost`

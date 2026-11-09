@@ -6050,8 +6050,8 @@ func TestRegistrationRemovalSerializesWithErasure(t *testing.T) {
 			t.Fatalf("erasure: %d %s", r.code, r.body)
 		}
 		// lockRegistrationHolder's default-scoped First finds no soft-deleted
-		// holder (api_registrations.go:1917-1923), and the handler answers every
-		// error that is not errRegNotFound with 500 (:1436-1438).
+		// holder (registration_locks.go), and the removal handler answers every
+		// error that is not errRegNotFound with 500.
 		r := awaitResult(t, rem)
 		if r.code != http.StatusInternalServerError || strings.TrimSpace(r.body) != `{"code":"server_error","error":"server error"}` {
 			t.Errorf("removal after the erasure: %d %s, want generic 500", r.code, r.body)
