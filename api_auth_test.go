@@ -111,7 +111,7 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 
 	for _, e := range []string{"alice@example.com", "ALICE@Example.Com", "  Alice@example.com "} {
 		if code, body := tryLogin(t, app, "", e, "password1234"); code != http.StatusOK {
@@ -137,7 +137,7 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 		}
 	}
 	// Setting a password activates the account.
-	if w := admin.do("POST", "/api/v1/admin/users/"+itoa2(created.User.ID)+"/password",
+	if w := admin.do("POST", "/api/v1/admin/users/"+itoa(created.User.ID)+"/password",
 		map[string]string{"password": "bobs-password"}, true); w.Code != http.StatusOK {
 		t.Fatalf("set password: %d %s", w.Code, w.Body.String())
 	}
@@ -154,13 +154,13 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 	if err := app.DB.Create(&models.User{Email: "ALICE@example.com", Name: "x"}).Error; err == nil {
 		t.Fatal("database accepted a duplicate email")
 	}
-	w = admin.do("PUT", "/api/v1/admin/users/"+itoa2(created.User.ID), map[string]string{"email": "alice@EXAMPLE.com"}, true)
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(created.User.ID), map[string]string{"email": "alice@EXAMPLE.com"}, true)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("change to taken email: got %d, want 409", w.Code)
 	}
 
 	// A deleted account frees its email.
-	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa2(created.User.ID), nil, true); w.Code != http.StatusOK {
+	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa(created.User.ID), nil, true); w.Code != http.StatusOK {
 		t.Fatalf("delete: %d", w.Code)
 	}
 	if w := admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult", "email": "bob@example.com", "name": "Bob"}, true); w.Code != http.StatusCreated {
@@ -194,7 +194,7 @@ func TestLoginThrottlePerEmailAndIP(t *testing.T) {
 	// Ten failures for one email, from different IPs, lock that email
 	// everywhere, even with the right password.
 	for i := 0; i < emailFailureLimit; i++ {
-		ip := "198.51.100." + itoa2(uint(i+1))
+		ip := "198.51.100." + itoa(uint(i+1))
 		if code, _ := tryLogin(t, app, ip, "Alice@example.com", "wrong"); code != http.StatusUnauthorized {
 			t.Fatalf("failure %d: got %d, want 401", i+1, code)
 		}
@@ -227,7 +227,7 @@ func TestLoginThrottlePerEmailAndIP(t *testing.T) {
 	// Fifty failures from one IP, spread over many emails, lock that IP.
 	ip := "192.0.2.77"
 	for i := 0; i < ipFailureLimit; i++ {
-		email := "nobody" + itoa2(uint(i%10)) + "@example.com"
+		email := "nobody" + itoa(uint(i%10)) + "@example.com"
 		if code, _ := tryLogin(t, app, ip, email, "wrong"); code != http.StatusUnauthorized {
 			t.Fatalf("ip failure %d: got %d, want 401", i+1, code)
 		}
@@ -274,16 +274,16 @@ func TestChangesEndOtherSessions(t *testing.T) {
 		do   func(admin *apiClient, id uint) int
 	}{
 		{"password", func(a *apiClient, id uint) int {
-			return a.do("POST", "/api/v1/admin/users/"+itoa2(id)+"/password", map[string]string{"password": "another-password"}, true).Code
+			return a.do("POST", "/api/v1/admin/users/"+itoa(id)+"/password", map[string]string{"password": "another-password"}, true).Code
 		}},
 		{"role", func(a *apiClient, id uint) int {
-			return a.do("PUT", "/api/v1/admin/users/"+itoa2(id), map[string]string{"role": "admin"}, true).Code
+			return a.do("PUT", "/api/v1/admin/users/"+itoa(id), map[string]string{"role": "admin"}, true).Code
 		}},
 		{"disable", func(a *apiClient, id uint) int {
-			return a.do("PUT", "/api/v1/admin/users/"+itoa2(id), map[string]string{"status": "disabled"}, true).Code
+			return a.do("PUT", "/api/v1/admin/users/"+itoa(id), map[string]string{"status": "disabled"}, true).Code
 		}},
 		{"email", func(a *apiClient, id uint) int {
-			return a.do("PUT", "/api/v1/admin/users/"+itoa2(id), map[string]string{"email": "new-alice@example.com"}, true).Code
+			return a.do("PUT", "/api/v1/admin/users/"+itoa(id), map[string]string{"email": "new-alice@example.com"}, true).Code
 		}},
 	}
 	for _, tc := range cases {
@@ -291,8 +291,8 @@ func TestChangesEndOtherSessions(t *testing.T) {
 			app := testApp(t)
 			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 			alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-			admin := loginAs(t, app, "admin", "password1234")
-			session := loginAs(t, app, "alice", "password1234")
+			admin := loginAPI(t, app, "admin", "password1234")
+			session := loginAPI(t, app, "alice", "password1234")
 			if w := session.do("GET", "/api/v1/auth/me", nil, false); w.Code != http.StatusOK {
 				t.Fatalf("before: %d", w.Code)
 			}
@@ -310,17 +310,17 @@ func TestChangesEndOtherSessions(t *testing.T) {
 	app := testApp(t)
 	me := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	admin := loginAs(t, app, "admin", "password1234")
-	admin.do("PUT", "/api/v1/admin/users/"+itoa2(alice.ID), map[string]string{"status": "disabled"}, true)
+	admin := loginAPI(t, app, "admin", "password1234")
+	admin.do("PUT", "/api/v1/admin/users/"+itoa(alice.ID), map[string]string{"status": "disabled"}, true)
 	if code, _ := tryLogin(t, app, "", "alice@example.com", "password1234"); code != http.StatusUnauthorized {
 		t.Fatalf("disabled login: got %d, want 401", code)
 	}
-	w := admin.do("PUT", "/api/v1/admin/users/"+itoa2(me.ID), map[string]string{"status": "disabled"}, true)
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(me.ID), map[string]string{"status": "disabled"}, true)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "yourself") && !strings.Contains(w.Body.String(), "own account") {
 		t.Fatalf("disable self: %d %s", w.Code, w.Body.String())
 	}
 	// Re-enabling works.
-	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa2(alice.ID), map[string]string{"status": "active"}, true); w.Code != http.StatusOK {
+	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(alice.ID), map[string]string{"status": "active"}, true); w.Code != http.StatusOK {
 		t.Fatalf("re-enable: %d", w.Code)
 	}
 	if code, _ := tryLogin(t, app, "", "alice@example.com", "password1234"); code != http.StatusOK {
@@ -485,7 +485,7 @@ func TestPasswordResetUniformAndSingleUse(t *testing.T) {
 func TestLogoutEndsSession(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "sam", "password1234", models.RoleMember)
-	sam := loginAs(t, app, "sam", "password1234")
+	sam := loginAPI(t, app, "sam", "password1234")
 	w := sam.do("POST", "/api/v1/auth/logout", nil, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("logout: %d", w.Code)
@@ -510,7 +510,7 @@ func TestLogoutEndsSession(t *testing.T) {
 		app := testApp(t)
 		u := newTestUser(t, app, "pat", "password1234", models.RoleMember)
 		here, other := newPushDevice(t, app, u, "this-browser"), newPushDevice(t, app, u, "phone")
-		pat := loginAs(t, app, "pat", "password1234")
+		pat := loginAPI(t, app, "pat", "password1234")
 		w := pat.do("POST", "/api/v1/auth/logout", map[string]string{"pushEndpoint": here.Endpoint}, true)
 		if w.Code != http.StatusOK || deviceExists(app, here.ID) || !deviceExists(app, other.ID) {
 			t.Fatalf("logout %d: this browser's device kept %v, the phone's %v", w.Code, deviceExists(app, here.ID), deviceExists(app, other.ID))
@@ -559,7 +559,7 @@ func TestLoginLockoutHoldsUnderParallelRequests(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			code, _ := tryLogin(t, app, "198.51.100."+itoa2(uint(i+1)), "alice@example.com", "wrong")
+			code, _ := tryLogin(t, app, "198.51.100."+itoa(uint(i+1)), "alice@example.com", "wrong")
 			codes <- code
 		}(i)
 	}

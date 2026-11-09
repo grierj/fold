@@ -29,11 +29,11 @@ func TestNotifications(t *testing.T) {
 	app.DB.Create(&models.Membership{UserID: member.ID, GroupID: g.ID, Role: "member", Status: "active", JoinedAt: time.Now().UTC()})
 
 	// A member's new group is a task for the admin.
-	memberClient := loginAs(t, app, "grier", "password1234")
+	memberClient := loginAPI(t, app, "grier", "password1234")
 	if w := memberClient.do("POST", "/api/v1/groups", map[string]any{"name": "Pending"}, true); w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	adminClient := loginAs(t, app, "admin", "password1234")
+	adminClient := loginAPI(t, app, "admin", "password1234")
 	foundApproval := false
 	for _, n := range feed(t, adminClient, "") {
 		if n.Kind == "group.pending" && n.Waiting && strings.Contains(n.Title, "Pending") {
@@ -236,8 +236,8 @@ func TestMemberGroupNotifiesAdmins(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	newTestUser(t, app, "sam", "password1234", models.RoleMember)
-	admin := loginAs(t, app, "admin", "password1234")
-	sam := loginAs(t, app, "sam", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
+	sam := loginAPI(t, app, "sam", "password1234")
 
 	approval := func(name string) (n notificationJSON) {
 		t.Helper()

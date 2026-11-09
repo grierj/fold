@@ -64,11 +64,6 @@ func noticeDataDate(t *testing.T, n models.Notification) string {
 	return data.Date
 }
 
-func loginAs(t *testing.T, app *App, name, password string) *apiClient {
-	t.Helper()
-	return loginAPI(t, app, name, password)
-}
-
 // loginAPIExpectFail reports whether login succeeded (it shouldn't).
 func loginAPIExpectFail(t *testing.T, app *App, name, password string) bool {
 	t.Helper()
@@ -78,8 +73,6 @@ func loginAPIExpectFail(t *testing.T, app *App, name, password string) bool {
 		map[string]string{"email": testEmail(name), "password": password}, true)
 	return w.Code == http.StatusOK
 }
-
-func itoa2(i uint) string { return itoa(i) }
 
 // TestMain gives this package one migrated Postgres database and drops it
 // afterwards (internal/testdb). Password hashes use the cheapest bcrypt cost;

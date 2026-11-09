@@ -219,8 +219,8 @@ func TestAgeRolloverChild13NoticeIsDurableAndKeepsRegistration(t *testing.T) {
 	holder := newTestUser(t, app, "birthday-parent", "pw", models.RoleMember)
 	parent := loginAPI(t, app, "birthday-parent", "pw")
 	person := addMyPerson(t, parent, map[string]any{"firstName": "Birthday Child", "kind": "child", "birthDate": "2013-10-22"})
-	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
-	path := "/api/v1/events/" + itoa2(eventID) + "/registrations"
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
+	path := "/api/v1/events/" + itoa(eventID) + "/registrations"
 	apiDo(t, parent, "PUT", path, map[string]any{"date": date, "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
 	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-21T12:00:00Z")); err != nil || n != 0 {
 		t.Fatalf("early child notice %d %v", n, err)
@@ -356,7 +356,7 @@ func TestAgeRolloverSuspendedStageKeepsHouseholdUntilEnable(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "Suspended birthday")
 	f := pendingTeenConversion(t, app, admin, gid, "birthday-stage", true)
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "disabled"}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
 	now := setStagedBirthdayToday(t, app, f)
 	if n, err := app.rolloverAges(now); err != nil || n != 1 {
 		t.Fatalf("suspended stage rollover %d %v", n, err)
@@ -375,8 +375,8 @@ func TestAgeRolloverSuspendedStageKeepsHouseholdUntilEnable(t *testing.T) {
 	app.DB.First(&occurrence, f.rows[0].OccurrenceID)
 	var event models.Event
 	app.DB.First(&event, occurrence.EventID)
-	apiDo(t, f.parent, "PUT", "/api/v1/events/"+itoa2(event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(occurrence.OriginalDate), "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "active"}, 200)
+	apiDo(t, f.parent, "PUT", "/api/v1/events/"+itoa(event.ID)+"/registrations", map[string]any{"date": models.FormatCalendarDate(occurrence.OriginalDate), "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
 	app.DB.First(&person, person.ID)
 	if person.ConvertedUserID == nil || *person.ConvertedUserID != f.user.ID {
 		t.Fatal("admin Enable did not finish adult transfer")
@@ -391,7 +391,7 @@ func TestAgeRolloverSuspendedStageKeepsHouseholdUntilEnable(t *testing.T) {
 	if n, err := app.rolloverAges(now); err != nil || n != 0 {
 		t.Fatalf("repeat birthday %d %v", n, err)
 	}
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "active"}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
 	if auditCount(t, app, audit.HouseholdPersonConverted) != 1 {
 		t.Fatal("adult transferred more than once")
 	}
@@ -402,7 +402,7 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 	admin, gid := openGroup(t, app, "Blocked birthday")
 	f := pendingTeenConversion(t, app, admin, gid, "blocked-birthday", true)
 	now := setStagedBirthdayToday(t, app, f)
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "disabled"}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.holder.ID), map[string]string{"status": "disabled"}, 200)
 	other := rolloverTeenUser(t, app, "later-birthday", now.AddDate(-18, 0, 0).Format("2006-01-02"), models.UserActive, false, true)
 	var adminUser models.User
 	app.DB.Where("email = ?", "admin@example.com").First(&adminUser)
@@ -447,7 +447,7 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 	if childNotices != 1 {
 		t.Fatal("blocked stage starved child birthday notice")
 	}
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "active"}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.holder.ID), map[string]string{"status": "active"}, 200)
 	if n, err := app.rolloverAges(now); err != nil || n != 1 {
 		t.Fatalf("retry birthday %d %v", n, err)
 	}
@@ -496,7 +496,7 @@ func TestAgeRolloverClosesOnlyPendingGuardianTasks(t *testing.T) {
 	if task.ResolvedAt == nil || task.Resolution != "withdrawn" || task.ResolvedByID != nil {
 		t.Fatalf("pending task not resolved by system: %+v", task)
 	}
-	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(pending.ID)+"/confirm", map[string]string{"checkNote": "Checked identity"}, 403)
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(pending.ID)+"/confirm", map[string]string{"checkNote": "Checked identity"}, 403)
 	var row models.AuditLog
 	if err := app.DB.Where("action = ? AND target_id = ?", audit.GuardianLinkRejected, pending.ID).First(&row).Error; err != nil {
 		t.Fatal(err)
@@ -518,7 +518,7 @@ func TestChild13NoticeSerializesWithGuardianErasure(t *testing.T) {
 		victim := newTestUser(t, app, "birthday-parent", "pw", models.RoleMember)
 		parent := loginAPI(t, app, "birthday-parent", "pw")
 		person := addMyPerson(t, parent, map[string]any{"firstName": "Birthday Child", "kind": "child", "birthDate": "2013-10-22"})
-		apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
+		apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
 		now := rolloverInstant(t, "2026-10-22T12:00:00Z")
 		return erasureScene{app: app, victim: victim,
 			run: func() error {

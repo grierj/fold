@@ -762,7 +762,7 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	// A public group lead doesn't lead, for the 403 case.
 	otherGroup := newTestGroup(t, app, other, "Other", models.GroupActive)
 
-	leader := loginAs(t, app, "lead", "password1234")
+	leader := loginAPI(t, app, "lead", "password1234")
 	path := "/api/v1/groups/" + itoa(g.ID) + "/members/"
 
 	// A member and a co-leader, each audited with actor, group, person,
@@ -800,7 +800,7 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	}
 	// Nobody removes the last leader: the admin removes lead after the
 	// admin co-leader steps down.
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 	if w := admin.do("PUT", path+itoa(adminUser.ID)+"/role", map[string]string{"role": "member"}, true); w.Code != http.StatusOK {
 		t.Fatalf("admin demotes admin co-leader: %d %s", w.Code, w.Body.String())
 	}
@@ -812,21 +812,21 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	}
 
 	// 404 for a group the caller can't see, 403 for a visible one they don't lead.
-	outsider := loginAs(t, app, "other", "password1234")
+	outsider := loginAPI(t, app, "other", "password1234")
 	if w := outsider.do("DELETE", path+itoa(pat.ID), nil, true); w.Code != http.StatusNotFound {
 		t.Fatalf("invisible group: got %d, want 404", w.Code)
 	}
 	if w := leader.do("DELETE", "/api/v1/groups/"+itoa(otherGroup.ID)+"/members/"+itoa(other.ID), nil, true); w.Code != http.StatusForbidden {
 		t.Fatalf("group they don't lead: got %d, want 403", w.Code)
 	}
-	member := loginAs(t, app, "pat", "password1234")
+	member := loginAPI(t, app, "pat", "password1234")
 	if w := member.do("DELETE", path+itoa(adminUser.ID), nil, true); w.Code != http.StatusForbidden {
 		t.Fatalf("member removes: got %d, want 403", w.Code)
 	}
 
 	// The removed member: invite-only is 404 at once; in a public group they
 	// can't rejoin by themselves; a leader can add them back.
-	removed := loginAs(t, app, "sam", "password1234")
+	removed := loginAPI(t, app, "sam", "password1234")
 	if w := removed.do("GET", "/api/v1/groups/"+itoa(g.ID), nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("invite-only after removal: got %d, want 404", w.Code)
 	}
@@ -869,7 +869,7 @@ func TestRosterFlagsAdmins(t *testing.T) {
 		var body struct {
 			Members []memberJSON `json:"members"`
 		}
-		decodeJSON(t, loginAs(t, app, "lead", "password1234").do("GET", path, nil, false), &body)
+		decodeJSON(t, loginAPI(t, app, "lead", "password1234").do("GET", path, nil, false), &body)
 		flags := map[uint]bool{}
 		for _, m := range body.Members {
 			flags[m.ID] = m.Admin
@@ -950,7 +950,7 @@ func TestSelectionGroupAddsCapacityAuditAndTeenGate(t *testing.T) {
 	app.DB.Model(g).Update("member_limit", limit)
 	target := newTestUser(t, app, "selected adult", "pw", models.RoleMember)
 	token, _ := app.newPeopleSelection(actor.ID, target.ID, time.Now())
-	path := "/api/v1/groups/" + itoa2(g.ID) + "/members"
+	path := "/api/v1/groups/" + itoa(g.ID) + "/members"
 	if w := client.do("POST", path, map[string]any{"selectionId": token}, true); w.Code != 409 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -998,7 +998,7 @@ func TestSelectionGroupAddAuditFailureRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { app.DB.Callback().Create().Remove(name) })
-	w := client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", map[string]any{"selectionId": token}, true)
+	w := client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", map[string]any{"selectionId": token}, true)
 	if w.Code != 500 {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -1017,9 +1017,9 @@ func TestMemberAddSiblingAuditsAndTeenSelfJoin(t *testing.T) {
 		path string
 		body map[string]any
 	}{
-		{"/api/v1/groups/" + itoa2(g.ID) + "/members", map[string]any{"email": emailTarget.Email}},
-		{"/api/v1/admin/groups/" + itoa2(g.ID) + "/members", map[string]any{"userId": rawTarget.ID}},
-		{"/api/v1/admin/groups/" + itoa2(g.ID) + "/members", map[string]any{"userId": actor.ID}},
+		{"/api/v1/groups/" + itoa(g.ID) + "/members", map[string]any{"email": emailTarget.Email}},
+		{"/api/v1/admin/groups/" + itoa(g.ID) + "/members", map[string]any{"userId": rawTarget.ID}},
+		{"/api/v1/admin/groups/" + itoa(g.ID) + "/members", map[string]any{"userId": actor.ID}},
 	} {
 		if w := client.do("POST", tt.path, tt.body, true); w.Code != 200 {
 			t.Fatal(w.Code, w.Body.String())
@@ -1034,7 +1034,7 @@ func TestMemberAddSiblingAuditsAndTeenSelfJoin(t *testing.T) {
 	birth := time.Now().AddDate(-15, 0, 0)
 	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth})
 	teenClient := loginAPI(t, app, "self teen", "pw")
-	w := teenClient.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/join", map[string]any{}, true)
+	w := teenClient.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/join", map[string]any{}, true)
 	if w.Code != 200 {
 		t.Fatal("self join changed", w.Code, w.Body.String())
 	}
@@ -1058,7 +1058,7 @@ func TestGroupManagerAddRefreshesActorAfterContactGate(t *testing.T) {
 				}
 				gate := holdContactGate(t, app)
 				response := queueContact(func() *httptest.ResponseRecorder {
-					return client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", body, true)
+					return client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", body, true)
 				})
 				waitContactWaiters(t, app, 1) // authentication/selection already resolved
 				revocation := peopleAddActorRevocations(actor)[change]
@@ -1095,7 +1095,7 @@ func TestGroupManagerAddRechecksLeaderAfterContactGate(t *testing.T) {
 			}
 			gate := holdContactGate(t, app)
 			response := queueContact(func() *httptest.ResponseRecorder {
-				return client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", map[string]any{"selectionId": token}, true)
+				return client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", map[string]any{"selectionId": token}, true)
 			})
 			waitContactWaiters(t, app, 1)
 			updates := map[string]any{"role": models.MembershipMember}
@@ -1133,7 +1133,7 @@ func TestGroupManagerAddExistingLeaderKeepsRoleUnderContactGate(t *testing.T) {
 				}
 				body = map[string]any{"selectionId": token}
 			}
-			path := "/api/v1/groups/" + itoa2(g.ID) + "/members"
+			path := "/api/v1/groups/" + itoa(g.ID) + "/members"
 			if w := client.do("POST", path, body, true); w.Code != 200 {
 				t.Fatal(w.Code, w.Body.String())
 			}
@@ -2073,8 +2073,8 @@ func TestGroupMemberLimitJoinOverrideAndLowering(t *testing.T) {
 		newTestUser(t, app, n, "password1234", models.RoleMember)
 	}
 	g := newTestGroup(t, app, lead, "Class", models.GroupActive)
-	leader := loginAs(t, app, "lead", "password1234")
-	admin := loginAs(t, app, "admin", "password1234")
+	leader := loginAPI(t, app, "lead", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 	path := "/api/v1/groups/" + itoa(g.ID)
 
 	// Set by the leader; must be a positive whole number or null.
@@ -2093,12 +2093,12 @@ func TestGroupMemberLimitJoinOverrideAndLowering(t *testing.T) {
 	}
 
 	join := func(name string) int {
-		return loginAs(t, app, name, "password1234").do("POST", path+"/join", nil, true).Code
+		return loginAPI(t, app, name, "password1234").do("POST", path+"/join", nil, true).Code
 	}
 	if c := join("ann"); c != http.StatusOK {
 		t.Fatalf("ann join: %d", c)
 	}
-	w := loginAs(t, app, "bo", "password1234").do("POST", path+"/join", nil, true)
+	w := loginAPI(t, app, "bo", "password1234").do("POST", path+"/join", nil, true)
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "This group is full") {
 		t.Fatalf("full join: %d %s", w.Code, w.Body.String())
 	}
@@ -2169,8 +2169,8 @@ func TestReenableIntoFullGroupLeavesThemOut(t *testing.T) {
 		addMember(t, app, pat, g, models.MembershipMember)
 		addMember(t, app, sam, g, models.MembershipMember)
 	}
-	admin := loginAs(t, app, "admin", "password1234")
-	leader := loginAs(t, app, "lead", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
+	leader := loginAPI(t, app, "lead", "password1234")
 	setLimit(t, leader, full, 3)
 	setLimit(t, leader, roomy, 10)
 
@@ -2182,7 +2182,7 @@ func TestReenableIntoFullGroupLeavesThemOut(t *testing.T) {
 			}
 			if s == "disabled" && u == pat {
 				// While pat is away, someone takes the seat.
-				if c := loginAs(t, app, "newbie", "password1234").do("POST", "/api/v1/groups/"+itoa(full.ID)+"/join", nil, true).Code; c != http.StatusOK {
+				if c := loginAPI(t, app, "newbie", "password1234").do("POST", "/api/v1/groups/"+itoa(full.ID)+"/join", nil, true).Code; c != http.StatusOK {
 					t.Fatalf("newbie join: %d", c)
 				}
 			}
@@ -2204,7 +2204,7 @@ func TestReenableIntoFullGroupLeavesThemOut(t *testing.T) {
 	}
 
 	// Pat is told to ask a leader; the leader gets no queue to work.
-	patC := loginAs(t, app, "pat", "password1234")
+	patC := loginAPI(t, app, "pat", "password1234")
 	if b := patC.do("GET", "/api/v1/notifications", nil, false).Body.String(); !strings.Contains(b, "not back in Full") ||
 		!strings.Contains(b, "Ask a leader") {
 		t.Fatalf("pat's notice missing: %s", b)
@@ -2235,12 +2235,12 @@ func TestConcurrentJoinsAndRestoreRespectLimit(t *testing.T) {
 	limit := 3
 	app.DB.Model(g).Update("member_limit", limit)
 
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 	names := []string{"j1", "j2", "j3", "j4", "j5"}
 	clients := []*apiClient{}
 	for _, n := range names {
 		newTestUser(t, app, n, "password1234", models.RoleMember)
-		clients = append(clients, loginAs(t, app, n, "password1234"))
+		clients = append(clients, loginAPI(t, app, n, "password1234"))
 	}
 	var wg sync.WaitGroup
 	codes := make([]int, len(clients))

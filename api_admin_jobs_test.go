@@ -14,6 +14,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/notify"
+	"fold/internal/testdb"
 	"fold/models"
 )
 
@@ -526,18 +527,13 @@ func TestDeadJobAlertRaces(t *testing.T) {
 			go func() { app.alertDeadJob(id, deadAlertKind, 1); close(done) }()
 			// It is blocked on the job row: another session shows as waiting
 			// on a lock, and a session with a short lock_timeout cannot take it.
-			deadline := time.Now().Add(5 * time.Second)
-			for {
+			testdb.WaitUntil(t, "alertDeadJob to wait on the job row", 5*time.Second, func() bool {
 				var waiting int64
-				app.DB.Raw(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM jobs WHERE id%FOR UPDATE%'`).Scan(&waiting)
-				if waiting == 1 {
-					break
+				if err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM jobs WHERE id%FOR UPDATE%'`).Scan(&waiting).Error; err != nil {
+					t.Fatal(err)
 				}
-				if time.Now().After(deadline) {
-					t.Fatal("alertDeadJob never waited on the job row")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+				return waiting == 1
+			})
 			select {
 			case <-done:
 				t.Fatal("alertDeadJob finished while the job row was locked")

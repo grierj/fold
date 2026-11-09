@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/testdb"
 	"fold/models"
 	"gorm.io/gorm"
 )
@@ -246,20 +247,13 @@ func TestTeenConversionLocksHolderBeforeTeenAndMovesLatestAnswer(t *testing.T) {
 	go func() {
 		response <- admin.do("POST", consentPath(&f.user), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Paper"}, true).Code
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	blocked := false
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, "consent to wait for the household holder", 5*time.Second, func() bool {
+		var blocked bool
 		if err := app.DB.Raw("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid)))", pid).Scan(&blocked).Error; err != nil {
 			t.Fatal(err)
 		}
-		if blocked {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !blocked {
-		t.Fatal("consent did not wait for the household holder")
-	}
+		return blocked
+	})
 	if err := app.DB.Transaction(func(tx *gorm.DB) error {
 		return tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE NOWAIT", f.user.ID).Error
 	}); err != nil {
@@ -305,18 +299,13 @@ func TestTeenConversionApprovalRechecksAdminAfterLockWait(t *testing.T) {
 			go func() {
 				result <- admin.do("POST", "/api/v1/admin/account-requests/"+itoa(f.request.ID)+"/approve", map[string]string{}, true).Code
 			}()
-			deadline := time.Now().Add(5 * time.Second)
-			blocked := false
-			for time.Now().Before(deadline) {
-				app.DB.Raw("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid)))", pid).Scan(&blocked)
-				if blocked {
-					break
+			testdb.WaitUntil(t, "approval to reach the participant lock", 5*time.Second, func() bool {
+				var blocked bool
+				if err := app.DB.Raw("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid)))", pid).Scan(&blocked).Error; err != nil {
+					t.Fatal(err)
 				}
-				time.Sleep(10 * time.Millisecond)
-			}
-			if !blocked {
-				t.Fatal("approval did not reach participant lock")
-			}
+				return blocked
+			})
 			updates := map[string]any{"session_version": gorm.Expr("session_version + 1")}
 			if change == "disabled" {
 				updates["status"] = models.UserDisabled

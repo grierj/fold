@@ -311,5 +311,5 @@ isolation_check_os_accepts() { # provision.sh-path [os-release-path]
   body="$(awk '/^check_os\(\) \{/{on=1} on{print} on && /^}$/{exit}' "$1")"
   [[ -n "$body" ]] || { echo "isolation: $1 has no check_os function to prove the stand-in against" >&2; return 1; }
   body="${body//\/etc\/os-release/$osfile}"
-  bash -c 'DRY_RUN=0; ALLOW_OS=0; die() { echo "$*" >&2; exit 1; }; eval "$1"; check_os' _ "$body" 2>&1 | grep -q '^os: Ubuntu '
+  bash -c 'DRY_RUN=0; ALLOW_OS=0; die() { echo "$*" >&2; exit 1; }; eval "$1"; check_os' _ "$body" 2>&1 | grep '^os: Ubuntu ' >/dev/null
 }

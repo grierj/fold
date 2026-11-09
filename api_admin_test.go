@@ -97,10 +97,10 @@ func TestAdminUserCRUD(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")
 	newTestUser(t, app, "grier", "password1234", "member")
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 
 	// Non-admin is forbidden.
-	member := loginAs(t, app, "grier", "password1234")
+	member := loginAPI(t, app, "grier", "password1234")
 	w := member.do("GET", "/api/v1/admin/users", nil, false)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member list users: got %d, want 403", w.Code)
@@ -150,7 +150,7 @@ func TestAdminUserCRUD(t *testing.T) {
 
 	// Update profile + promote.
 	uid := created.User.ID
-	w = admin.do("PUT", "/api/v1/admin/users/"+itoa2(uid), map[string]string{
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(uid), map[string]string{
 		"displayName": "Newbie Renamed", "role": "admin", "email": "n@example.org",
 	}, true)
 	if w.Code != http.StatusOK {
@@ -158,25 +158,25 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 
 	// Cannot demote the last admin... (there are 2 admins now, so demote newbie back)
-	w = admin.do("PUT", "/api/v1/admin/users/"+itoa2(uid), map[string]string{"role": "member"}, true)
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(uid), map[string]string{"role": "member"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("demote second admin: %d %s", w.Code, w.Body.String())
 	}
 	// Now only "admin" is admin: demoting them fails.
 	var adminUser models.User
 	app.DB.Where("email = ?", testEmail("admin")).First(&adminUser)
-	w = admin.do("PUT", "/api/v1/admin/users/"+itoa2(adminUser.ID), map[string]string{"role": "member"}, true)
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(adminUser.ID), map[string]string{"role": "member"}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("demote last admin: got %d, want 400", w.Code)
 	}
 	// Cannot delete self.
-	w = admin.do("DELETE", "/api/v1/admin/users/"+itoa2(adminUser.ID), nil, true)
+	w = admin.do("DELETE", "/api/v1/admin/users/"+itoa(adminUser.ID), nil, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("delete self: got %d, want 400", w.Code)
 	}
 
 	// Delete the new user.
-	w = admin.do("DELETE", "/api/v1/admin/users/"+itoa2(uid), nil, true)
+	w = admin.do("DELETE", "/api/v1/admin/users/"+itoa(uid), nil, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete user: %d %s", w.Code, w.Body.String())
 	}
@@ -301,11 +301,11 @@ func TestAdminResetPassword(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")
 	newTestUser(t, app, "grier", "password1234", "member")
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 
 	var u models.User
 	app.DB.Where("email = ?", testEmail("grier")).First(&u)
-	w := admin.do("POST", "/api/v1/admin/users/"+itoa2(u.ID)+"/password",
+	w := admin.do("POST", "/api/v1/admin/users/"+itoa(u.ID)+"/password",
 		map[string]string{"password": "brand-new-password"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reset password: %d %s", w.Code, w.Body.String())
@@ -315,10 +315,10 @@ func TestAdminResetPassword(t *testing.T) {
 	if bad {
 		t.Fatalf("old password still works after reset")
 	}
-	loginAs(t, app, "grier", "brand-new-password")
+	loginAPI(t, app, "grier", "brand-new-password")
 
 	// Short password rejected.
-	w = admin.do("POST", "/api/v1/admin/users/"+itoa2(u.ID)+"/password",
+	w = admin.do("POST", "/api/v1/admin/users/"+itoa(u.ID)+"/password",
 		map[string]string{"password": "short"}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("short reset password: got %d, want 400", w.Code)
@@ -334,8 +334,8 @@ func TestAdminGroupMembers(t *testing.T) {
 	if err := app.DB.Create(&g).Error; err != nil {
 		t.Fatalf("create group: %v", err)
 	}
-	admin := loginAs(t, app, "admin", "password1234")
-	membersPath := "/api/v1/admin/groups/" + itoa2(g.ID) + "/members"
+	admin := loginAPI(t, app, "admin", "password1234")
+	membersPath := "/api/v1/admin/groups/" + itoa(g.ID) + "/members"
 
 	// Add a member.
 	w := admin.do("POST", membersPath, map[string]interface{}{
@@ -364,7 +364,7 @@ func TestAdminGroupMembers(t *testing.T) {
 		t.Fatalf("leader not reassigned: %d", got.LeaderID)
 	}
 	// Cannot remove the current leader.
-	w = admin.do("DELETE", membersPath+"/"+itoa2(other.ID), nil, true)
+	w = admin.do("DELETE", membersPath+"/"+itoa(other.ID), nil, true)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("remove leader: got %d, want 409", w.Code)
 	}
@@ -378,12 +378,12 @@ func TestAdminGroupMembers(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("add old leader as member: %d %s", w.Code, w.Body.String())
 	}
-	w = confirmDeparture(t, admin, "DELETE", membersPath+"/"+itoa2(oldLeader.ID), "/api/v1/groups/"+itoa2(g.ID)+"/members/"+itoa2(oldLeader.ID)+"/departure-preview", "")
+	w = confirmDeparture(t, admin, "DELETE", membersPath+"/"+itoa(oldLeader.ID), "/api/v1/groups/"+itoa(g.ID)+"/members/"+itoa(oldLeader.ID)+"/departure-preview", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("remove member: %d %s", w.Code, w.Body.String())
 	}
 	// Non-admin forbidden.
-	memberClient := loginAs(t, app, "other", "password1234")
+	memberClient := loginAPI(t, app, "other", "password1234")
 	w = memberClient.do("POST", membersPath, map[string]interface{}{"userId": oldLeader.ID}, true)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member add: got %d, want 403", w.Code)
@@ -400,7 +400,7 @@ func TestAdminListGroups(t *testing.T) {
 			t.Fatalf("create group: %v", err)
 		}
 	}
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 	w := admin.do("GET", "/api/v1/admin/groups", nil, false)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list groups: %d", w.Code)
@@ -448,8 +448,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 	app.DB.Create(&models.Registration{UserID: &pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 	app.DB.Create(&models.Registration{UserID: &viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 
-	admin := loginAs(t, app, "admin", "password1234")
-	other := loginAs(t, app, "viewer", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
+	other := loginAPI(t, app, "viewer", "password1234")
 	type detail struct {
 		Group    groupSummaryJSON `json:"group"`
 		Members  []memberJSON     `json:"members"`
@@ -718,7 +718,7 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 	if err := app.DB.Create(&teen).Error; err != nil {
 		t.Fatal(err)
 	}
-	path := "/api/v1/admin/users/" + itoa2(teen.ID)
+	path := "/api/v1/admin/users/" + itoa(teen.ID)
 	reload := func() models.User {
 		var u models.User
 		app.DB.First(&u, teen.ID)
@@ -747,7 +747,7 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 
 	// An adult member can still be promoted and re-enabled as before.
 	adult := newTestUser(t, app, "adult94", "password1234", models.RoleMember)
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(adult.ID), map[string]string{"role": models.RoleAdmin}, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(adult.ID), map[string]string{"role": models.RoleAdmin}, http.StatusOK)
 }
 
 // Guardian links (M1.9 slice 1, DEC-32): a child or teen added to a
@@ -803,7 +803,7 @@ func TestAdminGuardianLinksConfirmReject(t *testing.T) {
 		t.Fatalf("bogus status: %d, want 400", w.Code)
 	}
 
-	confirmPath := "/api/v1/admin/guardian-links/" + itoa2(childLink.ID) + "/confirm"
+	confirmPath := "/api/v1/admin/guardian-links/" + itoa(childLink.ID) + "/confirm"
 	// No check note, no confirmation (DEC-32), and nothing changes.
 	w := admin.do("POST", confirmPath, map[string]string{}, true)
 	if w.Code != http.StatusBadRequest {
@@ -852,7 +852,7 @@ func TestAdminGuardianLinksConfirmReject(t *testing.T) {
 	}
 
 	// Rejecting needs no note; the holder sees the rejection.
-	rejectPath := "/api/v1/admin/guardian-links/" + itoa2(teenLink.ID) + "/reject"
+	rejectPath := "/api/v1/admin/guardian-links/" + itoa(teenLink.ID) + "/reject"
 	w = admin.do("POST", rejectPath, map[string]string{}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reject link: %d %s", w.Code, w.Body.String())
@@ -907,7 +907,7 @@ func TestGuardianLinkSelfConfirm(t *testing.T) {
 
 	// Sole admin: allowed and audited as a self-confirm.
 	solo := pendingFor(ada, "Solo")
-	if w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa2(solo)+"/confirm", note, true); w.Code != http.StatusOK {
+	if w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa(solo)+"/confirm", note, true); w.Code != http.StatusOK {
 		t.Fatalf("sole admin self-confirm: %d %s", w.Code, w.Body.String())
 	}
 	rows, metas := auditRows(t, app, audit.GuardianLinkConfirmed)
@@ -919,7 +919,7 @@ func TestGuardianLinkSelfConfirm(t *testing.T) {
 	newTestUser(t, app, "bea", "password1234", models.RoleAdmin)
 	bea := loginAPI(t, app, "bea", "password1234")
 	second := pendingFor(ada, "Second")
-	path := "/api/v1/admin/guardian-links/" + itoa2(second) + "/confirm"
+	path := "/api/v1/admin/guardian-links/" + itoa(second) + "/confirm"
 	if w := ada.do("POST", path, note, true); w.Code != http.StatusForbidden {
 		t.Fatalf("multi-admin self-confirm: %d %s, want 403", w.Code, w.Body.String())
 	}
@@ -954,7 +954,7 @@ func TestGuardianLinkSelfConfirmIgnoresInactiveAdmins(t *testing.T) {
 	if err := app.DB.Where("person_id = ?", p.ID).First(&link).Error; err != nil {
 		t.Fatal(err)
 	}
-	w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa2(link.ID)+"/confirm", map[string]string{"checkNote": "Known family"}, true)
+	w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]string{"checkNote": "Known family"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("self-confirm with only inactive other admins: %d %s", w.Code, w.Body.String())
 	}
@@ -1010,7 +1010,7 @@ func TestAdminDeleteUserPromotesWaiter(t *testing.T) {
 	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegWaitlisted {
 		t.Fatalf("waiter = %q, want waitlisted", got)
 	}
-	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa2(goer.ID), nil, true); w.Code != http.StatusOK {
+	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa(goer.ID), nil, true); w.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
 	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegGoing {
@@ -1072,7 +1072,7 @@ func TestAdminSelectionAdultAndRawTeenAdd(t *testing.T) {
 	g := newTestGroup(t, app, actor, "Admin selection", models.GroupActive)
 	adult := newTestUser(t, app, "admin chosen", "pw", models.RoleMember)
 	token, _ := app.newPeopleSelection(actor.ID, adult.ID, time.Now())
-	path := "/api/v1/admin/groups/" + itoa2(g.ID) + "/members"
+	path := "/api/v1/admin/groups/" + itoa(g.ID) + "/members"
 	w := client.do("POST", path, map[string]any{"selectionId": token}, true)
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
@@ -1109,7 +1109,7 @@ func TestAdminMemberAddRefreshesActorAfterContactGate(t *testing.T) {
 				}
 				gate := holdContactGate(t, app)
 				response := queueContact(func() *httptest.ResponseRecorder {
-					return client.do("POST", "/api/v1/admin/groups/"+itoa2(g.ID)+"/members", body, true)
+					return client.do("POST", "/api/v1/admin/groups/"+itoa(g.ID)+"/members", body, true)
 				})
 				waitContactWaiters(t, app, 1)
 				revocation := peopleAddActorRevocations(actor)[change]
@@ -1142,7 +1142,7 @@ func TestAdminMemberAddStillChangesExplicitRoleAndKeepsLastLeader(t *testing.T) 
 	leader := newTestUser(t, app, "admin role target", "pw", models.RoleMember)
 	g := newTestGroup(t, app, leader, "Explicit admin role", models.GroupActive)
 	addMember(t, app, actor, g, models.MembershipLeader)
-	path := "/api/v1/admin/groups/" + itoa2(g.ID) + "/members"
+	path := "/api/v1/admin/groups/" + itoa(g.ID) + "/members"
 	w := client.do("POST", path, map[string]any{"userId": actor.ID, "role": models.MembershipMember}, true)
 	if w.Code != 200 || relIn(app.DB, actor.ID, g.ID).Leader {
 		t.Fatal("admin add did not change explicit role", w.Code, w.Body.String())
@@ -1964,20 +1964,13 @@ func TestAvatarUploadBehindALongErasureHoldGivesUpThenIsRefused(t *testing.T) {
 	})
 
 	code := deleteUserAsync(adminC, target.ID)
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testdb.WaitUntil(t, "the erasure to start sleeping", 10*time.Second, func() bool {
 		var sleeping int
 		if err := app.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'PgSleep'").Scan(&sleeping).Error; err != nil {
 			t.Fatal(err)
 		}
-		if sleeping > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the erasure never started sleeping")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return sleeping > 0
+	})
 	start := time.Now()
 	w := targetC.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.png", tinyPNG(t))
 	d := time.Since(start)
@@ -2644,7 +2637,7 @@ func TestAdminDeleteHouseholdBusyBoundedAttempt(t *testing.T) {
 func TestAdminDecisionBodiesAreNotSilentlyEmpty(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
-	admin := loginAs(t, app, "admin", "password1234")
+	admin := loginAPI(t, app, "admin", "password1234")
 	w := admin.do("POST", "/api/v1/admin/groups/999/approve", rawJSON("{not json"), true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("malformed body: %d %s, want 400", w.Code, w.Body.String())

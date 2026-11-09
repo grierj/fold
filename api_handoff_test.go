@@ -23,7 +23,7 @@ func TestSoleLeaderHandoff(t *testing.T) {
 			shared := newTestGroup(t, app, leaving, "Gamma", models.GroupActive)
 			addMember(t, app, ann, g1, models.MembershipMember)
 			addMember(t, app, ann, shared, models.MembershipLeader) // not sole-led
-			admin := loginAs(t, app, "admin", "password1234")
+			admin := loginAPI(t, app, "admin", "password1234")
 
 			send := func(successors map[string]uint) *httptest.ResponseRecorder {
 				body := map[string]any{"successors": successors}

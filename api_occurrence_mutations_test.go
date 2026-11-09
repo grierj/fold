@@ -12,6 +12,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/testdb"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -1382,18 +1383,13 @@ func TestOccurrenceAskFinalTeenDecisionQueuedAuthorityLoss(t *testing.T) {
 // rather than hoping a sleep places the operation before its critical section.
 func waitOccurrenceDomainWaiter(t *testing.T, app *App) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, "completion to wait on the occurrence domain lock", 5*time.Second, func() bool {
 		var n int64
 		if err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%event_occurrences%FOR UPDATE%'`).Scan(&n).Error; err != nil {
 			t.Fatal(err)
 		}
-		if n > 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("completion never waited on occurrence domain lock")
+		return n > 0
+	})
 }
 
 func TestOccurrenceAskExpiryWhileWaitingOnDomainLock(t *testing.T) {

@@ -43,11 +43,11 @@ lockbad v1 '.lockfileVersion = 1' 'lockfileVersion 1 is too old'
 lockbad nover 'del(.lockfileVersion)' 'lockfileVersion none is too old'
 lockbad range '.packages["node_modules/@playwright/test"].version = "9.9.9" | .packages["node_modules/playwright-core"].version = "9.9.9"' 'outside the range'
 jq '.devDependencies["@playwright/test"] = "latest"' "$ROOT/web/package.json" >"$WORK/pkg.latest.json"
-qc1_browser_lock_problems "$WORK/pkg.latest.json" "$ROOT/web/package-lock.json" | grep -qF 'not a pinned or caret version'
+qc1_browser_lock_problems "$WORK/pkg.latest.json" "$ROOT/web/package-lock.json" | grep -F 'not a pinned or caret version' >/dev/null
 jq 'del(.devDependencies["@playwright/test"])' "$ROOT/web/package.json" >"$WORK/pkg.none.json"
-qc1_browser_lock_problems "$WORK/pkg.none.json" "$ROOT/web/package-lock.json" | grep -qF 'is not a dependency in package.json'
-qc1_browser_lock_problems "$ROOT/web/package.json" "$WORK/absent-lock.json" | grep -qF 'needs a lock file'
-qc1_browser_lock_problems "$WORK/absent-package.json" "$ROOT/web/package-lock.json" | grep -qF 'is missing'
+qc1_browser_lock_problems "$WORK/pkg.none.json" "$ROOT/web/package-lock.json" | grep -F 'is not a dependency in package.json' >/dev/null
+qc1_browser_lock_problems "$ROOT/web/package.json" "$WORK/absent-lock.json" | grep -F 'needs a lock file' >/dev/null
+qc1_browser_lock_problems "$WORK/absent-package.json" "$ROOT/web/package-lock.json" | grep -F 'is missing' >/dev/null
 # The real pins are the ones the repository's own browser tests use.
 [[ "$(jq -r '.packages["node_modules/@playwright/test"].version' "$ROOT/web/package-lock.json")" == "$(jq -r '.packages["node_modules/playwright-core"].version' "$ROOT/web/package-lock.json")" ]]
 # web/node_modules is ignored, so npm ci leaves the tree clean for the clean-tree checks.
@@ -276,11 +276,11 @@ boot_l="$(grep -n '^drill_case_begin bootstrap$' "$RDS" | cut -d: -f1)"
 ev_l="$(grep -n 'browser-preflight.json' "$RDS" | head -n 1 | cut -d: -f1)"
 proof_l="$(grep -n 'node "\$WORK/private-browser.cjs"' "$RDS" | head -n 1 | cut -d: -f1)"
 [[ -n "$pf_l" && -n "$iso_l" && -n "$boot_l" && -n "$ev_l" && -n "$proof_l" && "$iso_l" -lt "$pf_l" && "$pf_l" -lt "$boot_l" && "$boot_l" -lt "$ev_l" && "$ev_l" -lt "$proof_l" ]]
-sed -n "${pf_l},$((pf_l+3))p" "$RDS" | grep -q "jq -e '.ok == true'"
-sed -n "$((pf_l - 1)),$((pf_l + 1))p" "$RDS" | grep -q 'the browser preflight failed\|BROWSER_PREFLIGHT='
+sed -n "${pf_l},$((pf_l+3))p" "$RDS" | grep "jq -e '.ok == true'" >/dev/null
+sed -n "$((pf_l - 1)),$((pf_l + 1))p" "$RDS" | grep 'the browser preflight failed\|BROWSER_PREFLIGHT=' >/dev/null
 grep -q "printf '%s\\\\n' \"\$BROWSER_PREFLIGHT\" >\"\$WORK/browser-preflight.json\"" "$RDS"
 # No flag skips it: there is no --no-browser in the drill.
-if sed -n '/^while (( \$# )); do/,/^done/p' "$RDS" | grep -q -- '--no-browser'; then echo 'restore-drill.sh can skip the browser preflight' >&2; exit 1; fi
+if sed -n '/^while (( \$# )); do/,/^done/p' "$RDS" | grep -- '--no-browser' >/dev/null; then echo 'restore-drill.sh can skip the browser preflight' >&2; exit 1; fi
 
 # --- the nested launcher, both modes, against a stub docker -------------------------------------------------------------------------
 mkdir "$WORK/stubbin"
@@ -382,9 +382,9 @@ if grep -nE 'cli\.js install firefox|playwright install firefox' "$HERE/restore-
 ffchk_l="$(grep -n 'FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"' "$RDS" | head -n 1 | cut -d: -f1)"; ffcp_l="$(grep -n 'cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"' "$RDS" | cut -d: -f1)"
 boot2_l="$(grep -n '^drill_case_begin bootstrap$' "$RDS" | cut -d: -f1)"
 [[ -n "$ffchk_l" && -n "$ffcp_l" && "$ffchk_l" -lt "$boot2_l" && "$boot2_l" -lt "$ffcp_l" ]]
-sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep -q 'was not prepared'
-sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep -q 'docker image inspect'
-sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep -q 'is not the one the preparation proved'
+sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep 'was not prepared' >/dev/null
+sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep 'docker image inspect' >/dev/null
+sed -n "${ffchk_l},$((ffchk_l+8))p" "$RDS" | grep 'is not the one the preparation proved' >/dev/null
 
 # firefox_proof (the drill's Firefox step), taken out of restore-drill-cases.sh and run against a stub docker.
 awk '/^firefox_proof\(\) /{on=1} on{print} on && /^}$/{exit}' "$HERE/restore-drill-cases.sh" >"$WORK/firefox_proof.sh"
@@ -600,7 +600,7 @@ STUB_VOLNAME=the-hosts-pgdata STUB_VOLMODE=other vol_run "$WORK/v3"
 # --keep leaves the stack, including the volume.
 vol_run "$WORK/v4" --keep; if grep -q '^volume rm\|^network rm' "$WORK/stub.log"; then echo '--keep removed something' >&2; exit 1; fi
 # Cleanup is guarded by the label as well as mounting being: no unconditional volume removal.
-sed -n '/^cleanup() {/,/^}/p' "$RUNNER" | grep -q 'docker volume inspect --format .{{index .Labels "fold.qc1.owner"}}. "\$VOL"'
+sed -n '/^cleanup() {/,/^}/p' "$RUNNER" | grep 'docker volume inspect --format .{{index .Labels "fold.qc1.owner"}}. "\$VOL"' >/dev/null
 if grep -n 'docker volume rm' "$RUNNER" | grep -v 'fold.qc1.owner' | grep -v '^[0-9]*:      docker volume rm -f "\$VOL"'; then echo 'an unguarded volume removal' >&2; exit 1; fi
 if grep -nE 'docker volume create [^-]|docker volume create "|--name qc1' "$RUNNER"; then echo 'the volume is named' >&2; exit 1; fi
 grep -q '^VOL_TOKEN="\$(cat /proc/sys/kernel/random/uuid)"$' "$RUNNER"

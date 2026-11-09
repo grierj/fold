@@ -2798,11 +2798,8 @@ func erasureTestStatementWait(t *testing.T, app *App) (pid int, queryStart time.
 // and blocked by exactly blocker. It returns when that first held.
 func erasureTestWaitBlockedOnlyBy(t *testing.T, app *App, waiter int, queryStart time.Time, blocker int) time.Time {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
-	for {
+	var first time.Time
+	testdb.WaitUntil(t, fmt.Sprintf("session %d to be blocked only by session %d in the statement started at %v", waiter, blocker, queryStart), 5*time.Second, func() bool {
 		var n int
 		if err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity a
 			WHERE a.pid = ? AND a.state = 'active' AND a.wait_event_type = 'Lock' AND a.query_start = ?
@@ -2811,14 +2808,11 @@ func erasureTestWaitBlockedOnlyBy(t *testing.T, app *App, waiter int, queryStart
 			t.Fatal(err)
 		}
 		if n == 1 {
-			return time.Now()
+			first = time.Now()
 		}
-		select {
-		case <-tick.C:
-		case <-deadline.C:
-			t.Fatalf("session %d was never blocked only by session %d in the statement started at %v", waiter, blocker, queryStart)
-		}
-	}
+		return n == 1
+	})
+	return first
 }
 
 // erasureTestSinceQueryStart is clock_timestamp() - queryStart read on the
