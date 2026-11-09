@@ -27,21 +27,18 @@ func (a *App) groupShownTo(me *models.User, g *models.Group, rel policy.Rel) *mo
 	return g
 }
 
-// presentGroup hides a group the viewer cannot see. An opened invite-only
-// event then says it is hosted by the church and names nobody (DEC-17).
-func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Group, me *models.User, rel policy.Rel, siteName string) {
-	if ev.GroupID == nil {
+// presentGroup names the group an event is hosted by, which is shown (from
+// groupShownTo) or nil. A group the viewer cannot see, and no group at all,
+// says it is hosted by the church and names nobody (DEC-17).
+func presentGroup(inst *occurrenceJSON, shown *models.Group, siteName string) {
+	if shown == nil {
 		inst.HostedBy = siteName
 		return
 	}
-	if shown := a.groupShownTo(me, g, rel); shown != nil {
-		gid := shown.ID
-		inst.GroupID = &gid
-		inst.GroupName = shown.Name
-		inst.GroupVisibility = shown.Visibility
-		return
-	}
-	inst.HostedBy = siteName
+	gid := shown.ID
+	inst.GroupID = &gid
+	inst.GroupName = shown.Name
+	inst.GroupVisibility = shown.Visibility
 }
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) (eventJSON, error) {
@@ -120,25 +117,45 @@ func upcomingWindow(now time.Time) (from, to string) {
 	return now.Add(-24 * time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02")
 }
 
-// loadVisibleEvent is 404 when the event is missing or the caller cannot
-// see it. Managing it is a separate 403.
-func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool) {
+// loadEventFor loads the event named by :id with the caller's facts. The error
+// is errEventNotFound when it is missing or the caller cannot see it (never a
+// 403 for what they may not know exists), errCannotChangeEvent from
+// loadManagedEventFor when they can see but not manage it, else a failure.
+func (a *App) loadEventFor(c *gin.Context) (*models.Event, eventFacts, error) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var ev models.Event
 	if err := a.DB.First(&ev, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, eventFacts{}, false
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, eventFacts{}, errEventNotFound
+		}
+		return nil, eventFacts{}, err
 	}
 	f, err := eventFactsIn(a.DB, apiUser(c), &ev)
 	if err != nil {
-		fail(c, err)
-		return nil, eventFacts{}, false
+		return nil, eventFacts{}, err
 	}
 	if !f.canSee(apiUser(c)) {
-		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, eventFacts{}, false
+		return nil, eventFacts{}, errEventNotFound
 	}
-	return &ev, f, true
+	return &ev, f, nil
+}
+
+func (a *App) loadManagedEventFor(c *gin.Context) (*models.Event, eventFacts, error) {
+	ev, f, err := a.loadEventFor(c)
+	if err == nil && !f.canManage(apiUser(c)) {
+		return nil, eventFacts{}, errCannotChangeEvent
+	}
+	return ev, f, err
+}
+
+// loadVisibleEvent answers 404 when the event is missing or the caller cannot
+// see it. Managing it is a separate 403.
+func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool) {
+	ev, f, err := a.loadEventFor(c)
+	if err != nil {
+		fail(c, err)
+	}
+	return ev, f, err == nil
 }
 
 // openEventIDs is church-wide events the viewer can see, plus group events
@@ -495,7 +512,7 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 		var event models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "KEY SHARE"}).Where("id = ? AND group_id IS NULL", ev.ID).First(&event).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errEventGone
+				return errEventNotFound
 			}
 			return err
 		}
@@ -523,8 +540,9 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 	a.respondHosts(c, ev.ID)
 }
 
-// errEventGone: the church-wide event was deleted while the request waited.
-var errEventGone = apiErr(http.StatusNotFound, "", "event not found")
+// errEventNotFound: the event is not there for this caller, or was deleted
+// while the request waited.
+var errEventNotFound = apiErr(http.StatusNotFound, "", "event not found")
 
 func (a *App) apiRemoveEventHost(c *gin.Context) {
 	ev, ok := a.loadChurchEvent(c)
@@ -537,7 +555,7 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errEventGone
+				return errEventNotFound
 			}
 			return err
 		}

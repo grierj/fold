@@ -431,7 +431,7 @@ func (a *App) apiEventVisibilityImpact(c *gin.Context) {
 	}
 	impact, err := eventImpactOfReset(a.DB, ev, vis, c.Query("resetOverrides") == "1")
 	if err != nil {
-		jsonError(c, 500, "could not preview visibility")
+		jsonError(c, http.StatusInternalServerError, "could not preview visibility")
 		return
 	}
 	c.JSON(http.StatusOK, impact)

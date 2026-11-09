@@ -238,7 +238,8 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		// The group's meeting place is the default location only for people
 		// who can see the group; an opened invite-only event must not reveal it.
 		loc := ""
-		if shown := a.groupShownTo(me, g, rel); shown != nil {
+		shown := a.groupShownTo(me, g, rel)
+		if shown != nil {
 			loc = shown.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)
@@ -288,10 +289,10 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 				inst.Attendees = kept
 			}
 		}
-		if siteName == "" && (ev.GroupID == nil || a.groupShownTo(me, g, rel) == nil) {
+		if shown == nil && siteName == "" {
 			siteName = a.siteName()
 		}
-		a.presentGroup(&inst, ev, g, me, rel, siteName)
+		presentGroup(&inst, shown, siteName)
 		if !vs.canSeeSeries(me, ev) {
 			// Like the exact-date page: a hidden parent contributes no
 			// series fields, description or childcare details (PLAN 8.2). The
@@ -889,15 +890,11 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 }
 
 func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
-	ev, f, ok := a.loadVisibleEvent(c)
-	if !ok {
-		return nil, false
+	ev, _, err := a.loadManagedEventFor(c)
+	if err != nil {
+		fail(c, err)
 	}
-	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
-		fail(c, errCannotChangeEvent)
-		return nil, false
-	}
-	return ev, true
+	return ev, err == nil
 }
 
 func (a *App) apiUpdateEvent(c *gin.Context) {
@@ -1533,7 +1530,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errNeedDecision):
-		c.JSON(409, gin.H{"needsDecision": true, "impact": impact})
+		c.JSON(http.StatusConflict, gin.H{"needsDecision": true, "impact": impact})
 		return
 	case errors.Is(err, errDateVisibility):
 		fail(c, errVisibilityNotAllowed)

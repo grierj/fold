@@ -373,7 +373,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		// only logged by fail.
 		if isAPIError(err) {
 			if auditErr := a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operation); auditErr != nil {
-				jsonError(c, 500, "could not save registration")
+				jsonError(c, http.StatusInternalServerError, "could not save registration")
 				return
 			}
 		}
@@ -381,14 +381,14 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		return
 	}
 	if refused {
-		jsonError(c, 404, "event not found")
+		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
 	if operation == operationRegister {
-		c.JSON(200, gin.H{"registration": result})
+		c.JSON(http.StatusOK, gin.H{"registration": result})
 		return
 	}
-	c.JSON(200, gin.H{})
+	c.JSON(http.StatusOK, gin.H{})
 }
 
 // Only an internal request finalizer may supply this proof. It is never decoded
@@ -585,31 +585,16 @@ func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.Even
 // Unlike the general manager loader, this entry point must audit every
 // refusal before writing its response, including hidden/missing destinations.
 func (a *App) loadManagedDateAddEvent(c *gin.Context) (*models.Event, bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var ev models.Event
-	if err := a.DB.First(&ev, id).Error; err != nil {
-		a.managerDateAddError(c, 404, "event not found")
-		return nil, false
-	}
-	f, err := eventFactsIn(a.DB, apiUser(c), &ev)
+	ev, _, err := a.loadManagedEventFor(c)
 	if err != nil {
-		a.managerDateAddError(c, http.StatusInternalServerError, "could not load this event")
-		return nil, false
+		a.managerDateAddRefusal(c, err)
 	}
-	if !f.canSee(apiUser(c)) {
-		a.managerDateAddError(c, 404, "event not found")
-		return nil, false
-	}
-	if !f.canManage(apiUser(c)) {
-		a.managerDateAddError(c, 403, "you can't change this event")
-		return nil, false
-	}
-	return &ev, true
+	return ev, err == nil
 }
 
 func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 	if err := a.auditManagerDateRefusal(c); err != nil {
-		jsonError(c, 500, "could not add registration")
+		jsonError(c, http.StatusInternalServerError, "could not add registration")
 		return
 	}
 	jsonError(c, status, message)
@@ -619,7 +604,7 @@ func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 // own answer.
 func (a *App) managerDateAddRefusal(c *gin.Context, err error) {
 	if auditErr := a.auditManagerDateRefusal(c); auditErr != nil {
-		jsonError(c, 500, "could not add registration")
+		jsonError(c, http.StatusInternalServerError, "could not add registration")
 		return
 	}
 	fail(c, err)

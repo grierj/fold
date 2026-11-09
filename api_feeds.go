@@ -331,6 +331,13 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 	return feed, nil
 }
 
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 // calendarStatus is the iCalendar STATUS of a date for a person's own answer
 // (DEC-71, DEC-93): Going is CONFIRMED, Maybe and Waitlisted are TENTATIVE.
 // In the personal feed every other date it carries is TENTATIVE too (Not

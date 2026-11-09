@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+
 	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/models"
@@ -47,13 +49,6 @@ func (a *App) canRegisterDate(tx *gorm.DB, u *models.User, ev *models.Event, occ
 		return false
 	}
 	return a.canRegisterIn(tx, u, dateEvent(ev, occ))
-}
-
-func laterTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
 }
 
 var errDateVisibility = errors.New("invalid date visibility")
@@ -162,15 +157,15 @@ func (a *App) apiDateVisibilityImpact(c *gin.Context) {
 	}
 	var occ models.EventOccurrence
 	if !isCalendarDate(c.Param("date")) || a.DB.Where("event_id = ? AND original_date = ?", ev.ID, c.Param("date")).First(&occ).Error != nil {
-		jsonError(c, 404, "event not found")
+		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
 	impact, err := dateImpactOf(a.DB, ev, &occ, policy.EffectiveVisibility(ev.Visibility, value))
 	if err != nil {
-		jsonError(c, 500, "could not preview visibility")
+		jsonError(c, http.StatusInternalServerError, "could not preview visibility")
 		return
 	}
-	c.JSON(200, impact)
+	c.JSON(http.StatusOK, impact)
 }
 
 func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) (visibilityImpactJSON, error) {
