@@ -215,3 +215,13 @@ func groupAndRel(ev *models.Event, groups map[uint]*models.Group, rels map[uint]
 	}
 	return groups[*ev.GroupID], rels[*ev.GroupID]
 }
+
+// hostsChurchEvent reports whether the user hosts any church-wide event. Host
+// rows on group events grant nothing (DEC-7).
+func hostsChurchEvent(db *gorm.DB, userID uint) (bool, error) {
+	var n int64
+	err := db.Model(&models.EventHost{}).
+		Joins("JOIN events ON events.id = event_hosts.event_id AND events.group_id IS NULL AND events.deleted_at IS NULL").
+		Where("event_hosts.user_id = ?", userID).Count(&n).Error
+	return n > 0, err
+}

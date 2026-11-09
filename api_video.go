@@ -123,6 +123,27 @@ func parseVideoEdits(c *gin.Context, body eventBody, base *models.Event) (videoE
 	return ed, true
 }
 
+// videoShown is the one reveal rule for a viewer: the event's link when
+// policy.CanSeeVideoLink lets them see it, else hidden when a link exists at
+// all (so the UI can say "Register to get the link"). Every JSON shape that
+// carries a video link sets its fields from this.
+func videoShown(ev *models.Event, isGoing, isManager bool) (url string, hidden bool) {
+	return videoWhen(ev, policy.CanSeeVideoLink(videoRevealOf(ev), isGoing, isManager))
+}
+
+// videoWhen is videoShown once the viewer's right to the link is decided (the
+// date page also decides it for people holding only an exact-date invitation).
+func videoWhen(ev *models.Event, canSee bool) (url string, hidden bool) {
+	link := videoLinkOf(ev)
+	switch {
+	case link == "":
+		return "", false
+	case canSee:
+		return link, false
+	}
+	return "", true
+}
+
 // applyVideoReveal fills one occurrence's video fields for a viewer.
 // occurrenceToJSON calls it with (false, false), so a registered_only
 // link stays hidden until a caller that knows the viewer's facts —
@@ -130,27 +151,13 @@ func parseVideoEdits(c *gin.Context, body eventBody, base *models.Event) (videoE
 func applyVideoReveal(inst *occurrenceJSON, ev *models.Event, isGoing, isManager bool) {
 	inst.VideoProvider = videoProviderOf(ev)
 	inst.VideoReveal = videoRevealOf(ev)
-	link := videoLinkOf(ev)
-	inst.VideoURL = ""
-	inst.VideoHidden = false
-	if link == "" {
-		return
-	}
-	if policy.CanSeeVideoLink(inst.VideoReveal, isGoing, isManager) {
-		inst.VideoURL = link
-	} else {
-		inst.VideoHidden = true
-	}
+	inst.VideoURL, inst.VideoHidden = videoShown(ev, isGoing, isManager)
 }
 
-// revealVideoToManager undoes toEventJSON's fail-closed default for a
-// viewer who manages the event (a leader, a host, or an admin).
-func revealVideoToManager(j *eventJSON, ev *models.Event) {
-	if link := videoLinkOf(ev); link != "" &&
-		policy.CanSeeVideoLink(videoRevealOf(ev), false, true) {
-		j.VideoURL = link
-		j.VideoHidden = false
-	}
+// applyEventVideoReveal is applyVideoReveal for the series JSON: toEventJSON
+// starts fail-closed and presentEvent reveals the link to the event's managers.
+func applyEventVideoReveal(j *eventJSON, ev *models.Event, isGoing, isManager bool) {
+	j.VideoURL, j.VideoHidden = videoShown(ev, isGoing, isManager)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,16 +213,17 @@ func jitsiRoom() (string, error) {
 
 func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 	me := apiUser(c)
-	allowed := policy.IsAdmin(asPerson(me))
-	if !allowed {
-		var leads, hosts int64
-		a.DB.Model(&models.Membership{}).
-			Where("user_id = ? AND role = ? AND status = ?", me.ID, models.MembershipLeader, models.MembershipActive).
-			Count(&leads)
-		a.DB.Model(&models.EventHost{}).Where("user_id = ?", me.ID).Count(&hosts)
-		allowed = leads > 0 || hosts > 0
+	leads, err := leadsApprovedGroup(a.DB, me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not generate a video link")
+		return
 	}
-	if !allowed {
+	hosts, err := hostsChurchEvent(a.DB, me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not generate a video link")
+		return
+	}
+	if !policy.CanGenerateVideoLink(asPerson(me), leads, hosts) {
 		jsonError(c, http.StatusForbidden, "only leaders, hosts, and admins can generate a video link")
 		return
 	}

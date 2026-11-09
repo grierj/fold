@@ -461,7 +461,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		if body.Visibility != nil {
 			var err error
-			if impact, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, err = a.applyGroupTightening(tx, u, c.ClientIP(), g, locked.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
 		}

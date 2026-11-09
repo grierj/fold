@@ -343,6 +343,13 @@ const (
 	VideoRevealRegisteredOnly = "registered_only"
 )
 
+// CanGenerateVideoLink: the people who can run an event may mint a video
+// room for one: admins, leaders of an approved group (DEC-88), and hosts of
+// a church-wide event (a host row on a group event grants nothing, DEC-7).
+func CanGenerateVideoLink(p *Person, leadsApprovedGroup, hostsChurchEvent bool) bool {
+	return p != nil && (p.Admin || leadsApprovedGroup || hostsChurchEvent)
+}
+
 // CanSeeVideoLink decides who sees an event's video link (5.8, M1.8): with
 // "always", everyone who can see the event; with "registered_only" (the
 // default, and anything unexpected, failing closed), only people

@@ -8,7 +8,6 @@ import (
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"strconv"
 	"time"
 )
@@ -107,29 +106,34 @@ func dateImpactOf(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, ne
 
 // Caller holds the contact gate, event and occurrence locks. Cancellation,
 // audit and stored notices share the same transaction as the date edit.
-func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) error {
+//
+// group is the event's group as it will be once the surrounding change is
+// saved (a group edit passes its in-memory copy), or nil to read it. keep
+// records the date as deliberately kept open: it audits and notifies as an
+// override even though nothing changes.
+func (a *App) changeDateVisibility(tx *gorm.DB, actor *models.User, ip string, ev *models.Event, occ *models.EventOccurrence, group *models.Group, value *string, reason string, keep bool) error {
 	old := occ.VisibilityOverride
 	if !keep && ((old == nil && value == nil) || (old != nil && value != nil && *old == *value)) {
 		return nil
 	}
 	before, after := policy.EffectiveVisibility(ev.Visibility, old), policy.EffectiveVisibility(ev.Visibility, value)
 
-	f, err := eventFactsIn(tx, apiUser(c), ev)
-	if err != nil {
-		return err
-	}
-	if f.group != nil && len(groupVisibility) > 0 {
-		f.group.Visibility = groupVisibility[0]
+	if group == nil {
+		f, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		group = f.group
 	}
 	action := audit.VisibilityChanged
-	if f.group != nil && policy.MoreOpen(after, f.group.Visibility) {
+	if group != nil && policy.MoreOpen(after, group.Visibility) {
 		action = audit.VisibilityOverride
 	}
 	meta := map[string]any{"original_date": models.FormatCalendarDate(occ.OriginalDate), "oldVisibility": old, "newVisibility": value, "reason": reason}
-	if f.group != nil {
-		meta["groupVisibility"] = f.group.Visibility
+	if group != nil {
+		meta["groupVisibility"] = group.Visibility
 	}
-	if err := audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: action, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
+	if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: ip}); err != nil {
 		return err
 	}
 	occ.VisibilityOverride = value
@@ -137,14 +141,14 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 		return err
 	}
 	if policy.MoreOpen(before, after) && !keep {
-		if err := a.cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID); err != nil {
+		if err := a.cancelDateLosers(tx, actor, ip, ev, after, time.Now().UTC(), occ.ID); err != nil {
 			return err
 		}
 	}
-	if action == audit.VisibilityOverride && f.group != nil {
+	if action == audit.VisibilityOverride && group != nil {
 		date := *ev
 		date.Title = ev.Title + " · " + models.FormatCalendarDate(occ.OriginalDate)
-		if err := notifyVisibilityOverride(tx, apiUser(c).ID, &date, f.group, after, reason); err != nil {
+		if err := notifyVisibilityOverride(tx, actor.ID, &date, group, after, reason); err != nil {
 			return err
 		}
 	}
@@ -197,17 +201,13 @@ func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) 
 }
 
 // Explicit dates are reviewed independently of their parent's opened marker.
-func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]models.EventOccurrence, map[uint]*models.Event, error) {
+func openedDates(tx *gorm.DB, groupID uint, oldVis, next string) ([]models.EventOccurrence, map[uint]*models.Event, error) {
 	evs := map[uint]*models.Event{}
 	if !policy.MoreOpen(oldVis, next) {
 		return nil, evs, nil
 	}
 	var rows []models.Event
-	q := tx.Where("group_id = ?", groupID).Order("id")
-	if lock {
-		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	if err := q.Find(&rows).Error; err != nil {
+	if err := tx.Where("group_id = ?", groupID).Order("id").Find(&rows).Error; err != nil {
 		return nil, nil, err
 	}
 	ids := []uint{}
@@ -219,11 +219,7 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]m
 		return nil, evs, nil
 	}
 	var dates []models.EventOccurrence
-	q = tx.Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", ids, time.Now().UTC()).Order("id")
-	if lock {
-		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	if err := q.Find(&dates).Error; err != nil {
+	if err := tx.Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", ids, time.Now().UTC()).Order("id").Find(&dates).Error; err != nil {
 		return nil, nil, err
 	}
 	out := []models.EventOccurrence{}

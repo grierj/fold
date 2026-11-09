@@ -95,7 +95,9 @@ func (a *App) feedGroup(c *gin.Context) {
 		feedUnavailable(c, err)
 		return
 	}
-	if g.ID == 0 || g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
+	// The feed is served to anyone with the link: only what a signed-out
+	// visitor may see.
+	if g.ID == 0 || !policy.CanSeeGroup(nil, asGroup(&g), policy.Rel{}) {
 		feedNotFound(c)
 		return
 	}
@@ -264,7 +266,6 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 	if err != nil {
 		return events.Feed{}, err
 	}
-	viewerAdmin := asPerson(viewer).Admin
 	for i := range occs {
 		occ := &occs[i]
 		if occ.Status != models.OccurrenceScheduled {
@@ -314,8 +315,9 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		}
 		videoURL := ""
 		if seriesVisible {
+			facts := vs.of(ev)
 			if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
-				rel.Member || vs.Hosted[ev.ID], rel.Leader || vs.Hosted[ev.ID] || viewerAdmin) {
+				rel.Member || facts.view.Host, facts.canManage(viewer)) {
 				videoURL = link
 			}
 		}

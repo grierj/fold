@@ -412,13 +412,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 	}
 	// Fail closed like occurrenceToJSON; presentEvent refines for the
 	// event's managers, and create/update responses go to a manager.
-	if link := videoLinkOf(ev); link != "" {
-		if policy.CanSeeVideoLink(j.VideoReveal, false, false) {
-			j.VideoURL = link
-		} else {
-			j.VideoHidden = true
-		}
-	}
+	applyEventVideoReveal(&j, ev, false, false)
 	return j
 }
 
@@ -852,7 +846,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		return
 	}
 	j := toEventJSON(&ev)
-	revealVideoToManager(&j, &ev) // the creator leads the group or is an admin
+	applyEventVideoReveal(&j, &ev, false, true) // the creator leads the group or is an admin
 	c.JSON(http.StatusCreated, gin.H{"event": j})
 }
 
@@ -1129,7 +1123,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	}
 	ev = &locked
 	j := toEventJSON(ev)
-	revealVideoToManager(&j, ev) // the locked row was re-checked: only managers reach here
+	applyEventVideoReveal(&j, ev, false, true) // the locked row was re-checked: only managers reach here
 	c.JSON(http.StatusOK, gin.H{"event": j})
 }
 
@@ -1402,7 +1396,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		// Cancellation and promotion use the final title, time and seat pools
 		// even when this request edits visibility and capacity together.
 		if visibilitySet {
-			err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
+			err := a.changeDateVisibility(tx, me, c.ClientIP(), ev, &o, f.group, visibility, body.Reason, false)
 			if err != nil {
 				return err
 			}

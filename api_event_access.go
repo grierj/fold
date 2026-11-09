@@ -47,8 +47,8 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {
 	j := toEventJSON(ev)
-	if policy.CanManageEvent(asPerson(me), f.view, f.rel) {
-		revealVideoToManager(&j, ev)
+	if f.canManage(me) {
+		applyEventVideoReveal(&j, ev, false, true)
 	}
 	if shown := a.groupShownTo(me, f.group, f.rel); ev.GroupID == nil || shown == nil {
 		j.GroupID = nil
@@ -370,7 +370,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.MoreOpen(oldVis, vis) {
-			err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+			err := a.cancelDateLosers(tx, me, c.ClientIP(), &locked, vis, time.Now().UTC(), seriesDates)
 			if err != nil {
 				return err
 			}
@@ -381,7 +381,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 				return err
 			}
 			for i := range dates {
-				err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				err := a.changeDateVisibility(tx, me, c.ClientIP(), &locked, &dates[i], f.group, nil, "series_reset", false)
 				if err != nil {
 					return err
 				}

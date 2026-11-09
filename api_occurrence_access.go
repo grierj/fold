@@ -276,13 +276,7 @@ func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupL
 		out.MyAttendanceMode = &mode
 		out.MyGuestCount = &reg.GuestCount
 	}
-	if link := videoLinkOf(ev); link != "" {
-		if canVideo {
-			out.VideoURL = link
-		} else {
-			out.VideoHidden = true
-		}
-	}
+	out.VideoURL, out.VideoHidden = videoWhen(ev, canVideo)
 	return out
 }
 
