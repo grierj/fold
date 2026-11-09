@@ -1,3 +1,4 @@
+import { people } from "../lib/plural";
 import { useState } from "react";
 import type { OpenedDecision, Visibility, VisibilityImpact } from "../types";
 import { formatDayLong } from "../lib/when";
@@ -9,10 +10,6 @@ const WORD: Record<Visibility, string> = {
   private: "private",
   invite_only: "invite-only",
 };
-
-function people(n: number) {
-  return n === 1 ? "1 person" : `${n} people`;
-}
 
 // GroupVisibilityReview shows a leader what making the group more private
 // does to its events before anything is saved (DEC-48). Events that only

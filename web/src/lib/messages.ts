@@ -1,3 +1,4 @@
+import { people } from "./plural";
 import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 import { registrationStatusLabel } from "./status";
@@ -107,8 +108,6 @@ export function audienceLabel(a: MessageAudience, options: ComposeOptions | null
     case "users": return `${a.userIds?.length ?? 0} chosen people`;
   }
 }
-
-const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 // Reasons that need a verb to read after a count ("3 have no email
 // address"). Any other reason the API sends ("turned off messages from

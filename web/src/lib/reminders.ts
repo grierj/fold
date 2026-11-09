@@ -1,10 +1,9 @@
+import { people } from "./plural";
 import type { DateReminders, Message, MessageReminder, ReminderKind } from "../types";
 import { browserTimeZone, formatShortWeekdayDay, formatWhenIn, lowerLead } from "./when";
 
 // The words for automatic event reminders (M3.6b, DEC-133 D): the lines
 // on the date page its managers see, and how a reminder reads in Messages.
-
-const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 const NOUN: Record<ReminderKind, string> = { going: "Reminder", waitlist: "Waitlist note", push: "Push reminder" };
 

@@ -106,8 +106,3 @@ export function hourRange(rooms: RoomCalendarRoom[], day: string, zone: string):
   }
   return { start, end };
 }
-
-// A room's name with its building, as the room pickers write it.
-export function roomName(r: { name: string; building: string }): string {
-  return r.building ? `${r.name} · ${r.building}` : r.name;
-}
