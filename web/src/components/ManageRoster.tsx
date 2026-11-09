@@ -15,6 +15,7 @@ import { Button } from "./ui/Button";
 import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
 import { registrationStatusLabel } from "../lib/status";
+import { poolFull } from "../lib/registration";
 
 export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void; headingLevel?: 3 | 4 }) {
   const Heading = headingLevel === 3 ? "h3" : "h4";
@@ -37,7 +38,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
 
   async function action(a: Attendee, kind: "remove" | "promote" | "restore") {
     if (kind === "remove" && !confirm(`Remove ${a.name}'s registration for this date? They won't be able to re-register on their own.`)) return;
-    const full = a.attendanceMode === "remote" ? instance.remoteCapacity !== null && (instance.remoteSpotsLeft ?? 1) <= 0 : instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    const full = poolFull(instance, a.attendanceMode);
     if (kind === "restore" && full && !confirm(`This date's ${a.attendanceMode === "remote" ? "remote" : "in-person"} seats are full. Add ${a.name} over capacity?`)) return;
     setBusy(a.registrationId); setError(null);
     try {
@@ -63,7 +64,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
     if (selection && (selection.teen || approvalRequired)) { setAskPerson({ person: selection, overCapacity: approvalRequired?.overCapacity ?? false }); return; }
     if (!selection && !email.trim()) return;
     const target = selection ? { selectionId: selection.selectionId } : email.trim();
-    const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    const full = poolFull(instance, "in_person");
     let overCapacity = full;
     if (full && !confirm("This date is full. Add them over capacity?")) return;
     setBusy("add"); setError(null);
@@ -95,7 +96,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
         {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
         <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button>
       </Form>
-      {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
+      {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={poolFull(instance, "in_person")} onClose={() => setAskPerson(null)} />}
     </div>
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email above." />}
     {roster.length > 0 && <PeopleList rows={roster} noun="sign-ups" sort={false} filters={[
