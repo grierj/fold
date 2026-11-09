@@ -532,19 +532,14 @@ func (a *App) reasonPageTx(ctx context.Context, fn func(tx *gorm.DB) error) erro
 func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, after *int64, step *reasonPageStep) error {
 	return a.reasonPageTx(ctx, func(tx *gorm.DB) error {
 		*step = reasonPageStep{}
-		var actor models.User
-		if err := tx.First(&actor, me.ID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errSecuritySession
-			}
+		actorRow, err := lockActorIn(tx, me, actorRead)
+		if err != nil {
 			return err
 		}
-		if !actor.CanSignIn() || actor.SessionVersion != me.SessionVersion || actor.LogoutVersion != me.LogoutVersion {
-			return errSecuritySession
-		}
-		if !policy.IsAdmin(asPerson(&actor)) {
+		if !policy.IsAdmin(asPerson(actorRow)) {
 			return errActorForbidden
 		}
+		actor := *actorRow
 		admins, err := adminCountIn(tx)
 		if err != nil {
 			return err
@@ -809,7 +804,7 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 	case err == nil:
 		c.JSON(http.StatusOK, step.page)
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 	case errors.Is(err, errReasonReviewForbidden) || (errors.Is(err, errActorForbidden) && step.predFailed):
 		c.JSON(http.StatusForbidden, gin.H{"error": "only an adult admin can review these reasons", "code": "reason_review_not_allowed", "reviewRequired": true})
 	case errors.Is(err, errActorForbidden):

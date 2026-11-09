@@ -272,15 +272,12 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if !valid {
 			return refuse()
 		}
-		var actor models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id = ?", apiUser(c).ID).First(&actor).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return refuse()
-			}
-			return err
-		}
-		if !actor.CanSignIn() || actor.SessionVersion != apiUser(c).SessionVersion {
+		actor, err := lockActorIn(tx, apiUser(c), actorNoKeyUpdate)
+		if errors.Is(err, errSecuritySession) {
 			return refuse()
+		}
+		if err != nil {
+			return err
 		}
 		var occ models.EventOccurrence
 		if err := tx.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ).Error; err != nil {

@@ -127,7 +127,7 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			}
 			// Every account-status transition ends old sessions, including
 			// legacy pending cookies. A newly consented teen logs in afresh.
-			updates := map[string]any{"status": status, "session_version": gorm.Expr("session_version + 1")}
+			updates := map[string]any{"status": status, "session_version": sessionVersionBump()}
 			if err := tx.Model(teen).Updates(updates).Error; err != nil {
 				return err
 			}
@@ -252,7 +252,7 @@ func (a *App) apiChangeTeenConsent(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+		if !adminCurrent(actor, me) {
 			return errConsentForbidden
 		}
 		err = a.changeTeenConsent(tx, c, teen, actor, teenConsentChange{Scope: body.Scope, Status: body.Status, EvidenceText: body.EvidenceText})

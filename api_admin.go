@@ -347,7 +347,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			var validAdmin, validGuardian, validTeen bool
 			for _, u := range users {
 				if u.ID == me.ID {
-					validAdmin = policy.CanConfirmGuardianLink(asPerson(u)) && u.Status == models.UserActive && u.SessionVersion == me.SessionVersion
+					validAdmin = sessionCurrent(u, me) && policy.CanConfirmGuardianLink(asPerson(u))
 				}
 				if u.ID == link.GuardianUserID {
 					validGuardian = u.Status == models.UserActive && policy.CanRequestGuardianLink(asPerson(u))
@@ -546,15 +546,9 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		var actor models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, me.ID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errSecuritySession
-			}
+		actor, err := lockAdminIn(tx, me, actorNoKeyUpdate)
+		if err != nil {
 			return err
-		}
-		if !actor.CanSignIn() || actor.SessionVersion != me.SessionVersion || !policy.IsAdmin(asPerson(&actor)) {
-			return errSecuritySession
 		}
 		if err := tx.Create(&u).Error; err != nil {
 			return err
@@ -562,8 +556,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.UserCreated,
 			TargetType: "user", TargetID: u.ID, Meta: map[string]any{"role": u.Role}, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {
@@ -752,7 +745,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 				return err
 			}
-			if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+			if !adminCurrent(actor, me) {
 				return errConsentForbidden
 			}
 			u = target
@@ -823,7 +816,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 			}
 			if bump {
-				updates["session_version"] = gorm.Expr("session_version + 1")
+				updates["session_version"] = sessionVersionBump()
 			}
 			if updates["status"] == models.UserDisabled {
 				if err := revokeAccountTokens(tx, u.ID); err != nil {
@@ -1209,8 +1202,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	// The reason review (T07B-2b). Each is a refusal before COMMIT: the id above
@@ -1317,7 +1309,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if !actor.CanSignIn() || !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+		if !adminCurrent(actor, me) {
 			return errSecuritySession
 		}
 		if err := replacePasswordIn(tx, target, *prepared.PasswordHash); err != nil {
@@ -1326,8 +1318,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.PasswordResetCompleted,
 			TargetType: "user", TargetID: target.ID, IP: c.ClientIP(), Meta: map[string]any{"byAdmin": true}})
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {

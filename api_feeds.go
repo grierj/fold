@@ -436,8 +436,7 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 			Meta: map[string]any{"scope": scope}, IP: c.ClientIP(),
 		})
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {
@@ -495,8 +494,7 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 			Meta: map[string]any{"oldScope": current.Scope, "newScope": scope}, IP: c.ClientIP(),
 		})
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if errors.Is(err, errCalendarFeedGone) {

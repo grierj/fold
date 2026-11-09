@@ -107,7 +107,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 			if err != nil {
 				return err
 			}
-			if guardian.Status != models.UserActive || guardian.SessionVersion != me.SessionVersion || !policy.CanRequestGuardianLink(asPerson(guardian)) || target.AccountType != models.AccountTeen {
+			if !sessionCurrent(guardian, me) || !policy.CanRequestGuardianLink(asPerson(guardian)) || target.AccountType != models.AccountTeen {
 				return errGuardianUnavailable
 			}
 			err = requestTeenGuardian(tx, me.ID, teen.ID, &me.ID, "claim", c.ClientIP())
@@ -226,7 +226,7 @@ func (a *App) apiGuardianChangeConsent(c *gin.Context) {
 	me := apiUser(c)
 	err = a.contactMutation(contactChange{UserID: *link.TeenUserID}, func(tx *gorm.DB) error {
 		guardian, teen, _, err := lockedTeenGuardian(tx, me.ID, *link.TeenUserID, link.ID)
-		if err != nil || guardian.SessionVersion != me.SessionVersion {
+		if err != nil || !sessionCurrent(guardian, me) {
 			return errConsentForbidden
 		}
 		err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})

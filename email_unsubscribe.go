@@ -198,21 +198,20 @@ var errConsentSubjectGone = errors.New("consent: the person's account is gone")
 // locked so two quick changes can't interleave. Under that lock a missing or
 // soft-deleted person returns errConsentSubjectGone and writes nothing, so an
 // erasure that committed first is never followed by a stale consent row. A
-// signed-in writer passes its session: if the locked row's status, session
-// version or logout version differ from it, errSecuritySession is returned
-// and nothing is written. A signed link passes nil. Only after both checks
+// signed-in writer passes its session: unless the locked row is current for it
+// (sessionCurrent), errSecuritySession is returned and nothing is written. A
+// signed link passes nil. Only after both checks
 // may turnOn authorize and clear a retained choice; its force result requires
 // an appended row even when the latest account status already matches.
 func setConsent(tx *gorm.DB, row models.Consent, none string, session *models.User, turnOn func(tx *gorm.DB, fresh *models.User) (force bool, err error)) (bool, error) {
 	var fresh models.User
-	if err := tx.Raw("SELECT id, email, status, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR NO KEY UPDATE", row.UserID).Scan(&fresh).Error; err != nil {
+	if err := tx.Raw("SELECT id, email, status, password_hash, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR NO KEY UPDATE", row.UserID).Scan(&fresh).Error; err != nil {
 		return false, err
 	}
 	if fresh.ID == 0 || fresh.DeletedAt.Valid {
 		return false, errConsentSubjectGone
 	}
-	if session != nil && (fresh.Status != session.Status || fresh.SessionVersion != session.SessionVersion ||
-		fresh.LogoutVersion != session.LogoutVersion) {
+	if session != nil && !sessionCurrent(&fresh, session) {
 		return false, errSecuritySession
 	}
 	force := false

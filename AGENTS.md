@@ -105,8 +105,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
     `not_applied` (`subjectDeleted: true` only when the account is already gone), `history_unavailable` or `checking`;
     `not_applied` comes only from the ledger in memory. `attempt_expired` means only that this submission ran nothing; its copy
     never says "nothing was deleted". After a restart or 60 minutes an id settles `history_unavailable`.
-  - Actor seal: `contactChange.Seal` runs `currentAdminIn` (`FOR SHARE NOWAIT` on the actor's own row, decided with `CanSignIn`
-    and both session versions) as the last locking statement before COMMIT, with or without an attempt id
+  - Actor seal: `contactChange.Seal` runs `currentAdminIn` (`FOR SHARE NOWAIT` on the actor's own row, decided by `sessionCurrent`:
+    sign-in ability and both session versions) as the last locking statement before COMMIT, with or without an attempt id
     (`TestActorSealIsLast`, `TestCurrentAdminInFacts`); a busy seal retries at most three times and answers 409
     `admin_account_busy`, and settle makes at most three sealed tries in two seconds and then answers `checking`.
   - Panel (1c): `DeleteUserPanel` mints an id per press and keeps it in memory. A lost, unreadable or ambiguous answer settles
@@ -169,6 +169,16 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   `jsonErrorCode` and need an `ERROR_COPY` line, not an `api_errors.go` entry. Return is not release: after a client
   deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
   `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
+- Sessions (`session_state.go`): "this request's session is still current" is decided in one place,
+  `sessionCurrent(fresh, session)` (a live row that `CanSignIn()` and carries both the session's
+  `SessionVersion` and `LogoutVersion`), by the middleware, the actor seal and every locked recheck. A
+  writer that rechecks its own actor under a lock calls `lockActorIn(tx, me, mode)` (or `lockAdminIn`),
+  with `actorRead`, `actorShare` or `actorNoKeyUpdate` keeping the lock strength its transaction needs;
+  one that holds the actor in a batch of locked rows calls `sessionCurrent`/`adminCurrent` on that row.
+  Never compare the versions or `CanSignIn` by hand. Ending every session is `endAllSessionsIn` (epoch
+  bump plus `revokeAccountTokens`); a bump alone uses `sessionVersionBump()`. The cookie's keys are the
+  `session*Key` constants and `setSessionLogin`/`clearSessionLogin`; `errSecuritySession` is answered
+  401 by `answerStaleSession`/`jsonStaleSession`.
 - Membership rules live in `internal/policy` (`CanRemoveMember`, `CanBeSuccessor`, role changes).
   Removal keeps the row with `status=removed` (DEC-35); voluntary departure keeps `status=left`
   (DEC-86); neither counts as active. Adding anyone to a group goes through `changeRole`, which
@@ -615,6 +625,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Every fenced transaction takes the restore ticket first, and the floor is raised only on an acknowledged COMMIT before the turn is released; only the boot step and the ticket write `restore_fence` | `TestFencedTransactionsTakeTheTicketFirst`, `TestFencedTransactionsGuardCatchesBypasses` (parse-only, over `apiAdminDeleteUser` and the settle route), `TestRestoreFenceHasTwoWriters`, `TestSettingsWritersRefuseTheFenceKey`, `TestRestoreFenceDelayedAcknowledgment`, `TestRestoreFenceNoFalseDetection`, `TestRestoreFenceSameLifetime`; `TestRestoreFenceUndetectedCases` pins the stated detection limit |
 | Attempt ids are minted and checked only by the process that holds the key, run at most once, and are in the ledger before their age is judged; `attempt_expired` means only that the submission ran nothing; `not_applied` is answered only from memory | `TestAttemptIDCapability`, `TestAttemptLedgerRules`, `TestAttemptLifecycle`, `TestDefinitiveResponsesEndTheAttempt`, `TestOutcomeClassification`, `TestLedgerMutexHoldsNoWait`, `TestSettleAuthorization`, `TestSettleUnknownCommit`, `TestRestoreFenceFencedIdAcrossARestart` |
 | The signed-in admin is decided on their own row `FOR SHARE NOWAIT` as the last locking statement before COMMIT | `TestActorSealIsLast`, `TestCurrentAdminInFacts`, `TestActorSealBusy`, `TestActorSealVsConversion` |
+| A session is "still current" by `sessionCurrent` alone; no code compares a row's session or logout version by hand | `TestSessionEpochsAreComparedOnlyBySessionCurrent` (parse-only; `==`/`!=` with a `.SessionVersion` or `.LogoutVersion` operand in the root package, outside `session_state.go` and the signed-link binding in `api_guardian_email.go`), `TestSessionCurrentPredicate`, `TestLockActorInRefusesEveryStaleSession` |
 | The recovery level the binary reports equals `deploy/recovery-policy`, and R4-RP's tooling refuses a lower level on every scripted path; no release at level 1 or above before R4-6c-R's tooling and procedure land | `TestRecoveryPolicyFileMatchesConstant`, `TestVersionJSONReportsRecoveryPolicy`; the tooling refusal is R4-RP's; the publication gate is review only |
 | The test-only attempt clock exists only in a binary built with `-tags e2eclock` and run with `FOLD_E2E_CLOCK=1` | The build tag and `attempt_clock_e2e.go`'s admin-and-CSRF route; that no shipped build sets the tag is review only (no test) |
 | Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |

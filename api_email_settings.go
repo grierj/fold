@@ -116,7 +116,7 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, 
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
 		if session != nil {
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
+			jsonStaleSession(c)
 		} else {
 			jsonError(c, http.StatusNotFound, "not found")
 		}

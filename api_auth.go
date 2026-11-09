@@ -262,8 +262,7 @@ func (a *App) apiChangePassword(c *gin.Context) {
 		fresh = *locked
 		return nil
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {
@@ -275,8 +274,7 @@ func (a *App) apiChangePassword(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	session.Values["userID"] = fresh.ID
-	session.Values["sessionVersion"] = fresh.SessionVersion
+	setSessionLogin(session, &fresh)
 	if err := session.Save(c.Request, c.Writer); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
@@ -539,13 +537,9 @@ func (a *App) signInSession(c *gin.Context, u *models.User) error {
 	// the next request mints a fresh one (csrfToken; M7.2 slice b).
 	delete(session.Values, csrfSessionKey)
 	if u.CanSignIn() {
-		session.Values["userID"] = u.ID
-		session.Values["sessionVersion"] = u.SessionVersion
-		session.Values["logoutVersion"] = u.LogoutVersion
+		setSessionLogin(session, u)
 	} else {
-		delete(session.Values, "userID")
-		delete(session.Values, "sessionVersion")
-		delete(session.Values, "logoutVersion")
+		clearSessionLogin(session)
 	}
 	return session.Save(c.Request, c.Writer)
 }

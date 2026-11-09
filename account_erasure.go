@@ -517,6 +517,6 @@ func tombstoneUserIn(tx *gorm.DB, u *models.User) error {
 		"avatar_key":                "",
 		"status":                    models.UserDisabled,
 		"administratively_disabled": true,
-		"session_version":           gorm.Expr("session_version + 1"),
+		"session_version":           sessionVersionBump(),
 	}).Error
 }
