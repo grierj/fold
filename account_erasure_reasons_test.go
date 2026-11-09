@@ -1969,17 +1969,11 @@ var reasonCensusPinned = map[string][]string{
 
 // R1: the page equivalent of TestSettleBusyWindowClosesAfterBackoff. A busy
 // actor row lets a page start a new transaction only while the busy window
-// (measured from the request) is open, and the window is looked at again after
-// each backoff, so the sleep cannot carry a third attempt past it. At least two
-// attempts must have run so the post-backoff path was really reached; each
-// refused attempt rolls back its view audit, so none is committed. Without the
-// recheck after the backoff, attempt 3 begins at about 130 ms and its BEGIN lies
-// outside the 100 ms window.
+// is open, and the window is looked at again after each backoff, so the sleep
+// cannot carry a third attempt past it. Each refused attempt rolls back its view
+// audit, so none is committed.
 func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
-	const window = 100 * time.Millisecond
-	old := busyRetryWindow
-	busyRetryWindow = window
-	t.Cleanup(func() { busyRetryWindow = old })
+	setBusyRetry(t, busyWindowTestWindow, busyWindowTestBackoff)
 	s := newProxiedAttemptScene(t)
 	target, other := s.target("window-target"), s.target("window-other")
 	erasureMakeRequest(t, s.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, other.ID, target.ID, 1, 0, 0, 1, "")
@@ -1990,24 +1984,18 @@ func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	mark := len(s.rig.proxy.Events())
-	began := time.Now()
 	code, _, body := pageOf(t, s.c, target.ID, nil)
 	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"reason_review_busy"`) || strings.Contains(body, "identifying reason") {
 		t.Fatalf("a page against a held actor row: %d %s, want 503 reason_review_busy and no text", code, body)
 	}
-	var starts []time.Duration
+	began := 0
 	for _, e := range s.rig.proxy.Events()[mark:] {
 		if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "set_config('statement_timeout'") {
-			starts = append(starts, e.Time.Sub(began))
+			began++
 		}
 	}
-	if len(starts) < 2 || int64(len(starts)) != attempts.Load() {
-		t.Fatalf("the page began %d transactions (%d reached the seal) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), attempts.Load(), starts)
-	}
-	for _, at := range starts {
-		if at >= window {
-			t.Fatalf("a transaction began %s after the request, outside the %s busy window (starts %v)", at, window, starts)
-		}
+	if began != 2 || attempts.Load() != 2 {
+		t.Fatalf("the page began %d transactions (%d reached the seal), want 2: the retry ran once and the window refused the third", began, attempts.Load())
 	}
 	if n := countAudit(t, s.direct, audit.UserErasureReasonsViewed); n != 0 {
 		t.Errorf("%d view audits committed by refused attempts", n)

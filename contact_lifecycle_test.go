@@ -913,12 +913,15 @@ func (r *ctxRig) lockRows(pid int, where string) int64 {
 // awaitCancel waits until the proxy has logged the driver's cancel request with
 // the given action (dropped or held). The cancel is sent from the driver's own
 // goroutine after the deadline, so the call returning does not mean it arrived.
-func (r *ctxRig) awaitCancel(action string) {
+func (r *ctxRig) awaitCancel(action string) { r.awaitEvent(testdb.KindCancel, action) }
+
+// awaitEvent waits until the proxy has logged an event of that kind and action.
+func (r *ctxRig) awaitEvent(kind, action string) {
 	r.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for len(r.proxy.Find(testdb.KindCancel, action)) == 0 {
+	for len(r.proxy.Find(kind, action)) == 0 {
 		if time.Now().After(deadline) {
-			r.t.Fatalf("the proxy never logged a %s cancel", action)
+			r.t.Fatalf("the proxy never logged a %s %s", action, kind)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -995,6 +998,9 @@ func TestContactMutationCtxGateWaitExpiry(t *testing.T) {
 	bound := c.deadline.Sub(c.start) + contactServerCap + 300*time.Millisecond + time.Second
 	released := r.awaitReleased(pid, bound)
 	t.Logf("returned %s after D; backend released %s after D", c.returned.Sub(c.deadline), released.Sub(c.deadline))
+	// The cancel alone frees the backend; the Terminate follows the return, so
+	// wait for it instead of assuming it is already logged.
+	r.awaitEvent(testdb.KindTerminate, testdb.ActionForwarded)
 	if len(r.proxy.Find(testdb.KindCancel, testdb.ActionForwarded)) != 1 || len(r.proxy.Find(testdb.KindTerminate, testdb.ActionForwarded)) != 1 {
 		t.Errorf("want the cancel and Terminate forwarded: %+v", r.proxy.Events())
 	}

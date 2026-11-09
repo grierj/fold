@@ -1486,20 +1486,13 @@ func TestActorSealCompatibleLocks(t *testing.T) {
 	}
 }
 
-// The busy window closes after the backoff too (T07B1B-R1). The retry
-// schedule is: attempt 1, 25 ms, attempt 2, 100 ms, attempt 3 (production lets
-// all three run because they finish inside 2 s). With the window shortened to
-// 100 ms, attempt 2 still starts (about 30 ms in) but the second backoff ends
-// at about 130 ms, after the window: no transaction may begin then. The proof
-// is by time, not by count: every transaction settle begins must start inside
-// the window measured from the request, and at least two must have run so the
-// post-backoff path was really reached. Without the recheck after the backoff
-// attempt 3 begins at about 130 ms and its BEGIN lies outside the window.
+// The busy window closes after the backoff too (T07B1B-R1). The window is far
+// longer than the first backoff, so attempt 2 starts inside it however loaded
+// the machine is; the second backoff is longer than the window, so it ends
+// after the window closed and no third transaction may begin. Without the
+// recheck after the backoff attempt 3 runs. The count decides, not a clock.
 func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
-	const window = 100 * time.Millisecond
-	old := busyRetryWindow
-	busyRetryWindow = window
-	t.Cleanup(func() { busyRetryWindow = old })
+	setBusyRetry(t, busyWindowTestWindow, busyWindowTestBackoff)
 	s := newProxiedAttemptScene(t)
 	a := s.target("a")
 	id := s.mint(a.ID)
@@ -1509,21 +1502,15 @@ func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	mark := len(s.rig.proxy.Events())
-	began := time.Now()
 	wantSettle(t, s.settled(id, a.ID), settleChecking, nil)
-	var starts []time.Duration
+	began := 0
 	for _, e := range s.rig.proxy.Events()[mark:] {
 		if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "pg_advisory_xact_lock") {
-			starts = append(starts, e.Time.Sub(began))
+			began++
 		}
 	}
-	if len(starts) < 2 || int64(len(starts)) != s.app.hooks.sealAttempts.Load() {
-		t.Fatalf("settle began %d transactions (sealed %d times) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), s.app.hooks.sealAttempts.Load(), starts)
-	}
-	for _, at := range starts {
-		if at >= window {
-			t.Fatalf("a transaction began %s after the request, outside the %s busy window (starts %v)", at, window, starts)
-		}
+	if sealed := s.app.hooks.sealAttempts.Load(); began != 2 || sealed != 2 {
+		t.Fatalf("settle began %d transactions (sealed %d times), want 2: the retry ran once and the window refused the third", began, sealed)
 	}
 	if s.state(id, a.ID) != attemptAbsent {
 		t.Fatal("a busy settle must not fence the id")

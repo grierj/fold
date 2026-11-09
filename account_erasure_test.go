@@ -1343,6 +1343,9 @@ type erasureTestPoint struct {
 	// PID, when set, receives pg_backend_pid() of the participant's own
 	// connection before reached closes.
 	PID *atomic.Int64
+	// NotPID, when set, leaves alone statements from that backend: the point
+	// is for the other participant that runs the same statement.
+	NotPID int64
 }
 
 func (p erasureTestPoint) validate() error {
@@ -1518,16 +1521,24 @@ func erasureTestPause(t *testing.T, db *gorm.DB, p erasureTestPoint) (reached <-
 	var fired atomic.Bool
 	name := fmt.Sprintf("test:erasure_pause:%d", queryCounterSeq.Add(1))
 	fn := func(tx *gorm.DB) {
-		if tx.Error != nil || !p.matches(tx.Statement) || fired.Swap(true) {
+		if tx.Error != nil || fired.Load() || !p.matches(tx.Statement) {
 			return
 		}
 		ctx := tx.Statement.Context
-		if p.PID != nil {
-			var pid int64
+		var pid int64
+		if p.PID != nil || p.NotPID != 0 {
 			if err := tx.Statement.ConnPool.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
 				tx.AddError(err)
 				return
 			}
+		}
+		if p.NotPID != 0 && pid == p.NotPID {
+			return
+		}
+		if fired.Swap(true) {
+			return
+		}
+		if p.PID != nil {
 			p.PID.Store(pid)
 		}
 		close(signal)

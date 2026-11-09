@@ -2063,8 +2063,15 @@ func TestHouseholdBarriersFirstUseGapRefusesTheSecondStep(t *testing.T) {
 			del := hbErase(s)
 			waiter := waitForRowLockWaiter(t, s.app)
 			waitDBBlocked(t, s.app.DB, waiter, int(writerPID.Load()))
+			// Rows have no lock queue: when the first step commits, the erasure
+			// and the second step's lock request race for the user row. Hold the
+			// second step before it asks, so the erasure takes the row first.
+			secondReached, secondRelease := erasureTestPause(t, s.app.DB, erasureTestPoint{Processor: "query",
+				Step: "gorm:query", Table: "users", Locking: true, NotPID: int64(waiter)})
 			release()
+			awaitDBSignal(t, secondReached)
 			rep := hrReport(t, awaitResult(t, del))
+			secondRelease()
 			got := awaitResult(t, res)
 			if got.code != http.StatusUnauthorized || !strings.Contains(got.body, `"unauthorized"`) {
 				t.Fatalf("%s: %d %s, want 401 unauthorized for the second step", r.name, got.code, got.body)
