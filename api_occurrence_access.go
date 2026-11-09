@@ -261,33 +261,6 @@ type dateOccurrenceJSON struct {
 	Reminders *dateRemindersJSON `json:"reminders,omitempty"`
 }
 
-func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupLocation string, ordinary, manager, attendees bool, reg models.Registration, invited *occurrenceRead, now time.Time) dateOccurrenceJSON {
-	full := occurrenceToJSON(ev, occ, groupLocation)
-	var actor policy.ContactAccount
-	var access policy.OccurrenceAccess
-	var facts policy.OccurrenceFacts
-	if invited != nil {
-		actor, access, facts = invited.Account, invited.Access, invited.Facts
-	}
-	canVideo := policy.CanSeeOccurrenceVideo(actor, ordinary, manager, access, facts, now, videoRevealOf(ev), reg.Status)
-	out := dateOccurrenceJSON{ID: occ.ID, EventID: ev.ID, Date: models.FormatCalendarDate(occ.OriginalDate), DateURL: occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
-		Title: full.Title, Location: full.Location, StartsAt: full.StartsAt, EndsAt: full.EndsAt,
-		StartsLocal: full.StartsLocal, EndsLocal: full.EndsLocal, TZID: full.TZID, DurationMinutes: full.DurationMinutes,
-		RemoteAvailable: events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity), GuestsAllowed: full.GuestsAllowed,
-		VideoProvider: videoProviderOf(ev), CanSeeVideo: canVideo,
-		CanSeeAttendees: policy.CanSeeOccurrenceAttendees(ordinary, attendees),
-		CanDecline:      invited != nil && policy.CanEndOccurrenceAccess(actor, false, access),
-		CanBlock:        invited != nil && policy.CanBlockManagerAdds(actor, access)}
-	if reg.ID > 0 {
-		out.MyRegistration = &reg.Status
-		mode := attendanceModeOf(reg.AttendanceMode)
-		out.MyAttendanceMode = &mode
-		out.MyGuestCount = &reg.GuestCount
-	}
-	out.VideoURL, out.VideoHidden = videoWhen(ev, canVideo)
-	return out
-}
-
 func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 	if out, ok := a.loadOccurrenceDate(c); ok {
 		c.JSON(http.StatusOK, gin.H{"occurrence": out})
@@ -312,12 +285,7 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 		Host:        a.feedHost(),
 		WindowStart: out.StartsAt.Add(-24 * time.Hour),
 		WindowEnd:   out.EndsAt.Add(24 * time.Hour),
-		Singles: []events.FeedSingle{{
-			EventID: out.EventID, OriginalDate: out.Date, Title: out.Title,
-			Location: placeLine(out.Room, out.Location), TZID: out.TZID, StartsAt: out.StartsAt, EndsAt: out.EndsAt,
-			VideoURL: out.VideoURL, RemoteAvailable: out.RemoteAvailable,
-			URL: a.emailBaseURL() + out.DateURL, Status: status,
-		}},
+		Singles:     []events.FeedSingle{dateFeedSingle(out, a.emailBaseURL(), time.Time{}, status)},
 	})
 	c.Header("Content-Disposition", `attachment; filename="event-`+out.Date+`.ics"`)
 	c.Data(http.StatusOK, "text/calendar; charset=utf-8", body)
@@ -327,8 +295,8 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 // its calendar download. It answers the error itself when ok is false.
 func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	date := c.Param("date")
-	if _, dateErr := models.ParseCalendarDate(date); err != nil || id == 0 || dateErr != nil {
+	dateStr := c.Param("date")
+	if _, dateErr := models.ParseCalendarDate(dateStr); err != nil || id == 0 || dateErr != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return dateOccurrenceJSON{}, false
 	}
@@ -338,7 +306,7 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 		jsonError(c, http.StatusInternalServerError, "could not load this date")
 		return dateOccurrenceJSON{}, false
 	}
-	q := a.DB.Where("event_id = ? AND original_date = ? AND status = ?", id, date, models.OccurrenceScheduled)
+	q := a.DB.Where("event_id = ? AND original_date = ? AND status = ?", id, dateStr, models.OccurrenceScheduled)
 	scoped, err := a.scopedOccurrenceReads(me, q, now)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load this date")
@@ -349,25 +317,13 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return dateOccurrenceJSON{}, false
 	}
-	ev := vs.ByID[uint(id)]
-	ordinary := vs.canSeeDate(me, ev, &occ)
-	invited := scoped[occ.ID]
-	if !ordinary && invited == nil {
+	date, ok := a.projectDate(me, vs, &occ, scoped[occ.ID])
+	if !ok {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return dateOccurrenceJSON{}, false
 	}
 	var reg models.Registration
-	groupLocation, manager, attendees := "", false, false
-	var shownGroup *models.Group
-	if ordinary {
-		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-		shownGroup = a.groupShownTo(me, grp, rel)
-		if shownGroup != nil {
-			groupLocation = shownGroup.Location
-		}
-		facts := vs.of(ev)
-		manager = facts.canManage(me)
-		attendees = policy.CanSeeAttendeeNames(asPerson(me), facts.view, asGroup(grp), rel)
+	if date.Ordinary {
 		if me != nil {
 			if err := a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Limit(1).Find(&reg).Error; err != nil {
 				jsonError(c, http.StatusInternalServerError, "could not load this date")
@@ -375,28 +331,18 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 			}
 		}
 	} else {
-		ev = &invited.Event
-		reg = invited.Registration
+		reg = date.Invited.Registration
 	}
-	out := presentOccurrenceDate(ev, &occ, groupLocation, ordinary, manager, attendees, reg, invited, now)
+	out := date.dateJSON(&siteNameOnce{a: a}, reg, now)
 	out.Room = a.occurrenceRooms(a.DB, []uint{occ.ID})[occ.ID]
-	if ordinary && manager {
-		if out.Reminders, err = a.dateReminders(ev, &occ); err != nil {
+	if date.Ordinary && date.Manager {
+		if out.Reminders, err = a.dateReminders(date.Event, &occ); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not load this date")
 			return dateOccurrenceJSON{}, false
 		}
 	}
-	if ordinary {
-		out.CanRegister = me != nil && a.canRegisterDateIn(a.DB, me, ev, occ.ID)
-		out.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
-		if shownGroup != nil {
-			out.GroupID = &shownGroup.ID
-			out.GroupName = shownGroup.Name
-		} else {
-			// Match event pages: the church is the privacy-safe fallback for
-			// an opened date of a hidden group as well as church-wide dates.
-			out.HostedBy = a.siteName()
-		}
+	if date.Ordinary {
+		out.CanRegister = me != nil && a.canRegisterDateIn(a.DB, me, date.Event, occ.ID)
 	}
 	return out, true
 }
