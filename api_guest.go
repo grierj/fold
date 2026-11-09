@@ -690,27 +690,25 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		}
 		// authorizedTokenManage keeps the occurrence locked through the
 		// cancel and promotion check, so a freed seat cannot be taken twice.
-		res := tx.Model(&models.Registration{}).
-			Where("id = ? AND status IN ?", reg.ID,
-				models.CurrentRegStatuses).
-			Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil})
-			// The manage token stays live: cancel is idempotent (a second
-			// POST with the same link is a 200 no-op), and the token can
-			// then only ever show or re-cancel this dead registration.
-			// Current date authority is still required on every replay.
-			// It dies at the date end, and a new manage email rotates it.
-		if res.Error != nil {
-			return res.Error
+		// The manage token of an account row stays live (see saveRegistration):
+		// a second POST with the same link is a 200 no-op, and the token can
+		// then only ever show or re-cancel this dead registration. Current
+		// date authority is still required on every replay. It dies at the date
+		// end, and a new manage email rotates it.
+		now := time.Now().UTC()
+		cancelled := *reg
+		cancelled.Status = models.RegCancelled
+		if err := saveRegistration(tx, &cancelled); err != nil {
+			return err
 		}
-		if res.RowsAffected == 0 {
-			return errTokenInvalid
-		}
-		if reg.HouseholdPersonID != nil {
-			if err := tx.Model(reg).Update("manage_token_hash", "").Error; err != nil {
+		// Like declining, cancelling ends a live exact-date grant on the row.
+		if reg.AccessLive() {
+			holder := registrationHolder(*reg)
+			if err := endRegistrationAccess(tx, &cancelled, accessScopeOf(ev), policy.OccurrenceDeclined, &holder, now, c.ClientIP(), true); err != nil {
 				return err
 			}
 		}
-		reg.Status = models.RegCancelled
+		*reg = cancelled
 		if err := audit.Write(tx, audit.Entry{Action: audit.RegistrationCancelled,
 			TargetType: "event", TargetID: ev.ID,
 			Meta: registrationMeta(*reg),
@@ -718,7 +716,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			return err
 		}
 		if before == models.RegGoing {
-			err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
+			err := a.promoteLocked(tx, ev, occ, now, nil)
 			if err != nil {
 				return err
 			}

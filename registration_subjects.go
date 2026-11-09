@@ -205,15 +205,12 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 				r.ChildcareRequested = false
 			} else {
 				r.Status = models.RegCancelled
-				r.ManageTokenHash = ""
-				r.WaitlistedAt = nil
-				r.PromotedAt = nil
 			}
 		}
 		if r.Status == old.Status && r.ChildcareRequested == old.ChildcareRequested {
 			continue
 		}
-		if err := tx.Omit(registrationSaveOmits()...).Save(&r).Error; err != nil {
+		if err := saveRegistration(tx, &r); err != nil {
 			return err
 		}
 		if err := auditRegistration(tx, actor, audit.RegistrationChanged, ev.ID, old, r, ip); err != nil {

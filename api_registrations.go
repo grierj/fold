@@ -531,15 +531,11 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		if err != nil {
 			return err
 		}
-		res := tx.Model(&models.Registration{}).
-			Where("id = ? AND status = ?", r.ID, models.RegWaitlisted).
-			Updates(map[string]any{
-				"status": models.RegGoing, "promoted_at": now, "manage_token_hash": hash,
-			})
-		if res.Error != nil {
-			return res.Error
+		promoted, err := promoteRegistration(tx, r, hash, now)
+		if err != nil {
+			return err
 		}
-		if res.RowsAffected == 0 {
+		if !promoted {
 			continue // lost a race with another seat-changing write
 		}
 		next := r
@@ -601,16 +597,6 @@ func prepareRegistration(old models.Registration, o *models.EventOccurrence, sub
 		placeOnWaitlist(&ch.next, ch.old, now)
 	}
 	return ch, nil
-}
-
-func saveRegistration(tx *gorm.DB, r *models.Registration) error {
-	if r.Status != models.RegWaitlisted {
-		r.WaitlistedAt, r.PromotedAt = nil, nil
-		if r.Status != models.RegGoing {
-			r.ManageTokenHash = ""
-		}
-	}
-	return tx.Omit(registrationSaveOmits()...).Save(r).Error
 }
 
 // registerLocked allocates one final transition. Batch departures and
@@ -1229,10 +1215,9 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 				return errPeopleAddForbidden
 			}
 		}
-		if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(map[string]any{
-			"status": models.RegRemoved, "removed_by": me.ID, "removal_note": note,
-			"waitlisted_at": nil, "promoted_at": nil, "manage_token_hash": "",
-		}).Error; err != nil {
+		removed := r
+		removed.Status, removed.RemovedBy, removed.RemovalNote = models.RegRemoved, &me.ID, note
+		if err := saveRegistration(tx, &removed); err != nil {
 			return err
 		}
 		meta := registrationMeta(r)
@@ -1816,8 +1801,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 			r.Source = models.RegSourceAdmin
 		}
 		r.Status = models.RegGoing
-		r.RemovedBy = nil
-		r.RemovalNote = ""
+		// A manager's add carries no earlier link.
 		r.ManageTokenHash = ""
 		if mode != "" {
 			r.AttendanceMode = mode
@@ -1952,33 +1936,16 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	if over && !options.overCapacity {
 		return models.Registration{}, errEventFull
 	}
-	updates := map[string]any{
-		"status": models.RegGoing, "guest_count": options.guests, "attendance_mode": mode,
-		"removed_by": nil, "removal_note": "", "waitlisted_at": nil, "promoted_at": nil,
-		"childcare_count": count, "childcare_ages_note": ages,
+	after := r
+	if !found {
+		after = models.Registration{UserID: &targetID, OccurrenceID: locked.ID, Source: models.RegSourceAdmin}
 	}
-	if found {
-		if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(updates).Error; err != nil {
-			return models.Registration{}, err
-		}
-	} else {
-		r = models.Registration{
-			UserID: &targetID, OccurrenceID: locked.ID, ChildcareCount: count, ChildcareAgesNote: ages,
-			Status: models.RegGoing, GuestCount: options.guests, Source: models.RegSourceAdmin,
-			AttendanceMode: mode,
-		}
-		if err := tx.Create(&r).Error; err != nil {
-			return models.Registration{}, err
-		}
+	after.Status, after.GuestCount, after.AttendanceMode = models.RegGoing, options.guests, mode
+	after.ChildcareCount, after.ChildcareAgesNote = count, ages
+	if err := saveRegistration(tx, &after); err != nil {
+		return models.Registration{}, err
 	}
 	action := audit.RegistrationAdded
-	after := r
-	after.Status = models.RegGoing
-	after.GuestCount = options.guests
-	after.AttendanceMode = mode
-	after.ChildcareCount = count
-	after.ChildcareAgesNote = ages
-	after.RemovedBy, after.RemovalNote, after.WaitlistedAt, after.PromotedAt = nil, "", nil, nil
 	meta := registrationMeta(after)
 	meta["oldStatus"] = before.Status
 	meta["newStatus"] = models.RegGoing
