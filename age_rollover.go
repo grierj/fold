@@ -169,7 +169,7 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 		if err := restoreMemberships(tx, user.ID, 0, ""); err != nil {
 			return false, err
 		}
-		if err := a.restoreRegistrations(tx, user.ID, status, 0, "", now); err != nil {
+		if err := a.restoreRegistrations(tx, user.ID, status, nil, "", now); err != nil {
 			return false, err
 		}
 	}

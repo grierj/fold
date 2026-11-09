@@ -10,7 +10,6 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // registrationSubject keeps the two identity namespaces separate. Only the
@@ -84,11 +83,6 @@ func listedRegistrations() string {
  AND users.status = 'active' AND users.account_type = 'adult'
  AND EXISTS (SELECT 1 FROM household_accounts ha WHERE ha.user_id = users.id
  AND ha.household_id = registration_person.household_id AND ha.relation IN ('adult','guardian'))))`
-}
-
-func lockHousehold(tx *gorm.DB, id uint) error {
-	var h models.Household
-	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&h, id).Error
 }
 
 func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink, now time.Time) policy.HouseholdPerson {
@@ -201,11 +195,7 @@ func householdPersonName(tx *gorm.DB, id uint) (string, error) {
 
 // reconcileHouseholdPerson runs while the household is locked, and locks
 // affected dates in ID order before cancelling or clearing invalid requests.
-func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor uint, ip string) error {
-	var actorID *uint
-	if actor != 0 {
-		actorID = &actor
-	}
+func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor *uint, ip string) error {
 	var regs []models.Registration
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
@@ -265,7 +255,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			}
 		}
 		if old.Status == models.RegGoing {
-			if err := a.promoteLocked(tx, &ev, o, now, actorID); err != nil {
+			if err := a.promoteLocked(tx, &ev, o, now, actor); err != nil {
 				return err
 			}
 		}

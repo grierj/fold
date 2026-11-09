@@ -2516,7 +2516,7 @@ func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
 						return app.DB.Transaction(func(tx *gorm.DB) error {
 							var err error
 							if fan == "event changed" {
-								err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+								err = notifyEventChanged(tx, &ev, &occ, "time", &leader.ID)
 							} else {
 								err = notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 							}
@@ -2589,7 +2589,7 @@ func TestSiblingFanOutsLockRecipientsOncePerBatch(t *testing.T) {
 				before := maxNoticeID(t, app.DB)
 				err := app.DB.Transaction(func(tx *gorm.DB) error {
 					if fan == "event changed" {
-						return notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+						return notifyEventChanged(tx, &ev, &occ, "time", &leader.ID)
 					}
 					return notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
 				})

@@ -1040,7 +1040,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			err := notifyEventChanged(tx, &locked, o, variant, me.ID)
+			err := notifyEventChanged(tx, &locked, o, variant, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1072,7 +1072,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					// combined notice above.
 					continue
 				}
-				err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
+				err := notifyEventChanged(tx, &locked, &occs[i], "place", &me.ID)
 				if err != nil {
 					return err
 				}
@@ -1184,7 +1184,7 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 		// with its snapshots: end any live grant as event_deleted, no notices
 		// (the dates are about to disappear). Already-ended grants keep their
 		// own reason.
-		if err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC(), false); err != nil {
+		if err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC()); err != nil {
 			return err
 		}
 		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.Registration{}).Error; err != nil {
@@ -1432,7 +1432,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			if timeChanged && placeChanged {
 				variant = "time and place"
 			}
-			err := notifyEventChanged(tx, ev, &o, variant, me.ID)
+			err := notifyEventChanged(tx, ev, &o, variant, &me.ID)
 			if err != nil {
 				return err
 			}

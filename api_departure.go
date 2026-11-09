@@ -643,7 +643,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			// the now-ended grant with the departure grant at the same
 			// normalized instant. A live departure grant is left untouched.
 			if reg.AccessLive() && reg.AccessOrigin == policy.OccurrenceOriginManagerAdd {
-				if err := endOccurrenceAccessWithoutNoticeIn(tx, &reg, scope, policy.OccurrenceDepartureSuperseded, &facts.Actor.ID, now, ip); err != nil {
+				if err := endRegistrationAccessQuietly(tx, &reg, scope, policy.OccurrenceDepartureSuperseded, &facts.Actor.ID, now, ip); err != nil {
 					return departureConfirmationJSON{}, err
 				}
 			}
@@ -679,7 +679,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			change.next.RemovalNote = note
 			change.auditAction = audit.RegistrationRemoved
 		}
-		err = a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
+		err = a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, &facts.Actor.ID, ip)
 		if err != nil {
 			return departureConfirmationJSON{}, err
 		}
@@ -688,7 +688,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
 				reason, endedBy = policy.OccurrenceRemoved, facts.Actor.ID
 			}
-			if err := endOccurrenceAccessWithoutNoticeIn(tx, &reg, scope, reason, &endedBy, now, ip); err != nil {
+			if err := endRegistrationAccessQuietly(tx, &reg, scope, reason, &endedBy, now, ip); err != nil {
 				return departureConfirmationJSON{}, err
 			}
 		}
