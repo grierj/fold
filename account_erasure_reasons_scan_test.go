@@ -225,8 +225,8 @@ func TestReasonPageStatementBoundAcrossBusyAttempts(t *testing.T) {
 	}
 	schedule := reasonscan.Batches(reasonscan.Params{UnitRows: 1000, PageRequests: 100, FirstBatch: 2, Growth: 2})
 	scans := scannerStatements(statements())
-	if seals != reasonBusyTries || len(scans) != reasonBusyTries*len(schedule) {
-		t.Fatalf("%d attempts reached the seal, %d scanner statements; want %d attempts of %d statements", seals, len(scans), reasonBusyTries, len(schedule))
+	if seals != busyRetryTries || len(scans) != busyRetryTries*len(schedule) {
+		t.Fatalf("%d attempts reached the seal, %d scanner statements; want %d attempts of %d statements", seals, len(scans), busyRetryTries, len(schedule))
 	}
 	total := 0
 	for i, st := range scans {
@@ -235,8 +235,8 @@ func TestReasonPageStatementBoundAcrossBusyAttempts(t *testing.T) {
 		}
 		total += limitOf(t, st)
 	}
-	if total != reasonBusyTries*1000 {
-		t.Errorf("LIMITs sum to %d, want %d (three units)", total, reasonBusyTries*1000)
+	if total != busyRetryTries*1000 {
+		t.Errorf("LIMITs sum to %d, want %d (three units)", total, busyRetryTries*1000)
 	}
 	if n := countAudit(t, s.app.DB, audit.UserErasureReasonsViewed); n != 0 {
 		t.Errorf("%d view audits committed by busy attempts", n)

@@ -42,18 +42,18 @@ import (
 
 // setHouseholdRetry sets the retry window and the two backoffs for one test and
 // puts them back. A test that sets them stays serial.
-func setHouseholdRetry(t *testing.T, window time.Duration, backoff [householdAttempts - 1]time.Duration) {
+func setHouseholdRetry(t *testing.T, window time.Duration, backoff [busyRetryTries - 1]time.Duration) {
 	t.Helper()
-	oldWindow, oldBackoff := deleteRetryWindow, householdRetryBackoff
-	deleteRetryWindow, householdRetryBackoff = window, backoff
-	t.Cleanup(func() { deleteRetryWindow, householdRetryBackoff = oldWindow, oldBackoff })
+	oldWindow, oldBackoff := busyRetryWindow, busyRetryBackoff
+	busyRetryWindow, busyRetryBackoff = window, backoff
+	t.Cleanup(func() { busyRetryWindow, busyRetryBackoff = oldWindow, oldBackoff })
 }
 
 func busyErr() error { return &pgconn.PgError{Code: "55P03", Message: "could not obtain lock on row"} }
 
 // runHouseholdRetry is the loop apiAdminDeleteUser owns, with a fake attempt.
 func runHouseholdRetry(ctx context.Context, attempt func(n int) error) (attempts int, err error) {
-	retry := newHouseholdRetry(ctx)
+	retry := newDeleteRetry(ctx)
 	for {
 		attempts++
 		err = attempt(attempts)
@@ -81,7 +81,7 @@ func TestHouseholdRetryOnlyRepeatsAConfirmedBusy(t *testing.T) {
 			}
 			return nil
 		}, want: 3},
-		{name: "a bare 55P03 that never clears stops at three", attempt: func(int) error { return busyErr() }, want: householdAttempts, wantBusy: true},
+		{name: "a bare 55P03 that never clears stops at three", attempt: func(int) error { return busyErr() }, want: busyRetryTries, wantBusy: true},
 		{name: "a 55P03 whose rollback was not acknowledged runs once", attempt: func(int) error {
 			return &contactRollbackError{Cause: busyErr(), Rollback: errors.New("connection closed")}
 		}, want: 1, wantBusy: true, check: func(t *testing.T, err error) {
@@ -569,7 +569,7 @@ func runHouseholdWriterOrders(t *testing.T, w hlWriter) {
 		if got := awaitResult(t, del); got.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s, want 200 after a retry", got.code, got.body)
 		}
-		if n := states.Count("55P03"); n < 1 || n >= householdAttempts {
+		if n := states.Count("55P03"); n < 1 || n >= busyRetryTries {
 			t.Errorf("%d busy answers, want one or two and then a commit", n)
 		}
 		if n := states.Count("40P01"); n != 0 {

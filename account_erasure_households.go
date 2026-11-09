@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sort"
 	"strconv"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -65,21 +64,7 @@ import (
 // Only 55P03 retries. A cycle through an occurrence lock (D4-class) is not
 // closed by NOWAIT: the database breaks it with one 40P01 and the whole
 // erasure rolls back and answers as any other failure; nothing retries it.
-const (
-	// householdAttempts is the most times one deletion request runs the whole
-	// erasure transaction.
-	householdAttempts = 3
-)
-
-var (
-	// deleteRetryWindow is how long after the first attempt began a new
-	// attempt may still start. Inside an attempt the bound is the request
-	// context. A var so tests can shorten it; a test that sets it stays serial.
-	deleteRetryWindow = 2 * time.Second
-	// householdRetryBackoff is the wait before attempt 2 and attempt 3.
-	householdRetryBackoff = [householdAttempts - 1]time.Duration{25 * time.Millisecond, 100 * time.Millisecond}
-)
-
+// The retry is deleteRetry, below, on the shared busy-retry policy.
 // errErasureHouseholdGone: a household the erasure selected has no row to lock.
 // Foreign keys make that impossible; the erasure stops rather than guess.
 var errErasureHouseholdGone = errors.New("an erasure household has no row to lock")
@@ -123,64 +108,46 @@ func lockErasureHouseholdsIn(tx *gorm.DB, s erasureSubject) ([]uint, error) {
 	return ids, nil
 }
 
-// householdRetry is the bounded retry of the whole erasure on a busy household
-// (the plan's retryHouseholdBusy, in the shape guard R-6 allows: the guard
-// requires the a.contactMutationCtx call to sit in apiAdminDeleteUser itself,
-// never in a func literal, so the caller owns the loop and asks after each
-// attempt).
+// deleteRetry is the admin deletion's rule on the shared busy retry
+// (busy_retry.go): the whole erasure runs again when a row it takes NOWAIT is
+// busy (a household, the actor seal, a reviewed request's deleted party).
 //
-//	retry := newHouseholdRetry(ctx)
+//	retry := newDeleteRetry(ctx)
 //	for {
-//		err = a.contactMutationCtx(ctx, change, fn)
+//		err = a.fencedContactMutation(ctx, change, fn)
 //		var again bool
 //		if again, err = retry.after(err); !again { break }
 //	}
 //
-// At most householdAttempts attempts share ctx. Only a 55P03 whose rollback was
-// acknowledged (rollbackConfirmed) runs again: that acknowledgment proves the
-// server released the gate and the user locks, so the next BEGIN cannot wait
-// on this attempt. Everything else comes back at once, and a COMMIT whose
-// result is unknown (checked first) is never run twice. A 55P03 inside a
-// *contactRollbackError also comes back at once, with no further BEGIN.
+// Only a 55P03 whose rollback was acknowledged (rollbackConfirmed) runs again:
+// that acknowledgment proves the server released the gate and the user locks,
+// so the next BEGIN cannot wait on this attempt. Everything else comes back at
+// once, and a COMMIT whose result is unknown (checked first) is never run
+// twice. A 55P03 inside a *contactRollbackError also comes back at once, with
+// no further BEGIN; a 40P01 is never retried.
 //
-// A new attempt starts only within deleteRetryWindow of the first attempt's
-// start and while ctx is live, after a backoff that ends early with ctx. When
-// the window or the attempts run out the last 55P03 comes back; when ctx ends
-// first the error carries the context's, so classifyContactErr answers timed
-// out. The caller makes every attempt read its facts again.
-type householdRetry struct {
-	ctx     context.Context
-	started time.Time
-	n       int // attempts finished
-}
+// When the tries or the window run out the last 55P03 comes back; when ctx
+// ends first the error carries the context's, so classifyContactErr answers
+// timed out. The caller makes every attempt read its facts again.
+type deleteRetry struct{ busy *busyRetry }
 
-func newHouseholdRetry(ctx context.Context) *householdRetry {
-	return &householdRetry{ctx: ctx, started: time.Now()}
+func newDeleteRetry(ctx context.Context) *deleteRetry {
+	return &deleteRetry{busy: newBusyRetry(ctx)}
 }
 
 // after takes the error of the attempt that just finished. It returns true (and a
 // nil error) when, after the backoff, the caller should run the next attempt,
 // or false and the error to answer with.
-func (r *householdRetry) after(err error) (again bool, final error) {
+func (r *deleteRetry) after(err error) (again bool, final error) {
 	if err == nil || classifyContactErr(err) == outcomeUnknown || !isHouseholdBusy(err) || !rollbackConfirmed(err) {
 		return false, err
 	}
-	r.n++
-	if r.n >= householdAttempts {
+	again, cerr := r.busy.again()
+	if cerr != nil {
+		return false, errors.Join(cerr, err)
+	}
+	if !again {
 		return false, err
-	}
-	timer := time.NewTimer(householdRetryBackoff[r.n-1])
-	select {
-	case <-r.ctx.Done():
-		timer.Stop()
-		return false, errors.Join(r.ctx.Err(), err)
-	case <-timer.C:
-	}
-	if time.Since(r.started) >= deleteRetryWindow {
-		return false, err
-	}
-	if r.ctx.Err() != nil {
-		return false, errors.Join(r.ctx.Err(), err)
 	}
 	return true, nil
 }

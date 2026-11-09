@@ -55,9 +55,8 @@ const (
 	attemptReceiptKeep  = 24 * time.Hour
 
 	// attemptSettleBudget is the whole of one settle request; the busy retry
-	// inside it follows R5-C01 (at most 3 sealed transactions within 2 s).
+	// inside it is the shared R5-C01 policy (busy_retry.go).
 	attemptSettleBudget = 10 * time.Second
-	attemptSettleTries  = 3
 
 	attemptVersionTag = "fold/admin-attempt/v1"
 )
@@ -66,10 +65,6 @@ const (
 // receipt sweep; vars so tests can shorten them (a test that sets one stays
 // serial).
 var (
-	// attemptSettleBusyWindow is how long after settle's first sealed transaction
-	// a new one may still start (R5-C01: at most 3 within 2 s). A var so a test
-	// can shorten it; a test that sets it stays serial.
-	attemptSettleBusyWindow = 2 * time.Second
 	attemptSweepBatch       = 5000
 	attemptSweepBatchBudget = 10 * time.Second
 	attemptSweepBudget      = 2 * time.Minute
@@ -576,8 +571,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), attemptSettleBudget)
 	defer cancel()
-	started := time.Now()
-	sealed := 0
+	retry := newBusyRetry(ctx)
 	for {
 		// s2: a running attempt is waited for with no transaction, gate or lock.
 		if st, done := a.attempts.ledger.look(nonce); st == attemptRunning && done != nil {
@@ -638,20 +632,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			// Back to the wait: the attempt is running.
 			continue
 		case errors.Is(err, errActorBusy) && rollbackConfirmed(err):
-			sealed++
-			if sealed >= attemptSettleTries || time.Since(started) >= attemptSettleBusyWindow {
-				c.JSON(http.StatusOK, attemptSettleJSON{Result: settleChecking})
-				return
-			}
-			timer := time.NewTimer(householdRetryBackoff[sealed-1])
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
-			// The window is checked again after the backoff: a transaction never
-			// starts once it has closed, however the wait was spent.
-			if ctx.Err() != nil || time.Since(started) >= attemptSettleBusyWindow {
+			if again, _ := retry.again(); !again {
 				c.JSON(http.StatusOK, attemptSettleJSON{Result: settleChecking})
 				return
 			}

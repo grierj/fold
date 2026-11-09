@@ -1716,7 +1716,7 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 	if rollbackConfirmed(unacknowledged) || !errors.Is(unacknowledged, errReasonCounterpartBusy) {
 		t.Fatal("an unacknowledged rollback must not be retried, and must still name the cause")
 	}
-	retry := newHouseholdRetry(context.Background())
+	retry := newDeleteRetry(context.Background())
 	if again, _ := retry.after(&contactCommitError{Cause: err}); again {
 		t.Error("a COMMIT error was retried")
 	}
@@ -1976,9 +1976,9 @@ var reasonCensusPinned = map[string][]string{
 // outside the 100 ms window.
 func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 	const window = 100 * time.Millisecond
-	old := reasonBusyWindow
-	reasonBusyWindow = window
-	t.Cleanup(func() { reasonBusyWindow = old })
+	old := busyRetryWindow
+	busyRetryWindow = window
+	t.Cleanup(func() { busyRetryWindow = old })
 	s := newProxiedAttemptScene(t)
 	target, other := s.target("window-target"), s.target("window-other")
 	erasureMakeRequest(t, s.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, other.ID, target.ID, 1, 0, 0, 1, "")

@@ -1024,7 +1024,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// nothing a rolled-back attempt filled in carries over. body and hostPicks
 	// are only read.
 	targetID := u.ID
-	retry := newHouseholdRetry(ctx)
+	retry := newDeleteRetry(ctx)
 	var err error
 	// What the household and audit steps did, for the response. The callback
 	// replaces it on every successful attempt; rolled-back values are unused.

@@ -2271,9 +2271,9 @@ func (s *sealScene) wantDeleted(id string, sealed int64, counter *atomic.Int64) 
 
 func TestActorSealVsConversion(t *testing.T) {
 	withWindow := func(t *testing.T, d time.Duration) {
-		old := deleteRetryWindow
-		deleteRetryWindow = d
-		t.Cleanup(func() { deleteRetryWindow = old })
+		old := busyRetryWindow
+		busyRetryWindow = d
+		t.Cleanup(func() { busyRetryWindow = old })
 	}
 
 	// S1 (P1, A.id < B.id): the deletion of B is parked at deleteBeforeSeal; the
@@ -2328,7 +2328,7 @@ func TestActorSealVsConversion(t *testing.T) {
 		})
 	}
 
-	// S1 at the PRODUCTION retry window (deleteRetryWindow left at 2 s): the
+	// S1 at the PRODUCTION retry window (busyRetryWindow left at 2 s): the
 	// deletion stays parked past the window with the conversion waiting on B.
 	// When it is released the seal answers 55P03, the rollback is acknowledged,
 	// and no second attempt begins, because a new attempt may start only within
@@ -2344,7 +2344,7 @@ func TestActorSealVsConversion(t *testing.T) {
 		dpid := park.await(t)
 		conv := s.startConversion()
 		waiterBlockedBy(t, s.app.DB, dpid, "FOR NO KEY UPDATE")
-		time.Sleep(deleteRetryWindow + 300*time.Millisecond)
+		time.Sleep(busyRetryWindow + 300*time.Millisecond)
 		park.open()
 		cw := awaitRec(t, conv, "the conversion")
 		s.wantPending(cw)

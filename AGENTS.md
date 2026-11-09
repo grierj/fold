@@ -189,7 +189,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   it wraps, and answers 500 `delete_outcome_unknown` ("couldn't confirm", never "nothing was deleted") and is
   never retried; a spent budget, the commit reserve or SQLSTATE 57014 answers 503 `delete_timed_out`. Retry
   **only SQLSTATE 55P03 with `rollbackConfirmed(err)` true** (the ROLLBACK was acknowledged, so the server
-  released the gate and the user lock), at most three attempts within `deleteRetryWindow` (2 s), each rebuilt from the
+  released the gate and the user lock), at most three attempts within `busyRetryWindow` (2 s; `deleteRetry` on the shared R5-C01 `busyRetry` policy in `busy_retry.go`, which the settle and reason-page seals use too), each rebuilt from the
   target's id alone; a 55P03 inside a `*contactRollbackError` stops with no further BEGIN, and it and exhaustion both answer 409
   `delete_household_busy`: nothing was deleted because COMMIT was never sent, which is not the same as the locks being
   released (that is what the acknowledgment proves, and an unacknowledged ROLLBACK lacks). 40P01 is never retried. These three codes are

@@ -56,9 +56,6 @@ var (
 	reasonPageRequests = 100
 	// reasonPageBudget is a page route's deadline, including its busy retries.
 	reasonPageBudget = 10 * time.Second
-	// reasonBusyWindow: a busy actor seal may start a new transaction only this
-	// long after the first one began (at most reasonBusyTries of them).
-	reasonBusyWindow = 2 * time.Second
 	// reasonBlankBatch is how many decisions one write batch holds: one audit
 	// INSERT and the matching blanking UPDATE (T07B-2 F4). A var so tests can
 	// shorten it.
@@ -75,7 +72,6 @@ var (
 )
 
 const (
-	reasonBusyTries = 3
 	// reasonReviewVersion is the audit marker version of these decisions.
 	reasonReviewVersion = 1
 	// reasonSourceDeletion marks a decision made inside an account deletion.
@@ -732,26 +728,16 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), reasonPageBudget)
 	defer cancel()
-	start := time.Now()
+	retry := newBusyRetry(ctx)
 	var step reasonPageStep
 	var err error
-	for attempt := 0; attempt < reasonBusyTries; attempt++ {
+	for {
 		err = a.reasonPageAttempt(ctx, me, target, after, &step)
-		if !errors.Is(err, errActorBusy) {
+		// A busy actor seal runs the whole attempt again (R5-C01).
+		if !errors.Is(err, errActorBusy) || !rollbackConfirmed(err) {
 			break
 		}
-		if attempt == reasonBusyTries-1 || time.Since(start) >= reasonBusyWindow {
-			break
-		}
-		wait := 25 * time.Millisecond
-		if attempt > 0 {
-			wait = 100 * time.Millisecond
-		}
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-		}
-		if ctx.Err() != nil || time.Since(start) >= reasonBusyWindow {
+		if again, _ := retry.again(); !again {
 			break
 		}
 	}
