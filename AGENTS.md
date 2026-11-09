@@ -265,7 +265,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   with the scrub decides whether work remains, never a retained job. Keep the original church date
   in page payloads and daily keys. No tombstone address is reconstructed; address-only residue is
   unknown per subject (inventory 12.1 to 12.3). The local integration and its checks are recorded in inventory 12.3.
-- Background work goes through `internal/jobs` (M3.1, PLAN 5.5): register a `jobs.Kind` and queue with `jobs.Enqueue`, giving a `unique_key` when the work must happen once (daily tasks use `<kind>:<church date>`). Handlers must be safe to run twice and return their error so the worker retries. Never start a goroutine ticker for periodic work.
+- Background work goes through `internal/jobs` (M3.1, PLAN 5.5): a job kind is a `jobs.Type` (name and `MaxAttempts`, 0 meaning `DefaultMaxAttempts`), registered as a `jobs.Kind` that embeds it (`Daily`, `Hourly`, `DailyPayload`, `OnDismiss` say how the schedulers and the System page treat it), and queued with `<type>.Enqueue(db, payload, at, uniqueKey)` or `<type>.Spec` for `EnqueueMany`; the attempt count is stated once, on the type. Give a `unique_key` when the work must happen once (daily tasks use `<kind>:<church date>`, hourly `<kind>:<UTC hour>`). The one kind list is `App.allJobKinds()`. Payload keys and unique-key shapes that raw SQL also spells live in `job_identity.go`, checked by `job_identity_test.go` (which also pins the `push.devices_off` trigger to its Go type: renaming it needs a new migration). An admin's retry, dismiss and the dead-job lock are `jobs.Retry`, `jobs.Dismiss`, `jobs.LockDead`; nothing else writes a job row's status. Handlers must be safe to run twice and return their error so the worker retries. Never start a goroutine ticker for periodic work.
+- Notice writers (`notify.Send` callers) live in `notices_<domain>.go` for the domain they tell people about (`notices_groups.go`, `notices_accounts.go`, `notices_events.go`; the older writers in `api_registrations.go`, `api_room_*.go` and others move there as their slices are touched). They read recipients and names with the error-returning helpers in `notice_people.go` (`activeAdminIDs`, `leaderIDs`, `hostIDs`, `eventRunnerIDs`, `nameOf`, `userIn`, `userCanSeeGroupIn`, `loadNoticeFacts`) and return any failure, so the caller's transaction rolls back instead of skipping a recipient. `nameIn` is the lenient twin for pages that render anyway. Leadership notices read role changes through `audit.RoleMeta`, which the writers build.
+- Application mail reaches a provider only through `sendTracked` (`mail_send.go`), which classifies a send as sent, suppressed, not configured, permanent or transient; each ledger (notices, announcements, direct mail, the composer test send) decides what that means for itself. With no email service set up, a direct-mail job fails and retries (then is dead on the System page); it no longer finishes quietly. `mail.Sender` is `providers.EmailSender`: one interface (`SendEmail`, `Capabilities`) for every adapter, the suppression wrapper and `NoSender`.
+- Suppression reasons rank in one place, `mail.StrongestReason` (hard bounce, then manual, then complaint; an unknown reason counts as manual): the composer's counts, a send's refusal and the admin list all use it.
+- Pushes share `pushTarget`, `pushHeld` (church switch, active account, consent), `pushOpensAt` (quiet hours, at least a second out) and `sendPush` (`push_deliver.go`); a notice's, an announcement's and a reminder's push differ only in what they check before and what they say. Reminder keys are `reminderKey` values (`reminder_key.go`), built and parsed there and in the one SQL expression `reminderKeySQL`.
 - Notifications are stored rows (PLAN 5.12), written by `notify.Send(tx, notify.Msg{...})` in the
   same transaction as the change and its `AuditLog` row. The kind registry
   (`internal/notify/kinds.go`) never looks anything up, so the caller decides what the recipient
@@ -329,12 +333,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   there too. Tests, `testdata`, frontend dependencies, vendored code and hidden directories are
   excluded. Root delivery-file allowances do not grant permission to same-named nested files.
 - The guard follows mail import aliases and dot imports, `mail.Unwrap`, assigned senders and
-  package variables across files in one directory. It recognizes `mail.Sender`, `Adapter`,
+  package variables across files in one directory. It recognizes `mail.Sender`,
   `SMTPSender`, `Postmark`, `DevOutbox`, `Suppressing` and `NoSender` in typed parameters, fields,
   variables, assertions and literals. Same-package helper signatures track each result position,
   including multiple results; `mail.New*` and `mail.WithSuppressions` return a sender in the first
   position, including through assigned constructor functions. Add new sender types to this list
-  and the guard together.
+  and the guard together. It also treats naming `sendTracked` like a send: only the delivery files
+  (`mailerSendFiles`, now including `mail_send.go`) and the named synchronous methods may.
 - Synchronous exceptions allow sends only as immediate calls in their named App methods.
   Calls to those methods must also be immediate, never inside closures, `go` or `defer`, or
   captured as method values, even in delivery files. Transaction closures may finish before
