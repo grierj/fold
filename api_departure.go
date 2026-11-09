@@ -717,7 +717,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		}
 	}
 	if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
-		meta := audit.RoleMeta{UserID: facts.Subject.ID, OldRole: oldRole}.With(map[string]any{"keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)})
+		meta := map[string]any{"userId": facts.Subject.ID, "oldRole": oldRole, "keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}
 		if note != "" {
 			meta["note"] = note
 		}
@@ -727,7 +727,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		}
 	} else {
 		entry := audit.Entry{Actor: &facts.Actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: facts.GroupID,
-			Meta: audit.RoleMeta{UserID: facts.Subject.ID, OldRole: oldRole, NewRole: "none"}.With(map[string]any{"keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}), IP: ip}
+			Meta: map[string]any{"userId": facts.Subject.ID, "oldRole": oldRole, "newRole": "none", "keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}, IP: ip}
 		if err := audit.Write(tx, entry); err != nil {
 			return departureConfirmationJSON{}, err
 		}

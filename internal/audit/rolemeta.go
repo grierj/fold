@@ -2,8 +2,9 @@ package audit
 
 // RoleMeta is the part of a RoleChanged or MemberRemoved entry's meta that
 // leadership notices read back: who, and their role before and after. The
-// writers build their meta with With and the notice reads it with
-// ReadRoleMeta, so the keys are spelled once.
+// writers (changeRoleIn, handOffLeadership, demoteEverywhere, applyDeparture)
+// spell these keys in their entries' meta; the audit writer census pins those
+// literals, so a rename there fails it and must come here.
 type RoleMeta struct {
 	UserID  uint
 	OldRole string
@@ -11,20 +12,8 @@ type RoleMeta struct {
 	NewRole string
 }
 
-// With is the entry meta: the role facts plus any extra keys the writer adds.
-func (m RoleMeta) With(extra map[string]any) map[string]any {
-	meta := map[string]any{"userId": m.UserID, "oldRole": m.OldRole}
-	if m.NewRole != "" {
-		meta["newRole"] = m.NewRole
-	}
-	for k, v := range extra {
-		meta[k] = v
-	}
-	return meta
-}
-
 // ReadRoleMeta reads the role facts back from an entry's meta (in memory, as
-// the writer built it).
+// the writer built it: userId is a uint or an int).
 func ReadRoleMeta(meta map[string]any) RoleMeta {
 	var m RoleMeta
 	switch v := meta["userId"].(type) {
