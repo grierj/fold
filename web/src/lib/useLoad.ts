@@ -33,6 +33,7 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
   const [state, setState] = useState<State<T>>({ data: undefined, error: null, loading: enabled });
   const [tick, setTick] = useState(0);
   const quiet = useRef(false);
+  const lastDeps = useRef<DependencyList | null>(null);
   const latest = useRef(fn);
   latest.current = fn;
 
@@ -42,7 +43,11 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
       return;
     }
     let current = true;
-    const keep = quiet.current;
+    // A quiet reload keeps the old answer only under the same inputs.
+    const prev = lastDeps.current;
+    const sameDeps = prev !== null && prev.length === deps.length && deps.every((d, i) => Object.is(d, prev[i]));
+    lastDeps.current = deps;
+    const keep = quiet.current && sameDeps;
     quiet.current = false;
     setState((s) => (keep ? (s.error === null ? s : { ...s, error: null }) : { data: undefined, error: null, loading: true }));
     latest.current().then(

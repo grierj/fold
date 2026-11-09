@@ -50,3 +50,15 @@ it("loads nothing while disabled", async () => {
   rerender({ on: true });
   await waitFor(() => expect(result.current.data).toBe(1));
 });
+
+it("a reload batched with new inputs does not keep the old inputs' answer", async () => {
+  const fn = (key: string) => (key === "a" ? Promise.resolve("A") : Promise.reject(new Error("b failed")));
+  const { result, rerender } = renderHook(({ key }) => useLoad(() => fn(key), [key]), { initialProps: { key: "a" } });
+  await waitFor(() => expect(result.current.data).toBe("A"));
+  act(() => {
+    result.current.reload();
+    rerender({ key: "b" });
+  });
+  await waitFor(() => expect(result.current.error).toBeTruthy());
+  expect(result.current.data).toBeUndefined();
+});
