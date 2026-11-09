@@ -11,6 +11,7 @@
 # only when no erased account would be revived. Otherwise recovery stays private.
 # :latest is refused. --dry-run prints the plan and changes nothing.
 set -euo pipefail
+TOOL=upgrade.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$SCRIPT_DIR/checks.sh" ]] || {
@@ -34,11 +35,6 @@ SOURCE_DIR=""
 DOMAIN=""
 BACKUP_DIR="/var/backups/fold"
 
-die() {
-  printf 'upgrade.sh: %s\n' "$1" >&2
-  exit "${2:-1}"
-}
-
 usage() {
   cat <<'EOF'
 Usage: upgrade.sh --image ghcr.io/grierj/fold:1.2.3
@@ -55,10 +51,6 @@ recovery pending operator checks. Exit 0 requires a successful reopen.
 EOF
 }
 
-need_value() {
-  [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 needs a value"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
@@ -73,51 +65,11 @@ while [[ $# -gt 0 ]]; do
       DO_ROLLBACK=1
       shift
       ;;
-    --image)
-      need_value "$@"
-      IMAGE="$2"
-      shift 2
-      ;;
-    --image=*)
-      IMAGE="${1#*=}"
-      shift
-      ;;
-    --commit)
-      need_value "$@"
-      COMMIT="$2"
-      shift 2
-      ;;
-    --commit=*)
-      COMMIT="${1#*=}"
-      shift
-      ;;
-    --deploy-dir)
-      need_value "$@"
-      DEPLOY_DIR="$2"
-      shift 2
-      ;;
-    --deploy-dir=*)
-      DEPLOY_DIR="${1#*=}"
-      shift
-      ;;
-    --source-dir)
-      need_value "$@"
-      SOURCE_DIR="$2"
-      shift 2
-      ;;
-    --source-dir=*)
-      SOURCE_DIR="${1#*=}"
-      shift
-      ;;
-    --domain)
-      need_value "$@"
-      DOMAIN="$2"
-      shift 2
-      ;;
-    --domain=*)
-      DOMAIN="${1#*=}"
-      shift
-      ;;
+    --image|--image=*) take_value IMAGE "$@"; shift "$OPT_SHIFT" ;;
+    --commit|--commit=*) take_value COMMIT "$@"; shift "$OPT_SHIFT" ;;
+    --deploy-dir|--deploy-dir=*) take_value DEPLOY_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --source-dir|--source-dir=*) take_value SOURCE_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --domain|--domain=*) take_value DOMAIN "$@"; shift "$OPT_SHIFT" ;;
     *)
       die "unknown option: $1 (try --help)"
       ;;

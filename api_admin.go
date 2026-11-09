@@ -874,7 +874,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				// Registrations come back as they were when they fit;
 				// a row that would overfill is dropped and the person
 				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
+				err = a.restoreRegistrations(tx, u.ID, s, &me.ID, c.ClientIP(), time.Now().UTC())
 				if err != nil {
 					return err
 				}

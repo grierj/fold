@@ -86,7 +86,7 @@ fi
 if (( ! DRY )) && [[ "$MODE" != status ]]; then
   ops_lock_acquire "$DIR" "restore-$MODE" || exit $?
 fi
-for name in runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release; do
+for name in compose_in dc pg recovery_ids runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release; do
   declare -F "$name" >/dev/null || fail "checks.sh lacks $name; run the current provision.sh --deploy-dir $DIR to install the complete tool set"
 done
 for name in $(runtime_tools); do
@@ -198,8 +198,6 @@ publish_tools() {
 # Compose must resolve the site's own project and files, never shell overrides.
 unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES FOLD_RECOVERY_IMAGE FOLD_RECOVERY_NONCE
 
-dc() { docker compose --project-directory "$DIR" "$@"; }
-pg() { dc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
 get() { jq -er "$1" <<<"$STATE"; }
 nullable() { jq -r "$1 // empty" <<<"$STATE"; }
 # No eval, shell source, or personal ids in the durable recovery state.
@@ -301,7 +299,6 @@ project_init() {
   if [[ -z "$PROJECT" ]]; then PROJECT="$(dc config --format json | jq -er .name)"; fi
   [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail 'invalid Compose project'
 }
-recovery_ids() { docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=recovery; }
 recovery_nonce_check() {
   local ids id nonce
   ids="$(recovery_ids)" || return 1

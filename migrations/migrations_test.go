@@ -901,10 +901,7 @@ func TestMigrateEmptyDatabase(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
@@ -1142,10 +1139,7 @@ func TestHouseholdTablesConstraints(t *testing.T) {
 func TestManageTokenIndex(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	if _, err := p.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1700,21 +1694,14 @@ func TestEmailAddressOptOutsMigration(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	const version int64 = 5
-	if _, err := p.UpTo(ctx, version-1); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, p, version-1)
 	var exists bool
 	if err := db.QueryRow(`SELECT to_regclass('public.email_address_optouts') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatalf("table before 00005: exists=%t, err=%v", exists, err)
 	}
-	if _, err := p.UpTo(ctx, version); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, p, version)
 	var columns string
 	if err := db.QueryRow(`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
 		FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'email_address_optouts'`).Scan(&columns); err != nil {
@@ -1779,7 +1766,7 @@ func TestEmailAddressOptOutsMigration(t *testing.T) {
 			t.Fatalf("insert %s: %v", scope, err)
 		}
 	}
-	_, err = db.Exec(insert, hash, "category:admin", at.Add(time.Hour))
+	_, err := db.Exec(insert, hash, "category:admin", at.Add(time.Hour))
 	var pgerr *pgconn.PgError
 	if !errors.As(err, &pgerr) || pgerr.Code != "23505" || pgerr.ConstraintName != "email_address_optouts_pkey" {
 		t.Fatalf("duplicate pair: %v, want primary key refusal", err)
@@ -1813,9 +1800,7 @@ func TestEmailAddressOptOutsMigration(t *testing.T) {
 	if err := db.QueryRow(`SELECT to_regclass('public.email_address_optouts') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatalf("table after Down: exists=%t, err=%v", exists, err)
 	}
-	if _, err := p.UpTo(ctx, version); err != nil {
-		t.Fatalf("Up after Down: %v", err)
-	}
+	upTo(t, p, version)
 	if v, err := p.GetDBVersion(ctx); err != nil || v != version {
 		t.Fatalf("version after Up = %d, err=%v, want %d", v, err, version)
 	}
@@ -1830,21 +1815,14 @@ func TestAdminOperationAttemptsMigration(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	const version int64 = 6
-	if _, err := p.UpTo(ctx, version-1); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, p, version-1)
 	var exists bool
 	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatalf("table before 00006: exists=%t, err=%v", exists, err)
 	}
-	if _, err := p.UpTo(ctx, version); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, p, version)
 	var columns, primaryKey, defaultValue string
 	if err := db.QueryRow(`SELECT string_agg(column_name || ':' || data_type || ':' || is_nullable, ',' ORDER BY ordinal_position)
 		FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'admin_operation_attempts'`).Scan(&columns); err != nil {
@@ -1912,9 +1890,7 @@ func TestAdminOperationAttemptsMigration(t *testing.T) {
 	if err := db.QueryRow(`SELECT to_regclass('public.admin_operation_attempts') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatalf("table after Down: exists=%t, err=%v", exists, err)
 	}
-	if _, err := p.UpTo(ctx, version); err != nil {
-		t.Fatalf("Up after Down: %v", err)
-	}
+	upTo(t, p, version)
 	var receipts int
 	if err := db.QueryRow(`SELECT count(*) FROM admin_operation_attempts`).Scan(&receipts); err != nil || receipts != 0 {
 		t.Fatalf("receipts after round trip = %d, err=%v, want none", receipts, err)
@@ -1936,10 +1912,7 @@ func TestBaselineDownRefusesWhileAUserExists(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	if _, err := db.Exec(`INSERT INTO users (id, email) VALUES (1, 'down-guard@example.com')`); err != nil {
 		t.Fatal(err)
 	}
@@ -1992,10 +1965,7 @@ func TestBaselineDownAndUpOnAnEmptyDatabase(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProvider(t, db)
 	tables := publicTableCount(t, db)
 	if _, err := p.DownTo(ctx, 0); err != nil {
 		t.Fatalf("down on an empty database: %v", err)
@@ -2295,13 +2265,8 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 1); err != nil {
-		t.Fatalf("up to the baseline: %v", err)
-	}
+	p := newProvider(t, db)
+	upTo(t, p, 1)
 	if column, _, _, oldCheck, oldIndex := suppressionHashObjects(t, db); column || !oldCheck || !oldIndex {
 		t.Fatalf("at version 1: address_hash=%v suppressions_address_check=%v idx_suppressions_open=%v", column, oldCheck, oldIndex)
 	}
@@ -2333,9 +2298,7 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := p.UpTo(ctx, 2); err != nil {
-		t.Fatalf("migrate 00002 over existing rows: %v", err)
-	}
+	upTo(t, p, 2)
 	column, check, index, oldCheck, oldIndex := suppressionHashObjects(t, db)
 	if !column || !check || !index || !oldCheck || !oldIndex {
 		t.Fatalf("at version 2: address_hash=%v hash check=%v hash index=%v old check=%v old index=%v, want all present", column, check, index, oldCheck, oldIndex)
@@ -2485,28 +2448,11 @@ func TestSuppressionMatchingBasis(t *testing.T) {
 // the time the lock is held once it is taken.
 func TestSuppressionExpandWaitsAtMostFiveSecondsForTheLock(t *testing.T) {
 	t.Parallel()
-	name := testdb.Fresh(t, false)
-	db := openSQL(t, name)
+	name, db, p := freshAt(t, 1)
 	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 1); err != nil {
-		t.Fatalf("up to the baseline: %v", err)
-	}
-	holder, err := openSQL(t, name).BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback()
-	if _, err := holder.Exec(`LOCK suppressions IN ACCESS SHARE MODE`); err != nil {
-		t.Fatal(err)
-	}
+	holder := holdLock(t, name, `LOCK suppressions IN ACCESS SHARE MODE`)
 
-	start := time.Now()
-	_, err = p.UpTo(ctx, 2)
-	elapsed := time.Since(start)
+	elapsed, err := timedUpTo(p, 2, 0)
 	if code := pgErrorCode(err); code != "55P03" {
 		t.Fatalf("UpTo(2) with the table locked: %v (code %q), want lock_not_available 55P03", err, code)
 	}
@@ -2523,9 +2469,7 @@ func TestSuppressionExpandWaitsAtMostFiveSecondsForTheLock(t *testing.T) {
 	if err := holder.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.UpTo(ctx, 2); err != nil {
-		t.Fatalf("UpTo(2) after the lock was released: %v", err)
-	}
+	upTo(t, p, 2)
 	if column, _, _, _, _ := suppressionHashObjects(t, db); !column {
 		t.Fatal("address_hash is missing after the migration")
 	}
@@ -2548,14 +2492,8 @@ func TestSuppressionAddressHashExpandScale(t *testing.T) {
 	}
 	dbName := testdb.Fresh(t, false)
 	db := openSQL(t, dbName)
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, 1); err != nil {
-		t.Fatalf("up to the baseline: %v", err)
-	}
+	p := newProvider(t, db)
+	upTo(t, p, 1)
 	// 90% of the rows are cleared, and every row has a distinct address.
 	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, reason, created_at, cleared_at)
 		SELECT 'email', 'u' || g || '@example.com', CASE WHEN g % 2 = 0 THEN 'hard_bounce' ELSE 'complaint' END, now(), CASE WHEN g % 10 <> 0 THEN now() END
@@ -2567,9 +2505,7 @@ func TestSuppressionAddressHashExpandScale(t *testing.T) {
 	}
 	// The file is one transaction, so this is the whole span of the lock.
 	start := time.Now()
-	if _, err := p.UpTo(ctx, 2); err != nil {
-		t.Fatalf("migrate 00002: %v", err)
-	}
+	upTo(t, p, 2)
 	elapsed := time.Since(start)
 	var nulls, total int
 	if err := db.QueryRow(`SELECT count(*) FILTER (WHERE address_hash IS NULL), count(*) FROM suppressions`).Scan(&nulls, &total); err != nil {
@@ -2949,20 +2885,6 @@ const (
 	consentScrubTestConsentAppendOnlyMsg = "consent history is append-only"
 )
 
-// consentScrubTestWantConsentRefused checks the trigger's refusal exactly: SQLSTATE P0001 and
-// the baseline's message.
-func consentScrubTestWantConsentRefused(t *testing.T, label string, err error) {
-	t.Helper()
-	if err == nil {
-		t.Errorf("%s: allowed, want P0001 %q", label, consentScrubTestConsentAppendOnlyMsg)
-		return
-	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "P0001" || pgErr.Message != consentScrubTestConsentAppendOnlyMsg {
-		t.Errorf("%s: %v, want P0001 %q", label, err, consentScrubTestConsentAppendOnlyMsg)
-	}
-}
-
 // consentScrubTestConsentOwners are the ids of the seeded rows: each owner has an email row and
 // a push row carrying an address, a user agent and evidence text.
 type consentScrubTestConsentOwners struct{ living, deleted []int64 }
@@ -3005,45 +2927,7 @@ func consentScrubTestConsentSnapshot(t *testing.T, db *sql.DB, strip bool) map[i
 	if strip {
 		q = `SELECT id, (to_jsonb(c) - 'ip' - 'user_agent' - 'evidence_text')::text FROM consents c`
 	}
-	rows, err := db.Query(q)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	out := map[int64]string{}
-	for rows.Next() {
-		var id int64
-		var doc string
-		if err := rows.Scan(&id, &doc); err != nil {
-			t.Fatal(err)
-		}
-		out[id] = doc
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
-// consentScrubTestSameConsentRows reports every id whose row differs between two snapshots.
-// skip names ids to leave out of the comparison.
-func consentScrubTestSameConsentRows(t *testing.T, label string, got, want map[int64]string, skip ...int64) {
-	t.Helper()
-	skipped := map[int64]bool{}
-	for _, id := range skip {
-		skipped[id] = true
-	}
-	if len(got) != len(want) {
-		t.Errorf("%s: %d rows, want %d", label, len(got), len(want))
-	}
-	for id, doc := range want {
-		if skipped[id] {
-			continue
-		}
-		if got[id] != doc {
-			t.Errorf("%s: row %d is %s, want %s", label, id, got[id], doc)
-		}
-	}
+	return snapshotRows[int64](t, db, q)
 }
 
 // consentScrubTestConsentFields reads the three fields the scrub blanks.
@@ -3078,10 +2962,10 @@ func TestConsentTriggerAllowsOnlyTheErasureScrub(t *testing.T) {
 	before := consentScrubTestConsentSnapshot(t, db, false)
 
 	// A living owner's rows are append-only, scrub included.
-	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row", update(blank, livingRow))
-	consentScrubTestWantConsentRefused(t, "ordinary update of a living owner's row", update(`status = 'opted_out'`, livingRow))
-	consentScrubTestWantConsentRefused(t, "no-op update of a living owner's row", update(`ip = ip`, livingRow))
-	consentScrubTestWantConsentRefused(t, "delete of a living owner's row", remove(livingRow))
+	wantPgError(t, "scrub of a living owner's row", update(blank, livingRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "ordinary update of a living owner's row", update(`status = 'opted_out'`, livingRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "no-op update of a living owner's row", update(`ip = ip`, livingRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "delete of a living owner's row", remove(livingRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
 
 	// A soft-deleted owner's rows allow the scrub and nothing else.
 	for _, c := range []struct{ label, set string }{
@@ -3103,10 +2987,10 @@ func TestConsentTriggerAllowsOnlyTheErasureScrub(t *testing.T) {
 		{"non-empty evidence_text replacement", `ip = '', user_agent = '', evidence_text = 'REDACTED'`},
 		{"edit of the three fields to other text", `ip = '198.51.100.1', user_agent = 'other', evidence_text = 'other'`},
 	} {
-		consentScrubTestWantConsentRefused(t, c.label, update(c.set, goneRow))
+		wantPgError(t, c.label, update(c.set, goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
 	}
-	consentScrubTestWantConsentRefused(t, "delete of a soft-deleted owner's row", remove(goneRow))
-	consentScrubTestSameConsentRows(t, "rows after the refusals", consentScrubTestConsentSnapshot(t, db, false), before)
+	wantPgError(t, "delete of a soft-deleted owner's row", remove(goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	sameRows(t, "rows after the refusals", consentScrubTestConsentSnapshot(t, db, false), before)
 
 	// The scrub itself.
 	strippedBefore := consentScrubTestConsentSnapshot(t, db, true)
@@ -3121,15 +3005,15 @@ func TestConsentTriggerAllowsOnlyTheErasureScrub(t *testing.T) {
 		t.Fatalf("after the scrub: ip=%q user_agent=%q evidence_text=%q, want all empty", ip, ua, ev)
 	}
 	after := consentScrubTestConsentSnapshot(t, db, false)
-	consentScrubTestSameConsentRows(t, "every column but the three after the scrub", consentScrubTestConsentSnapshot(t, db, true), strippedBefore)
-	consentScrubTestSameConsentRows(t, "rows the scrub did not touch", after, before, goneRow)
+	sameRows(t, "every column but the three after the scrub", consentScrubTestConsentSnapshot(t, db, true), strippedBefore)
+	sameRows(t, "rows the scrub did not touch", after, before, goneRow)
 	if err := update(blank, goneRow); err != nil {
 		t.Fatalf("scrubbing an already scrubbed row: %v", err)
 	}
 	// A scrubbed row is still append-only for everything else.
-	consentScrubTestWantConsentRefused(t, "status change on a scrubbed row", update(`status = 'opted_out'`, goneRow))
-	consentScrubTestWantConsentRefused(t, "text added back to a scrubbed row", update(`evidence_text = 'again'`, goneRow))
-	consentScrubTestWantConsentRefused(t, "delete of a scrubbed row", remove(goneRow))
+	wantPgError(t, "status change on a scrubbed row", update(`status = 'opted_out'`, goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "text added back to a scrubbed row", update(`evidence_text = 'again'`, goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "delete of a scrubbed row", remove(goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
 	if ip, ua, ev := consentScrubTestConsentFields(t, db, spareRow); ip == "" || ua == "" || ev == "" {
 		t.Fatalf("the owner's other row was touched: ip=%q user_agent=%q evidence_text=%q", ip, ua, ev)
 	}
@@ -3140,15 +3024,7 @@ func TestConsentTriggerAllowsOnlyTheErasureScrub(t *testing.T) {
 // direction touches a row.
 func TestConsentErasureScrubDownAndUp(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
-		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion-1, err)
-	}
+	_, db, p := freshAt(t, consentScrubTestConsentScrubVersion-1)
 	owners := consentScrubTestSeedConsentOwners(t, db)
 	goneRow, otherRow := owners.deleted[0], owners.deleted[1]
 	const blank = `ip = '', user_agent = '', evidence_text = ''`
@@ -3156,50 +3032,34 @@ func TestConsentErasureScrubDownAndUp(t *testing.T) {
 		_, err := db.Exec(`UPDATE consents SET `+blank+` WHERE id = $1`, id)
 		return err
 	}
-	functionSource := func() string {
-		t.Helper()
-		var src string
-		if err := db.QueryRow(`SELECT prosrc FROM pg_proc WHERE oid = 'public.reject_consent_change()'::regprocedure`).Scan(&src); err != nil {
-			t.Fatal(err)
-		}
-		return src
-	}
+	functionSource := func() string { return procSource(t, db, "public.reject_consent_change()") }
 	baselineSource := functionSource()
-	consentScrubTestWantConsentRefused(t, "scrub before 00003", scrub(goneRow))
+	wantPgError(t, "scrub before 00003", scrub(goneRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
 	seeded := consentScrubTestConsentSnapshot(t, db, false)
 
-	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion); err != nil {
-		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion, err)
-	}
+	upTo(t, p, consentScrubTestConsentScrubVersion)
 	if functionSource() == baselineSource {
 		t.Fatal("00003 left the baseline function body in place")
 	}
-	consentScrubTestSameConsentRows(t, "rows after 00003", consentScrubTestConsentSnapshot(t, db, false), seeded)
+	sameRows(t, "rows after 00003", consentScrubTestConsentSnapshot(t, db, false), seeded)
 	if err := scrub(goneRow); err != nil {
 		t.Fatalf("scrub of the soft-deleted owner's row at version %d: %v", consentScrubTestConsentScrubVersion, err)
 	}
-	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row at the new version", scrub(owners.living[0]))
+	wantPgError(t, "scrub of a living owner's row at the new version", scrub(owners.living[0]), "P0001", consentScrubTestConsentAppendOnlyMsg)
 	scrubbed := consentScrubTestConsentSnapshot(t, db, false)
 
-	if _, err := p.DownTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
-		t.Fatalf("down to %d: %v", consentScrubTestConsentScrubVersion-1, err)
-	}
-	if version, err := p.GetDBVersion(ctx); err != nil || version != consentScrubTestConsentScrubVersion-1 {
-		t.Fatalf("version after the down = %d, %v, want %d", version, err, consentScrubTestConsentScrubVersion-1)
-	}
+	downTo(t, p, consentScrubTestConsentScrubVersion-1)
 	if got := functionSource(); got != baselineSource {
 		t.Fatalf("function body after the down is not the baseline's:\n%q\nwant\n%q", got, baselineSource)
 	}
-	consentScrubTestSameConsentRows(t, "rows after the down", consentScrubTestConsentSnapshot(t, db, false), scrubbed)
-	consentScrubTestWantConsentRefused(t, "scrub of the deleted owner's other row after the down", scrub(otherRow))
+	sameRows(t, "rows after the down", consentScrubTestConsentSnapshot(t, db, false), scrubbed)
+	wantPgError(t, "scrub of the deleted owner's other row after the down", scrub(otherRow), "P0001", consentScrubTestConsentAppendOnlyMsg)
 
-	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion); err != nil {
-		t.Fatalf("up again to %d: %v", consentScrubTestConsentScrubVersion, err)
-	}
+	upTo(t, p, consentScrubTestConsentScrubVersion)
 	if err := scrub(otherRow); err != nil {
 		t.Fatalf("scrub after up again: %v", err)
 	}
-	consentScrubTestSameConsentRows(t, "rows after up again", consentScrubTestConsentSnapshot(t, db, false), scrubbed, otherRow)
+	sameRows(t, "rows after up again", consentScrubTestConsentSnapshot(t, db, false), scrubbed, otherRow)
 	if ip, ua, ev := consentScrubTestConsentFields(t, db, otherRow); ip != "" || ua != "" || ev != "" {
 		t.Fatalf("after the second scrub: ip=%q user_agent=%q evidence_text=%q, want all empty", ip, ua, ev)
 	}
@@ -3211,48 +3071,17 @@ func TestConsentErasureScrubDownAndUp(t *testing.T) {
 // lock_timeout. This proves the header's lock claim.
 func TestConsentScrubMigrationTakesNoConsentsLock(t *testing.T) {
 	t.Parallel()
-	name := testdb.Fresh(t, false)
-	db := openSQL(t, name)
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, consentScrubTestConsentScrubVersion-1); err != nil {
-		t.Fatalf("up to %d: %v", consentScrubTestConsentScrubVersion-1, err)
-	}
-	holder, err := openSQL(t, name).BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback()
-	if _, err := holder.Exec(`LOCK TABLE consents IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	// Control: the lock really blocks another session.
-	probe, err := openSQL(t, name).Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer probe.Close()
-	if _, err := probe.ExecContext(ctx, `SET lock_timeout = '200ms'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := probe.ExecContext(ctx, `SELECT count(*) FROM consents`); pgErrorCode(err) != "55P03" {
-		t.Fatalf("a read of consents under the held lock: %v (code %q), want lock_not_available 55P03", err, pgErrorCode(err))
-	}
+	name, _, p := freshAt(t, consentScrubTestConsentScrubVersion-1)
+	holdLock(t, name, `LOCK TABLE consents IN ACCESS EXCLUSIVE MODE`)
+	requireBlocked(t, name, "consents")
 
 	// Well inside the migration's own 5s lock_timeout, so a wait on consents
 	// fails here rather than passing by timing out later.
-	mctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
-	start := time.Now()
-	_, err = p.UpTo(mctx, consentScrubTestConsentScrubVersion)
-	elapsed := time.Since(start)
+	elapsed, err := timedUpTo(p, consentScrubTestConsentScrubVersion, 4*time.Second)
 	if err != nil {
 		t.Fatalf("UpTo(%d) with consents locked ACCESS EXCLUSIVE: %v after %s; the migration waits on consents, so correct its header's lock claim", consentScrubTestConsentScrubVersion, err, elapsed)
 	}
-	if version, err := p.GetDBVersion(ctx); err != nil || version != consentScrubTestConsentScrubVersion {
+	if version, err := p.GetDBVersion(context.Background()); err != nil || version != consentScrubTestConsentScrubVersion {
 		t.Fatalf("version after the migration = %d, %v, want %d", version, err, consentScrubTestConsentScrubVersion)
 	}
 }
@@ -3302,10 +3131,10 @@ func TestConsentScrubKeepsThePreviousWriterWorking(t *testing.T) {
 	// The new body still refuses the updates and deletes the previous release
 	// never sends.
 	err = gdb.Model(&models.Consent{}).Where("id = ?", written[0].ID).Update("status", models.ConsentOptedOut).Error
-	consentScrubTestWantConsentRefused(t, "ordinary update of a living owner's row", err)
+	wantPgError(t, "ordinary update of a living owner's row", err, "P0001", consentScrubTestConsentAppendOnlyMsg)
 	err = gdb.Model(&models.Consent{}).Where("id = ?", written[0].ID).Updates(map[string]any{"ip": "", "user_agent": "", "evidence_text": ""}).Error
-	consentScrubTestWantConsentRefused(t, "scrub of a living owner's row", err)
-	consentScrubTestWantConsentRefused(t, "delete of a living owner's row", gdb.Delete(&models.Consent{}, written[0].ID).Error)
+	wantPgError(t, "scrub of a living owner's row", err, "P0001", consentScrubTestConsentAppendOnlyMsg)
+	wantPgError(t, "delete of a living owner's row", gdb.Delete(&models.Consent{}, written[0].ID).Error, "P0001", consentScrubTestConsentAppendOnlyMsg)
 	var kept models.Consent
 	if err := gdb.First(&kept, written[0].ID).Error; err != nil || kept.Status != models.ConsentOptedIn || kept.IP != "203.0.113.7" {
 		t.Fatalf("the living owner's row changed: %+v (%v)", kept, err)
@@ -3371,15 +3200,7 @@ type agesNoteDB struct {
 
 func newAgesNoteDB(t *testing.T, version int64) agesNoteDB {
 	t.Helper()
-	name := testdb.Fresh(t, false)
-	db := openSQL(t, name)
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(context.Background(), version); err != nil {
-		t.Fatalf("up to %d: %v", version, err)
-	}
+	_, db, p := freshAt(t, version)
 	a := agesNoteDB{accessDB: accessDB{t: t, db: db}, p: p}
 	for _, q := range []string{
 		`INSERT INTO users(id,email,status,role,account_type) VALUES
@@ -3400,22 +3221,8 @@ func newAgesNoteDB(t *testing.T, version int64) agesNoteDB {
 	return a
 }
 
-func (a agesNoteDB) migrateTo(version int64) {
-	a.t.Helper()
-	if _, err := a.p.UpTo(context.Background(), version); err != nil {
-		a.t.Fatalf("up to %d: %v", version, err)
-	}
-}
-
-func (a agesNoteDB) migrateDownTo(version int64) {
-	a.t.Helper()
-	if _, err := a.p.DownTo(context.Background(), version); err != nil {
-		a.t.Fatalf("down to %d: %v", version, err)
-	}
-	if got, err := a.p.GetDBVersion(context.Background()); err != nil || got != version {
-		a.t.Fatalf("version after the down = %d, %v, want %d", got, err, version)
-	}
-}
+func (a agesNoteDB) migrateTo(version int64)     { a.t.Helper(); upTo(a.t, a.p, version) }
+func (a agesNoteDB) migrateDownTo(version int64) { a.t.Helper(); downTo(a.t, a.p, version) }
 
 func (a agesNoteDB) register(id, occurrence, user int) {
 	a.t.Helper()
@@ -3573,24 +3380,7 @@ func (a agesNoteDB) rows(strip bool) map[int]string {
 	if strip {
 		q = `SELECT id, (to_jsonb(c) - 'add_childcare_ages_note')::text FROM contact_requests c`
 	}
-	rs, err := a.db.Query(q)
-	if err != nil {
-		a.t.Fatal(err)
-	}
-	defer rs.Close()
-	out := map[int]string{}
-	for rs.Next() {
-		var id int
-		var doc string
-		if err := rs.Scan(&id, &doc); err != nil {
-			a.t.Fatal(err)
-		}
-		out[id] = doc
-	}
-	if err := rs.Err(); err != nil {
-		a.t.Fatal(err)
-	}
-	return out
+	return snapshotRows[int](a.t, a.db, q)
 }
 
 func (a agesNoteDB) noteOf(id int) string {
@@ -3644,39 +3434,6 @@ func (a agesNoteDB) runTx(immediate bool, steps ...agesNoteStep) (string, error)
 	return "", nil
 }
 
-// agesNoteWantError checks SQLSTATE and, when msg is not empty, the message.
-func agesNoteWantError(t *testing.T, label string, err error, code, msg string) {
-	t.Helper()
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		t.Errorf("%s: %v, want %s %q", label, err, code, msg)
-		return
-	}
-	if pgErr.Code != code || (msg != "" && pgErr.Message != msg) {
-		t.Errorf("%s: %s %q, want %s %q", label, pgErr.Code, pgErr.Message, code, msg)
-	}
-}
-
-// agesNoteSameRows reports every id whose row differs between two snapshots.
-func agesNoteSameRows(t *testing.T, label string, got, want map[int]string, skip ...int) {
-	t.Helper()
-	skipped := map[int]bool{}
-	for _, id := range skip {
-		skipped[id] = true
-	}
-	if len(got) != len(want) {
-		t.Errorf("%s: %d rows, want %d", label, len(got), len(want))
-	}
-	for id, doc := range want {
-		if skipped[id] {
-			continue
-		}
-		if got[id] != doc {
-			t.Errorf("%s: row %d is %s, want %s", label, id, got[id], doc)
-		}
-	}
-}
-
 const agesNoteBlankSQL = `UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id = $1`
 
 // TestAgesNoteTriggerAllowsOnlyTheErasureBlank runs the licence at 00004. The blank
@@ -3724,9 +3481,9 @@ func testAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T, version int64) {
 		{"reason change on a terminal group_add row", `UPDATE contact_requests SET reason = 'edited' WHERE id = 133`},
 	} {
 		_, err := a.db.Exec(c.q)
-		agesNoteWantError(t, c.label, err, "23514", agesNoteIdentityMsg)
+		wantPgError(t, c.label, err, "23514", agesNoteIdentityMsg)
 	}
-	agesNoteSameRows(t, "rows after the refusals", a.rows(false), before)
+	sameRows(t, "rows after the refusals", a.rows(false), before)
 
 	// The licensed blank, alone, at every status. The pending row 103 keeps its
 	// reason, and the granted rows 120 to 124 cover a valid live grant, ended
@@ -3749,9 +3506,9 @@ func testAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T, version int64) {
 		if got := a.noteOf(id); got != "" {
 			t.Errorf("request %d note after the blank = %q, want empty", id, got)
 		}
-		agesNoteSameRows(t, fmt.Sprintf("every column but the note after blanking %d", id), a.rows(true), stripped)
+		sameRows(t, fmt.Sprintf("every column but the note after blanking %d", id), a.rows(true), stripped)
 	}
-	agesNoteSameRows(t, "rows the blank did not touch", a.rows(false), before, blanked...)
+	sameRows(t, "rows the blank did not touch", a.rows(false), before, blanked...)
 	var reason string
 	if err := a.db.QueryRow(`SELECT reason FROM contact_requests WHERE id = 103`).Scan(&reason); err != nil || reason != "Please add me, I was away" {
 		t.Fatalf("reason of request 103 after the blank = %q (%v), want it unchanged", reason, err)
@@ -3763,7 +3520,7 @@ func testAgesNoteTriggerAllowsOnlyTheErasureBlank(t *testing.T, version int64) {
 		t.Fatalf("blank of request 104: %v", err)
 	}
 	_, err := a.db.Exec(`UPDATE contact_requests SET add_childcare_ages_note = $2 WHERE id = $1`, 104, agesNoteText)
-	agesNoteWantError(t, "stale restore after a blank", err, "23514", agesNoteIdentityMsg)
+	wantPgError(t, "stale restore after a blank", err, "23514", agesNoteIdentityMsg)
 	if got := a.noteOf(104); got != "" {
 		t.Errorf("request 104 note after the refused restore = %q, want empty", got)
 	}
@@ -3832,8 +3589,8 @@ func testAgesNoteTriggerDeferredCases(t *testing.T, version int64) {
 			t.Errorf("%s: failed at %q (%v), want the failure at %q", label, failed, err, want.step)
 			return
 		}
-		agesNoteWantError(t, label, err, "23514", want.msg)
-		agesNoteSameRows(t, label+" left rows behind", a.rows(false), before)
+		wantPgError(t, label, err, "23514", want.msg)
+		sameRows(t, label+" left rows behind", a.rows(false), before)
 	}
 
 	// D1: a forged granted INSERT, then a licensed blank. Under default deferral
@@ -3892,7 +3649,7 @@ func testAgesNoteTriggerDeferredCases(t *testing.T, version int64) {
 		if got := a.noteOf(c.id); got != "" {
 			t.Errorf("D6 request %d note = %q, want empty", c.id, got)
 		}
-		agesNoteSameRows(t, fmt.Sprintf("D6 every column but the note of request %d", c.id), a.rows(true), stripped)
+		sameRows(t, fmt.Sprintf("D6 every column but the note of request %d", c.id), a.rows(true), stripped)
 		if got := a.digest("registrations"); got != registrations {
 			t.Errorf("D6 request %d: the blank changed a registration", c.id)
 		}
@@ -3931,7 +3688,7 @@ func testAgesNoteTriggerHistoricalCompletion(t *testing.T, version int64) {
 				t.Errorf("%s: the baseline recheck of a valid completion failed: %v", c.name, err)
 			}
 		} else {
-			agesNoteWantError(t, c.name+": the baseline recheck", err, "23514", agesNoteCompletionMsg)
+			wantPgError(t, c.name+": the baseline recheck", err, "23514", agesNoteCompletionMsg)
 		}
 		stripped, registrations, audit := a.rows(true), a.digest("registrations"), a.digest("audit_logs")
 		if _, err := a.db.Exec(agesNoteBlankSQL, c.id); err != nil {
@@ -3941,7 +3698,7 @@ func testAgesNoteTriggerHistoricalCompletion(t *testing.T, version int64) {
 		if got := a.noteOf(c.id); got != "" {
 			t.Errorf("%s: note after the blank = %q, want empty", c.name, got)
 		}
-		agesNoteSameRows(t, c.name+": every column but the note", a.rows(true), stripped)
+		sameRows(t, c.name+": every column but the note", a.rows(true), stripped)
 		if a.digest("registrations") != registrations || a.digest("audit_logs") != audit {
 			t.Errorf("%s: the blank changed a registration or an audit row", c.name)
 		}
@@ -3994,28 +3751,6 @@ func TestAgesNoteMigrationFileHasNoTriggerBypass(t *testing.T) {
 	}
 }
 
-// agesNoteCollapse collapses runs of whitespace to one space outside string
-// literals, trims both ends and keeps case.
-func agesNoteCollapse(s string) string {
-	var b strings.Builder
-	inQuote, pendingSpace := false, false
-	for _, r := range s {
-		if !inQuote && (r == ' ' || r == '\n' || r == '\t' || r == '\r') {
-			pendingSpace = b.Len() > 0
-			continue
-		}
-		if pendingSpace {
-			b.WriteByte(' ')
-			pendingSpace = false
-		}
-		if r == '\'' {
-			inQuote = !inQuote
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
 // The adopted compact templates (inventory T07, "the two function shapes"): the
 // text each new body adds in front of the previous body.
 const (
@@ -4041,63 +3776,32 @@ func agesNoteFidelity(t *testing.T, label, previous, current, template string) {
 	}
 	rest := previous[i+len(begin):]
 	first := rest[:strings.Index(rest, "\n")+1]
-	j := strings.Index(current, first)
-	if j < 0 {
-		t.Errorf("%s: the new source does not contain the previous body's first statement %q", label, first)
-		return
-	}
-	if current[j:] != rest {
-		t.Errorf("%s: the new source from the previous first statement is not the previous body byte for byte:\n%q\nwant\n%q", label, current[j:], rest)
-	}
-	if got := agesNoteCollapse(current[:j]); got != template {
-		t.Errorf("%s: the added prefix is\n%s\nwant\n%s", label, got, template)
-	}
+	bodyFidelity(t, label, previous, current, first, template, false)
 }
 
 type agesNoteShapeSnapshot struct {
 	triggers, constraints, others, attributes, identitySrc, completedSrc string
 }
 
-func agesNoteLines(t *testing.T, db *sql.DB, q string) string {
-	t.Helper()
-	rs, err := db.Query(q)
-	if err != nil {
-		t.Fatalf("%s: %v", q, err)
-	}
-	defer rs.Close()
-	var out []string
-	for rs.Next() {
-		var s string
-		if err := rs.Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, s)
-	}
-	if err := rs.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return strings.Join(out, "\n")
-}
-
 func agesNoteShape(t *testing.T, db *sql.DB) agesNoteShapeSnapshot {
 	t.Helper()
 	return agesNoteShapeSnapshot{
-		triggers: agesNoteLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text, t.tgfoid::regprocedure::text)
+		triggers: queryLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text, t.tgfoid::regprocedure::text)
 			FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal ORDER BY t.tgname`),
-		constraints: agesNoteLines(t, db, `SELECT concat_ws('|', c.conrelid::regclass::text, c.conname, pg_get_constraintdef(c.oid))
+		constraints: queryLines(t, db, `SELECT concat_ws('|', c.conrelid::regclass::text, c.conname, pg_get_constraintdef(c.oid))
 			FROM pg_constraint c WHERE c.conrelid IN ('public.contact_requests'::regclass, 'public.contact_grants'::regclass, 'public.registrations'::regclass)
 			ORDER BY c.conrelid::regclass::text, c.conname`),
-		others: agesNoteLines(t, db, `SELECT p.oid::regprocedure::text || E'\n' || pg_get_functiondef(p.oid)
+		others: queryLines(t, db, `SELECT p.oid::regprocedure::text || E'\n' || pg_get_functiondef(p.oid)
 			FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 			WHERE n.nspname = 'public' AND p.prokind = 'f' AND p.proname NOT IN ('add_request_identity', 'add_request_completed')
 			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
 			ORDER BY p.oid::regprocedure::text`),
-		attributes: agesNoteLines(t, db, `SELECT concat_ws('|', p.proname, coalesce(p.proconfig::text, 'no config'), p.prosecdef::text, p.provolatile::text,
+		attributes: queryLines(t, db, `SELECT concat_ws('|', p.proname, coalesce(p.proconfig::text, 'no config'), p.prosecdef::text, p.provolatile::text,
 			l.lanname, pg_get_userbyid(p.proowner), p.prorettype::regtype::text)
 			FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
 			WHERE p.oid IN ('public.add_request_identity()'::regprocedure, 'public.add_request_completed()'::regprocedure) ORDER BY p.proname`),
-		identitySrc:  agesNoteLines(t, db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_identity()'::regprocedure`),
-		completedSrc: agesNoteLines(t, db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_completed()'::regprocedure`),
+		identitySrc:  procSource(t, db, "public.add_request_identity()"),
+		completedSrc: procSource(t, db, "public.add_request_completed()"),
 	}
 }
 
@@ -4129,19 +3833,9 @@ func agesNoteSameShape(t *testing.T, label string, got, want agesNoteShapeSnapsh
 // M4b.
 func TestAgesNoteTriggerShape(t *testing.T) {
 	t.Parallel()
-	db := openSQL(t, testdb.Fresh(t, false))
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion-1); err != nil {
-		t.Fatal(err)
-	}
+	_, db, p := freshAt(t, agesNoteTriggerTestVersion-1)
 	previous := agesNoteShape(t, db)
-	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion); err != nil {
-		t.Fatal(err)
-	}
+	upTo(t, p, agesNoteTriggerTestVersion)
 	current := agesNoteShape(t, db)
 	agesNoteSameShape(t, "00004 against the version before it", current, previous, false)
 	if current.identitySrc == previous.identitySrc || current.completedSrc == previous.completedSrc {
@@ -4155,34 +3849,22 @@ func TestAgesNoteTriggerShape(t *testing.T) {
 	// the completion one an AFTER INSERT OR UPDATE FOR EACH ROW constraint trigger
 	// deferrable and initially deferred.
 	const wantTriggers = "add_request_completed|21|true|true|O\nadd_request_identity|19|false|false|O"
-	if got := agesNoteLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text)
+	if got := queryLines(t, db, `SELECT concat_ws('|', t.tgname, t.tgtype::text, t.tgdeferrable::text, t.tginitdeferred::text, t.tgenabled::text)
 			FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal ORDER BY t.tgname`); got != wantTriggers {
 		t.Errorf("non-internal triggers on contact_requests:\n%s\nwant\n%s", got, wantTriggers)
 	}
-	if got := agesNoteLines(t, db, `SELECT t.tgname FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal
+	if got := queryLines(t, db, `SELECT t.tgname FROM pg_trigger t WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal
 		AND (t.tgtype & 2) <> 0 AND (t.tgtype & 16) <> 0`); got != "add_request_identity" {
 		t.Errorf("BEFORE UPDATE triggers on contact_requests = %q, want only add_request_identity", got)
 	}
-	if got := agesNoteLines(t, db, `SELECT count(*)::text FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+	if got := queryLines(t, db, `SELECT count(*)::text FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
 		WHERE t.tgrelid = 'public.contact_requests'::regclass AND NOT t.tgisinternal AND t.tgname = p.proname`); got != "2" {
 		t.Errorf("triggers calling the function of their own name = %s, want 2", got)
 	}
 
-	moveTo := func(version int64) {
-		t.Helper()
-		var err error
-		if version < agesNoteTriggerTestVersion {
-			_, err = p.DownTo(ctx, version)
-		} else {
-			_, err = p.UpTo(ctx, version)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	moveTo(agesNoteTriggerTestVersion - 1)
+	downTo(t, p, agesNoteTriggerTestVersion-1)
 	agesNoteSameShape(t, "after the way down", agesNoteShape(t, db), previous, true)
-	moveTo(agesNoteTriggerTestVersion)
+	upTo(t, p, agesNoteTriggerTestVersion)
 	agesNoteSameShape(t, "after up again", agesNoteShape(t, db), current, true)
 }
 
@@ -4196,39 +3878,38 @@ func TestAgesNoteMigrationDownAndUp(t *testing.T) {
 	a.tombstone(2)
 	source := func() (identity, completed string) {
 		t.Helper()
-		return agesNoteLines(t, a.db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_identity()'::regprocedure`),
-			agesNoteLines(t, a.db, `SELECT prosrc FROM pg_proc WHERE oid = 'public.add_request_completed()'::regprocedure`)
+		return procSource(t, a.db, "public.add_request_identity()"), procSource(t, a.db, "public.add_request_completed()")
 	}
 	baselineIdentity, baselineCompleted := source()
 	_, err := a.db.Exec(agesNoteBlankSQL, 100)
-	agesNoteWantError(t, "blank before 00004", err, "23514", agesNoteIdentityMsg)
+	wantPgError(t, "blank before 00004", err, "23514", agesNoteIdentityMsg)
 	seeded := a.rows(false)
 
 	a.migrateTo(agesNoteTriggerTestVersion)
 	if identity, completed := source(); identity == baselineIdentity || completed == baselineCompleted {
 		t.Fatal("00004 left a baseline function body in place")
 	}
-	agesNoteSameRows(t, "rows after 00004", a.rows(false), seeded)
+	sameRows(t, "rows after 00004", a.rows(false), seeded)
 	if _, err := a.db.Exec(agesNoteBlankSQL, 100); err != nil {
 		t.Fatalf("blank at version %d: %v", agesNoteTriggerTestVersion, err)
 	}
 	_, err = a.db.Exec(agesNoteBlankSQL, 130)
-	agesNoteWantError(t, "blank of a living subject's row at the new version", err, "23514", agesNoteIdentityMsg)
+	wantPgError(t, "blank of a living subject's row at the new version", err, "23514", agesNoteIdentityMsg)
 	blanked := a.rows(false)
 
 	a.migrateDownTo(agesNoteTriggerTestVersion - 1)
 	if identity, completed := source(); identity != baselineIdentity || completed != baselineCompleted {
 		t.Fatalf("a function body after the down is not the previous one byte for byte:\n%q\n%q\nwant\n%q\n%q", identity, completed, baselineIdentity, baselineCompleted)
 	}
-	agesNoteSameRows(t, "rows after the down (scrubbed text is not restored)", a.rows(false), blanked)
+	sameRows(t, "rows after the down (scrubbed text is not restored)", a.rows(false), blanked)
 	_, err = a.db.Exec(agesNoteBlankSQL, 101)
-	agesNoteWantError(t, "blank after the down", err, "23514", agesNoteIdentityMsg)
+	wantPgError(t, "blank after the down", err, "23514", agesNoteIdentityMsg)
 
 	a.migrateTo(agesNoteTriggerTestVersion)
 	if _, err := a.db.Exec(agesNoteBlankSQL, 101); err != nil {
 		t.Fatalf("blank after up again: %v", err)
 	}
-	agesNoteSameRows(t, "rows after up again", a.rows(false), blanked, 101)
+	sameRows(t, "rows after up again", a.rows(false), blanked, 101)
 	if got := a.noteOf(101); got != "" {
 		t.Fatalf("note of request 101 after the second blank = %q, want empty", got)
 	}
@@ -4239,50 +3920,18 @@ func TestAgesNoteMigrationDownAndUp(t *testing.T) {
 // be applied after the holder releases that lock.
 func TestAgesNoteMigrationWaitsForExclusiveTableLock(t *testing.T) {
 	t.Parallel()
-	name := testdb.Fresh(t, false)
-	db := openSQL(t, name)
-	ctx := context.Background()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion-1); err != nil {
-		t.Fatalf("up to %d: %v", agesNoteTriggerTestVersion-1, err)
-	}
-	holder, err := openSQL(t, name).BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback()
-	if _, err := holder.Exec(`LOCK TABLE contact_requests IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	probe, err := openSQL(t, name).Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer probe.Close()
-	if _, err := probe.ExecContext(ctx, `SET lock_timeout = '200ms'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := probe.ExecContext(ctx, `SELECT count(*) FROM contact_requests`); pgErrorCode(err) != "55P03" {
-		t.Fatalf("a read of contact_requests under the held lock: %v (code %q), want lock_not_available 55P03", err, pgErrorCode(err))
-	}
-	mctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	start := time.Now()
-	_, err = p.UpTo(mctx, agesNoteTriggerTestVersion)
-	elapsed := time.Since(start)
+	name, _, p := freshAt(t, agesNoteTriggerTestVersion-1)
+	holder := holdLock(t, name, `LOCK TABLE contact_requests IN ACCESS EXCLUSIVE MODE`)
+	requireBlocked(t, name, "contact_requests")
+	elapsed, err := timedUpTo(p, agesNoteTriggerTestVersion, 8*time.Second)
 	if pgErrorCode(err) != "55P03" {
 		t.Fatalf("UpTo(%d) with contact_requests locked ACCESS EXCLUSIVE: %v (code %q) after %s, want 55P03", agesNoteTriggerTestVersion, err, pgErrorCode(err), elapsed)
 	}
 	if err := holder.Rollback(); err != nil {
 		t.Fatalf("release exclusive table lock: %v", err)
 	}
-	if _, err := p.UpTo(ctx, agesNoteTriggerTestVersion); err != nil {
-		t.Fatalf("UpTo(%d) after releasing table lock: %v", agesNoteTriggerTestVersion, err)
-	}
-	if version, err := p.GetDBVersion(ctx); err != nil || version != agesNoteTriggerTestVersion {
+	upTo(t, p, agesNoteTriggerTestVersion)
+	if version, err := p.GetDBVersion(context.Background()); err != nil || version != agesNoteTriggerTestVersion {
 		t.Fatalf("version after the migration = %d, %v, want %d", version, err, agesNoteTriggerTestVersion)
 	}
 }
@@ -4354,12 +4003,7 @@ func agesNotePreviousWriter(t *testing.T, version int64) ([]string, map[int]stri
 // same SQLSTATE and message, and leaves the same rows.
 func TestAgesNoteMigrationKeepsThePreviousWriterWorking(t *testing.T) {
 	t.Parallel()
-	previousOut, previousRows := agesNotePreviousWriter(t, agesNoteTriggerTestVersion-1)
-	currentOut, currentRows := agesNotePreviousWriter(t, agesNoteTriggerTestVersion)
-	if p, c := strings.Join(previousOut, "\n"), strings.Join(currentOut, "\n"); p != c {
-		t.Fatalf("the previous writer's outcomes differ at version %d:\n%s\nwant (version %d)\n%s", agesNoteTriggerTestVersion, c, agesNoteTriggerTestVersion-1, p)
-	}
-	agesNoteSameRows(t, "rows after the previous writer's script", currentRows, previousRows)
+	samePreviousWriter(t, agesNoteTriggerTestVersion-1, agesNoteTriggerTestVersion, agesNotePreviousWriter)
 }
 
 // agesNoteWatchLocks samples pg_locks for one backend until the returned function
@@ -4557,7 +4201,7 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		}
 		start := time.Now()
 		_, err := b.ExecContext(ctx, agesNoteBlankSQL, 130)
-		agesNoteWantError(t, "living subject", err, "23514", agesNoteIdentityMsg)
+		wantPgError(t, "living subject", err, "23514", agesNoteIdentityMsg)
 		if time.Since(start) > 1500*time.Millisecond {
 			t.Errorf("the living-subject refusal took %s", time.Since(start))
 		}
@@ -4573,7 +4217,7 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		start = time.Now()
 		_, err = b.ExecContext(ctx, agesNoteBlankSQL, 130)
 		elapsed := time.Since(start)
-		agesNoteWantError(t, "deletion not yet committed", err, "23514", agesNoteIdentityMsg)
+		wantPgError(t, "deletion not yet committed", err, "23514", agesNoteIdentityMsg)
 		if elapsed > 1500*time.Millisecond {
 			t.Errorf("the refusal under an uncommitted deletion took %s, want no wait", elapsed)
 		}
@@ -4697,7 +4341,7 @@ func testAgesNoteTriggerCoversAddedColumns(t *testing.T, version int64) {
 		_, err := tx.ExecContext(ctx, `UPDATE contact_requests SET add_childcare_ages_note = '', t07a_probe = 1 WHERE id = 302`)
 		return err
 	})
-	agesNoteWantError(t, "(ii) blank that also sets the new column", err, "23514", agesNoteIdentityMsg)
+	wantPgError(t, "(ii) blank that also sets the new column", err, "23514", agesNoteIdentityMsg)
 	if note, probe := probeOf(302); note != before || probe != 0 {
 		t.Errorf("(ii) request 302 has note %q and probe %d after the refusal, want %q and 0", note, probe, before)
 	}

@@ -135,9 +135,9 @@ func TestReasonReviewTriggerAllowsOnlyTheErasureBlank(t *testing.T) {
 				{"reason and group options", `UPDATE contact_requests SET reason='',add_over_limit=true WHERE id=211`},
 			} {
 				_, err := a.db.Exec(tc.q)
-				agesNoteWantError(t, tc.name, err, "23514", agesNoteIdentityMsg)
+				wantPgError(t, tc.name, err, "23514", agesNoteIdentityMsg)
 			}
-			agesNoteSameRows(t, "refused changes", a.rows(false), before)
+			sameRows(t, "refused changes", a.rows(false), before)
 
 			stripped := reasonReviewRows(t, a.db)
 			memberships, registrations, audit := a.digest("memberships"), a.digest("registrations"), a.digest("audit_logs")
@@ -158,13 +158,13 @@ func TestReasonReviewTriggerAllowsOnlyTheErasureBlank(t *testing.T) {
 					blanked = append(blanked, id)
 				}
 			}
-			agesNoteSameRows(t, "only reason changed", reasonReviewRows(t, a.db), stripped)
-			agesNoteSameRows(t, "unchosen requests", a.rows(false), before, blanked...)
+			sameRows(t, "only reason changed", reasonReviewRows(t, a.db), stripped)
+			sameRows(t, "unchosen requests", a.rows(false), before, blanked...)
 			if a.digest("memberships") != memberships || a.digest("registrations") != registrations || a.digest("audit_logs") != audit {
 				t.Error("the database exception changed a completion or audit row")
 			}
 			_, err := a.db.Exec(`UPDATE contact_requests SET reason='stale text' WHERE id=211`)
-			agesNoteWantError(t, "restore blanked terminal reason", err, "23514", agesNoteIdentityMsg)
+			wantPgError(t, "restore blanked terminal reason", err, "23514", agesNoteIdentityMsg)
 		})
 	}
 }
@@ -200,12 +200,7 @@ func TestReasonReviewMigrationKeepsThePreviousWriterWorking(t *testing.T) {
 		run  func(*testing.T, int64) ([]string, map[int]string)
 	}{{"request and lifecycle", agesNotePreviousWriter}, {"mutable reasons", reasonReviewPreviousWriter}} {
 		t.Run(writer.name, func(t *testing.T) {
-			previousOut, previousRows := writer.run(t, reasonReviewTriggerTestVersion-1)
-			currentOut, currentRows := writer.run(t, reasonReviewTriggerTestVersion)
-			if strings.Join(previousOut, "\n") != strings.Join(currentOut, "\n") {
-				t.Errorf("previous writer outcomes differ:\n%v\nwant\n%v", currentOut, previousOut)
-			}
-			agesNoteSameRows(t, "previous writer rows", currentRows, previousRows)
+			samePreviousWriter(t, reasonReviewTriggerTestVersion-1, reasonReviewTriggerTestVersion, writer.run)
 		})
 	}
 }
@@ -232,7 +227,7 @@ func TestReasonReviewTriggerHistoricalCompletion(t *testing.T) {
 					msg string
 				}{{205, agesNoteCompletionMsg}, {215, "group add requires completed membership"}} {
 					_, err := a.db.Exec(`UPDATE contact_requests SET reason=reason WHERE id=$1`, tc.id)
-					agesNoteWantError(t, "ordinary completion recheck", err, "23514", tc.msg)
+					wantPgError(t, "ordinary completion recheck", err, "23514", tc.msg)
 					before := reasonReviewRows(t, a.db)
 					failed, err := a.runTx(immediate, agesNoteStep{label: "blank", q: reasonReviewBlankSQL, args: []any{tc.id}})
 					if err != nil {
@@ -241,7 +236,7 @@ func TestReasonReviewTriggerHistoricalCompletion(t *testing.T) {
 					if reasonReviewReason(t, a.db, tc.id) != "" {
 						t.Error("the reason was not blanked")
 					}
-					agesNoteSameRows(t, "historical blank preserves every other column", reasonReviewRows(t, a.db), before)
+					sameRows(t, "historical blank preserves every other column", reasonReviewRows(t, a.db), before)
 				}
 			})
 		}
@@ -269,8 +264,8 @@ func TestReasonReviewTriggerDoesNotHideEarlierDeferredEvents(t *testing.T) {
 			if failed != want {
 				t.Fatalf("failed at %q: %v, want %s", failed, err, want)
 			}
-			agesNoteWantError(t, "forged grant then blank", err, "23514", agesNoteCompletionMsg)
-			agesNoteSameRows(t, "failed transaction", a.rows(false), before)
+			wantPgError(t, "forged grant then blank", err, "23514", agesNoteCompletionMsg)
+			sameRows(t, "failed transaction", a.rows(false), before)
 		})
 	}
 }
@@ -283,25 +278,9 @@ const (
 	reasonReviewCompletedBranch = `IF TG_OP = 'UPDATE' AND OLD.purpose IN ('group_add', 'occurrence_add') AND OLD.status = 'granted' AND OLD.reason <> '' AND NEW.reason = '' THEN v := NEW; v.reason := OLD.reason; IF v IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF; END IF;`
 )
 
-func reasonReviewFidelity(t *testing.T, previous, current, anchor, branch string) {
-	t.Helper()
-	i, j := strings.Index(previous, anchor), strings.Index(current, anchor)
-	if i < 0 || j < 0 {
-		t.Fatalf("missing previous statement %q", anchor)
-	}
-	prefix := previous[:i]
-	if !strings.HasPrefix(current, prefix) || current[j:] != previous[i:] {
-		t.Error("the preexisting body, including the ages-note branch, changed")
-		return
-	}
-	if got := agesNoteCollapse(current[len(prefix):j]); got != branch {
-		t.Errorf("added branch:\n%s\nwant\n%s", got, branch)
-	}
-}
-
 func reasonReviewFunctionDefs(t *testing.T, db *sql.DB) string {
 	t.Helper()
-	return agesNoteLines(t, db, `SELECT pg_get_functiondef(oid) FROM pg_proc
+	return queryLines(t, db, `SELECT pg_get_functiondef(oid) FROM pg_proc
 		WHERE oid IN ('public.add_request_identity()'::regprocedure,'public.add_request_completed()'::regprocedure) ORDER BY proname`)
 }
 
@@ -319,19 +298,19 @@ func TestReasonReviewMigrationShapeDownAndUp(t *testing.T) {
 	// Terminal blanking is refused before the expansion, for both add purposes.
 	for _, id := range []int{201, 211} {
 		_, err := a.db.Exec(reasonReviewBlankSQL, id)
-		agesNoteWantError(t, "previous schema", err, "23514", agesNoteIdentityMsg)
+		wantPgError(t, "previous schema", err, "23514", agesNoteIdentityMsg)
 	}
-	indexes := agesNoteLines(t, a.db, `SELECT indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY tablename,indexname`)
+	indexes := queryLines(t, a.db, `SELECT indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY tablename,indexname`)
 	a.migrateTo(reasonReviewTriggerTestVersion)
 	current := agesNoteShape(t, a.db)
 	currentDefs := reasonReviewFunctionDefs(t, a.db)
 	agesNoteSameShape(t, "expanded schema", current, previous, false)
-	reasonReviewFidelity(t, previous.identitySrc, current.identitySrc, "    IF NEW.purpose <> OLD.purpose", reasonReviewIdentityBranch)
-	reasonReviewFidelity(t, previous.completedSrc, current.completedSrc, "    IF NEW.purpose = 'group_add'", reasonReviewCompletedBranch)
-	if got := agesNoteLines(t, a.db, `SELECT indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY tablename,indexname`); got != indexes {
+	bodyFidelity(t, "add_request_identity", previous.identitySrc, current.identitySrc, "    IF NEW.purpose <> OLD.purpose", reasonReviewIdentityBranch, true)
+	bodyFidelity(t, "add_request_completed", previous.completedSrc, current.completedSrc, "    IF NEW.purpose = 'group_add'", reasonReviewCompletedBranch, true)
+	if got := queryLines(t, a.db, `SELECT indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY tablename,indexname`); got != indexes {
 		t.Error("the expansion changed indexes")
 	}
-	agesNoteSameRows(t, "Up does not change data", a.rows(false), before)
+	sameRows(t, "Up does not change data", a.rows(false), before)
 	a.exec(reasonReviewBlankSQL, 201)
 	blanked := a.rows(false)
 	a.migrateDownTo(reasonReviewTriggerTestVersion - 1)
@@ -339,10 +318,10 @@ func TestReasonReviewMigrationShapeDownAndUp(t *testing.T) {
 		t.Error("Down did not restore pg_get_functiondef byte for byte")
 	}
 	agesNoteSameShape(t, "Down", agesNoteShape(t, a.db), previous, true)
-	agesNoteSameRows(t, "Down does not restore blanked text", a.rows(false), blanked)
+	sameRows(t, "Down does not restore blanked text", a.rows(false), blanked)
 	for _, id := range []int{202, 203, 204, 205, 211, 212, 213, 214, 215} {
 		_, err := a.db.Exec(reasonReviewBlankSQL, id)
-		agesNoteWantError(t, fmt.Sprintf("blank after Down, request %d", id), err, "23514", agesNoteIdentityMsg)
+		wantPgError(t, fmt.Sprintf("blank after Down, request %d", id), err, "23514", agesNoteIdentityMsg)
 	}
 	// 00004's ages-note licence survives Down, as do pending-reason updates.
 	a.exec(agesNoteBlankSQL, 202)
@@ -384,7 +363,7 @@ func TestReasonReviewTriggerDeletedPartyLocks(t *testing.T) {
 				}
 				result, err := blanker.ExecContext(ctx, reasonReviewBlankSQL, 201)
 				if mode == "FOR NO KEY UPDATE" || mode == "FOR UPDATE" {
-					agesNoteWantError(t, "deleted party busy", err, "55P03", "could not obtain lock on row in relation \"users\"")
+					wantPgError(t, "deleted party busy", err, "55P03", "could not obtain lock on row in relation \"users\"")
 					if err := blanker.Rollback(); err != nil {
 						t.Fatal(err)
 					}
@@ -408,7 +387,7 @@ func TestReasonReviewTriggerDeletedPartyLocks(t *testing.T) {
 				}
 				defer probe.Rollback()
 				err = probe.QueryRowContext(ctx, `SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE NOWAIT`, party).Scan(&id)
-				agesNoteWantError(t, "blank holds deleted licence", err, "55P03", "could not obtain lock on row in relation \"users\"")
+				wantPgError(t, "blank holds deleted licence", err, "55P03", "could not obtain lock on row in relation \"users\"")
 				if err := blanker.Commit(); err != nil {
 					t.Fatal(err)
 				}
@@ -521,7 +500,7 @@ func TestReasonReviewPreviousUpdatesWithDeletedPartyLocked(t *testing.T) {
 					}
 					result, err := tx.ExecContext(ctx, q, request)
 					if combined && request != 400 {
-						agesNoteWantError(t, "pending identity change", err, "23514", agesNoteIdentityMsg)
+						wantPgError(t, "pending identity change", err, "23514", agesNoteIdentityMsg)
 					} else if err != nil {
 						t.Fatalf("request %d combined=%v: %v", request, combined, err)
 					} else {
@@ -584,7 +563,7 @@ func TestReasonReviewTerminalLockOwnership(t *testing.T) {
 			defer tx.Rollback()
 			result, err := tx.ExecContext(ctx, reasonReviewBlankSQL, 201)
 			if scenario == "other-deleted" {
-				agesNoteWantError(t, "other deleted party busy", err, "55P03", "could not obtain lock on row in relation \"users\"")
+				wantPgError(t, "other deleted party busy", err, "55P03", "could not obtain lock on row in relation \"users\"")
 			} else if err != nil {
 				t.Fatal(err)
 			} else {
@@ -615,8 +594,8 @@ func TestReasonReviewTriggerCoversAddedColumns(t *testing.T) {
 	a.exec(`ALTER TABLE contact_requests ADD COLUMN t07b_probe integer NOT NULL DEFAULT 0`)
 	before := a.rows(false)
 	_, err = conn.ExecContext(ctx, `UPDATE contact_requests SET reason='',t07b_probe=1 WHERE id=201`)
-	agesNoteWantError(t, "reason plus future column", err, "23514", agesNoteIdentityMsg)
-	agesNoteSameRows(t, "future-column refusal", a.rows(false), before)
+	wantPgError(t, "reason plus future column", err, "23514", agesNoteIdentityMsg)
+	sameRows(t, "future-column refusal", a.rows(false), before)
 	for _, id := range []int{201, 215} {
 		if _, err := conn.ExecContext(ctx, reasonReviewBlankSQL, id); err != nil {
 			t.Fatalf("plain blank after DDL, request %d: %v", id, err)

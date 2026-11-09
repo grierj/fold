@@ -20,8 +20,9 @@ import (
 //
 //   - grantRegistrationAccess starts a grant (a first one, or one that replaces
 //     an ended grant on the same row) and writes occurrence_access.added.
-//   - endRegistrationAccess ends a live grant for good and writes
-//     occurrence_access.ended with the complete terminal state.
+//   - endRegistrationAccess (and endRegistrationAccessQuietly, which sends no
+//     notice) ends a live grant for good and writes occurrence_access.ended with
+//     the complete terminal state.
 //
 // registration_access_provenance() refuses to replace or delete provenance whose
 // two snapshots are missing, and it reads the same snapshots for the repeat and
@@ -237,31 +238,37 @@ func grantRegistrationAccess(tx *gorm.DB, registrationID uint, scope accessScope
 	return next, true, nil
 }
 
-// endRegistrationAccess ends a live grant (irreversibly) and writes its ended
-// snapshot, then sends the recipient notice when asked. It reloads *row. A grant
-// that is not live is a no-op, which makes a retry add nothing.
-func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string, sendNotice bool) error {
+// endAccess ends a live grant (irreversibly) and writes its ended snapshot. It
+// reloads *row and reports whether a live grant was ended: a grant that is not
+// live is a no-op, which makes a retry add nothing.
+func endAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) (bool, error) {
 	if row.AccessOrigin == "" || row.UserID == nil {
-		return nil
+		return false, nil
 	}
 	now = accessInstant(now)
 	res := tx.Model(&models.Registration{}).Where("id = ? AND "+registrationAccessLiveSQL, row.ID).UpdateColumns(map[string]any{
 		"access_ended_at": now, "access_end_reason": reason, "access_ended_by": optionalUint(actor),
 	})
 	if res.Error != nil {
-		return res.Error
+		return false, res.Error
 	}
 	if res.RowsAffected == 0 {
-		return nil
+		return false, nil
 	}
 	if err := tx.First(row, row.ID).Error; err != nil {
-		return err
+		return false, err
 	}
 	if err := writeAccessSnapshot(tx, audit.OccurrenceAccessEnded, actor, *row, scope, true, ip); err != nil {
-		return err
+		return false, err
 	}
-	if !sendNotice {
-		return nil
+	return true, nil
+}
+
+// endRegistrationAccess ends a live grant and tells the person it ended.
+func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
+	ended, err := endAccess(tx, row, scope, reason, actor, now, ip)
+	if err != nil || !ended {
+		return err
 	}
 	var subject models.User
 	if err := tx.Where("id = ? AND status = ? AND password_hash IS NOT NULL", *row.UserID, models.UserActive).Limit(1).Find(&subject).Error; err != nil {
@@ -278,8 +285,16 @@ func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessSc
 	if occ.ID == 0 {
 		return nil
 	}
-	_, err := notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: accessTargetType, SubjectID: row.ID,
+	_, err = notify.Send(tx, notify.Msg{Kind: notify.OccurrenceUpdated, To: []uint{subject.ID}, SubjectType: accessTargetType, SubjectID: row.ID,
 		Link: occurrenceDatePath(scope.EventID, models.FormatCalendarDate(occ.OriginalDate)), DedupeKey: accessEndedKey(*row)})
+	return err
+}
+
+// endRegistrationAccessQuietly is endRegistrationAccess for a larger summarized
+// operation, such as group departure or deleting dates: it keeps the irreversible
+// end stamp and its audit snapshot without one recipient notice per date.
+func endRegistrationAccessQuietly(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
+	_, err := endAccess(tx, row, scope, reason, actor, now, ip)
 	return err
 }
 
@@ -287,7 +302,7 @@ func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessSc
 // reason before the caller hard-deletes the registrations, so the delete trigger
 // finds an ended grant and its snapshots. Rows already ended keep their original
 // reason. It runs while the dates still exist, so the scope can be read.
-func endLiveAccessOnDates(tx *gorm.DB, occurrenceIDs []uint, reason string, now time.Time, sendNotice bool) error {
+func endLiveAccessOnDates(tx *gorm.DB, occurrenceIDs []uint, reason string, now time.Time) error {
 	if len(occurrenceIDs) == 0 {
 		return nil
 	}
@@ -303,7 +318,7 @@ func endLiveAccessOnDates(tx *gorm.DB, occurrenceIDs []uint, reason string, now 
 		return err
 	}
 	for i := range rows {
-		if err := endRegistrationAccess(tx, &rows[i], scopes[rows[i].OccurrenceID], reason, nil, now, "", sendNotice); err != nil {
+		if err := endRegistrationAccessQuietly(tx, &rows[i], scopes[rows[i].OccurrenceID], reason, nil, now, ""); err != nil {
 			return err
 		}
 	}

@@ -121,7 +121,7 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 				if err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP()); err != nil {
 					return err
 				}
-				if err := a.restoreRegistrations(tx, teen.ID, status, actor.ID, c.ClientIP(), time.Now().UTC()); err != nil {
+				if err := a.restoreRegistrations(tx, teen.ID, status, &actor.ID, c.ClientIP(), time.Now().UTC()); err != nil {
 					return err
 				}
 			}
