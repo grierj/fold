@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoomCalendarRoom, RoomSlot } from "../types";
-import { hourRange, placeSlots, roomName, slotByline, slotLabel, slotLink, slotsByDay, viewDays } from "./roomCalendar";
+import { hourRange, placeSlots, slotByline, slotLabel, slotLink, slotsByDay, viewDays } from "./roomCalendar";
 
 const zone = "America/Denver";
 // Denver is UTC-6 in October: 19:00 local is 01:00Z the next day.
@@ -73,12 +73,5 @@ describe("hourRange", () => {
     const early = slot("2026-10-21T12:15:00Z", "2026-10-21T13:00:00Z");
     const late = slot("2026-10-22T04:00:00Z", "2026-10-22T05:30:00Z");
     expect(hourRange([room([early, late])], "2026-10-21", zone)).toEqual({ start: 6, end: 24 });
-  });
-});
-
-describe("roomName", () => {
-  it("adds the building when there is one", () => {
-    expect(roomName({ name: "Hall", building: "Main" })).toBe("Hall · Main");
-    expect(roomName({ name: "Hall", building: "" })).toBe("Hall");
   });
 });

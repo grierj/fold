@@ -5,7 +5,7 @@ import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Illustration } from "./ui/Illustration";
 import {
-  badgeLabel, badgeText, kindIcon, relativeTime, resolutionText, useFeed, type Feed,
+  badgeAriaLabel, badgeCount, badgeText, kindIcon, relativeTime, resolutionText, useFeed, type Feed,
 } from "../lib/notifications";
 import type { Badge, Notification } from "../types";
 
@@ -297,6 +297,15 @@ export function useArchiveToast(feed: Feed) {
   return { onArchived: setToast, toast: node };
 }
 
+// The count on the bell and the tab; the accessible name carries the same count.
+function BadgePill({ badge, position }: { badge: Badge; position: string }) {
+  return (
+    <span aria-hidden="true" className={`${position} min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-surface`}>
+      {badgeText(badge)}
+    </span>
+  );
+}
+
 // NotificationBell: the badge counts unread plus waiting items (DEC-44),
 // capped at 9+. On narrow screens it goes to /notifications (6.10); wider,
 // it opens a disclosure popover (no focus trap, 6.2).
@@ -308,7 +317,7 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feed = useFeed("all", open);
   const { onArchived, toast } = useArchiveToast(feed);
-  const count = badge.unread + badge.waiting;
+  const count = badgeCount(badge);
 
   // The count increases are announced at most once a minute (6.9).
   const [announce, setAnnounce] = useState("");
@@ -362,20 +371,13 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
         ref={bellRef}
         onClick={() => (isMobile() ? navigate("/notifications") : setOpen((o) => !o))}
         className="relative flex items-center justify-center min-h-11 min-w-11 text-text-muted hover:text-primary rounded-full"
-        aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}
+        aria-label={badgeAriaLabel(badge)}
         aria-expanded={open}
         aria-controls="notif-panel"
         title="Alerts"
       >
         <BellIcon />
-        {count > 0 && (
-          <span
-            aria-hidden="true"
-            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-surface"
-          >
-            {badgeText(badge)}
-          </span>
-        )}
+        {count > 0 && <BadgePill badge={badge} position="absolute top-0.5 right-0.5" />}
       </button>
       <span className="sr-only" aria-live="polite">
         {announce}
@@ -419,16 +421,12 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
 // NotificationTab: the phone tab bar's Notifications tab (UI makeover PR 5),
 // with the same badge as the bell.
 export function NotificationTab({ badge, className }: { badge: Badge; className: (a: { isActive: boolean }) => string }) {
-  const count = badge.unread + badge.waiting;
+  const count = badgeCount(badge);
   return (
-    <NavLink to="/notifications" className={className} aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}>
+    <NavLink to="/notifications" className={className} aria-label={badgeAriaLabel(badge)}>
       <span className="relative">
         <BellIcon />
-        {count > 0 && (
-          <span aria-hidden="true" className="absolute -top-1.5 -right-2.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-surface">
-            {badgeText(badge)}
-          </span>
-        )}
+        {count > 0 && <BadgePill badge={badge} position="absolute -top-1.5 -right-2.5" />}
       </span>{" "}
       {/* "Alerts" so five tabs fit at 390 without wrapping (DEC-67). */}
       <span aria-hidden="true">Alerts</span>

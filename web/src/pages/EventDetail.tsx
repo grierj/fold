@@ -1,3 +1,4 @@
+import { canRegisterAsGuest } from "../lib/can";
 import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
@@ -27,7 +28,8 @@ import { dateLine, whenLine } from "../lib/repeat";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { Missing } from "./NotFound";
+import { Missing } from "../components/Missing";
+
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
@@ -385,7 +387,7 @@ function DateRow({
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} headingLevel={single ? 3 : 4} onChange={onRsvp} seriesFeedback={seriesFeedback}
               mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
-          ) : instance.visibility === "public" ? (
+          ) : canRegisterAsGuest(loggedIn, instance.visibility) ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
               <p className="text-sm text-text-muted">Already have an account?</p>

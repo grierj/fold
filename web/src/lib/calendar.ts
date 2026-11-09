@@ -1,3 +1,4 @@
+import { addDays, weekdayIndex } from "./days";
 import { dayOf } from "./when";
 
 // Pure date math for the calendar (M1.6, DEC-67). Days are "YYYY-MM-DD"
@@ -6,24 +7,9 @@ import { dayOf } from "./when";
 
 export type View = "agenda" | "week" | "month";
 
-export function addDays(day: string, n: number): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
-}
-
-function weekday(day: string): number {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-}
-
-export function addMonths(day: string, n: number): string {
-  const [y, m] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 10);
-}
-
 // The 7 days, Sunday to Saturday, of the week holding day.
 export function weekRange(day: string): string[] {
-  const start = addDays(day, -weekday(day));
+  const start = addDays(day, -weekdayIndex(day));
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));
 }
 
@@ -31,7 +17,7 @@ export function weekRange(day: string): string[] {
 // changes height from month to month).
 export function monthGrid(day: string): string[][] {
   const first = `${day.slice(0, 7)}-01`;
-  const start = addDays(first, -weekday(first));
+  const start = addDays(first, -weekdayIndex(first));
   return Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, d) => addDays(start, w * 7 + d)));
 }
 

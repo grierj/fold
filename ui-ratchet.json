@@ -7,7 +7,6 @@
   },
   "dateFormatting": {
     "web/src/components/Notifications.tsx": 2,
-    "web/src/lib/eventForm.ts": 1,
     "web/src/lib/notifications.ts": 1,
     "web/src/pages/Admin.tsx": 1
   },

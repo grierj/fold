@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { cardState, deviceState, iosVersion, platformOf, sameKey, type PushEnv } from "./pushState";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cardState, deviceState, readPushEnv, sameKey, type PushEnv } from "./pushState";
 
 const UA = {
   iphone163: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1",
@@ -10,20 +10,32 @@ const UA = {
   windowsEdge: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0",
 };
 
+// What readPushEnv makes of a browser's user agent.
+function envFor(ua: string, touchPoints = 0) {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua);
+  Object.defineProperty(navigator, "maxTouchPoints", { value: touchPoints, configurable: true });
+  return readPushEnv();
+}
+
 describe("platform and iOS version", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(navigator, "maxTouchPoints");
+  });
+
   it("reads the platform, including an iPad asking for desktop pages", () => {
-    expect(platformOf(UA.iphone17)).toBe("ios");
-    expect(platformOf(UA.ipadDesktop, 5)).toBe("ios");
-    expect(platformOf(UA.ipadDesktop, 0)).toBe("mac-safari");
-    expect(platformOf(UA.android)).toBe("android");
-    expect(platformOf(UA.macChrome)).toBe("computer");
-    expect(platformOf(UA.windowsEdge)).toBe("computer");
+    expect(envFor(UA.iphone17).platform).toBe("ios");
+    expect(envFor(UA.ipadDesktop, 5).platform).toBe("ios");
+    expect(envFor(UA.ipadDesktop, 0).platform).toBe("mac-safari");
+    expect(envFor(UA.android).platform).toBe("android");
+    expect(envFor(UA.macChrome).platform).toBe("computer");
+    expect(envFor(UA.windowsEdge).platform).toBe("computer");
   });
 
   it("reads the iOS version from the OS token or Safari's version", () => {
-    expect(iosVersion(UA.iphone163)).toEqual([16, 3]);
-    expect(iosVersion(UA.ipadDesktop)).toEqual([17, 1]);
-    expect(iosVersion("Mozilla/5.0 (X11; Linux x86_64)")).toBeNull();
+    expect(envFor(UA.iphone163).iosVersion).toEqual([16, 3]);
+    expect(envFor(UA.ipadDesktop).iosVersion).toEqual([17, 1]);
+    expect(envFor("Mozilla/5.0 (X11; Linux x86_64)").iosVersion).toBeNull();
   });
 });
 

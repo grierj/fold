@@ -32,10 +32,6 @@ export function remoteProblem(v: RemoteValue, allowZero = false): string | null 
   return null;
 }
 
-export function focusRemoteCapacity(idPrefix: string) {
-  setTimeout(() => document.getElementById(`remote-capacity-${idPrefix}`)?.focus(), 0);
-}
-
 export const isRemoteError = (err: unknown) => {
   const code = errorCode(err);
   return code === "invalid_remote_capacity" || code === "invalid_remote_capacity_override" || code === "remote_capacity_zero";

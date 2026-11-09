@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour, wallClock, wallToInstant, formatWhenIn } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour, wallClock, wallToInstant, formatWhenIn, shortZoneName } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -41,28 +41,6 @@ describe("formatWhen", () => {
     expect(formatTime("2026-10-28T23:00:00Z", "Europe/London")).toBe("11:00 PM");
     expect(formatTime("2026-11-05T00:00:00Z", "Europe/London")).toBe("12:00 AM");
     expect(formatTime("2026-11-05T00:00:00Z", "America/New_York")).toBe("7:00 PM");
-  });
-});
-
-describe("formatWhenRange", () => {
-  const now = new Date("2026-10-17T16:00:00Z");
-
-  it("shows the date once when both times are on the same viewer day", () => {
-    expect(formatWhenRange("2026-10-17T19:00:00Z", "2026-10-17T20:30:00Z", "America/New_York", now)).toBe(
-      "Today at 3:00 PM – 4:30 PM",
-    );
-  });
-
-  it("shows both dates when the range crosses viewer midnight", () => {
-    expect(formatWhenRange("2026-10-18T03:30:00Z", "2026-10-18T04:30:00Z", "America/New_York", now)).toBe(
-      "Today at 11:30 PM – Tomorrow at 12:30 AM",
-    );
-  });
-
-  it("uses different viewer dates even when the UTC date is the same", () => {
-    expect(formatWhenRange("2026-10-18T09:30:00Z", "2026-10-18T10:30:00Z", "Pacific/Honolulu", new Date("2026-10-01T12:00:00Z"))).toBe(
-      "Sat, Oct 17 at 11:30 PM – Sun, Oct 18 at 12:30 AM",
-    );
   });
 });
 
@@ -204,4 +182,15 @@ describe("formatWhenIn", () => {
     expect(formatWhenIn("2026-11-03T16:00:00Z", "America/Boise", now, "America/Denver")).toBe("Tomorrow at 9:00 AM");
     expect(formatWhenIn("2026-11-03T16:00:00Z", "America/Boise", now, "America/New_York")).toBe("Tomorrow at 9:00 AM MST");
   });
+});
+
+describe("shortZoneName", () => {
+  it.each([
+    ["Pacific Time", "Pacific"],
+    ["Hawaii-Aleutian Standard Time", "Hawaii-Aleutian"],
+    ["Mountain Standard Time", "Mountain Standard"],
+    ["India Standard Time", "India"],
+    ["United Kingdom Time", "United Kingdom"],
+    ["Coordinated Universal", "Coordinated Universal"],
+  ])("shortens %s to %s", (full, short) => expect(shortZoneName(full)).toBe(short));
 });

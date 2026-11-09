@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
@@ -75,7 +76,7 @@ export function MessagesPage() {
     count.current?.focus({ preventScroll: true });
   }, [messages]);
 
-  const me = user?.displayName || user?.name;
+  const me = user ? publicName(user) : undefined;
   const allowed = canCompose || options?.canCompose;
   const newButton = <ButtonLink variant="primary" to="/messages/new" layout="w-full sm:w-auto">New message</ButtonLink>;
 

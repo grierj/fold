@@ -4,17 +4,11 @@ import { Groups } from "../api/groups";
 import type { DepartureConfirmation, DepartureKeepableDate, DeparturePreview } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { formatWhen } from "../lib/when";
+import { count } from "../lib/plural";
+import { registrationStatusLabel } from "../lib/status";
 import { Button } from "./ui/Button";
 import { Checkbox, Choices, Field, FormError, Textarea } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
-
-function countLabel(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function statusLabel(status: DepartureKeepableDate["status"]) {
-  return status === "waitlisted" ? "Waitlisted" : status === "maybe" ? "Maybe" : "Going";
-}
 
 function reasonLabel(reason: DepartureKeepableDate["keepReason"], remove: boolean) {
   const person = remove ? "them" : "you";
@@ -187,7 +181,7 @@ export function GroupDepartureDialog({
     ? preview.action === "leave" ? `Leave ${preview.groupName}?` : `Remove ${preview.subjectName}?`
     : unavailable ? "Departure unavailable" : "Review departure";
   const goingClause = preview && preview.goingCount > 0
-    ? `, including ${countLabel(
+    ? `, including ${count(
       preview.goingCount,
       preview.action === "leave" ? "date you said Going to" : "date they said Going to",
       preview.action === "leave" ? "dates you said Going to" : "dates they said Going to"
@@ -195,8 +189,8 @@ export function GroupDepartureDialog({
     : "";
   const description = preview?.affectedCount
     ? preview.action === "leave"
-      ? `You'll be taken off ${countLabel(preview.affectedCount, "upcoming date")}${goingClause}. Your past attendance stays.`
-      : `They'll be taken off ${countLabel(preview.affectedCount, "upcoming date")}${goingClause}, and told what was kept and ended. Their past attendance stays.`
+      ? `You'll be taken off ${count(preview.affectedCount, "upcoming date")}${goingClause}. Your past attendance stays.`
+      : `They'll be taken off ${count(preview.affectedCount, "upcoming date")}${goingClause}, and told what was kept and ended. Their past attendance stays.`
     : preview ? (preview.action === "leave" ? "Your past attendance stays." : "Their past attendance stays.") : null;
 
   return (
@@ -242,7 +236,7 @@ export function GroupDepartureDialog({
                       });
                     }}
                     label={`Keep ${date.title} — ${formatWhen(date.startsAt)}`}
-                    description={`${statusLabel(date.status)}. ${reasonLabel(date.keepReason, remove)}`}
+                    description={`${registrationStatusLabel(date.status)}. ${reasonLabel(date.keepReason, remove)}`}
                   />
                 ))}
               </Choices>
@@ -261,8 +255,8 @@ export function GroupDepartureDialog({
             {preview.affectedCount > 0 && (
               <p role="status" className="text-sm text-text-muted">
                 {selected.size > 0
-                  ? `${countLabel(selected.size, "date")} will be kept. ${countLabel(preview.affectedCount - selected.size, "date")} will end.`
-                  : `${countLabel(preview.affectedCount, "upcoming date")} will end.`}
+                  ? `${count(selected.size, "date")} will be kept. ${count(preview.affectedCount - selected.size, "date")} will end.`
+                  : `${count(preview.affectedCount, "upcoming date")} will end.`}
               </p>
             )}
           </div>

@@ -4,12 +4,12 @@ import { ApiError } from "../api/core";
 import { Calendar } from "../api/calendar";
 import { useAuth } from "../auth";
 import type { RoomCalendar, RoomCalendarRoom, RoomSlot } from "../types";
-import { addDays } from "../lib/calendar";
+import { addDays } from "../lib/days";
 import { errorText } from "../lib/errors";
+import { roomName } from "../lib/place";
 import {
   hourRange,
   placeSlots,
-  roomName,
   slotByline,
   slotLabel,
   slotLink,

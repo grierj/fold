@@ -14,6 +14,9 @@ import { AttendeeDetails } from "./AttendeeDetails";
 import { Button } from "./ui/Button";
 import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
+import { registrationStatusLabel } from "../lib/status";
+import { poolFull } from "../lib/registration";
+import { canAskForContact, isActiveAdult } from "../lib/can";
 
 export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void; headingLevel?: 3 | 4 }) {
   const Heading = headingLevel === 3 ? "h3" : "h4";
@@ -36,7 +39,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
 
   async function action(a: Attendee, kind: "remove" | "promote" | "restore") {
     if (kind === "remove" && !confirm(`Remove ${a.name}'s registration for this date? They won't be able to re-register on their own.`)) return;
-    const full = a.attendanceMode === "remote" ? instance.remoteCapacity !== null && (instance.remoteSpotsLeft ?? 1) <= 0 : instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    const full = poolFull(instance, a.attendanceMode);
     if (kind === "restore" && full && !confirm(`This date's ${a.attendanceMode === "remote" ? "remote" : "in-person"} seats are full. Add ${a.name} over capacity?`)) return;
     setBusy(a.registrationId); setError(null);
     try {
@@ -62,7 +65,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
     if (selection && (selection.teen || approvalRequired)) { setAskPerson({ person: selection, overCapacity: approvalRequired?.overCapacity ?? false }); return; }
     if (!selection && !email.trim()) return;
     const target = selection ? { selectionId: selection.selectionId } : email.trim();
-    const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    const full = poolFull(instance, "in_person");
     let overCapacity = full;
     if (full && !confirm("This date is full. Add them over capacity?")) return;
     setBusy("add"); setError(null);
@@ -91,20 +94,20 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
     <div className="my-3"><Button variant="secondary" aria-expanded={adding} onClick={() => setAdding(!adding)}>{adding ? "Close add person" : "Add person"}</Button></div>
     <div hidden={!adding} className="mb-4">
       <Form noValidate onSubmit={add} className="space-y-3">
-        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
+        {isActiveAdult(user) && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
         <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button>
       </Form>
-      {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
+      {askPerson && isActiveAdult(user) && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={poolFull(instance, "in_person")} onClose={() => setAskPerson(null)} />}
     </div>
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email above." />}
     {roster.length > 0 && <PeopleList rows={roster} noun="sign-ups" sort={false} filters={[
-      { value: "going", label: "Going", matches: (a) => a.status === "going" },
-      { value: "maybe", label: "Maybe", matches: (a) => a.status === "maybe" },
+      { value: "going", label: registrationStatusLabel("going"), matches: (a) => a.status === "going" },
+      { value: "maybe", label: registrationStatusLabel("maybe"), matches: (a) => a.status === "maybe" },
       { value: "waitlisted", label: "Waitlist", matches: (a) => a.status === "waitlisted" },
     ]}>{(a) => <li key={a.registrationId} className="flex items-start justify-between gap-3 py-3 border-b border-border">
       <div className="min-w-0 flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
         {a.addedByLeader === true && <p className="text-sm text-text-muted">Added by a leader</p>}
-        {user?.status === "active" && user.accountType === "adult" && a.userId !== undefined && a.userId > 0 && !a.householdPerson && a.userId !== user.id && a.email === undefined && a.phone === undefined && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
+        {a.userId !== undefined && a.userId > 0 && !a.householdPerson && canAskForContact(user, { id: a.userId, email: a.email, phone: a.phone }) && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
       </div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
@@ -125,12 +128,12 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
 function statusLabel(a: Attendee, roster: Attendee[]): string {
   switch (a.status) {
     case "going": return a.attendanceMode === "remote" ? "Going remotely" : "Going";
-    case "maybe": return "Maybe";
+    case "maybe": return registrationStatusLabel("maybe");
     case "waitlisted": {
       const line = roster.filter((r) => r.status === "waitlisted" && r.attendanceMode === a.attendanceMode);
       return `Waitlist position ${line.indexOf(a) + 1}`;
     }
-    case "declined": return "Can't go";
+    case "declined": return registrationStatusLabel("declined");
     default: return "Removed";
   }
 }

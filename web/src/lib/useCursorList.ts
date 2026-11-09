@@ -5,7 +5,7 @@ import { errorText } from "./errors";
 // (add requests, contact requests and grants). A full page means there may be
 // more; a shorter one is the end. The server sends no `more` flag, so this
 // mirrors its limit in one place.
-export const CURSOR_PAGE_SIZE = 100;
+const CURSOR_PAGE_SIZE = 100;
 
 interface CursorState<T> {
   items: T[];

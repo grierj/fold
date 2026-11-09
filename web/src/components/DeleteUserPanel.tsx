@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
@@ -628,7 +629,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     }
   }
 
-  const name = target.displayName || target.name;
+  const name = publicName(target);
   // Delete stays off while an answer is unresolved or the attempt has ended it.
   const canPress = (phase.kind === "idle" || phase.kind === "notApplied") && !hashBroken;
   // Closing reloads the list when the account is gone or may be.

@@ -7,6 +7,7 @@ import { Button } from "./ui/Button";
 import { PageCount, Pagination } from "./ui/Pagination";
 import { SearchBox } from "./ui/SearchBox";
 import { EmptyState } from "./ui/EmptyState";
+import { registrationStatusLabel } from "../lib/status";
 
 // Small schedules keep direct answers. Longer schedules share one compact,
 // searchable date list. Opened forms stay mounted while hidden, so browsing
@@ -58,7 +59,7 @@ export function CompactDates({ dates, requested, requestVersion = 0, loadedOnly 
             <p className="font-semibold">{d.title || "Event"}</p>
             <p className="text-sm text-text-muted">{when}</p>
             {place && <p className="text-sm text-text-muted">{place}</p>}
-            {d.myRegistration && <p className="text-sm font-medium">{d.myRegistration === "going" ? "Going" : d.myRegistration === "maybe" ? "Maybe" : d.myRegistration === "waitlisted" ? "Waitlisted" : d.myRegistration === "declined" ? "Can't go" : "Not answered"}</p>}
+            {d.myRegistration && <p className="text-sm font-medium">{registrationStatusLabel(d.myRegistration)}</p>}
           </div>
           <Button variant="secondary" size="sm" layout="shrink-0 whitespace-nowrap" aria-expanded={opened} aria-label={`${opened ? "Hide details" : "Details and RSVP"}: ${d.title || "Event"}, ${when}`} aria-controls={`date-details-${d.id}`} onClick={() => {
             setExpanded(opened ? -1 : d.id);
