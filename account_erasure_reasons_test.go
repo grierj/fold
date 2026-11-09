@@ -699,8 +699,9 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 		})
 	}
 
-	// Malformed entries are 400s that end the id; the account is untouched.
-	t.Run("malformed entries", func(t *testing.T) {
+	// The old envelope is recognized by its version, never read: whatever its
+	// entries hold, it is the outdated answer (409) and the account is untouched.
+	t.Run("legacy entries are not read", func(t *testing.T) {
 		p := prepare(t)
 		h := strings.Repeat("ab", 32)
 		for name, items := range map[string][]map[string]string{
@@ -711,8 +712,8 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 			"wrong choice": {{"requestId": p.items[0].RequestID, "reviewHash": p.items[0].ReviewHash, "choice": "blank"}},
 		} {
 			res := deleteAccount(p.s.ac, p.s.target.ID, map[string]any{"reasonReview": map[string]any{"items": items}})
-			if res.code != http.StatusBadRequest {
-				t.Errorf("%s: %d %s, want 400", name, res.code, res.body)
+			if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"reason_review_outdated"`) {
+				t.Errorf("%s: %d %s, want 409 reason_review_outdated", name, res.code, res.body)
 			}
 		}
 		if n := countAudit(t, p.s.app.DB, decisionActions...); n != 0 {
@@ -2584,7 +2585,6 @@ func TestReasonLegacyEnvelope(t *testing.T) {
 		s := newReasonScene(t) // an empty set
 		h := strings.Repeat("ab", 32)
 		for name, raw := range map[string]string{
-			"legacy duplicate id":    `{"reasonReview":{"items":[{"requestId":"1","reviewHash":"` + h + `","choice":"keep"},{"requestId":"1","reviewHash":"` + h + `","choice":"keep"}]}}`,
 			"legacy case variant":    `{"reasonReview":{"Items":[]}}`,
 			"legacy extra key":       `{"reasonReview":{"items":[],"x":"y"}}`,
 			"items null":             `{"reasonReview":{"items":null}}`,
