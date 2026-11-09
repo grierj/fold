@@ -166,7 +166,6 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 		"api_admin_household.go:apiAdminAddHouseholdPerson":        true,
 		"api_household_conversion.go:issueHouseholdConversion":     true,
 		"api_household_conversion.go:apiCancelHouseholdConversion": true,
-		"api_household_conversion.go:acceptHouseholdConversion":    true,
 		"api_household_conversion.go:approveHouseholdConversion":   true,
 		"api_profile.go:apiUpdateMyHousehold":                      true, // N-11 family
 		"api_profile.go:apiAddHouseholdPerson":                     true,

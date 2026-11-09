@@ -132,7 +132,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   every person in `PERS`, soft-deleted included); any other household is another family's record, retained
   and counted in the `erasure` report the delete answers (`householdsKept`, `householdsScrubbed`,
   `peopleAnonymized`, `guardianLinksRevoked`; counts only). Households are locked only by
-  `lockErasureHouseholdsIn`; `TestErasureHouseholdLockCensus` pins the names of the 15 `lockHousehold` callers and fails on
+  `lockErasureHouseholdsIn`; `TestErasureHouseholdLockCensus` pins the names of the 14 `lockHousehold` callers (the public conversion accept reaches it through `lockConversionParticipants`) and fails on
   a new one; their classifications and lock orders are inventory 9.6.1 and are kept by review, not by the test.
 - Focal points (`AvatarFocalX/Y`, `CoverFocalX/Y`) are stored 0-100 and rendered as CSS
   `object-position`. `AvatarKey` is a blob-store key, not a URL.

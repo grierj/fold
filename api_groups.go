@@ -711,6 +711,11 @@ var errGroupNotApprovedForAdds = apiErr(http.StatusConflict, "group_add_not_appr
 type memberAddOptions struct {
 	KeepExistingRole bool
 	approved         *verifiedGroupAdd
+	// invitationID names the invitation being accepted: the new member joins
+	// on its authority (checked by the acceptor under the inviter's lock), so
+	// the people-add rules do not apply, a teen still waiting for consent may
+	// be added, and the over-limit audit row names the invitation.
+	invitationID uint
 }
 
 // changeRole sets userID's role in g to newRole, "leader" or "member". It locks the group row so
@@ -754,10 +759,11 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 			return err
 		}
 	}
-	if target.Status != models.UserActive {
+	viaInvitation := add != nil && add.invitationID != 0
+	if target.Status != models.UserActive && !(viaInvitation && target.Status == models.UserPendingConsent) {
 		return errRoleRefused
 	}
-	if add != nil {
+	if add != nil && !viaInvitation {
 		fresh, err := peopleAddActor(tx, actor)
 		if err != nil {
 			return err
@@ -789,7 +795,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	// Adding someone (or bringing them back) needs room under the member
 	// limit, or an explicit over-limit choice, which is audited (DEC-39).
 	adding := !targetRel.Member
-	if adding && add != nil {
+	if adding && add != nil && !viaInvitation {
 		if !policy.CanAddToGroup(asPerson(actor), g.Status) {
 			return errGroupNotApprovedForAdds
 		}
@@ -821,16 +827,20 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		}
 	}
 	if adding && !policy.GroupHasRoom(g.MemberLimit, count) {
+		meta := map[string]any{"userId": userID, "count": count, "limit": *g.MemberLimit, "role": newRole}
+		if viaInvitation {
+			meta["invitationId"] = add.invitationID
+		}
 		if err := audit.Write(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.AddedOverLimit, TargetType: "group", TargetID: g.ID,
-			Meta: map[string]any{"userId": userID, "count": count, "limit": *g.MemberLimit, "role": newRole},
+			Meta: meta,
 			IP:   ip,
 		}); err != nil {
 			return err
 		}
 	}
 	if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
-		if adding && add != nil {
+		if adding && add != nil && !viaInvitation {
 			return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.MemberAdded, TargetType: "group", TargetID: g.ID, Meta: map[string]any{"userId": userID, "role": newRole}, IP: ip})
 		}
 		return nil

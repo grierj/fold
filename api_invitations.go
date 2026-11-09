@@ -331,7 +331,6 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return errEmailTaken
 		}
 		var group *models.Group
-		var count int64
 		if inv.GroupID != nil {
 			var g models.Group
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, *inv.GroupID).Error; err != nil {
@@ -360,12 +359,6 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		if !policy.CanInvite(asPerson(&inviter), group != nil, leadsTarget, leadsAnywhere) {
 			return errTokenInvalid
-		}
-		if group != nil {
-			count = memberCount(tx, group.ID)
-			if !policy.GroupHasRoom(group.MemberLimit, int(count)) && !inv.OverLimit {
-				return errGroupFull // the token stays live: this can be retried
-			}
 		}
 		u := models.User{Email: inv.Email, Role: models.RoleMember}
 		if guestRow {
@@ -407,24 +400,17 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		meta := map[string]any{"userId": u.ID}
 		if group != nil {
-			if err := tx.Create(&models.Membership{UserID: u.ID, GroupID: group.ID,
-				Role: inv.Role, Status: models.MembershipActive, JoinedAt: now}).Error; err != nil {
+			// The invitation is the authority (checked above under the inviter's
+			// lock); changeRoleIn still holds the capacity rule (DEC-39) and writes
+			// the over-limit audit row, naming this invitation. errGroupFull rolls
+			// the whole accept back, so the token stays live and can be retried.
+			err := a.changeRoleIn(tx, &inviter, c.ClientIP(), group, u.ID, inv.Role, inv.OverLimit,
+				&memberAddOptions{invitationID: inv.ID},
+				func(_, _ *models.User, _, _ policy.Rel, _ int) bool { return true })
+			if err != nil {
 				return err
 			}
 			meta["groupId"] = group.ID
-			if !policy.GroupHasRoom(group.MemberLimit, int(count)) {
-				// Over the limit by the inviting leader's or admin's
-				// explicit choice (DEC-39).
-				if err := audit.Write(tx, audit.Entry{
-					Actor: &inv.InvitedBy, Action: audit.AddedOverLimit,
-					TargetType: "group", TargetID: group.ID,
-					Meta: map[string]any{"userId": u.ID, "count": count,
-						"limit": *group.MemberLimit, "role": inv.Role, "invitationId": inv.ID},
-					IP: c.ClientIP(),
-				}); err != nil {
-					return err
-				}
-			}
 		}
 		userID = u.ID
 		return audit.Write(tx, audit.Entry{Actor: &inv.InvitedBy, Action: audit.InvitationAccepted,

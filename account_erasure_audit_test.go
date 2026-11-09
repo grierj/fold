@@ -876,7 +876,7 @@ var auditWriterCensus = map[string]string{
 	"api_group_visibility.go:cancelDateLosers":                    "fb0f531082cb9e5a6d2ed6d2ebef78d9f7bd846f491ce5be9f6b2b23743b0e62",
 	"api_groups.go:apiUpdateGroup":                                "066a15def11b07f00492ad420206068b7ff977b43f8d492b9be3f8f976c9192d",
 	"api_groups.go:auditAndNotifyLeadership":                      "10cc718888efbfe112b1f9d198a48a9a9c7e8c74ba90ec721ad35ba8d555316c",
-	"api_groups.go:changeRoleIn":                                  "6c81ce1bd5f4f91603428940c43e97b1d3d30ef4c5f5dc52441dc0126e23d208",
+	"api_groups.go:changeRoleIn":                                  "2bbe7152fb27b6fdc394965e6b8047c5cec5f0a6c7e7bab0e140bb9821076855",
 	"api_groups.go:deleteGroup":                                   "fec7d685ed8b3700c060f747c0c0bc2a1b758fef582f539ec837dd198058edbd",
 	"api_guest.go:apiCancelGuestRegistration":                     "d92867ce53e9aa1d9e3f635bee6ae5946c7aa0fed892bebc76beba28bb017fbb",
 	"api_guest.go:createGuestUpgradeRequest":                      "d4efcca0c23809550c5f9d8996e03fad7134231186eb151392530f8a17e6341c",
@@ -891,7 +891,7 @@ var auditWriterCensus = map[string]string{
 	"api_household_conversion.go:issueHouseholdConversion":        "9f6f439dcead0603cd7951269d59d2ee82732c3609c9b37bb7ff37db4e44e679",
 	"api_household_conversion.go:revokeConversionInvitation":      "0fefea42145a8ecba0cd41cf715a9856d9865a070b65d847987d1d3526dd1d29",
 	"api_household_conversion.go:transferHouseholdConversion":     "e1908caf0ce2fcf2d264c520c2f9c4adda50c7625277295c99d6678b8eef369f",
-	"api_invitations.go:apiAcceptInvitation":                      "60f7cc3dd7e17625a05e396cae326b52bd06a2fc9672e65a7d60e5d50c62353f",
+	"api_invitations.go:apiAcceptInvitation":                      "aefaf685053af673d24c4f48cb8cc6c94eeb2cb219db2bd91773e5d2c3ff9b99",
 	"api_invitations.go:apiCreateInvitation":                      "45bbb658cdec5c7de60681c0d505544e2c25a011e8fa9bbb38b9e978c79d1a7e",
 	"api_invitations.go:writeInvitationRefusal":                   "7b02d5b25e7c2b17d5c628c82fa102075c93ba82255b0a21b4eecb4c7dae6e0f",
 	"api_message_history.go:apiRetryMessage":                      "28f49307508e5f77df4a6aaebc4c63d59a94aca0cccb26e86b207e8d4024ce19",
@@ -1206,8 +1206,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 119 {
-		t.Fatalf("audit.Write sites = %d, expected 119; review every changed site", len(c.Sites))
+	if len(c.Sites) != 118 {
+		t.Fatalf("audit.Write sites = %d, expected 118; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)

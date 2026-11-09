@@ -451,6 +451,10 @@ func sortedUniqueIDs(ids []uint) []uint {
 	return unique
 }
 
+// conversionAcceptAttempts bounds the retries of an accept whose household
+// changed under it.
+const conversionAcceptAttempts = 4
+
 func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, initial *models.Invitation) {
 	// Password hashing never holds database locks.
 	prepared := models.User{}
@@ -459,7 +463,11 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		return
 	}
 	var err error
-	for attempt := 0; attempt < 4; attempt++ {
+	// Everyone else who hits errConversionRetry (lockTeenLifecycleUsers) answers
+	// 409 "try again" at once. This door is anonymous, so a household that changed
+	// while the participants were being locked is retried here, in a fresh
+	// transaction each time, and only an exhausted budget answers the same 409.
+	for attempt := 0; attempt < conversionAcceptAttempts; attempt++ {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			discovery, err := liveInvitation(tx, raw)
 			if err != nil || discovery.HouseholdPersonID == nil {
@@ -470,33 +478,15 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := tx.First(&person, *initial.HouseholdPersonID).Error; err != nil {
 				return errTokenInvalid
 			}
-			ids, err := conversionLockIDs(tx, initial, &person)
-			if err != nil {
-				return err
-			}
-			locked, err := lockUsersByID(tx, ids, true)
-			if err != nil {
-				return err
-			}
-			// Test seam (nil in production): the users statement above holds
-			// every participant until this transaction commits.
-			if a.conversionAfterUserLocks != nil {
-				a.conversionAfterUserLocks(tx)
-			}
-			if err := lockHousehold(tx, person.HouseholdID); err != nil {
-				return err
-			}
-			if err := tx.First(&person, person.ID).Error; err != nil {
+			locked, _, err := lockConversionParticipants(tx, initial, &person, a.conversionAfterUserLocks)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errTokenInvalid
 			}
-			freshIDs, err := conversionLockIDs(tx, initial, &person)
 			if err != nil {
 				return err
 			}
-			for _, id := range freshIDs {
-				if locked[id] == nil {
-					return errConversionRetry
-				}
+			if person.DeletedAt.Valid {
+				return errTokenInvalid
 			}
 			var inv models.Invitation
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inv, initial.ID).Error; err != nil {

@@ -452,7 +452,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				return errConversionUnavailable
 			}
 			var err error
-			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, me.ID)
+			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, nil, me.ID)
 			if err != nil {
 				return err
 			}
