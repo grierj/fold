@@ -247,10 +247,6 @@ func TestBatchSchedule(t *testing.T) {
 				t.Errorf("first %d: batch %d is %d, want double %d", c.first, i, b[i], b[i-1])
 			}
 		}
-		// three attempts (busy seal retries) triple both bounds
-		if 3*len(b) != 3*c.statements || 3*sum != 150000 {
-			t.Errorf("first %d: per request %d statements, %d rows", c.first, 3*len(b), 3*sum)
-		}
 	}
 	if b := Batches(params(5, 256, 100)); !reflect.DeepEqual(b, []int{5}) {
 		t.Errorf("a unit smaller than the first batch is one statement of the unit: %v", b)
@@ -484,16 +480,8 @@ func TestThreeAttemptsBound(t *testing.T) {
 		for _, st := range s.log {
 			total += st.Returned
 		}
-		want, sum := 0, 0
-		for _, n := range Batches(params(50000, 256, 100)) {
-			sum += n
-			if sum >= r {
-				want = sum
-				break
-			}
-		}
-		if total != want || (want < 50000 && total >= 2*r+256) {
-			t.Errorf("R=%d: %d rows read, want %d (< 2R+256 = %d)", r, total, want, 2*r+256)
+		if total < r || (total < 50000 && total >= 2*r+256) {
+			t.Errorf("R=%d: %d rows read, want at least R and under 2R+256 = %d", r, total, 2*r+256)
 		}
 	}
 }

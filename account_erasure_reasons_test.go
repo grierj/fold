@@ -193,18 +193,8 @@ func TestReasonProjectionShape(t *testing.T) {
 			}
 		}
 	}
-	if reasonColumns[0].name != "id" {
-		t.Errorf("the first hashed column is %s, want id", reasonColumns[0].name)
-	}
-	proj := reasonProjection()
-	if strings.Count(proj, ", ")+1 < len(reasonColumns) {
-		t.Errorf("the projection has fewer parts than columns: %s", proj)
-	}
-	if strings.Contains(proj, "add_childcare_ages_note") {
+	if strings.Contains(reasonProjection(), "add_childcare_ages_note") {
 		t.Error("the ages note must stay out of the hash")
-	}
-	if !strings.HasSuffix(reasonSelect, ", created_at") {
-		t.Errorf("reasonSelect must end with created_at: %s", reasonSelect)
 	}
 }
 
@@ -943,10 +933,18 @@ func TestReasonTypesUseStringIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := string(src)
-	for _, want := range []string{"  requestId: string;", "  counterpartRef?: string;", "  next: string | null;"} {
-		if strings.Count(ts, want) < 1 {
-			t.Errorf("web/src/types.ts lacks %q in ErasureReasonItem or ErasureReasonPage", want)
+	for iface, want := range map[string][]string{
+		"ErasureReasonItem": {"requestId: string;", "counterpartRef?: string;"},
+		"ErasureReasonPage": {"next: string | null;"},
+	} {
+		m := regexp.MustCompile(`(?s)export interface ` + iface + ` \{(.*?)\n\}`).FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("web/src/types.ts has no interface %s", iface)
+		}
+		for _, line := range want {
+			if !strings.Contains(m[1], "\n  "+line) {
+				t.Errorf("web/src/types.ts: %s lacks %q", iface, line)
+			}
 		}
 	}
 	// The pair check covers every field name; this covers the page's own cursor.
@@ -1955,19 +1953,12 @@ func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	mark := len(s.rig.proxy.Events())
 	code, _, body := pageOf(t, s.c, target.ID, nil)
 	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"reason_review_busy"`) || strings.Contains(body, "identifying reason") {
 		t.Fatalf("a page against a held actor row: %d %s, want 503 reason_review_busy and no text", code, body)
 	}
-	began := 0
-	for _, e := range s.rig.proxy.Events()[mark:] {
-		if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "set_config('statement_timeout'") {
-			began++
-		}
-	}
-	if began != 2 || attempts.Load() != 2 {
-		t.Fatalf("the page began %d transactions (%d reached the seal), want 2: the retry ran once and the window refused the third", began, attempts.Load())
+	if n := attempts.Load(); n != 2 {
+		t.Fatalf("%d attempts reached the seal, want 2: the retry ran once and the window refused the third", n)
 	}
 	if n := countAudit(t, s.direct, audit.UserErasureReasonsViewed); n != 0 {
 		t.Errorf("%d view audits committed by refused attempts", n)

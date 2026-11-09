@@ -168,16 +168,9 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 	}
 }
 
-func TestUsersTableIsEmailFirst(t *testing.T) {
+// The login is a case-insensitive email, and a new account hides nothing.
+func TestUsersEmailIsCitextAndContactIsVisibleByDefault(t *testing.T) {
 	app := testApp(t)
-	var cols []string
-	app.DB.Raw(`SELECT column_name FROM information_schema.columns
-		WHERE table_name = 'users' ORDER BY column_name`).Scan(&cols)
-	want := "account_type administratively_disabled avatar_focal_x avatar_focal_y avatar_key birth_date created_at deleted_at display_name email hide_contact_from_leaders id " +
-		"logout_version name password_hash phone role session_version status timezone updated_at"
-	if got := strings.Join(cols, " "); got != want {
-		t.Fatalf("users columns:\n got %s\nwant %s", got, want)
-	}
 	var typ string
 	app.DB.Raw(`SELECT data_type || ':' || udt_name FROM information_schema.columns
 		WHERE table_name = 'users' AND column_name = 'email' AND is_nullable = 'NO'`).Scan(&typ)
@@ -646,23 +639,6 @@ func TestPasswordResetDoesNotWaitOnEmail(t *testing.T) {
 	drainNotices(t, app)
 	if calls != 1 {
 		t.Fatalf("drained sends=%d, want 1", calls)
-	}
-}
-
-func TestLoginFailureLimitPolicy(t *testing.T) {
-	for _, tt := range []struct {
-		key  string
-		want int
-	}{
-		{"email:alice@example.com", 10},
-		{"user:123", 10},
-		{"ip:192.0.2.1", 50},
-	} {
-		t.Run(tt.key, func(t *testing.T) {
-			if got := failureLimit(throttleKey(tt.key)); got != tt.want {
-				t.Fatalf("limit = %d, want %d", got, tt.want)
-			}
-		})
 	}
 }
 

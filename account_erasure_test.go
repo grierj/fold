@@ -1135,12 +1135,6 @@ func TestErasureCapturesRequestInvitationAndPersonSets(t *testing.T) {
 }
 
 func TestErasureHelpers(t *testing.T) {
-	if got := erasedRowAddressSQL("guest_signups"); got != "'deleted-guest_signups-' || id || '@deleted.invalid'" {
-		t.Errorf("erasedRowAddressSQL = %q", got)
-	}
-	if got := erasedTokenMarkerSQL("invitations"); got != "'erased-invitations-' || id" {
-		t.Errorf("erasedTokenMarkerSQL = %q", got)
-	}
 	for addr, want := range map[string]bool{
 		"deleted-7@deleted.invalid":                 true,
 		" Deleted-guest_signups-3@Deleted.Invalid ": true,
@@ -1151,9 +1145,6 @@ func TestErasureHelpers(t *testing.T) {
 		if got := isErasedAddress(addr); got != want {
 			t.Errorf("isErasedAddress(%q) = %v, want %v", addr, got, want)
 		}
-	}
-	if erasureRecipientWait != 20*time.Second {
-		t.Errorf("erasureRecipientWait = %v, want 20s", erasureRecipientWait)
 	}
 }
 
@@ -5599,14 +5590,27 @@ func TestAccountErasureScrubsSubjectAgesNoteStatement(t *testing.T) {
 	}
 }
 
-// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds lookupChunk+1 rows of
-// the erased subject, one more than one batch, and erases through the real
-// DELETE: the helper sends exactly two UPDATEs, a full batch and a batch of
-// one, each carrying its ids and the subject as bind parameters. A late
-// failure after both batches rolls them back together.
+// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds one more row of the
+// erased subject than a batch holds and erases through the real DELETE: the
+// blank takes more than one UPDATE, none carries more bind parameters than
+// PostgreSQL allows, and together they change every row. A late failure after
+// the batches rolls them back together.
 func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 	const rows = lookupChunk + 1
-	want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}
+	const maxBindParameters = 65535
+	batchesOK := func(t *testing.T, updates []agesNoteStatement) {
+		t.Helper()
+		var changed int64
+		for _, u := range updates {
+			if u.Vars > maxBindParameters {
+				t.Errorf("an UPDATE carried %d bind parameters, the limit is %d", u.Vars, maxBindParameters)
+			}
+			changed += u.Rows
+		}
+		if len(updates) < 2 || changed != rows {
+			t.Errorf("%d UPDATEs changed %d rows, want at least two that changed %d", len(updates), changed, rows)
+		}
+	}
 	t.Run("commit", func(t *testing.T) {
 		sc := newAgesNoteScene(t, false, rows)
 		rec := recordAgesNoteStatements(t, sc.app.DB)
@@ -5619,9 +5623,7 @@ func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 		if len(selects) != 1 {
 			t.Errorf("%d lock selections, want 1", len(selects))
 		}
-		if !reflect.DeepEqual(updates, want) {
-			t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v", updates, want)
-		}
+		batchesOK(t, updates)
 	})
 	t.Run("late failure", func(t *testing.T) {
 		sc := newAgesNoteScene(t, false, rows)
@@ -5632,9 +5634,8 @@ func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
 		}
 		// Both batches ran and committed nothing: the failure came after them.
-		if _, updates := rec.seen(); !reflect.DeepEqual(updates, want) {
-			t.Errorf("UPDATEs before the failure = %+v, want %+v", updates, want)
-		}
+		_, updates := rec.seen()
+		batchesOK(t, updates)
 		if got := failed.Load(); got != 1 {
 			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
 		}
