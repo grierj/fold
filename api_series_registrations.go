@@ -76,12 +76,7 @@ const (
 	seriesUndoPendingTTL = 24 * time.Hour
 )
 
-func (a *App) seriesTime() time.Time {
-	if a.seriesClock != nil {
-		return a.seriesClock().UTC()
-	}
-	return time.Now().UTC()
-}
+func (a *App) seriesTime() time.Time { return a.now().UTC() }
 
 type seriesUndoState struct {
 	Exists             bool       `json:"exists"`

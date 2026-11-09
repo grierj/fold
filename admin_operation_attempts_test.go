@@ -26,7 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 // T07B-1b: the attempt lifecycle, settle, the actor seal and the receipt sweep.
 // Every route test goes through the real router, as an admin with a cookie
-// session and a CSRF token. attemptClock is the test clock: the process's
+// session and a CSRF token. App.clock (useAttemptClock) is the test clock: the process's
 // monotonic time, advanced by hand.
 // ---------------------------------------------------------------------------
 
@@ -50,7 +50,7 @@ func newAttemptScene(t *testing.T) *attemptScene {
 	app := testApp(t)
 	s := &attemptScene{t: t, app: app, direct: app.DB}
 	app.requestRestart = func() { s.restarts.Add(1) }
-	app.attemptClock = func() time.Duration { return time.Duration(s.clock.Load()) }
+	app.useAttemptClock(func() time.Duration { return time.Duration(s.clock.Load()) })
 	s.admin = newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	s.c = loginAPI(t, app, "admin", "pw")
 	return s
@@ -68,7 +68,7 @@ func newProxiedAttemptScene(t *testing.T) *attemptScene {
 	s := &attemptScene{t: t, app: rig.papp, direct: direct.DB, rig: rig, admin: admin}
 	bootFence(t, rig.papp)
 	rig.papp.requestRestart = func() { s.restarts.Add(1) }
-	rig.papp.attemptClock = func() time.Duration { return time.Duration(s.clock.Load()) }
+	rig.papp.useAttemptClock(func() time.Duration { return time.Duration(s.clock.Load()) })
 	s.c = loginAPI(t, rig.papp, "admin", "pw")
 	return s
 }
@@ -766,7 +766,7 @@ func TestOutcomeClassification(t *testing.T) {
 			r := newCtxRigFor(t, app)
 			c := loginAPI(t, r.papp, "admin", "pw")
 			var clock atomic.Int64
-			r.papp.attemptClock = func() time.Duration { return time.Duration(clock.Load()) }
+			r.papp.useAttemptClock(func() time.Duration { return time.Duration(clock.Load()) })
 			mintW := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindAccountDelete, "subjectUserId": target.ID}, true)
 			var minted attemptMintJSON
 			decodeJSON(t, mintW, &minted)
@@ -929,23 +929,23 @@ func TestCurrentAdminInFacts(t *testing.T) {
 func TestCurrentAdminInOnTheRoutes(t *testing.T) {
 	s := newAttemptScene(t)
 	a, b := s.target("a"), s.target("b")
-	s.app.sealAttempts = &atomic.Int64{}
+	s.app.hooks.sealAttempts = &atomic.Int64{}
 	id := s.mint(a.ID)
 	if w := s.del(id, a.ID); w.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
 	}
-	if n := s.app.sealAttempts.Load(); n != 1 {
+	if n := s.app.hooks.sealAttempts.Load(); n != 1 {
 		t.Fatalf("the deletion's seal ran %d times, want 1", n)
 	}
-	s.app.sealAttempts.Store(0)
+	s.app.hooks.sealAttempts.Store(0)
 	wantSettle(t, s.settled(id, a.ID), settleApplied, nil)
-	if n := s.app.sealAttempts.Load(); n != 1 {
+	if n := s.app.hooks.sealAttempts.Load(); n != 1 {
 		t.Fatalf("settle's seal ran %d times, want 1", n)
 	}
 
 	// The password goes between the early read and the seal.
 	var cleared atomic.Bool
-	s.app.deleteBeforeSeal = func(tx *gorm.DB) {
+	s.app.hooks.deleteBeforeSeal = func(tx *gorm.DB) {
 		if cleared.Swap(true) {
 			return
 		}
@@ -978,7 +978,7 @@ func TestActorSealBusy(t *testing.T) {
 	defer func() { deleteRetryWindow, attemptSettleBusyWindow = oldWindow, oldSettle }()
 	s := newAttemptScene(t)
 	a := s.target("a")
-	s.app.sealAttempts = &atomic.Int64{}
+	s.app.hooks.sealAttempts = &atomic.Int64{}
 	hold, _ := beginOwnedTx(t, s.app.DB)
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
@@ -997,7 +997,7 @@ func TestActorSealBusy(t *testing.T) {
 	if w.Code != http.StatusConflict || codeOf(t, w) != "admin_account_busy" {
 		t.Fatalf("delete under the hold: %d %s, want 409 admin_account_busy", w.Code, w.Body.String())
 	}
-	if n := s.app.sealAttempts.Load(); n != 3 {
+	if n := s.app.hooks.sealAttempts.Load(); n != 3 {
 		t.Fatalf("sealed attempts = %d, want 3", n)
 	}
 	if s.deleted(a.ID) || s.state(id, a.ID) != attemptRolledBack || s.receipts() != 0 {
@@ -1006,9 +1006,9 @@ func TestActorSealBusy(t *testing.T) {
 
 	// Settle under the same hold: 3 sealed transactions, no fence, checking.
 	id2 := s.mint(a.ID)
-	s.app.sealAttempts.Store(0)
+	s.app.hooks.sealAttempts.Store(0)
 	wantSettle(t, s.settled(id2, a.ID), settleChecking, nil)
-	if n := s.app.sealAttempts.Load(); n != 3 {
+	if n := s.app.hooks.sealAttempts.Load(); n != 3 {
 		t.Fatalf("settle sealed %d times under the hold, want 3", n)
 	}
 	if s.state(id2, a.ID) != attemptAbsent {
@@ -1040,7 +1040,7 @@ func TestSettleAuthorization(t *testing.T) {
 			id := s.mint(a.ID)
 			// (a) committed after the middleware authenticated the request and
 			// before the settle transaction.
-			s.app.settleBeforeTx = func() {
+			s.app.hooks.settleBeforeTx = func() {
 				if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
 					t.Errorf("revoke: %v", err)
 				}
@@ -1066,7 +1066,7 @@ func TestSettleAuthorization(t *testing.T) {
 		a := s.target("a")
 		id := s.mint(a.ID)
 		var once atomic.Bool
-		s.app.deleteBeforeSeal = func(*gorm.DB) {
+		s.app.hooks.deleteBeforeSeal = func(*gorm.DB) {
 			if once.Swap(true) {
 				return
 			}
@@ -1288,7 +1288,7 @@ func TestSettleAuthorizationRevokedBeforeTheFence(t *testing.T) {
 			id := s.mint(a.ID)
 			revoked := make(chan error, 1)
 			var once atomic.Bool
-			s.app.settleBeforeFence = func(tx *gorm.DB) {
+			s.app.hooks.settleBeforeFence = func(tx *gorm.DB) {
 				if once.Swap(true) {
 					return
 				}
@@ -1322,7 +1322,7 @@ func TestSettleBackendTerminatedAfterTheFence(t *testing.T) {
 	a := s.target("a")
 	id := s.mint(a.ID)
 	var once atomic.Bool
-	s.app.settleAfterFence = func(tx *gorm.DB) {
+	s.app.hooks.settleAfterFence = func(tx *gorm.DB) {
 		if once.Swap(true) {
 			return
 		}
@@ -1381,7 +1381,7 @@ func TestSettleSealBusyThenRevoked(t *testing.T) {
 				t.Fatal(err)
 			}
 			var fenced atomic.Int32
-			r.papp.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
+			r.papp.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
 			commit := make(chan struct{})
 			go func() {
 				defer close(commit)
@@ -1436,10 +1436,10 @@ func TestSettleRefusesAPasswordRemovedAfterTheMiddleware(t *testing.T) {
 	s := newAttemptScene(t)
 	a := s.target("a")
 	id := s.mint(a.ID)
-	s.app.sealAttempts = &atomic.Int64{}
+	s.app.hooks.sealAttempts = &atomic.Int64{}
 	var fenced atomic.Int32
-	s.app.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
-	s.app.settleBeforeTx = func() {
+	s.app.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
+	s.app.hooks.settleBeforeTx = func() {
 		if err := s.app.DB.Exec("UPDATE users SET password_hash = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
 			t.Errorf("clear the hash: %v", err)
 		}
@@ -1453,8 +1453,8 @@ func TestSettleRefusesAPasswordRemovedAfterTheMiddleware(t *testing.T) {
 			t.Errorf("a refused settle names %q: %s", field, w.Body.String())
 		}
 	}
-	if s.state(id, a.ID) != attemptAbsent || fenced.Load() != 0 || s.app.sealAttempts.Load() != 1 {
-		t.Fatalf("ledger %v, fence entries %d, sealed %d: want absent, 0, 1", s.state(id, a.ID), fenced.Load(), s.app.sealAttempts.Load())
+	if s.state(id, a.ID) != attemptAbsent || fenced.Load() != 0 || s.app.hooks.sealAttempts.Load() != 1 {
+		t.Fatalf("ledger %v, fence entries %d, sealed %d: want absent, 0, 1", s.state(id, a.ID), fenced.Load(), s.app.hooks.sealAttempts.Load())
 	}
 }
 
@@ -1466,7 +1466,7 @@ func TestActorSealCompatibleLocks(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s := newAttemptScene(t)
 			a, b := s.target("a"), s.target("b")
-			s.app.sealAttempts = &atomic.Int64{}
+			s.app.hooks.sealAttempts = &atomic.Int64{}
 			hold, _ := beginOwnedTx(t, s.app.DB)
 			if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR "+mode, s.admin.ID).Error; err != nil {
 				t.Fatal(err)
@@ -1475,13 +1475,13 @@ func TestActorSealCompatibleLocks(t *testing.T) {
 			if w := s.del(id, a.ID); w.Code != http.StatusOK {
 				t.Fatalf("delete under a FOR %s holder: %d %s, want 200", mode, w.Code, w.Body.String())
 			}
-			if n := s.app.sealAttempts.Load(); n != 1 {
+			if n := s.app.hooks.sealAttempts.Load(); n != 1 {
 				t.Fatalf("the deletion's seal ran %d times under FOR %s, want 1", n, mode)
 			}
-			s.app.sealAttempts.Store(0)
+			s.app.hooks.sealAttempts.Store(0)
 			idB := s.mint(b.ID)
 			wantSettle(t, s.settled(idB, b.ID), settleNotApplied, nil)
-			if n := s.app.sealAttempts.Load(); n != 1 {
+			if n := s.app.hooks.sealAttempts.Load(); n != 1 {
 				t.Fatalf("settle's seal ran %d times under FOR %s, want 1", n, mode)
 			}
 		})
@@ -1505,7 +1505,7 @@ func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
 	s := newProxiedAttemptScene(t)
 	a := s.target("a")
 	id := s.mint(a.ID)
-	s.app.sealAttempts = &atomic.Int64{}
+	s.app.hooks.sealAttempts = &atomic.Int64{}
 	hold, _ := beginOwnedTx(t, s.direct)
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
@@ -1519,8 +1519,8 @@ func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
 			starts = append(starts, e.Time.Sub(began))
 		}
 	}
-	if len(starts) < 2 || int64(len(starts)) != s.app.sealAttempts.Load() {
-		t.Fatalf("settle began %d transactions (sealed %d times) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), s.app.sealAttempts.Load(), starts)
+	if len(starts) < 2 || int64(len(starts)) != s.app.hooks.sealAttempts.Load() {
+		t.Fatalf("settle began %d transactions (sealed %d times) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), s.app.hooks.sealAttempts.Load(), starts)
 	}
 	for _, at := range starts {
 		if at >= window {
@@ -1784,14 +1784,14 @@ func TestDeletionDeadlineDuringARetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := s.mint(a.ID)
-	s.app.sealAttempts = &atomic.Int64{}
-	s.app.deleteBeforeRetry = func() { time.Sleep(1100 * time.Millisecond) }
+	s.app.hooks.sealAttempts = &atomic.Int64{}
+	s.app.hooks.deleteBeforeRetry = func() { time.Sleep(1100 * time.Millisecond) }
 	w := s.del(id, a.ID)
 	if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != "delete_timed_out" {
 		t.Fatalf("delete: %d %s, want 503 delete_timed_out", w.Code, w.Body.String())
 	}
-	if s.app.sealAttempts.Load() != 1 {
-		t.Errorf("sealed attempts = %d, want the one before the retry ran out of time", s.app.sealAttempts.Load())
+	if s.app.hooks.sealAttempts.Load() != 1 {
+		t.Errorf("sealed attempts = %d, want the one before the retry ran out of time", s.app.hooks.sealAttempts.Load())
 	}
 	if s.state(id, a.ID) != attemptRolledBack || s.deleted(a.ID) {
 		t.Fatal("the id should end rolled back with nothing deleted")

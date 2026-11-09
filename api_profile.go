@@ -432,15 +432,18 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// uploadsURLPrefix is where the local blob store is served (serveUpload); the
+// store builds URLs under it and uploadKeyFromURL reads them back.
+const uploadsURLPrefix = "/uploads"
+
 // uploadKeyFromURL returns the storage key for an /uploads/... URL, or
 // false when the value isn't a locally stored upload (a group without
 // a cover has an empty URL; covers are only ever set by upload).
 func uploadKeyFromURL(raw string) (string, bool) {
-	const prefix = "/uploads/"
-	if !strings.HasPrefix(raw, prefix) {
+	key, found := strings.CutPrefix(raw, uploadsURLPrefix+"/")
+	if !found {
 		return "", false
 	}
-	key := strings.TrimPrefix(raw, prefix)
 	if err := storage.ValidateKey(key); err != nil {
 		return "", false
 	}

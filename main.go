@@ -30,21 +30,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// App wires together config, database, and session store.
+// App is what the handlers share: the database, session store, configuration,
+// blob store and mailer, plus the state of the few features that keep some
+// (push, the restore fence, the admin attempt ledger).
 type App struct {
 	DB      *gorm.DB
 	Store   *sessions.CookieStore
 	Config  Config
 	Uploads storage.Store // blob store for avatars and group covers
 	Mailer  mail.Sender   // transactional email (C6, M1.2)
-
-	// seriesClock is a per-App clock seam for lock-boundary tests. Production
-	// leaves it nil and reads the current UTC time.
-	seriesClock func() time.Time
-
-	// calendarClock fixes DEC-77 window boundaries in handler tests. Production
-	// leaves it nil and reads the current UTC time.
-	calendarClock func() time.Time
 
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
@@ -61,14 +55,10 @@ type App struct {
 	pushOnce sync.Once
 	// vapid caches the decrypted VAPID key (push_keys.go).
 	vapid vapidCache
-	// pushRender overrides renderPush in tests (a rendering past the
-	// payload cap); nil uses the stored push text.
-	pushRender func(*models.Notification) (push.Notification, bool)
-	// pushClock and pushWindow fix the time and the quiet hours in push
-	// tests (DEC-126). Production leaves them unset: the current time and
-	// push.DefaultWindow.
-	pushClock  func() time.Time
-	pushWindow *push.Window
+	// clock replaces the wall clock in tests (a.now). Production leaves it nil.
+	clock func() time.Time
+	// hooks are the test seams, all nil in production (test_hooks.go).
+	hooks testHooks
 
 	// fence is the restore barrier (restore_fence.go) and attempts the admin
 	// operation ledger (admin_operation_attempts.go). Both are ready at their
@@ -79,32 +69,6 @@ type App struct {
 	// requestRestart asks serve to shut down and exit non-zero once a restore
 	// is detected. serve sets it; tests set a recorder; nil does nothing.
 	requestRestart func()
-
-	// Test seams, all nil in production (T07B-1b). A nil seam sends no
-	// statement and takes no time.
-	//
-	// restoreAckPause runs inside acknowledgeRestoreTicket before it raises the
-	// floor. attemptClock replaces the monotonic time since the process
-	// started. settleBeforeTx runs before settle's first transaction;
-	// settleBeforeFence and settleAfterFence run inside its seal, around the
-	// ledger transition, given the open transaction. deleteBeforeSeal runs in
-	// the deletion's seal just before currentAdminIn, given the open
-	// transaction; deleteBeforeRetry runs between a busy attempt's rollback and
-	// the next attempt, with no transaction open. conversionAfterUserLocks runs
-	// in acceptHouseholdConversion right after its users statement.
-	// readBeforeSeal runs in a reason-review page transaction between its view
-	// audit and the actor seal, given the open transaction (T07B-2b).
-	// sealAttempts counts seal entries of the deletion and settle.
-	restoreAckPause          func()
-	attemptClock             func() time.Duration
-	settleBeforeTx           func()
-	settleBeforeFence        func(*gorm.DB)
-	settleAfterFence         func(*gorm.DB)
-	deleteBeforeSeal         func(*gorm.DB)
-	deleteBeforeRetry        func()
-	readBeforeSeal           func(*gorm.DB)
-	conversionAfterUserLocks func(*gorm.DB)
-	sealAttempts             *atomic.Int64
 }
 
 const sessionName = "fold-session"
@@ -140,7 +104,7 @@ func serve(stderr io.Writer) int {
 		return 1
 	}
 
-	uploads, err := storage.NewLocalStore(cfg.UploadDir, "/uploads")
+	uploads, err := storage.NewLocalStore(cfg.UploadDir, uploadsURLPrefix)
 	if err != nil {
 		fmt.Fprintln(stderr, "fold: upload storage:", err)
 		return 1
@@ -349,11 +313,11 @@ func (a *App) setupRouter() *gin.Engine {
 	// User-uploaded assets (avatars, group covers). Served with
 	// X-Content-Type-Options: nosniff; uploads are validated as images
 	// on the way in.
-	r.GET("/uploads/*filepath", a.serveUpload)
+	r.GET(uploadsURLPrefix+"/*filepath", a.serveUpload)
 
 	// Registered before the setup redirect so a database ping still
 	// answers while the wizard is waiting for the first admin.
-	r.GET("/healthz", httpx.Healthz(func(ctx context.Context) error {
+	r.GET(pathHealthz, httpx.Healthz(func(ctx context.Context) error {
 		sqlDB, err := a.DB.DB()
 		if err != nil {
 			return err
@@ -378,9 +342,9 @@ func (a *App) setupRouter() *gin.Engine {
 	r.Use(a.csrfMiddleware())
 
 	// Setup wizard (only reachable when no users exist; server-rendered).
-	r.GET("/setup", a.showSetup)
-	r.POST("/setup", a.handleSetup)
-	r.POST("/setup/unlock", a.unlockSetup)
+	r.GET(pathSetup, a.showSetup)
+	r.POST(pathSetup, a.handleSetup)
+	r.POST(pathSetupUnlock, a.unlockSetup)
 
 	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
@@ -451,12 +415,17 @@ func (a *App) setupComplete() (bool, error) {
 		return false, err
 	}
 	if n > 0 {
-		a.setupMu.Lock()
-		a.setupDone = true
-		a.setupMu.Unlock()
+		a.markSetupDone()
 		return true, nil
 	}
 	return false, nil
+}
+
+// markSetupDone records that an account exists, for the life of the process.
+func (a *App) markSetupDone() {
+	a.setupMu.Lock()
+	a.setupDone = true
+	a.setupMu.Unlock()
 }
 
 // html renders a template, injecting the CSRF field and site name.
@@ -469,12 +438,20 @@ func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 	c.HTML(code, name, data)
 }
 
+// The paths the first-run gate lets through: the wizard itself, the database
+// probe, and (below) the built assets the wizard page links.
+const (
+	pathSetup       = "/setup"
+	pathSetupUnlock = "/setup/unlock"
+	pathHealthz     = "/healthz"
+)
+
 // setupRequired redirects everything to the setup wizard until an admin
 // account exists. This replaces the old hardcoded seed users.
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || p == "/setup/unlock" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
+		if p == pathSetup || p == pathSetupUnlock || p == pathHealthz || strings.HasPrefix(p, "/assets/") {
 			c.Next()
 			return
 		}
@@ -485,7 +462,7 @@ func (a *App) setupRequired() gin.HandlerFunc {
 			return
 		}
 		if !ready {
-			c.Redirect(http.StatusSeeOther, "/setup")
+			c.Redirect(http.StatusSeeOther, pathSetup)
 			c.Abort()
 			return
 		}
@@ -552,9 +529,7 @@ func (a *App) handleSetup(c *gin.Context) {
 		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(nil, "We couldn't create your account. Try again."))
 		return
 	}
-	a.setupMu.Lock()
-	a.setupDone = true
-	a.setupMu.Unlock()
+	a.markSetupDone()
 	log.Printf("Setup complete: site=%q timezone=%q", in.SiteName, in.Timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }

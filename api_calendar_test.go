@@ -16,7 +16,7 @@ type calendarPage struct {
 }
 
 func useCalendarTestClock(app *App, now time.Time) {
-	app.calendarClock = func() time.Time { return now.UTC() }
+	app.clock = func() time.Time { return now.UTC() }
 }
 
 func getCalendar(t *testing.T, c *apiClient, query string, want int) (calendarPage, string) {

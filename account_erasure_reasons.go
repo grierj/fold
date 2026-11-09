@@ -590,8 +590,8 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 				}
 			}
 		}
-		if a.readBeforeSeal != nil {
-			a.readBeforeSeal(tx)
+		if a.hooks.readBeforeSeal != nil {
+			a.hooks.readBeforeSeal(tx)
 		}
 		// Last statement: nothing locks after it.
 		return currentAdminIn(tx, me, pred)

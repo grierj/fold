@@ -217,8 +217,8 @@ func (a *App) acknowledgeRestoreTicket(tk *restoreTicket, err error) {
 		return
 	}
 	if err == nil {
-		if a.restoreAckPause != nil {
-			a.restoreAckPause()
+		if a.hooks.restoreAckPause != nil {
+			a.hooks.restoreAckPause()
 		}
 		a.fence.raise(tk.value)
 	}

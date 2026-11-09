@@ -509,8 +509,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			}
 			// Test seam (nil in production): the users statement above holds
 			// every participant until this transaction commits.
-			if a.conversionAfterUserLocks != nil {
-				a.conversionAfterUserLocks(tx)
+			if a.hooks.conversionAfterUserLocks != nil {
+				a.hooks.conversionAfterUserLocks(tx)
 			}
 			if err := lockHousehold(tx, person.HouseholdID); err != nil {
 				return err

@@ -113,7 +113,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
     the same id with Delete off and shows no "nothing was deleted" copy first; definitive refusals discard the id; a
     `restore_detected` or `history_unavailable` answer keeps Delete off until the users list reloads successfully
     (`lib/deleteReload.ts`).
-  - Test-only clock: `attempt_clock_e2e.go` (build tag `e2eclock`, with `e2e_hooks.go`) adds an offset to the attempt clock and an
+  - Test-only clock: `attempt_clock_e2e.go` (build tag `e2eclock`, with `e2e_hooks.go`) adds an offset to the App clock (`a.now`, the one injected clock; the other test seams are the `a.hooks` struct in `test_hooks.go`) and an
     admin-only, CSRF-protected `POST /api/v1/e2e/attempt-clock`, and only when `FOLD_E2E_CLOCK=1`. `web/e2e/run.sh` and
     `server.sh` build with the tag and set the variable; the Dockerfile, release build, `make test` and `go build` never set the
     tag, which is checked by review, not by a test.
