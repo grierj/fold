@@ -179,8 +179,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   tests. Handlers load facts and call it; never inline role checks or read `Group.LeaderID`
   (display only). Leadership is `Membership.Role = leader`; a group can have several leaders.
 - Time zones (`zones.go`): the church's zone is read with `churchZoneIn(tx)` on the caller's connection and
-  returns an error for a failed read or a stored value that is no zone; only `churchZoneOrUTC` logs and shows UTC, for
-  pages, emails, notices, push quiet hours and reminders that must still go out. A person's zone is `userZone(tz, church)`
+  returns an error for a failed read or a stored value that is no zone; decisions from a person's age (household
+  eligibility, contact rules), the avatar sweep and the age rollover use it and return the error. `churchZoneLenient`
+  logs a stored value that is no zone and uses UTC but still errors on a failed read (the daily job queue and guest
+  verification mail, which retry); `churchZoneOrUTC` also shows UTC on a failed read, for pages, emails, notices, push
+  quiet hours, reminders and ages shown on a page. A person's zone is `userZone(tz, church)`
   (`userZoneIn` reads the church only when needed); an event's is `eventZone(tzid)`. Household ages count from
   `churchClockIn(tx, now)`; a transaction takes `now` once and passes it down. All parse with `events.LoadZone`, which
   refuses "Local".

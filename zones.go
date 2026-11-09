@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -16,11 +17,17 @@ import (
 // event has the one it was written in (Event.TZID). Every zone is parsed with
 // events.LoadZone, which refuses "" and "Local".
 
+// errBadChurchZone is a stored church zone that is no zone. A failed read is a
+// different error.
+var errBadChurchZone = errors.New("the church time zone setting is not a zone")
+
 // churchZoneIn is the church's zone, read on the caller's connection so a
 // caller inside a transaction sees what the transaction sees. An unset or empty
 // setting is UTC. A failed read, or a stored value that is not a zone (the
 // setting is validated on every write, so only a damaged row), is an error: a
-// caller that can fail returns it rather than guess a day or a clock.
+// caller that can fail returns it rather than guess a day or a clock. That
+// covers every decision made from a person's age (household eligibility,
+// contact rules), the avatar sweep and the age rollover.
 func churchZoneIn(tx *gorm.DB) (*time.Location, error) {
 	v, found, err := settingIn(tx, settingTimezone)
 	if err != nil {
@@ -31,18 +38,33 @@ func churchZoneIn(tx *gorm.DB) (*time.Location, error) {
 	}
 	loc, err := events.LoadZone(v)
 	if err != nil {
-		return nil, fmt.Errorf("the church time zone setting: %w", err)
+		return nil, fmt.Errorf("%w: %w", errBadChurchZone, err)
 	}
 	return loc, nil
 }
 
-// churchZoneOrUTC is churchZoneIn for the paths where an error would drop a
-// notice or break a page that has nothing to say about the zone: emails and
-// notices, push quiet hours, reminders, the site payload and defaults for
-// calendar views. It logs the problem and shows UTC. It is the only place
-// that falls back; every other caller of churchZoneIn returns the error.
-func churchZoneOrUTC(tx *gorm.DB) *time.Location {
+// churchZoneLenient is churchZoneIn for work that must still happen when the
+// stored zone is damaged: it logs a stored value that is no zone and uses UTC.
+// A failed read is still an error, so a job retries instead of guessing. It is
+// the one place that falls back for a damaged value. The daily job queue uses
+// it directly (its jobs are keyed by date and idempotent, and privacy cleanups
+// matter more than a day boundary a few hours off), and so does the guest
+// verification mail.
+func churchZoneLenient(tx *gorm.DB) (*time.Location, error) {
 	loc, err := churchZoneIn(tx)
+	if errors.Is(err, errBadChurchZone) {
+		log.Printf("zones: using UTC: %v", err)
+		return time.UTC, nil
+	}
+	return loc, err
+}
+
+// churchZoneOrUTC is churchZoneLenient for the paths where even a failed read
+// must not drop a notice or break a page: emails and notices, push quiet hours,
+// reminders, the site payload and defaults for calendar views, and age shown on
+// a page. It logs the problem and shows UTC.
+func churchZoneOrUTC(tx *gorm.DB) *time.Location {
+	loc, err := churchZoneLenient(tx)
 	if err != nil {
 		log.Printf("zones: using UTC: %v", err)
 		return time.UTC
