@@ -305,10 +305,10 @@ const pushReminderGrace = 15 * time.Minute
 // Unix seconds; a job without one uses the row's updated_at, when the
 // sweep wrote it), it is skipped as "outside quiet hours". The hourly limit
 // never stops a reminder, though a sent one counts toward it (DEC-126).
-func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipient, u *models.User, dev models.PushSubscription, m *models.Message, plannedAt int64) error {
+func (a *App) deliverReminderPush(ctx context.Context, t pushTarget, row *models.MessageRecipient, u *models.User, m *models.Message, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
-	rec := pushReminderRecorder(*row)
-	record := func(status, reason string) error { return rec(db, status, reason, a.pushNow()) }
+	t.rec = pushReminderRecorder(*row)
+	record := func(status, reason string) error { return t.record(a, status, reason) }
 	now := a.pushNow()
 	start, ok := pushReminderStart(m.ReminderKey)
 	if !ok || m.OccurrenceID == nil {
@@ -363,19 +363,17 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 		title = *occ.TitleOverride
 	}
 	head, text := reminderPushText(title, occ.StartsAt, loc, now)
-	what := fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
+	t.what = fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
 		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + idString(occ.ID),
 	}))
 	if err != nil {
-		return record(models.RecipientFailed, pushWhyTooLarge)
+		return t.tooLarge(a)
 	}
 	// Kept by the push service until the date starts, never longer than a
 	// day: a reminder for a date already begun is no use.
 	ttl := min(max(occ.StartsAt.Sub(now), time.Minute), pushTTL)
-	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	opts := push.Options{TTL: ttl, Urgency: push.UrgencyNormal, Topic: "mr" + strconv.FormatUint(uint64(row.ID), 10)}
-	return a.pushOutcome(ctx, what, dev, a.pushClient().Send(ctx, sub, body, opts), "", rec)
+	return a.sendPush(ctx, t, body, recipientPushOptions(row.ID, ttl), "")
 }
 
 // reminderPushText is a push reminder's lock screen (DEC-124, DEC-136):

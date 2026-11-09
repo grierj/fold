@@ -123,7 +123,7 @@ func (a *App) lockScreen(n *models.Notification) (push.Notification, bool) {
 		render = a.pushRender
 	}
 	note, ok := render(n)
-	if ok && note.Title == notify.SafePushTitle && note.Body == notify.SafePushBody {
+	if ok && notify.IsSafePush(note.Title, note.Body) {
 		note.Title = a.siteName()
 	}
 	return note, ok
@@ -357,27 +357,17 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	if !ok {
 		return nil
 	}
-	if !a.pushEnabled() {
-		return a.recordPush(n, models.DeliverySuppressed, pushWhyChurchOff)
-	}
 	var u models.User
 	if err := a.DB.WithContext(ctx).Select("id", "status", "timezone").First(&u, n.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	if u.Status != models.UserActive {
-		return a.recordPush(n, models.DeliverySuppressed, pushWhyInactive)
-	}
-	on, categoryOff, err := pushConsent(a.DB.WithContext(ctx), u.ID, kind.Category)
-	if err != nil {
+	t := pushTarget{what: fmt.Sprintf("notification %d (%s)", n.ID, n.Kind), dev: dev, rec: notificationRecorder(n)}
+	if why, err := a.pushHeld(a.DB.WithContext(ctx), &u, kind.Category, kind.Required); err != nil {
 		return err
-	}
-	switch {
-	case !on:
-		return a.recordPush(n, models.DeliverySuppressed, pushWhyNotOn)
-	case categoryOff && !kind.Required:
-		return a.recordPush(n, models.DeliverySuppressed, "push turned off for "+notify.CategoryEmailName(kind.Category))
+	} else if why != "" {
+		return t.record(a, models.DeliverySuppressed, why)
 	}
 	now := a.pushNow()
 	if why := pushStale(&n, now); why != "" {
@@ -404,12 +394,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	default:
 		// The zone is resolved as emails resolve it (userZoneIn reads the
 		// church's only when the person's own doesn't load).
-		if inside, opens := a.pushQuietHours().Check(now, userZoneIn(a.DB.WithContext(ctx), u.Timezone)); !inside {
-			// At least a second out, so the app's clock running a little
-			// behind the database's can't make the job spin.
-			if soonest := now.Add(time.Second); opens.Before(soonest) {
-				opens = soonest
-			}
+		if opens, wait := a.pushOpensAt(now, userZoneIn(a.DB.WithContext(ctx), u.Timezone)); wait {
 			return jobs.Later(opens)
 		}
 		over, err := a.overHourlyLimit(ctx, pushItem{UserID: n.UserID, NotificationID: n.ID}, now)
@@ -426,12 +411,107 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	}
 	body, err := a.pushBody(&n, note)
 	if err != nil {
-		log.Printf("push: notification %d (%s) is too large to push: a bug in its push text", n.ID, n.Kind)
-		return a.recordPush(n, models.DeliveryFailed, pushWhyTooLarge)
+		return t.tooLarge(a)
 	}
-	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	res := a.pushClient().Send(ctx, sub, body, pushOptions(kind, &n, soon))
-	return a.pushOutcome(ctx, fmt.Sprintf("notification %d (%s)", n.ID, n.Kind), dev, res, sentWhy, notificationRecorder(n))
+	return a.sendPush(ctx, t, body, pushOptions(kind, &n, soon), sentWhy)
+}
+
+// pushTarget is one push to one device: what it is for in logs (never a
+// device's endpoint), the device, and the writer of the one row its outcome
+// goes on (a notification's push delivery, or an announcement's or
+// reminder's push row). The three kinds of push differ in what they check
+// and say; they share the checks below and this send.
+type pushTarget struct {
+	what string
+	dev  models.PushSubscription
+	rec  pushRecorder
+}
+
+// record writes status and reason on t's row, stamped with the push clock.
+func (t pushTarget) record(a *App, status, reason string) error {
+	return t.rec(a.DB, status, reason, a.pushNow())
+}
+
+// tooLarge records a payload past the cap: a bug in the push text, not
+// something a retry fixes.
+func (t pushTarget) tooLarge(a *App) error {
+	log.Printf("push: %s is too large to push: a bug in its push text", t.what)
+	return t.record(a, models.DeliveryFailed, pushWhyTooLarge)
+}
+
+// pushHeld runs the checks every push shares, in order: the church's
+// switch, that the account is active, and the person's consent (DEC-122):
+// push on, and category not turned off unless the kind is required. It
+// returns why the push must not go, or "" when it may.
+func (a *App) pushHeld(db *gorm.DB, u *models.User, category string, required bool) (string, error) {
+	if !a.pushEnabled() {
+		return pushWhyChurchOff, nil
+	}
+	if u.Status != models.UserActive {
+		return pushWhyInactive, nil
+	}
+	on, categoryOff, err := pushConsent(db, u.ID, category)
+	switch {
+	case err != nil:
+		return "", err
+	case !on:
+		return pushWhyNotOn, nil
+	case categoryOff && !required:
+		return pushWhyCategoryOff(category), nil
+	}
+	return "", nil
+}
+
+// pushWhyCategoryOff is the reason when the person turned the category off.
+func pushWhyCategoryOff(category string) string {
+	return "push turned off for " + notify.CategoryEmailName(category)
+}
+
+// pushOpensAt reports, when now is outside the person's window (DEC-126),
+// when it opens. The answer is at least a second out, so the app's clock
+// running a little behind the database's can't make a job spin.
+func (a *App) pushOpensAt(now time.Time, loc *time.Location) (opens time.Time, wait bool) {
+	inside, opens := a.pushQuietHours().Check(now, loc)
+	if inside {
+		return time.Time{}, false
+	}
+	if soonest := now.Add(time.Second); opens.Before(soonest) {
+		opens = soonest
+	}
+	return opens, true
+}
+
+// pushSubscription is the push client's view of a stored device.
+func pushSubscription(d models.PushSubscription) push.Subscription {
+	return push.Subscription{Endpoint: d.Endpoint, P256dh: d.P256dh, Auth: d.Auth}
+}
+
+// recipientPushOptions are the delivery headers for an announcement's or
+// reminder's row; the topic only collapses retries of that row.
+func recipientPushOptions(rowID uint, ttl time.Duration) push.Options {
+	return push.Options{TTL: ttl, Urgency: push.UrgencyNormal, Topic: "mr" + idString(rowID)}
+}
+
+// sendPush sends body to t's device and records what the push service said.
+// sentWhy is the sent row's reason ("" for an optional push).
+func (a *App) sendPush(ctx context.Context, t pushTarget, body []byte, opts push.Options, sentWhy string) error {
+	return a.pushOutcome(ctx, t, a.pushClient().Send(ctx, pushSubscription(t.dev), body, opts), sentWhy)
+}
+
+// pushDevicesLeft reports whether the person still has a device.
+func pushDevicesLeft(db *gorm.DB, userID uint) (bool, error) {
+	var left int64
+	err := db.Model(&models.PushSubscription{}).Where("user_id = ?", userID).Count(&left).Error
+	return left > 0, err
+}
+
+// markPushUsed stamps a device that took a push (at most once a day, and
+// clearing an earlier failure). It never turns a delivery into a retry.
+func (a *App) markPushUsed(id uint) {
+	if err := a.DB.Exec(`UPDATE push_subscriptions SET last_used_at = now(), failed_at = NULL
+		WHERE id = ? AND (last_used_at < now() - interval '1 day' OR failed_at IS NOT NULL)`, id).Error; err != nil {
+		log.Printf("push: device %d: marking it used: %v", id, err)
+	}
 }
 
 // pushRecorder writes a push's outcome on its one row: a notification's
@@ -457,20 +537,16 @@ func (a *App) pushBody(n *models.Notification, note push.Notification) ([]byte, 
 	return push.MarshalPayload(push.NewPayload(note))
 }
 
-// pushOutcome records what the push service said about one device;
-// sentWhy is the sent row's reason ("" for an optional push). what names
-// the item in logs ("notification 7 (group.approved)"), never a device's
-// endpoint; rec writes its row.
-func (a *App) pushOutcome(ctx context.Context, what string, dev models.PushSubscription, res push.Result, sentWhy string, rec pushRecorder) error {
-	record := func(status, reason string) error { return rec(a.DB, status, reason, a.pushNow()) }
+// pushOutcome records what the push service said about t's device;
+// sentWhy is the sent row's reason ("" for an optional push).
+func (a *App) pushOutcome(ctx context.Context, t pushTarget, res push.Result, sentWhy string) error {
+	dev, what := t.dev, t.what
+	record := func(status, reason string) error { return t.record(a, status, reason) }
 	switch res.Status {
 	case push.Accepted:
 		// It went: nothing below may turn this into a retry, which would
 		// send it again.
-		if err := a.DB.Exec(`UPDATE push_subscriptions SET last_used_at = now(), failed_at = NULL
-			WHERE id = ? AND (last_used_at < now() - interval '1 day' OR failed_at IS NOT NULL)`, dev.ID).Error; err != nil {
-			log.Printf("push: device %d: marking it used: %v", dev.ID, err)
-		}
+		a.markPushUsed(dev.ID)
 		if err := record(models.DeliverySent, sentWhy); err != nil {
 			log.Printf("push: %s: recording the delivery: %v", what, err)
 		}
@@ -481,14 +557,12 @@ func (a *App) pushOutcome(ctx context.Context, what string, dev models.PushSubsc
 			if err := tx.Delete(&models.PushSubscription{}, dev.ID).Error; err != nil {
 				return err
 			}
-			var left int64
-			if err := tx.Model(&models.PushSubscription{}).Where("user_id = ?", dev.UserID).Count(&left).Error; err != nil {
+			if left, err := pushDevicesLeft(tx, dev.UserID); err != nil {
 				return err
-			}
-			if left > 0 {
+			} else if left {
 				return nil // another device may still take it
 			}
-			return rec(tx, models.DeliverySuppressed, pushWhyGone, a.pushNow())
+			return t.rec(tx, models.DeliverySuppressed, pushWhyGone, a.pushNow())
 		})
 	case push.TooLarge:
 		log.Printf("push: %s was too large for the push service (%d): a bug in its push text", what, res.Code)
