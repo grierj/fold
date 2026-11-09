@@ -2,26 +2,14 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import { DateRooms, type DateRoomInput } from "../api/rooms";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
-import { roomName } from "../lib/place";
-import { useLoad } from "../lib/useLoad";
-import { useRoomsEnabled } from "../lib/useSite";
-import type { RoomBooking, RoomPickerItem } from "../types";
-import { Field, FormError, Input, Select, Textarea } from "./ui/Field";
+import { NO_ROOM, roomOptionLabel } from "../lib/roomLabels";
+import type { RoomBooking } from "../types";
+import { Field, FormError, Input, Select } from "./ui/Field";
 import { Button } from "./ui/Button";
-import { Skeleton } from "./ui/Skeleton";
+import { DoubleBookPrompt, useOverlapReason } from "./DoubleBookPrompt";
 import { RoomOptions } from "./RoomOptions";
+import { RoomLoadStatus, useRoomPicker } from "./useRoomPicker";
 import { AlertCircleIcon } from "./icons";
-
-const NONE = "none";
-const REASON_MAX = 500;
-
-// A room as the picker words it: "Fellowship Hall · Main (80 seats)", then what
-// a leader should know before choosing it, then why it was suggested, if it was
-// (last, so a phone that clips the option still shows the busy note).
-function optionLabel(room: RoomPickerItem, reason?: string): string {
-  const seats = room.capacity === null ? "" : ` (${room.capacity} ${room.capacity === 1 ? "seat" : "seats"})`;
-  return `${roomName(room)}${seats}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
-}
 
 // The Room control of "Edit this date" and the single-date "Edit event"
 // (M2.1b, DEC-95: beside Location, not under More options). Booking is its own
@@ -41,31 +29,20 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   const { isAdmin } = useAuth();
   const id = `${idPrefix}-room`;
   const reasonId = `${id}-reason`;
-  // A church with rooms off, or a site we can't read, sees no rooms control at all.
-  const roomsOn = useRoomsEnabled();
-  const enabled = roomsOn === true;
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // An admin's conflict answer: the booking to resend with a reason.
   const [pending, setPending] = useState<DateRoomInput | null>(null);
-  const [reason, setReason] = useState("");
-  const [reasonError, setReasonError] = useState<string | null>(null);
+  const overlap = useOverlapReason(reasonId);
   const [padOpen, setPadOpen] = useState(false);
   const [setup, setSetup] = useState("");
   const [teardown, setTeardown] = useState("");
   const [padError, setPadError] = useState<{ field: "setup" | "teardown"; text: string } | null>(null);
   const setupRef = useRef<HTMLInputElement>(null);
   const teardownRef = useRef<HTMLInputElement>(null);
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; };
-  }, []);
-
-  const list = useLoad(() => DateRooms.list(eventId, date), [eventId, date], { enabled });
-  const loading = roomsOn === null || list.loading;
-  const loadError = list.error ? errorText(list.error, "We couldn't load the rooms.") : null;
+  // A church with rooms off, or a site we can't read, sees no rooms control at all.
+  const { enabled, alive, list, loading, loadError } = useRoomPicker(() => DateRooms.list(eventId, date), [eventId, date]);
   const rooms = list.data?.rooms ?? [];
   const suggestions = list.data?.suggestions ?? null;
   const booking = list.data?.booking ?? null;
@@ -100,8 +77,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
       if (!alive.current) return;
       setBooking(res.booking);
       setPending(null);
-      setReason("");
-      setReasonError(null);
+      overlap.reset();
       setStatus(done(res.booking));
       onChanged?.();
     } catch (e) {
@@ -121,9 +97,9 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   function choose(value: string) {
     if (busy) return;
     setPending(null);
-    setReasonError(null);
+    overlap.clearError();
     if (value === "") return;
-    if (value === NONE) {
+    if (value === NO_ROOM) {
       void send({ roomId: null }, () => "Room released.");
       return;
     }
@@ -134,18 +110,8 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
 
   function bookAnyway() {
     if (!pending) return;
-    const why = reason.trim();
-    if (!why) {
-      setReasonError("Say why you are double-booking this room.");
-      document.getElementById(reasonId)?.focus();
-      return;
-    }
-    if (why.length > REASON_MAX) {
-      setReasonError(`Use ${REASON_MAX} characters or fewer.`);
-      document.getElementById(reasonId)?.focus();
-      return;
-    }
-    setReasonError(null);
+    const why = overlap.read();
+    if (why === null) return;
     const room = rooms.find((r) => r.id === pending.roomId);
     void send({ ...pending, overlapReason: why }, () => `Booked ${room?.name ?? "the room"} over another booking.`);
   }
@@ -170,7 +136,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   const waiting = booking?.pending === true;
   const rejected = booking?.status === "rejected";
   const requested = booking?.status === "requested" && !waiting;
-  const value = booking && (booking.status === "confirmed" || waiting) ? String(booking.roomId) : requested ? "" : NONE;
+  const value = booking && (booking.status === "confirmed" || waiting) ? String(booking.roomId) : requested ? "" : NO_ROOM;
   const anyBusy = rooms.some((r) => r.busy);
   const onPaddingEnter = (e: KeyboardEvent<HTMLInputElement>) => {
     // Enter here is "save the times", not "submit the editor around this field".
@@ -181,20 +147,14 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
 
   return (
     <div className="space-y-2">
-      {loading && <Skeleton kind="lines" count={1} label="Loading rooms…" />}
-      {loadError && (
-        <div className="space-y-2">
-          <FormError>{loadError}</FormError>
-          <Button variant="secondary" onClick={list.retry}>Try again</Button>
-        </div>
-      )}
+      <RoomLoadStatus loading={loading} error={loadError} onRetry={list.retry} />
       {!loading && !loadError && (
         <>
           <Field id={id} label="Room" optional hint="Saved as soon as you choose it, so you don't need to press Save. If bookings need an admin's approval, it waits for one.">
             <Select value={value} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               {requested && <option value="">Pick a room</option>}
-              <option value={NONE}>No room</option>
-              <RoomOptions rooms={rooms} suggestions={suggestions} label={optionLabel} disabled={(r) => r.busy && !isAdmin} />
+              <option value={NO_ROOM}>No room</option>
+              <RoomOptions rooms={rooms} suggestions={suggestions} label={roomOptionLabel} disabled={(r) => r.busy && !isAdmin} />
             </Select>
           </Field>
           {!isAdmin && anyBusy && (
@@ -220,15 +180,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
             )}
           </div>
           {error && <FormError>{error}</FormError>}
-          {pending && (
-            <div className="space-y-2 rounded-md border border-warning-border bg-warning-subtle p-3">
-              <p role="alert" className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />That room is in use at this time. Give a reason to book it anyway.</p>
-              <Field id={reasonId} label="Reason for double-booking" error={reasonError}>
-                <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
-              </Field>
-              <Button variant="secondary" disabled={busy} onClick={bookAnyway}>Book anyway</Button>
-            </div>
-          )}
+          {pending && <DoubleBookPrompt reasonId={reasonId} prompt={overlap} busy={busy} onBookAnyway={bookAnyway} message="That room is in use at this time. Give a reason to book it anyway." />}
           {isAdmin && booking?.status === "confirmed" && (
             <div>
               <Button variant="link" aria-expanded={padOpen} aria-controls={`${id}-padding`} onClick={() => setPadOpen((v) => !v)}>

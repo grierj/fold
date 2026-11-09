@@ -17,6 +17,7 @@ const BADGE = "/assets/brand/fold-badge-96.png";
 
 // FALLBACK is what shows when a push can't be read. Something must show:
 // Safari revokes a subscription that receives a silent push.
+/** @public tested directly: the service worker's rules. */
 export function fallback(origin: string): Shown {
   return {
     title: "Open Fold",
@@ -27,6 +28,7 @@ export function fallback(origin: string): Shown {
 // sameOrigin makes a link absolute and keeps it only if it is on the
 // worker's own origin; anything else becomes the home page, so a payload
 // can never send a tap somewhere else.
+/** @public tested directly: the service worker's rules. */
 export function sameOrigin(link: unknown, origin: string): string {
   if (typeof link !== "string" || link === "") return origin + "/";
   try {
@@ -106,6 +108,7 @@ export async function openOrFocus(
 
 // keyBytes turns the VAPID public key (base64url, from /push/config)
 // into the applicationServerKey bytes.
+/** @public tested directly: the service worker's rules. */
 export function keyBytes(base64url: string): Uint8Array<ArrayBuffer> {
   const pad = "=".repeat((4 - (base64url.length % 4)) % 4);
   const raw = atob((base64url + pad).replace(/-/g, "+").replace(/_/g, "/"));

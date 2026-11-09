@@ -1,4 +1,5 @@
 import type { EventOccurrence, RegistrationResponse, SeriesRegistrationState } from "../types";
+import { savedAnswerFromState } from "./registration";
 
 export type ActorRsvpResult = { date: string; after: SeriesRegistrationState };
 
@@ -29,14 +30,15 @@ export function applyActorRsvpResults(instance: EventOccurrence, eventId: number
   const result = actorResults.find((row) => row.date === instance.date);
   if (!result) return instance;
   const { after } = result;
-  const hasRegistration = after.status !== undefined;
+  const saved = savedAnswerFromState(after);
+  const hasRegistration = saved.status !== null;
   return {
     ...instance,
-    myRegistration: after.status ?? null,
-    myAttendanceMode: hasRegistration ? after.attendanceMode ?? "in_person" : undefined,
-    myGuestCount: hasRegistration ? after.guestCount ?? 0 : undefined,
-    myChildcareCount: hasRegistration ? after.childcareCount ?? 0 : undefined,
-    myChildcareAgesNote: hasRegistration ? after.childcareAgesNote ?? "" : undefined,
-    myWaitlistPosition: after.status === "waitlisted" ? after.waitlistPosition : undefined,
+    myRegistration: saved.status,
+    myAttendanceMode: hasRegistration ? saved.mode : undefined,
+    myGuestCount: hasRegistration ? saved.guests : undefined,
+    myChildcareCount: hasRegistration ? saved.children : undefined,
+    myChildcareAgesNote: hasRegistration ? saved.ages : undefined,
+    myWaitlistPosition: saved.status === "waitlisted" ? after.waitlistPosition : undefined,
   };
 }

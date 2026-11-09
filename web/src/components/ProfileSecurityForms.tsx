@@ -1,8 +1,9 @@
+import { NewPasswordField } from "./NewPasswordField";
 import { useState } from "react";
 import { Profile as ProfileApi } from "../api/profile";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
-import { passwordLengthProblem } from "../lib/password";
+import { passwordProblem } from "../lib/password";
 import { Button } from "./ui/Button";
 import { Field, FormError, Input, showFieldErrors } from "./ui/Field";
 import { Form } from "./ui/Form";
@@ -86,13 +87,9 @@ export function ProfilePasswordForm() {
     setPasswordError(null);
     setPasswordSaved(false);
     const form = e.currentTarget as HTMLFormElement;
-    const lengthProblem = passwordLengthProblem(newPassword);
-    if (lengthProblem === "short") {
-      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "Password must be at least 10 characters." }));
-      return;
-    }
-    if (lengthProblem === "long") {
-      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "That password is too long. Use at most 72 bytes — about 72 letters, fewer with accents or emoji." }));
+    const lengthProblem = passwordProblem(newPassword);
+    if (lengthProblem) {
+      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: lengthProblem }));
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -128,20 +125,8 @@ export function ProfilePasswordForm() {
           required
         />
       </Field>
-      <Field
-        id="new-password"
-        label="New password"
-        hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more)."
-        error={passwordFieldError?.field === "new" && passwordFieldError.message}
-      >
-        <Input
-          type="password"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          autoComplete="new-password"
-          required
-        />
-      </Field>
+      <NewPasswordField id="new-password" label="New password" value={newPassword} onChange={setNewPassword}
+        error={passwordFieldError?.field === "new" && passwordFieldError.message} />
       <Field id="confirm-password" label="Confirm new password" error={passwordFieldError?.field === "confirm" && passwordFieldError.message}>
         <Input
           type="password"

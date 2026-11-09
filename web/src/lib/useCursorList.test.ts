@@ -1,6 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { CURSOR_PAGE_SIZE, useCursorList } from "./useCursorList";
+import { useCursorList } from "./useCursorList";
+
+// The server sends 100 rows a page.
+const CURSOR_PAGE_SIZE = 100;
 
 const rows = (from: number, n: number) => Array.from({ length: n }, (_, i) => ({ id: from - i }));
 

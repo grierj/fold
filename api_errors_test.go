@@ -553,3 +553,41 @@ var oldErrorTable = []struct {
 	{400, "visibility_not_allowed", "that visibility isn't allowed on this event"},
 	{400, "wrong_password", "current password is incorrect"},
 }
+
+// fail sends an apiError's message as written, so a 5xx one must be fixed
+// English with no runtime detail. Every 5xx declaration is reviewed and listed
+// here; a new one fails until it is, and apiErrf (a message built at run time)
+// may never carry a 5xx status.
+var reviewedServerErrors = map[string]bool{
+	"attempt_busy": true, "reason_review_busy": true, "delete_outcome_unknown": true,
+	"delete_timed_out": true, "restore_detected": true, "message_test_failed": true,
+	"server_error": true,
+}
+
+func TestServerErrorsCarryNoRuntimeDetail(t *testing.T) {
+	for _, e := range declaredAPIErrors {
+		if e.Status >= 500 && !reviewedServerErrors[e.Code] {
+			t.Errorf("declared %d apiError %q (%q): review that its message carries no runtime detail, then list its code in reviewedServerErrors", e.Status, e.Code, e.Message)
+		}
+	}
+	for _, m := range runtimeStatusRe.FindAllStringSubmatch(goSources(t), -1) {
+		if m[1] == "status int" {
+			continue // the declaration itself
+		}
+		if strings.HasPrefix(m[1], "http.Status") {
+			if s, ok := serverStatusNames[m[1]]; ok && s {
+				t.Errorf("apiErrf(%s, ...): a runtime message may not be a 5xx answer; use a declared, reviewed apiError", m[1])
+			}
+			continue
+		}
+		t.Errorf("apiErrf(%s, ...): pass the status as an http.Status constant so its class can be checked", m[1])
+	}
+}
+
+var (
+	runtimeStatusRe   = regexp.MustCompile(`\bapiErrf\(([^,()]+),`)
+	serverStatusNames = map[string]bool{
+		"http.StatusInternalServerError": true, "http.StatusNotImplemented": true, "http.StatusBadGateway": true,
+		"http.StatusServiceUnavailable": true, "http.StatusGatewayTimeout": true,
+	}
+)

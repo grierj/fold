@@ -1,5 +1,7 @@
+import { people } from "./plural";
 import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
+import { registrationStatusLabel } from "./status";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
 
@@ -14,9 +16,9 @@ export interface AudienceChoice {
 }
 
 export const STATUS_CHOICES: { id: AudienceStatus; label: string }[] = [
-  { id: "going", label: "Going" },
-  { id: "waitlisted", label: "Waitlisted" },
-  { id: "maybe", label: "Maybe" },
+  { id: "going", label: registrationStatusLabel("going") },
+  { id: "waitlisted", label: registrationStatusLabel("waitlisted") },
+  { id: "maybe", label: registrationStatusLabel("maybe") },
 ];
 export const ROLE_CHOICES: { id: AudienceRole; label: string }[] = [
   { id: "member", label: "Members" },
@@ -106,8 +108,6 @@ export function audienceLabel(a: MessageAudience, options: ComposeOptions | null
     case "users": return `${a.userIds?.length ?? 0} chosen people`;
   }
 }
-
-const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 // Reasons that need a verb to read after a count ("3 have no email
 // address"). Any other reason the API sends ("turned off messages from

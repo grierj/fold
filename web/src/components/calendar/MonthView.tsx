@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { CalendarOccurrence } from "../../types";
-import { addDays, addMonths } from "../../lib/calendar";
+import { addDays, addMonths } from "../../lib/days";
 import { formatDayHeading, formatDayLong, weekdayNames } from "../../lib/when";
 import { Button } from "../ui/Button";
 import { DayButton } from "../ui/DayButton";
-import { calendarState, calendarStateLabel, DaySection, EventChip } from "./EventRow";
+import { DaySection, EventChip } from "./EventRow";
+import { calendarState, calendarStateLabel } from "../../lib/calendarState";
 
 const MAX_CHIPS = 3;
 

@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { WEEKDAYS } from "../lib/eventForm";
+import { WEEKDAYS } from "../lib/rrule";
 import { Chip } from "./ui/Chip";
 
 // The days a weekly series repeats on, as toggle chips: the same picker on
