@@ -187,6 +187,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   5xx on purpose, answered with `fail(c, ...)`, and need an `ERROR_COPY` line. Return is not release: after a client
   deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
   `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
+- Accounts (A1): capabilities live in `tokens.go` only (find, `claimAccountToken`, rotate, revoke; lock order contact gate →
+  user → token) and every rate limit in `throttle.go` (`countThrottleHit`, plus the audit-counted `inviteSendAllowed`);
+  advisory lock ids are the one block in `advisory_locks.go`. An existing account's status changes only through
+  `setAccountStatusIn` (`account_status.go`, which documents the order) and a new one starts in `newAccountStatus`. Profile
+  fields are validated by `fields.go` (trimmed, counted in characters). A pending item is decided with `decidePendingIn`.
 - Sessions (`session_state.go`): "this request's session is still current" is decided in one place,
   `sessionCurrent(fresh, session)` (a live row that `CanSignIn()` and carries both the session's
   `SessionVersion` and `LogoutVersion`), by the middleware, the actor seal and every locked recheck. A
