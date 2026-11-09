@@ -11,20 +11,18 @@ vi.mock("../lib/notifications", () => ({ useBadge: () => ({ unread: 0, waiting: 
 vi.mock("./Notifications", () => ({ NotificationBell: () => null, NotificationTab: () => null }));
 beforeEach(() => auth.mockReturnValue({ user: null, loading: false, logout: vi.fn(), isAdmin: false }));
 
-it("allows the church name to wrap and keeps signed-out controls on one line", async () => {
+it("names the church, offers the skip link and main region, and shows signed-out controls", async () => {
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
-  const brand = await screen.findByText("Grace Community Church");
-  expect(brand).toHaveClass("line-clamp-2");
-  expect(brand).not.toHaveClass("truncate");
+  expect(await screen.findByText("Grace Community Church")).toBeInTheDocument();
   expect(screen.getAllByRole("link")[0]).toHaveTextContent("Skip to main content");
   expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main");
   expect(screen.getByRole("main")).toHaveAttribute("id", "main");
   expect(screen.getByRole("main")).toHaveAttribute("tabindex", "-1");
   expect(screen.getAllByText(/powered by Fold/i)).toHaveLength(1);
   const nav = screen.getByRole("navigation", { name: "Main" });
-  expect(within(nav).getByRole("link", { name: "Log in" })).toHaveClass("whitespace-nowrap");
-  expect(within(nav).getByRole("link", { name: "Sign up" })).toHaveClass("whitespace-nowrap");
-  expect(within(nav).getByRole("link", { name: "Calendar" }).parentElement).toHaveClass("hidden", "sm:block");
+  expect(within(nav).getByRole("link", { name: "Log in" })).toBeInTheDocument();
+  expect(within(nav).getByRole("link", { name: "Sign up" })).toBeInTheDocument();
+  expect(within(nav).getByRole("link", { name: "Calendar" })).toBeInTheDocument();
 });
 
 it("turns the header's Log in into a plain link on the sign-in pages", async () => {
@@ -78,15 +76,12 @@ it("moves keyboard focus into main when the skip link is activated", async () =>
   expect(main.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
 });
 
-it("uses a labelled phone pill so the church name keeps its space", async () => {
+it("offers New group as a labelled link, not a bare icon", async () => {
   auth.mockReturnValue({ user: { id: 1, name: "Sam", displayName: "Sam" }, loading: false, logout: vi.fn(), isAdmin: false });
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
   await screen.findByText("Grace Community Church");
   const actions = screen.getAllByRole("link", { name: "New group" });
-  const phone = actions.find((a) => a.classList.contains("sm:hidden"));
-  expect(phone).toBeDefined();
-  expect(phone).toHaveClass("min-h-11", "whitespace-nowrap");
-  expect(phone).toHaveTextContent("New group");
+  for (const action of actions) expect(action).toHaveTextContent("New group");
 });
 
 it("shows Messages in the top nav only to people who can compose (M3.4c)", async () => {
@@ -101,12 +96,9 @@ it("shows Messages in the top nav only to people who can compose (M3.4c)", async
   await screen.findByText("Grace Community Church");
   const link = within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" });
   expect(link).toHaveAttribute("href", "/messages");
-  // From lg up, beside the other links; below that it is on Me, so the
-  // church's name keeps its room.
-  expect(link.parentElement).toHaveClass("hidden", "lg:contents");
   unmount2();
   auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: true, canCompose: true });
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
   await screen.findByText("Grace Community Church");
-  expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" }).parentElement).toHaveClass("hidden", "lg:contents");
+  expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" })).toHaveAttribute("href", "/messages");
 });

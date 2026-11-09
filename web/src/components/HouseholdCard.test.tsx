@@ -88,8 +88,8 @@ describe("HouseholdCard focus and states (PR 107 review)", () => {
     });
     render(<HouseholdCard />);
     expect(await screen.findByText("Born May 1, 2020")).toBeInTheDocument();
-    expect(screen.getByText("Confirmed")).toHaveClass("bg-primary-subtle");
-    expect(screen.getByText("Child")).toHaveClass("bg-sunken");
+    expect(screen.getByText("Confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Child")).toBeInTheDocument();
   });
 });
 

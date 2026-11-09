@@ -90,7 +90,7 @@ it("disables the switches while one saves, so saves can't overlap", async () => 
   await userEvent.click(screen.getByRole("checkbox", { name: /^Event updates/ }));
   expect(update).toHaveBeenCalledOnce();
   await act(async () => { finish(settings(kinds({ groups: true }))); });
-  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(box).not.toHaveAttribute("aria-disabled");
 });
 

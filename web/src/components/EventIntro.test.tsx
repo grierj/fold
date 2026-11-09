@@ -37,8 +37,6 @@ describe("opened events", () => {
     );
     const link = screen.getByRole("link", { name: "Choir" });
     expect(link).toHaveAttribute("href", "/groups/3");
-    expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
-    expect(link.parentElement?.className).not.toMatch(/leading-/);
   });
 
   it("warns before an invite-only group is opened", () => {

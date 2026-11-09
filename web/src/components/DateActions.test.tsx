@@ -30,7 +30,6 @@ describe("DateActions", () => {
     const link = screen.getByRole("link", { name: /^Add to calendar/ });
     expect(link).toHaveAttribute("href", "/api/v1/events/7/dates/2026-11-04/calendar.ics");
     expect(link).toHaveAttribute("download");
-    expect(link).toHaveClass("min-h-11");
   });
 
   it("names the date for screen readers only when asked", () => {

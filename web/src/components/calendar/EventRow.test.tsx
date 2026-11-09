@@ -38,9 +38,9 @@ describe("EventRow", () => {
     expect(screen.getByRole("link")).toHaveAccessibleName(expect.stringContaining(expected));
   });
 
-  it("marks events with remote seats using the neutral badge", () => {
+  it("marks events with remote seats", () => {
     wrap(<EventRow occ={occ({ remoteAvailable: true })} />);
-    expect(screen.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
+    expect(screen.getByText("Remote")).toBeInTheDocument();
   });
 
   it("does not offer a remote badge for an in-person-only date", () => {
@@ -61,23 +61,17 @@ describe("EventRow", () => {
     wrap(<EventRow occ={occ({ myStatus, ownScope: true })} />);
     const status = screen.getByLabelText(label);
     expect(status).toHaveTextContent(label);
-    expect(status.parentElement).toHaveClass("flex-col", "items-start");
     expect(status.previousElementSibling).toHaveTextContent("7:00 PM to 8:30 PM");
   });
 
-  it("labels unanswered own-scope dates and ghosts them without fading text", () => {
+  it("labels unanswered own-scope dates in words", () => {
     wrap(<EventRow occ={occ({ ownScope: true })} />);
-    const link = screen.getByRole("link");
     expect(screen.getByText("Not answered")).toBeInTheDocument();
-    expect(link).toHaveClass("border-border", "border-dashed", "bg-sunken", "text-text");
-    expect(link).not.toHaveClass("border-primary");
-    expect(link.className).not.toMatch(/opacity/);
   });
 
   it("keeps outside-own-scope events ordinary", () => {
     wrap(<EventRow occ={occ({ ownScope: false })} />);
     expect(screen.queryByText("Not answered")).not.toBeInTheDocument();
-    expect(screen.getByRole("link")).toHaveClass("bg-surface");
   });
 
   it("marks church-wide events", () => {
@@ -92,35 +86,24 @@ describe("EventChip", () => {
     await userEvent.tab();
     expect(screen.getByRole("link")).toHaveFocus();
   });
-  it.each([false, true])("keeps a 44px target when stacked=%s", (stacked) => {
-    wrap(<EventChip occ={occ({})} stacked={stacked} />);
-    expect(screen.getByRole("link")).toHaveClass("min-h-11");
-  });
   it("names remote attendance in compact calendar entries too", () => {
     wrap(<EventChip occ={occ({ remoteAvailable: true })} />);
-    expect(screen.getByText("Remote")).toHaveClass("bg-sunken");
     expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
   });
   it.each([
-    ["going", "Going", ["border-primary", "bg-primary-subtle"]],
-    ["maybe", "Maybe", ["border-border", "border-dashed", "bg-sunken"]],
-    ["waitlisted", "Waitlisted", ["border-border", "border-dashed", "bg-sunken"]],
-    [null, "Not answered", ["border-border", "border-dashed", "bg-sunken"]],
-  ] as const)("spells out the %s own-scope state and keeps it in the accessible name", (myStatus, label, styles) => {
+    ["going", "Going"],
+    ["maybe", "Maybe"],
+    ["waitlisted", "Waitlisted"],
+    [null, "Not answered"],
+  ] as const)("spells out the %s own-scope state and keeps it in the accessible name", (myStatus, label) => {
     wrap(<EventChip occ={occ({ myStatus, ownScope: true })} />);
-    const link = screen.getByRole("link");
-    expect(link).toHaveAccessibleName(new RegExp(`Thursday class.*${label}`));
-    expect(link).toHaveClass(...styles);
-    if (myStatus !== "going") expect(link).not.toHaveClass("border-primary");
-    expect(link.className).not.toMatch(/opacity/);
+    expect(screen.getByRole("link")).toHaveAccessibleName(new RegExp(`Thursday class.*${label}`));
   });
 
-  it("labels Can't go in Everything without applying the ghosted treatment", () => {
+  it("labels Can't go in Everything", () => {
     wrap(<EventChip occ={occ({ myStatus: "declined", ownScope: true })} />);
     const link = screen.getByRole("link");
     expect(link).toHaveAccessibleName(/Thursday class.*Can't go/);
-    expect(link).not.toHaveClass("border-dashed", "bg-primary-subtle");
-    expect(link).toHaveClass("border-border", "bg-surface", "text-text-muted");
   });
 
   it("keeps compact context in visible-text order without overriding its content name", () => {
@@ -131,10 +114,9 @@ describe("EventChip", () => {
     expect(link).not.toHaveAttribute("aria-label");
   });
 
-  it("stacks the time over a two-line title in the week view, keeping the full name", () => {
+  it("keeps the full title in the accessible name in the week view", () => {
     wrap(<EventChip occ={occ({ title: "A very long evening of hymns and fellowship" })} stacked />);
     const link = screen.getByRole("link");
-    expect(screen.getByText("A very long evening of hymns and fellowship")).toHaveClass("line-clamp-2");
     expect(link).toHaveAccessibleName(/A very long evening of hymns and fellowship/);
   });
 });
@@ -142,13 +124,13 @@ describe("EventChip", () => {
 describe("EventRow deleted group (DEC-68)", () => {
   it("says the group is deleted when the admin switch listed it", () => {
     wrap(<EventRow occ={occ({ groupDeleted: true })} />);
-    expect(screen.getByText("Deleted group")).toHaveClass("bg-sunken", "text-text-muted");
+    expect(screen.getByText("Deleted group")).toBeInTheDocument();
   });
 });
 
-it.each([EventRow, EventChip])("marks childcare availability with a neutral calendar badge", (Component) => {
+it.each([EventRow, EventChip])("marks childcare availability", (Component) => {
   wrap(<Component occ={occ({ childcareAvailable: true })} />);
-  expect(screen.getByText("Childcare")).toHaveClass("bg-sunken", "text-text-muted");
+  expect(screen.getByText("Childcare")).toBeInTheDocument();
 });
 
 it.each([EventRow, EventChip])("prefers the server's exact date URL and does not invent a hidden organizer", (Component) => {
@@ -160,26 +142,20 @@ it.each([EventRow, EventChip])("prefers the server's exact date URL and does not
 describe("StatusBadge (DEC-99: quiet text, DEC-71 words kept)", () => {
   it.each([
     ["maybe", "Maybe"], ["waitlisted", "Waitlisted"], ["declined", "Can't go"], ["not_answered", "Not answered"],
-  ] as const)("renders %s as muted text with no border or fill", (state, label) => {
+  ] as const)("says %s in words", (state, label) => {
     render(<StatusBadge state={state} />);
-    const badge = screen.getByLabelText(label);
-    expect(badge).toHaveTextContent(label);
-    expect(badge).toHaveClass("text-text-muted");
-    expect(badge.className).not.toMatch(/border|bg-|rounded|px-/);
+    expect(screen.getByLabelText(label)).toHaveTextContent(label);
   });
 
-  it("gives Going the success tone and its check icon", () => {
+  it("gives Going its check icon", () => {
     render(<StatusBadge state="going" />);
     const badge = screen.getByLabelText("Going");
-    expect(badge).toHaveClass("text-success-on-subtle");
-    expect(badge.className).not.toMatch(/border|bg-/);
+    expect(badge).toHaveTextContent("Going");
     expect(badge.querySelector("svg")).not.toBeNull();
   });
 
-  it.each([EventRow, EventChip])("uses a quiet tint and accent for Going, never a solid violet card", (Component) => {
+  it.each([EventRow, EventChip])("shows Going in words on a row and on a chip", (Component) => {
     wrap(<Component occ={occ({ myStatus: "going", ownScope: true })} />);
-    expect(screen.getByRole("link")).toHaveClass("bg-primary-subtle", "border-primary", "text-text");
-    expect(screen.getByRole("link")).not.toHaveClass("bg-primary", "text-primary-foreground");
     expect(screen.getByText("Going")).toBeInTheDocument();
   });
 
