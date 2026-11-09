@@ -1,27 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { passwordLengthProblem, passwordProblem } from "./password";
+import { passwordProblem } from "./password";
 
-describe("passwordLengthProblem", () => {
+const SHORT = "Password must be at least 10 characters.";
+const LONG = /too long/;
+
+describe("passwordProblem", () => {
   it("counts characters for the minimum, as the server does", () => {
-    expect(passwordLengthProblem("a".repeat(9))).toBe("short");
-    expect(passwordLengthProblem("a".repeat(10))).toBeNull();
-    expect(passwordLengthProblem("😀".repeat(9))).toBe("short");
-    expect(passwordLengthProblem("😀".repeat(10))).toBeNull();
-    expect(passwordLengthProblem("é".repeat(10))).toBeNull();
+    expect(passwordProblem("a".repeat(9))).toBe(SHORT);
+    expect(passwordProblem("a".repeat(10))).toBeNull();
+    expect(passwordProblem("😀".repeat(9))).toBe(SHORT);
+    expect(passwordProblem("😀".repeat(10))).toBeNull();
+    expect(passwordProblem("é".repeat(10))).toBeNull();
   });
 
   it("counts bytes for the maximum", () => {
-    expect(passwordLengthProblem("a".repeat(72))).toBeNull();
-    expect(passwordLengthProblem("a".repeat(73))).toBe("long");
-    expect(passwordLengthProblem("😀".repeat(18))).toBeNull();
-    expect(passwordLengthProblem("😀".repeat(19))).toBe("long");
-  });
-});
-
-describe("passwordProblem", () => {
-  it("says what is wrong in a sentence, or nothing", () => {
-    expect(passwordProblem("short")).toBe("Password must be at least 10 characters.");
-    expect(passwordProblem("a".repeat(73))).toMatch(/too long/);
-    expect(passwordProblem("a long enough one")).toBeNull();
+    expect(passwordProblem("a".repeat(72))).toBeNull();
+    expect(passwordProblem("a".repeat(73))).toMatch(LONG);
+    expect(passwordProblem("😀".repeat(18))).toBeNull();
+    expect(passwordProblem("😀".repeat(19))).toMatch(LONG);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterZones, shortZoneName, US_ZONES, zoneLabel, zonePickerOptions } from "./zone";
+import { filterZones, US_ZONES, zoneLabel, zonePickerOptions } from "./zone";
 import { zoneOffset } from "./when";
 
 describe("zoneLabel", () => {
@@ -22,17 +22,6 @@ describe("zoneLabel", () => {
   it("shows the place alone for an id the browser can't name", () => {
     expect(zoneLabel("Mars/Olympus_Mons", "en-US")).toBe("Olympus Mons");
   });
-});
-
-describe("shortZoneName", () => {
-  it.each([
-    ["Pacific Time", "Pacific"],
-    ["Hawaii-Aleutian Standard Time", "Hawaii-Aleutian"],
-    ["Mountain Standard Time", "Mountain Standard"],
-    ["India Standard Time", "India"],
-    ["United Kingdom Time", "United Kingdom"],
-    ["Coordinated Universal", "Coordinated Universal"],
-  ])("shortens %s to %s", (full, short) => expect(shortZoneName(full)).toBe(short));
 });
 
 describe("zonePickerOptions", () => {

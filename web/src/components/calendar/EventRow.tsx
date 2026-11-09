@@ -10,6 +10,7 @@ import { ChildcareBadge } from "../ChildcareBadge";
 // One occurrence as a full-width link (Agenda, Week on phones, day panel).
 // Own-scope state is communicated by border/fill and by an explicit label;
 // text is never faded with opacity.
+/** @public tested directly; the day sections render it. */
 export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   const state = calendarState(occ);
   const stateClass = state === "going"

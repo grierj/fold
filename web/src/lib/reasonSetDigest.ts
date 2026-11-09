@@ -20,9 +20,11 @@ const HEADER = PREFIX.length + 1 + 8;
 const ITEM = 8 + 32;
 
 /** Above this many preimage bytes the digest is streamed in chunks (a memory choice, not a cap). */
+/** @public test seam for the digest vectors. */
 export const WEBCRYPTO_PREIMAGE_LIMIT = 16 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
 /** Whole records in one chunk: a record is never split, so a chunk is a little under CHUNK_BYTES (1 MiB / 40 is 26,214.4). */
+/** @public test seam for the digest vectors. */
 export const ITEMS_PER_CHUNK = Math.floor(CHUNK_BYTES / ITEM);
 
 export class DigestUnavailableError extends Error {
@@ -39,6 +41,7 @@ export class DigestUnavailableError extends Error {
  * whole 40-byte records (a whole number, never a fraction of one). Their
  * concatenation is digestPreimage.
  */
+/** @public test seam for the digest vectors. */
 export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, count: number, itemsPerChunk = ITEMS_PER_CHUNK): Generator<Uint8Array<ArrayBuffer>> {
   const per = Math.max(1, Math.floor(itemsPerChunk));
   const head = new Uint8Array(HEADER);
@@ -59,6 +62,7 @@ export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, coun
 }
 
 /** The whole preimage in one array (35 + 40n bytes). */
+/** @public test seam for the digest vectors. */
 export function digestPreimage(ids: readonly string[], hashes: Uint8Array, count: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(HEADER + count * ITEM);
   let at = 0;
@@ -82,6 +86,7 @@ const K = new Uint32Array([
 const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
 
 /** An incremental SHA-256 (FIPS 180-4). Only update() and digest() are public. */
+/** @public test seam for the digest vectors. */
 export class Sha256 {
   private readonly h = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
   private readonly block = new Uint8Array(64);
@@ -173,6 +178,7 @@ const KNOWN: ReadonlyArray<readonly [string, string]> = [
   ["abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"],
 ];
 
+/** @public test seam: which digest path ran. */
 export type DigestPath = "webcrypto" | "fallback";
 
 type Subtle = { digest(algorithm: string, data: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> };
@@ -201,6 +207,7 @@ let verdict: Promise<{ subtle: Subtle | null; fallback: boolean }> | null = null
 let lastPath: DigestPath | null = null;
 
 /** Which implementation produced the last digest; the QC harness records it. */
+/** @public test seam: which digest path ran. */
 export const lastDigestPath = (): DigestPath | null => lastPath;
 
 function chosen() {
@@ -212,6 +219,7 @@ function chosen() {
 }
 
 /** Test seam: forget the cached self-test (after a test swaps crypto.subtle). */
+/** @public test seam: forgets the chosen digest path. */
 export function resetDigestChoice(): void {
   verdict = null;
   lastPath = null;
@@ -224,6 +232,7 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
  * implementation passes its self-test (permanent for this page); any other
  * exception is transient.
  */
+/** @public test seam for the digest vectors. */
 export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, count: number): Promise<string> {
   const { subtle, fallback } = await chosen();
   if (subtle && HEADER + count * ITEM <= WEBCRYPTO_PREIMAGE_LIMIT) {
@@ -245,6 +254,7 @@ export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, c
 // --- the choice vector -------------------------------------------------------
 
 /** Packs two-bit codes (1 keep, 2 remove) for count items as standard padded base64. */
+/** @public test seam for the digest vectors. */
 export function encodeChoices(codes: Uint8Array, count: number): string {
   const packed = new Uint8Array(Math.ceil(count / 4));
   for (let i = 0; i < count; i++) packed[i >> 2] |= codes[i] << ((i & 3) * 2);

@@ -13,7 +13,7 @@ import { Choices, Radio } from "./ui/Field";
 
 export type ReasonChoice = "keep" | "remove";
 
-export const CHANGED_COPY = "Changed since you looked: choose again";
+const CHANGED_COPY = "Changed since you looked: choose again";
 const NOT_CHOSEN_COPY = "Not chosen yet";
 const PARTY_COPY = "You're part of this request";
 const OCCURRENCE_ADD_NOTE = "This reason wasn't shown to the people who decided this request.";

@@ -67,7 +67,7 @@ export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: 
   return badge;
 }
 
-export function badgeLabel(b: Badge): string {
+function badgeLabel(b: Badge): string {
   const parts = [];
   if (b.unread > 0) parts.push(`${b.unread} unread`);
   if (b.waiting > 0) parts.push(`${b.waiting} waiting on you`);

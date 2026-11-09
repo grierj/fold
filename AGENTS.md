@@ -439,7 +439,7 @@ go build ./...
 go vet ./...
 make lint-go                       # go vet + gofmt + staticcheck v0.8.2
 (cd web && npx tsc --noEmit)       # types, incl. fixture objects missing a field
-(cd web && npx knip)               # web lint (make lint-web); web/ has no eslint config
+(cd web && npx knip && npx knip --production)  # web lint (make lint-web; the second pass counts production code only, so test-only exports need a `@public` reason); web/ has no eslint config
 ```
 
 CI runs on pull requests and on pushes to `master` only, so a branch push

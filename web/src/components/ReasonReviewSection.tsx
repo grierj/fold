@@ -12,7 +12,7 @@ import { ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
 // however long the review is. Nothing is preselected and there is no bulk
 // control; moving between display pages never chooses anything.
 
-export const DISPLAY_PAGE = 50;
+const DISPLAY_PAGE = 50;
 
 const numbers = new Intl.NumberFormat("en-US");
 const fmt = (n: number) => numbers.format(n);

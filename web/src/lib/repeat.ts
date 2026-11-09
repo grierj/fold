@@ -49,6 +49,7 @@ function weekdayShift(dates: RepeatDate[], zone: string): number {
 
 // "Every Wednesday", "First Saturday of each month", … or "Repeats". Null for
 // a rule that is empty (a single date).
+/** @public tested directly: the wording table. */
 export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserTimeZone()): string | null {
   if (!rule.trim()) return null;
   const parts = parseRule(rule);
