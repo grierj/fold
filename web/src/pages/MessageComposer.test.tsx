@@ -370,20 +370,6 @@ describe("MessageComposerPage", () => {
     open("/messages/77");
     expect(await screen.findByRole("heading", { name: "This message isn't here" })).toBeInTheDocument();
   });
-
-  it("shows the text tab only when texting is set up", async () => {
-    vi.mocked(Messages.options).mockResolvedValue(composeOptions({ smsEnabled: true }));
-    open("/messages/5");
-    await editorReady();
-    await act(async () => { fireEvent.click(screen.getByRole("tab", { name: "Text" })); });
-    expect(screen.getByRole("textbox", { name: "Text message" })).toBeInTheDocument();
-  });
-
-  it("has no text tab today", async () => {
-    open("/messages/5");
-    await editorReady();
-    expect(screen.queryByRole("tab", { name: "Text" })).toBeNull();
-  });
 });
 
 // After it goes out (M3.5b): the counts in words, who got it, a failed

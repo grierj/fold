@@ -2,6 +2,5 @@
 ^internal/notify/kinds\.go:[0-9]+:[0-9]+: unreachable func: Kinds$
 ^models/models\.go:[0-9]+:[0-9]+: unreachable func: All$
 ^models/models\.go:[0-9]+:[0-9]+: unreachable func: EmailAddressOptOut\.TableName$
-^internal/content/sms\.go:[0-9]+:[0-9]+: unreachable func: (CountSMS|FramedSMS|DonationAsk)$
 ^internal/testdb/pgproxy\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9_.$]*$
 ^internal/reasonscan/scan\.go:[0-9]+:[0-9]+: unreachable func: Batches$

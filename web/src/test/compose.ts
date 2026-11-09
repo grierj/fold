@@ -9,7 +9,7 @@ export const dates: ComposeDate[] = [
 export const bookNight: ComposeEvent = { id: 3, title: "Book night", groupName: "Book club", churchWide: false, dates };
 
 export function composeOptions(over: Partial<ComposeOptions> = {}): ComposeOptions {
-  return { canCompose: true, canMessageEveryone: false, smsEnabled: false, pushEnabled: true, groups: [bookClub], events: [bookNight], ...over };
+  return { canCompose: true, canMessageEveryone: false, pushEnabled: true, groups: [bookClub], events: [bookNight], ...over };
 }
 
 export function summary(over: Partial<AudienceSummary> = {}): AudienceSummary {

@@ -1328,7 +1328,7 @@ Admins only (403 otherwise). The list holds background jobs that ran out of atte
 ### Messages: the composer (M3.4a)
 
 ```
-GET  /api/v1/messages/compose[?event=<id>] → 200 {canCompose, canMessageEveryone, smsEnabled, pushEnabled, groups: [{id, name}], events: [{id, title, groupName?, churchWide, dates: [{occurrenceId, date, startsAt}]}]}
+GET  /api/v1/messages/compose[?event=<id>] → 200 {canCompose, canMessageEveryone, pushEnabled, groups: [{id, name}], events: [{id, title, groupName?, churchWide, dates: [{occurrenceId, date, startsAt}]}]}
 POST /api/v1/messages/audience-preview   → 200 {summary} | 400 | 403 | 404   body: {audience}
 GET  /api/v1/messages[?category=announcement|reminder] → 200 {messages: [message]} | 400   (yours; an admin's has everyone's; M3.6b)
 POST /api/v1/messages                    → 201 {message} | 400 | 403 | 404   body: {channel?, subject, bodyHtml, audience, pushAlert?}
@@ -1338,7 +1338,7 @@ POST /api/v1/messages/:id/schedule       → 200 {message, summary} | 400 | 409 
 POST /api/v1/messages/:id/cancel         → 200 {message} | 409               (audited message.cancelled)
 ```
 
-`smsEnabled` shows the composer's text tab; it is always false until texting can be set up (M3.7, DEC-117). `?event=<id>` narrows the answer to that one event by the same rules (no groups; no events when the viewer may not write to it; a malformed id is 400), for the date page's "Email people going". `GET /auth/me` and `POST /auth/login` also answer `canCompose` (true for admins without reading anything), so the nav offers Messages only to people who can write (M3.4c).
+`?event=<id>` narrows the answer to that one event by the same rules (no groups; no events when the viewer may not write to it; a malformed id is 400), for the date page's "Email people going". `GET /auth/me` and `POST /auth/login` also answer `canCompose` (true for admins without reading anything), so the nav offers Messages only to people who can write (M3.4c).
 
 Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): admins to anyone, a group's leaders to their own active group and its events' registrants, a church-wide event's hosts only to that event's registrants (`policy.CanMessageAudience`, checked on every save and again at send time in M3.5). `compose` lists only what the author may target; any other target is 403 `message_not_yours`, and so is one that no longer exists, except that an admin gets 404 `message_audience_gone` (so ids can't be probed). The stored audience keeps only the fields its type uses. `audience` is a PLAN 7.2 shape: `occurrence` (one date), `event_series` (an event's upcoming dates), `events` (up to 50 events' upcoming dates), each with registrant `statuses` (`going`, `maybe`, `waitlisted`; default Going and waitlisted); `group` with `roles` (default members and leaders); `all_members` and `users` (admins only). A household person's registration reaches the account holder who registered them (DEC-8).
 
@@ -1363,8 +1363,6 @@ A preview or test first checks again that the viewer may write to the audience (
 An effective opt-out for this kind of email answers 400 `message_test_opted_out` before counting a try or writing an audit row. A stale or erased session answers 401. The locked check honors choices committed before its statement starts. At commit, the user lock is released before the provider call. An opt-out, erasure or address change committed after that commit and before the provider call returns may not stop this one test send. The next request rechecks.
 
 Every email adapter now sends an HTML part when there is one: SMTP as `multipart/alternative` with quoted-printable text and HTML parts, Postmark as `HtmlBody`, devoutbox in `mail_outboxes.html_body` (defined in `migrations/00001_baseline.sql`).
-
-The SMS counter (`internal/content/sms.go`, `web/src/lib/sms.ts`, one table of cases in `web/src/lib/sms-cases.json`) counts GSM-7 septets (160 per text, 153 per part, extended characters count 2) or UCS-2 UTF-16 units (70, 67 per part), never splitting an escape or surrogate pair, after adding the `<church>: ` prefix and the `Reply STOP to opt out` footer. The donation-ask check (DEC-3) looks for give, donate, tithe and offering words and for links to giving pages (a giving word in the address, or a giving service such as Tithe.ly, Pushpay or Givelify). Both wait for the SMS tab (DEC-117).
 
 #### Sending (M3.5a)
 
