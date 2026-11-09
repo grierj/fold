@@ -103,10 +103,13 @@ func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink,
 
 // eligibleRegistration reads current eligibility without taking earlier-order
 // holder/household locks after the caller has locked an occurrence.
-func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) bool {
+func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) (bool, error) {
 	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
-	f.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
-	return f.eligible(a, tx, r, ev, map[uint]bool{}, now)
+	var err error
+	if f.today, err = churchClockIn(tx, now); err != nil {
+		return false, err
+	}
+	return f.eligible(a, tx, r, ev, map[uint]bool{}, now), nil
 }
 
 // eligible is whether r still stands; now is the caller's one reading of the clock.
@@ -179,12 +182,26 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			return err
 		}
 		old := r
-		if deleting || !a.eligibleRegistration(tx, r, &ev, now) {
+		eligible := false
+		if !deleting {
+			var err error
+			if eligible, err = a.eligibleRegistration(tx, r, &ev, now); err != nil {
+				return err
+			}
+		}
+		if !eligible {
 			// Changing away from child clears care without cancelling an otherwise
 			// eligible confirmed teen or verified adult's seat.
 			candidate := r
 			candidate.ChildcareRequested = false
-			if !deleting && a.eligibleRegistration(tx, candidate, &ev, now) {
+			careOK := false
+			if !deleting {
+				var err error
+				if careOK, err = a.eligibleRegistration(tx, candidate, &ev, now); err != nil {
+					return err
+				}
+			}
+			if careOK {
 				r.ChildcareRequested = false
 			} else {
 				r.Status = models.RegCancelled
@@ -598,7 +615,8 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		if a.DB.First(&holder, subject.holderID).Error != nil || holder.Status != models.UserActive {
 			continue
 		}
-		if !a.eligibleRegistration(a.DB, r, &o.Event, now) {
+		// A page that cannot read the church zone leaves the row out.
+		if ok, err := a.eligibleRegistration(a.DB, r, &o.Event, now); err != nil || !ok {
 			continue
 		}
 		regs = append(regs, r)

@@ -1,12 +1,12 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { People } from "../../api";
+import { People } from "../../api/people";
 import type { PeopleSearchResponse, PersonSearchResult } from "../../types";
 import { Field } from "./Field";
 import { PeoplePicker } from "./PeoplePicker";
 
-vi.mock("../../api", async (actual) => ({ ...(await actual<typeof import("../../api")>()), People: { search: vi.fn() } }));
+vi.mock("../../api/people", async (actual) => ({ ...(await actual<typeof import("../../api/people")>()), People: { search: vi.fn() } }));
 const pat: PersonSearchResult = { selectionId: "opaque-pat", displayName: "Pat Lee", teen: false, sharedGroups: ["Choir"], otherGroups: ["Walking"] };
 function Harness({ eligible = true }: { eligible?: boolean }) {
   const [value, setValue] = useState<PersonSearchResult | null>(null);

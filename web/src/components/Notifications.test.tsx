@@ -13,9 +13,12 @@ const api = vi.hoisted(() => ({
   read: vi.fn(),
   readAll: vi.fn(),
   archive: vi.fn(),
-  approveGroup: vi.fn(),
 }));
-vi.mock("../api", () => {
+const approve = vi.hoisted(() => vi.fn());
+vi.mock("../api/notifications", () => ({ Notifications: api }));
+vi.mock("../api/admin", () => ({ Admin: { approve } }));
+vi.mock("../api/accountRequests", () => ({ AdminAccountRequests: { approve } }));
+vi.mock("../api/core", () => {
   class ApiError extends Error {
     status: number;
     data: Record<string, unknown>;
@@ -25,7 +28,7 @@ vi.mock("../api", () => {
       this.data = data;
     }
   }
-  return { Notifications: api, ApiError };
+  return { ApiError };
 });
 
 const item = (over: Partial<Notification>): Notification => ({
@@ -144,7 +147,7 @@ describe("NotificationBell", () => {
   });
 
   it("lists waiting items first, approves inline, and keeps nothing in storage", async () => {
-    api.approveGroup.mockImplementation(async () => {
+    approve.mockImplementation(async () => {
       // The server now has it resolved by me; the refetch shows that.
       const done = { ...task, waiting: false, actions: [], resolution: { outcome: "approved", by: "Me", byMe: true, at: "" } };
       api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [done, item({})], next: "" });
@@ -154,7 +157,7 @@ describe("NotificationBell", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
     expect(await screen.findByText("Waiting on you", { selector: "h3" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(api.approveGroup).toHaveBeenCalledWith(9, 2);
+    expect(approve).toHaveBeenCalledWith(9, undefined, 2);
     expect(await screen.findByText("You approved this")).toBeInTheDocument();
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
@@ -171,8 +174,8 @@ describe("NotificationBell", () => {
   });
 
   it("shows who won when an inline approve loses the race", async () => {
-    const { ApiError } = await import("../api");
-    api.approveGroup.mockImplementation(async () => {
+    const { ApiError } = await import("../api/core");
+    approve.mockImplementation(async () => {
       const done = { ...task, waiting: false, actions: [], resolution: { outcome: "approved", by: "Kim", byMe: false, at: "" } };
       api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [done], next: "" });
       throw new ApiError(409, "handled", { resolvedBy: "Kim", resolution: "approved" });

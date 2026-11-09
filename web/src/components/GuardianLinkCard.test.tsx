@@ -3,12 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const confirmLink = vi.fn();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  AdminGuardianLinks: { list: vi.fn(), confirm: (id: number, n: string) => confirmLink(id, n), reject: vi.fn() },
-}));
+vi.mock("../api/guardians", async (orig) => ({ ...(await orig<typeof import("../api/guardians")>()), AdminGuardianLinks: { list: vi.fn(), confirm: (id: number, n: string) => confirmLink(id, n), reject: vi.fn() } }));
 
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { GuardianLinkCard } from "./GuardianLinkCard";
 
 const link = {

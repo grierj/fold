@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Events } from "../api";
+import { Events } from "../api/events";
 import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse, SeriesRegistrationState } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, focusFirstInvalid, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";

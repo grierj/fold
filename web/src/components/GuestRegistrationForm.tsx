@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useState } from "react";
-import { Guests } from "../api";
+import { Guests } from "../api/events";
 import type { EventOccurrence } from "../types";
 import { browserTimeZone } from "../lib/when";
 import { errorText } from "../lib/errors";

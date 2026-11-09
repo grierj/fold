@@ -336,7 +336,7 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	if a.requestFailed(c, id, err) {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"confirmed": confirmed, "overlapped": overlapped, "lost": lost})
+	c.JSON(http.StatusOK, roomRequestConfirmationJSON{Confirmed: confirmed, Overlapped: overlapped, Lost: lost})
 }
 
 // apiRejectRoomRequest declines a request: its dates hold nothing, show as

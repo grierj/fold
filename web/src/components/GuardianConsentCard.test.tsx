@@ -2,15 +2,15 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { ApiError } from "../api";
-import { Contacts } from "../contact-api";
+import { ApiError } from "../api/core";
+import { Contacts } from "../api/contacts";
 import type { ContactGrant } from "../types";
 import { GuardianConsentCard } from "./GuardianConsentCard";
-import { Guardians } from "../guardian-api";
+import { Guardians } from "../api/guardians";
 
-vi.mock("../guardian-api", () => ({ Guardians: { teens: vi.fn(), claim: vi.fn(), change: vi.fn(), email: vi.fn() } }));
+vi.mock("../api/guardians", () => ({ Guardians: { teens: vi.fn(), claim: vi.fn(), change: vi.fn(), email: vi.fn() } }));
 
-vi.mock("../contact-api", () => ({ Contacts: { grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() } }));
+vi.mock("../api/contacts", () => ({ Contacts: { grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() } }));
 const teen = { linkId: 1, teenUserId: 2, teenName: "Sam Teen", accountConsent: true, smsConsent: false, photosConsent: false };
 const grant: ContactGrant = { id: 1, requestId: 1, requesterId: 10, requesterName: "Lee", subjectUserId: 2, subjectName: "Sam Teen", contextType: "group", fields: "email", needsAdmin: true, grantedAt: "2026-10-02T12:00:00Z", endReason: "", canReveal: false, canRevoke: true };
 

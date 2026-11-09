@@ -7,8 +7,7 @@ import { Illustration } from "./ui/Illustration";
 import {
   badgeLabel, badgeText, kindIcon, relativeTime, resolutionText, useFeed, type Feed,
 } from "../lib/notifications";
-import type { Badge } from "../api";
-import type { Notification } from "../types";
+import type { Badge, Notification } from "../types";
 
 // The bell, its panel, and the rows shared with the /notifications page.
 // Built to research 6.1–6.7, 6.9 and 6.10. Rows are plain text; links are

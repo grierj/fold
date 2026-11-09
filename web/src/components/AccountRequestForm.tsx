@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useState } from "react";
-import { type AccountRequestInput } from "../api";
+import { type AccountRequestInput } from "../api/accountRequests";
 import type { AgeBand } from "../types";
 import { errorText } from "../lib/errors";
 import { Field, FormError, Honeypot, Input, Textarea } from "./ui/Field";

@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ApiError, Groups, Invitations } from "../api";
+import { ApiError } from "../api/core";
+import { Groups } from "../api/groups";
+import { Invitations } from "../api/invitations";
 import type { PersonSearchResult } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { AddRequestForm } from "./AddRequestForm";

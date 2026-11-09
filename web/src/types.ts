@@ -302,6 +302,7 @@ export interface GroupDetailResponse {
   isMember: boolean;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface GroupEventsResponse {
   events: EventOccurrence[];
   truncated: boolean;
@@ -392,6 +393,7 @@ export interface SeriesRegistrationState {
   waitlistPosition?: number;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface SeriesRegistrationResult {
   occurrenceId: number;
   date: string;
@@ -399,6 +401,7 @@ export interface SeriesRegistrationResult {
   after: SeriesRegistrationState;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface SeriesRegistrationRefusal {
   occurrenceId: number;
   date: string;
@@ -1473,4 +1476,159 @@ export interface ErasureReasonPage {
   reviewRequired?: boolean;
   items: ErasureReasonItem[];
   next: string | null;
+}
+
+// ---- Response shapes the API modules return, checked against Go by
+// TestWebTypesMatchGoJSON (guards_test.go, tsContracts) ----
+
+// POST /auth/login and GET /auth/me. `user` is null on /auth/me when signed out.
+export interface SessionResponse {
+  user: User;
+  canCompose?: boolean;
+}
+
+// GET /site. pushEnabled is the church's switch for notifications on devices (DEC-124).
+export interface SiteInfo {
+  name: string;
+  timezone: string;
+  selfSignup: "request" | "off";
+  roomsEnabled: boolean;
+  pushEnabled: boolean;
+}
+
+// POST /account-requests/confirm: the person set a password and is signed in.
+export interface AccountRequestConfirmation {
+  user: User;
+  pendingConsent: boolean;
+}
+
+// POST /admin/account-requests/:id/approve and /reject.
+export interface AccountRequestDecision {
+  request: AccountRequest;
+  userId: number;
+}
+
+export interface CalendarResponse {
+  occurrences: CalendarOccurrence[];
+  truncated: boolean;
+}
+
+export interface GuestConfirmation {
+  registration: GuestRegistration;
+  manageToken: string;
+}
+
+// PUT /me. verificationSent is present when an email change started.
+export interface ProfileUpdateResponse {
+  user: User;
+  verificationSent?: boolean;
+}
+
+// GET /email-settings/:token (M3.3b): the page an email's link opens.
+export interface EmailSettingsLinkResponse {
+  emailSettings: NotificationSettings;
+  email: string;
+  fromCategory: string;
+  canTurnOn: boolean;
+}
+
+export interface TeenConsentsResponse {
+  consents: TeenConsent[];
+  administrativelyDisabled: boolean;
+}
+
+export interface GuardianLinksResponse {
+  guardianLinks: GuardianLink[];
+  nominations: GuardianNomination[];
+}
+
+export interface AdminJobsResponse {
+  jobs: AdminJob[];
+  more: boolean;
+  deliveries: AdminDeliverySummary;
+}
+
+export interface AdminRoomsResponse {
+  rooms: Room[];
+  needApproval: boolean;
+}
+
+export interface MatchLocationResponse {
+  booked: number;
+  busy: MatchBusy[];
+  busyTotal: number;
+  series: number;
+}
+
+export interface RoomRequestConfirmation {
+  confirmed: number;
+  overlapped: number;
+  lost: string[];
+}
+
+// GET /events/:id/dates/:date/rooms (M2.1b).
+export interface DateRoomsResponse {
+  rooms: RoomPickerItem[];
+  booking: RoomBooking | null;
+  suggestions?: RoomSuggestions;
+}
+
+// GET /events/:id/rooms (M2.1c).
+export interface SeriesRoomsResponse {
+  rooms: SeriesRoom[];
+  dates: number;
+  defaultRoom: OccurrenceRoom | null;
+  needsRoom: NeedsRoom[];
+  pending: number;
+  suggestions?: RoomSuggestions;
+}
+
+// POST /rooms/check: rooms for an event not yet created.
+export interface RoomsCheckResponse {
+  rooms: SeriesRoom[];
+  dates: number;
+  suggestions?: RoomSuggestions;
+}
+
+// What an event's create and edit forms send (POST /events, POST
+// /groups/:id/events, PUT /events/:id). Absent fields keep their value on
+// update; a null capacity clears the limit. The server ignores the ones a
+// route does not take (hosts is church-wide only, visibilityReason is for
+// groups only, rruleUntil is for edits only).
+export interface EventInput {
+  title?: string;
+  description?: string;
+  startsLocal?: string;
+  durationMinutes?: number;
+  tzid?: string;
+  location?: string;
+  recurrenceRule?: string;
+  rruleUntil?: string;
+  visibility?: Visibility;
+  visibilityReason?: string;
+  roomId?: number;
+  hosts?: string[];
+  capacity?: number | null;
+  waitlistEnabled?: boolean;
+  guestsAllowed?: number | null;
+  remoteAvailable?: boolean;
+  remoteCapacity?: number | null;
+  childcareAvailable?: boolean;
+  childcareCapacity?: number | null;
+  childcareAges?: string;
+  childcareNotes?: string;
+  videoProvider?: VideoProvider;
+  videoUrl?: string;
+  videoReveal?: VideoReveal;
+  reminderEmailMinutes?: number;
+  reminderPush?: boolean;
+}
+
+// What creating an event must send.
+export type NewEventInput = EventInput & Required<Pick<EventInput, "startsLocal" | "durationMinutes" | "tzid">>;
+
+// GET /notifications/badge: the bell's counts.
+export interface Badge {
+  unread: number;
+  waiting: number;
 }

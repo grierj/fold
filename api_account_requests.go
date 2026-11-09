@@ -644,7 +644,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	if fresh.RequestedBy != nil {
 		ids = append(ids, *fresh.RequestedBy)
 	}
-	c.JSON(http.StatusOK, gin.H{"request": toAccountRequestJSON(&fresh, publicNamesIn(a.DB, ids)), "userId": userID})
+	c.JSON(http.StatusOK, accountRequestDecisionJSON{Request: toAccountRequestJSON(&fresh, publicNamesIn(a.DB, ids)), UserID: userID})
 }
 
 // apiConfirmAccountSetup redeems the emailed set-password link. An
@@ -694,7 +694,7 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh), "pendingConsent": pendingConsent})
+	c.JSON(http.StatusOK, accountRequestConfirmJSON{User: a.toUserJSON(&fresh), PendingConsent: pendingConsent})
 }
 
 // apiSetSelfSignup turns self-signup between request (default) and off

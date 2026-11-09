@@ -1,19 +1,17 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Groups } from "../api";
+import { ApiError } from "../api/core";
+import { Groups } from "../api/groups";
 import type { DeparturePreview } from "../types";
 import { GroupDepartureDialog } from "./GroupDepartureDialog";
 
-vi.mock("../api", async (actual) => ({
-  ...(await actual<typeof import("../api")>()),
-  Groups: {
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: {
     departurePreview: vi.fn(),
     memberDeparturePreview: vi.fn(),
     confirmDeparture: vi.fn(),
     confirmMemberDeparture: vi.fn(),
-  },
-}));
+  } }));
 
 const preview = (action: "leave" | "remove" = "leave", overrides: Partial<DeparturePreview> = {}): DeparturePreview => ({
   action,

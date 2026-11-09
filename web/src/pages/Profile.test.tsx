@@ -16,15 +16,12 @@ vi.mock("../components/HouseholdCard", async () => {
 });
 vi.mock("../components/GuardianConsentCard", () => ({ GuardianConsentCard: () => <div>Guardian links loaded</div> }));
 const get = vi.fn();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  CalendarFeeds: { get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() },
-  Profile: { update: vi.fn(), changePassword: vi.fn() },
-  NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true, kinds: [{ category: "groups", off: true }] } }), update: vi.fn() },
-}));
+vi.mock("../api/profile", async (orig) => ({ ...(await orig<typeof import("../api/profile")>()), CalendarFeeds: { get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() }, Profile: { update: vi.fn(), changePassword: vi.fn() } }));
+vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true, kinds: [{ category: "groups", off: true }] } }), update: vi.fn() } }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, refresh: actor.refresh, logout: vi.fn(), isAdmin: false }) }));
 
-import { ApiError, Profile } from "../api";
+import { ApiError } from "../api/core";
+import { Profile } from "../api/profile";
 import { ProfilePage } from "./Profile";
 const adult: User = { id: 1, name: "Pat Smith", displayName: "Pat", email: "pat@example.com", phone: "208-555-0100", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "America/Boise" };
 const privacyLabel = /^Hide my contact info from group leaders/;

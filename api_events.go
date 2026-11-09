@@ -27,10 +27,7 @@ const (
 )
 
 func (a *App) apiSite(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"name": a.siteName(), "timezone": churchZoneOrUTC(a.DB).String(), "selfSignup": a.selfSignupMode(), "roomsEnabled": a.roomsEnabled(),
-		// The directions page (/notifications/setup) is public and hides
-		// itself when the church turned notifications off (DEC-124).
-		"pushEnabled": a.pushEnabled()})
+	c.JSON(http.StatusOK, siteJSON{Name: a.siteName(), Timezone: churchZoneOrUTC(a.DB).String(), SelfSignup: a.selfSignupMode(), RoomsEnabled: a.roomsEnabled(), PushEnabled: a.pushEnabled()})
 }
 
 func (a *App) apiSetTimezone(c *gin.Context) {

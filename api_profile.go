@@ -127,7 +127,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 	}
 	if len(updates) == 0 && emailChange == nil {
-		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u)})
+		c.JSON(http.StatusOK, profileUpdateJSON{User: a.toUserJSON(u)})
 		return
 	}
 	updated := *u
@@ -164,7 +164,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		a.apiRequestEmailChange(c, u, mail.NormalizeAddress(*emailChange))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
+	c.JSON(http.StatusOK, profileUpdateJSON{User: a.toUserJSON(&updated)})
 }
 
 // apiRequestEmailChange starts a verified email change (10.1, M1.2): a
@@ -217,7 +217,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 	if !userOK || !addrOK {
 		// Answer as usual and log it (DEC-52): nothing is stored or sent.
 		log.Printf("email change rate limited: user=%d", u.ID)
-		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
+		c.JSON(http.StatusOK, profileUpdateJSON{User: a.toUserJSON(u), VerificationSent: true})
 		return
 	}
 	oldEmail := u.Email
@@ -262,7 +262,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		// the address a provider refusal may echo back.
 		log.Printf("email change notice for user %d: %s", u.ID, jobs.CleanError(err))
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
+	c.JSON(http.StatusOK, profileUpdateJSON{User: a.toUserJSON(u), VerificationSent: true})
 }
 
 // sendEmailChangeNotice tells the old address what's happening (10.1). It is

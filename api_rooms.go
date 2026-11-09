@@ -206,7 +206,7 @@ func (a *App) apiAdminListRooms(c *gin.Context) {
 	for i := range rooms {
 		out = append(out, toRoomJSON(&rooms[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "needApproval": roomApprovalOn(a.DB)})
+	c.JSON(http.StatusOK, adminRoomsJSON{Rooms: out, NeedApproval: roomApprovalOn(a.DB)})
 }
 
 func (a *App) apiAdminCreateRoom(c *gin.Context) {

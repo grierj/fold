@@ -7,8 +7,8 @@ const guardianCopies = vi.fn();
 const setGuardianCopies = vi.fn();
 const replyTo = vi.fn();
 const setReplyTo = vi.fn();
-vi.mock("../../api", async (orig) => {
-  const real = await orig<typeof import("../../api")>();
+vi.mock("../../api/admin", async (orig) => {
+  const real = await orig<typeof import("../../api/admin")>();
   return {
     ...real,
     Admin: {
@@ -19,7 +19,7 @@ vi.mock("../../api", async (orig) => {
   };
 });
 
-import { ApiError } from "../../api";
+import { ApiError } from "../../api/core";
 import { ERROR_COPY } from "../../lib/errors";
 import { GuardianCopiesSetting, ReplyToSetting } from "./MessageSettings";
 

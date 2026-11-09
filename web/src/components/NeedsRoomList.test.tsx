@@ -2,16 +2,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, DateRooms, SeriesRooms, Site } from "../api";
+import { ApiError } from "../api/core";
+import { DateRooms, SeriesRooms } from "../api/rooms";
+import { Site } from "../api/site";
 import type { NeedsRoom, RoomPickerItem } from "../types";
 import { NeedsRoomList } from "./NeedsRoomList";
 
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Site: { get: vi.fn() },
-  SeriesRooms: { list: vi.fn() },
-  DateRooms: { list: vi.fn(), set: vi.fn() },
-}));
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
+vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { list: vi.fn() }, DateRooms: { list: vi.fn(), set: vi.fn() } }));
 vi.mock("../auth", () => ({ useAuth: () => ({ isAdmin: false }) }));
 
 const hall: RoomPickerItem = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busy: false, tooSmall: false };

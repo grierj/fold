@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Calendar, Groups } from "../api";
+import { Calendar } from "../api/calendar";
+import { Groups } from "../api/groups";
 import { useAuth } from "../auth";
 import type { CalendarOccurrence, GroupSummary } from "../types";
 import { addDays, addMonths, groupByDay, monthGrid, rangeFor, weekRange, type View } from "../lib/calendar";

@@ -83,3 +83,18 @@ func TestUserZone(t *testing.T) {
 		t.Errorf("eventZone(Local) = %s; want UTC", got)
 	}
 }
+
+func TestChurchZoneLenient(t *testing.T) {
+	app := testApp(t)
+	if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: "Not/AZone"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if loc, err := churchZoneLenient(app.DB); err != nil || loc != time.UTC {
+		t.Fatalf("damaged value = %v, %v; want UTC, nil", loc, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := churchZoneLenient(app.DB.WithContext(ctx)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("failed read = %v; want it returned", err)
+	}
+}

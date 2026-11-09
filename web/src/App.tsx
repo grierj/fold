@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect } from "react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
@@ -8,10 +8,9 @@ import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { Skeleton } from "./components/ui/Skeleton";
 import { NotFound } from "./pages/NotFound";
-import { setOnUnauthorized } from "./api";
+import { RequireUser } from "./components/RequireUser";
 import { useAuth } from "./auth";
 import { UnsavedChangesBlocker } from "./lib/unsavedChanges";
-import { syncAppBadge } from "./lib/push";
 
 const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m.NewGroup })));
 const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
@@ -44,23 +43,7 @@ const MessageReadPage = lazy(() => import("./pages/MessageRead").then((m) => ({ 
 
 export default function App() {
   const { user, loading } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
-
-  // The API returns 401 JSON (never redirects); the SPA owns routing, so any
-  // unauthorized API call sends the user to /login, preserving their place.
-  useEffect(() => {
-    setOnUnauthorized(() => {
-      // Signed out without Log out (the session expired): the icon's count
-      // was this person's. The device stays subscribed; it belongs to the
-      // person, not the session (logout and turning off end it).
-      syncAppBadge(0);
-      if (location.pathname !== "/login") {
-        navigate("/login", { state: { from: location.pathname + location.search }, replace: true });
-      }
-    });
-    return () => setOnUnauthorized(null);
-  }, [navigate, location.pathname, location.search]);
 
   if (loading) return null;
   // The Home Screen app opens at /?source=homescreen (the manifest) with
@@ -90,22 +73,22 @@ export default function App() {
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />
         <Route path="/email-settings/:token" element={<EmailSettingsPage />} />
-        <Route path="/groups/new" element={<NewGroup />} />
+        <Route path="/groups/new" element={<RequireUser><NewGroup /></RequireUser>} />
         <Route path="/groups/:id" element={<GroupDetail />} />
-        <Route path="/groups/:id/events/new" element={<NewEvent />} />
-        <Route path="/events/new" element={<NewChurchEvent />} />
+        <Route path="/groups/:id/events/new" element={<RequireUser><NewEvent /></RequireUser>} />
+        <Route path="/events/new" element={<RequireUser><NewChurchEvent /></RequireUser>} />
         <Route path="/events/:id" element={<EventDetail />} />
         <Route path="/events/:id/dates/:date" element={<Suspense fallback={<Skeleton kind="page" label="Loading this date…" />}><EventDatePage /></Suspense>} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/calendar/rooms" element={<RoomCalendarPage />} />
-        <Route path="/my-groups" element={<MyGroups />} />
-        <Route path="/profile/:section?" element={<ProfilePage />} />
-        <Route path="/add-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense>} />
-        <Route path="/add-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense>} />
-        <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />
-        <Route path="/contact-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense>} />
-        <Route path="/admin/contact-history" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense>} />
-        <Route path="/admin/users/:id/contact-history" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense>} />
+        <Route path="/my-groups" element={<RequireUser><MyGroups /></RequireUser>} />
+        <Route path="/profile/:section?" element={<RequireUser><ProfilePage /></RequireUser>} />
+        <Route path="/add-requests" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense></RequireUser>} />
+        <Route path="/add-requests/:id" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense></RequireUser>} />
+        <Route path="/contact-requests" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense></RequireUser>} />
+        <Route path="/contact-requests/:id" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense></RequireUser>} />
+        <Route path="/admin/contact-history" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense></RequireUser>} />
+        <Route path="/admin/users/:id/contact-history" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense></RequireUser>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/notifications/setup" element={<NotificationsSetupPage />} />

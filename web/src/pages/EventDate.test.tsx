@@ -2,17 +2,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Events, Site } from "../api";
-import { Dates } from "../date-api";
+import { ApiError } from "../api/core";
+import { Dates, Events } from "../api/events";
+import { Site } from "../api/site";
 import type { EventDate, RegistrationResponse } from "../types";
-import { Messages } from "../messages-api";
+import { Messages } from "../api/messages";
 import { EventDatePage } from "./EventDate";
 
 const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null, canCompose: false }));
-vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), Events: { register: vi.fn() } }));
 vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../date-api", () => ({ Dates: { get: vi.fn(), register: vi.fn(), end: vi.fn() } }));
-vi.mock("../messages-api", () => ({ Messages: { options: vi.fn() } }));
+vi.mock("../api/events", () => ({ Events: { register: vi.fn() }, Dates: { get: vi.fn(), register: vi.fn(), end: vi.fn() } }));
+vi.mock("../api/messages", () => ({ Messages: { options: vi.fn() } }));
 const occurrence = (overrides: Partial<EventDate> = {}): EventDate => ({ id: 51, eventId: 7, date: "2026-12-01", dateUrl: "/events/7/dates/2026-12-01", title: "One invited date", location: "Room 2", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", startsLocal: "2026-12-01T19:00", endsLocal: "2026-12-01T20:00", tzid: "UTC", durationMinutes: 60, remoteAvailable: true, guestsAllowed: 3, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 1, videoProvider: "link", videoUrl: "https://example.com/private-call", videoHidden: false, canSeeVideo: true, canSeeAttendees: false, canDecline: true, canBlock: true, ...overrides });
 const registration: RegistrationResponse = { registrationId: 8, userId: 2, eventId: 7, occurrenceId: 51, date: "2026-12-01", status: "going", guestCount: 1, attendanceMode: "remote", childcareCount: 2, childcareAgesNote: "Preserve this", waitlistPosition: null };
 function mount() { return render(<MemoryRouter initialEntries={["/events/7/dates/2026-12-01"]}><Routes><Route path="/events/:id/dates/:date" element={<EventDatePage />} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }

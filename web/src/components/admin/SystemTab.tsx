@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AdminJobs } from "../../api";
+import { AdminJobs } from "../../api/admin";
 import { errorText } from "../../lib/errors";
 import { formatWhen, lowerLead } from "../../lib/when";
 import type { AdminDeliverySummary, AdminJob } from "../../types";

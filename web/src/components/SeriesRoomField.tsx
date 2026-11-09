@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { SeriesRooms, Site } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { SeriesRooms } from "../api/rooms";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
+import { useLoad } from "../lib/useLoad";
+import { useRoomsEnabled } from "../lib/useSite";
 import type { OccurrenceRoom, SeriesBooking, SeriesRoom, RoomSuggestions } from "../types";
 import { Field, FormError, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
@@ -78,9 +80,9 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   const { isAdmin } = useAuth();
   const id = `${idPrefix}-series-room`;
   const reasonId = `${id}-reason`;
-  const [enabled, setEnabled] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // A church with rooms off, or a site we can't read, sees no rooms control at all.
+  const roomsOn = useRoomsEnabled();
+  const enabled = roomsOn === true;
   // The select's choice, not yet booked.
   const [pick, setPick] = useState(NONE);
   // How many upcoming dates have a room that holds nothing (DEC-103).
@@ -104,41 +106,22 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
     return () => { alive.current = false; };
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    // A church with rooms off, or a site we can't read, sees no rooms control at all.
-    let site;
-    try {
-      site = await Site.get();
-    } catch {
-      if (alive.current) { setEnabled(false); setLoading(false); }
-      return;
-    }
-    if (!alive.current) return;
-    if (!site.roomsEnabled) {
-      setEnabled(false);
-      setLoading(false);
-      return;
-    }
-    setEnabled(true);
-    try {
-      const res = await SeriesRooms.list(eventId);
-      if (!alive.current) return;
-      setRooms(res.rooms);
-      setDates(res.dates);
-      setCurrent(res.defaultRoom);
-      setSuggestions(res.suggestions ?? null);
-      setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
-      setNeedsCount(res.needsRoom.length);
-      setPendingCount(res.pending);
-    } catch (e) {
-      if (alive.current) setLoadError(errorText(e, "We couldn't load the rooms."));
-    } finally {
-      if (alive.current) setLoading(false);
-    }
-  }, [eventId]);
-  useEffect(() => { void load(); }, [load]);
+  const list = useLoad(() => SeriesRooms.list(eventId), [eventId], { enabled });
+  const loading = roomsOn === null || list.loading;
+  const loadError = list.error ? errorText(list.error, "We couldn't load the rooms.") : null;
+  // Each answer replaces the form's state in the same render that first sees it.
+  const loaded = list.data;
+  const [applied, setApplied] = useState(loaded);
+  if (loaded && loaded !== applied) {
+    setApplied(loaded);
+    setRooms(loaded.rooms);
+    setDates(loaded.dates);
+    setCurrent(loaded.defaultRoom);
+    setSuggestions(loaded.suggestions ?? null);
+    setPick(loaded.defaultRoom ? String(loaded.defaultRoom.id) : NONE);
+    setNeedsCount(loaded.needsRoom.length);
+    setPendingCount(loaded.pending);
+  }
 
   // An admin's busy-dates answer moves focus to the reason it asks for.
   useEffect(() => {
@@ -217,7 +200,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       {loadError && (
         <div className="space-y-2">
           <FormError>{loadError}</FormError>
-          <Button variant="secondary" onClick={() => void load()}>Try again</Button>
+          <Button variant="secondary" onClick={list.retry}>Try again</Button>
         </div>
       )}
       {!loading && !loadError && (

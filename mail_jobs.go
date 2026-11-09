@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/policy"
@@ -210,11 +211,14 @@ func (a *App) prepareGuestVerification(tx *gorm.DB, signupID uint) (mail.Message
 	if err != nil {
 		return none, false, err
 	}
-	church, err := churchZoneIn(tx)
+	loc, err := events.LoadZone(signup.Timezone)
 	if err != nil {
-		return none, false, err
+		// The guest's own zone is unusable: read the church's. A failed read
+		// retries the job.
+		if loc, err = churchZoneLenient(tx); err != nil {
+			return none, false, err
+		}
 	}
-	loc := userZone(signup.Timezone, church)
 	raw, err := rotateGuestSignupToken(tx, signup.ID)
 	if errors.Is(err, errTokenInvalid) {
 		return none, false, nil

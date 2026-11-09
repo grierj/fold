@@ -583,7 +583,9 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
-	facts.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
+	if facts.today, err = churchClockIn(tx, now); err != nil {
+		return err
+	}
 	entries := make([]events.WaitEntry, 0, len(wl))
 	for _, r := range wl {
 		if !facts.eligible(a, tx, r, ev, access, now) {
@@ -1021,10 +1023,11 @@ func (a *App) apiRegister(c *gin.Context) {
 		holderIDs = append(holderIDs, existingHolders...)
 	}
 	sort.Slice(holderIDs, func(i, j int) bool { return holderIDs[i] < holderIDs[j] })
-	now := time.Now().UTC()
 	response := registrationBatchJSON{People: []householdRegistrationJSON{}}
 	gated := false
 	mutate := func(tx *gorm.DB) error {
+		// Read inside the closure: a gated retry runs it again, after lock waits.
+		now := time.Now().UTC()
 		if gated {
 			if err := lockContacts(tx); err != nil {
 				return err
@@ -1461,7 +1464,11 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 			body.RegistrationID, locked.ID, models.RegWaitlisted).First(&r).Error; err != nil {
 			return errRegNotFound
 		}
-		if !a.eligibleRegistration(tx, r, ev, now) {
+		ok, err := a.eligibleRegistration(tx, r, ev, now)
+		if err != nil {
+			return err
+		}
+		if !ok {
 			return householdRegistrationError{code: "household_registration_holder_unavailable"}
 		}
 		// A waitlisted entry promotes into its own pool (M1.8 slice 2).
@@ -1796,6 +1803,10 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 	if err := tx.First(&holder, userID).Error; err != nil {
 		return err
 	}
+	today, err := churchClockIn(tx, now)
+	if err != nil {
+		return err
+	}
 	holder.Status = intendedStatus
 	var regs []models.Registration
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").Where("(registrations.user_id = ? OR registrations.registered_by = ?) AND registrations.status IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at > ?", userID, userID, []string{models.RegGoing, models.RegWaitlisted}, models.OccurrenceScheduled, now).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
@@ -1839,7 +1850,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 				}
 			}
 			facts = a.loadSubjectFacts(tx, currentRegs, nil)
-			facts.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
+			facts.today = today
 			facts.users[holder.ID] = &holder
 			access = map[uint]bool{}
 		}

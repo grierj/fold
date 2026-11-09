@@ -7,7 +7,7 @@ import { SeatsField, type SeatsValue } from "./SeatsField";
 import { VideoField, type VideoValue } from "./VideoField";
 import { ReminderField, reminderSummary } from "./ReminderField";
 import { Button } from "./ui/Button";
-import { usePushEnabled } from "../lib/usePushEnabled";
+import { usePushEnabled } from "../lib/useSite";
 
 const VISIBILITY_NAMES: Record<Visibility, string> = { public: "Public", private: "Private", invite_only: "Invite only" };
 

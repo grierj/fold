@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { SeriesRooms, Site } from "../api";
+import { SeriesRooms } from "../api/rooms";
+import { useRoomsEnabled } from "../lib/useSite";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
 import type { WhenState } from "../lib/useWhenState";
@@ -75,7 +76,8 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
   // longer lists the chosen room.
   onChange: (roomId: number | null) => void;
 }) {
-  const [enabled, setEnabled] = useState(false);
+  // A church with rooms off, or a site we can't read, sees no rooms control at all.
+  const enabled = useRoomsEnabled() === true;
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
   const [suggestions, setSuggestions] = useState<RoomSuggestions | null>(null);
   const [dates, setDates] = useState(0);
@@ -89,13 +91,6 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
   const seq = useRef(0);
   const latest = useRef({ roomId, onChange, kept });
   latest.current = { roomId, onChange, kept };
-
-  useEffect(() => {
-    let alive = true;
-    // A church with rooms off, or a site we can't read, sees no rooms control at all.
-    Site.get().then((site) => { if (alive) setEnabled(site.roomsEnabled === true); }, () => {});
-    return () => { alive = false; };
-  }, []);
 
   const key = schedule ? JSON.stringify([schedule, groupId ?? null, visibility ?? null]) : "";
   useEffect(() => {

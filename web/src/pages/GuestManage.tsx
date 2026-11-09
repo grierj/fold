@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Guests } from "../api";
+import { Guests } from "../api/events";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";

@@ -161,6 +161,6 @@ func (a *App) apiAdminMatchLocation(c *gin.Context) {
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not book the room")
 	default:
-		c.JSON(http.StatusOK, gin.H{"booked": booked, "busy": busy, "busyTotal": busyTotal, "series": series})
+		c.JSON(http.StatusOK, matchLocationJSON{Booked: booked, Busy: busy, BusyTotal: busyTotal, Series: series})
 	}
 }

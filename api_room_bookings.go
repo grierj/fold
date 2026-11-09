@@ -282,7 +282,7 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	suggestions := a.roomSuggestions(suggestFor{person: me, eventID: ev.ID, groupID: ev.GroupID,
 		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: seats,
 		windows: windowsOf([]models.EventOccurrence{*occ})}, offered)
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking, "suggestions": suggestions})
+	c.JSON(http.StatusOK, dateRoomsJSON{Rooms: out, Booking: booking, Suggestions: suggestions})
 }
 
 // dateBooking is a date's booking for its managers, or nil.

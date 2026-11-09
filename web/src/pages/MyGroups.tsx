@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { Groups } from "../api";
-import type { GroupSummary } from "../types";
+import { Groups } from "../api/groups";
 import { usePage } from "../lib/usePage";
 import { PageCount, Pagination } from "../components/ui/Pagination";
 import { SearchBox } from "../components/ui/SearchBox";
 import { GroupCard } from "../components/GroupCard";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
@@ -21,20 +20,8 @@ import { ButtonLink } from "../components/ui/Button";
 const SOON_LIMIT = 3;
 
 function MeetingSoon() {
-  const [groups, setGroups] = useState<GroupSummary[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    Groups.list()
-      .then(({ groups }) => {
-        if (alive) setGroups(groups.filter((g) => g.nextEventAt && !g.myRole).slice(0, SOON_LIMIT));
-      })
-      .catch(() => {
-        if (alive) setGroups([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const load = useLoad(async () => (await Groups.list()).groups.filter((g) => g.nextEventAt && !g.myRole).slice(0, SOON_LIMIT), []);
+  const groups = load.data ?? null;
   // Nothing is shown until we know something qualifies, so the heading never
   // flashes in and vanishes.
   if (!groups || groups.length === 0) return null;
@@ -56,53 +43,13 @@ export function MyGroups() {
   const [params, setParams] = useSearchParams();
   const query = params.get("search") ?? "";
   const departureStatus = (location.state as { departureStatus?: string } | null)?.departureStatus;
-  const [groups, setGroups] = useState<GroupSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
-
-  useEffect(() => {
-    if (authLoading) return;
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-    let alive = true;
-    setLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const { groups } = await Groups.mine();
-        if (alive) {
-          setGroups(groups);
-        }
-      } catch (e) {
-        if (alive) setError(errorText(e, "We couldn't load your groups."));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [user, authLoading, retry]);
+  const mine = useLoad(async () => (await Groups.mine()).groups, [user?.id], { enabled: !authLoading && !!user });
+  const groups = mine.data ?? [];
+  const loading = authLoading ? true : !!user && mine.loading;
+  const error = mine.error ? errorText(mine.error, "We couldn't load your groups.") : null;
 
   const matching = groups.filter((g) => `${g.name} ${g.description}`.toLowerCase().includes(query.trim().toLowerCase()));
   const paging = usePage(matching, query, 12, { page: Number(params.get("page")) || 1, onChange: (page) => setParams((old) => { const next = new URLSearchParams(old); next.set("page", String(page)); return next; }) });
-
-  if (!authLoading && !user) {
-    return (
-      <div className="fold-page-narrow">
-        <h1 className="fold-page-header text-3xl font-bold">My groups</h1>
-        <p className="text-text-muted">
-          <Link to="/login" className="text-primary font-semibold">
-            Log in
-          </Link>{" "}
-          to see your groups.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="fold-page-narrow">
@@ -113,7 +60,7 @@ export function MyGroups() {
           <Skeleton kind="lines" count={3} />
         </div>
       )}
-      {!loading && error && <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />}
+      {!loading && error && <ErrorNotice message={error} onRetry={mine.retry} />}
       {!loading && !error && groups.length === 0 && (
         <>
           <EmptyState

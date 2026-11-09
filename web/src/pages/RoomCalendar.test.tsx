@@ -1,17 +1,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import type { RoomCalendar, RoomCalendarRoom } from "../types";
 import { RoomCalendarPage } from "./RoomCalendar";
 
 const { rooms, auth } = vi.hoisted(() => ({ rooms: vi.fn(), auth: vi.fn() }));
 vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api", async (importActual) => ({
-  ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Calendar: { rooms },
-  Site: { get: vi.fn().mockResolvedValue({ roomsEnabled: true }) },
-}));
+vi.mock("../api/calendar", () => ({ Calendar: { rooms } }));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ roomsEnabled: true }) } }));
 
 const zone = "America/Denver";
 // 7:00–8:30 PM on Wednesday Oct 21 in Denver.

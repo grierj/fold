@@ -256,5 +256,5 @@ func (a *App) apiCalendar(c *gin.Context) {
 		row.OwnScope = decision.OwnScope
 		out = append(out, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": truncated})
+	c.JSON(http.StatusOK, calendarResponseJSON{Occurrences: out, Truncated: truncated})
 }

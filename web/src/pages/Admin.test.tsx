@@ -2,31 +2,33 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Admin, AdminAccountRequests, AdminGroups, AdminJobs, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
+import { Admin, AdminGroups, AdminJobs } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
+import { AdminRooms, RoomRequests } from "../api/rooms";
+import { AdminUsers } from "../api/adminUsers";
+import { Groups } from "../api/groups";
+import { Invitations } from "../api/invitations";
+import { People } from "../api/people";
+import { Site } from "../api/site";
+import { ApiError } from "../api/core";
 import { ERROR_COPY, errorText } from "../lib/errors";
-import { ContactHistory } from "../contact-history-api";
+import { ContactHistory } from "../api/contactHistory";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
 import { AdminPage } from "./Admin";
 
 // One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
 const auth = vi.hoisted(() => ({ user: { id: 1 }, loading: false, isAdmin: true }));
 vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
-vi.mock("../api", async (actual) => ({
-  ...(await actual<typeof import("../api")>()),
-  People: { search: vi.fn() },
-  Invitations: { create: vi.fn() },
-  Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
-  AdminGroups: { list: vi.fn(), addMember: vi.fn() },
-  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() },
-  AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() },
-  AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
-  AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
-  RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
-  AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) },
-}));
+vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
+vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
+vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() } }));
+vi.mock("../api/admin", async (actual) => ({ ...(await actual<typeof import("../api/admin")>()), AdminGroups: { list: vi.fn(), addMember: vi.fn() }, Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() }, AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
+vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() } }));
+vi.mock("../api/guardians", async (actual) => ({ ...(await actual<typeof import("../api/guardians")>()), AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) } }));
+vi.mock("../api/accountRequests", async (actual) => ({ ...(await actual<typeof import("../api/accountRequests")>()), AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() } }));
+vi.mock("../api/rooms", async (actual) => ({ ...(await actual<typeof import("../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() }, RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
+vi.mock("../api/site", async (actual) => ({ ...(await actual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) } }));
 
 function HistoryDestination() {
   const { id } = useParams();
@@ -99,6 +101,25 @@ it("shows no count on a tab whose list failed to load", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
   expect(screen.getByRole("tab", { name: "Groups" })).toHaveTextContent(/^Groups$/);
+});
+
+it("says the users couldn't load, with a retry, instead of an empty list", async () => {
+  vi.mocked(AdminUsers.list).mockRejectedValueOnce(new ApiError(500, "private server text")).mockResolvedValue({ users: [user(1, "Ann")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't load the users");
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByText("Ann")).toBeInTheDocument();
+});
+
+it("says the church settings couldn't load, rather than showing On, a blank zone or an empty rooms switch", async () => {
+  vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "private server text"));
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("heading", { name: "Church settings" })).toBeInTheDocument();
+  expect(await screen.findByText("We couldn't load the church time zone. Please try again in a minute.")).toBeInTheDocument();
+  expect(screen.getByText("We couldn't load the self-signup setting. Please try again in a minute.")).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Self-signup" })).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /Use rooms/ })).toBeDisabled();
 });
 
 it("keeps daily work above settings and opens the settings forms only on demand", async () => {
@@ -468,7 +489,10 @@ it("does not fall back to the first user when the selected row has no email", as
 });
 
 it("saves self-signup the moment it changes and says Saved", async () => {
-  vi.mocked(AdminAccountRequests.setSelfSignup).mockResolvedValue({ selfSignup: "request" });
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockImplementation(async (selfSignup) => {
+    vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup, roomsEnabled: false, pushEnabled: true });
+    return { selfSignup };
+  });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const mode = await screen.findByRole("group", { name: "Self-signup" });
   await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
@@ -734,8 +758,8 @@ it("asks /site once and hands the answer to the rooms switch", async () => {
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
-  // The page, the church time zone, its zone picker and self-signup each read it; the rooms switch no longer does.
-  expect(Site.get).toHaveBeenCalledTimes(4);
+  // The page, the church time zone, its zone picker, self-signup and the rooms switch share one read.
+  expect(Site.get).toHaveBeenCalledTimes(1);
 });
 
 it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async () => {
@@ -750,7 +774,7 @@ it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async ()
 });
 
 it("reads the rooms switch from /site and saves it the moment it changes, then shows the tab", async () => {
-  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: true });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   expect(box).not.toBeChecked();
@@ -765,7 +789,7 @@ it("reads the rooms switch from /site and saves it the moment it changes, then s
 
 it("starts the rooms switch on when /site says rooms are on, and hides the tab when it is turned off", async () => {
   withRooms(true);
-  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: false });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
