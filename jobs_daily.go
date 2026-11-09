@@ -114,7 +114,7 @@ func (a *App) startJobs(ctx context.Context) func() {
 			if err := queueHourly(a.DB, hourly, now); err != nil {
 				log.Printf("jobs: queue hourly tasks: %v", err)
 			}
-			if zone, err := churchZoneErr(a.DB); err != nil {
+			if zone, err := churchZoneIn(a.DB); err != nil {
 				log.Printf("jobs: read the church time zone: %v", err)
 			} else if err := a.queueDaily(kinds, now, zone); err != nil {
 				log.Printf("jobs: queue daily tasks: %v", err)

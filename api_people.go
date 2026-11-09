@@ -88,7 +88,7 @@ func (a *App) parsePeopleSelection(token string, actor uint, now time.Time) (uin
 }
 
 func (a *App) canSearchPeople(db *gorm.DB, actor *models.User) (bool, error) {
-	zone, err := contactZone(db)
+	zone, err := churchZoneIn(db)
 	if err != nil {
 		return false, err
 	}
@@ -113,7 +113,7 @@ func peopleAddActor(tx *gorm.DB, authenticated *models.User) (*models.User, erro
 	if actor == nil || actor.SessionVersion != authenticated.SessionVersion {
 		return nil, errPeopleAddForbidden
 	}
-	zone, err := contactZone(tx)
+	zone, err := churchZoneIn(tx)
 	if err != nil {
 		return nil, err
 	}

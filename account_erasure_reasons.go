@@ -570,7 +570,7 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 		var pred func(*models.User) bool
 		if len(unit.Requests) > 0 {
 			now := time.Now().UTC()
-			zone, err := contactZone(tx)
+			zone, err := churchZoneIn(tx)
 			if err != nil {
 				return err
 			}
@@ -1009,7 +1009,7 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 	if err != nil {
 		return plan, nil, err
 	}
-	zone, err := contactZone(tx)
+	zone, err := churchZoneIn(tx)
 	if err != nil {
 		return plan, nil, err
 	}

@@ -322,8 +322,11 @@ func loadContactHistoryPage(tx *gorm.DB, f contactHistoryFilter, limit int) ([]c
 }
 
 func (a *App) canViewContactHistoryAt(user *models.User, now time.Time) bool {
-	today := a.householdClock(now)
-	return policy.CanViewContactHistory(contactAccount(user, today, today.Location()))
+	zone, err := churchZoneIn(a.DB)
+	if err != nil {
+		return false
+	}
+	return policy.CanViewContactHistory(contactAccount(user, now, zone))
 }
 
 func (a *App) contactHistoryFilter(c *gin.Context, export bool) (contactHistoryFilter, bool) {
@@ -462,7 +465,7 @@ func (a *App) apiExportContactHistory(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&current, actor.ID).Error; err != nil {
 			return err
 		}
-		zone, err := contactZone(tx)
+		zone, err := churchZoneIn(tx)
 		if err != nil {
 			return err
 		}

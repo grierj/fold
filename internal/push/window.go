@@ -1,9 +1,6 @@
 package push
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 // Quiet hours for push (DEC-126, research 2.5). This is M3.13's interim
 // copy of the send-window function: M3.8 builds the shared one for SMS
@@ -26,31 +23,18 @@ func (w Window) valid() bool {
 	return 0 <= w.StartHour && w.StartHour < w.EndHour && w.EndHour <= 24
 }
 
-// Zone is the recipient's zone: tzid when it names one (User.Timezone),
-// else fallback (the church's zone, as emails use, DEC-58), else UTC.
-func Zone(tzid string, fallback *time.Location) *time.Location {
-	tzid = strings.TrimSpace(tzid)
-	if tzid != "" && tzid != "Local" && len(tzid) <= 64 {
-		if loc, err := time.LoadLocation(tzid); err == nil {
-			return loc
-		}
-	}
-	if fallback != nil {
-		return fallback
-	}
-	return time.UTC
-}
-
-// Check reports whether t is inside w in the recipient's zone (tzid,
-// falling back to fallback as Zone does) and, when it isn't, when the
-// window next opens: later that day if t is before the start, else the
+// Check reports whether t is inside w in the recipient's zone loc (UTC when
+// nil; the caller resolves the person's own zone, else the church's) and,
+// when it isn't, when the window next opens: later that day if t is before the start, else the
 // next day's start. On a day whose start hour doesn't exist (a
 // spring-forward gap) it opens at the first moment after the gap.
-func (w Window) Check(t time.Time, tzid string, fallback *time.Location) (inside bool, opens time.Time) {
+func (w Window) Check(t time.Time, loc *time.Location) (inside bool, opens time.Time) {
 	if !w.valid() {
 		return true, time.Time{}
 	}
-	loc := Zone(tzid, fallback)
+	if loc == nil {
+		loc = time.UTC
+	}
 	local := t.In(loc)
 	mins := local.Hour()*60 + local.Minute()
 	if mins >= w.StartHour*60 && mins < w.EndHour*60 {
@@ -87,11 +71,13 @@ func afterGap(t time.Time, hour int) time.Time {
 // 7:00 AM reminder) if that is no more than within earlier; ok is false
 // when it would be, and the reminder is skipped. The 2-hour push reminder
 // (M3.13d3) and, through M3.8, SMS reminders use it.
-func (w Window) LastAllowed(t time.Time, tzid string, fallback *time.Location, within time.Duration) (at time.Time, ok bool) {
-	if inside, _ := w.Check(t, tzid, fallback); inside {
+func (w Window) LastAllowed(t time.Time, loc *time.Location, within time.Duration) (at time.Time, ok bool) {
+	if inside, _ := w.Check(t, loc); inside {
 		return t, true
 	}
-	loc := Zone(tzid, fallback)
+	if loc == nil {
+		loc = time.UTC
+	}
 	local := t.In(loc)
 	day := local.Day()
 	if local.Hour()*60+local.Minute() < w.StartHour*60 {

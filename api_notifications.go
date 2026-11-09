@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/events"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -330,7 +328,7 @@ type noticeFacts struct {
 
 // loadNoticeFacts loads the groups, recipients, their memberships in
 // those groups and their zones for a batch of event notices, plus the
-// church zone once when anyone needs it. Like groupsByID and relsFor,
+// church zone once. Like groupsByID and relsFor,
 // a failed load leaves the fact absent, the same answer the per-person
 // First calls gave.
 func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) *noticeFacts {
@@ -352,33 +350,14 @@ func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) *noticeFacts {
 	if len(userIDs) > 0 {
 		tx.Where("id IN ?", userIDs).Find(&users)
 	}
-	loaded := make(map[uint]bool, len(users))
-	for i := range users {
-		loaded[users[i].ID] = true
-	}
-	needChurch := false
-	for _, id := range userIDs {
-		if !loaded[id] {
-			needChurch = true
-		}
+	if len(userIDs) > 0 {
+		f.church = churchZoneOrUTC(tx)
 	}
 	for i := range users {
 		if users[i].Status == models.UserActive {
 			f.viewers[users[i].ID] = &users[i]
 		}
-		if loc, err := events.LoadZone(users[i].Timezone); err == nil {
-			f.zones[users[i].ID] = loc
-		} else {
-			needChurch = true
-		}
-	}
-	if needChurch {
-		f.church = churchZone(tx)
-		for i := range users {
-			if _, ok := f.zones[users[i].ID]; !ok {
-				f.zones[users[i].ID] = f.church
-			}
-		}
+		f.zones[users[i].ID] = userZone(users[i].Timezone, f.church)
 	}
 	if len(groupIDs) > 0 && len(userIDs) > 0 {
 		var ms []models.Membership
@@ -403,13 +382,10 @@ func (f *noticeFacts) canSeeGroup(userID uint, g *models.Group) bool {
 // zone is the preloaded recipientZone for userID: their own zone, else
 // the church's, else UTC.
 func (f *noticeFacts) zone(userID uint) *time.Location {
-	if loc, ok := f.zones[userID]; ok && loc != nil {
+	if loc, ok := f.zones[userID]; ok {
 		return loc
 	}
-	if f.church != nil {
-		return f.church
-	}
-	return time.UTC
+	return f.church
 }
 
 const approvalsLink = "/admin?tab=approvals"
@@ -736,45 +712,9 @@ func recipientZone(tx *gorm.DB, userID uint) *time.Location {
 	var zones []string
 	tx.Model(&models.User{}).Where("id = ?", userID).Pluck("timezone", &zones)
 	if len(zones) == 1 {
-		return zoneOrChurch(tx, zones[0])
+		return userZoneIn(tx, zones[0])
 	}
-	return zoneOrChurch(tx, "")
-}
-
-// zoneOrChurch is tz when it names a zone, else the church's, else UTC.
-func zoneOrChurch(tx *gorm.DB, tz string) *time.Location {
-	if loc, err := events.LoadZone(tz); err == nil {
-		return loc
-	}
-	return churchZone(tx)
-}
-
-// churchZone is the church's zone from its setting, else UTC.
-// churchZoneErr is churchZone, reporting a failed read instead of guessing
-// UTC. An unset or unknown zone is UTC, as there.
-func churchZoneErr(tx *gorm.DB) (*time.Location, error) {
-	var s models.Setting
-	err := tx.Where("key = ?", settingTimezone).First(&s).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return time.UTC, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if loc, err := events.LoadZone(s.Value); err == nil {
-		return loc, nil
-	}
-	return time.UTC, nil
-}
-
-func churchZone(tx *gorm.DB) *time.Location {
-	var s models.Setting
-	if tx.Where("key = ?", settingTimezone).First(&s).Error == nil {
-		if loc, err := events.LoadZone(s.Value); err == nil {
-			return loc
-		}
-	}
-	return time.UTC
+	return userZoneIn(tx, "")
 }
 
 // formatWhen is how emails and notices write an event time, in the

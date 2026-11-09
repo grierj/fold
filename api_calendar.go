@@ -64,14 +64,13 @@ func (a *App) apiCalendar(c *gin.Context) {
 	// window on starts_at runs from their local midnight to the next
 	// midnight after `to`, so an event near midnight in its own zone
 	// lands on the viewer's day even at a week or month edge.
-	tzName := strings.TrimSpace(c.Query("tz"))
-	if tzName == "" {
-		tzName = a.churchTimezone()
-	}
-	zone, err := events.LoadZone(tzName)
-	if err != nil {
-		jsonError(c, http.StatusBadRequest, "tz must be an IANA name, for example America/Denver")
-		return
+	zone := churchZoneOrUTC(a.DB)
+	if tzName := strings.TrimSpace(c.Query("tz")); tzName != "" {
+		var err error
+		if zone, err = events.LoadZone(tzName); err != nil {
+			jsonError(c, http.StatusBadRequest, "tz must be an IANA name, for example America/Denver")
+			return
+		}
 	}
 	fd, _ := models.ParseCalendarDate(from)
 	td, _ := models.ParseCalendarDate(to)

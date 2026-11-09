@@ -162,7 +162,7 @@ func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn 
 		}
 		op.now = time.Now().UTC().Truncate(time.Microsecond)
 		var err error
-		op.zone, err = contactZone(tx)
+		op.zone, err = churchZoneIn(tx)
 		if err != nil {
 			return err
 		}

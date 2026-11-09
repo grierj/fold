@@ -143,7 +143,11 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 		}
 	}
 	if change.Scope == models.TeenConsentAccount {
-		if err := a.completeTeenConversionIfReady(tx, teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
+		today, err := churchClockIn(tx, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if err := a.completeTeenConversionIfReady(tx, teen, today, c.ClientIP()); err != nil {
 			return err
 		}
 	}

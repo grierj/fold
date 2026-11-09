@@ -101,31 +101,16 @@ func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink,
 	return out
 }
 
-func (a *App) householdClock(now time.Time) time.Time {
-	clock, err := householdClockIn(a.DB, now)
-	if err != nil {
-		return now.UTC()
-	}
-	return clock
-}
-
-func householdClockIn(db *gorm.DB, now time.Time) (time.Time, error) {
-	loc, err := churchLocationIn(db)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return now.In(loc), nil
-}
-
 // eligibleRegistration reads current eligibility without taking earlier-order
 // holder/household locks after the caller has locked an occurrence.
 func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) bool {
 	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
-	f.clock = func() time.Time { return a.householdClock(now) }
-	return f.eligible(a, tx, r, ev, map[uint]bool{})
+	f.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
+	return f.eligible(a, tx, r, ev, map[uint]bool{}, now)
 }
 
-func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool) bool {
+// eligible is whether r still stands; now is the caller's one reading of the clock.
+func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool, now time.Time) bool {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
 		return false
@@ -138,7 +123,7 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 	if !allowed && r.UserID != nil && r.ID != 0 {
 		var grant models.Registration
 		if tx.Where("registrations.id = ? AND "+registrationAccessLiveSQL, r.ID).Limit(1).Find(&grant).Error == nil && grant.ID != 0 {
-			live, err := liveOccurrenceInvitationIn(tx, grant, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, grant, now)
 			allowed = err == nil && live
 		}
 	}
@@ -287,6 +272,7 @@ func (f *subjectFacts) day() time.Time {
 
 func (a *App) loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
 	f := a.requestFacts()
+	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(db)) }
 	f.load(db, regs, viewer)
 	return *f
 }
@@ -298,7 +284,7 @@ func newSubjectFacts(today time.Time) *subjectFacts {
 // requestFacts is one request's shared facts, on the church-local clock.
 func (a *App) requestFacts() *subjectFacts {
 	f := newSubjectFacts(time.Time{})
-	f.clock = func() time.Time { return a.householdClock(time.Now().UTC()) }
+	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(a.DB)) }
 	return f
 }
 

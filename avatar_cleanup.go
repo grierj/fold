@@ -387,7 +387,7 @@ func (a *App) sweepAvatarsRun(ctx context.Context, now time.Time, limit int) err
 	sctx, cancel := context.WithTimeout(ctx, avatarSweepTimeout)
 	defer cancel()
 	db := a.DB.WithContext(sctx)
-	zone, err := churchZoneErr(db)
+	zone, err := churchZoneIn(db)
 	if err != nil {
 		if sctx.Err() != nil {
 			return errSweepOutOfTime

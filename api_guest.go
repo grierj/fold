@@ -657,12 +657,12 @@ func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, o
 		if err := tx.Where("person_id = ?", person.ID).Find(&links).Error; err != nil {
 			return err
 		}
-		zone, err := contactZone(tx)
+		today, err := churchClockIn(tx, time.Now().UTC())
 		if err != nil {
 			return err
 		}
 		hr := householdRelOf(account, true)
-		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, time.Now().In(zone)), holder.CanSignIn(), allowed, allowed) != "" {
+		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, today), holder.CanSignIn(), allowed, allowed) != "" {
 			return errTokenInvalid
 		}
 	}

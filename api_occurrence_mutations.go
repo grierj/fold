@@ -54,7 +54,13 @@ func occurrenceFactsIn(tx *gorm.DB, eventID, occurrenceID uint) (policy.Occurren
 	return f, nil
 }
 
-func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time, zone *time.Location) (policy.ContactAccount, error) {
+// occurrenceAccountIn counts the account's age on the church's calendar, as every
+// contact path does.
+func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time) (policy.ContactAccount, error) {
+	zone, err := churchZoneIn(tx)
+	if err != nil {
+		return policy.ContactAccount{}, err
+	}
 	u, err := contactUser(tx, userID)
 	if err != nil {
 		return policy.ContactAccount{}, err
@@ -75,14 +81,11 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if r.Purpose != policy.RequestOccurrenceAdd || r.ContextType != policy.ContactEvent || r.OccurrenceID == nil {
 		return f, nil
 	}
-	zone, err := contactZone(tx)
-	if err != nil {
+	var err error
+	if f.Requester, err = occurrenceAccountIn(tx, r.RequesterID, now); err != nil {
 		return f, err
 	}
-	if f.Requester, err = occurrenceAccountIn(tx, r.RequesterID, now, zone); err != nil {
-		return f, err
-	}
-	if f.Subject, err = occurrenceAccountIn(tx, r.SubjectUserID, now, zone); err != nil {
+	if f.Subject, err = occurrenceAccountIn(tx, r.SubjectUserID, now); err != nil {
 		return f, err
 	}
 	if f.Occurrence, err = occurrenceFactsIn(tx, r.ContextID, *r.OccurrenceID); err != nil {
@@ -209,7 +212,7 @@ func liveOccurrenceInvitationIn(tx *gorm.DB, row models.Registration, now time.T
 	if err != nil {
 		return false, err
 	}
-	account, err := occurrenceAccountIn(tx, *row.UserID, now, time.UTC)
+	account, err := occurrenceAccountIn(tx, *row.UserID, now)
 	if err != nil {
 		return false, err
 	}
@@ -292,7 +295,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		account, err := occurrenceAccountIn(tx, actor.ID, now, time.UTC)
+		account, err := occurrenceAccountIn(tx, actor.ID, now)
 		if err != nil {
 			return err
 		}

@@ -26,33 +26,8 @@ const (
 	maxEventWindow = 366 * 24 * time.Hour
 )
 
-func (a *App) churchTimezone() string {
-	loc, err := churchLocationIn(a.DB)
-	if err != nil {
-		return "UTC"
-	}
-	return loc.String()
-}
-
-// churchLocationIn keeps the UTC fallback for missing or invalid settings.
-// Database failures return to the caller so mail preparation can retry.
-func churchLocationIn(db *gorm.DB) (*time.Location, error) {
-	var s models.Setting
-	if err := db.Where("key = ?", settingTimezone).First(&s).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return time.UTC, nil
-		}
-		return nil, err
-	}
-	loc, err := events.LoadZone(s.Value)
-	if err != nil {
-		return time.UTC, nil
-	}
-	return loc, nil
-}
-
 func (a *App) apiSite(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"name": a.siteName(), "timezone": a.churchTimezone(), "selfSignup": a.selfSignupMode(), "roomsEnabled": a.roomsEnabled(),
+	c.JSON(http.StatusOK, gin.H{"name": a.siteName(), "timezone": churchZoneOrUTC(a.DB).String(), "selfSignup": a.selfSignupMode(), "roomsEnabled": a.roomsEnabled(),
 		// The directions page (/notifications/setup) is public and hides
 		// itself when the church turned notifications off (DEC-124).
 		"pushEnabled": a.pushEnabled()})
@@ -358,10 +333,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
-	loc, err := time.LoadLocation(ev.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(ev.TZID)
 	dur := ev.DurationMinutes
 	if o.DurationOverride != nil {
 		dur = *o.DurationOverride
@@ -558,7 +530,7 @@ type eventBody struct {
 // those dates. A rule that passes here cannot fail later as a 500 or leave
 // the daily extender stuck.
 func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, []events.When, bool) {
-	spec := events.Spec{TZID: a.churchTimezone()}
+	spec := events.Spec{TZID: churchZoneOrUTC(a.DB).String()}
 	if base != nil {
 		spec.StartsLocal = base.StartsLocal
 		spec.DurationMinutes = base.DurationMinutes

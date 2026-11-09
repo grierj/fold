@@ -583,10 +583,10 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
-	facts.clock = func() time.Time { return a.householdClock(now) }
+	facts.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
 	entries := make([]events.WaitEntry, 0, len(wl))
 	for _, r := range wl {
-		if !facts.eligible(a, tx, r, ev, access) {
+		if !facts.eligible(a, tx, r, ev, access, now) {
 			continue
 		}
 		entries = append(entries, entryOf(r))
@@ -1092,7 +1092,10 @@ func (a *App) apiRegister(c *gin.Context) {
 			if !registrable() {
 				return errOccurrenceNotFound
 			}
-			today = a.householdClock(now)
+			var err error
+			if today, err = churchClockIn(tx, now); err != nil {
+				return err
+			}
 		}
 		personIDs := make([]uint, 0, len(body.People))
 		for _, answer := range body.People {
@@ -1117,7 +1120,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			return errOccurrenceGateRetry
 		}
 		if hasInvitation {
-			live, err := liveOccurrenceInvitationIn(tx, ownRow, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, ownRow, now)
 			if err != nil {
 				return err
 			}
@@ -1181,7 +1184,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		access := map[uint]bool{}
 		for _, r := range candidates {
-			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, access) {
+			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, access, now) {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
@@ -1190,7 +1193,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			return err
 		}
 		if hasInvitation && body.Status == models.RegDeclined {
-			err := endRegistrationAccess(tx, &ownRow, accessScopeOf(ev), policy.OccurrenceDeclined, &holder.ID, time.Now().UTC(), c.ClientIP(), true)
+			err := endRegistrationAccess(tx, &ownRow, accessScopeOf(ev), policy.OccurrenceDeclined, &holder.ID, now, c.ClientIP(), true)
 			if err != nil {
 				return err
 			}
@@ -1322,6 +1325,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		if err := lockRegistrationHolder(tx, body.RegistrationID, o.ID); err != nil {
 			return err
 		}
+		now := time.Now().UTC()
 		locked, err := lockOccurrence(tx, o.ID)
 		if err != nil {
 			return err
@@ -1333,11 +1337,11 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		}
 		hadGrant, priorStatus := r.AccessLive(), r.Status
 		if hadGrant {
-			account, err := occurrenceAccountIn(tx, me.ID, time.Now().UTC(), time.UTC)
+			account, err := occurrenceAccountIn(tx, me.ID, now)
 			if err != nil {
 				return err
 			}
-			live, err := liveOccurrenceInvitationIn(tx, r, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, r, now)
 			if err != nil {
 				return err
 			}
@@ -1370,14 +1374,14 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 				return err
 			}
 			for i := range pending {
-				err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, time.Now().UTC())
+				err := finishContactRequest(tx, &pending[i], policy.ContactEnded, policy.OccurrenceRemoved, now)
 				if err != nil {
 					return err
 				}
 			}
 		}
 		if hadGrant {
-			err = endRegistrationAccess(tx, &r, accessScopeOf(ev), policy.OccurrenceRemoved, &me.ID, time.Now().UTC(), c.ClientIP(), true)
+			err = endRegistrationAccess(tx, &r, accessScopeOf(ev), policy.OccurrenceRemoved, &me.ID, now, c.ClientIP(), true)
 		} else {
 			err = notifyRegistrationRemoved(tx, ev, locked, r, note, me.ID)
 		}
@@ -1388,7 +1392,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		// promoteLocked checks remaining attendance/childcare room and cutoff;
 		// being at or over capacity after removal never seats another party.
 		if priorStatus == models.RegGoing {
-			err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			err := a.promoteLocked(tx, ev, locked, now, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1448,6 +1452,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		if err := lockRegistrationHolder(tx, body.RegistrationID, o.ID); err != nil {
 			return err
 		}
+		now := time.Now().UTC()
 		locked, err := lockOccurrence(tx, o.ID)
 		if err != nil {
 			return err
@@ -1457,7 +1462,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 			body.RegistrationID, locked.ID, models.RegWaitlisted).First(&r).Error; err != nil {
 			return errRegNotFound
 		}
-		if !a.eligibleRegistration(tx, r, ev, time.Now().UTC()) {
+		if !a.eligibleRegistration(tx, r, ev, now) {
 			return householdRegistrationError{code: "household_registration_holder_unavailable"}
 		}
 		// A waitlisted entry promotes into its own pool (M1.8 slice 2).
@@ -1482,7 +1487,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		}); err != nil {
 			return err
 		}
-		err = a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
+		err = a.promoteRows(tx, ev, locked, []models.Registration{r}, now, &me.ID)
 		if err != nil {
 			return err
 		}
@@ -1834,13 +1839,13 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 				}
 			}
 			facts = a.loadSubjectFacts(tx, currentRegs, nil)
-			facts.clock = func() time.Time { return a.householdClock(now) }
+			facts.clock = func() time.Time { return now.In(churchZoneOrUTC(tx)) }
 			facts.users[holder.ID] = &holder
 			access = map[uint]bool{}
 		}
 		fits := true
 		if r.HouseholdPersonID != nil {
-			fits = facts.eligible(a, tx, r, &ev, access)
+			fits = facts.eligible(a, tx, r, &ev, access, now)
 		} else {
 			fits = a.canRegisterDate(tx, &holder, &ev, o)
 		}
@@ -1940,8 +1945,12 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		}
 		acct, found := householdAccountIn(tx, holderID)
 		links := guardianLinksForPeople(tx, []uint{personID})
+		today, err := churchClockIn(tx, now)
+		if err != nil {
+			return err
+		}
 		f := eventFactsIn(tx, actor, ev)
-		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
+		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], today), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
 		if problem != "" {
 			return householdRegistrationError{code: problem}
 		}

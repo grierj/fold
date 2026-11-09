@@ -43,7 +43,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 			}
 		}
 	}
-	users, accounts, err := occurrenceAccountsIn(tx, userIDs, op.now, op.zone)
+	users, accounts, err := occurrenceAccountsIn(tx, userIDs, op.now)
 	if err != nil {
 		return nil, err
 	}

@@ -130,7 +130,7 @@ func (a *App) householdPersonRow(tx *gorm.DB, person *models.HouseholdPerson, vi
 func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint, links map[uint][]models.GuardianLink) (*conversionBatch, error) {
 	// Use the caller's transaction, including its context and connection. A
 	// mail job must not take another connection while holding an invitation.
-	today, err := householdClockIn(tx, time.Now().UTC())
+	today, err := churchClockIn(tx, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -683,7 +683,11 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) {
 		return 0, errConversionDetails
 	}
-	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], a.householdClock(time.Now().UTC())); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
+	today, err := churchClockIn(tx, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
 		return 0, errConversionAdult
 	}
 	inviter := locked[inv.InvitedBy]

@@ -721,10 +721,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; err != nil {
 		return out, nil
 	}
-	loc, err := time.LoadLocation(ev.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(ev.TZID)
 	statuses := au.Statuses
 	if len(statuses) == 0 {
 		statuses = defaultRegStatuses
@@ -840,10 +837,7 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 	if err != nil || len(keys) == 0 {
 		return false, err
 	}
-	loc, err := time.LoadLocation(a.churchTimezone())
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := churchZoneOrUTC(a.DB)
 	local := when.In(loc)
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	var others []models.Message

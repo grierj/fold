@@ -18,7 +18,12 @@ func (a *App) classifyAccountInput(c *gin.Context, band, birthDate string) (stri
 		jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
 		return "", nil, false
 	}
-	kind, err := accounts.Classify(strings.TrimSpace(band), birth, a.householdClock(time.Now().UTC()))
+	today, err := churchClockIn(a.DB, time.Now().UTC())
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not check the birth date")
+		return "", nil, false
+	}
+	kind, err := accounts.Classify(strings.TrimSpace(band), birth, today)
 	if errors.Is(err, accounts.ErrUnder13) {
 		jsonError(c, http.StatusBadRequest, "Fold accounts start at 13. A parent or guardian can add a younger child to their household and sign them up for events.")
 		return "", nil, false

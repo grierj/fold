@@ -82,10 +82,7 @@ type messageReminderJSON struct {
 // (the date's title, its time on the event's clock); any other field
 // stays as written.
 func reminderSubject(subject string, d messageReminderJSON) string {
-	loc, err := time.LoadLocation(d.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(d.TZID)
 	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
 }
 

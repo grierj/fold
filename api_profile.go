@@ -1234,9 +1234,16 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 		}
 		birth = parsed
 	}
-	if birth != nil && (accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 0 || (kind == models.HouseholdAdult && accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 18)) {
-		registrationError(c, householdRegistrationError{code: "household_age_mismatch"})
-		return models.HouseholdPerson{}, false
+	if birth != nil {
+		today, err := churchClockIn(a.DB, time.Now().UTC())
+		if err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not check the birth date")
+			return models.HouseholdPerson{}, false
+		}
+		if age := accounts.AgeOn(*birth, today); age < 0 || (kind == models.HouseholdAdult && age < 18) {
+			registrationError(c, householdRegistrationError{code: "household_age_mismatch"})
+			return models.HouseholdPerson{}, false
+		}
 	}
 	careNotes := ""
 	if body.CareNotes != nil {
@@ -1465,8 +1472,14 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 				merged.BirthDate = birth.(*time.Time)
 			}
 		}
-		if merged.BirthDate != nil && (accounts.AgeOn(*merged.BirthDate, a.householdClock(time.Now().UTC())) < 0 || (merged.Kind == models.HouseholdAdult && accounts.AgeOn(*merged.BirthDate, a.householdClock(time.Now().UTC())) < 18)) {
-			return householdRegistrationError{code: "household_age_mismatch", personID: person.ID}
+		if merged.BirthDate != nil {
+			today, err := churchClockIn(tx, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if age := accounts.AgeOn(*merged.BirthDate, today); age < 0 || (merged.Kind == models.HouseholdAdult && age < 18) {
+				return householdRegistrationError{code: "household_age_mismatch", personID: person.ID}
+			}
 		}
 		if merged.Kind == models.HouseholdAdult && merged.BirthDate == nil {
 			var n int64

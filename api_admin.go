@@ -416,7 +416,11 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
 				return err
 			}
-			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
+			today, err := churchClockIn(tx, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if err := a.completeTeenConversionIfReady(tx, &teen, today, c.ClientIP()); err != nil {
 				return err
 			}
 			if _, err := jobs.Enqueue(tx, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
@@ -873,7 +877,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if err := tx.Model(u).Updates(updates).Error; err != nil {
 				return err
 			}
-			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP())
+			today, err := churchClockIn(tx, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			return a.completeTeenConversionIfReady(tx, u, today, c.ClientIP())
 		})
 		if needSuccessors(c, err) {
 			return

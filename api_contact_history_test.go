@@ -384,8 +384,8 @@ func TestContactHistoryCursorExportBoundsAndTypedAttribution(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	// Old budget 7 + initial churchTimezone + final actor FOR SHARE + final
-	// contactZone = 10. Authorization reads are constant, not per history row.
+	// Old budget 7 + initial church-zone read + final actor FOR SHARE + final
+	// church-zone read = 10. Authorization reads are constant, not per history row.
 	if pages != 3 || actorLocks != 1 || zoneReads != 2 {
 		t.Fatal("export query shape", pages, actorLocks, zoneReads)
 	}

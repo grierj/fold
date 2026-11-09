@@ -107,7 +107,7 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, no
 		}
 		ids = append(ids, row.OccurrenceID)
 	}
-	users, accounts, err := occurrenceAccountsIn(tx, subjectIDs, now, time.UTC)
+	users, accounts, err := occurrenceAccountsIn(tx, subjectIDs, now)
 	if err != nil {
 		return nil, err
 	}
@@ -406,11 +406,15 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 
 // occurrenceAccountsIn uses the same latest-consent ordering as the single-user
 // loader. Facts are local to the caller's transaction, never cached authority.
-func occurrenceAccountsIn(tx *gorm.DB, ids []uint, now time.Time, zone *time.Location) (map[uint]*models.User, map[uint]policy.ContactAccount, error) {
+func occurrenceAccountsIn(tx *gorm.DB, ids []uint, now time.Time) (map[uint]*models.User, map[uint]policy.ContactAccount, error) {
 	users := map[uint]*models.User{}
 	accounts := map[uint]policy.ContactAccount{}
 	if len(ids) == 0 {
 		return users, accounts, nil
+	}
+	zone, err := churchZoneIn(tx)
+	if err != nil {
+		return nil, nil, err
 	}
 	var rows []models.User
 	if err := tx.Where("id IN ?", ids).Find(&rows).Error; err != nil {
