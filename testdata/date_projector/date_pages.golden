@@ -1,0 +1,2231 @@
+### signed out GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### signed out GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### signed out GET /api/v1/events/1/dates/D+21 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### signed out GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### signed out GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "hostedBy": "Fold"
+  }
+}
+### signed out GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "hostedBy": "Fold"
+  }
+}
+### signed out GET /api/v1/events/3/dates/D+9 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### signed out GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### signed out GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "hostedBy": "Fold"
+  }
+}
+### signed out GET /api/v1/events/5/dates/D+11 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Ada Admin GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+6T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+7T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Ada Admin GET /api/v1/events/1/dates/D+21 -> 200
+{
+  "occurrence": {
+    "id": 3,
+    "eventId": 1,
+    "date": "D+21",
+    "dateUrl": "/events/1/dates/D+21",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+21T19:00:00Z",
+    "endsAt": "D+21T20:00:00Z",
+    "startsLocal": "D+21T19:00",
+    "endsLocal": "D+21T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "invite_only",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+20T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+21T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+27T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+28T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+7T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+8T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+14T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+15T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/private-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+8T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+9T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/private-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+15T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+16T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/potluck-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+9T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+10T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Ada Admin GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+10T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+11T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+6T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+7T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Lee Leader GET /api/v1/events/1/dates/D+21 -> 200
+{
+  "occurrence": {
+    "id": 3,
+    "eventId": 1,
+    "date": "D+21",
+    "dateUrl": "/events/1/dates/D+21",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+21T19:00:00Z",
+    "endsAt": "D+21T20:00:00Z",
+    "startsLocal": "D+21T19:00",
+    "endsLocal": "D+21T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "invite_only",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+20T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+21T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+27T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+28T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+7T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+8T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+14T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+15T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/private-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+8T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+9T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/private-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+15T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+16T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Lee Leader GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Lee Leader GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Mia Member GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": "going",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 1,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Mia Member GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Mia Member GET /api/v1/events/1/dates/D+21 -> 200
+{
+  "occurrence": {
+    "id": 3,
+    "eventId": 1,
+    "date": "D+21",
+    "dateUrl": "/events/1/dates/D+21",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+21T19:00:00Z",
+    "endsAt": "D+21T20:00:00Z",
+    "startsLocal": "D+21T19:00",
+    "endsLocal": "D+21T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "invite_only",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Mia Member GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Mia Member GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group"
+  }
+}
+### Mia Member GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "Secret Room",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 2,
+    "groupName": "Hidden Group"
+  }
+}
+### Mia Member GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Mia Member GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Mia Member GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": "maybe",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Mia Member GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Ivy Invited GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": "maybe",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Ivy Invited GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Ivy Invited GET /api/v1/events/1/dates/D+21 -> 200
+{
+  "occurrence": {
+    "id": 3,
+    "eventId": 1,
+    "date": "D+21",
+    "dateUrl": "/events/1/dates/D+21",
+    "title": "Open Study",
+    "location": "",
+    "startsAt": "D+21T19:00:00Z",
+    "endsAt": "D+21T20:00:00Z",
+    "startsLocal": "D+21T19:00",
+    "endsLocal": "D+21T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": "going",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/study-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": true,
+    "canBlock": true
+  }
+}
+### Ivy Invited GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Ivy Invited GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Ivy Invited GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Ivy Invited GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Ivy Invited GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Ivy Invited GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Ivy Invited GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Sam Stranger GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": "declined",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Sam Stranger GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Sam Stranger GET /api/v1/events/1/dates/D+21 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Sam Stranger GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Sam Stranger GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Sam Stranger GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Sam Stranger GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Sam Stranger GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": "going",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/private-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Sam Stranger GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Sam Stranger GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Hal Host GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Hal Host GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Hal Host GET /api/v1/events/1/dates/D+21 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Hal Host GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Hal Host GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Hal Host GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Hal Host GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Hal Host GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Hal Host GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": "going",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/potluck-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+9T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+10T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Hal Host GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold",
+    "reminders": {
+      "minutes": 1440,
+      "dueAt": "D+10T19:00:00Z",
+      "covered": false,
+      "push": true,
+      "pushDueAt": "D+11T17:00:00Z",
+      "messages": []
+    }
+  }
+}
+### Tess Teen GET /api/v1/events/1/dates/D+7 -> 200
+{
+  "occurrence": {
+    "id": 1,
+    "eventId": 1,
+    "date": "D+7",
+    "dateUrl": "/events/1/dates/D+7",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+7T19:00:00Z",
+    "endsAt": "D+7T20:00:00Z",
+    "startsLocal": "D+7T19:00",
+    "endsLocal": "D+7T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": "waitlisted",
+    "myAttendanceMode": "in_person",
+    "myGuestCount": 0,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Tess Teen GET /api/v1/events/1/dates/D+14 -> 404
+{
+  "code": "not_found",
+  "error": "event not found"
+}
+### Tess Teen GET /api/v1/events/1/dates/D+21 -> 200
+{
+  "occurrence": {
+    "id": 3,
+    "eventId": 1,
+    "date": "D+21",
+    "dateUrl": "/events/1/dates/D+21",
+    "title": "Open Study",
+    "location": "Open Hall",
+    "startsAt": "D+21T19:00:00Z",
+    "endsAt": "D+21T20:00:00Z",
+    "startsLocal": "D+21T19:00",
+    "endsLocal": "D+21T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "invite_only",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Tess Teen GET /api/v1/events/1/dates/D+28 -> 200
+{
+  "occurrence": {
+    "id": 4,
+    "eventId": 1,
+    "date": "D+28",
+    "dateUrl": "/events/1/dates/D+28",
+    "title": "Renamed Study",
+    "location": "Back Room",
+    "startsAt": "D+28T19:00:00Z",
+    "endsAt": "D+28T20:30:00Z",
+    "startsLocal": "D+28T19:00",
+    "endsLocal": "D+28T20:30",
+    "tzid": "UTC",
+    "durationMinutes": 90,
+    "remoteAvailable": false,
+    "guestsAllowed": 2,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Tess Teen GET /api/v1/events/2/dates/D+8 -> 200
+{
+  "occurrence": {
+    "id": 5,
+    "eventId": 2,
+    "date": "D+8",
+    "dateUrl": "/events/2/dates/D+8",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+8T19:00:00Z",
+    "endsAt": "D+8T20:00:00Z",
+    "startsLocal": "D+8T19:00",
+    "endsLocal": "D+8T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Tess Teen GET /api/v1/events/2/dates/D+15 -> 200
+{
+  "occurrence": {
+    "id": 6,
+    "eventId": 2,
+    "date": "D+15",
+    "dateUrl": "/events/2/dates/D+15",
+    "title": "Opened Event",
+    "location": "",
+    "startsAt": "D+15T19:00:00Z",
+    "endsAt": "D+15T20:00:00Z",
+    "startsLocal": "D+15T19:00",
+    "endsLocal": "D+15T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoUrl": "https://example.com/opened-call",
+    "videoHidden": false,
+    "canSeeVideo": true,
+    "canSeeAttendees": false,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Tess Teen GET /api/v1/events/3/dates/D+9 -> 200
+{
+  "occurrence": {
+    "id": 7,
+    "eventId": 3,
+    "date": "D+9",
+    "dateUrl": "/events/3/dates/D+9",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+9T19:00:00Z",
+    "endsAt": "D+9T20:00:00Z",
+    "startsLocal": "D+9T19:00",
+    "endsLocal": "D+9T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Tess Teen GET /api/v1/events/3/dates/D+16 -> 200
+{
+  "occurrence": {
+    "id": 8,
+    "eventId": 3,
+    "date": "D+16",
+    "dateUrl": "/events/3/dates/D+16",
+    "title": "Private Event",
+    "location": "Private Porch",
+    "startsAt": "D+16T19:00:00Z",
+    "endsAt": "D+16T20:00:00Z",
+    "startsLocal": "D+16T19:00",
+    "endsLocal": "D+16T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "groupId": 1,
+    "groupName": "Open Group"
+  }
+}
+### Tess Teen GET /api/v1/events/4/dates/D+10 -> 200
+{
+  "occurrence": {
+    "id": 9,
+    "eventId": 4,
+    "date": "D+10",
+    "dateUrl": "/events/4/dates/D+10",
+    "title": "Church Potluck",
+    "location": "Fellowship Hall",
+    "startsAt": "D+10T19:00:00Z",
+    "endsAt": "D+10T20:00:00Z",
+    "startsLocal": "D+10T19:00",
+    "endsLocal": "D+10T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": true,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "link",
+    "videoHidden": true,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "public",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}
+### Tess Teen GET /api/v1/events/5/dates/D+11 -> 200
+{
+  "occurrence": {
+    "id": 10,
+    "eventId": 5,
+    "date": "D+11",
+    "dateUrl": "/events/5/dates/D+11",
+    "title": "Staff Retreat",
+    "location": "",
+    "startsAt": "D+11T19:00:00Z",
+    "endsAt": "D+11T20:00:00Z",
+    "startsLocal": "D+11T19:00",
+    "endsLocal": "D+11T20:00",
+    "tzid": "UTC",
+    "durationMinutes": 60,
+    "remoteAvailable": false,
+    "guestsAllowed": 0,
+    "myRegistration": null,
+    "videoProvider": "none",
+    "videoHidden": false,
+    "canSeeVideo": false,
+    "canSeeAttendees": true,
+    "canDecline": false,
+    "canBlock": false,
+    "visibility": "private",
+    "canRegister": true,
+    "hostedBy": "Fold"
+  }
+}

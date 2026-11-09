@@ -115,7 +115,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		return
 	}
 	out := []calendarOccurrenceJSON{}
-	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
+	byID, hosted, visibleIDs := vs.ByID, vs.Hosted, vs.IDs
 	now := a.calendarTime()
 	scoped, err := a.scopedOccurrenceReads(me, a.DB.Where("starts_at >= ? AND starts_at < ? AND event_id IN (?)",
 		windowStart.UTC(), windowEnd.UTC(), q.Model(&models.Event{}).Select("id")), now)
@@ -166,93 +166,26 @@ func (a *App) apiCalendar(c *gin.Context) {
 	}
 
 	truncated := false
-	siteName := ""
+	siteName := &siteNameOnce{a: a}
 	for i := range occs {
 		occ := &occs[i]
-		ev := byID[occ.EventID]
-		ordinary := vs.canSeeDate(me, ev, occ)
-		read := scoped[occ.ID]
-		exact := read != nil
-		if !ordinary && !exact {
+		date, ok := a.projectDate(me, vs, occ, scoped[occ.ID])
+		if !ok {
 			continue
 		}
-		if ev == nil && read != nil {
-			ev = &read.Event
-		}
-		_, rel := groupAndRel(ev, groups, rels)
 		status := scopeFacts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, me != nil, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
+		decision := calendarScopeDecision(scope, me != nil, date.Event, occ, date.Rel, hosted[date.Event.ID], scopeFacts.household[occ.ID], scoped[occ.ID] != nil, status, now)
 		if !decision.Include {
 			continue
 		}
-		if !ordinary {
-			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
-			if c.Query("remote") == "1" && !date.RemoteAvailable {
-				continue
-			}
-			if len(out) >= maxCalendarOccurrences {
-				truncated = true
-				break
-			}
-			var myStatus *string
-			if status != "" {
-				s := status
-				myStatus = &s
-			}
-			out = append(out, calendarOccurrenceJSON{EventID: date.EventID, Date: date.Date, DateURL: date.DateURL,
-				StartsAt: date.StartsAt, EndsAt: date.EndsAt, Title: date.Title, Location: date.Location,
-				ChurchWide: read.Event.GroupID == nil, RemoteAvailable: date.RemoteAvailable,
-				ChildcareAvailable: read.Event.ChildcareAvailable, MyStatus: myStatus, OwnScope: decision.OwnScope})
-			continue
-		}
-		grp, rel := groupAndRel(ev, groups, rels)
-		shown := a.groupShownTo(me, grp, rel)
-		groupLoc := ""
-		if shown != nil {
-			groupLoc = shown.Location
-		}
-		full := occurrenceToJSON(ev, occ, groupLoc)
-		remoteAvailable := events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity)
-		if c.Query("remote") == "1" && !remoteAvailable {
+		if c.Query("remote") == "1" && !date.RemoteOffered() {
 			continue
 		}
 		if len(out) >= maxCalendarOccurrences {
 			truncated = true
 			break
 		}
-		row := calendarOccurrenceJSON{
-			EventID:            ev.ID,
-			Date:               models.FormatCalendarDate(occ.OriginalDate),
-			StartsAt:           full.StartsAt,
-			EndsAt:             full.EndsAt,
-			Title:              full.Title,
-			Location:           full.Location,
-			ChurchWide:         ev.GroupID == nil,
-			RemoteAvailable:    remoteAvailable,
-			ChildcareAvailable: ev.ChildcareAvailable,
-		}
-		if !vs.canSeeSeries(me, ev) {
-			row.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
-		}
-		if shown != nil {
-			gid := shown.ID
-			row.GroupID = &gid
-			row.GroupName = shown.Name
-			row.GroupDeleted = shown.DeletedAt.Valid
-		} else if ev.GroupID != nil {
-			// An opened event of a group this viewer can't see names
-			// nobody: it is hosted by the church (DEC-17).
-			if siteName == "" {
-				siteName = a.siteName()
-			}
-			row.HostedBy = siteName
-		}
-		if status != "" {
-			s := status
-			row.MyStatus = &s
-		}
-		row.OwnScope = decision.OwnScope
-		out = append(out, row)
+		out = append(out, date.calendarRow(siteName, status, decision.OwnScope))
 	}
 	c.JSON(http.StatusOK, calendarResponseJSON{Occurrences: out, Truncated: truncated})
 }

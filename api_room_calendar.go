@@ -181,7 +181,7 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 		occByID[occs[i].ID] = &occs[i]
 	}
 
-	siteName := ""
+	siteName := &siteNameOnce{a: a}
 	for _, r := range rows {
 		slot := roomSlotJSON{StartsAt: r.StartsAt, EndsAt: r.EndsAt, Reserved: true}
 		occ := occByID[r.OccurrenceID]
@@ -196,18 +196,10 @@ func (a *App) apiRoomCalendar(c *gin.Context) {
 				slot.DateURL = occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
 			}
 			grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-			if shown := a.groupShownTo(me, grp, rel); shown != nil {
-				gid := shown.ID
-				slot.GroupID = &gid
-				slot.GroupName = shown.Name
-			} else if ev.GroupID != nil {
-				// An opened event of a group this viewer can't see names
-				// nobody: the church hosts it (DEC-17).
-				if siteName == "" {
-					siteName = a.siteName()
-				}
-				slot.HostedBy = siteName
-			}
+			// An opened event of a group this viewer can't see names nobody:
+			// the church hosts it (DEC-17).
+			l := labelGroup(a.groupShownTo(me, grp, rel), ev.GroupID != nil, siteName)
+			slot.GroupID, slot.GroupName, slot.HostedBy = l.ID, l.Name, l.HostedBy
 		case scoped[occ.ID] != nil:
 			// An exact-date invitation shows that date and its title, never
 			// the series or its group.

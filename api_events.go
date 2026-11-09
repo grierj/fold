@@ -82,7 +82,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	if len(vs.IDs) == 0 {
 		return out, false, nil
 	}
-	evs, byID, groups, rels := vs.Events, vs.ByID, vs.Groups, vs.Rels
+	evs, byID := vs.Events, vs.ByID
 	eventIDs = vs.IDs
 
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
@@ -222,7 +222,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		}
 	}
 
-	siteName := ""
+	siteName := &siteNameOnce{a: a}
 	keptIDs := make([]uint, len(kept))
 	for i := range kept {
 		keptIDs[i] = kept[i].ID
@@ -230,19 +230,12 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	rooms := a.occurrenceRooms(a.DB, keptIDs)
 	for i := range kept {
 		o := &kept[i]
-		ev := byID[o.EventID]
-		if ev == nil {
+		date, ok := a.projectDate(me, vs, o, nil)
+		if !ok {
 			continue
 		}
-		g, rel := groupAndRel(ev, groups, rels)
-		// The group's meeting place is the default location only for people
-		// who can see the group; an opened invite-only event must not reveal it.
-		loc := ""
-		shown := a.groupShownTo(me, g, rel)
-		if shown != nil {
-			loc = shown.Location
-		}
-		inst := occurrenceToJSON(ev, o, loc)
+		ev := date.Event
+		inst := date.occurrenceJSON(siteName)
 		inst.Room = rooms[o.ID]
 		inst.MyHouseholdRegistrations = ownHousehold[o.ID]
 		if inst.MyHouseholdRegistrations == nil {
@@ -251,9 +244,6 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		if showDeclined[ev.ID] {
 			inst.RemovedRegistrations = removed[o.ID]
 		}
-		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
-		inst.LeaderOpened = ev.LeaderOpened
-		inst.ChurchWide = ev.GroupID == nil
 		inst.Registrations = registrationCounts(countOf[o.ID], showDeclined[ev.ID])
 		used := usedMap[o.ID]
 		inst.SeatsUsed = used
@@ -274,8 +264,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		}
 		// The video link is per date: going on this date (or running the
 		// event) reveals a registered_only link (policy.CanSeeVideoLink).
-		applyVideoReveal(&inst, ev,
-			mine[o.ID].Status == models.RegGoing || householdVideo[o.ID], showDeclined[ev.ID])
+		date.listVideo(&inst, mine[o.ID].Status == models.RegGoing || householdVideo[o.ID])
 		inst.AttendeesVisible = showNames[ev.ID]
 		if showNames[ev.ID] {
 			inst.Attendees = names[o.ID]
@@ -288,16 +277,6 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 				}
 				inst.Attendees = kept
 			}
-		}
-		if shown == nil && siteName == "" {
-			siteName = a.siteName()
-		}
-		presentGroup(&inst, shown, siteName)
-		if !vs.canSeeSeries(me, ev) {
-			// Like the exact-date page: a hidden parent contributes no
-			// series fields, description or childcare details (PLAN 8.2). The
-			// video link already follows the date page's reveal rule above.
-			inst.hideSeriesDetails(occurrenceDatePath(ev.ID, models.FormatCalendarDate(o.OriginalDate)))
 		}
 		out = append(out, inst)
 	}
