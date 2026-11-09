@@ -203,7 +203,7 @@ func (f *contactReadFixture) compareGrants(t *testing.T, viewers ...*models.User
 			if err != nil {
 				t.Fatal(err)
 			}
-			teen := facts.Subject.Person != nil && facts.Subject.Person.Teen && facts.Subject.AgeYears != nil && *facts.Subject.AgeYears >= 13 && *facts.Subject.AgeYears < 18
+			teen := facts.Subject.IsTeen()
 			if !policy.CanViewContactGrant(actor, guardian, teen, contactGrantPolicy(g, r)) {
 				continue
 			}

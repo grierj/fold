@@ -130,7 +130,7 @@ func AddIneligibility(s AddScope, f AddFacts, needsAdmin bool) string {
 	if needsAdmin && f.Subject.AgeYears != nil && *f.Subject.AgeYears >= 18 {
 		return ContactTurned18
 	}
-	if (needsAdmin && !f.Subject.teen()) || (!needsAdmin && !f.Subject.adult()) {
+	if (needsAdmin && !f.Subject.IsTeen()) || (!needsAdmin && !f.Subject.adult()) {
 		return ContactAccountDisabled
 	}
 	if !f.ContextActive || f.ContextType != s.ContextType || f.ContextID != s.ContextID {

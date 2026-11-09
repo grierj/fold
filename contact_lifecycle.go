@@ -472,9 +472,8 @@ func contactGuardians(tx *gorm.DB, teen uint) ([]uint, error) {
 	return ids, err
 }
 func contactConfirmedGuardian(tx *gorm.DB, actor, teen uint) (bool, error) {
-	var n int64
-	err := tx.Model(&models.GuardianLink{}).Where("guardian_user_id = ? AND teen_user_id = ? AND status = ?", actor, teen, models.GuardianConfirmed).Count(&n).Error
-	return n > 0, err
+	links, err := confirmedGuardianLinks(tx, actor, []uint{teen})
+	return links[teen], err
 }
 
 func contactNotice(tx *gorm.DB, r models.ContactRequest, kind string, recipients []uint, key string) error {

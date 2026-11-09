@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"unicode"
@@ -156,8 +157,9 @@ func (a *App) apiTokenEmailSettings(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load email settings")
 		return
 	}
+	fromCategory, _ := categoryOfScope(link.Scope)
 	c.JSON(http.StatusOK, emailSettingsLinkJSON{EmailSettings: s, Email: maskEmail(u.Email),
-		FromCategory: strings.TrimPrefix(link.Scope, "category:"), CanTurnOn: link.boundTo(u.Email)})
+		FromCategory: fromCategory, CanTurnOn: link.boundTo(u.Email)})
 }
 
 // apiTokenUpdateEmailSettings changes one switch from the signed-out page.
@@ -180,8 +182,11 @@ func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"emailSettings": s})
 }
 
-// maxChurchAddress bounds the footer address (a few lines).
-const maxChurchAddress = 300
+// maxChurchAddress and maxChurchAddressLines bound the footer address.
+const (
+	maxChurchAddress      = 300
+	maxChurchAddressLines = 6
+)
 
 func (a *App) apiAdminGetChurchAddress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"address": a.churchAddress()})
@@ -197,12 +202,7 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	lines := []string{}
-	for _, l := range strings.Split(strings.ReplaceAll(*body.Address, "\r", ""), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			lines = append(lines, l)
-		}
-	}
+	lines := churchAddressLines(*body.Address)
 	addr := strings.Join(lines, "\n")
 	for _, r := range addr {
 		// Plain characters only: no NUL (Postgres refuses it) or other control,
@@ -212,7 +212,7 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 			return
 		}
 	}
-	if utf8.RuneCountInString(addr) > maxChurchAddress || len(lines) > 6 {
+	if utf8.RuneCountInString(addr) > maxChurchAddress || len(lines) > maxChurchAddressLines {
 		fail(c, errChurchAddressLong)
 		return
 	}
@@ -223,7 +223,20 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"address": addr})
 }
 
-var errChurchAddressLong = apiErr(http.StatusBadRequest, "church_address_long", "the address must be at most 300 characters on 6 lines")
+// churchAddressLines is the one normalization of a postal address: no carriage
+// returns, each line trimmed, blank lines dropped. The setter stores it and the
+// footer renders it.
+func churchAddressLines(address string) []string {
+	lines := []string{}
+	for _, l := range strings.Split(strings.ReplaceAll(address, "\r", ""), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+var errChurchAddressLong = apiErr(http.StatusBadRequest, "church_address_long", fmt.Sprintf("the address must be at most %d characters on %d lines", maxChurchAddress, maxChurchAddressLines))
 
 var errChurchAddressCharacters = apiErr(http.StatusBadRequest, "church_address_characters", "the address has a character that can't go in an email")
 

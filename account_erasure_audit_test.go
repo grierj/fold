@@ -908,7 +908,7 @@ var auditWriterCensus = map[string]string{
 	"api_profile.go:apiDeleteHouseholdPerson":                     "0988a9ba35deecc848bebbda7af43b773f91042364c274cf13d5972f56cb85de",
 	"api_profile.go:apiRequestEmailChange":                        "47dde4ece9b10109a2a709861dd8ede7b41f840030b00f94e5e2c268efbae924",
 	"api_profile.go:apiUpdateHouseholdPerson":                     "91057afc72a767e94c4ff02c02a890b1bbd9f72c182f173c1f587e584c88aa26",
-	"api_profile.go:apiUpdateMe":                                  "6df73176956edcdffc542634fdd38ed1c316384fa629b31d68f49779ec20cb95",
+	"api_profile.go:apiUpdateMe":                                  "b3262ccbdcd1dcaca42e211131e510e4abf3ae042a90dcb55969393aeec23277",
 	"api_profile.go:apiUpdateMyHousehold":                         "2c02ddc4bf65e78173d88a57d0be58945b0dff62e6530b09d2748101589b4582",
 	"api_profile.go:apiVerifyEmailChange":                         "ed76d52dcbe727a70cb2f4dbce8a3271b06e396d7be527dbde1361c165a47950",
 	"api_profile.go:ensureHousehold":                              "9236b5e942983ff2454573eae5fb0b2aec6146c461772d6723207f5ed544cbf8",
@@ -1064,7 +1064,7 @@ func readAuditSourceCensus(sources map[string][]byte) (auditSourceCensus, error)
 	for _, pf := range parsed.Files {
 		name, file := pf.Path, pf.AST
 		aliases := guardkit.ImportNames(file, "fold/internal/audit")
-		// The registry covers both named constants and the one local action literal.
+		// The registry covers the named constants in internal/audit.
 		if name == "internal/audit/audit.go" {
 			for _, decl := range file.Decls {
 				if d, ok := decl.(*ast.GenDecl); ok && d.Tok == token.CONST {
@@ -1157,8 +1157,6 @@ func readAuditSourceCensus(sources map[string][]byte) (auditSourceCensus, error)
 			}
 		}
 	}
-	// The privacy action is defined locally and used through an identifier.
-	out.Actions[contactPrivacyChanged] = true
 	return out, nil
 }
 
@@ -1233,7 +1231,7 @@ func TestAuditErasureCensusRejectsMutations(t *testing.T) {
 		{"conversion identity key rename", "api_household_conversion.go", "transferHouseholdConversion", `"invitationId": inv.ID`, `"renamedInvitationId": inv.ID`},
 		{"signup IP source", "api_teen_guardians.go", "nominateTeenGuardian", `"signup", req.IP`, `"signup", ""`},
 		{"new guardian source", "api_teen_guardians.go", "apiClaimTeenGuardian", `"claim", c.ClientIP()`, `"new_source", c.ClientIP()`},
-		{"actor expression", "api_profile.go", "apiUpdateMe", "Actor: &u.ID, Action: contactPrivacyChanged", "Actor: nil, Action: contactPrivacyChanged"},
+		{"actor expression", "api_profile.go", "apiUpdateMe", "Actor: &u.ID, Action: audit.ContactPrivacyChanged", "Actor: nil, Action: audit.ContactPrivacyChanged"},
 		{"direct IP source", "api_profile.go", "apiUpdateMe", "IP: c.ClientIP()", `IP: ""`},
 		{"indirect metadata key", "api_profile.go", "apiAddHouseholdPerson", `meta["guardianLinkId"]`, `meta["renamedGuardianLinkId"]`},
 	} {

@@ -829,7 +829,15 @@ type emailRecipient struct {
 	ChurchAddress string
 }
 
-func categoryScope(category string) string { return "category:" + category }
+// categoryScope is the consent and unsubscribe scope of one optional
+// notification category; categoryOfScope reads it back.
+const categoryScopePrefix = "category:"
+
+func categoryScope(category string) string { return categoryScopePrefix + category }
+
+func categoryOfScope(scope string) (string, bool) {
+	return strings.CutPrefix(scope, categoryScopePrefix)
+}
 
 // notificationEmailMessage is the mail notify.deliver sends: the
 // stored email text, the absolute link, and, for an optional kind, the

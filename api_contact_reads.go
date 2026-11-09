@@ -121,15 +121,11 @@ func loadContactPageReads(tx *gorm.DB, op *contactOperation, rs []models.Contact
 		}
 	}
 	if guardians {
-		var links []models.GuardianLink
-		if err := tx.Where("guardian_user_id = ? AND teen_user_id IN ? AND status = ?", op.actor.ID, subjectIDs, models.GuardianConfirmed).Find(&links).Error; err != nil {
+		links, err := confirmedGuardianLinks(tx, op.actor.ID, subjectIDs)
+		if err != nil {
 			return nil, err
 		}
-		for _, link := range links {
-			if link.TeenUserID != nil {
-				p.guardians[*link.TeenUserID] = true
-			}
-		}
+		p.guardians = links
 	}
 	return p, nil
 }
@@ -247,7 +243,7 @@ func (a *App) presentContactGrants(tx *gorm.DB, op *contactOperation, gs []model
 		f := page.facts(op, r)
 		guardian := page.guardians[r.SubjectUserID]
 		p := contactGrantPolicy(g, r)
-		teen := f.Subject.Person != nil && f.Subject.Person.Teen && f.Subject.AgeYears != nil && *f.Subject.AgeYears >= 13 && *f.Subject.AgeYears < 18
+		teen := f.Subject.IsTeen()
 		if !policy.CanViewContactGrant(actor, guardian, teen, p) {
 			continue
 		}
