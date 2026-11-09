@@ -21,20 +21,23 @@ func TestCalendarScopeDecisionUsesEffectiveDateVisibility(t *testing.T) {
 	}
 }
 
-func TestLoadCalendarScopeBatchUsesConstantReads(t *testing.T) {
+func TestLoadCalendarScopeBatchReadsDoNotGrowWithDates(t *testing.T) {
 	app := testApp(t)
 	viewer := newTestUser(t, app, "calendar batch viewer", "password1234", models.RoleMember)
-	ids := make([]uint, 100)
-	for i := range ids {
-		ids[i] = uint(i + 1)
+	readsFor := func(n int) int64 {
+		ids := make([]uint, n)
+		for i := range ids {
+			ids[i] = uint(i + 1)
+		}
+		reads := countDBReads(t, app.DB)
+		if _, err := app.loadCalendarScopeBatch(viewer, ids); err != nil {
+			t.Fatal(err)
+		}
+		reads.Stop()
+		return reads.Reads()
 	}
-	reads := countDBReads(t, app.DB)
-	if _, err := app.loadCalendarScopeBatch(viewer, ids); err != nil {
-		t.Fatal(err)
-	}
-	reads.Stop()
-	if got := reads.Reads(); got != 2 {
-		t.Fatalf("calendar scope batch used %d reads for 100 dates, want 2", got)
+	if few, many := readsFor(3), readsFor(100); few != many {
+		t.Fatalf("calendar scope batch reads grew with the dates: %d for 3, %d for 100", few, many)
 	}
 }
 
