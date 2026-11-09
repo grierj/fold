@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Site } from "../api/site";
 import { useAuth } from "../auth";
 import { deviceState, localSubscription, readPushEnv, type DeviceState, type Platform } from "../lib/pushState";
 import { Skeleton } from "../components/ui/Skeleton";
+import { ErrorNotice } from "../components/ErrorNotice";
+import { errorText } from "../lib/errors";
+import { churchName, useSite } from "../lib/useSite";
 import { NotFound } from "./NotFound";
 
 // /notifications/setup (M3.13c2, research 2.7, DEC-127): how to get Fold's
@@ -102,16 +104,12 @@ type Here = { platform: Platform; device: DeviceState; on: boolean; secure: bool
 
 export function NotificationsSetupPage() {
   const { user } = useAuth();
-  const [site, setSite] = useState<{ name: string; pushEnabled: boolean } | null>(null);
+  // A failed read shows an error, not the directions: whether the church has notifications on is what decides if this page exists.
+  const { site, error: siteError, retry } = useSite();
   const [here, setHere] = useState<Here | null>(null);
 
   useEffect(() => {
     let alive = true;
-    // A failed read shows the directions anyway: they are public words.
-    Site.get().then(
-      (s) => { if (alive) setSite({ name: s.name, pushEnabled: s.pushEnabled !== false }); },
-      () => { if (alive) setSite({ name: "", pushEnabled: true }); },
-    );
     const env = readPushEnv();
     const device = deviceState(env);
     const known = { platform: env.platform, device, on: false, secure: env.secure, standalone: env.standalone };
@@ -123,11 +121,12 @@ export function NotificationsSetupPage() {
     return () => { alive = false; };
   }, []);
 
+  if (siteError) return <div className="fold-page fold-page-narrow"><ErrorNotice message={errorText(siteError, "We couldn't load the directions.")} onRetry={retry} /></div>;
   if (!site || !here) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" label="Loading the directions…" /></div>;
   // The church turned notifications off (DEC-124): the page isn't there.
-  if (!site.pushEnabled) return <NotFound />;
+  if (site.pushEnabled === false) return <NotFound />;
 
-  const church = site.name || "Fold";
+  const church = churchName(site) || "Fold";
   const all = sections(church, window.location.host);
   const mine = all.find((s) => s.platform === here.platform) ?? all[2];
   // Reading this inside the Home Screen app: it is already installed, so

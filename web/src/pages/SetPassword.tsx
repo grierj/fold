@@ -13,7 +13,7 @@ export function SetPassword() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const navigate = useNavigate();
-  const { refresh } = useAuth();
+  const { signedIn } = useAuth();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +33,7 @@ export function SetPassword() {
       const result = await AccountRequests.confirm(token, password);
       setPassword("");
       setConfirm("");
-      await refresh();
-      navigate(result.pendingConsent ? "/waiting-for-consent" : "/", { replace: true });
+      navigate(await signedIn(result), { replace: true });
     } catch (err) {
       setError(
         errorCode(err) === "link_expired"

@@ -20,7 +20,7 @@ export function Invite() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const navigate = useNavigate();
-  const { refresh } = useAuth();
+  const { signedIn } = useAuth();
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [site, setSite] = useState("");
   const [name, setName] = useState("");
@@ -62,8 +62,7 @@ export function Invite() {
       const result = await InvitationsApi.accept({ token, name, password, ageBand, birthDate: ageBand === "teen" ? birthDate : undefined });
       setPassword("");
       if (result.pendingApproval) { setWaiting(true); return; }
-      await refresh();
-      navigate(result.pendingConsent ? "/waiting-for-consent" : "/", { replace: true });
+      navigate(await signedIn(result), { replace: true });
     } catch (e) {
       // "That email already has an account" (email_taken) stays: the
       // person holding the invitation can act on it by signing in.

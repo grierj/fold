@@ -6,11 +6,12 @@ import { Adds } from "../api/adds";
 import { ApiError } from "../api/core";
 import { addRequest } from "../test/addRequest";
 import { AddRequestsPage } from "./AddRequests";
+import { RequireUser } from "../components/RequireUser";
 
 const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
 vi.mock("../auth", () => ({ useAuth: () => actor }));
 vi.mock("../api/adds", () => ({ Adds: { request: vi.fn(), requests: vi.fn(), decide: vi.fn(), withdraw: vi.fn(), complete: vi.fn() } }));
-function mount(path = "/add-requests/7") { return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/add-requests" element={<AddRequestsPage />} /><Route path="/add-requests/:id" element={<AddRequestsPage />} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }
+function mount(path = "/add-requests/7") { return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/add-requests" element={<RequireUser><AddRequestsPage /></RequireUser>} /><Route path="/add-requests/:id" element={<RequireUser><AddRequestsPage /></RequireUser>} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }
 beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2 }; vi.mocked(Adds.request).mockResolvedValue({ request: addRequest() }); vi.mocked(Adds.requests).mockResolvedValue({ requests: [] }); });
 
 it.each(["group_add", "occurrence_add"] as const)("supports both teen decision orders in %s, including an admin requester without preapproval", async (purpose) => {

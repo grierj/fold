@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import type { DateReminders } from "../types";
 import { reminderLines } from "../lib/reminders";
-import { useChurchZoneLoad } from "../lib/useEventZone";
+import { useChurchZoneLoad } from "../lib/useSite";
 import { browserTimeZone } from "../lib/when";
 
 // The date page's reminder lines for its event's managers (M3.6b, DEC-133

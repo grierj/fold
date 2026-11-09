@@ -7,7 +7,7 @@ import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { reminderAudience, reminderDateText, reminderName } from "../lib/reminders";
-import { useChurchZoneLoad } from "../lib/useEventZone";
+import { useChurchZoneLoad } from "../lib/useSite";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
 import { AudiencePicker } from "../components/messages/AudiencePicker";

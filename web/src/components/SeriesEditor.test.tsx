@@ -7,6 +7,7 @@ import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { DateRooms, SeriesRooms } from "../api/rooms";
 import { Events } from "../api/events";
 import { Site } from "../api/site";
+import { forgetSite } from "../lib/useSite";
 
 vi.mock("../api/rooms", () => ({ DateRooms: { list: vi.fn() }, SeriesRooms: { list: vi.fn() } }));
 vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
@@ -274,6 +275,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
       expect(screen.getByRole("textbox", { name: /^Location/ }).compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(room.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       unmount();
+      forgetSite();
       vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
       vi.mocked(SeriesRooms.list).mockClear();
       render(<SeriesEditor series={series} idPrefix="room-hint-off" onSaved={() => {}} />);

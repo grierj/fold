@@ -18,12 +18,27 @@ export function clearClientData() {
   }
 }
 
+// What a token sign-in (password reset, set password, accepted invitation)
+// answers with. The server's shapes differ: the account-request and
+// invitation answers carry pendingConsent, the password reset only the
+// user's status; waitingForConsent reads either.
+export interface SignInResult {
+  user?: User;
+  pendingConsent?: boolean;
+}
+
+function waitingForConsent(result: SignInResult): boolean {
+  return result.pendingConsent ?? result.user?.status === "pending_consent";
+}
+
 interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  // A token flow just started a session: load it and say where to go next.
+  signedIn: (result: SignInResult) => Promise<string>;
   isAdmin: boolean;
   // The person may write announcements: they lead an approved group, host
   // a church-wide event, or are an admin (M3.4c). Shows Messages in the nav.
@@ -36,6 +51,7 @@ const AuthContext = createContext<AuthState>({
   login: async () => {},
   logout: async () => {},
   refresh: async () => {},
+  signedIn: async () => "/",
   isAdmin: false,
   canCompose: false,
 });
@@ -95,6 +111,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
+  const signedIn = useCallback(async (result: SignInResult) => {
+    await refresh();
+    return waitingForConsent(result) ? "/waiting-for-consent" : "/";
+  }, [refresh]);
+
   const login = useCallback(async (email: string, password: string) => {
     try {
       const { user, canCompose } = await AuthApi.login(email, password);
@@ -136,10 +157,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       logout,
       refresh,
+      signedIn,
       isAdmin: user?.role === "admin",
       canCompose: !!user && canCompose,
     }),
-    [user, loading, login, logout, refresh, canCompose]
+    [user, loading, login, logout, refresh, signedIn, canCompose]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

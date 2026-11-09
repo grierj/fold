@@ -164,7 +164,7 @@ describe("the Rooms view item (M2.2a)", () => {
     expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
   });
 
-  it("hides Rooms from teens and signed-out visitors without asking", async () => {
+  it("hides Rooms from teens and signed-out visitors", async () => {
     site.mockResolvedValue({ roomsEnabled: true });
     auth.mockReturnValue({ user: { id: 1, accountType: "teen" }, isAdmin: false });
     const { unmount } = show([]);
@@ -175,6 +175,5 @@ describe("the Rooms view item (M2.2a)", () => {
     show([]);
     await screen.findByRole("link", { name: "Month" });
     expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
-    expect(site).not.toHaveBeenCalled();
   });
 });

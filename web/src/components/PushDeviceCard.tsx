@@ -4,7 +4,7 @@ import type { EmailKind, NotificationSettings, PushDevice, PushSettings, PushSub
 import { errorText } from "../lib/errors";
 import { useAuth } from "../auth";
 import { cardState, deviceState, localSubscription, pushOwner, readPushEnv, sameKey, setPushOwner, subscribeThisDevice, type Platform } from "../lib/pushState";
-import { useSiteName } from "../lib/useSiteName";
+import { churchName, useSite } from "../lib/useSite";
 import { formatShortDay } from "../lib/when";
 import { Button, ButtonLink } from "./ui/Button";
 import { Checkbox, Choices, FormError } from "./ui/Field";
@@ -58,7 +58,7 @@ interface Loaded {
 // subscription and saving it again succeeds; the settings never return
 // endpoints, so the browser can't look itself up in the device list.
 export function PushDeviceCard({ load }: { load: () => Promise<NotificationSettings> }) {
-  const site = useSiteName();
+  const { site } = useSite();
   const userId = useAuth().user?.id ?? null;
   const [data, setData] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -118,7 +118,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
   const state = cardState({ enabled: data.enabled, device: data.device, thisDeviceOn: !!data.mine, otherDevices: others.length });
   // The church turned notifications off: no card at all (DEC-124).
   if (state === "church_off") return null;
-  const church = site || "Fold";
+  const church = churchName(site) || "Fold";
   const mobile = data.platform === "ios" || data.platform === "android";
 
   // Each action shows the server's line as it is (DEC-129) or an error.

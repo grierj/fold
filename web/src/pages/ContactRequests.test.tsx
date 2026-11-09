@@ -6,6 +6,7 @@ import { ApiError } from "../api/core";
 import { Contacts } from "../api/contacts";
 import type { ContactGrant, ContactRequest } from "../types";
 import { ContactRequestsPage } from "./ContactRequests";
+import { RequireUser } from "../components/RequireUser";
 
 const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
 vi.mock("../auth", () => ({ useAuth: () => actor }));
@@ -13,7 +14,7 @@ vi.mock("../api/contacts", () => ({ Contacts: { request: vi.fn(), requests: vi.f
 const request: ContactRequest = { id: 7, requesterId: 1, requesterName: "Lee", subjectUserId: 2, subjectName: "Pat", contextType: "event", contextId: 3, fields: "email", reason: "A private reason", needsAdmin: true, subjectDecision: "pending", adminDecision: "pending", status: "pending", createdAt: "2026-10-01T12:00:00Z", expiresAt: "2026-10-15T12:00:00Z", endReason: "", canSubjectDecide: true, canAdminDecide: false, canWithdraw: false };
 const grant: ContactGrant = { id: 8, requestId: 7, requesterId: 1, requesterName: "Lee", subjectUserId: 2, subjectName: "Pat", contextType: "event", fields: "email", needsAdmin: true, grantedAt: "2026-10-02T12:00:00Z", endReason: "", canReveal: false, canRevoke: true };
 function mount(path = "/contact-requests/7") {
-  return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/contact-requests" element={<ContactRequestsPage />} /><Route path="/contact-requests/:id" element={<ContactRequestsPage />} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>);
+  return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/contact-requests" element={<RequireUser><ContactRequestsPage /></RequireUser>} /><Route path="/contact-requests/:id" element={<RequireUser><ContactRequestsPage /></RequireUser>} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>);
 }
 beforeEach(() => {
   vi.clearAllMocks(); actor.user = { id: 2 };

@@ -7,6 +7,7 @@ import { Site } from "../api/site";
 import { ContactHistory } from "../api/contactHistory";
 import type { ContactHistoryEntry, ContactHistoryResponse } from "../types";
 import { ContactHistoryPage } from "./ContactHistory";
+import { RequireUser } from "../components/RequireUser";
 
 const auth = vi.hoisted(() => ({ user: { id: 1, role: "admin", status: "active" } as { id: number; role: string; status: string } | null, loading: false, isAdmin: true }));
 vi.mock("../auth", () => ({ useAuth: () => auth }));
@@ -19,8 +20,8 @@ function Switch() { const navigate = useNavigate(); return <button onClick={() =
 const openFilters = () => userEvent.click(screen.getByRole("button", { name: "Filters" }));
 function mount(path = "/admin/users/9223372036854775807/contact-history") {
   return render(<MemoryRouter initialEntries={[path]}><Switch /><Routes>
-    <Route path="/admin/users/:id/contact-history" element={<ContactHistoryPage />} />
-    <Route path="/admin/contact-history" element={<ContactHistoryPage />} />
+    <Route path="/admin/users/:id/contact-history" element={<RequireUser><ContactHistoryPage /></RequireUser>} />
+    <Route path="/admin/contact-history" element={<RequireUser><ContactHistoryPage /></RequireUser>} />
     <Route path="/login" element={<p>Sign in first</p>} />
   </Routes></MemoryRouter>);
 }
