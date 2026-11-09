@@ -109,6 +109,7 @@ type scopeState struct {
 // before batching, so the whole set is still locked in ascending ID order.
 const recipientLockBatch = userlock.Batch
 
+// ErrBadScope: a Msg.Scope that is not valid for this Send (see Msg.Scope).
 var ErrBadScope = errors.New("notify: recipient scope is not valid here")
 
 // ErrNoRollbackGuard: the database handle was opened without txguard.Plugin, so a
@@ -120,6 +121,7 @@ var ErrNoRollbackGuard = errors.New("notify: the database handle does not watch 
 // it takes would end with the single statement that took them.
 var ErrNoTransaction = errors.New("notify: recipient protection needs a transaction")
 
+// ErrBadLink: a link that isn't an internal path.
 var ErrBadLink = errors.New("notify: link must be an internal path")
 
 // ValidLink reports whether s is an internal path: it starts with one "/",

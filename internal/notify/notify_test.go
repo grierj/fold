@@ -1641,7 +1641,7 @@ func TestExportedDatabaseEntryPointsAreDeliberate(t *testing.T) {
 		}
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !fn.Name.IsExported() {
+			if !ok || !fn.Name.IsExported() {
 				continue
 			}
 			for _, field := range fn.Type.Params.List {
