@@ -237,7 +237,7 @@ func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccu
 // group's: a reminder's place is read by registrants who may not see the
 // group (events.EffectivePlace with no group place).
 func occurrencePlace(ev *models.Event, occ *models.EventOccurrence) string {
-	return events.EffectivePlace(ev.Location, occ.LocationOverride, "")
+	return effectiveOccurrencePlace(ev, occ, "")
 }
 
 // reminderText is a reminder's subject and body. The event, time and links

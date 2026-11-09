@@ -1,4 +1,4 @@
-package events
+package eventdates
 
 import (
 	"database/sql"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/events"
 	"fold/internal/testdb"
 	"fold/models"
 
@@ -164,7 +165,7 @@ func TestExtendKeepsCalendarDatesInEverySessionZone(t *testing.T) {
 		t.Fatalf("AfterEnsure saw %v, want weekly from 2026-03-01", added[:3])
 	}
 
-	kiritimati, err := LoadZone("Pacific/Kiritimati")
+	kiritimati, err := events.LoadZone("Pacific/Kiritimati")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestOccurrenceDateWritesAreCalendarDates(t *testing.T) {
 	owner := testOwner(t, shared)
 	sessions := openSessions(t, shared)
 	for i, s := range sessions {
-		loc, err := LoadZone(s.zone)
+		loc, err := events.LoadZone(s.zone)
 		if err != nil {
 			t.Fatal(err)
 		}

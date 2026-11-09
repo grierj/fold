@@ -72,11 +72,15 @@ type accessScope struct {
 }
 
 func accessScopeOf(ev *models.Event) accessScope {
-	s := accessScope{EventID: ev.ID, Organizer: policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}}
 	if ev.GroupID != nil {
-		s.Organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
+		return groupAccessScope(ev.ID, *ev.GroupID)
 	}
-	return s
+	return accessScope{EventID: ev.ID, Organizer: policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}}
+}
+
+// groupAccessScope is the scope of a date of one of a group's events.
+func groupAccessScope(eventID, groupID uint) accessScope {
+	return accessScope{EventID: eventID, Organizer: policy.OrganizerScope{Type: policy.ContactGroup, ID: groupID}}
 }
 
 // accessScopesIn derives the scope of each date from the live schema. It reads

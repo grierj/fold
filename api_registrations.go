@@ -63,37 +63,30 @@ type capacityEdits struct {
 	reminderSet     bool
 }
 
-// parseCapacityEdits parses the M1.5 capacity fields, answering 400 on a
-// bad value.
-func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
+// parseCapacityEdits parses the M1.5 capacity fields; the error is the 400 to
+// answer with.
+func parseCapacityEdits(body eventBody) (capacityEdits, error) {
 	var ed capacityEdits
 	var err error
-	ed.cap, ed.capSet, err = parseCapacity(body.Capacity)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.cap, ed.capSet, err = parseCapacity(body.Capacity); err != nil {
+		return ed, err
 	}
-	ed.guests, ed.guestsSet, err = parseGuestsAllowed(body.GuestsAllowed)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.guests, ed.guestsSet, err = parseGuestsAllowed(body.GuestsAllowed); err != nil {
+		return ed, err
 	}
-	ed.remoteCap, ed.remoteCapSet, err = parseRemoteCapacity(body.RemoteCapacity, false)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.remoteCap, ed.remoteCapSet, err = parseRemoteCapacity(body.RemoteCapacity, false); err != nil {
+		return ed, err
 	}
-	if !parseChildcareEdits(c, body, &ed) {
-		return ed, false
+	if err := parseChildcareEdits(body, &ed); err != nil {
+		return ed, err
 	}
 	if body.ReminderEmailMinutes != nil {
 		if !validReminderMinutes(*body.ReminderEmailMinutes) {
-			fail(c, errReminderTime)
-			return ed, false
+			return ed, errReminderTime
 		}
 		ed.reminder, ed.reminderSet = *body.ReminderEmailMinutes, true
 	}
-	return ed, true
+	return ed, nil
 }
 
 // intPtrEqual reports whether two optional ints hold the same value.
@@ -182,13 +175,6 @@ func noticeEnd(o *models.EventOccurrence) time.Time {
 // cannot see the group gets no group name, place, or group link
 // (PR #41). It reads nothing; loadNoticeFacts did the reading once for
 // every recipient.
-func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
-	if o.TitleOverride != nil {
-		return *o.TitleOverride
-	}
-	return ev.Title
-}
-
 func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {
@@ -204,7 +190,7 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 		groupPlace = g.Location // group-ok: g is set only when facts.canSeeGroup is true
 	}
 	vars := notify.Vars{Event: effectiveOccurrenceTitle(ev, o), When: formatWhen(o.StartsAt, facts.zone(userID)),
-		Place: events.EffectivePlace(ev.Location, o.LocationOverride, groupPlace)}
+		Place: effectiveOccurrencePlace(ev, o, groupPlace)}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
 		vars.Event = firstNonEmpty(effectiveOccurrenceTitle(ev, o), g.Name) // group-ok: g is set only when facts.canSeeGroup is true
@@ -1106,25 +1092,16 @@ func (a *App) canRegisterAnyDate(tx *gorm.DB, u *models.User, ev *models.Event) 
 }
 
 func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool {
-	gp := policy.Group{}
-	rel := policy.Rel{}
-	if ev.GroupID != nil {
-		var group models.Group
-		if tx.First(&group, *ev.GroupID).Error != nil {
-			return false
-		}
-		gp = asGroup(&group)
-		// Host facts are irrelevant to visibility. An active public/private group
-		// needs no membership read; invitation-only or inactive contexts do.
-		if u != nil && !policy.IsAdmin(asPerson(u)) && (ev.Visibility == models.VisibilityInviteOnly || group.Status != models.GroupActive) {
-			rel = relIn(tx, u.ID, group.ID)
-		}
+	// Host facts are irrelevant to visibility, and a failed read can only say no.
+	f, err := eventFactsIn(tx, u, ev)
+	if err != nil || (ev.GroupID != nil && f.group == nil) {
+		return false
 	}
-	view := viewOf(ev, false)
+	f.view = viewOf(ev, false)
 	if u != nil && u.Status == models.UserGuest {
-		return policy.CanRegisterGuest(view, gp)
+		return policy.CanRegisterGuest(f.view, asGroup(f.group))
 	}
-	return policy.CanRegisterEvent(asPerson(u), view, gp, rel)
+	return policy.CanRegisterEvent(asPerson(u), f.view, asGroup(f.group), f.rel)
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,8 +1143,11 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1292,8 +1272,11 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1479,8 +1462,11 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return errPeopleAddForbidden
 		}
-		facts := eventFactsIn(tx, actor, ev)
-		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+		facts, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		if !facts.canManage(actor) {
 			return errPeopleAddForbidden
 		}
 		me = actor
@@ -1490,7 +1476,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		}
 		refuse := func(err error) error {
 			businessErr = err
-			return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": "manager_add"}})
+			return writeOccurrenceRefusal(tx, actor.ID, c.ClientIP(), operationManagerAdd)
 		}
 		if !allowed {
 			return refuse(errDateAddThrottled)
@@ -1773,9 +1759,12 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if err != nil {
 			return err
 		}
-		f := eventFactsIn(tx, actor, ev)
+		f, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
 		acct, found := facts.accounts[holderID]
-		manager := policy.HouseholdManager{Person: asPerson(actor), ManagesEvent: policy.CanManageEvent(asPerson(actor), f.view, f.rel), PreviouslyRegistered: previously}
+		manager := policy.HouseholdManager{Person: asPerson(actor), ManagesEvent: f.canManage(actor), PreviouslyRegistered: previously}
 		holderFacts := householdHolderOf(&holder, acct, found, &person, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
 		if problem := policy.CanManageHouseholdRegistration(manager, holderFacts, householdFacts(&person, facts.links[personID], today)); problem != "" {
 			return householdRegistrationError{code: problem}

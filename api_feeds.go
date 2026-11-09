@@ -95,7 +95,9 @@ func (a *App) feedGroup(c *gin.Context) {
 		feedUnavailable(c, err)
 		return
 	}
-	if g.ID == 0 || g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
+	// The feed is served to anyone with the link: only what a signed-out
+	// visitor may see.
+	if g.ID == 0 || !policy.CanSeeGroup(nil, asGroup(&g), policy.Rel{}) {
 		feedNotFound(c)
 		return
 	}
@@ -264,7 +266,6 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 	if err != nil {
 		return events.Feed{}, err
 	}
-	viewerAdmin := asPerson(viewer).Admin
 	for i := range occs {
 		occ := &occs[i]
 		if occ.Status != models.OccurrenceScheduled {
@@ -281,16 +282,13 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		}
 		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
 		ownStatus := facts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, true, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
+		decision := calendarScopeDecision(scope, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
 		// Personal ICS never carries Can't go, even in scope=all.
 		if !decision.Include || ownStatus == models.RegDeclined {
 			continue
 		}
 
-		status := "TENTATIVE"
-		if ownStatus == models.RegGoing {
-			status = "CONFIRMED"
-		}
+		status := calendarStatus(ownStatus, true)
 		if !ordinary {
 			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
 			feed.Singles = append(feed.Singles, events.FeedSingle{
@@ -314,8 +312,9 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		}
 		videoURL := ""
 		if seriesVisible {
+			facts := vs.of(ev)
 			if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
-				rel.Member || vs.Hosted[ev.ID], rel.Leader || vs.Hosted[ev.ID] || viewerAdmin) {
+				rel.Member || facts.view.Host, facts.canManage(viewer)) {
 				videoURL = link
 			}
 		}
@@ -330,6 +329,28 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		})
 	}
 	return feed, nil
+}
+
+func laterTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// calendarStatus is the iCalendar STATUS of a date for a person's own answer
+// (DEC-71, DEC-93): Going is CONFIRMED, Maybe and Waitlisted are TENTATIVE.
+// In the personal feed every other date it carries is TENTATIVE too (Not
+// answered); a one-date download omits STATUS for a date the person has not
+// answered, as its page shows no answer.
+func calendarStatus(answer string, personalFeed bool) string {
+	switch {
+	case answer == models.RegGoing:
+		return "CONFIRMED"
+	case personalFeed || answer == models.RegMaybe || answer == models.RegWaitlisted:
+		return "TENTATIVE"
+	}
+	return ""
 }
 
 type feedSeriesDetails struct {
@@ -364,12 +385,17 @@ type calendarFeedJSON struct {
 // errCalendarFeedGone means the person's link was not there under the lock.
 var errCalendarFeedGone = errors.New("calendar feed not found")
 
-func (a *App) calendarTokenFor(userID uint) *models.CalendarToken {
+// calendarTokenFor is the person's feed link, nil when they have none. A
+// failed read is an error, never "no link".
+func (a *App) calendarTokenFor(userID uint) (*models.CalendarToken, error) {
 	var tok models.CalendarToken
 	if err := a.DB.Where("user_id = ?", userID).First(&tok).Error; err != nil {
-		return nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return &tok
+	return &tok, nil
 }
 
 func calendarFeedOf(tok *models.CalendarToken) calendarFeedJSON {
@@ -388,7 +414,12 @@ func feedScopeOK(c *gin.Context, scope string) bool {
 }
 
 func (a *App) apiGetMyCalendarFeed(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(a.calendarTokenFor(apiUser(c).ID))})
+	tok, err := a.calendarTokenFor(apiUser(c).ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar link")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(tok)})
 }
 
 func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
@@ -401,7 +432,12 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 		return
 	}
 	scope := models.CalendarFeedMine
-	if existing := a.calendarTokenFor(me.ID); existing != nil {
+	existing, err := a.calendarTokenFor(me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not create the calendar link")
+		return
+	}
+	if existing != nil {
 		scope = existing.Scope
 	}
 	if body.Scope != nil {
@@ -462,13 +498,17 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 	if !feedScopeOK(c, scope) {
 		return
 	}
-	tok := a.calendarTokenFor(me.ID)
+	tok, err := a.calendarTokenFor(me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not change the calendar link")
+		return
+	}
 	if tok == nil {
 		jsonError(c, http.StatusNotFound, "calendar feed not found")
 		return
 	}
 	var current models.CalendarToken
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// Gate and person's lock first, as in create. The link is then read
 		// again under the lock for its old scope: it may be gone, since
 		// revoking a link takes no gate.

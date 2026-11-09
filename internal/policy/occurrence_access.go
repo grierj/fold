@@ -56,13 +56,19 @@ type AddOptions struct {
 	ChildcareAgesNote string
 }
 
+// The most childcare places and the longest ages note an exact-date add carries.
+const (
+	MaxAddChildcare = 20
+	MaxAddAgesNote  = 200
+)
+
 func ValidAddOptions(purpose string, o AddOptions) bool {
 	switch purpose {
 	case RequestGroupAdd:
 		return !o.OverCapacity && o.AttendanceMode == "" && o.GuestCount == 0 && o.ChildcareCount == 0 && o.ChildcareAgesNote == ""
 	case RequestOccurrenceAdd:
 		return !o.OverLimit && (o.AttendanceMode == "in_person" || o.AttendanceMode == "remote") &&
-			o.GuestCount >= 0 && o.GuestCount <= 5 && o.ChildcareCount >= 0 && o.ChildcareCount <= 20 && utf8.RuneCountInString(o.ChildcareAgesNote) <= 200
+			o.GuestCount >= 0 && o.GuestCount <= 5 && o.ChildcareCount >= 0 && o.ChildcareCount <= MaxAddChildcare && utf8.RuneCountInString(o.ChildcareAgesNote) <= MaxAddAgesNote
 	}
 	return false
 }

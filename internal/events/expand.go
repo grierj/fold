@@ -101,6 +101,12 @@ func FormatWall(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format(WallLayout)
 }
 
+// ValidDuration reports whether minutes is a length an event can have: at
+// least one minute and at most MaxDurationMinutes.
+func ValidDuration(minutes int) bool {
+	return minutes >= 1 && minutes <= MaxDurationMinutes
+}
+
 // WindowEnd is the last instant to generate through: 18 months after now,
 // or 18 months after the series start when that is later (a series that
 // begins next year still has its dates).
@@ -122,7 +128,7 @@ func Expand(spec Spec, horizonEnd time.Time) ([]When, error) {
 	if err != nil {
 		return nil, err
 	}
-	if spec.DurationMinutes < 1 || spec.DurationMinutes > MaxDurationMinutes {
+	if !ValidDuration(spec.DurationMinutes) {
 		return nil, ErrBadDuration
 	}
 	until := strings.TrimSpace(spec.Until)

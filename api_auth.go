@@ -349,8 +349,11 @@ func (a *App) canComposeOrLog(me *models.User) bool {
 func (a *App) apiMyGroups(c *gin.Context) {
 	u := apiUser(c)
 	var memberships []models.Membership
-	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, models.MembershipActive).
-		Order("joined_at").Find(&memberships)
+	if err := a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, models.MembershipActive).
+		Order("joined_at").Find(&memberships).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
 	groups := make([]models.Group, 0, len(memberships))
 	roles := make(map[uint]string, len(memberships))
 	for i := range memberships {
@@ -362,7 +365,12 @@ func (a *App) apiMyGroups(c *gin.Context) {
 		groups = append(groups, memberships[i].Group)
 		roles[memberships[i].GroupID] = memberships[i].Role
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, roles)})
+	list, err := a.viewerGroupList(groups, roles)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": list})
 }
 
 // ---------------------------------------------------------------------------

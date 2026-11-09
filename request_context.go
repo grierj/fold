@@ -57,12 +57,9 @@ func loadRequestContexts(tx *gorm.DB, refs []contextRef, userIDs []uint) (*reque
 		}
 	}
 	if len(groupIDs) > 0 {
-		var groups []models.Group
-		if err := tx.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
+		var err error
+		if c.groups, err = groupsByID(tx, groupIDs, false); err != nil {
 			return nil, err
-		}
-		for i := range groups {
-			c.groups[groups[i].ID] = &groups[i]
 		}
 		var memberships []models.Membership
 		if err := tx.Where("group_id IN ? AND user_id IN ?", groupIDs, userIDs).Find(&memberships).Error; err != nil {
@@ -103,15 +100,14 @@ func (c *requestContexts) shown(a *App, viewer *models.User, ref contextRef) (st
 		if !ok {
 			return "", false
 		}
-		group, rel := policy.Group{}, policy.Rel{}
+		f := eventFacts{view: viewOf(&ev, c.hosts[userContext{viewer.ID, ev.ID}])}
 		if ev.GroupID != nil {
-			g := c.groups[*ev.GroupID]
-			if g == nil {
+			if f.group = c.groups[*ev.GroupID]; f.group == nil {
 				return "", false
 			}
-			group, rel = asGroup(g), c.rels[userContext{viewer.ID, g.ID}]
+			f.rel = c.rels[userContext{viewer.ID, *ev.GroupID}]
 		}
-		if policy.CanSeeEvent(asPerson(viewer), viewOf(&ev, c.hosts[userContext{viewer.ID, ev.ID}]), group, rel) {
+		if f.canSee(viewer) {
 			return ev.Title, true
 		}
 	}
