@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -62,37 +63,71 @@ type renderedMessage struct {
 	Unsubscribe string `json:"-"`
 }
 
-// sampleValues are the merge-field values for previewing m as me.
-func (a *App) sampleValues(m *models.Message, me *models.User) map[string]string {
+// sampleValues are the merge-field values for previewing m as me: what
+// recipientValues would give me, with the date the audience's next (or, with
+// none upcoming, latest) one. An event that is gone leaves its fields out.
+func (a *App) sampleValues(m *models.Message, me *models.User) (map[string]string, error) {
 	vals := map[string]string{content.FieldFirstName: firstName(me.PublicName())}
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
-	ids, _ := a.audienceEventIDs(a.DB, au)
-	if len(ids) != 1 || (au.Type != policy.AudienceOccurrence && au.Type != policy.AudienceEventSeries) {
-		return vals
+	if au.Type != policy.AudienceOccurrence && au.Type != policy.AudienceEventSeries {
+		return vals, nil
+	}
+	ids, err := a.audienceEventIDs(a.DB, au)
+	if errors.Is(err, errAudienceGone) || (err == nil && len(ids) != 1) {
+		return vals, nil
+	} else if err != nil {
+		return nil, err
 	}
 	var ev models.Event
-	if a.DB.Select("id, title, tzid").First(&ev, ids[0]).Error != nil {
-		return vals
+	if err := a.DB.Select("id, title, tzid").First(&ev, ids[0]).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return vals, nil
+	} else if err != nil {
+		return nil, err
 	}
 	var occ models.EventOccurrence
-	q := a.DB.Select("id, starts_at").Where("event_id = ?", ev.ID)
+	q := a.DB.Select("id, starts_at, title_override").Where("event_id = ?", ev.ID)
 	if au.Type == policy.AudienceOccurrence {
 		q = q.Where("id = ?", au.OccurrenceID)
 	} else {
 		q = q.Where("status = ? AND starts_at >= ?", models.OccurrenceScheduled, time.Now()).Order("starts_at")
 	}
-	link := a.emailLink("/events/" + idString(ev.ID))
-	vals[content.FieldEventTitle], vals[content.FieldEventLink], vals[content.FieldManageLink] = ev.Title, link, link
-	found := q.First(&occ).Error == nil
+	found := true
+	if err := q.First(&occ).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		found = false
+	} else if err != nil {
+		return nil, err
+	}
 	if !found && au.Type == policy.AudienceEventSeries {
 		// Nothing upcoming: show the latest date, so the preview isn't blank.
-		found = a.DB.Select("id, starts_at").Where("event_id = ?", ev.ID).Order("starts_at DESC").First(&occ).Error == nil
+		err := a.DB.Select("id, starts_at").Where("event_id = ?", ev.ID).Order("starts_at DESC").First(&occ).Error
+		if found = err == nil; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
 	}
+	title := ev.Title
+	if au.Type == policy.AudienceOccurrence && occ.TitleOverride != nil && *occ.TitleOverride != "" {
+		title = *occ.TitleOverride
+	}
+	a.setEventFields(vals, ev.ID, title)
 	if found {
-		vals[content.FieldEventTime] = formatWhen(occ.StartsAt, eventZone(ev.TZID))
+		vals[content.FieldEventTime] = eventTimeText(occ.StartsAt, ev.TZID)
 	}
-	return vals
+	return vals, nil
+}
+
+// setEventFields sets the fields every message about an event can use: its
+// title, and its page as both the event link and (until a reader's own date
+// is known) the manage link.
+func (a *App) setEventFields(vals map[string]string, eventID uint, title string) {
+	link := a.emailLink("/events/" + idString(eventID))
+	vals[content.FieldEventTitle], vals[content.FieldEventLink], vals[content.FieldManageLink] = title, link, link
+}
+
+// eventTimeText is a date's start on its event's clock, as a merge field and
+// a reminder's subject show it.
+func eventTimeText(startsAt time.Time, tzid string) string {
+	return formatWhen(startsAt, eventZone(tzid))
 }
 
 // firstName is the first word of a name.
@@ -105,32 +140,30 @@ func firstName(name string) string {
 
 // renderMessage renders m for the reader u with the given merge values.
 func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string) (renderedMessage, error) {
-	return a.renderMessageWith(m, u, u.Email, vals, footerFacts{site: a.siteName(), address: a.churchAddress()})
+	footer, err := footerFactsIn(a.DB)
+	if err != nil {
+		return renderedMessage{}, err
+	}
+	return a.renderMessageWith(m, u, u.Email, vals, footer)
 }
 
 // renderMessageWith renders with the church's name and address already
 // read, so a batch reads them once, not once per email.
 func (a *App) renderMessageWith(m *models.Message, u *models.User, to string, vals map[string]string, f footerFacts) (renderedMessage, error) {
-	site, address := f.site, f.address
+	site := f.site
 	cat := messageCategory(m)
 	token := a.unsubscribeToken(u.ID, categoryScope(cat), to)
-	var lines []string
-	for _, l := range strings.Split(strings.ReplaceAll(address, "\r", ""), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			lines = append(lines, l)
-		}
-	}
 	html, err := content.RenderEmail(content.EmailPage{
 		Church: site, Subject: content.Merge(m.Subject, vals, false), Body: content.Merge(m.BodyHTML, vals, true),
 		Footer:      notify.YoureGetting(cat, site) + ".",
-		SettingsURL: a.emailBaseURL() + "/email-settings/" + token, Address: lines,
+		SettingsURL: a.emailSettingsURL(token), Address: f.addressLines(),
 	})
 	if err != nil {
 		return renderedMessage{}, err
 	}
 	return renderedMessage{
 		Subject:     strings.TrimSpace(content.Merge(m.Subject, vals, false)),
-		Text:        content.Merge(m.BodyText, vals, false) + a.optionalEmailFooter(footerFacts{site: site, address: address}, cat, token),
+		Text:        content.Merge(m.BodyText, vals, false) + a.optionalEmailFooter(f, cat, token),
 		HTML:        html,
 		Unsubscribe: a.oneClickURL(token),
 	}, nil
@@ -152,12 +185,17 @@ func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessag
 	if _, ok := a.checkAudience(c, me, &au); !ok {
 		return nil, renderedMessage{}, false
 	}
-	r, err := a.renderMessage(m, me, a.sampleValues(m, me))
+	vals, err := a.sampleValues(m, me)
+	if err == nil {
+		var r renderedMessage
+		if r, err = a.renderMessage(m, me, vals); err == nil {
+			return m, r, true
+		}
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not show the preview")
-		return nil, renderedMessage{}, false
 	}
-	return m, r, true
+	return nil, renderedMessage{}, false
 }
 
 // apiPreviewMessage answers the subject and plain-text part as the viewer
@@ -251,10 +289,23 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	// Synchronous by design: the person at the composer waits for this one
-	// test message, so it is not a notice and does not go through notify.Send.
-	res := sendTracked(ctx, a.mailSender(), mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
-		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()}, nil)
+	from, err := messageFromName(a.DB, m, a.siteName())
+	if err == nil {
+		var replyTo string
+		if replyTo, err = replyToAddressIn(a.DB); err == nil {
+			// Synchronous by design: the person at the composer waits for this one
+			// test message, so it is not a notice and does not go through notify.Send.
+			res := sendTracked(ctx, a.mailSender(), mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
+				Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: from, ReplyTo: replyTo}, nil)
+			answerTestSend(c, res)
+			return
+		}
+	}
+	fail(c, errMessageTestFail)
+}
+
+// answerTestSend answers the composer's test send with how it ended.
+func answerTestSend(c *gin.Context, res sendResult) {
 	switch res.outcome {
 	case sendSent:
 	case sendSuppressed:

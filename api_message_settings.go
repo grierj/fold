@@ -52,7 +52,12 @@ func (a *App) apiAdminSetGuardianCopies(c *gin.Context) {
 }
 
 func (a *App) apiAdminGetReplyTo(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"address": a.settingValue(settingReplyTo)})
+	address, err := settingValueIn(a.DB, settingReplyTo)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the address")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"address": address})
 }
 
 // apiAdminSetReplyTo sets where replies to announcements go: one plain

@@ -184,7 +184,12 @@ func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
 const maxChurchAddress = 300
 
 func (a *App) apiAdminGetChurchAddress(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"address": a.churchAddress()})
+	address, err := settingValueIn(a.DB, settingChurchAddress)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the address")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"address": address})
 }
 
 // apiAdminSetChurchAddress saves the church's postal address for email
@@ -226,8 +231,3 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 var errChurchAddressLong = apiErr(http.StatusBadRequest, "church_address_long", "the address must be at most 300 characters on 6 lines")
 
 var errChurchAddressCharacters = apiErr(http.StatusBadRequest, "church_address_characters", "the address has a character that can't go in an email")
-
-// churchAddress is the church's postal address for footers, or "".
-func (a *App) churchAddress() string {
-	return a.settingValue(settingChurchAddress)
-}

@@ -1310,3 +1310,13 @@ func noticeIDsAfter(t *testing.T, db *gorm.DB, after uint) []uint {
 func enqueueJob(db *gorm.DB, kind string, payload any, at time.Time, key string, attempts int) (bool, error) {
 	return jobs.Type{Name: kind, MaxAttempts: attempts}.Enqueue(db, payload, at, key)
 }
+
+// settingText is the stored, trimmed value of key.
+func settingText(t *testing.T, app *App, key string) string {
+	t.Helper()
+	v, err := settingValueIn(app.DB, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

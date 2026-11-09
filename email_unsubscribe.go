@@ -242,17 +242,41 @@ func setConsent(tx *gorm.DB, row models.Consent, none string, session *models.Us
 // footerFacts are the church's name and address for one batch of email.
 type footerFacts struct{ site, address string }
 
+// footerFactsIn reads them. A failed read is an error, so a batch or a
+// preview never goes out without the church's address.
+func footerFactsIn(db *gorm.DB) (footerFacts, error) {
+	site, err := siteNameIn(db)
+	if err != nil {
+		return footerFacts{}, err
+	}
+	address, err := settingValueIn(db, settingChurchAddress)
+	return footerFacts{site: site, address: address}, err
+}
+
+// addressLines are the address's non-empty lines, trimmed.
+func (f footerFacts) addressLines() []string {
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(f.address, "\r", ""), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// emailSettingsURL is the link in an optional email's footer to change which
+// emails the token's owner gets.
+func (a *App) emailSettingsURL(token string) string {
+	return a.emailBaseURL() + "/email-settings/" + token
+}
+
 // optionalEmailFooter ends an optional email (PLAN 10.5): what it is, how to
 // stop that kind or change email settings, and the church's address.
 func (a *App) optionalEmailFooter(f footerFacts, category, token string) string {
 	footer := "\n\n--\n" + notify.YoureGetting(category, f.site) +
-		". To stop them or change which emails you get, visit " + a.emailBaseURL() + "/email-settings/" + token
-	if addr := strings.TrimSpace(f.address); addr != "" {
-		for _, line := range strings.Split(strings.ReplaceAll(addr, "\r", ""), "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				footer += "\n" + line
-			}
-		}
+		". To stop them or change which emails you get, visit " + a.emailSettingsURL(token)
+	for _, line := range f.addressLines() {
+		footer += "\n" + line
 	}
 	return footer
 }

@@ -119,8 +119,10 @@ func (a *App) prepareMessage(ctx context.Context, id uint) error {
 	if err != nil && jobs.LastAttempt(ctx) {
 		log.Printf("message %d: couldn't prepare it: %s", id, jobs.CleanError(err))
 		var m models.Message
-		if a.DB.Select("id, author_id").First(&m, id).Error == nil {
+		if lookup := a.DB.Select("id, author_id").First(&m, id).Error; lookup == nil {
 			return a.refuseMessage(a.DB, &m, nil, whyNotPrepared)
+		} else if !errors.Is(lookup, gorm.ErrRecordNotFound) {
+			log.Printf("message %d: couldn't load it to say why: %s", id, jobs.CleanError(lookup))
 		}
 	}
 	return err
@@ -531,9 +533,18 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	if err != nil {
 		return err
 	}
-	footer := footerFacts{site: a.siteName(), address: a.churchAddress()}
-	from := a.messageFromName(db, &m, footer.site)
-	replyTo := a.replyToAddress()
+	footer, err := footerFactsIn(db)
+	if err != nil {
+		return err
+	}
+	from, err := messageFromName(db, &m, footer.site)
+	if err != nil {
+		return err
+	}
+	replyTo, err := replyToAddressIn(db)
+	if err != nil {
+		return err
+	}
 	sender := mail.Unwrap(a.mailSender())
 	optOut := categoryScope(messageCategory(&m))
 	last := jobs.LastAttempt(ctx)
@@ -636,23 +647,29 @@ func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string]
 
 // messageFromName is "Pat Lee via First Church" (PLAN 7.8): the author's
 // name in the From header over the church's own address, kept short.
-func (a *App) messageFromName(db *gorm.DB, m *models.Message, site string) string {
+func messageFromName(db *gorm.DB, m *models.Message, site string) (string, error) {
 	name := site
-	var author models.User
-	if m.AuthorID != nil && db.Select("id, name, display_name").First(&author, *m.AuthorID).Error == nil {
-		name = author.PublicName() + " via " + site
+	if m.AuthorID != nil {
+		var author models.User
+		err := db.Select("id, name, display_name").First(&author, *m.AuthorID).Error
+		switch {
+		case err == nil:
+			name = author.PublicName() + " via " + site
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return "", err
+		}
 	}
-	return clipRunes(name, 120)
+	return clipRunes(name, 120), nil
 }
 
-// replyToAddress is the church office address replies go to (DEC-130),
+// replyToAddressIn is the church office address replies go to (DEC-130),
 // or "" when none is set or it isn't one plain address.
-func (a *App) replyToAddress() string {
-	addr := a.settingValue(settingReplyTo)
-	if addr == "" || !validEmail(addr) {
-		return ""
+func replyToAddressIn(db *gorm.DB) (string, error) {
+	addr, err := settingValueIn(db, settingReplyTo)
+	if err != nil || addr == "" || !validEmail(addr) {
+		return "", err
 	}
-	return addr
+	return addr, nil
 }
 
 // messageEmail renders m for one row's reader. A guardian copy is the
@@ -698,10 +715,11 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 		return out, err
 	}
 	var ev models.Event
-	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; err != nil {
-		return out, nil
+	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return out, nil // the event is gone: the fields stay unset
+	} else if err != nil {
+		return nil, err
 	}
-	loc := eventZone(ev.TZID)
 	statuses := au.Statuses
 	if len(statuses) == 0 {
 		statuses = defaultRegStatuses
@@ -727,17 +745,18 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if au.Type == policy.AudienceOccurrence {
 		// One date: its own title, when it has one.
 		var occ models.EventOccurrence
-		if db.Select("id, title_override").First(&occ, au.OccurrenceID).Error == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
+		if err := db.Select("id, title_override").First(&occ, au.OccurrenceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		} else if err == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
 			title = *occ.TitleOverride
 		}
 	}
-	link := a.emailLink("/events/" + idString(ev.ID))
 	for id := range out {
-		out[id][content.FieldEventTitle], out[id][content.FieldEventLink], out[id][content.FieldManageLink] = title, link, link
+		a.setEventFields(out[id], ev.ID, title)
 	}
 	for _, d := range dates {
 		if v := out[d.UID]; v != nil {
-			v[content.FieldEventTime] = formatWhen(d.StartsAt, loc)
+			v[content.FieldEventTime] = eventTimeText(d.StartsAt, ev.TZID)
 			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
 		}
 	}

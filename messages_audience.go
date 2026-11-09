@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -123,8 +124,10 @@ func (a *App) audienceEventIDs(db *gorm.DB, au audienceJSON) ([]uint, error) {
 	switch au.Type {
 	case policy.AudienceOccurrence:
 		var occ models.EventOccurrence
-		if err := db.Select("id, event_id").First(&occ, au.OccurrenceID).Error; err != nil {
+		if err := db.Select("id, event_id").First(&occ, au.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errAudienceGone
+		} else if err != nil {
+			return nil, err
 		}
 		return []uint{occ.EventID}, nil
 	case policy.AudienceEventSeries:
@@ -216,7 +219,10 @@ func (a *App) audienceUserIDs(db *gorm.DB, au audienceJSON, now time.Time) ([]ui
 	case policy.AudienceOccurrence:
 		err = regs(db.Where("registrations.occurrence_id = ?", au.OccurrenceID))
 	case policy.AudienceEventSeries, policy.AudienceEvents:
-		events, _ := a.audienceEventIDs(db, au)
+		var events []uint
+		if events, err = a.audienceEventIDs(db, au); err != nil {
+			return nil, err
+		}
 		err = regs(db.Joins("JOIN event_occurrences o ON o.id = registrations.occurrence_id").
 			Where("o.event_id IN ? AND o.status = ? AND o.starts_at >= ?", events, models.OccurrenceScheduled, now))
 	case policy.AudienceGroup:
