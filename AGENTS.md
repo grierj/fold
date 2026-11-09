@@ -236,6 +236,16 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   equal to it by `TestDirectoryMatchesPolicy` and `TestLosersMatchPolicy`.
   Leading a pending or archived group grants no power to add people or invite anyone into Fold
   (DEC-88; `policy.LeadsApprovedGroup`, `CanInviteIntoGroup`).
+- Showing a date (`date_projector.go`): `a.projectDate(viewer, vs, occ, invited)` decides everything about how one date
+  looks to one viewer (ordinary access or only an exact-date invitation, the group `groupShownTo` allows, whether the
+  series is visible, manager and attendee rights, the resolved title, place and clock) and returns one
+  `dateProjection`. Every surface renders that value and decides nothing: `calendarRow`, `occurrenceJSON` (event page,
+  group list, open list), `dateJSON` (date page) with `dateFeedSingle` (its `.ics` and an invitation in the personal
+  feed), and `feedSingle` (public, group and personal feeds). `labelGroup` is the one place a shown group or "hosted by
+  the church" becomes fields (events, dates, calendar and room-calendar rows). The `.ics` STATUS choices
+  (`calendarStatus`) and a calendar row's missing "hosted by" for a church-wide event are rendering options. A new
+  surface for a date calls `projectDate`; `TestDateProjectorGoldens` pins every surface's bytes for each kind of viewer
+  (`testdata/date_projector`, rewrite with `UPDATE_GOLDEN=1`).
 - Registrations: seat decisions go through the ledger in `registration_seats.go` (`poolFits`, `seatChange`, `seatTally`;
   party size and childcare demand each have one SQL and one Go form, `TestSeatSQLMatchesGoRules`). Registration rows are
   written only by `saveRegistration` and `promoteRegistration` (`registration_rows.go`: the status decides what is cleared;

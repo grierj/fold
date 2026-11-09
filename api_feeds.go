@@ -217,32 +217,17 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 	if opts.personal && viewer != nil {
 		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs, rooms)
 	}
+	env := feedEnv{baseURL: a.emailBaseURL(), rooms: rooms}
 	for i := range occs {
 		occ := &occs[i]
-		ev := vs.ByID[occ.EventID]
-		if occ.Status != models.OccurrenceScheduled || !vs.canSeeDate(viewer, ev, occ) {
+		if occ.Status != models.OccurrenceScheduled {
 			continue
 		}
-		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-		groupLoc := ""
-		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
-			groupLoc = shown.Location
+		date, ok := a.projectDate(viewer, vs, occ, nil)
+		if !ok {
+			continue
 		}
-		eff := occurrenceToJSON(ev, occ, groupLoc)
-		videoURL := ""
-		if policy.CanSeeVideoLink(videoRevealOf(ev), false, false) {
-			videoURL = videoLinkOf(ev)
-		}
-		details := projectFeedSeriesDetails(ev, vs.canSeeSeries(viewer, ev), videoURL)
-		feed.Singles = append(feed.Singles, events.FeedSingle{
-			EventID: ev.ID, OriginalDate: models.FormatCalendarDate(occ.OriginalDate),
-			Title: eff.Title, Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location),
-			VideoURL: details.videoURL, RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity),
-			ChildcareAvailable: details.childcareAvailable, ChildcareAges: details.childcareAges,
-			TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
-			URL:       a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
-			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: "CONFIRMED",
-		})
+		feed.Singles = append(feed.Singles, date.feedSingle(env, feedAudience{}, statusConfirmed))
 	}
 	return feed, nil
 }
@@ -266,67 +251,35 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 	if err != nil {
 		return events.Feed{}, err
 	}
+	env := feedEnv{baseURL: a.emailBaseURL(), rooms: rooms}
+	siteName := &siteNameOnce{a: a}
 	for i := range occs {
 		occ := &occs[i]
 		if occ.Status != models.OccurrenceScheduled {
 			continue
 		}
-		ev := vs.ByID[occ.EventID]
-		read := scoped[occ.ID]
-		ordinary := vs.canSeeDate(viewer, ev, occ)
-		if !ordinary && read == nil {
+		date, ok := a.projectDate(viewer, vs, occ, scoped[occ.ID])
+		if !ok {
 			continue
 		}
-		if ev == nil && read != nil {
-			ev = &read.Event
-		}
-		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
 		ownStatus := facts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
+		decision := calendarScopeDecision(scope, true, date.Event, occ, date.Rel, vs.Hosted[date.Event.ID], facts.household[occ.ID], scoped[occ.ID] != nil, ownStatus, now)
 		// Personal ICS never carries Can't go, even in scope=all.
 		if !decision.Include || ownStatus == models.RegDeclined {
 			continue
 		}
-
 		status := calendarStatus(ownStatus, true)
-		if !ordinary {
-			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
-			feed.Singles = append(feed.Singles, events.FeedSingle{
-				EventID: date.EventID, OriginalDate: date.Date, Title: date.Title,
-				Location: placeLine(rooms[occ.ID], date.Location), TZID: date.TZID, StartsAt: date.StartsAt, EndsAt: date.EndsAt,
-				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
-				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: occ.UpdatedAt, Status: status,
-			})
+		if !date.Ordinary {
+			page := date.dateJSON(siteName, date.Invited.Registration, now)
+			page.Room = rooms[occ.ID]
+			feed.Singles = append(feed.Singles, dateFeedSingle(page, env.baseURL, occ.UpdatedAt, status))
 			continue
 		}
-
-		groupLoc := ""
-		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
-			groupLoc = shown.Location
-		}
-		eff := occurrenceToJSON(ev, occ, groupLoc)
-		seriesVisible := vs.canSeeSeries(viewer, ev)
 		videoStatus := ownStatus
 		if videoStatus == "" && householdGoing[occ.ID] {
 			videoStatus = models.RegGoing
 		}
-		videoURL := ""
-		if seriesVisible {
-			facts := vs.of(ev)
-			if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
-				rel.Member || facts.view.Host, facts.canManage(viewer)) {
-				videoURL = link
-			}
-		}
-		details := projectFeedSeriesDetails(ev, seriesVisible, videoURL)
-		feed.Singles = append(feed.Singles, events.FeedSingle{
-			EventID: ev.ID, OriginalDate: models.FormatCalendarDate(occ.OriginalDate), Title: eff.Title,
-			Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location), TZID: ev.TZID,
-			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: details.videoURL,
-			RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity), ChildcareAvailable: details.childcareAvailable,
-			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
-			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
-		})
+		feed.Singles = append(feed.Singles, date.feedSingle(env, feedAudience{Personal: true, Status: videoStatus}, status))
 	}
 	return feed, nil
 }
@@ -336,38 +289,6 @@ func laterTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-
-// calendarStatus is the iCalendar STATUS of a date for a person's own answer
-// (DEC-71, DEC-93): Going is CONFIRMED, Maybe and Waitlisted are TENTATIVE.
-// In the personal feed every other date it carries is TENTATIVE too (Not
-// answered); a one-date download omits STATUS for a date the person has not
-// answered, as its page shows no answer.
-func calendarStatus(answer string, personalFeed bool) string {
-	switch {
-	case answer == models.RegGoing:
-		return "CONFIRMED"
-	case personalFeed || answer == models.RegMaybe || answer == models.RegWaitlisted:
-		return "TENTATIVE"
-	}
-	return ""
-}
-
-type feedSeriesDetails struct {
-	description        string
-	videoURL           string
-	childcareAvailable bool
-	childcareAges      string
-}
-
-// projectFeedSeriesDetails is shared by public, group and personal date feeds.
-// An opened date authorizes its date fields, never its hidden parent details.
-func projectFeedSeriesDetails(ev *models.Event, seriesVisible bool, videoURL string) feedSeriesDetails {
-	if !seriesVisible {
-		return feedSeriesDetails{}
-	}
-	return feedSeriesDetails{description: ev.Description, videoURL: videoURL,
-		childcareAvailable: ev.ChildcareAvailable, childcareAges: ev.ChildcareAges}
 }
 
 // ---------------------------------------------------------------------------
