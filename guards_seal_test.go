@@ -376,7 +376,7 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a session decision other than sessionCurrent", with(aops, "!sessionCurrent(&actor, me)", "actor.Status != models.UserActive")},
 		{"a hand-written sign-in check", with(aops, "!sessionCurrent(&actor, me)", "!actor.CanSignIn()")},
 		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
-		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
+		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {", "\t_ = tx\n\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {")},
 		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)\n\t}}")},
 		{"a seal predicate shared through a pointer", with(aops, "pred func(*models.User) bool) *contactSeal", "pred *func(*models.User) bool) *contactSeal")},
 		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},

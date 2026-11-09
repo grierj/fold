@@ -832,11 +832,10 @@ var auditWriterCensus = map[string]string{
 	// System maintenance: no actor or IP, fixed host-removal metadata and a
 	// version/count-only sweep marker. The two existing erasure writers now
 	// accept a nil system actor, preserving their nonzero admin attribution.
-	"account_erasure_tombstones.go:eraseTombstoneOnce":        "275b68295526163c3a5a0f45ca6cc5f1ac1a1c262e8ed8ebd8524be1bdd33a04",
-	"account_erasure_tombstones.go:removeTombstoneHostRowsIn": "40b6c0bf6a68765eadbd9aa7900dc65200b58e586d69bec34cd651c6e3312eb8",
-	"account_erasure.go:eraseAccountIn":                       "1b081dbae07a9d40b613a3c0df8b072777f7e3653d98cb2d8dc28b06c4266d57",
-	"account_erasure.go:eraseMessagesIn":                      "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
-	"account_erasure_households.go:eraseHouseholdRecordsIn":   "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
+	"account_erasure_tombstones.go:eraseTombstoneOnce":      "275b68295526163c3a5a0f45ca6cc5f1ac1a1c262e8ed8ebd8524be1bdd33a04",
+	"account_erasure.go:eraseAccountIn":                     "1b081dbae07a9d40b613a3c0df8b072777f7e3653d98cb2d8dc28b06c4266d57",
+	"account_erasure.go:eraseMessagesIn":                    "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
+	"account_erasure_households.go:eraseHouseholdRecordsIn": "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
 	// T07B-2b: the page-view row of the reason review (no IP, actor the admin;
 	// meta keys count and source). Decision rows go through audit.WriteAll.
 	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
@@ -883,8 +882,8 @@ var auditWriterCensus = map[string]string{
 	"api_handoff.go:demoteEverywhere":                             "3942c7789f1b83307e31f2d2cda7354ea0f7e59338749e79a4f46afca124c159",
 	"api_handoff.go:handOffLeadership":                            "393728be02db620976ea271722aca2900d1fd6fbf558b85cb4c7d3959f265c08",
 	"api_handoff.go:restoreMemberships":                           "7e5274985450108d91a71e530fe4d6256b0a330c3361cff5a271bfb0cf037773",
-	"api_host_handoff.go:handOffHosting":                          "53914ec57672b0fb64eb4f599b0c84df94da0f98985fb4ac5541c1081831a925",
-	"api_host_handoff.go:removeDeletedHostRows":                   "911f1f768d2205b4e9a240a9cf89a1a62455be0e420f152285a9917e52edc79d",
+	"api_host_handoff.go:handOffHosting":                          "93a50176317d4e93ff841272aef57f58ebecc26f8aa682ce85787ebd38232772",
+	"api_host_handoff.go:deleteHostRowsAudited":                   "e4840ae49c5b95f68150584f85c36abeed2bf195f0f91c7ae3f764bb2fe72277",
 	"api_household_conversion.go:acceptHouseholdConversion":       "6cc4414eef3eb20cd4c91809c39acac928e40ff1cfe0fedb0bc0b24d9c603e26",
 	"api_household_conversion.go:approveHouseholdConversion":      "cfcbf9731a399602d784713f4057943e87cba061ccc8bdabacb603d5b2574d3e",
 	"api_household_conversion.go:createConversionApprovalRequest": "b3446035530b204e0fd55527ba5da2ddd14c3e619cf3c50141aaec152b9fdd29",
@@ -1203,8 +1202,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 116 {
-		t.Fatalf("audit.Write sites = %d, expected 116; review every changed site", len(c.Sites))
+	if len(c.Sites) != 114 {
+		t.Fatalf("audit.Write sites = %d, expected 114; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)

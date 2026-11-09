@@ -77,11 +77,11 @@ func TestParseRequestID(t *testing.T) {
 }
 
 func TestInt64Array(t *testing.T) {
-	if got := int64Array([]int64{-9223372036854775808, -1, 0, 9223372036854775807}); got != "{-9223372036854775808,-1,0,9223372036854775807}" {
-		t.Errorf("int64Array = %s", got)
+	if got := pgBigintArray([]int64{-9223372036854775808, -1, 0, 9223372036854775807}); got != "{-9223372036854775808,-1,0,9223372036854775807}" {
+		t.Errorf("pgBigintArray = %s", got)
 	}
-	if got := int64Array(nil); got != "{}" {
-		t.Errorf("int64Array(nil) = %s", got)
+	if got := pgBigintArray[int64](nil); got != "{}" {
+		t.Errorf("pgBigintArray(nil) = %s", got)
 	}
 }
 
@@ -1913,7 +1913,8 @@ func TestReasonReviewCensus(t *testing.T) {
 // auditReaders, each shown not to read the new decision rows (targets
 // contact_request and add_request, actions contact.reason_* and add.reason_*)
 // into a uint: captureErasureSetsIn, discoverAuditConversionsIn,
-// eraseTombstoneOnce, flagHouseholdChild13, rolloverAges,
+// tombstoneSweptSQL (the sweep marker, read by eraseTombstoneOnce and the
+// candidate page), flagHouseholdChild13, rolloverAges,
 // previouslyRegisteredPerson, loadAccessHistory and appendRecoverableRegistrations
 // filter to other actions or target types; conversionInviterDisabled,
 // conversionSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
@@ -1941,7 +1942,7 @@ var reasonCensusPinned = map[string][]string{
 		"account_erasure.go:captureErasureSetsIn",
 		"account_erasure_audit.go:discoverAuditConversionsIn",
 		"account_erasure_audit.go:eraseAuditDetailsIn",
-		"account_erasure_tombstones.go:eraseTombstoneOnce",
+		"account_erasure_tombstones.go:tombstoneSweptSQL",
 		"age_rollover.go:flagHouseholdChild13",
 		"age_rollover.go:rolloverAges",
 		"api_contact_history.go:contactHistoryQuery",

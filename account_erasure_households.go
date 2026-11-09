@@ -152,6 +152,19 @@ func (r *deleteRetry) after(err error) (again bool, final error) {
 	return true, nil
 }
 
+// stagedConversionSQL is the predicate of an approved household_conversion
+// request, the staged arm of PERS (inventory 3.1).
+const stagedConversionSQL = "source = 'household_conversion' AND status = 'approved'"
+
+// persSQL selects PERS(U), the household people who are the individual U,
+// unscoped (soft-deleted people count): completed (converted_user_id = U) or
+// staged (the person of U's approved household_conversion request). It binds
+// U twice.
+const persSQL = `SELECT id FROM household_people WHERE converted_user_id = ?
+	UNION
+	SELECT household_person_id FROM account_requests
+	WHERE ` + stagedConversionSQL + ` AND approved_user_id = ? AND household_person_id IS NOT NULL`
+
 // removedHouseholdName is the neutral name of a sole-subject household (T16,
 // O-9). Nobody sees it: no account or person remains on the household.
 const removedHouseholdName = "Removed household"
@@ -209,7 +222,7 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 		InvitationID *uint `gorm:"column:invitation_id"`
 	}
 	if err := tx.Raw(`SELECT household_person_id AS person_id, invitation_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
+		WHERE `+stagedConversionSQL+`
 		AND approved_user_id = ? AND household_person_id IS NOT NULL ORDER BY id`, s.ID).Scan(&staged).Error; err != nil {
 		return err
 	}
@@ -226,7 +239,7 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 	for id := range distinct {
 		var claimed int64
 		if err := tx.Raw(`SELECT count(*) FROM account_requests
-			WHERE source = 'household_conversion' AND status = 'approved'
+			WHERE `+stagedConversionSQL+`
 			AND household_person_id = ? AND approved_user_id IS NOT NULL AND approved_user_id <> ?`, id, s.ID).Scan(&claimed).Error; err != nil {
 			return err
 		}
@@ -475,7 +488,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 			WHERE id IN ? AND converted_user_id IS NOT NULL
 			UNION
 			SELECT household_person_id, approved_user_id FROM account_requests
-			WHERE household_person_id IN ? AND source = 'household_conversion' AND status = 'approved'
+			WHERE household_person_id IN ? AND `+stagedConversionSQL+`
 			AND approved_user_id IS NOT NULL) o`, people, people).Scan(&owned).Error; err != nil {
 		return 0, false, err
 	}
@@ -520,11 +533,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		return 0, false, nil
 	}
 	var whole []uint
-	if err := tx.Raw(`SELECT id FROM household_people WHERE converted_user_id = ?
-		UNION
-		SELECT household_person_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
-		AND approved_user_id = ? AND household_person_id IS NOT NULL`, x, x).Scan(&whole).Error; err != nil {
+	if err := tx.Raw(persSQL, x, x).Scan(&whole).Error; err != nil {
 		return 0, false, err
 	}
 	sort.Slice(whole, func(i, j int) bool { return whole[i] < whole[j] })

@@ -122,16 +122,17 @@ func parseRequestID(s string) (int64, bool) {
 	return v, true
 }
 
-// int64Array formats ids as a Postgres array literal for a ?::bigint[]
-// parameter: GORM would expand a slice into a list of values.
-func int64Array(ids []int64) string {
+// pgBigintArray formats ids as a Postgres array literal for a ?::bigint[] (or
+// CAST(@x AS bigint[])) parameter: GORM would expand a slice into a list of
+// values.
+func pgBigintArray[T int64 | uint](ids []T) string {
 	var b strings.Builder
 	b.WriteByte('{')
 	for i, id := range ids {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(strconv.FormatInt(id, 10))
+		b.WriteString(fmt.Sprint(id))
 	}
 	b.WriteByte('}')
 	return b.String()
@@ -603,7 +604,7 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 		return nil, err
 	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id",
-		int64Array(ids), target.ID, target.ID).Rows()
+		pgBigintArray(ids), target.ID, target.ID).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -637,14 +638,11 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 	}
 	out := make([]reasonItemJSON, 0, len(read))
 	for _, r := range read {
-		role := "subject"
-		if r.RequesterID == int64(target.ID) {
-			role = "requester"
-		}
+		role, reviewerIsParty := reasonParties(r, int64(actor.ID), int64(target.ID))
 		other := uint(reasonCounterpart(r, int64(target.ID)))
 		item := reasonItemJSON{
 			RequestID: strconv.FormatInt(r.ID, 10), ReviewHash: r.Hash, Role: role, Purpose: r.Purpose, Status: r.Status,
-			CreatedAt: r.CreatedAt, ReviewerIsParty: int64(actor.ID) == r.RequesterID || int64(actor.ID) == r.SubjectUserID,
+			CreatedAt: r.CreatedAt, ReviewerIsParty: reviewerIsParty,
 			ContextLabel: labels[r.ID], Reason: r.Reason,
 		}
 		cp, found := counterparts[other]
@@ -665,6 +663,17 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 type reasonCounterpartFacts struct {
 	name    string
 	deleted bool
+}
+
+// reasonParties is the target's part in a request (requester or subject) and
+// whether the reviewing admin is one of its parties: what the page shows and
+// the deletion's decision audit row records.
+func reasonParties(r reasonRow, actor, target int64) (role string, reviewerIsParty bool) {
+	role = "subject"
+	if r.RequesterID == target {
+		role = "requester"
+	}
+	return role, actor == r.RequesterID || actor == r.SubjectUserID
 }
 
 // reasonCounterpart is the other party of a request the target is in.
@@ -842,8 +851,10 @@ func reasonWriteGuard(tx *gorm.DB) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= contactCommitReserve {
-		return errCommitReserve
+	if dl, ok := ctx.Deadline(); ok {
+		if _, left := commitReserveLeft(dl); !left {
+			return errCommitReserve
+		}
 	}
 	return nil
 }
@@ -929,13 +940,10 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 			return errReasonStreamStop
 		}
 		hasher.add(r.ID, &r.Raw)
-		role := "subject"
-		if r.RequesterID == int64(target.ID) {
-			role = "requester"
-		}
+		role, reviewerIsParty := reasonParties(r, int64(actor.ID), int64(target.ID))
 		// The text is not kept: only the id and the facts of the audit row.
 		decisions = append(decisions, reasonDecision{RequestID: r.ID, Role: role, Purpose: r.Purpose, Status: r.Status,
-			ReviewerIsParty: int64(actor.ID) == r.RequesterID || int64(actor.ID) == r.SubjectUserID})
+			ReviewerIsParty: reviewerIsParty})
 		return nil
 	})
 	if err != nil && !errors.Is(err, errReasonStreamStop) {
@@ -1055,7 +1063,7 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 			continue
 		}
 		res := tx.Exec("UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)",
-			int64Array(remove), s.ID, s.ID)
+			pgBigintArray(remove), s.ID, s.ID)
 		if res.Error != nil {
 			if pgCode(res.Error) == pgLockNotAvailable {
 				return fmt.Errorf("%w: %w", errReasonCounterpartBusy, res.Error)

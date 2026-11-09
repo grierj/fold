@@ -139,13 +139,29 @@ func removeDeletedHostRows(tx *gorm.DB, actorID uint, eventIDs []uint, ip string
 	if len(eventIDs) == 0 {
 		return nil
 	}
+	return deleteHostRowsAudited(tx, &actorID, ip, hostRemovedDeleted, `DELETE FROM event_hosts WHERE event_id IN ?
+		AND user_id IN (SELECT id FROM users WHERE deleted_at IS NOT NULL)
+		RETURNING event_id, user_id`, eventIDs)
+}
+
+// The reasons a host row is removed without a person choosing it.
+const (
+	// hostRemovedDeleted: the host's account was already deleted.
+	hostRemovedDeleted = "deleted_host_cleanup"
+	// hostRemovedAccountDeleted: the account is being deleted now.
+	hostRemovedAccountDeleted = "account_deleted"
+)
+
+// deleteHostRowsAudited runs query, a DELETE FROM event_hosts ... RETURNING
+// event_id, user_id, and writes one event.host_removed audit row per removed
+// row, ordered by (event, user), with reason. actor is nil for a system
+// action.
+func deleteHostRowsAudited(tx *gorm.DB, actor *uint, ip, reason, query string, args ...any) error {
 	var gone []struct {
 		EventID uint
 		UserID  uint
 	}
-	if err := tx.Raw(`DELETE FROM event_hosts WHERE event_id IN ?
-		AND user_id IN (SELECT id FROM users WHERE deleted_at IS NOT NULL)
-		RETURNING event_id, user_id`, eventIDs).Scan(&gone).Error; err != nil {
+	if err := tx.Raw(query, args...).Scan(&gone).Error; err != nil {
 		return err
 	}
 	sort.Slice(gone, func(i, j int) bool {
@@ -155,8 +171,8 @@ func removeDeletedHostRows(tx *gorm.DB, actorID uint, eventIDs []uint, ip string
 		return gone[i].UserID < gone[j].UserID
 	})
 	for _, g := range gone {
-		if err := audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.EventHostRemoved, TargetType: "event", TargetID: g.EventID,
-			Meta: map[string]any{"userId": g.UserID, "reason": "deleted_host_cleanup"}, IP: ip}); err != nil {
+		if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.EventHostRemoved, TargetType: "event", TargetID: g.EventID,
+			Meta: map[string]any{"userId": g.UserID, "reason": reason}, IP: ip}); err != nil {
 			return err
 		}
 	}
@@ -362,19 +378,11 @@ func handOffHosting(tx *gorm.DB, actorID, targetID uint, picks map[uint]uint, lo
 	}
 	// Every row of the target, including those on deleted events; deleting a
 	// child row takes no lock on its event.
-	var gone []uint
-	if err := tx.Raw(`DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id`, targetID).Scan(&gone).Error; err != nil {
-		return err
-	}
-	sort.Slice(gone, func(i, j int) bool { return gone[i] < gone[j] })
-	for _, eventID := range gone {
-		if err := audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.EventHostRemoved, TargetType: "event", TargetID: eventID,
-			Meta: map[string]any{"userId": targetID, "reason": "account_deleted"}, IP: ip}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return deleteHostRowsAudited(tx, &actorID, ip, hostRemovedAccountDeleted, hostRowsOfUserSQL, targetID)
 }
+
+// hostRowsOfUserSQL deletes every host row of one account.
+const hostRowsOfUserSQL = `DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id, user_id`
 
 // lockHostedEvents locks the live church-wide events among ids FOR KEY SHARE,
 // ascending, and returns the ids it locked. KEY SHARE is what the host insert's

@@ -251,21 +251,13 @@ type auditConversionGroupCounts struct {
 	Reason                   string
 }
 
-func auditIDArray(ids []uint) string {
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		parts[i] = strconv.FormatUint(uint64(id), 10)
-	}
-	return "{" + strings.Join(parts, ",") + "}"
-}
-
 // eraseAuditDetailsIn runs within account deletion, after dependent records and
 // before the owned throttle keys (which stay last, detected limit D2).
 // Its caller supplies the transaction and the sets captured before any scrub.
 // It changes neither audit attribution nor authorization/safeguarding evidence.
 func eraseAuditDetailsIn(tx *gorm.DB, s erasureSubject) (auditErasureCounts, error) {
 	out := auditErasureCounts{BlankedByClass: map[auditIPClass]int64{}, KeptByClassAndAction: map[auditIPClass]map[string]int64{}}
-	args := []any{sql.Named("uid", s.ID), sql.Named("requests", auditIDArray(s.Requests)), sql.Named("invitations", auditIDArray(s.Invitations)), sql.Named("people", auditIDArray(s.People))}
+	args := []any{sql.Named("uid", s.ID), sql.Named("requests", pgBigintArray(s.Requests)), sql.Named("invitations", pgBigintArray(s.Invitations)), sql.Named("people", pgBigintArray(s.People))}
 	actions := make([]string, 0, len(auditIPAttribution))
 	for action := range auditIPAttribution {
 		actions = append(actions, action)

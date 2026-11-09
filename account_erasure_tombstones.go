@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -33,7 +33,7 @@ type tombstoneReport struct {
 func lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) {
 	var ids []uint
 	err := tx.Raw(`SELECT id FROM users WHERE id = ? AND deleted_at IS NOT NULL
-		AND email = 'deleted-' || id || '@deleted.invalid' FOR UPDATE`, id).Scan(&ids).Error
+		AND email = `+tombstoneEmailSQL("id")+` FOR UPDATE`, id).Scan(&ids).Error
 	return len(ids) == 1, err
 }
 
@@ -45,15 +45,33 @@ func lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) {
 // tombstone's status transition cannot queue push.devices_off. The trigger
 // census and whole-database tests pin this absence of side effects.
 func scrubTombstoneRowIn(tx *gorm.DB, id uint) error {
-	return tx.Exec(`UPDATE users SET name = '', display_name = '', phone = '', timezone = '',
-		password_hash = NULL, birth_date = NULL, avatar_focal_x = 50, avatar_focal_y = 50,
-		hide_contact_from_leaders = false, avatar_key = '', status = 'disabled',
-		administratively_disabled = true, updated_at = now()
-		WHERE id = ? AND deleted_at IS NOT NULL AND email = 'deleted-' || id || '@deleted.invalid'
-		AND (name IS DISTINCT FROM '' OR display_name IS DISTINCT FROM '' OR phone IS DISTINCT FROM '' OR timezone <> ''
-		OR password_hash IS NOT NULL OR birth_date IS NOT NULL OR avatar_focal_x IS DISTINCT FROM 50
-		OR avatar_focal_y IS DISTINCT FROM 50 OR hide_contact_from_leaders OR avatar_key IS DISTINCT FROM ''
-		OR status <> 'disabled' OR NOT administratively_disabled)`, id).Error
+	return tx.Exec(scrubTombstoneRowSQL, id).Error
+}
+
+// scrubTombstoneRowSQL sets every erasedUserColumns value, and only on a row
+// where one of them differs (IS DISTINCT FROM, so a NULL counts as dirty).
+var scrubTombstoneRowSQL = func() string {
+	set := make([]string, 0, len(erasedUserColumns)+1)
+	dirty := make([]string, 0, len(erasedUserColumns))
+	for _, c := range erasedUserColumns {
+		set = append(set, c.name+" = "+c.sql)
+		dirty = append(dirty, c.name+" IS DISTINCT FROM "+c.sql)
+	}
+	set = append(set, "updated_at = now()")
+	return "UPDATE users SET " + strings.Join(set, ", ") +
+		" WHERE id = ? AND deleted_at IS NOT NULL AND email = " + tombstoneEmailSQL("id") +
+		" AND (" + strings.Join(dirty, " OR ") + ")"
+}()
+
+// tombstoneSweptSQL is true when target (a SQL expression for a user id) has a
+// sweep marker at version ? or above; it binds the marker action, then (when target
+// is "?") the user id, then the version. The CASE deliberately excludes string, null and malformed
+// historical versions without ever casting them.
+func tombstoneSweptSQL(target string) string {
+	return `EXISTS (SELECT 1 FROM audit_logs l
+		WHERE l.action = ? AND l.target_type = 'user' AND l.target_id = ` + target + `
+		AND CASE WHEN jsonb_typeof(l.meta_json->'version') = 'number'
+		THEN (l.meta_json->>'version')::numeric ELSE 0 END >= ?)`
 }
 
 // eraseTombstoneOnce performs one whole erasure under one contact transaction.
@@ -90,10 +108,7 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 			return errTombstoneNoop
 		}
 		var marked bool
-		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM audit_logs
-			WHERE action = ? AND target_type = 'user' AND target_id = ?
-			AND CASE WHEN jsonb_typeof(meta_json->'version') = 'number'
-			THEN (meta_json->>'version')::numeric ELSE 0 END >= ?)`,
+		if err := tx.Raw("SELECT "+tombstoneSweptSQL("?"),
 			audit.UserErasureSwept, id, version).Scan(&marked).Error; err != nil {
 			return err
 		}
@@ -145,19 +160,7 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 // order. This does not claim the whole erasure is deadlock-free (throttle limit
 // D2); any 40P01 still returns unchanged for the job runner to retry.
 func removeTombstoneHostRowsIn(tx *gorm.DB, id uint) error {
-	var hosts []uint
-	if err := tx.Raw(`DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id`, id).Scan(&hosts).Error; err != nil {
-		return err
-	}
-	sort.Slice(hosts, func(i, j int) bool { return hosts[i] < hosts[j] })
-	for _, eventID := range hosts {
-		if err := audit.Write(tx, audit.Entry{Action: audit.EventHostRemoved,
-			TargetType: "event", TargetID: eventID,
-			Meta: map[string]any{"userId": id, "reason": "deleted_host_cleanup"}}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return deleteHostRowsAudited(tx, nil, "", hostRemovedDeleted, hostRowsOfUserSQL, id)
 }
 
 // Bump the version only when a reviewed erasure slice adds work. Markers,
@@ -212,14 +215,11 @@ func (a *App) runTombstonePageJob(ctx context.Context, raw json.RawMessage) erro
 	return a.runSweepPage(ctx, p.AfterID, p.Day)
 }
 
-// The CASE deliberately excludes string, null and malformed historical
-// versions without ever casting them. Keep it aligned with eraseTombstoneOnce.
-const tombstoneCandidatesSQL = `SELECT u.id FROM users u
- WHERE u.deleted_at IS NOT NULL AND u.email = 'deleted-' || u.id || '@deleted.invalid'
- AND u.id > ? AND NOT EXISTS (SELECT 1 FROM audit_logs l
- WHERE l.action = ? AND l.target_type = 'user' AND l.target_id = u.id
- AND CASE WHEN jsonb_typeof(l.meta_json->'version') = 'number'
- THEN (l.meta_json->>'version')::numeric ELSE 0 END >= ?)
+// tombstoneCandidatesSQL binds the cursor, the marker action, the version and
+// the page size.
+var tombstoneCandidatesSQL = `SELECT u.id FROM users u
+ WHERE u.deleted_at IS NOT NULL AND u.email = ` + tombstoneEmailSQL("u.id") + `
+ AND u.id > ? AND NOT ` + tombstoneSweptSQL("u.id") + `
  ORDER BY u.id LIMIT ?`
 
 func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {

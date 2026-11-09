@@ -151,6 +151,15 @@ func discardConn(conn *sql.Conn) {
 	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
+// commitReserveLeft is the one commit-reserve rule: the time left before
+// deadline, and whether it is more than contactCommitReserve. With at most
+// the reserve left a contact transaction rolls back (or never begins) with
+// errCommitReserve.
+func commitReserveLeft(deadline time.Time) (time.Duration, bool) {
+	left := time.Until(deadline)
+	return left, left > contactCommitReserve
+}
+
 func ceilMillis(d time.Duration) int64 {
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
@@ -213,12 +222,9 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	autoRollback := false
 	var remaining time.Duration
 	if bounded {
-		remaining = time.Until(deadline)
-		if remaining <= contactCommitReserve {
+		if _, ok := commitReserveLeft(deadline); !ok {
 			return errCommitReserve
 		}
-	}
-	if bounded {
 		sqlDB, err := a.DB.DB()
 		if err != nil {
 			return err
@@ -245,8 +251,9 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 			}
 			discardConn(conn)
 		}()
-		remaining = time.Until(deadline)
-		if remaining <= contactCommitReserve {
+		// Again after the connection wait, which takes time.
+		var ok bool
+		if remaining, ok = commitReserveLeft(deadline); !ok {
 			return errCommitReserve
 		}
 		if _, err := conn.ExecContext(ctx, "SELECT set_config('idle_in_transaction_session_timeout', $1, false)",
@@ -308,7 +315,7 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 			return rollback(err)
 		}
 	}
-	if ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {
+	if _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {
 		return rollback(errCommitReserve)
 	}
 	finished = true

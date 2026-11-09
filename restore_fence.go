@@ -59,8 +59,17 @@ import (
 // restore tooling and operator procedure land and are verified.
 const recoveryPolicyLevel = 2
 
-// restoreFenceKey is the settings row that holds the counter.
+// restoreFenceKey is the settings row that holds the counter. It is bound as
+// the parameter of the two statements below, which only the two writers run.
 const restoreFenceKey = "restore_fence"
+
+// restoreFenceCreateSQL creates the counter at zero if it is absent, and
+// restoreFenceAdvanceSQL adds one to it and returns the new value. Each takes
+// the key as its one parameter.
+const (
+	restoreFenceCreateSQL  = "INSERT INTO settings (key, value) VALUES (?, '0') ON CONFLICT (key) DO NOTHING"
+	restoreFenceAdvanceSQL = "UPDATE settings SET value = (value::bigint + 1)::text WHERE key = ? RETURNING value::bigint"
+)
 
 // errRestoreDetected: the counter is at or below the floor, or its row is gone,
 // so the database was restored under the running process. The transaction
@@ -132,10 +141,10 @@ func (a *App) bootRestoreFence() error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrations.LockID).Error; err != nil {
 			return err
 		}
-		if err := tx.Exec("INSERT INTO settings (key, value) VALUES ('restore_fence', '0') ON CONFLICT (key) DO NOTHING").Error; err != nil {
+		if err := tx.Exec(restoreFenceCreateSQL, restoreFenceKey).Error; err != nil {
 			return err
 		}
-		res := tx.Raw("UPDATE settings SET value = (value::bigint + 1)::text WHERE key = 'restore_fence' RETURNING value::bigint").Scan(&v)
+		res := tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey).Scan(&v)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -190,7 +199,7 @@ func (a *App) takeRestoreTicket(tx *gorm.DB) (restoreTicket, error) {
 	}
 	tk := restoreTicket{a: a, held: true}
 	var v int64
-	res := tx.Raw("UPDATE settings SET value = (value::bigint + 1)::text WHERE key = 'restore_fence' RETURNING value::bigint").Scan(&v)
+	res := tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey).Scan(&v)
 	if res.Error != nil {
 		tk.release()
 		return restoreTicket{}, res.Error

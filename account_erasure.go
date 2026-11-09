@@ -71,12 +71,7 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 		return err
 	}
 	var pers []uint
-	if err := tx.Raw(`SELECT id FROM household_people WHERE converted_user_id = ?
-		UNION
-		SELECT household_person_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
-		AND approved_user_id = ? AND household_person_id IS NOT NULL`,
-		s.ID, s.ID).Scan(&pers).Error; err != nil {
+	if err := tx.Raw(persSQL, s.ID, s.ID).Scan(&pers).Error; err != nil {
 		return err
 	}
 	inv := map[uint]bool{}
@@ -130,9 +125,21 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 }
 
 // erasedDomain is the reserved domain of every erased row's placeholder
-// address. tombstoneUserIn keeps its own byte-identical
-// deleted-<id>@deleted.invalid form, which R4-6's legacy match depends on.
+// address.
 const erasedDomain = "deleted.invalid"
+
+// tombstoneEmail is the address an erased account's users row keeps,
+// deleted-<id>@deleted.invalid: byte-identical to what every release wrote,
+// which the tombstone sweep's exact match (R4-6) depends on.
+func tombstoneEmail(id uint) string {
+	return fmt.Sprintf("deleted-%d@%s", id, erasedDomain)
+}
+
+// tombstoneEmailSQL is tombstoneEmail as a SQL expression over the id column
+// idCol, a trusted constant.
+func tombstoneEmailSQL(idCol string) string {
+	return "'deleted-' || " + idCol + " || '@" + erasedDomain + "'"
+}
 
 // erasedRowAddressSQL is the SQL expression 'deleted-<table>-' || id ||
 // '@deleted.invalid' (O-10), the placeholder a scrub writes in an address
@@ -491,28 +498,43 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 	return nil
 }
 
-// tombstoneUserIn scrubs the personal columns of the erased account in the
-// one UPDATE that also bumps session_version, so every open session ends.
+// erasedUserColumn is one personal column of users that an erasure clears and
+// the value it leaves, for GORM and as SQL.
+type erasedUserColumn struct {
+	name  string
+	value any
+	sql   string
+}
+
+// erasedUserColumns are the personal columns both erasures clear on the users
+// row (tombstoneUserIn on the admin path, scrubTombstoneRowIn in the sweep).
 // The row keeps its id, role (O-11), account_type, created_at and
-// logout_version; the caller soft-deletes it afterwards. The address becomes
-// a placeholder that frees the real one for a new account.
+// logout_version.
+var erasedUserColumns = []erasedUserColumn{
+	{"name", "", "''"},
+	{"display_name", "", "''"},
+	{"phone", "", "''"},
+	{"timezone", "", "''"},
+	{"password_hash", gorm.Expr("NULL"), "NULL"},
+	{"birth_date", gorm.Expr("NULL"), "NULL"},
+	{"avatar_focal_x", 50, "50"},
+	{"avatar_focal_y", 50, "50"},
+	{"hide_contact_from_leaders", false, "false"},
+	{"avatar_key", "", "''"},
+	{"status", models.UserDisabled, "'" + models.UserDisabled + "'"},
+	{"administratively_disabled", true, "true"},
+}
+
+// tombstoneUserIn scrubs the personal columns of the erased account in the
+// one UPDATE that also bumps session_version, so every open session ends;
+// the caller soft-deletes it afterwards. The address becomes a placeholder
+// that frees the real one for a new account.
 func tombstoneUserIn(tx *gorm.DB, u *models.User) error {
-	return tx.Model(u).Updates(map[string]any{
-		"email":                     fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
-		"name":                      "",
-		"display_name":              "",
-		"phone":                     "",
-		"timezone":                  "",
-		"password_hash":             gorm.Expr("NULL"),
-		"birth_date":                gorm.Expr("NULL"),
-		"avatar_focal_x":            50,
-		"avatar_focal_y":            50,
-		"hide_contact_from_leaders": false,
-		"avatar_key":                "",
-		"status":                    models.UserDisabled,
-		"administratively_disabled": true,
-		"session_version":           sessionVersionBump(),
-	}).Error
+	updates := map[string]any{"email": tombstoneEmail(u.ID), "session_version": sessionVersionBump()}
+	for _, c := range erasedUserColumns {
+		updates[c.name] = c.value
+	}
+	return tx.Model(u).Updates(updates).Error
 }
 
 // erasureOptions is everything that differs between the two account erasures:
