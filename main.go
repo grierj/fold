@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"fmt"
@@ -11,8 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
-	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"fold/internal/httpx"
 	"fold/internal/images"
 	"fold/internal/mail"
 	"fold/internal/providers"
@@ -325,10 +323,10 @@ func (a *App) setupRouter() *gin.Engine {
 	r.RedirectTrailingSlash = false
 	// Stamp the request before anything reads its body: the CSRF check parses a
 	// multipart form, so a slow upload is already read when a handler starts.
-	r.Use(stampRequestStart(), accessLog(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
+	r.Use(stampRequestStart(), httpx.AccessLog(), gin.Recovery(), httpx.SecurityHeaders(a.Config.CookieSecure))
 	// Cap every request body before anything parses it (the CSRF check
 	// reads form fields, and Gin spools big multipart bodies to disk).
-	r.Use(limitBody(maxRequestBytes))
+	r.Use(httpx.LimitBody(maxRequestBytes, jsonError))
 	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
 	// validated the list; an empty one trusts nobody.
 	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {
@@ -351,7 +349,13 @@ func (a *App) setupRouter() *gin.Engine {
 
 	// Registered before the setup redirect so a database ping still
 	// answers while the wizard is waiting for the first admin.
-	r.GET("/healthz", a.healthz)
+	r.GET("/healthz", httpx.Healthz(func(ctx context.Context) error {
+		sqlDB, err := a.DB.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.PingContext(ctx)
+	}))
 	r.GET("/help/members", serveMemberHelp)
 
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
@@ -386,10 +390,10 @@ func (a *App) setupRouter() *gin.Engine {
 	a.registerCalendarFeeds(r)
 
 	// The Home Screen app's manifest carries the church's name (M3.13c1).
-	r.GET("/manifest.webmanifest", a.serveManifest)
+	r.GET("/manifest.webmanifest", httpx.Manifest(a.siteName, defaultSiteName))
 
 	// Embedded SPA for everything else, including the service worker.
-	r.NoRoute(a.serveSPA())
+	r.NoRoute(httpx.ServeSPA(distSub(), a.emailBaseURL(), jsonError))
 
 	return r
 }
@@ -403,7 +407,7 @@ var templatesFS embed.FS
 // pageTemplates parses the server-rendered pages (setup wizard, dev outbox)
 // from the binary once; every router shares the result.
 var pageTemplates = sync.OnceValues(func() (*template.Template, error) {
-	css := builtStylesheet(distFS)
+	css := httpx.Stylesheet(distSub())
 	return template.New("").Funcs(template.FuncMap{
 		"split":      strings.Split,
 		"stylesheet": func() string { return css },
@@ -418,176 +422,14 @@ func serveMemberHelp(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", memberHelp)
 }
 
-// stylesheetRe finds the CSS bundle Vite links from index.html.
-var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)
-
-var (
-	eventPageRe   = regexp.MustCompile(`^/events/[0-9]+$`)
-	closingHeadRe = regexp.MustCompile(`(?i)</head>`)
-)
-
-const defaultOGImagePath = "/assets/brand/og-default-1200x630.png"
-
-// builtStylesheet returns the path of the SPA's CSS bundle, which the
-// server-rendered pages (setup, dev outbox) share so they use the same
-// tokens and font. It is empty when web/dist is not built; those pages
-// then render unstyled.
-func builtStylesheet(fsys fs.FS) string {
-	b, err := fs.ReadFile(fsys, "web/dist/index.html")
-	if err != nil {
-		return ""
-	}
-	m := stylesheetRe.FindSubmatch(b)
-	if m == nil {
-		return ""
-	}
-	return string(m[1])
-}
-
-// serveSPA serves the embedded frontend bundle, falling back to index.html
-// for client-side routes. API paths get a JSON 404 instead.
-func (a *App) serveSPA() gin.HandlerFunc {
+// distSub is the built SPA bundle, rooted at index.html; nil when the embedded
+// directory has no bundle.
+func distSub() fs.FS {
 	sub, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
-		sub = nil
+		return nil
 	}
-	return serveSPAFrom(sub, a.emailBaseURL())
-}
-
-// serveSPAFrom serves a built bundle: web/dist, or a test's files.
-func serveSPAFrom(sub fs.FS, origin string) gin.HandlerFunc {
-	built := sub != nil
-	if built {
-		if _, err := fs.Stat(sub, "index.html"); err != nil {
-			built = false
-		}
-	}
-	if !built {
-		log.Println("WARNING: web/dist is empty — run `npm run build` in web/ to build the frontend")
-	}
-	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.Header("Cache-Control", "no-store")
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		if !built {
-			c.String(http.StatusServiceUnavailable,
-				"Frontend not built. Run `npm run build` in web/ and restart.")
-			return
-		}
-		servedPath := strings.TrimPrefix(c.Request.URL.Path, "/")
-		if servedPath == "" {
-			servedPath = "index.html"
-		}
-		if _, err := fs.Stat(sub, servedPath); err != nil {
-			if servedPath == serviceWorkerPath {
-				// Never the shell in the worker's place: registering
-				// HTML as a script fails in a confusing way.
-				jsonError(c, http.StatusNotFound, "not found")
-				return
-			}
-			if path.Ext(path.Base(servedPath)) != "" {
-				// A missing static asset must not receive the SPA shell.
-				jsonError(c, http.StatusNotFound, "not found")
-				return
-			}
-			// Client-side route — let the SPA router handle it.
-			servedPath = "index.html"
-		}
-		// ServeContent, not http.FileServer: FileServer 301-redirects
-		// index.html serves to "./", which breaks the SPA fallback.
-		data, err := fs.ReadFile(sub, servedPath)
-		if err != nil {
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		info, err := fs.Stat(sub, servedPath)
-		if err != nil || info.IsDir() {
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		if servedPath == "index.html" {
-			// no-store: always fetch the shell fresh (a rebuilt image is what
-			// runs), and keep the page out of the back/forward cache, so going
-			// back after logout never shows the previous session's screen.
-			c.Header("Cache-Control", "no-store")
-			if eventPageRe.MatchString(c.Request.URL.Path) {
-				data = eventImageMeta(data, origin+defaultOGImagePath)
-			}
-		} else if servedPath == serviceWorkerPath {
-			// no-cache: the browser checks for a new worker on every
-			// registration and update instead of guessing a lifetime for
-			// a root file with no header (research 2.3).
-			c.Header("Cache-Control", "no-cache")
-		} else if strings.HasPrefix(servedPath, "assets/") {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-		}
-		http.ServeContent(c.Writer, c.Request, servedPath, info.ModTime(), bytes.NewReader(data))
-	}
-}
-
-// eventImageMeta adds the default social image to a public event shell.
-func eventImageMeta(index []byte, imageURL string) []byte {
-	head := closingHeadRe.FindIndex(index)
-	if head == nil {
-		return index
-	}
-	escapedURL := template.HTMLEscapeString(imageURL)
-	meta := []byte(fmt.Sprintf(`<meta property="og:image" content="%s">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="%s">
-`, escapedURL, escapedURL))
-	withMeta := make([]byte, 0, len(index)+len(meta))
-	withMeta = append(withMeta, index[:head[0]]...)
-	withMeta = append(withMeta, meta...)
-	withMeta = append(withMeta, index[head[0]:]...)
-	return withMeta
-}
-
-// contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
-// and styles come only from this origin; React sets focal points through
-// the CSSOM, which CSP allows without 'unsafe-inline'. Images may be data:
-// and blob: (upload previews) or any https URL (group covers given by URL);
-// tighten img-src when uploads are the only source (M4.7). The service
-// worker and the manifest come only from this origin too (M3.13c1); both
-// already fell back to 'self', and naming them keeps it that way.
-const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
-	"img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
-	"worker-src 'self'; manifest-src 'self'; " +
-	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
-
-// securityHeaders sets the headers on every response, so they hold behind
-// any proxy. HSTS goes out only when cookies are Secure, which means the
-// site is served over HTTPS (never in dev).
-func securityHeaders(hsts bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		h := c.Writer.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "same-origin")
-		h.Set("X-Frame-Options", "SAMEORIGIN")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if hsts {
-			h.Set("Strict-Transport-Security", "max-age=31536000")
-		}
-		c.Next()
-	}
-}
-
-func (a *App) healthz(c *gin.Context) {
-	sqlDB, err := a.DB.DB()
-	if err != nil {
-		c.Status(http.StatusServiceUnavailable)
-		return
-	}
-	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
-		c.Status(http.StatusServiceUnavailable)
-		return
-	}
-	c.Status(http.StatusOK)
+	return sub
 }
 
 // setupComplete reports whether the wizard has already created an account.
@@ -716,16 +558,3 @@ func (a *App) handleSetup(c *gin.Context) {
 // maxRequestBytes is the largest request body accepted: one image upload
 // plus room for the multipart envelope.
 const maxRequestBytes = images.MaxUploadBytes + 1<<20
-
-// limitBody makes reads past n fail, so oversized bodies are refused
-// instead of buffered.
-func limitBody(n int64) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.ContentLength > n {
-			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, errorBody(http.StatusRequestEntityTooLarge, "request too large"))
-			return
-		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)
-		c.Next()
-	}
-}

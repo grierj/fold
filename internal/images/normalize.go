@@ -37,9 +37,6 @@ const (
 	jpegQuality = 85
 )
 
-// MaxUploadBytes caps a single image upload (avatars, group covers).
-const MaxUploadBytes = 5 << 20 // 5MB
-
 // allowedTypes maps sniffed MIME types to canonical extensions. The
 // client-supplied Content-Type is never trusted; uploads are sniffed.
 var allowedTypes = map[string]string{

@@ -1,4 +1,4 @@
-package main
+package httpx
 
 import (
 	"bytes"
@@ -44,7 +44,7 @@ func TestAccessLogKeepsSecretsOut(t *testing.T) {
 	defer func() { gin.DefaultWriter = saved }()
 
 	r := gin.New()
-	r.Use(accessLog())
+	r.Use(AccessLog())
 	r.GET("/*any", func(c *gin.Context) { c.Status(http.StatusNotFound) })
 	for _, u := range []string{"/cal/u/feedsecret123.ics", "/cal/rooms/7/roomsecret321.ics", "/reset-password?token=resetsecret456", "/api/v1/invitations/invitesecret789"} {
 		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, u, nil))

@@ -8,6 +8,9 @@ import (
 	"os"
 )
 
+// MaxUploadBytes caps a single image upload (avatars, group covers).
+const MaxUploadBytes = 5 << 20 // 5MB
+
 // ReadUpload validates a multipart image upload: real byte-count size limit and
 // content sniffing, then Normalize. It returns a temp file (the caller closes
 // and removes it), the canonical extension and the MIME type. A refusal's

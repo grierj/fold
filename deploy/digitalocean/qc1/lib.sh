@@ -66,13 +66,13 @@ qc1_gate_key() {
   printf '%d %d' "$((id >> 32))" "$((id & 0xffffffff))"
 }
 
-# Go's maxRequestBytes from the source: maxUploadBytes (a << b) plus (c << d).
+# Go's maxRequestBytes from the source: MaxUploadBytes (a << b) plus (c << d).
 # Go binds << tighter than +, which bash arithmetic does not.
 qc1_max_request_bytes() { # repo-root
   local root="$1" up req a b c d
-  up="$(sed -n 's/^const maxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/api_profile.go")"
-  req="$(sed -n 's/^const maxRequestBytes = maxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
-  [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read maxUploadBytes or maxRequestBytes' >&2; return 1; }
+  up="$(sed -n 's/^const MaxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/internal/images/upload.go")"
+  req="$(sed -n 's/^const maxRequestBytes = images.MaxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
+  [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read MaxUploadBytes or maxRequestBytes' >&2; return 1; }
   read -r a b <<<"$up"; read -r c d <<<"$req"
   printf '%d' "$(( (a << b) + (c << d) ))"
 }
