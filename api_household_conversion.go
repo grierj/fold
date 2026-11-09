@@ -39,41 +39,41 @@ type conversionJSON struct {
 	State     string    `json:"state"`
 }
 
+// The states a household person's conversion shows: an invitation that is
+// pending or expired, then a request awaiting an admin, then an approved
+// teen awaiting account consent.
+const (
+	conversionPending          = "pending"
+	conversionExpired          = "expired"
+	conversionAwaitingApproval = "awaiting_approval"
+	conversionAwaitingConsent  = "awaiting_consent"
+)
+
+// openConversionRequests scopes tx to the conversion requests still in flight:
+// pending, or approved with the account created.
+func openConversionRequests(tx *gorm.DB) *gorm.DB {
+	return tx.Model(&models.AccountRequest{}).Where("source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved)
+}
+
+// conversionDetailsMatch: the person is still the one the request named.
+func conversionDetailsMatch(person *models.HouseholdPerson, req *models.AccountRequest) bool {
+	return person.FullName() == req.Name && formatBirthDate(person.BirthDate) == formatBirthDate(req.BirthDate)
+}
+
 func conversionMetadata(inv *models.Invitation) conversionJSON {
-	state := "pending"
+	state := conversionPending
 	if !inv.ExpiresAt.After(time.Now()) {
-		state = "expired"
+		state = conversionExpired
 	}
 	return conversionJSON{Email: inv.Email, ExpiresAt: inv.ExpiresAt, State: state}
 }
 
-// Ordinary and household invitations reserve the same email namespace.
-func lockInvitationEmail(tx *gorm.DB, email string) error {
-	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 7316193))", mail.NormalizeAddress(email)).Error
-}
-
-func conversionEmailAvailable(tx *gorm.DB, email string, except uint, exceptRequest ...uint) error {
-	var n int64
-	if err := tx.Unscoped().Model(&models.User{}).Where("email = ?", email).Count(&n).Error; err != nil {
+func conversionEmailAvailable(tx *gorm.DB, email string, exceptInvitation, exceptRequest uint) error {
+	hold, err := emailHeldBy(tx, email, exceptInvitation, exceptRequest, false)
+	if err != nil {
 		return err
 	}
-	if n != 0 {
-		return errConversionEmail
-	}
-	if err := tx.Model(&models.Invitation{}).Where("email = ? AND id <> ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email, except).Count(&n).Error; err != nil {
-		return err
-	}
-	if n != 0 {
-		return errConversionEmail
-	}
-	q := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending)
-	if len(exceptRequest) > 0 {
-		q = q.Where("id <> ?", exceptRequest[0])
-	}
-	if err := q.Count(&n).Error; err != nil {
-		return err
-	}
-	if n != 0 {
+	if hold != "" {
 		return errConversionEmail
 	}
 	return nil
@@ -204,29 +204,6 @@ func conversionError(c *gin.Context, err error) {
 	}
 }
 
-// Conversion mail uses the invitation limit, including resends. Audits are
-// durable counters; refused ordinary invitations spend only the actor budget.
-// The actor advisory lock serializes different households and invite targets.
-func conversionSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) {
-	if err := tx.Exec("SELECT pg_advisory_xact_lock(7316194, ?)", actor).Error; err != nil {
-		return false, err
-	}
-	var byActor, byEmail int64
-	mailKinds := []string{audit.InvitationCreated, audit.InvitationResent}
-	actorKinds := []string{audit.InvitationCreated, audit.InvitationResent, audit.InvitationRefused}
-	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", actor, actorKinds).Count(&byActor).Error; err != nil {
-		return false, err
-	}
-	if byActor >= leaderInviteDailyLimit {
-		return false, nil
-	}
-	// Join the invitation instead of putting destination email in conversion audits.
-	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.at > now() - interval '24 hours'", email, mailKinds).Count(&byEmail).Error; err != nil {
-		return false, err
-	}
-	return byEmail < leaderInviteDailyLimit, nil
-}
-
 // Re-enabling an inviter requires a fresh issue or explicit resend. Delivery
 // and acceptance use the same cutoff without taking any authority locks.
 func conversionInviterDisabled(tx *gorm.DB, inv *models.Invitation) (bool, error) {
@@ -278,7 +255,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			return errConversionUnavailable
 		}
 		var pending int64
-		if err := tx.Model(&models.AccountRequest{}).Where("household_person_id = ? AND source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", person.ID, models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved).Count(&pending).Error; err != nil {
+		if err := openConversionRequests(tx).Where("household_person_id = ?", person.ID).Count(&pending).Error; err != nil {
 			return err
 		}
 		if pending > 0 {
@@ -302,7 +279,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		}
 		// Household address checks use the same actor gate before looking up
 		// an address. Otherwise this sibling could bypass the ordinary limit.
-		allowed, err = conversionSendAllowed(tx, actor.ID, body.Email)
+		allowed, err = inviteSendAllowed(tx, actor.ID, body.Email)
 		if err != nil {
 			return err
 		}
@@ -316,7 +293,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			}
 			return nil
 		}
-		if err := conversionEmailAvailable(tx, body.Email, inv.ID); err != nil {
+		if err := conversionEmailAvailable(tx, body.Email, inv.ID, 0); err != nil {
 			if !errors.Is(err, errConversionEmail) {
 				return err
 			}
@@ -328,7 +305,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			// check still spends an actor attempt rather than becoming free.
 			return writeInvitationRefusal(tx, actor.ID, "household_invitation_open", c.ClientIP())
 		}
-		_, hash, err := createInvitationToken()
+		_, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}
@@ -473,6 +450,10 @@ func sortedUniqueIDs(ids []uint) []uint {
 	return unique
 }
 
+// conversionAcceptAttempts bounds the retries of an accept whose household
+// changed under it.
+const conversionAcceptAttempts = 4
+
 func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, initial *models.Invitation) {
 	// Password hashing never holds database locks.
 	prepared := models.User{}
@@ -481,7 +462,11 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		return
 	}
 	var err error
-	for attempt := 0; attempt < 4; attempt++ {
+	// Everyone else who hits errConversionRetry (lockTeenLifecycleUsers) answers
+	// 409 "try again" at once. This door is anonymous, so a household that changed
+	// while the participants were being locked is retried here, in a fresh
+	// transaction each time, and only an exhausted budget answers the same 409.
+	for attempt := 0; attempt < conversionAcceptAttempts; attempt++ {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			discovery, err := liveInvitation(tx, raw)
 			if err != nil || discovery.HouseholdPersonID == nil {
@@ -492,33 +477,15 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := tx.First(&person, *initial.HouseholdPersonID).Error; err != nil {
 				return errTokenInvalid
 			}
-			ids, err := conversionLockIDs(tx, initial, &person)
-			if err != nil {
-				return err
-			}
-			locked, err := lockUsersByID(tx, ids, true)
-			if err != nil {
-				return err
-			}
-			// Test seam (nil in production): the users statement above holds
-			// every participant until this transaction commits.
-			if a.hooks.conversionAfterUserLocks != nil {
-				a.hooks.conversionAfterUserLocks(tx)
-			}
-			if err := lockHousehold(tx, person.HouseholdID); err != nil {
-				return err
-			}
-			if err := tx.First(&person, person.ID).Error; err != nil {
+			locked, _, err := lockConversionParticipants(tx, initial, &person, a.hooks.conversionAfterUserLocks)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errTokenInvalid
 			}
-			freshIDs, err := conversionLockIDs(tx, initial, &person)
 			if err != nil {
 				return err
 			}
-			for _, id := range freshIDs {
-				if locked[id] == nil {
-					return errConversionRetry
-				}
+			if person.DeletedAt.Valid {
+				return errTokenInvalid
 			}
 			var inv models.Invitation
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&inv, initial.ID).Error; err != nil {
@@ -549,7 +516,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := lockInvitationEmail(tx, inv.Email); err != nil {
 				return err
 			}
-			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
+			if err := conversionEmailAvailable(tx, inv.Email, inv.ID, 0); err != nil {
 				return err
 			}
 			err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
@@ -557,12 +524,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 				return err
 			}
 
-			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive+" AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
-			if claim.Error != nil {
-				return claim.Error
-			}
-			if claim.RowsAffected != 1 {
-				return errTokenInvalid
+			if err := claimInvitation(tx, inv.ID, raw, time.Now().UTC()); err != nil {
+				return err
 			}
 			return audit.Write(tx, audit.Entry{Actor: &inv.InvitedBy, Action: audit.InvitationAccepted, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID}, IP: c.ClientIP()})
 		})
@@ -670,14 +633,18 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.ConvertedUserID != nil {
 		return 0, errConversionPerson
 	}
-	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) {
+	if !conversionDetailsMatch(&person, req) {
 		return 0, errConversionDetails
 	}
 	today, err := churchClockIn(tx, time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
-	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
+	personLinks, err := loadGuardianLinks(tx, []uint{person.ID})
+	if err != nil {
+		return 0, err
+	}
+	if facts := householdFacts(&person, personLinks[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
 		return 0, errConversionAdult
 	}
 	inviter := locked[inv.InvitedBy]
@@ -701,15 +668,11 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	}
 	inv.Email = req.Email
 	if person.Kind == models.HouseholdTeen {
-		user := models.User{Email: req.Email, Name: req.Name, Role: models.RoleMember, Status: models.UserPendingConsent, AccountType: models.AccountTeen, BirthDate: req.BirthDate, PasswordHash: req.PasswordHash}
+		user := models.User{Email: req.Email, Name: req.Name, Role: models.RoleMember, Status: newAccountStatus(models.AccountTeen, req.PasswordHash != nil), AccountType: models.AccountTeen, BirthDate: req.BirthDate, PasswordHash: req.PasswordHash}
 		if err := tx.Create(&user).Error; err != nil {
 			return 0, err
 		}
-		if err := tx.Model(req).Update("approved_user_id", user.ID).Error; err != nil {
-			return 0, err
-		}
-		links := guardianLinksForPeople(tx, []uint{person.ID})[person.ID]
-		for _, link := range links {
+		for _, link := range personLinks[person.ID] {
 			if link.Status != models.GuardianConfirmed {
 				continue
 			}
@@ -724,7 +687,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 		}
 		return user.ID, nil
 	}
-	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: req.PasswordHash}
+	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: newAccountStatus(person.Kind, req.PasswordHash != nil), AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: req.PasswordHash}
 	if err := tx.Create(&user).Error; err != nil {
 		return 0, err
 	}

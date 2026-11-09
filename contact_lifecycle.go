@@ -26,7 +26,6 @@ import (
 // The gate stays held
 // through audit, task resolution and commit (including reveal). This preserves
 // both group-first membership and user-first deletion/consent lock prefixes.
-const contactLockID int64 = 0x464f4c44434f4e
 
 func lockContacts(tx *gorm.DB) error {
 	return tx.Exec("SELECT pg_advisory_xact_lock(?)", contactLockID).Error

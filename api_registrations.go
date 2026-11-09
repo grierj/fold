@@ -472,7 +472,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	rows []models.Registration, now time.Time, actor *uint) error {
 	for _, r := range rows {
-		raw, hash, err := createInvitationToken()
+		raw, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}

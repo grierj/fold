@@ -30,7 +30,7 @@ refused 'not a whole number' qc1_list 10,,20
 [[ "$QC1_COUNTS_DEFAULT" == 0,10,100,1000,10000 ]]
 
 # --- the gate the sampler watches is the contact gate ------------------------------
-grep -q 'const contactLockID int64 = 0x464f4c44434f4e$' "$ROOT/contact_lifecycle.go"
+grep -q 'contactLockID int64 = 0x464f4c44434f4e$' "$ROOT/advisory_locks.go"
 [[ "$QC1_GATE_LOCK_ID" == 0x464f4c44434f4e ]]
 read -r class obj <<<"$(qc1_gate_key)"
 [[ "$class" == "$(( 0x464f4c44434f4e >> 32 ))" && "$obj" == "$(( 0x464f4c44434f4e & 0xffffffff ))" ]]

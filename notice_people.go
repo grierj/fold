@@ -16,7 +16,7 @@ import (
 // fail when the read does.
 func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 	var ids []uint
-	err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Order("id").Pluck("id", &ids).Error
+	err := activeAdmins(tx).Order("id").Pluck("id", &ids).Error
 	return ids, err
 }
 

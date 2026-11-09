@@ -38,12 +38,11 @@ const throttleKeysFile = "throttle_keys.go"
 // SQL or models.LoginThrottle. eraseOwnedThrottleKeysIn (account_erasure.go)
 // is the erasure's one statement over the table.
 var throttleSQLAllowed = map[string]map[string]bool{
-	"api_auth.go": {
-		"apiLogin": true, "reauthenticate": true, "reserveLoginAttempt": true,
-		"countThrottleHit": true, "lockLoginKeysAtLimit": true, "pruneLoginThrottles": true,
+	"throttle.go": {
+		"reserveLoginAttempt": true, "countThrottleHit": true, "lockLoginKeysAtLimit": true,
+		"pruneLoginThrottles": true, "refundLoginAttempts": true, "clearLoginKey": true,
 	},
-	"api_occurrence_mutations.go": {"managerDateAddAllowedIn": true},
-	"account_erasure.go":          {"eraseOwnedThrottleKeysIn": true},
+	"account_erasure.go": {"eraseOwnedThrottleKeysIn": true},
 }
 
 // loginThrottlesTable matches the table name as a whole word, so a schema
@@ -523,7 +522,7 @@ func TestOwnedThrottleKeysCoverEveryOwnedBuilder(t *testing.T) {
 }
 
 // throttleStubs declares the helper signatures a fixture calls, the way
-// api_auth.go does for the real tree.
+// throttle.go does for the real tree.
 const throttleStubs = `package main
 
 func (a *App) throttleAllow(ctx context.Context, key throttleKey, limit int, window time.Duration) (bool, error) {
@@ -652,7 +651,7 @@ func f(v any) { _ = v.(throttleKey) }`, "uses the throttleKey type"},
 		}
 	})
 	t.Run("a listed function may hold the SQL", func(t *testing.T) {
-		src := map[string]string{"api_auth.go": "package main\nfunc pruneLoginThrottles() { _ = `DELETE FROM login_throttles` }\n"}
+		src := map[string]string{"throttle.go": "package main\nfunc pruneLoginThrottles() { _ = `DELETE FROM login_throttles` }\n"}
 		if bad := throttleSQLViolations(src, throttleSQLAllowed); len(bad) != 0 {
 			t.Fatalf("got %v", bad)
 		}

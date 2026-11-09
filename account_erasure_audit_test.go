@@ -840,7 +840,6 @@ var auditWriterCensus = map[string]string{
 	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
-	"api_account_requests.go:apiConfirmAccountSetup":              "f97b48dcb56a3e178e94d2c297f260fa526f176e68252f55b8085d4a774e0acb",
 	"api_account_requests.go:apiSetSelfSignup":                    "46f34cd7e73d9cf344b3e9378c76b811b88b06d10a20b7f495aadac78da63e82",
 	"api_account_requests.go:decideAccountRequest":                "18bb2e5e2f8af270aef775f8a7cdbdf8f7eaa0f5d151615576dc938bd4d21fe9",
 	"api_account_requests.go:expirePendingRequests":               "b30d60d413fdc04420d5ef85fed5141945bbad23cd3c882a19a4e160d067446f",
@@ -848,16 +847,16 @@ var auditWriterCensus = map[string]string{
 	"api_admin.go:apiAdminCreateUser":                             "6d94b5f538e0ac21ef2812e65b5bf9dd6da4434ebf5635c0fbeb6e8df06ec1c4",
 	"api_admin.go:apiAdminDeleteUser":                             "beda70946e599d9df50effed52b98044534ae7c33f90272ec47c9c3b7d371db2",
 	"api_admin.go:apiAdminResetPassword":                          "a5986e9dbf1710c87fec4483407977aa9f587bc64c8619363aef2f26d72c514f",
-	"api_admin.go:apiAdminUpdateUser":                             "393506599017bf070142cef9cf59a88b9bd08cb73a34937d8257c64da2abffc2",
-	"api_admin.go:decideGroup":                                    "faa6da1ee041b4d39f734458a51662ca5be8359d0ebc31c4a8e811ac897c1f2f",
-	"api_admin.go:decideGuardianLink":                             "0d2559e7a9ccefe3156c283990dc4653610534becb9e47c4a52a0ab473c50cf5",
+	"api_admin.go:apiAdminUpdateUser":                             "aa7bd3e1f541a1b039858f6a2397cadde395e6932b29952892e4f8b5af0c808c",
+	"api_admin_groups.go:decideGroup":                             "faa6da1ee041b4d39f734458a51662ca5be8359d0ebc31c4a8e811ac897c1f2f",
+	"api_admin_guardian_links.go:decideGuardianLink":              "0d2559e7a9ccefe3156c283990dc4653610534becb9e47c4a52a0ab473c50cf5",
 	"api_admin_household.go:apiAdminAddHouseholdPerson":           "8cf7bd69171a89be85dc1274e7086c190bcf9ad4b70f9ab22d10b0dc81c4c385",
 	"api_admin_household.go:apiAdminCreateHousehold":              "94247b2de1067ca36bff02c0f6b171ca43b0d7ef09ea9677c58633c5315a341c",
 	"api_admin_jobs.go:decideDeadJob":                             "04e9851ad53e2151ac2bc13599645fe06b1025aa77319bd291be047403485d08",
 	"api_admin_suppressions.go:apiAdminClearSuppression":          "9044a4250a72408b0ccb7354305dd22e93dd2082f630b5993b7586c79035b4ea",
 	"api_auth.go:apiChangePassword":                               "09345a72be2ea9e67394b3ee2bec5e8c127451fb3fd6e21978d7498994fffc18",
-	"api_auth.go:apiConfirmPasswordReset":                         "ca2949268c280855e19fb399c0a1a707a9d9a827fcfcf552b0e6bd255de50fc2",
 	"api_auth.go:apiRequestPasswordReset":                         "dc3a3d5d37afce904a46dd6dd87342be9b49ea3b9379a2d2556f0f889158683e",
+	"api_auth.go:redeemPasswordLink":                              "841741c26844e3d9414a86b0128034760bc5057f9594496f59da2713855960b3",
 	"api_contact.go:auditRefusal":                                 "bfe884ae54cfeb1f8224d9cf33ad758168262cbc65502778d8d0561890191f6d",
 	"api_contact_history.go:apiExportContactHistory":              "5df09267b49abc795ee0f42a03f5d376bd233f87e77455d53e529b8068a97a24",
 	"api_departure.go:applyDeparture":                             "835354a095c0a480e8499c4ecb04f74092dfd2bce845699898fb141b9b9ab9a2",
@@ -875,7 +874,7 @@ var auditWriterCensus = map[string]string{
 	"api_group_visibility.go:cancelDateLosers":                    "b559a56de6e1d185f9d67eb2c1b9bf40754de49713a0133ed067296b2f791bb9",
 	"api_groups.go:apiUpdateGroup":                                "066a15def11b07f00492ad420206068b7ff977b43f8d492b9be3f8f976c9192d",
 	"api_groups.go:auditAndNotifyLeadership":                      "10cc718888efbfe112b1f9d198a48a9a9c7e8c74ba90ec721ad35ba8d555316c",
-	"api_groups.go:changeRoleIn":                                  "6c81ce1bd5f4f91603428940c43e97b1d3d30ef4c5f5dc52441dc0126e23d208",
+	"api_groups.go:changeRoleIn":                                  "2bbe7152fb27b6fdc394965e6b8047c5cec5f0a6c7e7bab0e140bb9821076855",
 	"api_groups.go:deleteGroup":                                   "fec7d685ed8b3700c060f747c0c0bc2a1b758fef582f539ec837dd198058edbd",
 	"api_guest.go:apiCancelGuestRegistration":                     "d92867ce53e9aa1d9e3f635bee6ae5946c7aa0fed892bebc76beba28bb017fbb",
 	"api_guest.go:createGuestUpgradeRequest":                      "d4efcca0c23809550c5f9d8996e03fad7134231186eb151392530f8a17e6341c",
@@ -890,7 +889,7 @@ var auditWriterCensus = map[string]string{
 	"api_household_conversion.go:issueHouseholdConversion":        "9f6f439dcead0603cd7951269d59d2ee82732c3609c9b37bb7ff37db4e44e679",
 	"api_household_conversion.go:revokeConversionInvitation":      "0fefea42145a8ecba0cd41cf715a9856d9865a070b65d847987d1d3526dd1d29",
 	"api_household_conversion.go:transferHouseholdConversion":     "e1908caf0ce2fcf2d264c520c2f9c4adda50c7625277295c99d6678b8eef369f",
-	"api_invitations.go:apiAcceptInvitation":                      "60f7cc3dd7e17625a05e396cae326b52bd06a2fc9672e65a7d60e5d50c62353f",
+	"api_invitations.go:apiAcceptInvitation":                      "aefaf685053af673d24c4f48cb8cc6c94eeb2cb219db2bd91773e5d2c3ff9b99",
 	"api_invitations.go:apiCreateInvitation":                      "45bbb658cdec5c7de60681c0d505544e2c25a011e8fa9bbb38b9e978c79d1a7e",
 	"api_invitations.go:writeInvitationRefusal":                   "7b02d5b25e7c2b17d5c628c82fa102075c93ba82255b0a21b4eecb4c7dae6e0f",
 	"api_message_history.go:apiRetryMessage":                      "28f49307508e5f77df4a6aaebc4c63d59a94aca0cccb26e86b207e8d4024ce19",
@@ -899,16 +898,16 @@ var auditWriterCensus = map[string]string{
 	"api_messages.go:apiCancelMessage":                            "072e942199cda3fee26b59da2a7cd384b18bb75c04052b6873cd0ded6b108fd7",
 	"api_messages.go:apiScheduleMessage":                          "c3812387e4ed2d94a8099978724a83523a859e25f6edd41167d14c35be69f5ca",
 	"api_messages.go:apiUpdateMessage":                            "488f229db14d0f858b82d153bd8a76dbe2e3d4f1d46a6c57564a9e9c73df9928",
+	"api_households.go:apiAddHouseholdPerson":                     "83c8ef22c21d627b9ef84d66838ad7dc8491b5dbc5de3d0ea4dd2e77a203609a",
+	"api_households.go:apiDeleteHouseholdPerson":                  "0988a9ba35deecc848bebbda7af43b773f91042364c274cf13d5972f56cb85de",
 	"api_occurrence_visibility.go:changeDateVisibility":           "c6b8840390d62966740b633cc84d9ae61de734822f099bca9ef0301c3b780c62",
-	"api_profile.go:apiAddHouseholdPerson":                        "83c8ef22c21d627b9ef84d66838ad7dc8491b5dbc5de3d0ea4dd2e77a203609a",
-	"api_profile.go:apiDeleteHouseholdPerson":                     "0988a9ba35deecc848bebbda7af43b773f91042364c274cf13d5972f56cb85de",
 	"api_profile.go:apiRequestEmailChange":                        "47dde4ece9b10109a2a709861dd8ede7b41f840030b00f94e5e2c268efbae924",
-	"api_profile.go:apiUpdateHouseholdPerson":                     "91057afc72a767e94c4ff02c02a890b1bbd9f72c182f173c1f587e584c88aa26",
+	"api_households.go:apiUpdateHouseholdPerson":                  "91057afc72a767e94c4ff02c02a890b1bbd9f72c182f173c1f587e584c88aa26",
 	"api_profile.go:apiUpdateMe":                                  "b3262ccbdcd1dcaca42e211131e510e4abf3ae042a90dcb55969393aeec23277",
-	"api_profile.go:apiUpdateMyHousehold":                         "2c02ddc4bf65e78173d88a57d0be58945b0dff62e6530b09d2748101589b4582",
+	"api_households.go:apiUpdateMyHousehold":                      "2c02ddc4bf65e78173d88a57d0be58945b0dff62e6530b09d2748101589b4582",
 	"api_profile.go:apiVerifyEmailChange":                         "ed76d52dcbe727a70cb2f4dbce8a3271b06e396d7be527dbde1361c165a47950",
-	"api_profile.go:ensureHousehold":                              "9236b5e942983ff2454573eae5fb0b2aec6146c461772d6723207f5ed544cbf8",
-	"api_profile.go:revokeGuardianLinks":                          "72f5343ffde6bf01d84532da5a2e7f5e927e5385b992a3032a86ff0d01f933da",
+	"api_households.go:ensureHousehold":                           "9236b5e942983ff2454573eae5fb0b2aec6146c461772d6723207f5ed544cbf8",
+	"api_households.go:revokeGuardianLinks":                       "72f5343ffde6bf01d84532da5a2e7f5e927e5385b992a3032a86ff0d01f933da",
 	"api_push.go:apiPushSubscribe":                                "83847c8032633da5bab06adb3c85a625a493d7d2611846e6b518027f9f22cead",
 	"api_push.go:apiPushTest":                                     "72c9c905b24bb81242cff2694dbdee3833e47cb298c7e1ca5dd9494b4e6b403a",
 	"api_registrations.go:addAccountRegistrationLocked":           "e846bc3c56efea3f161d41ac9eb3594308b3493a3a9bdfc1d0a875929a0b76ff",
@@ -1202,8 +1201,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 116 {
-		t.Fatalf("audit.Write sites = %d, expected 116; review every changed site", len(c.Sites))
+	if len(c.Sites) != 113 {
+		t.Fatalf("audit.Write sites = %d, expected 113; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)
@@ -1230,7 +1229,7 @@ func TestAuditErasureCensusRejectsMutations(t *testing.T) {
 		{"new guardian source", "api_teen_guardians.go", "apiClaimTeenGuardian", `"claim", c.ClientIP()`, `"new_source", c.ClientIP()`},
 		{"actor expression", "api_profile.go", "apiUpdateMe", "Actor: &u.ID, Action: audit.ContactPrivacyChanged", "Actor: nil, Action: audit.ContactPrivacyChanged"},
 		{"direct IP source", "api_profile.go", "apiUpdateMe", "IP: c.ClientIP()", `IP: ""`},
-		{"indirect metadata key", "api_profile.go", "apiAddHouseholdPerson", `meta["guardianLinkId"]`, `meta["renamedGuardianLinkId"]`},
+		{"indirect metadata key", "api_households.go", "apiAddHouseholdPerson", `meta["guardianLinkId"]`, `meta["renamedGuardianLinkId"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mutated := make(map[string][]byte, len(sources))

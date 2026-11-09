@@ -50,7 +50,7 @@ func approvedConversionForPerson(tx *gorm.DB, personID uint) (bool, error) {
 }
 
 // All conversion participants are discovered before any user lock is taken.
-func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *models.HouseholdPerson, extraIDs ...uint) (map[uint]*models.User, []uint, error) {
+func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *models.HouseholdPerson, afterUsers func(*gorm.DB), extraIDs ...uint) (map[uint]*models.User, []uint, error) {
 	ids, err := conversionLockIDs(tx, inv, person)
 	if err != nil {
 		return nil, nil, err
@@ -60,6 +60,9 @@ func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *mod
 	locked, err := lockUsersByID(tx, ids, true)
 	if err != nil {
 		return nil, nil, err
+	}
+	if afterUsers != nil {
+		afterUsers(tx) // test seam (nil in production): every participant is held here
 	}
 	if err := lockHousehold(tx, person.HouseholdID); err != nil {
 		return nil, nil, err
@@ -91,7 +94,7 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 	}
 	ids := append([]uint{userID}, extraIDs...)
 	if stage != nil {
-		locked, _, err := lockConversionParticipants(tx, &stage.invitation, &stage.person, ids...)
+		locked, _, err := lockConversionParticipants(tx, &stage.invitation, &stage.person, nil, ids...)
 		return locked, err
 	}
 	var household models.HouseholdAccount
@@ -135,7 +138,7 @@ func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, toda
 	if person.DeletedAt.Valid || person.ConvertedUserID != nil || req.ApprovedUserID == nil || *req.ApprovedUserID != user.ID {
 		return errConversionPerson
 	}
-	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) || formatBirthDate(user.BirthDate) != formatBirthDate(req.BirthDate) {
+	if !conversionDetailsMatch(person, req) || formatBirthDate(user.BirthDate) != formatBirthDate(req.BirthDate) {
 		return errConversionDetails
 	}
 	if user.AdministrativelyDisabled {

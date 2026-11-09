@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -109,15 +107,6 @@ func toAccountRequestJSON(r *models.AccountRequest, names publicNames) accountRe
 	return out
 }
 
-// throttleHit counts one hit against key and reports the running count
-// inside the window. It lives in login_throttles, so it survives
-// restarts and is shared by every replica. Public forms each use their
-// own key prefix, so one form's traffic never throttles another's.
-func (a *App) throttleHit(ctx context.Context, key throttleKey, window time.Duration) (int, error) {
-	failures, _, err := countThrottleHit(a.DB.WithContext(ctx), key, window)
-	return failures, err
-}
-
 type accountRequestInput struct {
 	GuardianEmail string `json:"guardianEmail"`
 	Name          string `json:"name"`
@@ -142,9 +131,9 @@ type validatedRequest struct {
 // (DEC-8). Under 13 answers 400 with the household explanation and the
 // caller stores nothing.
 func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (validatedRequest, bool) {
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return validatedRequest{}, false
 	}
 	email := foldmail.NormalizeAddress(body.Email)
@@ -152,9 +141,9 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 		fail(c, errEnterValidEmail)
 		return validatedRequest{}, false
 	}
-	phone := strings.TrimSpace(body.Phone)
-	if len(phone) > 30 {
-		fail(c, errPhoneTooLong)
+	phone, err := phoneNumber(body.Phone)
+	if err != nil {
+		fail(c, err)
 		return validatedRequest{}, false
 	}
 	message := strings.TrimSpace(body.Message)
@@ -344,6 +333,11 @@ func (a *App) apiInviteFriend(c *gin.Context) {
 // Admin queue
 // ---------------------------------------------------------------------------
 
+// apiListAccountRequests closes overdue requests before it lists. The write in
+// a GET is deliberate: the daily accounts.expire_requests job runs once a day,
+// and without this the pending queue (and its bell tasks) would show an
+// overdue request an admin can no longer act on until the next run. It is
+// idempotent and an error only logs; the list is still served.
 func (a *App) apiListAccountRequests(c *gin.Context) {
 	if _, err := a.expirePendingRequests(); err != nil {
 		log.Printf("account requests: expire: %v", err)
@@ -359,7 +353,10 @@ func (a *App) apiListAccountRequests(c *gin.Context) {
 		return
 	}
 	var rows []models.AccountRequest
-	q.Find(&rows)
+	if err := q.Find(&rows).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list requests")
+		return
+	}
 	ids := []uint{}
 	for _, r := range rows {
 		if r.RequestedBy != nil {
@@ -397,7 +394,9 @@ func (a *App) apiApproveAccountRequest(c *gin.Context) {
 		FromNotification           *uint   `json:"fromNotification"`
 		AccountConsentEvidenceText *string `json:"accountConsentEvidenceText"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	if !a.fromNotification(c, body.FromNotification, notify.ActionApproveAccount, req.ID) {
 		return
 	}
@@ -420,14 +419,15 @@ func (a *App) apiRejectAccountRequest(c *gin.Context) {
 		Note             string `json:"note"`
 		FromNotification *uint  `json:"fromNotification"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	if !a.fromNotification(c, body.FromNotification, "reject", req.ID) {
 		return
 	}
 	a.decideAccountRequest(c, req, false, strings.TrimSpace(body.Note), nil)
 }
 
-var errRequestHandled = errors.New("account request already decided")
 var errConsentExistingAccount = apiErr(http.StatusConflict, "consent_existing_account", "that email already has an account; approve without consent and review the account separately")
 
 func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, approve bool, note string, consentEvidence *string) {
@@ -462,7 +462,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				return errConversionUnavailable
 			}
 			var err error
-			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, me.ID)
+			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, nil, me.ID)
 			if err != nil {
 				return err
 			}
@@ -508,16 +508,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		if approve {
 			status = models.RequestApproved
 		}
-		res := tx.Model(&models.AccountRequest{}).
-			Where("id = ? AND status = ?", req.ID, models.RequestPending).
-			Updates(map[string]any{
-				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
-			})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errRequestHandled
+		if err := decidePendingIn(tx, &models.AccountRequest{}, req.ID, models.RequestPending, map[string]any{
+			"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
+		}); err != nil {
+			return err
 		}
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
@@ -535,14 +529,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				// every guest registration stays theirs. From here it
 				// is the created path: a set-password link, not the
 				// already-have-an-account hint.
-				status := models.UserInvited
-				if req.AccountType == models.AccountTeen {
-					status = models.UserPendingConsent
-				}
-				if err := tx.Model(&existing).Updates(map[string]any{
-					"status": status, "name": req.Name, "phone": req.Phone,
-					"account_type": req.AccountType, "birth_date": req.BirthDate,
-				}).Error; err != nil {
+				existing.Status = newAccountStatus(req.AccountType, false)
+				existing.Name, existing.Phone = req.Name, req.Phone
+				existing.AccountType, existing.BirthDate = req.AccountType, req.BirthDate
+				if err := upgradeGuestIn(tx, &existing, "status", "name", "phone", "account_type", "birth_date"); err != nil {
 					return err
 				}
 				userID, upgraded = existing.ID, true
@@ -552,14 +542,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				}
 				userID = existing.ID
 			} else {
-				status := models.UserInvited
-				if req.AccountType == models.AccountTeen {
-					// Ordinary access waits for account consent.
-					status = models.UserPendingConsent
-				}
 				u := models.User{
 					Email: req.Email, Name: req.Name, Phone: req.Phone,
-					Role: models.RoleMember, Status: status,
+					Role: models.RoleMember, Status: newAccountStatus(req.AccountType, false),
 					AccountType: req.AccountType, BirthDate: req.BirthDate,
 				}
 				if err := tx.Create(&u).Error; err != nil {
@@ -614,8 +599,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
 			TargetType: "account_request", TargetID: req.ID, Meta: meta, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errRequestHandled) {
-		a.alreadyHandled(c, notify.AccountRequested, req.ID)
+	if a.answerAlreadyHandled(c, err, notify.AccountRequested, req.ID) {
 		return
 	}
 	if err != nil && req.Source == models.RequestHouseholdConversion {
@@ -642,48 +626,8 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 // apiConfirmAccountSetup redeems the emailed set-password link. An
 // active account gets a login; a pending teen gets the public consent explanation.
 func (a *App) apiConfirmAccountSetup(c *gin.Context) {
-	var body struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" || body.Password == "" {
-		jsonError(c, http.StatusBadRequest, "token and password are required")
-		return
-	}
-	if !checkNewPassword(c, body.Password) {
-		return
-	}
-	var fresh models.User
-	var pendingConsent bool
-	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenAccountSetup, body.Token, body.Password)
-	if err == nil {
-		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, _, err := lockAndConsumeAccountToken(tx, models.TokenAccountSetup, body.Token)
-			if err != nil {
-				return err
-			}
-			pendingConsent = u.Status == models.UserPendingConsent
-			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
-				return err
-			}
-			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
-				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-				return err
-			}
-			fresh = *u
-			return nil
-		})
-	}
-	if errors.Is(err, errTokenInvalid) {
-		fail(c, errLinkExpired)
-		return
-	}
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not set your password")
-		return
-	}
-	if err := a.signInSession(c, &fresh); err != nil {
-		jsonError(c, http.StatusInternalServerError, "session error")
+	fresh, pendingConsent, ok := a.redeemPasswordLink(c, models.TokenAccountSetup, audit.AccountSetupCompleted, "could not set your password")
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, accountRequestConfirmJSON{User: a.toUserJSON(&fresh), PendingConsent: pendingConsent})
