@@ -163,7 +163,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 	var regs []models.Registration
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
-		Where("registrations.household_person_id = ? AND event_occurrences.starts_at > ? AND event_occurrences.status = ? AND registrations.status IN ?", person.ID, now, models.OccurrenceScheduled, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
+		Where("registrations.household_person_id = ? AND event_occurrences.starts_at > ? AND event_occurrences.status = ? AND registrations.status IN ?", person.ID, now, models.OccurrenceScheduled, models.CurrentRegStatuses).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
 		return err
 	}
 	for _, r := range regs {

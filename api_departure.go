@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -228,12 +229,7 @@ func departureAccessSnapshot(r *models.Registration, scope accessScope) *departu
 }
 
 func currentDepartureRegistration(status string) bool {
-	switch status {
-	case models.RegGoing, models.RegMaybe, models.RegWaitlisted:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(models.CurrentRegStatuses, status)
 }
 
 func loadMembership(tx *gorm.DB, userID, groupID uint) (models.Membership, error) {
@@ -245,7 +241,7 @@ func loadMembership(tx *gorm.DB, userID, groupID uint) (models.Membership, error
 func leaderCountIn(tx *gorm.DB, groupID uint) (int, error) {
 	var n int64
 	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?", groupID, models.MembershipLeader, "active").Count(&n).Error
+		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?", groupID, models.MembershipLeader, models.MembershipActive).Count(&n).Error
 	return int(n), err
 }
 
@@ -316,7 +312,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
 		Where("registrations.user_id = ? AND events.group_id = ? AND registrations.status IN ? AND event_occurrences.status = ? AND event_occurrences.ends_at > ?",
-			subject.ID, group.ID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}, models.OccurrenceScheduled, now).
+			subject.ID, group.ID, models.CurrentRegStatuses, models.OccurrenceScheduled, now).
 		Preload("Occurrence").Preload("Occurrence.Event").
 		Order("event_occurrences.starts_at, event_occurrences.id").Find(&registrations).Error; err != nil {
 		return facts, err
@@ -363,11 +359,11 @@ func departureFactsDigest(facts departureFacts) ([sha256.Size]byte, error) {
 }
 
 func (a *App) departureSnapshotCipher() (cipher.AEAD, error) {
-	if len(a.Config.SessionSecret) == 0 {
-		return nil, errors.New("missing departure snapshot signing secret")
+	key, err := deriveKey(a.Config.SessionSecret, "departure-preview:v3")
+	if err != nil {
+		return nil, err
 	}
-	key := sha256.Sum256(append([]byte("fold:departure-preview:v3:"), a.Config.SessionSecret...))
-	block, err := aes.NewCipher(key[:])
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -597,7 +593,7 @@ func recordDepartureOccurrenceAccess(tx *gorm.DB, facts departureFacts, d depart
 func departureLeaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
 	var ids []uint
 	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.role = ?", groupID, "active", models.MembershipLeader).
+		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.role = ?", groupID, models.MembershipActive, models.MembershipLeader).
 		Order("memberships.user_id").Pluck("memberships.user_id", &ids).Error
 	return ids, err
 }
@@ -711,11 +707,11 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 	}
 
 	oldRole := facts.SubjectMembership.Role
-	membershipStatus := memberRemoved
+	membershipStatus := models.MembershipRemoved
 	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
 		membershipStatus = models.MembershipLeft
 	}
-	membershipUpdate := tx.Model(&models.Membership{}).Where("id = ? AND status = ?", facts.SubjectMembership.ID, "active").
+	membershipUpdate := tx.Model(&models.Membership{}).Where("id = ? AND status = ?", facts.SubjectMembership.ID, models.MembershipActive).
 		Updates(map[string]any{"status": membershipStatus, "role": models.MembershipMember})
 	if membershipUpdate.Error != nil {
 		return departureConfirmationJSON{}, membershipUpdate.Error
@@ -769,8 +765,8 @@ func asPersonFact(f departureUserFact) *policy.Person {
 }
 
 func membershipFactRel(f departureMembershipFact) policy.Rel {
-	active := f.ID != 0 && f.Status == "active"
-	return policy.Rel{Member: active, Leader: active && f.Role == models.MembershipLeader, Removed: f.ID != 0 && f.Status == memberRemoved}
+	active := f.ID != 0 && f.Status == models.MembershipActive
+	return policy.Rel{Member: active, Leader: active && f.Role == models.MembershipLeader, Removed: f.ID != 0 && f.Status == models.MembershipRemoved}
 }
 
 func (a *App) departureConfirm(c *gin.Context, subjectID uint) {

@@ -8,6 +8,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -86,7 +87,7 @@ func leadsApprovedGroup(db *gorm.DB, userID uint) (bool, error) {
 	var statuses []string
 	err := db.Model(&models.Membership{}).
 		Joins("JOIN groups ON groups.id = memberships.group_id AND groups.deleted_at IS NULL").
-		Where("memberships.user_id = ? AND memberships.role = ? AND memberships.status = 'active'", userID, models.MembershipLeader).
+		Where("memberships.user_id = ? AND memberships.role = ? AND memberships.status = ?", userID, models.MembershipLeader, models.MembershipActive).
 		Pluck("groups.status", &statuses).Error
 	return policy.LeadsApprovedGroup(statuses), err
 }
@@ -108,7 +109,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
@@ -433,7 +434,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		meta := map[string]any{"userId": u.ID}
 		if group != nil {
 			if err := tx.Create(&models.Membership{UserID: u.ID, GroupID: group.ID,
-				Role: inv.Role, Status: "active", JoinedAt: now}).Error; err != nil {
+				Role: inv.Role, Status: models.MembershipActive, JoinedAt: now}).Error; err != nil {
 				return err
 			}
 			meta["groupId"] = group.ID

@@ -59,7 +59,7 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	address := normalizeEmail(u.Email)
+	address := mail.NormalizeAddress(u.Email)
 	var cleared int64
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// One statement clears them and says which, so the audit row names

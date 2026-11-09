@@ -4,6 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"fold/internal/policy"
+
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -22,22 +24,24 @@ const (
 
 // Membership statuses.
 const (
-	MembershipLeft = "left"
+	MembershipActive  = "active"
+	MembershipLeft    = "left"
+	MembershipRemoved = "removed" // a leader or admin removed them (DEC-35)
 )
 
-// Group statuses.
+// Group statuses. internal/policy owns the values; models names them for rows.
 const (
-	GroupPending  = "pending"
-	GroupActive   = "active"
-	GroupArchived = "archived"
+	GroupPending  = policy.GroupPending
+	GroupActive   = policy.GroupActive
+	GroupArchived = policy.GroupArchived
 )
 
 // Who can see an active group (C3). The same values are used on events.
 // internal/policy decides what each means.
 const (
-	VisibilityPublic     = "public"      // anyone, including logged-out visitors
-	VisibilityPrivate    = "private"     // signed-in users
-	VisibilityInviteOnly = "invite_only" // members and admins only
+	VisibilityPublic     = policy.Public     // anyone, including logged-out visitors
+	VisibilityPrivate    = policy.Private    // signed-in users
+	VisibilityInviteOnly = policy.InviteOnly // members and admins only
 )
 
 // Registration statuses (renamed from RSVP, M1.1a). Cancelled arrives
@@ -76,8 +80,8 @@ const (
 	VideoProviderLink  = "link"
 	VideoProviderJitsi = "jitsi"
 
-	VideoRevealAlways         = "always"
-	VideoRevealRegisteredOnly = "registered_only"
+	VideoRevealAlways         = policy.VideoRevealAlways
+	VideoRevealRegisteredOnly = policy.VideoRevealRegisteredOnly
 )
 
 // Occurrence statuses. A cancelled date is a row, not a separate exception.
@@ -96,10 +100,10 @@ const (
 // access; pending-consent teens can authenticate only to the waiting page.
 // Account lifecycle states.
 const (
-	UserActive         = "active"
+	UserActive         = policy.AccountActive
 	UserInvited        = "invited" // no password yet
-	UserGuest          = "guest"
-	UserPendingConsent = "pending_consent"
+	UserGuest          = policy.AccountGuest
+	UserPendingConsent = policy.AccountPendingConsent
 	UserDisabled       = "disabled"
 )
 
@@ -1240,3 +1244,8 @@ const (
 	RecipientComplained = "complained"
 	RecipientFailed     = "failed"
 )
+
+// CurrentRegStatuses are the registration statuses that still stand: a seat
+// held, a maybe, or a place on the waitlist. Declined, cancelled and removed
+// rows are history. Read-only; pass it to a query as an IN list.
+var CurrentRegStatuses = []string{RegGoing, RegMaybe, RegWaitlisted}

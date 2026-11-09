@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -143,4 +144,15 @@ func TestAdminPasswordPathsRejectMoreThan72Bytes(t *testing.T) {
 	apiDo(t, admin, "POST", "/api/v1/admin/users/"+itoa2(alice.ID)+"/password", map[string]string{"password": strings.Repeat("a", 72)}, http.StatusOK)
 	w = admin.do("POST", "/api/v1/admin/users", map[string]any{"ageBand": "adult", "email": "bob@example.com", "name": "Bob", "password": strings.Repeat("a", 73)}, true)
 	assertTooLong(t, w.Code, w.Body.String())
+}
+
+// The messages are written out because api_errors.go keys on them; the
+// numbers in them are the limits.
+func TestPasswordMessagesStateTheLimits(t *testing.T) {
+	if want := fmt.Sprintf("password must be at least %d characters", minPasswordLength); errPasswordTooShort != want {
+		t.Errorf("errPasswordTooShort = %q, want %q", errPasswordTooShort, want)
+	}
+	if want := fmt.Sprintf("password must be at most %d bytes", maxPasswordBytes); errPasswordTooLong != want {
+		t.Errorf("errPasswordTooLong = %q, want %q", errPasswordTooLong, want)
+	}
 }

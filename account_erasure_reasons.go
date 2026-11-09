@@ -44,7 +44,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -234,9 +233,8 @@ const reasonHashPrefix = "fold-reason-review-v1"
 // cipher does. A changed secret makes every open panel's hashes stale (409,
 // reload). The insecure development secret gives no secrecy and none is
 // claimed.
-func reasonHashKey(secret []byte) []byte {
-	k := sha256.Sum256(append([]byte("fold:erasure-reason-review:v1:"), secret...))
-	return k[:]
+func reasonHashKey(secret []byte) ([]byte, error) {
+	return deriveKey(secret, "erasure-reason-review:v1")
 }
 
 // reviewHashRaw is HMAC-SHA256 over the prefix, then the viewing admin's id, the
@@ -609,12 +607,15 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 // this admin. A request whose reason was blanked since the unit read it is not
 // an item any more.
 func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int64) ([]reasonItemJSON, error) {
+	key, err := reasonHashKey(a.Config.SessionSecret)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id",
 		int64Array(ids), target.ID, target.ID).Rows()
 	if err != nil {
 		return nil, err
 	}
-	key := reasonHashKey(a.Config.SessionSecret)
 	var read []reasonRow
 	if err := scanReasonRows(rows, key, int64(actor.ID), int64(target.ID), func(r reasonRow) error {
 		read = append(read, r)
@@ -960,12 +961,15 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 			return plan, nil, errNeedsReasonReview
 		}
 	}
+	key, err := reasonHashKey(a.Config.SessionSecret)
+	if err != nil {
+		return plan, nil, err
+	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id FOR UPDATE",
 		target.ID, target.ID).Rows()
 	if err != nil {
 		return plan, nil, err
 	}
-	key := reasonHashKey(a.Config.SessionSecret)
 	hasher := newReasonSetHasher(env.count)
 	// Never sized from the claim: it grows from real rows.
 	decisions := make([]reasonDecision, 0, 64)
@@ -1103,8 +1107,7 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 		res := tx.Exec("UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)",
 			int64Array(remove), s.ID, s.ID)
 		if res.Error != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(res.Error, &pgErr) && pgErr.Code == "55P03" {
+			if pgCode(res.Error) == pgLockNotAvailable {
 				return fmt.Errorf("%w: %w", errReasonCounterpartBusy, res.Error)
 			}
 			return res.Error

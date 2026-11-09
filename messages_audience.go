@@ -220,7 +220,7 @@ func (a *App) audienceUserIDs(db *gorm.DB, au audienceJSON, now time.Time) ([]ui
 		err = regs(db.Joins("JOIN event_occurrences o ON o.id = registrations.occurrence_id").
 			Where("o.event_id IN ? AND o.status = ? AND o.starts_at >= ?", events, models.OccurrenceScheduled, now))
 	case policy.AudienceGroup:
-		err = db.Model(&models.Membership{}).Where("group_id = ? AND status = 'active' AND role IN ?", au.GroupID, au.Roles).
+		err = db.Model(&models.Membership{}).Where("group_id = ? AND status = ? AND role IN ?", au.GroupID, models.MembershipActive, au.Roles).
 			Distinct().Pluck("user_id", &ids).Error
 	case policy.AudienceAllMembers:
 		err = db.Model(&models.User{}).Where("status = ?", models.UserActive).Pluck("id", &ids).Error
@@ -353,7 +353,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 		users = append(users, part...)
 		emails := make([]string, 0, len(part))
 		for _, u := range part {
-			if e := normalizeEmail(u.Email); e != "" {
+			if e := mail.NormalizeAddress(u.Email); e != "" {
 				emails = append(emails, e)
 			}
 		}
@@ -402,9 +402,9 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 			f.Skip = skipNotActive
 		case strings.TrimSpace(u.Email) == "":
 			f.Skip = skipNoEmail
-		case suppressed[normalizeEmail(u.Email)] == models.SuppressComplaint:
+		case suppressed[mail.NormalizeAddress(u.Email)] == models.SuppressComplaint:
 			f.Skip = skipComplained
-		case suppressed[normalizeEmail(u.Email)] != "":
+		case suppressed[mail.NormalizeAddress(u.Email)] != "":
 			f.Skip = skipNotWorking
 		case optedOut.Off(u.ID, u.Email, optOut):
 			f.Skip = skipOptedOutOf(category)

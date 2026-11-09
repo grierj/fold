@@ -19,7 +19,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -396,8 +395,7 @@ func insertAttemptReceipt(tx *gorm.DB, nonce [16]byte) error {
 	// The nonce travels as hex and is decoded by the server: GORM would expand a
 	// []byte argument into a list of values.
 	if err := tx.Exec("INSERT INTO admin_operation_attempts (attempt_id) VALUES (decode(?, 'hex'))", hex.EncodeToString(nonce[:])).Error; err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgCode(err) == pgUniqueViolation {
 			return fmt.Errorf("%w: %w", errAttemptReceiptInvariant, err)
 		}
 		return err
@@ -424,8 +422,7 @@ func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) 
 	var actor models.User
 	err := tx.Raw("SELECT id, status, deleted_at, role, account_type, birth_date, password_hash, session_version, logout_version FROM users WHERE id = ? FOR SHARE NOWAIT", me.ID).Scan(&actor).Error
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		if pgCode(err) == pgLockNotAvailable {
 			return fmt.Errorf("%w: %w", errActorBusy, err)
 		}
 		return err

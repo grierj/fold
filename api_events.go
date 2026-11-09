@@ -439,7 +439,7 @@ func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
 		Count   int64
 	}
 	a.DB.Model(&models.Membership{}).Select("memberships.group_id, count(*) AS count").Joins(listedUsers("memberships")).
-		Where("memberships.group_id IN ? AND memberships.status = ?", ids, "active").Group("memberships.group_id").Scan(&counts)
+		Where("memberships.group_id IN ? AND memberships.status = ?", ids, models.MembershipActive).Group("memberships.group_id").Scan(&counts)
 	members := make(map[uint]int64, len(counts))
 	for _, row := range counts {
 		members[row.GroupID] = row.Count

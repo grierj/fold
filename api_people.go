@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -36,11 +35,11 @@ type peopleSelection struct {
 }
 
 func (a *App) peopleSelectionCipher() (cipher.AEAD, error) {
-	if len(a.Config.SessionSecret) == 0 {
-		return nil, errors.New("missing selection signing secret")
+	key, err := deriveKey(a.Config.SessionSecret, "people-selection:v1")
+	if err != nil {
+		return nil, err
 	}
-	key := sha256.Sum256(append([]byte("fold:people-selection:v1:"), a.Config.SessionSecret...))
-	block, err := aes.NewCipher(key[:])
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}

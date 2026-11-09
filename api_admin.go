@@ -22,7 +22,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -503,7 +502,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
 		jsonError(c, http.StatusBadRequest, "a valid email is required")
 		return
@@ -578,10 +577,10 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"user": a.toUserJSON(&u)})
 }
 
-// emailTaken reports a unique-email violation.
+// emailTaken reports a violation of the unique login email on users, and no
+// other unique index.
 func emailTaken(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return pgConstraint(err, pgUniqueViolation, "uni_users_email")
 }
 
 func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
@@ -685,12 +684,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
 	}
 	if body.Email != nil {
-		email := normalizeEmail(*body.Email)
+		email := mail.NormalizeAddress(*body.Email)
 		if !validEmail(email) {
 			jsonError(c, http.StatusBadRequest, "a valid email is required")
 			return
 		}
-		if email != normalizeEmail(u.Email) {
+		if email != mail.NormalizeAddress(u.Email) {
 			updates["email"] = email
 			bump = true
 		}

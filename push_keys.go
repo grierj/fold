@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"log"
@@ -37,11 +36,11 @@ const vapidAAD = "vapid-private-key"
 var errVAPIDUnreadable = errors.New("push: the stored web push key can't be read with this SESSION_SECRET")
 
 func vapidCipher(secret []byte) (cipher.AEAD, error) {
-	if len(secret) == 0 {
-		return nil, errors.New("push: SESSION_SECRET is empty")
+	key, err := deriveKey(secret, "vapid:v1")
+	if err != nil {
+		return nil, err
 	}
-	key := sha256.Sum256(append([]byte("fold:vapid:v1:"), secret...))
-	block, err := aes.NewCipher(key[:])
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}

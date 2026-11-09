@@ -950,7 +950,7 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 		}
 	}
 	var m models.Membership
-	if err = tx.Where("group_id = ? AND user_id = ? AND status = ?", r.ContextID, r.SubjectUserID, "active").First(&m).Error; err != nil {
+	if err = tx.Where("group_id = ? AND user_id = ? AND status = ?", r.ContextID, r.SubjectUserID, models.MembershipActive).First(&m).Error; err != nil {
 		return err
 	}
 	r.Status, r.CompletedAt, r.CompletedTargetID = policy.ContactGranted, &op.now, &m.ID

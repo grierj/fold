@@ -231,7 +231,7 @@ func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 
 func leaderIDs(tx *gorm.DB, groupID uint) []uint {
 	var ids []uint
-	tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = 'active'", groupID, models.MembershipLeader).
+	tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = ?", groupID, models.MembershipLeader, models.MembershipActive).
 		Pluck("user_id", &ids)
 	return ids
 }
@@ -253,19 +253,21 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 			unique = append(unique, id)
 		}
 	}
-	for start := 0; start < len(unique); start += publicNamesBatchSize {
-		batch := unique[start:min(start+publicNamesBatchSize, len(unique))]
+	err := eachChunk(unique, publicNamesBatchSize, func(batch []uint) error {
 		var users []models.User
 		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", batch).Find(&users).Error; err != nil {
-			// Preserve the historical all-fallback behavior on read failure;
-			// never publish names determined by which batch failed.
-			for id := range names {
-				names[id] = "Someone"
-			}
-			return names
+			return err
 		}
 		for _, u := range users {
 			names[u.ID] = u.PublicName()
+		}
+		return nil
+	})
+	if err != nil {
+		// Preserve the historical all-fallback behavior on read failure;
+		// never publish names determined by which batch failed.
+		for id := range names {
+			names[id] = "Someone"
 		}
 	}
 	return names

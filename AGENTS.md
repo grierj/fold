@@ -93,7 +93,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
     is raised only when the call returned nil (an acknowledged COMMIT), and only then is the turn released, so a later ticket never
     reads the counter between a COMMIT and its acknowledgment (`TestFencedTransactionsTakeTheTicketFirst`). A ticket at or below
     the floor, or a missing row, is 503 `restore_detected`, and `requestRestart` makes `serve` exit 1 for the supervisor. Only the
-    boot step and the ticket write the row (`TestRestoreFenceHasTwoWriters`); a settings writer with a non-literal key calls
+    boot step and the ticket write the row (`TestRestoreFenceHasTwoWriters`); `setSettingIn` (`settings.go`), the one settings writer, calls
     `refuseRestoreFenceKey`. Detection limit, stated: a stored counter or boot value alone detects nothing; only the in-memory
     floor does, and only when a restore loses a commit this process saw acknowledged. A restore of a dump taken after the last
     acknowledged fenced commit, one that loses only an unknown commit, and one made while the process was stopped are not detected;

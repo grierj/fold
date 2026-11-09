@@ -300,19 +300,21 @@ func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bo
 		DeletedAt *time.Time
 	}
 	live := map[uint]bool{}
-	for len(ids) > 0 {
-		n := min(len(ids), 500)
+	err := eachChunk(ids, 500, func(chunk []uint) error {
 		var got []snapshotUser
-		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", ids[:n]).Order("id").
+		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", chunk).Order("id").
 			Clauses(clause.Locking{Strength: "KEY SHARE"}).Find(&got).Error; err != nil {
-			return nil, err
+			return err
 		}
 		for _, u := range got {
 			if u.DeletedAt == nil {
 				live[u.ID] = true
 			}
 		}
-		ids = ids[n:]
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return live, nil
 }
@@ -349,16 +351,11 @@ func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
 	if gen != "" {
 		prefix += gen + ":"
 	}
-	for len(ids) > 0 {
-		n := min(len(ids), messageBatchSize)
-		batch := ids[:n]
-		ids = ids[n:]
-		if _, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
-			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts); err != nil {
-			return err
-		}
-	}
-	return nil
+	return eachChunk(ids, messageBatchSize, func(batch []uint) error {
+		_, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
+			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts)
+		return err
+	})
 }
 
 // guardianCopyRows are the copy rows for the confirmed guardians of teens:
@@ -581,7 +578,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			msg.FromName, msg.ReplyTo = from, replyTo
 			var providerID string
-			err = mail.Blocked(blocked[normalizeEmail(row.Address)], msg)
+			err = mail.Blocked(blocked[mail.NormalizeAddress(row.Address)], msg)
 			if err == nil {
 				if tracked, ok := sender.(providers.EmailSender); ok {
 					providerID, err = tracked.SendEmail(ctx, msg)
@@ -649,7 +646,7 @@ func (a *App) batchReaders(db *gorm.DB, rows []models.MessageRecipient) (map[uin
 func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string][]string, error) {
 	addrs := make([]string, 0, len(rows))
 	for _, r := range rows {
-		addrs = append(addrs, normalizeEmail(r.Address))
+		addrs = append(addrs, mail.NormalizeAddress(r.Address))
 	}
 	return mail.OpenSuppressionReasons(db, addrs)
 }

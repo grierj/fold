@@ -386,7 +386,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 	groups := []models.Group{}
 	gq := a.DB.Where("status = ?", models.GroupActive).Order("lower(name)")
 	if !p.Admin {
-		gq = gq.Where("id IN (SELECT group_id FROM memberships WHERE user_id = ? AND role = ? AND status = 'active')", me.ID, models.MembershipLeader)
+		gq = gq.Where("id IN (SELECT group_id FROM memberships WHERE user_id = ? AND role = ? AND status = ?)", me.ID, models.MembershipLeader, models.MembershipActive)
 	}
 	if err := gq.Find(&groups).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the composer")

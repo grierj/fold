@@ -133,7 +133,7 @@ func reviewHashOf(key []byte, viewerID, partyID int64, fields []sql.NullString) 
 
 func TestReviewHashVectors(t *testing.T) {
 	const secret = "fold-test-secret"
-	key := reasonHashKey([]byte(secret))
+	key := testReasonKey([]byte(secret))
 	if len(reasonColumns) != 28 {
 		t.Fatalf("the hash covers %d columns, want 28", len(reasonColumns))
 	}
@@ -166,7 +166,7 @@ func TestReviewHashVectors(t *testing.T) {
 	// secret differs.
 	a := reviewHashOf(key, 1, 2, hashFields(map[string]any{"reason": nil}))
 	b := reviewHashOf(key, 1, 2, hashFields(map[string]any{"reason": ""}))
-	c := reviewHashOf(reasonHashKey([]byte("another secret")), 1, 2, hashFields(map[string]any{"reason": ""}))
+	c := reviewHashOf(testReasonKey([]byte("another secret")), 1, 2, hashFields(map[string]any{"reason": ""}))
 	if a == b || b == c {
 		t.Error("NULL, the empty string and another secret must all hash differently")
 	}
@@ -325,7 +325,7 @@ func TestReasonProjectionAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []reasonRow
-	if err := scanReasonRows(rows, reasonHashKey([]byte("k")), 1, 2, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
+	if err := scanReasonRows(rows, testReasonKey([]byte("k")), 1, 2, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 1 || seen[0].ID != int64(r.ID) || seen[0].Purpose != policy.RequestGroupAdd || seen[0].Reason != r.Reason || !validReviewHash(seen[0].Hash) {
@@ -679,7 +679,7 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			var items []reasonItemJSON
-			if err := scanReasonRows(rows, reasonHashKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), func(r reasonRow) error {
+			if err := scanReasonRows(rows, testReasonKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), func(r reasonRow) error {
 				items = append(items, reasonItemJSON{RequestID: strconv.FormatInt(r.ID, 10), ReviewHash: r.Hash})
 				return nil
 			}); err != nil {
@@ -4437,4 +4437,13 @@ func TestReasonScanPlanDoesNotGrowWithCursor(t *testing.T) {
 		}
 	}
 	t.Logf("the old NULL-or statement, generic plan, middle cursor:\n%s", plan("SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE (?::bigint IS NULL OR id > ?::bigint) ORDER BY id LIMIT ?", "bigint, bigint, integer", fmt.Sprintf("%d, %d, %d", lo+(hi-lo)/2, lo+(hi-lo)/2, unit)))
+}
+
+// testReasonKey is reasonHashKey for tests, which never pass an empty secret.
+func testReasonKey(secret []byte) []byte {
+	k, err := reasonHashKey(secret)
+	if err != nil {
+		panic(err)
+	}
+	return k
 }

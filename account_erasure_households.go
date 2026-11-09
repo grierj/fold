@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 
 	"fold/internal/audit"
@@ -88,8 +87,7 @@ var errErasureHouseholdGone = errors.New("an erasure household has no row to loc
 // refusal. It reads through *contactRollbackError to the cause; a commit error
 // does not unwrap, so a COMMIT result is never taken for it.
 func isHouseholdBusy(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+	return pgCode(err) == pgLockNotAvailable
 }
 
 // lockErasureHouseholdsIn locks, FOR UPDATE NOWAIT in ascending id, the

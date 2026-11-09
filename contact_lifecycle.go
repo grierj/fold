@@ -14,7 +14,6 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -139,8 +138,7 @@ func classifyContactErr(err error) contactOutcome {
 	if errors.Is(err, errCommitReserve) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return outcomeTimedOut
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "57014" {
+	if pgCode(err) == pgQueryCanceled {
 		return outcomeTimedOut
 	}
 	return outcomeFailed

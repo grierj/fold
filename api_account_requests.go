@@ -147,7 +147,7 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
 		return validatedRequest{}, false
 	}
-	email := normalizeEmail(body.Email)
+	email := foldmail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return validatedRequest{}, false
@@ -168,7 +168,7 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 	}
 	guardianEmail := ""
 	if accountType == models.AccountTeen {
-		guardianEmail = normalizeEmail(body.GuardianEmail)
+		guardianEmail = foldmail.NormalizeAddress(body.GuardianEmail)
 		if guardianEmail != "" && (!validEmail(guardianEmail) || guardianEmail == email) {
 			jsonError(c, http.StatusBadRequest, "enter a different valid email for the guardian")
 			return validatedRequest{}, false
@@ -490,7 +490,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				if err != nil {
 					return err
 				}
-				if target.Status != models.UserGuest || normalizeEmail(target.Email) != normalizeEmail(req.Email) {
+				if target.Status != models.UserGuest || foldmail.NormalizeAddress(target.Email) != foldmail.NormalizeAddress(req.Email) {
 					return errConsentExistingAccount
 				}
 			} else {

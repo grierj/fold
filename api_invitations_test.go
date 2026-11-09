@@ -33,7 +33,7 @@ func TestInvitationAcceptanceRechecksInviterAuthority(t *testing.T) {
 			case "demoted":
 				app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", leader.ID, g.ID).Update("role", models.MembershipMember)
 			case "removed":
-				app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", leader.ID, g.ID).Update("status", memberRemoved)
+				app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", leader.ID, g.ID).Update("status", models.MembershipRemoved)
 			case "disabled":
 				app.DB.Model(leader).Update("status", models.UserDisabled)
 			case "deleted":

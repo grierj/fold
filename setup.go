@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"fold/internal/events"
+	"fold/internal/mail"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -116,7 +117,7 @@ func readSetupInput(c *gin.Context) setupInput {
 		SiteName: strings.TrimSpace(c.PostForm("site_name")),
 		Timezone: strings.TrimSpace(c.PostForm("timezone")),
 		Name:     strings.TrimSpace(c.PostForm("name")),
-		Email:    normalizeEmail(c.PostForm("email")),
+		Email:    mail.NormalizeAddress(c.PostForm("email")),
 		Password: c.PostForm("password"),
 		Confirm:  c.PostForm("password_confirm"),
 		Adult:    c.PostForm("age_band") == "adult",

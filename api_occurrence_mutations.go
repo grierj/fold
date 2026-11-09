@@ -61,6 +61,12 @@ func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time) (policy.Contac
 	if err != nil {
 		return policy.ContactAccount{}, err
 	}
+	return occurrenceAccountInZone(tx, userID, now, zone)
+}
+
+// occurrenceAccountInZone is occurrenceAccountIn for a caller that already read
+// the church zone.
+func occurrenceAccountInZone(tx *gorm.DB, userID uint, now time.Time, zone *time.Location) (policy.ContactAccount, error) {
 	u, err := contactUser(tx, userID)
 	if err != nil {
 		return policy.ContactAccount{}, err
@@ -81,11 +87,14 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if r.Purpose != policy.RequestOccurrenceAdd || r.ContextType != policy.ContactEvent || r.OccurrenceID == nil {
 		return f, nil
 	}
-	var err error
-	if f.Requester, err = occurrenceAccountIn(tx, r.RequesterID, now); err != nil {
+	zone, err := churchZoneIn(tx)
+	if err != nil {
 		return f, err
 	}
-	if f.Subject, err = occurrenceAccountIn(tx, r.SubjectUserID, now); err != nil {
+	if f.Requester, err = occurrenceAccountInZone(tx, r.RequesterID, now, zone); err != nil {
+		return f, err
+	}
+	if f.Subject, err = occurrenceAccountInZone(tx, r.SubjectUserID, now, zone); err != nil {
 		return f, err
 	}
 	if f.Occurrence, err = occurrenceFactsIn(tx, r.ContextID, *r.OccurrenceID); err != nil {
@@ -224,7 +233,7 @@ func liveOccurrenceInvitationIn(tx *gorm.DB, row models.Registration, now time.T
 		return false, nil
 	}
 	var n int64
-	err = tx.Model(&models.Registration{}).Where("id = ? AND occurrence_id = ? AND user_id = ? AND status IN ? AND "+registrationAccessLiveSQL, row.ID, row.OccurrenceID, *row.UserID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Count(&n).Error
+	err = tx.Model(&models.Registration{}).Where("id = ? AND occurrence_id = ? AND user_id = ? AND status IN ? AND "+registrationAccessLiveSQL, row.ID, row.OccurrenceID, *row.UserID, models.CurrentRegStatuses).Count(&n).Error
 	return n == 1, err
 }
 

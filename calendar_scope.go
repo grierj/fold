@@ -8,22 +8,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// lookupChunk caps the ids in one IN list, well under PostgreSQL's 65535
-// bind parameters.
-const lookupChunk = 5000
-
-// eachIDChunk calls fn on slices of at most lookupChunk ids.
-func eachIDChunk(ids []uint, fn func([]uint) error) error {
-	for len(ids) > 0 {
-		n := min(len(ids), lookupChunk)
-		if err := fn(ids[:n]); err != nil {
-			return err
-		}
-		ids = ids[n:]
-	}
-	return nil
-}
-
 // visibleOccurrenceIDs is the scheduled dates this viewer may see, either by
 // ordinary access or through an exact-date grant. Cancelled and hidden dates
 // never reach a per-date lookup.
@@ -84,7 +68,7 @@ func (a *App) loadCalendarScopeBatch(viewer *models.User, occurrenceIDs []uint) 
 		var householdIDs []uint
 		if err := a.DB.Model(&models.Registration{}).Joins(listedRegistrations()).
 			Where("registrations.registered_by = ? AND registrations.household_person_id IS NOT NULL AND registrations.occurrence_id IN ? AND registrations.status IN ?", viewer.ID, chunk,
-				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
+				models.CurrentRegStatuses).
 			Distinct().Pluck("registrations.occurrence_id", &householdIDs).Error; err != nil {
 			return err
 		}

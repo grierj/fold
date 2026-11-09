@@ -89,7 +89,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// new address and a notice to the old one; the change applies only after
 	// verification (10.1, M1.2).
 	var emailChange *string
-	if body.Email != nil && normalizeEmail(*body.Email) != normalizeEmail(u.Email) {
+	if body.Email != nil && mail.NormalizeAddress(*body.Email) != mail.NormalizeAddress(u.Email) {
 		emailChange = body.Email
 	}
 	if body.Phone != nil {
@@ -118,7 +118,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// An email change proves the current password before anything is saved,
 	// so a wrong password leaves the other fields as they were.
 	if emailChange != nil {
-		if !validEmail(normalizeEmail(*emailChange)) {
+		if !validEmail(mail.NormalizeAddress(*emailChange)) {
 			jsonError(c, http.StatusBadRequest, "enter a valid email address")
 			return
 		}
@@ -161,7 +161,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 	}
 	if emailChange != nil {
-		a.apiRequestEmailChange(c, u, normalizeEmail(*emailChange))
+		a.apiRequestEmailChange(c, u, mail.NormalizeAddress(*emailChange))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
@@ -1483,7 +1483,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		}
 		if merged.Kind == models.HouseholdAdult && merged.BirthDate == nil {
 			var n int64
-			if err := tx.Model(&models.Registration{}).Where("household_person_id = ? AND status IN ?", person.ID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Count(&n).Error; err != nil {
+			if err := tx.Model(&models.Registration{}).Where("household_person_id = ? AND status IN ?", person.ID, models.CurrentRegStatuses).Count(&n).Error; err != nil {
 				return err
 			}
 			if n > 0 {

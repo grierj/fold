@@ -13,7 +13,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -194,8 +193,7 @@ func equalIntPtr(a, b *int) bool {
 
 // roomNameTaken reports the one-name-per-building index.
 func roomNameTaken(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_rooms_building_name"
+	return pgConstraint(err, pgUniqueViolation, "idx_rooms_building_name")
 }
 
 func (a *App) apiAdminListRooms(c *gin.Context) {

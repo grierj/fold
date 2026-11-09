@@ -210,7 +210,7 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 	if !allowed {
 		var leads, hosts int64
 		a.DB.Model(&models.Membership{}).
-			Where("user_id = ? AND role = ? AND status = ?", me.ID, models.MembershipLeader, "active").
+			Where("user_id = ? AND role = ? AND status = ?", me.ID, models.MembershipLeader, models.MembershipActive).
 			Count(&leads)
 		a.DB.Model(&models.EventHost{}).Where("user_id = ?", me.ID).Count(&hosts)
 		allowed = leads > 0 || hosts > 0
