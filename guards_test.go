@@ -284,6 +284,7 @@ var testLayoutAllowed = map[string]bool{
 	"testhelpers_test.go":              true,
 	"guards_test.go":                   true,
 	"migrations/drift_test.go":         true,
+	"migrations/testhelpers_test.go":   true,
 	"migrations/reason_review_test.go": true,
 }
 
