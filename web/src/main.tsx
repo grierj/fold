@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import App from "./App";
 import { configureApi } from "./api/core";
-import { AuthProvider } from "./auth";
+import { AuthProvider, endSession } from "./auth";
 import { syncAppBadge } from "./lib/push";
 import "./index.css";
 
@@ -29,7 +29,10 @@ configureApi({
     // was this person's. The device stays subscribed; it belongs to the
     // person, not the session (logout and turning off end it).
     syncAppBadge(0);
+    endSession();
     const { pathname, search } = router.state.location;
+    // A second 401 already in flight must not replace Log in's "from".
+    if (pathname === "/login") return;
     void router.navigate("/login", { state: { from: pathname + search }, replace: true });
   },
 });
