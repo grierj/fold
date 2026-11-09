@@ -199,13 +199,8 @@ func (a *App) manageMyHousehold(c *gin.Context) (*models.Household, bool) {
 	return household, true
 }
 
-func guardianLinksForPeople(db *gorm.DB, personIDs []uint) map[uint][]models.GuardianLink {
-	out, _ := loadGuardianLinks(db, personIDs)
-	return out
-}
-
-// loadGuardianLinks is guardianLinksForPeople for callers that can report a
-// failed read; a partial map is never returned alongside an error.
+// loadGuardianLinks reads the guardian links of personIDs by person; a partial
+// map is never returned alongside an error.
 func loadGuardianLinks(db *gorm.DB, personIDs []uint) (map[uint][]models.GuardianLink, error) {
 	out := map[uint][]models.GuardianLink{}
 	if len(personIDs) == 0 {

@@ -183,8 +183,13 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	// IP/site limits and the honeypot above shed CPU without inspecting it.
 	(&models.User{}).CheckPassword("not a real password")
 	var existing models.User
-	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
-		existing.Status != models.UserGuest {
+	lookup := a.DB.Where("email = ?", email).Limit(1).Find(&existing)
+	if lookup.Error != nil {
+		log.Printf("guest registration: %s", jobs.CleanError(lookup.Error))
+		jsonError(c, http.StatusInternalServerError, "could not save your registration")
+		return
+	}
+	if lookup.RowsAffected == 1 && existing.Status != models.UserGuest {
 		// The hint is an email to that address too, so it shares the
 		// per-address limit (3 an hour, 10 a day) whatever the IP (10.1).
 		if ok, err := a.targetAllow(c.Request.Context(), guestHintKey(email)); err == nil && ok {
@@ -325,8 +330,14 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		// A guest who confirms again already holds their row; like
 		// registerLocked, their own seats do not count against them.
 		var prior models.Registration
-		havePrior := found &&
-			tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).Limit(1).Find(&prior).RowsAffected == 1
+		havePrior := false
+		if found {
+			lookup := tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).Limit(1).Find(&prior)
+			if lookup.Error != nil {
+				return lookup.Error
+			}
+			havePrior = lookup.RowsAffected == 1
+		}
 		// Guests register in person. The seat check runs under the lock, before
 		// anything is created, through the same ledger as every other writer.
 		reg := prior

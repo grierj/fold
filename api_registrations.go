@@ -962,7 +962,10 @@ func (a *App) apiRegister(c *gin.Context) {
 		for i := range people {
 			byID[people[i].ID] = &people[i]
 		}
-		links := guardianLinksForPeople(tx, personIDs)
+		links, err := loadGuardianLinks(tx, personIDs)
+		if err != nil {
+			return err
+		}
 		for _, answer := range body.People {
 			person := byID[answer.PersonID]
 			if person == nil {
