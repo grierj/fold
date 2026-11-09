@@ -11,15 +11,14 @@
 # A second run does not create a second domain or a second DNS record.
 # sudo drops the environment unless you pass --preserve-env.
 set -euo pipefail
+TOOL=email-dns
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$SCRIPT_DIR/checks.sh"
 
 DRY_RUN=0
 DOMAIN=""
 DEPLOY_DIR="/opt/fold"
-
-die() {
-  printf 'email-dns: %s\n' "$1" >&2
-  exit "${2:-1}"
-}
 
 usage() {
   cat <<'EOF'
@@ -29,10 +28,6 @@ Does nothing unless POSTMARK_ACCOUNT_TOKEN is set. With CLOUDFLARE_API_TOKEN
 and CLOUDFLARE_ZONE_ID, upserts SPF (TXT), DKIM (TXT), and the return-path
 CNAME. Prints dig commands either way. --dry-run makes no API calls.
 EOF
-}
-
-need_value() {
-  [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 needs a value"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -45,24 +40,8 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift
       ;;
-    --domain)
-      need_value "$@"
-      DOMAIN="$2"
-      shift 2
-      ;;
-    --domain=*)
-      DOMAIN="${1#*=}"
-      shift
-      ;;
-    --deploy-dir)
-      need_value "$@"
-      DEPLOY_DIR="$2"
-      shift 2
-      ;;
-    --deploy-dir=*)
-      DEPLOY_DIR="${1#*=}"
-      shift
-      ;;
+    --domain|--domain=*) take_value DOMAIN "$@"; shift "$OPT_SHIFT" ;;
+    --deploy-dir|--deploy-dir=*) take_value DEPLOY_DIR "$@"; shift "$OPT_SHIFT" ;;
     *)
       die "unknown option: $1"
       ;;
