@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KEEP, REMOVE, ReasonReviewStore } from "../lib/reasonReviewStore";
 import type { ErasureReasonItem } from "../types";
-import { DISPLAY_PAGE, ReasonProgress, ReasonReviewSection, ReasonSummary } from "./ReasonReviewSection";
+import { ReasonProgress, ReasonReviewSection, ReasonSummary } from "./ReasonReviewSection";
+
+// Reasons shown per page.
+const DISPLAY_PAGE = 50;
 
 // Counts how many times a row renders: each row formats its date once per render.
 const rowRenders = vi.hoisted(() => ({ n: 0 }));

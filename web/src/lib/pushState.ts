@@ -23,7 +23,7 @@ export type DeviceState = "unavailable" | "unavailable_ios" | "install_first" | 
 
 // platformOf reads the platform from the user agent. iPadOS asks for
 // desktop pages as a Mac, which only touch points give away.
-export function platformOf(ua: string, maxTouchPoints = 0): Platform {
+function platformOf(ua: string, maxTouchPoints = 0): Platform {
   if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1)) return "ios";
   if (/Android/.test(ua)) return "android";
   if (/Macintosh/.test(ua) && /Version\/[\d.]+.*Safari\//.test(ua) && !/Chrome|Chromium|Edg\/|Firefox/.test(ua)) return "mac-safari";
@@ -32,7 +32,7 @@ export function platformOf(ua: string, maxTouchPoints = 0): Platform {
 
 // iosVersion: "CPU iPhone OS 16_3 like Mac OS X", or Safari's own
 // "Version/17.1" when iPadOS passes as a Mac.
-export function iosVersion(ua: string): [number, number] | null {
+function iosVersion(ua: string): [number, number] | null {
   const m = ua.match(/ OS (\d+)_(\d+)/) ?? ua.match(/Version\/(\d+)\.(\d+)/);
   return m ? [Number(m[1]), Number(m[2])] : null;
 }

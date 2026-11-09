@@ -32,10 +32,6 @@ export function childcareBody(value: ChildcareValue) {
   };
 }
 
-export function focusChildcareCapacity(prefix: string) {
-  setTimeout(() => document.getElementById(`childcare-capacity-${prefix}`)?.focus(), 0);
-}
-
 export const isChildcareCapacityError = (err: unknown) => {
   const code = errorCode(err);
   return code === "invalid_childcare_capacity" || code === "childcare_capacity_zero";

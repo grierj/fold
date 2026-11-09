@@ -1,4 +1,4 @@
-import { shortZoneName, zoneGenericName } from "./eventForm";
+import { addDays } from "./days";
 
 // Every event time a person reads is shown in their browser's zone (DEC-57),
 // so nobody converts in their head. The source is always the UTC instant
@@ -21,11 +21,6 @@ function ymd(instant: Date, zone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
 }
 
-function nextDay(day: string, by = 1): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + by)).toISOString().slice(0, 10);
-}
-
 // "7:00 PM"
 export function formatTime(iso: string, zone = browserTimeZone()): string {
   return fmt(iso, zone, { hour: "numeric", minute: "2-digit" });
@@ -39,8 +34,8 @@ export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date
   const today = ymd(now, zone);
   const time = formatTime(iso, zone);
   if (day === today) return `Today at ${time}`;
-  if (day === nextDay(today)) return `Tomorrow at ${time}`;
-  if (past && day === nextDay(today, -1)) return `Yesterday at ${time}`;
+  if (day === addDays(today, 1)) return `Tomorrow at ${time}`;
+  if (past && day === addDays(today, -1)) return `Yesterday at ${time}`;
   return `${fmt(iso, zone, { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
 }
 
@@ -62,16 +57,38 @@ export function formatNextMeeting(iso: string, zone = browserTimeZone(), now = n
   return { soon: true, text: `${lead} · ${time}` };
 }
 
-export function formatWhenRange(start: string, end: string, zone = browserTimeZone(), now = new Date()): string {
-  if (ymd(new Date(start), zone) === ymd(new Date(end), zone)) {
-    return `${formatWhen(start, zone, now)} – ${formatTime(end, zone)}`;
-  }
-  return `${formatWhen(start, zone, now)} – ${formatWhen(end, zone, now)}`;
-}
-
 // The month and day for a date badge, in the viewer's zone.
 export function badgeParts(iso: string, zone = browserTimeZone()): { month: string; day: string } {
   return { month: fmt(iso, zone, { month: "short" }), day: fmt(iso, zone, { day: "numeric" }) };
+}
+
+// The zone's generic name in the reader's language ("Pacific Time"), the
+// same in summer and winter, so it matches "the clock stays put". Falls back
+// to the long name, then to nothing, if the browser can't name it.
+export function zoneGenericName(tz: string, locale?: string): string {
+  for (const style of ["longGeneric", "long"] as const) {
+    try {
+      const part = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style })
+        .formatToParts(new Date())
+        .find((p) => p.type === "timeZoneName");
+      if (part?.value) return part.value;
+    } catch {
+      // unsupported style or unknown zone: try the next one
+    }
+  }
+  return "";
+}
+
+// The generic name without its trailing "Time": "Pacific Time" -> "Pacific",
+// "Hawaii-Aleutian Standard Time" -> "Hawaii-Aleutian". A zone that skips
+// daylight saving inside a US region keeps "Standard" ("Mountain Standard"
+// for Phoenix), so it doesn't read as the same clock as Denver.
+const DST_REGIONS = new Set(["Pacific", "Mountain", "Central", "Eastern", "Alaska", "Atlantic"]);
+export function shortZoneName(name: string): string {
+  const std = name.match(/^(.+) Standard Time$/);
+  if (std) return DST_REGIONS.has(std[1]) ? `${std[1]} Standard` : std[1];
+  const t = name.match(/^(.+) Time$/);
+  return t ? t[1] : name;
 }
 
 // "Pacific time", from the zone's generic name; the IANA id when the browser
@@ -144,7 +161,7 @@ function asDate(day: string): string {
 export function formatDayHeading(day: string, zone = browserTimeZone(), now = new Date()): string {
   const today = ymd(now, zone);
   if (day === today) return "Today";
-  if (day === nextDay(today)) return "Tomorrow";
+  if (day === addDays(today, 1)) return "Tomorrow";
   return fmt(asDate(day), "UTC", { weekday: "long", month: "short", day: "numeric" });
 }
 

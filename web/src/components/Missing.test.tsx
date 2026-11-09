@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { NotFound } from "./NotFound";
+import { NotFound } from "./Missing";
 
 describe("NotFound", () => {
   it("heads the page and offers a way home", () => {

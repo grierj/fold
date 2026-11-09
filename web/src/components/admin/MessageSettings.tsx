@@ -3,7 +3,9 @@ import { Admin } from "../../api/admin";
 import { errorCode, errorText } from "../../lib/errors";
 import { useUnsavedChanges } from "../../lib/unsavedChanges";
 import { Form } from "../ui/Form";
-import { Checkbox, Field, FormError, Input } from "../ui/Field";
+import { Field, FormError, Input } from "../ui/Field";
+import { useLoad } from "../../lib/useLoad";
+import { SettingSwitch } from "./SettingSwitch";
 import { FormActions } from "../ui/FormActions";
 import { Button } from "../ui/Button";
 import { ErrorNotice } from "../ErrorNotice";
@@ -12,62 +14,22 @@ import { ErrorNotice } from "../ErrorNotice";
 // messages to teens (DEC-19) and where replies go (DEC-130). Each is
 // audited on the server.
 
-// GuardianCopiesSetting is one on/off switch, so it saves when changed,
-// says "Saved", and goes back if saving fails (DEC-98).
+// GuardianCopiesSetting is one on/off switch (SettingSwitch, DEC-98).
 export function GuardianCopiesSetting() {
-  const [on, setOn] = useState<boolean | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [ok, setOk] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const alive = useRef(true);
-
-  const load = useCallback(() => {
-    setLoadFailed(false);
-    Admin.guardianCopies()
-      .then((r) => { if (alive.current) setOn(r.on); })
-      .catch(() => { if (alive.current) setLoadFailed(true); });
-  }, []);
-
-  useEffect(() => {
-    alive.current = true;
-    load();
-    return () => { alive.current = false; };
-  }, [load]);
-
-  async function change(next: boolean) {
-    const previous = on;
-    setSaving(true);
-    setOn(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await Admin.setGuardianCopies(next);
-      setOn(r.on);
-      setOk(true);
-    } catch (err) {
-      setOn(previous);
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (loadFailed) {
-    return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load the guardian copies setting." onRetry={load} /></div>;
+  const setting = useLoad(() => Admin.guardianCopies(), []);
+  if (setting.error) {
+    return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load the guardian copies setting." onRetry={setting.retry} /></div>;
   }
   return (
-    <div className="mb-6 max-w-xl space-y-2">
-      <Checkbox
-        label="Send guardians a copy of messages to their teens"
-        description="When a message goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Takes effect for messages sent from now on. Off by default."
-        checked={on === true}
-        disabled={saving || on === null}
-        onChange={(e) => void change(e.target.checked)}
-      />
-      <p role="status" className="text-sm text-success empty:hidden">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
-    </div>
+    <SettingSwitch
+      label="Send guardians a copy of messages to their teens"
+      description="When a message goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Takes effect for messages sent from now on. Off by default."
+      value={setting.data ? setting.data.on : null}
+      save={async (next) => {
+        const r = await Admin.setGuardianCopies(next);
+        setting.setData({ on: r.on });
+      }}
+    />
   );
 }
 

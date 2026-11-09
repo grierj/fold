@@ -4,58 +4,51 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Site } from "../api/site";
 import { emptyChildcare } from "./ChildcareField";
-import { EventOptions, optionsSummary } from "./EventOptions";
-import { emptyRemote } from "./RemoteField";
+import { EventOptions } from "./EventOptions";
+import { emptyEventOptions, type EventOptionValues } from "./eventOptionValues";
 import { emptySeats } from "./SeatsField";
 import { emptyVideo } from "./VideoField";
+import type { Visibility } from "../types";
 
 vi.mock("../api/events", () => ({ Events: { generateJitsi: vi.fn() } }));
 vi.mock("../api/site", () => ({ Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
 
-const base = { seats: emptySeats, video: emptyVideo, remote: emptyRemote, childcare: emptyChildcare };
+const base: EventOptionValues = { ...emptyEventOptions(), reminderPush: false };
 
-describe("optionsSummary", () => {
+// The line a closed "More options" shows, read as its button's description.
+function closedSummary(values: EventOptionValues, visibility?: Visibility): string | null {
+  render(<EventOptions idPrefix="s" open={false} onOpenChange={() => {}} values={values} onChange={() => {}}
+    visibility={visibility ? { value: visibility, field: null } : undefined} />);
+  return document.getElementById(screen.getByRole("button", { name: "More options" }).getAttribute("aria-describedby")!)!.textContent;
+}
+
+describe("the closed summary", () => {
   it("says what is set, so nothing is hidden by surprise", () => {
-    expect(optionsSummary({ ...base, visibility: "public" })).toBe("Visible to: Public · No seat limit · No video · No childcare");
+    expect(closedSummary(base, "public")).toBe("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before");
+  });
+  it("names each choice", () => {
     expect(
-      optionsSummary({
-        visibility: "invite_only",
+      closedSummary({
+        ...base,
         seats: { capacity: "20", waitlist: true, guests: 0 },
         video: { ...emptyVideo, provider: "jitsi" },
         remote: { available: true, capacity: "" },
         childcare: { ...emptyChildcare, available: true },
-      }),
-    ).toBe("Visible to: Invite only · 20 seats with waitlist · Video link · Remote seats · Childcare");
-    expect(optionsSummary({ ...base, seats: { ...emptySeats, capacity: "1" } })).toBe("1 seat · No video · No childcare");
-    expect(optionsSummary({ ...base, reminder: 1440 })).toBe("No seat limit · No video · No childcare · Reminder 1 day before");
-    expect(optionsSummary({ ...base, reminder: 0 })).toBe("No seat limit · No video · No childcare · No reminder");
+      }, "invite_only"),
+    ).toBe("Visible to: Invite only · 20 seats with waitlist · Video link · Remote seats · Childcare · Reminder 1 day before");
+  });
+  it("counts one seat in the singular", () => {
+    expect(closedSummary({ ...base, seats: { ...emptySeats, capacity: "1" } })).toBe("1 seat · No video · No childcare · Reminder 1 day before");
+  });
+  it("says when there is no reminder", () => {
+    expect(closedSummary({ ...base, reminder: 0 })).toBe("No seat limit · No video · No childcare · No reminder");
   });
 });
 
 function Harness({ open = false }: { open?: boolean }) {
   const [isOpen, setOpen] = useState(open);
-  const [seats, setSeats] = useState(emptySeats);
-  const [video, setVideo] = useState(emptyVideo);
-  const [remote, setRemote] = useState(emptyRemote);
-  const [childcare, setChildcare] = useState(emptyChildcare);
-  const [reminder, setReminder] = useState(1440);
-  return (
-    <EventOptions
-      idPrefix="t"
-      open={isOpen}
-      onOpenChange={setOpen}
-      seats={seats}
-      onSeats={setSeats}
-      video={video}
-      onVideo={setVideo}
-      remote={remote}
-      onRemote={setRemote}
-      childcare={childcare}
-      onChildcare={setChildcare}
-      reminder={reminder}
-      onReminder={setReminder}
-    />
-  );
+  const [values, setValues] = useState<EventOptionValues>(base);
+  return <EventOptions idPrefix="t" open={isOpen} onOpenChange={setOpen} values={values} onChange={setValues} />;
 }
 
 describe("EventOptions", () => {
@@ -102,13 +95,11 @@ describe("ReminderField in More options", () => {
 });
 
 function PushHarness() {
-  const [reminder, setReminder] = useState(1440);
-  const [push, setPush] = useState(true);
+  const [values, setValues] = useState<EventOptionValues>({ ...base, reminderPush: true });
   return (
     <>
-      <EventOptions idPrefix="p" open onOpenChange={() => {}} {...base} onSeats={() => {}} onVideo={() => {}} onRemote={() => {}} onChildcare={() => {}}
-        reminder={reminder} onReminder={setReminder} reminderPush={push} onReminderPush={setPush} />
-      <p>push is {push ? "on" : "off"}</p>
+      <EventOptions idPrefix="p" open onOpenChange={() => {}} values={values} onChange={setValues} />
+      <p>push is {values.reminderPush ? "on" : "off"}</p>
     </>
   );
 }
@@ -131,9 +122,11 @@ describe("the push reminder switch (M3.13d3)", () => {
     expect(screen.getByLabelText("Reminder email")).toBeInTheDocument();
   });
 
-  it("joins the closed summary", () => {
-    expect(optionsSummary({ ...base, reminder: 1440, reminderPush: true })).toBe("No seat limit · No video · No childcare · Reminder 1 day before · Push reminder");
-    expect(optionsSummary({ ...base, reminder: 0, reminderPush: true })).toBe("No seat limit · No video · No childcare · No reminder email · Push reminder");
-    expect(optionsSummary({ ...base, reminder: 0, reminderPush: false })).toBe("No seat limit · No video · No childcare · No reminder");
+  it("joins the closed summary", async () => {
+    const { unmount } = render(<EventOptions idPrefix="s" open={false} onOpenChange={() => {}} values={{ ...base, reminderPush: true }} onChange={() => {}} />);
+    await waitFor(() => expect(screen.getByText("No seat limit · No video · No childcare · Reminder 1 day before · Push reminder")).toBeInTheDocument());
+    unmount();
+    render(<EventOptions idPrefix="s" open={false} onOpenChange={() => {}} values={{ ...base, reminder: 0, reminderPush: true }} onChange={() => {}} />);
+    await waitFor(() => expect(screen.getByText("No seat limit · No video · No childcare · No reminder email · Push reminder")).toBeInTheDocument());
   });
 });

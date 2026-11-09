@@ -1,105 +1,37 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { CalendarFeeds } from "../api/profile";
 import type { CalendarFeed } from "../types";
-import { errorText } from "../lib/errors";
-import { useLoad } from "../lib/useLoad";
-import { Button } from "./ui/Button";
-import { Choices, Field, FormError, Input, Radio } from "./ui/Field";
-import { Skeleton } from "./ui/Skeleton";
-import { ErrorNotice } from "./ErrorNotice";
+import { Choices, Radio } from "./ui/Field";
+import { SecretFeedLink, useSecretFeed } from "./SecretFeedLink";
 
 export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean }) {
-  // A failed load must never look like "no link yet": Create would
-  // then quietly replace a link that works (M17-REVIEW M1).
-  const feed = useLoad(() => CalendarFeeds.get(), []);
-  const loaded = feed.data !== undefined;
-  const loadError = feed.error ? errorText(feed.error, "We couldn't load your calendar link.") : null;
-  const [hasToken, setHasToken] = useState(false);
   const [scope, setScope] = useState<CalendarFeed["scope"]>("mine");
-  const [link, setLink] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
-  const linkRef = useRef<HTMLInputElement>(null);
-
-  // Each answer fills the form's state in the render that first sees it.
-  const [applied, setApplied] = useState(feed.data);
-  if (feed.data && feed.data !== applied) {
-    setApplied(feed.data);
-    setHasToken(feed.data.calendarFeed.hasToken);
-    setScope(feed.data.calendarFeed.scope);
-  }
-
-  async function create() {
-    setBusy(true);
-    setError(null);
-    setStatus("");
-    try {
-      const r = await CalendarFeeds.create(scope);
-      setHasToken(true);
-      setScope(r.calendarFeed.scope);
-      setLink(r.calendarFeed.url ?? null);
-    } catch (err) {
-      setError(errorText(err, "We couldn't make your calendar link."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remake() {
-    if (!confirm("Make a new calendar link? Your old link will stop working.")) return;
-    await create();
-  }
-
-  async function turnOff() {
-    if (!confirm("Turn off your calendar link? Calendar apps using it will stop updating.")) return;
-    setBusy(true);
-    setError(null);
-    setStatus("");
-    try {
-      await CalendarFeeds.revoke();
-      setHasToken(false);
-      setLink(null);
-      setStatus("Calendar link turned off.");
-    } catch (err) {
-      setError(errorText(err, "We couldn't turn off your calendar link."));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const feed = useSecretFeed({
+    load: async () => (await CalendarFeeds.get()).calendarFeed,
+    deps: [],
+    create: async () => (await CalendarFeeds.create(scope)).calendarFeed,
+    revoke: () => CalendarFeeds.revoke().then(() => undefined),
+    failed: {
+      load: "We couldn't load your calendar link.",
+      create: "We couldn't make your calendar link.",
+      revoke: "We couldn't turn off your calendar link.",
+    },
+    onInfo: (info) => setScope(info.scope),
+  });
 
   async function chooseScope(next: CalendarFeed["scope"]) {
     const prev = scope;
     setScope(next);
-    if (!hasToken) return;
-    setBusy(true);
-    setError(null);
-    setStatus("");
-    try {
-      await CalendarFeeds.setScope(next);
-      setStatus("Feed choice saved.");
-    } catch (err) {
-      setScope(prev);
-      setError(errorText(err, "We couldn't save that choice."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function copyLink() {
-    if (!link) return;
-    setError(null);
-    if (navigator.clipboard) {
+    if (!feed.hasToken) return;
+    await feed.act(async () => {
       try {
-        await navigator.clipboard.writeText(link);
-        setStatus("Link copied.");
-        return;
-      } catch {
-        // Fall through to selecting the text by hand.
+        await CalendarFeeds.setScope(next);
+      } catch (err) {
+        setScope(prev);
+        throw err;
       }
-    }
-    linkRef.current?.select();
-    setStatus("The link is selected. Copy it from the box above.");
+      feed.setStatus("Feed choice saved.");
+    }, "We couldn't save that choice.");
   }
 
   return (
@@ -110,20 +42,27 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
         app, choose Add calendar &rarr; From URL (or Subscribe) and paste this link.
         It keeps itself up to date.
       </p>
-      {loadError ? (
-        <ErrorNotice message={loadError} onRetry={feed.retry} />
-      ) : !loaded ? (
-        <Skeleton kind="lines" count={2} label="Loading your calendar link…" />
-      ) : (
-        <>
-          {error && <FormError>{error}</FormError>}
+      <SecretFeedLink
+        feed={feed}
+        id="calendar-feed-link"
+        loadingLabel="Loading your calendar link…"
+        linkLabel="Your calendar link"
+        linkHint="This link is shown once. Anyone with it can see these events, so keep it to yourself. Making a new link stops the old one."
+        setUp={() => <>
+          Your calendar link is on. We can&rsquo;t show it again, so make a new
+          one if you need to set up another device.
+        </>}
+        none={<>You don&rsquo;t have a calendar link yet.</>}
+        confirmRemake="Make a new calendar link? Your old link will stop working."
+        confirmOff="Turn off your calendar link? Calendar apps using it will stop updating."
+        extras={
           <Choices legend="Events in the feed">
             <Radio
               name="feed-scope"
               label="My events"
               description="Your groups' events, events you host, and the dates you're going or waitlisted for."
               checked={scope === "mine"}
-              disabled={busy}
+              disabled={feed.busy}
               onChange={() => void chooseScope("mine")}
             />
             <Radio
@@ -131,48 +70,12 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
               label="Everything I can see"
               description="Every event you could find here in Fold."
               checked={scope === "all"}
-              disabled={busy}
+              disabled={feed.busy}
               onChange={() => void chooseScope("all")}
             />
           </Choices>
-          {link ? (
-            <Field
-              id="calendar-feed-link"
-              label="Your calendar link"
-              hint="This link is shown once. Anyone with it can see these events, so keep it to yourself. Making a new link stops the old one."
-            >
-              <Input ref={linkRef} value={link} readOnly layout="font-mono text-sm" onFocus={(e) => e.currentTarget.select()} />
-            </Field>
-          ) : hasToken ? (
-            <p className="text-sm text-text-muted">
-              Your calendar link is on. We can&rsquo;t show it again, so make a new
-              one if you need to set up another device.
-            </p>
-          ) : (
-            <p className="text-sm text-text-muted">You don&rsquo;t have a calendar link yet.</p>
-          )}
-          {hasToken ? (
-            <div className="flex flex-wrap gap-2">
-              {link && (
-                <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void copyLink()}>
-                  Copy link
-                </Button>
-              )}
-              <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => void remake()} disabled={busy}>
-                {busy ? "Saving…" : "Make a new link"}
-              </Button>
-              <Button variant="danger-outline" layout="w-full sm:w-auto" onClick={() => void turnOff()} disabled={busy}>
-                Turn off calendar link
-              </Button>
-            </div>
-          ) : (
-            <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void create()} disabled={busy}>
-              {busy ? "Saving…" : "Create calendar link"}
-            </Button>
-          )}
-        </>
-      )}
-      <p role="status" className="text-success text-sm empty:hidden">{status}</p>
+        }
+      />
     </div>
   );
 }

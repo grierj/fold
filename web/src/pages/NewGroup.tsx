@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { GroupCover, Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
-import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
+import { CreateGroupForm, type GroupFormData } from "../components/GroupForm";
 import { useAuth } from "../auth";
 import { ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";

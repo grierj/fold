@@ -6,7 +6,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { errorText } from "../lib/errors";
 import { churchName, useSite } from "../lib/useSite";
-import { NotFound } from "./NotFound";
+import { NotFound } from "../components/Missing";
 
 // /notifications/setup (M3.13c2, research 2.7, DEC-127): how to get Fold's
 // notifications on each kind of device, and how to undo it. Public, so a

@@ -10,7 +10,7 @@ import { Button, ButtonLink } from "./ui/Button";
 import { Checkbox, Choices, FormError } from "./ui/Field";
 import { Skeleton } from "./ui/Skeleton";
 import { ErrorNotice } from "./ErrorNotice";
-import { EMAIL_KIND_COPY } from "./EmailSettings";
+import { EMAIL_KIND_COPY } from "../lib/emailKinds";
 
 // The directions page (M3.13c2) for each platform's steps and undo steps.
 const SETUP = "/notifications/setup";

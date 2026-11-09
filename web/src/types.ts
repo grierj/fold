@@ -1248,6 +1248,7 @@ export interface DateReminders {
 
 // One reminder message: how many people it reached (guardian copies
 // apart, DEC-132) and failed for.
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface DateReminder {
   messageId: number;
   kind: ReminderKind;
@@ -1358,17 +1359,20 @@ export interface AudienceSummary {
   more: boolean;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface ComposeGroup {
   id: number;
   name: string;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface ComposeDate {
   occurrenceId: number;
   date: string;
   startsAt: string;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface ComposeEvent {
   id: number;
   title: string;
