@@ -21,7 +21,7 @@ func TestDailyTasksQueueOncePerChurchDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	kinds := app.dailyKinds()
-	denver, err := churchZoneErr(app.DB)
+	denver, err := churchZoneIn(app.DB)
 	if err != nil || denver.String() != "America/Denver" {
 		t.Fatalf("zone %v %v", denver, err)
 	}

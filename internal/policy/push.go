@@ -5,11 +5,11 @@ package policy
 // consent, but a teen still waiting for consent has no feed, and a guest
 // never signs in.
 
-// Account statuses push cares about (models.User.Status).
+// Account statuses policy decides on (models.User.Status names them).
 const (
-	accountActive         = "active"
-	accountGuest          = "guest"
-	accountPendingConsent = "pending_consent"
+	AccountActive         = "active"
+	AccountGuest          = "guest"
+	AccountPendingConsent = "pending_consent"
 )
 
 // Why a device can't turn on push; PushOK means it can.
@@ -27,10 +27,10 @@ const (
 // not the church's setting.
 func PushRefusal(status string, churchOn bool) string {
 	switch status {
-	case accountActive:
-	case accountGuest:
+	case AccountActive:
+	case AccountGuest:
 		return PushGuest
-	case accountPendingConsent:
+	case AccountPendingConsent:
 		return PushPendingConsent
 	default:
 		return PushInactive

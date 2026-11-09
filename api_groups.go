@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -71,7 +72,7 @@ func (a *App) viewerRoles(me *models.User, groups []models.Group) map[uint]strin
 		ids[i] = groups[i].ID
 	}
 	var rows []models.Membership
-	if err := a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, "active", ids).Find(&rows).Error; err != nil {
+	if err := a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, models.MembershipActive, ids).Find(&rows).Error; err != nil {
 		// The list still works; it just loses its "You're in" labels.
 		log.Printf("group list roles for user %d: %v", me.ID, err)
 		return nil
@@ -158,7 +159,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		// The creator is the group's first leader.
 		if err := tx.Create(&models.Membership{
 			UserID: u.ID, GroupID: g.ID,
-			Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
+			Role: models.MembershipLeader, Status: models.MembershipActive, JoinedAt: time.Now().UTC(),
 		}).Error; err != nil {
 			return err
 		}
@@ -268,7 +269,7 @@ func (a *App) apiGetGroup(c *gin.Context) {
 func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []memberJSON {
 	var members []models.Membership
 	a.DB.Preload("User").Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = 'active'", groupID).
+		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).
 		Order("memberships.joined_at").Find(&members)
 	users := make(map[uint]*models.User, len(members))
 	for i := range members {
@@ -641,7 +642,7 @@ func (a *App) directoryQuery(u *models.User) *gorm.DB {
 	return q.Where("visibility IN ? OR id IN (?)",
 		[]string{models.VisibilityPublic, models.VisibilityPrivate},
 		a.DB.Model(&models.Membership{}).Select("group_id").
-			Where("user_id = ? AND status = ?", u.ID, "active"))
+			Where("user_id = ? AND status = ?", u.ID, models.MembershipActive))
 }
 
 // normalizeVisibility accepts public, private, or invite_only; empty means
@@ -829,11 +830,11 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	switch {
 	case m.ID == 0:
 		if err := tx.Create(&models.Membership{UserID: userID, GroupID: g.ID, Role: newRole,
-			Status: "active", JoinedAt: time.Now().UTC()}).Error; err != nil {
+			Status: models.MembershipActive, JoinedAt: time.Now().UTC()}).Error; err != nil {
 			return err
 		}
 	default: // a role change, or adding back someone who left or was removed
-		if err := tx.Model(&m).Updates(map[string]any{"role": newRole, "status": "active"}).Error; err != nil {
+		if err := tx.Model(&m).Updates(map[string]any{"role": newRole, "status": models.MembershipActive}).Error; err != nil {
 			return err
 		}
 	}
@@ -873,7 +874,7 @@ func fixPrimaryContact(tx *gorm.DB, g *models.Group) error {
 		return nil
 	}
 	var next models.Membership
-	if err := tx.Where("group_id = ? AND role = ? AND status = ?", g.ID, models.MembershipLeader, "active").
+	if err := tx.Where("group_id = ? AND role = ? AND status = ?", g.ID, models.MembershipLeader, models.MembershipActive).
 		Order("joined_at, id").First(&next).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil // no leader left (an admin removed the last one is refused earlier)
@@ -922,7 +923,7 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 			return
 		}
 		target = *selected
-	} else if err := a.DB.Where("email = ?", normalizeEmail(body.Email)).First(&target).Error; err != nil {
+	} else if err := a.DB.Where("email = ?", mail.NormalizeAddress(body.Email)).First(&target).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
@@ -965,7 +966,7 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 	u := apiUser(c)
 	var others int64
 	a.DB.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.user_id <> ?", g.ID, "active", u.ID).
+		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.user_id <> ?", g.ID, models.MembershipActive, u.ID).
 		Count(&others)
 	if !rel.Leader {
 		jsonError(c, http.StatusForbidden, "only a group leader can request deletion")
@@ -1073,6 +1074,6 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group, by *uint) error 
 func memberCount(db *gorm.DB, groupID uint) int64 {
 	var n int64
 	db.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").Count(&n)
+		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).Count(&n)
 	return n
 }

@@ -13,11 +13,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// minPasswordLength is the minimum for local-account passwords, enforced
-// at setup, admin creation, password change, and admin password reset.
-// The setup template states the requirement next to the field — keep them in sync.
-const minPasswordLength = 10
-
 // Text caps keep a single request from storing an unbounded row.
 // Profile name/display name stay at 100 (see api_profile.go).
 const (
@@ -459,17 +454,13 @@ func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
 
 // membershipRel turns a membership row (any status) into policy facts.
 func membershipRel(m models.Membership) policy.Rel {
-	active := m.ID != 0 && m.Status == "active"
+	active := m.ID != 0 && m.Status == models.MembershipActive
 	return policy.Rel{
 		Member:  active,
 		Leader:  active && m.Role == models.MembershipLeader,
-		Removed: m.ID != 0 && m.Status == memberRemoved,
+		Removed: m.ID != 0 && m.Status == models.MembershipRemoved,
 	}
 }
-
-// memberRemoved is the Membership.Status of someone a leader or admin
-// removed (DEC-35).
-const memberRemoved = "removed"
 
 // listedUsers is the account-only membership join: not deleted or disabled.
 // Registration queries use listedRegistrations for their two subject types.
@@ -484,7 +475,7 @@ func leaderCount(db *gorm.DB, groupID uint) int {
 	db.Model(&models.Membership{}).
 		Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
-			groupID, models.MembershipLeader, "active").
+			groupID, models.MembershipLeader, models.MembershipActive).
 		Count(&n)
 	return int(n)
 }

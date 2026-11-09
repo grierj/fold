@@ -154,7 +154,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := foldmail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
@@ -314,7 +314,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 				}
 				return err
 			}
-			if user.DeletedAt.Valid || normalizeEmail(user.Email) != normalizeEmail(signup.Email) {
+			if user.DeletedAt.Valid || foldmail.NormalizeAddress(user.Email) != foldmail.NormalizeAddress(signup.Email) {
 				return errTokenInvalid
 			}
 		}
@@ -657,12 +657,12 @@ func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, o
 		if err := tx.Where("person_id = ?", person.ID).Find(&links).Error; err != nil {
 			return err
 		}
-		zone, err := contactZone(tx)
+		today, err := churchClockIn(tx, time.Now().UTC())
 		if err != nil {
 			return err
 		}
 		hr := householdRelOf(account, true)
-		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, time.Now().In(zone)), holder.CanSignIn(), allowed, allowed) != "" {
+		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, today), holder.CanSignIn(), allowed, allowed) != "" {
 			return errTokenInvalid
 		}
 	}
@@ -731,7 +731,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		// cancel and promotion check, so a freed seat cannot be taken twice.
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status IN ?", reg.ID,
-				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
+				models.CurrentRegStatuses).
 			Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil})
 			// The manage token stays live: cancel is idempotent (a second
 			// POST with the same link is a 200 no-op), and the token can

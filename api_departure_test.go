@@ -857,7 +857,7 @@ func TestDepartureConfirmationRemovalSummaryGuardianAndAdminParity(t *testing.T)
 		preview := getDeparturePreview(t, client, previewPath, http.StatusOK)
 		legacy := "/api/v1/admin/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.subject.ID)
 		w := confirmDeparturePreview(t, client, "DELETE", legacy, preview, nil, "")
-		if w.Code != http.StatusOK || membershipStatus(f.app, f.subject, f.group) != memberRemoved {
+		if w.Code != http.StatusOK || membershipStatus(f.app, f.subject, f.group) != models.MembershipRemoved {
 			t.Fatalf("admin removal: %d %s status=%s", w.Code, w.Body.String(), membershipStatus(f.app, f.subject, f.group))
 		}
 	})
@@ -1168,7 +1168,7 @@ func TestDepartureSelfRejoinKeepsNormalGroupRules(t *testing.T) {
 				client = f.leaderC
 				previewPath = base + "/members/" + itoa(f.subject.ID) + "/departure-preview"
 				confirmPath = base + "/members/" + itoa(f.subject.ID) + "/departure"
-				wantStatus = memberRemoved
+				wantStatus = models.MembershipRemoved
 			}
 			preview := getDeparturePreview(t, client, previewPath, http.StatusOK)
 			if w := confirmDeparturePreview(t, client, "POST", confirmPath, preview, nil, ""); w.Code != http.StatusOK {
@@ -1378,7 +1378,7 @@ func TestDepartureDisabledSubjectPreviewEndsRegistrationsWithoutRetainedAccess(t
 	if result.Departure.KeptCount != 0 || result.Departure.EndedCount != 2 {
 		t.Fatalf("disabled removal result=%+v", result.Departure)
 	}
-	if membershipStatus(f.app, f.subject, f.group) != memberRemoved || regStatus(t, f.app, f.subject.ID, cutoff.ID) != models.RegRemoved || regStatus(t, f.app, f.subject.ID, future.ID) != models.RegRemoved {
+	if membershipStatus(f.app, f.subject, f.group) != models.MembershipRemoved || regStatus(t, f.app, f.subject.ID, cutoff.ID) != models.RegRemoved || regStatus(t, f.app, f.subject.ID, future.ID) != models.RegRemoved {
 		t.Fatal("disabled cleanup did not remove membership and registrations")
 	}
 	var activeAccess int64
@@ -1465,7 +1465,7 @@ func TestDepartureLeaderMayRemoveDisabledAdminMember(t *testing.T) {
 	if w := confirmDeparturePreview(t, f.leaderC, "POST", removePath, preview, nil, ""); w.Code != http.StatusOK {
 		t.Fatalf("leader confirming removal of a disabled admin: %d %s", w.Code, w.Body.String())
 	}
-	if got := membershipStatus(f.app, disabledAdmin, f.group); got != memberRemoved {
+	if got := membershipStatus(f.app, disabledAdmin, f.group); got != models.MembershipRemoved {
 		t.Fatalf("membership status=%q, want removed", got)
 	}
 }

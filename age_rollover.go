@@ -24,7 +24,11 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 	if err := a.sweepContacts(context.Background(), now); err != nil {
 		return 0, err
 	}
-	today := now.In(churchZone(a.DB))
+	zone, err := churchZoneIn(a.DB)
+	if err != nil {
+		return 0, err
+	}
+	today := now.In(zone)
 	var userIDs []uint
 	if err := a.DB.Model(&models.User{}).Where("account_type = ? AND birth_date IS NOT NULL AND birth_date <= ?", models.AccountTeen,
 		today.AddDate(-18, 0, 0).Format("2006-01-02")).Order("id").Pluck("id", &userIDs).Error; err != nil {

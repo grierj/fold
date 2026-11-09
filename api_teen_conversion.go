@@ -7,7 +7,6 @@ import (
 	"fold/internal/accounts"
 	"fold/models"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var errConversionConsent = errors.New("this approved account is waiting for consent and guardian confirmation; ask your church office before changing their identity or removing them")
@@ -57,13 +56,9 @@ func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *mod
 	}
 	ids = append(ids, extraIDs...)
 	ids = sortedUniqueIDs(ids)
-	var rows []models.User
-	if err := tx.Unscoped().Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+	locked, err := lockUsersByID(tx, ids, true)
+	if err != nil {
 		return nil, nil, err
-	}
-	locked := make(map[uint]*models.User, len(rows))
-	for i := range rows {
-		locked[rows[i].ID] = &rows[i]
 	}
 	if err := lockHousehold(tx, person.HouseholdID); err != nil {
 		return nil, nil, err
@@ -102,13 +97,9 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 	if err := tx.Where("user_id = ?", userID).Limit(1).Find(&household).Error; err != nil {
 		return nil, err
 	}
-	var users []models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&users).Error; err != nil {
+	locked, err := lockUsersByID(tx, ids, false)
+	if err != nil {
 		return nil, err
-	}
-	locked := make(map[uint]*models.User, len(users))
-	for i := range users {
-		locked[users[i].ID] = &users[i]
 	}
 	if household.ID != 0 {
 		if err := lockHousehold(tx, household.HouseholdID); err != nil {

@@ -12,7 +12,6 @@ import (
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var (
@@ -50,13 +49,9 @@ func lockAdminHouseholdParticipants(tx *gorm.DB, session *models.User, holderID,
 	if err := lockContacts(tx); err != nil {
 		return nil, nil, nil, err
 	}
-	var users []models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", []uint{session.ID, holderID, guardianID}).Order("id").Find(&users).Error; err != nil {
+	byID, err := lockUsersByID(tx, []uint{session.ID, holderID, guardianID}, false)
+	if err != nil {
 		return nil, nil, nil, err
-	}
-	byID := make(map[uint]*models.User, len(users))
-	for i := range users {
-		byID[users[i].ID] = &users[i]
 	}
 	actor, holder, guardian := byID[session.ID], byID[holderID], byID[guardianID]
 	if actor == nil || !actor.CanSignIn() || actor.SessionVersion != session.SessionVersion || !policy.IsAdmin(asPerson(actor)) {

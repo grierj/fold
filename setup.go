@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"fold/internal/events"
+	"fold/internal/mail"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -91,15 +92,10 @@ func (a *App) createFirstAdmin(ctx context.Context, admin *models.User, in setup
 		if err := tx.Create(admin).Error; err != nil {
 			return err
 		}
-		for _, setting := range []models.Setting{{Key: "site_name", Value: in.SiteName}, {Key: settingTimezone, Value: in.Timezone}} {
-			if err := refuseRestoreFenceKey(setting.Key); err != nil {
-				return err
-			}
-			if err := tx.Where(models.Setting{Key: setting.Key}).Assign(models.Setting{Value: setting.Value}).FirstOrCreate(&models.Setting{}).Error; err != nil {
-				return err
-			}
+		if err := setSettingIn(tx, settingSiteName, in.SiteName); err != nil {
+			return err
 		}
-		return nil
+		return setSettingIn(tx, settingTimezone, in.Timezone)
 	})
 }
 
@@ -121,7 +117,7 @@ func readSetupInput(c *gin.Context) setupInput {
 		SiteName: strings.TrimSpace(c.PostForm("site_name")),
 		Timezone: strings.TrimSpace(c.PostForm("timezone")),
 		Name:     strings.TrimSpace(c.PostForm("name")),
-		Email:    normalizeEmail(c.PostForm("email")),
+		Email:    mail.NormalizeAddress(c.PostForm("email")),
 		Password: c.PostForm("password"),
 		Confirm:  c.PostForm("password_confirm"),
 		Adult:    c.PostForm("age_band") == "adult",

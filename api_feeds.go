@@ -70,19 +70,8 @@ func feedUnavailable(c *gin.Context, err error) {
 	c.String(http.StatusInternalServerError, "calendar unavailable")
 }
 
-func (a *App) feedSiteName() (string, error) {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", "site_name").First(&s).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", err
-	}
-	if s.Value == "" {
-		return "Fold", nil
-	}
-	return s.Value, nil
-}
-
 func (a *App) feedPublic(c *gin.Context) {
-	name, err := a.feedSiteName()
+	name, err := siteNameIn(a.DB)
 	if err != nil {
 		feedUnavailable(c, err)
 		return
@@ -148,7 +137,7 @@ func (a *App) feedPersonal(c *gin.Context) {
 		feedNotFound(c)
 		return
 	}
-	name, err := a.feedSiteName()
+	name, err := siteNameIn(a.DB)
 	if err != nil {
 		feedUnavailable(c, err)
 		return

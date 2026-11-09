@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"fold/internal/content"
-	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -96,7 +95,7 @@ type pushReminderPlan struct {
 // plans it), or it passed too long ago, as an email reminder missed by a
 // long outage is. A skip is recorded only once the reminder is near due.
 func planPushReminder(w push.Window, due time.Time, loc *time.Location, now time.Time) (at time.Time, skip, ok bool) {
-	at, allowed := w.LastAllowed(due, "", loc, pushReminderMaxMove)
+	at, allowed := w.LastAllowed(due, loc, pushReminderMaxMove)
 	switch {
 	case !allowed && due.After(now.Add(reminderLookahead)):
 		return time.Time{}, false, false
@@ -107,7 +106,7 @@ func planPushReminder(w push.Window, due time.Time, loc *time.Location, now time
 	case !at.Before(now):
 		return at, false, true
 	}
-	if inside, _ := w.Check(now, "", loc); !inside {
+	if inside, _ := w.Check(now, loc); !inside {
 		return time.Time{}, true, true
 	}
 	if now.Sub(at) > reminderLookback {
@@ -148,7 +147,7 @@ func (a *App) sweepPushReminders(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	church := churchZone(db)
+	church := churchZoneOrUTC(db)
 	win := a.pushQuietHours()
 	type date struct {
 		occ   models.EventOccurrence
@@ -159,11 +158,7 @@ func (a *App) sweepPushReminders(ctx context.Context, now time.Time) error {
 		if !ready[c.UserID] {
 			continue
 		}
-		loc, err := events.LoadZone(c.Timezone)
-		if err != nil {
-			loc = church
-		}
-		at, skip, ok := planPushReminder(win, c.StartsAt.Add(-pushReminderLead), loc, now)
+		at, skip, ok := planPushReminder(win, c.StartsAt.Add(-pushReminderLead), userZone(c.Timezone, church), now)
 		if !ok {
 			continue
 		}
@@ -355,12 +350,12 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 	if !can[u.ID] {
 		return record(models.RecipientSuppressed, skipCantSeeDate)
 	}
-	loc := zoneOrChurch(db, u.Timezone)
+	loc := userZoneIn(db, u.Timezone)
 	planned := time.Unix(plannedAt, 0)
 	if plannedAt == 0 {
 		planned = row.UpdatedAt
 	}
-	if inside, _ := a.pushQuietHours().Check(now, "", loc); !inside && now.After(planned.Add(pushReminderGrace)) {
+	if inside, _ := a.pushQuietHours().Check(now, loc); !inside && now.After(planned.Add(pushReminderGrace)) {
 		return record(models.RecipientSuppressed, pushWhyQuietHours)
 	}
 	title := ev.Title

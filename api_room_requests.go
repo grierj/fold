@@ -29,15 +29,12 @@ import (
 // Dates that lost their room are not requests: they stay the leader's.
 // ---------------------------------------------------------------------------
 
-const settingRoomApproval = "room_bookings_need_approval"
-
 // roomsRequestsLink is the admin Rooms tab, where the requests list is.
 const roomRequestsLink = "/admin?tab=rooms"
 
 // roomApprovalOn reads the setting in the caller's transaction.
 func roomApprovalOn(db *gorm.DB) bool {
-	var s models.Setting
-	return db.Where("key = ?", settingRoomApproval).First(&s).Error == nil && s.Value == "true"
+	return boolSettingIn(db, settingRoomApproval, false)
 }
 
 // apiSetRoomApproval turns "Room bookings need an admin's approval" on or
@@ -52,9 +49,7 @@ func (a *App) apiSetRoomApproval(c *gin.Context) {
 	}
 	me := apiUser(c)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where(models.Setting{Key: settingRoomApproval}).
-			Assign(models.Setting{Value: strconv.FormatBool(*body.Enabled)}).
-			FirstOrCreate(&models.Setting{}).Error; err != nil {
+		if err := setSettingIn(tx, settingRoomApproval, strconv.FormatBool(*body.Enabled)); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomApprovalChanged,

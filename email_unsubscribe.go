@@ -28,14 +28,17 @@ import (
 // unsubscribeVersion is the first byte of every token, so the format can change.
 const unsubscribeVersion = 2
 
+// unsubscribeKey and unsubscribeAddressKey are nil only when SESSION_SECRET is
+// empty, which Config refuses. parseUnsubscribeToken then refuses every link, so
+// a token minted without a key never verifies.
 func (a *App) unsubscribeKey() []byte {
-	key := sha256.Sum256(append([]byte("fold:unsubscribe:v1:"), a.Config.SessionSecret...))
-	return key[:]
+	key, _ := deriveKey(a.Config.SessionSecret, "unsubscribe:v1")
+	return key
 }
 
 func (a *App) unsubscribeAddressKey() []byte {
-	key := sha256.Sum256(append([]byte("fold:unsubscribe-address:v1:"), a.Config.SessionSecret...))
-	return key[:]
+	key, _ := deriveKey(a.Config.SessionSecret, "unsubscribe-address:v1")
+	return key
 }
 
 // unsubscribeToken signs the identity and scope, then separately binds the
@@ -236,10 +239,6 @@ func setConsent(tx *gorm.DB, row models.Consent, none string, session *models.Us
 	row.UserAgent = clipRunes(row.UserAgent, 500)
 	return true, tx.Create(&row).Error
 }
-
-// settingChurchAddress is the church's postal address for email footers
-// (PLAN 10.5, DEC-116); empty until an admin sets it.
-const settingChurchAddress = "church_address"
 
 // footerFacts are the church's name and address for one batch of email.
 type footerFacts struct{ site, address string }

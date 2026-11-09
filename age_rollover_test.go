@@ -339,7 +339,7 @@ func TestAgeRolloverPromotesHouseholdRelationWithoutGuardianship(t *testing.T) {
 
 func setStagedBirthdayToday(t *testing.T, app *App, f teenConversionFixture) time.Time {
 	t.Helper()
-	today := app.householdClock(time.Now().UTC())
+	today := time.Now().UTC().In(churchZoneOrUTC(app.DB))
 	birth := today.AddDate(-18, 0, 0).Format("2006-01-02")
 	for _, entry := range []struct {
 		model any

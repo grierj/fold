@@ -195,7 +195,7 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 	roomLine := placeLine(&occurrenceRoomJSON{ID: room.ID, Name: room.Name, Building: room.Building}, "")
 	host := a.feedHost()
 	feed := events.Feed{Name: roomLine, Host: host, WindowStart: windowStart, WindowEnd: windowEnd, Singles: []events.FeedSingle{}}
-	tz := a.churchTimezone()
+	tz := churchZoneOrUTC(a.DB).String()
 
 	var bookings []models.RoomBooking
 	if err := a.DB.Joins("JOIN event_occurrences o ON o.id = room_bookings.occurrence_id").

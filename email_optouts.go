@@ -71,12 +71,11 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 		}
 		unique = append(unique, d)
 	}
-	for start := 0; start < len(unique); start += 500 {
-		end := min(start+500, len(unique))
+	if err := eachChunk(unique, 500, func(chunk []emailDest) error {
 		var ids []uint
 		var hashes []string
 		addresses := map[string]string{}
-		for _, d := range unique[start:end] {
+		for _, d := range chunk {
 			if d.UserID != 0 {
 				ids = append(ids, d.UserID)
 			}
@@ -104,7 +103,7 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 			AddressHash, Scope string
 		}
 		if err := db.Raw(strings.Join(arms, " UNION ALL "), args...).Scan(&rows).Error; err != nil {
-			return emailOff{}, err
+			return err
 		}
 		for _, r := range rows {
 			if r.UserID != 0 {
@@ -120,6 +119,9 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 				out.address[address][r.Scope] = true
 			}
 		}
+		return nil
+	}); err != nil {
+		return emailOff{}, err
 	}
 	return out, nil
 }

@@ -101,31 +101,19 @@ func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink,
 	return out
 }
 
-func (a *App) householdClock(now time.Time) time.Time {
-	clock, err := householdClockIn(a.DB, now)
-	if err != nil {
-		return now.UTC()
-	}
-	return clock
-}
-
-func householdClockIn(db *gorm.DB, now time.Time) (time.Time, error) {
-	loc, err := churchLocationIn(db)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return now.In(loc), nil
-}
-
 // eligibleRegistration reads current eligibility without taking earlier-order
 // holder/household locks after the caller has locked an occurrence.
-func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) bool {
+func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) (bool, error) {
 	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
-	f.clock = func() time.Time { return a.householdClock(now) }
-	return f.eligible(a, tx, r, ev, map[uint]bool{})
+	var err error
+	if f.today, err = churchClockIn(tx, now); err != nil {
+		return false, err
+	}
+	return f.eligible(a, tx, r, ev, map[uint]bool{}, now), nil
 }
 
-func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool) bool {
+// eligible is whether r still stands; now is the caller's one reading of the clock.
+func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool, now time.Time) bool {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
 		return false
@@ -138,7 +126,7 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 	if !allowed && r.UserID != nil && r.ID != 0 {
 		var grant models.Registration
 		if tx.Where("registrations.id = ? AND "+registrationAccessLiveSQL, r.ID).Limit(1).Find(&grant).Error == nil && grant.ID != 0 {
-			live, err := liveOccurrenceInvitationIn(tx, grant, time.Now().UTC())
+			live, err := liveOccurrenceInvitationIn(tx, grant, now)
 			allowed = err == nil && live
 		}
 	}
@@ -178,7 +166,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 	var regs []models.Registration
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
-		Where("registrations.household_person_id = ? AND event_occurrences.starts_at > ? AND event_occurrences.status = ? AND registrations.status IN ?", person.ID, now, models.OccurrenceScheduled, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
+		Where("registrations.household_person_id = ? AND event_occurrences.starts_at > ? AND event_occurrences.status = ? AND registrations.status IN ?", person.ID, now, models.OccurrenceScheduled, models.CurrentRegStatuses).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
 		return err
 	}
 	for _, r := range regs {
@@ -194,12 +182,26 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			return err
 		}
 		old := r
-		if deleting || !a.eligibleRegistration(tx, r, &ev, now) {
+		eligible := false
+		if !deleting {
+			var err error
+			if eligible, err = a.eligibleRegistration(tx, r, &ev, now); err != nil {
+				return err
+			}
+		}
+		if !eligible {
 			// Changing away from child clears care without cancelling an otherwise
 			// eligible confirmed teen or verified adult's seat.
 			candidate := r
 			candidate.ChildcareRequested = false
-			if !deleting && a.eligibleRegistration(tx, candidate, &ev, now) {
+			careOK := false
+			if !deleting {
+				var err error
+				if careOK, err = a.eligibleRegistration(tx, candidate, &ev, now); err != nil {
+					return err
+				}
+			}
+			if careOK {
 				r.ChildcareRequested = false
 			} else {
 				r.Status = models.RegCancelled
@@ -287,6 +289,7 @@ func (f *subjectFacts) day() time.Time {
 
 func (a *App) loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
 	f := a.requestFacts()
+	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(db)) }
 	f.load(db, regs, viewer)
 	return *f
 }
@@ -298,7 +301,7 @@ func newSubjectFacts(today time.Time) *subjectFacts {
 // requestFacts is one request's shared facts, on the church-local clock.
 func (a *App) requestFacts() *subjectFacts {
 	f := newSubjectFacts(time.Time{})
-	f.clock = func() time.Time { return a.householdClock(time.Now().UTC()) }
+	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(a.DB)) }
 	return f
 }
 
@@ -612,7 +615,8 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		if a.DB.First(&holder, subject.holderID).Error != nil || holder.Status != models.UserActive {
 			continue
 		}
-		if !a.eligibleRegistration(a.DB, r, &o.Event, now) {
+		// A page that cannot read the church zone leaves the row out.
+		if ok, err := a.eligibleRegistration(a.DB, r, &o.Event, now); err != nil || !ok {
 			continue
 		}
 		regs = append(regs, r)
