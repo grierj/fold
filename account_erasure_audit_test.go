@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/format"
-	"go/parser"
 	"go/token"
 	"reflect"
 	"sort"
@@ -1053,18 +1052,17 @@ func auditCensusEntry(fset *token.FileSet, fn *ast.FuncDecl, lit *ast.CompositeL
 
 func readAuditSourceCensus(sources map[string][]byte) (auditSourceCensus, error) {
 	out := auditSourceCensus{Writers: map[string]string{}, Actions: map[string]bool{}}
-	names := make([]string, 0, len(sources))
-	for name := range sources {
-		names = append(names, name)
+	text := guardkit.Sources{}
+	for name, src := range sources {
+		text[name] = string(src)
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		src := sources[name]
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			return out, err
-		}
+	parsed := text.Parse(0)
+	if len(parsed.Problems) > 0 {
+		return out, errors.New(strings.Join(parsed.Problems, "; "))
+	}
+	fset := parsed.Fset
+	for _, pf := range parsed.Files {
+		name, file := pf.Path, pf.AST
 		aliases := guardkit.ImportNames(file, "fold/internal/audit")
 		// The registry covers both named constants and the one local action literal.
 		if name == "internal/audit/audit.go" {

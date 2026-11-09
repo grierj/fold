@@ -493,17 +493,14 @@ func TestThrottleSQLStaysInItsHelpers(t *testing.T) {
 	}
 	// The allow list must name functions that exist, so a rename cannot leave
 	// a stale permission behind.
-	fset := token.NewFileSet()
+	parsed := sources.Parse(0)
 	for file, fns := range throttleSQLAllowed {
-		src, ok := sources[file]
-		if !ok {
+		pf := parsed.File(file)
+		if pf == nil {
 			t.Errorf("throttleSQLAllowed names %s, which does not exist", file)
 			continue
 		}
-		f, err := parser.ParseFile(fset, file, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		f := pf.AST
 		have := map[string]bool{}
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok {
