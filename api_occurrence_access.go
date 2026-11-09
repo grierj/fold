@@ -147,7 +147,6 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, no
 	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID}, nil
 }
 
-// group is the loaded group of ev, nil for a church-wide event or a missing group.
 func (f *occurrenceInvitationFacts) group(ev *models.Event) *models.Group {
 	if ev.GroupID == nil {
 		return nil
@@ -360,8 +359,6 @@ func occurrenceAccountsIn(tx *gorm.DB, ids []uint, now time.Time) (map[uint]*mod
 	return occurrenceAccountsInZone(tx, ids, now, zone)
 }
 
-// occurrenceAccountsInZone is occurrenceAccountsIn for a caller that already
-// read the church zone.
 func occurrenceAccountsInZone(tx *gorm.DB, ids []uint, now time.Time, zone *time.Location) (map[uint]*models.User, map[uint]policy.ContactAccount, error) {
 	users := map[uint]*models.User{}
 	accounts := map[uint]policy.ContactAccount{}

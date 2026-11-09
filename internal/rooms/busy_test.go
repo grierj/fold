@@ -1,7 +1,6 @@
 package rooms
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -132,6 +131,29 @@ func TestPaddedRangeIsTheTablesFormula(t *testing.T) {
 	}
 }
 
+// bestOf is the fastest of n runs of fn.
+func bestOf(n int, fn func()) time.Duration {
+	best := time.Hour
+	for i := 0; i < n; i++ {
+		start := time.Now()
+		fn()
+		if d := time.Since(start); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// scanCost is what one pass over every booking costs on this machine right now.
+// The speed tests below are budgets in scans, so a loaded runner slows the
+// budget as much as the code under test; a plan that probes the range index
+// stays at a few dozen scans, one that scans the bookings per probe is hundreds.
+func scanCost(f *fixture) time.Duration {
+	return bestOf(5, func() {
+		f.db.Exec(`SELECT count(*), max(upper(padded_range)) FROM room_bookings`)
+	})
+}
+
 // A series of daily dates over every room answers well inside a request:
 // the replaced in-memory sweep existed because a join once grew with every
 // booking ever made (M2.1c); the range index keeps each probe the same size.
@@ -148,24 +170,16 @@ func TestBusyCountsStayFastForALongSeries(t *testing.T) {
 		s := f.now.AddDate(0, 0, i)
 		windows = append(windows, Window{Start: s, End: s.Add(time.Hour)})
 	}
-	best := time.Hour
 	var busy map[uint]int
-	for i := 0; i < 3; i++ {
-		start := time.Now()
+	best := bestOf(3, func() {
 		var err error
 		if busy, err = BusyCounts(f.db, ids, windows, 1); err != nil {
 			t.Fatal(err)
 		}
-		if d := time.Since(start); d < best {
-			best = d
-		}
-	}
-	limit := 500 * time.Millisecond
-	if os.Getenv("CI") != "" {
-		limit = 1500 * time.Millisecond
-	}
-	t.Logf("550 dates x %d rooms: %v, %d rooms busy somewhere", len(ids), best, len(busy))
-	if best > limit {
-		t.Fatalf("busy counts took %v, want under %v", best, limit)
+	})
+	scan := scanCost(f)
+	t.Logf("550 dates x %d rooms: %v (%.0f scans), %d rooms busy somewhere", len(ids), best, float64(best)/float64(scan), len(busy))
+	if limit := 200 * scan; best > limit {
+		t.Fatalf("busy counts took %v, want under %v (200 scans of the bookings)", best, limit)
 	}
 }

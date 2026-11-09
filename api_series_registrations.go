@@ -133,8 +133,6 @@ func registrationState(r models.Registration) seriesRegistrationState {
 // failing the others; the date's refusal carries the refusal's own code.
 var seriesDateRefusals = []*apiError{errRemovedBlocked, errEventFull, errChildcareFull, errChildcareUnavailable, errRemoteNotAvailable}
 
-// seriesRefusalCode is the code of err when it is one of seriesDateRefusals,
-// else "".
 func seriesRefusalCode(err error) string {
 	for _, refusal := range seriesDateRefusals {
 		if errors.Is(err, refusal) {
@@ -377,10 +375,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err := tx.Where("expires_at <= ? OR actor_id = ?", receiptNow, actor.ID).Delete(&models.SeriesUndoReceipt{}).Error; err != nil {
 				return err
 			}
-			// The raw token is not returned until post-commit delivery finishes.
-			// A bounded pending expiry keeps the row valid while that work runs;
-			// finalizeSeriesUndoReceipt replaces it with the promised response-time
-			// window, or suppresses Undo if a later action already replaced it.
+			// The Undo window starts when the response is ready, not when this
+			// transaction began, because the transaction may wait on locks. The
+			// pending expiry keeps the row valid until finalizeSeriesUndoReceipt
+			// sets the real window, or suppresses Undo if a later action replaced it.
 			receipt := models.SeriesUndoReceipt{TokenHash: undoHash, ActorID: actor.ID, EventID: ev.ID,
 				Snapshot: string(snapshot), ExpiresAt: receiptNow.Add(seriesUndoPendingTTL), CreatedAt: receiptNow}
 			if err := tx.Create(&receipt).Error; err != nil {
@@ -394,8 +392,6 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	// Stable ordering is part of the mutation/result boundary even if future
-	// implementation changes build the slices concurrently.
 	sort.Slice(response.Results, func(i, j int) bool { return response.Results[i].Date < response.Results[j].Date })
 	sort.Slice(response.Refusals, func(i, j int) bool { return response.Refusals[i].Date < response.Refusals[j].Date })
 	if undoReceiptID != 0 {
@@ -406,10 +402,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// finalizeSeriesUndoReceipt starts the usable Undo interval after committed
-// notification delivery. Its row lock makes the refreshed time post-wait. The
-// full identity predicate prevents a deleted or replaced receipt from being
-// recreated or extended by an older response finishing late.
+// finalizeSeriesUndoReceipt starts the usable Undo interval after the
+// transaction has committed, so lock waits do not use it up. Its row lock makes
+// the refreshed time post-wait. The full identity predicate prevents a deleted
+// or replaced receipt from being recreated or extended by an older response.
 func (a *App) finalizeSeriesUndoReceipt(receiptID uint, tokenHash string, actorID, eventID uint) (time.Time, bool) {
 	var expires time.Time
 	err := a.DB.Transaction(func(tx *gorm.DB) error {

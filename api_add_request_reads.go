@@ -213,7 +213,6 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 	return out, nil
 }
 
-// presentAddRequest is the page of one request.
 func (a *App) presentAddRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (addRequestJSON, error) {
 	rows, err := a.presentAddRequests(tx, op, []models.ContactRequest{r})
 	if err != nil {

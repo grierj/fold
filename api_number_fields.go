@@ -42,9 +42,8 @@ func (f numberField) parse(raw json.RawMessage, present bool) (n *int, set, ok b
 	return &v, true, true
 }
 
-// parseCapacity reads an event capacity from a body: null clears it to
-// unlimited, a positive whole number sets it (DEC-39). raw is nil when the field
-// is absent.
+// parseCapacity: null clears the capacity to unlimited, a positive whole number
+// sets it (DEC-39). raw is nil when the field is absent.
 func parseCapacity(raw *json.RawMessage) (cap *int, set bool, err error) {
 	if raw == nil {
 		return nil, false, nil
@@ -72,9 +71,8 @@ func parseRemoteCapacity(raw json.RawMessage, allowZero bool) (cap *int, set boo
 	return n, set, nil
 }
 
-// parseGuestsAllowed reads guestsAllowed from a body: null clears it to 0 (no
-// extra guests), a whole number up to the maximum sets the per-registration
-// guest cap. raw is nil when the field is absent.
+// parseGuestsAllowed: null clears it to 0 (no extra guests), a whole number up
+// to the maximum sets the per-registration guest cap. raw is nil when absent.
 func parseGuestsAllowed(raw *json.RawMessage) (n int, set bool, err error) {
 	if raw == nil {
 		return 0, false, nil
@@ -102,8 +100,8 @@ func parseChildcareCapacity(raw json.RawMessage) (*int, bool, error) {
 	return n, set, nil
 }
 
-// parseMemberLimit reads memberLimit from a body: null clears it, a positive
-// whole number sets it (DEC-39). raw is nil when the field is absent.
+// parseMemberLimit: null clears the limit, a positive whole number sets it
+// (DEC-39). raw is nil when the field is absent.
 func parseMemberLimit(raw json.RawMessage) (limit *int, set bool, msg string) {
 	n, set, ok := seatLimitField.parse(raw, raw != nil)
 	if !ok {

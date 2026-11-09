@@ -16,10 +16,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
-// Admin endpoints
-// ---------------------------------------------------------------------------
-
 func (a *App) apiPendingGroups(c *gin.Context) {
 	var groups []models.Group
 	if err := a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups).Error; err != nil {
@@ -29,8 +25,6 @@ func (a *App) apiPendingGroups(c *gin.Context) {
 	a.respondGroups(c, groups)
 }
 
-// respondGroups answers with the groups' summaries, or a 500 when one cannot
-// be built.
 func (a *App) respondGroups(c *gin.Context, groups []models.Group) {
 	out, err := a.groupSummaries(groups)
 	if err != nil {
@@ -66,7 +60,6 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags, "")
 }
 
-// maxRejectMessage bounds the optional message to a rejected group's leaders.
 const maxRejectMessage = 500
 
 // Notification text never carries contact details (5.12), so free text that
@@ -175,10 +168,6 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// ---------------------------------------------------------------------------
-// Admin: group + membership management
-// ---------------------------------------------------------------------------
-
 func (a *App) apiAdminListGroups(c *gin.Context) {
 	var groups []models.Group
 	if err := a.DB.Order("name").Find(&groups).Error; err != nil {
@@ -255,7 +244,6 @@ func (a *App) apiDeletionRequests(c *gin.Context) {
 	a.respondGroups(c, groups)
 }
 
-// apiRejectDeletion keeps the group and clears the leader's request.
 func (a *App) apiRejectDeletion(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group

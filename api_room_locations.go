@@ -36,8 +36,6 @@ const unbookedDatesSQL = `FROM event_occurrences o
 	WHERE o.status = 'scheduled' AND o.starts_at > now()
 	AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = o.id)`
 
-// seriesMatchSQL picks live series with upcoming dates and no series room
-// whose own place (the event's, else the group's) matches the ? location.
 var seriesMatchSQL = `e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
 	AND lower(btrim(` + events.SeriesPlaceSQL("e.location", "(SELECT g.location FROM groups g WHERE g.id = e.group_id)") + `)) = lower(btrim(?))
 	AND EXISTS (SELECT 1 FROM event_occurrences u WHERE u.event_id = e.id AND u.status = 'scheduled' AND u.starts_at > now())`
@@ -51,14 +49,12 @@ type typedLocationJSON struct {
 	Events   int    `json:"events"`
 }
 
-// matchBusyJSON is a matching date the room was taken on.
 type matchBusyJSON struct {
 	EventID    uint   `json:"eventId"`
 	EventTitle string `json:"eventTitle"`
 	Date       string `json:"date"`
 }
 
-// maxMatchBusy caps the busy dates a match lists; busyTotal counts them all.
 const maxMatchBusy = 100
 
 func (a *App) apiAdminTypedLocations(c *gin.Context) {

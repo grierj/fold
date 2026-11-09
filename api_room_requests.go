@@ -21,16 +21,13 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Room booking approval (M2.1d, DEC-102, DEC-105, DEC-106). With the
 // room_bookings_need_approval setting on, a leader's or host's booking is a
 // request: its free dates are requested bookings (holding nothing) that
 // point at one room_requests row, and every admin gets one task. An admin
 // confirms it (a reason double-books dates that became busy) or rejects it.
 // Dates that lost their room are not requests: they stay the leader's.
-// ---------------------------------------------------------------------------
 
-// roomsRequestsLink is the admin Rooms tab, where the requests list is.
 const roomRequestsLink = "/admin?tab=rooms"
 
 // roomApprovalOn reads the setting in the caller's transaction.
@@ -46,13 +43,11 @@ func (a *App) apiSetRoomApproval(c *gin.Context) {
 	}
 }
 
-// openRoomRequest starts a request; the caller places its dates.
 func openRoomRequest(tx *gorm.DB, eventID, roomID uint, by *uint, series bool) (*models.RoomRequest, error) {
 	req := models.RoomRequest{EventID: eventID, RoomID: roomID, Series: series, RequestedBy: by, Status: models.RoomRequestPending}
 	return &req, tx.Create(&req).Error
 }
 
-// notifyRoomRequested gives every admin the request as a task.
 func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event, room *models.Room, dates int, actor *uint) error {
 	change := room.Name + " for 1 date"
 	if dates != 1 {
@@ -105,7 +100,6 @@ func closeEmptyRoomRequests(tx *gorm.DB) error {
 	return nil
 }
 
-// roomRequestJSON is one open request in the admin list.
 type roomRequestJSON struct {
 	ID          uint   `json:"id"`
 	EventID     uint   `json:"eventId"`
@@ -118,15 +112,13 @@ type roomRequestJSON struct {
 	RequestedBy string `json:"requestedBy"`
 	// Dates waiting, and how many of them another booking now holds the
 	// room on (confirming those needs a double-book reason).
-	Dates     int    `json:"dates"`
-	BusyDates int    `json:"busyDates"`
-	FirstDate string `json:"firstDate"`
-	// FirstStartsAt: when the first waiting date starts (UTC).
+	Dates         int       `json:"dates"`
+	BusyDates     int       `json:"busyDates"`
+	FirstDate     string    `json:"firstDate"`
 	FirstStartsAt time.Time `json:"firstStartsAt"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
 
-// apiAdminRoomRequests lists the open requests, oldest first.
 func (a *App) apiAdminRoomRequests(c *gin.Context) {
 	var rows []struct {
 		ID, EventID, RoomID                       uint
@@ -236,7 +228,6 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	var body struct {
 		OverlapReason string `json:"overlapReason"`
 	}
-	// The body is optional.
 	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
@@ -339,7 +330,6 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	// The body is optional.
 	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
@@ -397,7 +387,6 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// requestFailed answers a confirm or reject that didn't go through.
 func (a *App) requestFailed(c *gin.Context, id uint, err error) bool {
 	switch {
 	case err == nil:

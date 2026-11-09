@@ -19,7 +19,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Room bookings (M2.1b, 9.2). A booking holds one room for one date, padded
 // by the room's setup and teardown minutes (DEC-101). Confirmed bookings of
 // one room never overlap: the database refuses it (room_bookings_no_overlap),
@@ -27,7 +26,6 @@ import (
 // with a reason, which is audited. Moving a date moves its booking; a move
 // into a conflict keeps the booking as requested (holding nothing) and tells
 // the people running the event.
-// ---------------------------------------------------------------------------
 
 const maxOverlapReason = 500
 
@@ -60,7 +58,6 @@ func lockRoom(tx *gorm.DB, roomID uint) (*models.Room, error) {
 	return &r, nil
 }
 
-// bookResult is what placeBooking wrote.
 type bookResult int
 
 const (
@@ -71,7 +68,6 @@ const (
 	notBooked                         // the room was busy and nothing was written
 )
 
-// placement says how placeBooking books.
 type placement struct {
 	by *uint
 	// reason double-books a busy room; the caller checks it is an admin's.
@@ -149,12 +145,10 @@ func trySavepoint(tx *gorm.DB, name string, write func() error) (ok bool, err er
 	return werr == nil, tx.Exec("RELEASE SAVEPOINT " + name).Error
 }
 
-// isOverlap reports the exclusion constraint refusing a booking.
 func isOverlap(err error) bool {
 	return pgConstraint(err, pgExclusionViolation, "room_bookings_no_overlap")
 }
 
-// roomPickerJSON is one bookable room as the picker for a date sees it.
 type roomPickerJSON struct {
 	ID         uint   `json:"id"`
 	Name       string `json:"name"`
@@ -170,7 +164,6 @@ type roomPickerJSON struct {
 	TooSmall bool `json:"tooSmall"`
 }
 
-// roomBookingJSON is a date's booking as its managers see it.
 type roomBookingJSON struct {
 	RoomID          uint   `json:"roomId"`
 	RoomName        string `json:"roomName"`
@@ -185,14 +178,12 @@ type roomBookingJSON struct {
 	Pending bool `json:"pending"`
 }
 
-// occurrenceRoomJSON is the room a date's people see as its place.
 type occurrenceRoomJSON struct {
 	ID       uint   `json:"id"`
 	Name     string `json:"name"`
 	Building string `json:"building"`
 }
 
-// managedOccurrence loads the event the caller runs and its scheduled date.
 func (a *App) managedOccurrence(c *gin.Context) (*models.Event, *models.EventOccurrence, bool) {
 	ev, ok := a.loadManagedEvent(c)
 	if !ok {
@@ -228,8 +219,6 @@ func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) (in
 
 func tooSmall(capacity *int, want int) bool { return capacity != nil && want > *capacity }
 
-// activeRoomsBusy lists the active rooms in picker order with how many of
-// the windows another confirmed booking holds each on (rooms.BusyCounts).
 func activeRoomsBusy(db *gorm.DB, windows []rooms.Window, exceptEvent uint) ([]models.Room, map[uint]int, error) {
 	var list []models.Room
 	if err := db.Where("active").Order("lower(building), lower(name)").Find(&list).Error; err != nil {
@@ -243,8 +232,6 @@ func activeRoomsBusy(db *gorm.DB, windows []rooms.Window, exceptEvent uint) ([]m
 	return list, busy, err
 }
 
-// apiDateRooms lists the rooms the caller may book for a date, marking busy
-// and too-small ones, with the date's current booking.
 func (a *App) apiDateRooms(c *gin.Context) {
 	ev, occ, ok := a.managedOccurrence(c)
 	if !ok {
@@ -289,7 +276,6 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	c.JSON(http.StatusOK, dateRoomsJSON{Rooms: out, Booking: booking, Suggestions: suggestions})
 }
 
-// dateBooking is a date's booking for its managers, or nil.
 func (a *App) dateBooking(db *gorm.DB, occurrenceID uint, want int) (*roomBookingJSON, error) {
 	var b models.RoomBooking
 	err := db.Where("occurrence_id = ?", occurrenceID).First(&b).Error
@@ -618,7 +604,6 @@ func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occur
 	return out
 }
 
-// roomsChunk keeps one rooms lookup under the Postgres parameter limit.
 const roomsChunk = 10000
 
 // roomsFor is occurrenceRooms, reporting a failed read. A feed's dates come

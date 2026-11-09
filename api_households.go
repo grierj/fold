@@ -18,14 +18,11 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
 // My household (M1.9 slice 1, 5.3, 5.10, DEC-32). An account gets a
 // household on first use, named after the account's last name. Any adult
 // account in the household manages it (policy.CanManageHousehold).
 // Adding a child or teen writes a pending guardian link and asks the
-// admins to confirm it; an adult needs no approval. Nothing here touches
-// registrations; household people register from slice 2.
-// ---------------------------------------------------------------------------
+// admins to confirm it; an adult needs no approval.
 
 type householdPersonJSON struct {
 	Conversion              *conversionJSON `json:"conversion,omitempty"`
@@ -73,7 +70,6 @@ func householdAccountIn(db *gorm.DB, userID uint) (models.HouseholdAccount, bool
 	return acct, true
 }
 
-// householdRelOf turns a household account row into policy facts.
 func householdRelOf(acct models.HouseholdAccount, found bool) policy.HouseholdRel {
 	return policy.HouseholdRel{
 		Account: found,
@@ -81,8 +77,6 @@ func householdRelOf(acct models.HouseholdAccount, found bool) policy.HouseholdRe
 	}
 }
 
-// defaultHouseholdName names a new household after the account's last
-// name: "Smith household" for John Smith.
 func defaultHouseholdName(u *models.User) string {
 	name := strings.TrimSpace(u.Name)
 	if name == "" {
@@ -110,8 +104,9 @@ var (
 // lockConversionParticipants and lockAdminHouseholdParticipants do), plus the
 // seat and the policy check, both read under the lock. It takes no contact
 // gate; a writer that takes one takes it before this. The caller uses the
-// returned row, never the preloaded one, for every later fact. noSeat is the error for an account with no
-// seat: forbidden for the household routes, not found for the person routes.
+// returned row, never the preloaded one, for every later fact. noSeat is the
+// error for an account with no seat: forbidden for the household routes, not
+// found for the person routes.
 func lockHouseholdSeat(tx *gorm.DB, me *models.User, noSeat error) (*models.User, models.HouseholdAccount, error) {
 	fresh, err := lockActorIn(tx, me, actorNoKeyUpdate)
 	if err != nil {
@@ -204,8 +199,6 @@ func (a *App) manageMyHousehold(c *gin.Context) (*models.Household, bool) {
 	return household, true
 }
 
-// guardianLinksForPeople loads every guardian link for the people, by
-// person id, oldest first.
 func guardianLinksForPeople(db *gorm.DB, personIDs []uint) map[uint][]models.GuardianLink {
 	out, _ := loadGuardianLinks(db, personIDs)
 	return out
@@ -459,7 +452,6 @@ func (a *App) apiGetMyHousehold(c *gin.Context) {
 	c.JSON(http.StatusOK, myHouseholdResponseJSON{Household: &out})
 }
 
-// apiUpdateMyHousehold renames the household or sets its address.
 func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 	household, ok := a.manageMyHousehold(c)
 	if !ok {
@@ -548,7 +540,6 @@ func validHouseholdKind(kind string) bool {
 	return kind == models.HouseholdChild || kind == models.HouseholdTeen || kind == models.HouseholdAdult
 }
 
-// splitPersonName splits a single name field into first and last names.
 func splitPersonName(name string) (string, string) {
 	fields := strings.Fields(strings.TrimSpace(name))
 	if len(fields) == 0 {

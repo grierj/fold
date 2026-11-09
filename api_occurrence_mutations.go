@@ -53,8 +53,6 @@ func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time) (policy.Contac
 	return occurrenceAccountInZone(tx, userID, now, zone)
 }
 
-// occurrenceAccountInZone is occurrenceAccountIn for a caller that already read
-// the church zone.
 func occurrenceAccountInZone(tx *gorm.DB, userID uint, now time.Time, zone *time.Location) (policy.ContactAccount, error) {
 	// A batch of one: a missing user is the zero account, as in every list.
 	_, accounts, err := occurrenceAccountsInZone(tx, []uint{userID}, now, zone)
@@ -595,8 +593,6 @@ func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 	jsonError(c, status, message)
 }
 
-// managerDateAddRefusal is managerDateAddError for a refusal that carries its
-// own answer.
 func (a *App) managerDateAddRefusal(c *gin.Context, err error) {
 	if auditErr := a.auditManagerDateRefusal(c); auditErr != nil {
 		jsonError(c, http.StatusInternalServerError, "could not add registration")
@@ -609,8 +605,6 @@ func (a *App) auditManagerDateRefusal(c *gin.Context) error {
 	return a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operationManagerAdd)
 }
 
-// operationManagerAdd names a manager's add of someone to one date in the
-// occurrence_refused audit rows.
 const operationManagerAdd = "manager_add"
 
 // writeOccurrenceRefusal records a refused exact-date request in the caller's

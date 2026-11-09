@@ -58,7 +58,6 @@ func (v visibilityImpactJSON) empty() bool {
 	return len(v.Tightened) == 0 && len(v.LeaderOpened) == 0
 }
 
-// errNeedDecision: a leader-opened event has no keep/tighten decision.
 var errNeedDecision = errors.New("leader-opened events need a decision")
 
 // affectedEvents lists g's events more open than newVis, split into the

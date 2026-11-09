@@ -122,8 +122,6 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	c.JSON(http.StatusOK, noticeResponseJSON{Message: guardianClaimThanks})
 }
 
-// guardianLinkUsable: the guardian can still act for this teen through this
-// confirmed link.
 func guardianLinkUsable(guardian, teen *models.User, link *models.GuardianLink) bool {
 	return guardian.Status == models.UserActive && policy.CanRequestGuardianLink(asPerson(guardian)) &&
 		teen.AccountType == models.AccountTeen && link.Status == models.GuardianConfirmed

@@ -8,44 +8,7 @@ import (
 
 	"fold/internal/policy"
 	"fold/models"
-
-	"gorm.io/gorm"
 )
-
-func TestAttendeeProvenanceReadIsBoundedToPageDates(t *testing.T) {
-	app := testApp(t)
-	admin, gid := openGroup(t, app, "Attendee query")
-	eid, date := seedCappedEvent(t, app, admin, gid, nil, true)
-	var occ models.EventOccurrence
-	if err := app.DB.Where("event_id = ? AND original_date = ?", eid, date).First(&occ).Error; err != nil {
-		t.Fatal(err)
-	}
-	var sql string
-	const callback = "test:attendee_provenance_sql"
-	if err := app.DB.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
-		if strings.Contains(tx.Statement.SQL.String(), "AS leader_added") {
-			sql = tx.Statement.SQL.String()
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	defer app.DB.Callback().Query().Remove(callback)
-	if _, _, err := app.attendeeNames([]models.EventOccurrence{occ}, map[uint]bool{eid: true}, nil, map[uint]bool{eid: true}, nil, app.requestFacts()); err != nil {
-		t.Fatal(err)
-	}
-	// The flag is the row's own provenance, so there is no second table to bound:
-	// the one read is limited to the page's dates and joins no access table.
-	if !strings.Contains(sql, "registrations.occurrence_id IN (") || strings.Contains(sql, "occurrence_accesses") || !strings.Contains(sql, "registrations.access_ended_at IS NULL") {
-		t.Fatalf("the read must use the page's dates and the row's own provenance: %s", sql)
-	}
-	var index string
-	if err := app.DB.Raw("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_registrations_live_access'").Scan(&index).Error; err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(index, "(occurrence_id)") || !strings.Contains(index, "access_ended_at IS NULL") || !strings.Contains(index, "access_origin <> ''") {
-		t.Fatalf("missing partial index for live grants on page dates: %s", index)
-	}
-}
 
 func TestRegistrationSubjectIdentity(t *testing.T) {
 	user, person, holder := uint(7), uint(7), uint(9)

@@ -19,10 +19,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
-// Auth endpoints
-// ---------------------------------------------------------------------------
-
 func (a *App) apiGetCSRF(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"csrfToken": c.GetString("csrfToken")})
 }
@@ -95,7 +91,6 @@ func (a *App) apiLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(user), CanCompose: a.canComposeOrLog(user)})
 }
 
-// validEmail checks an address before it is stored as a login.
 func validEmail(s string) bool {
 	if len(s) > 254 || !strings.Contains(s, "@") {
 		return false
@@ -257,7 +252,6 @@ func (a *App) canComposeOrLog(me *models.User) bool {
 	return ok
 }
 
-// apiMyGroups lists the groups the current user is an active member of.
 func (a *App) apiMyGroups(c *gin.Context) {
 	u := apiUser(c)
 	var memberships []models.Membership
@@ -284,10 +278,6 @@ func (a *App) apiMyGroups(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, groupListResponseJSON{Groups: list})
 }
-
-// ---------------------------------------------------------------------------
-// Password reset (M1.2, 10.1)
-// ---------------------------------------------------------------------------
 
 // resetRequestMessage is the uniform answer: the same for every address,
 // known or not, so the endpoint can't be used to enumerate accounts.
@@ -421,8 +411,6 @@ func (a *App) redeemPasswordLink(c *gin.Context, kind, auditAction, failMsg stri
 	return fresh, pendingConsent, true
 }
 
-// apiConfirmPasswordReset redeems a reset token and sets the new password. A
-// successful reset signs the person in.
 func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	fresh, _, ok := a.redeemPasswordLink(c, models.TokenPasswordReset, audit.PasswordResetCompleted, "could not reset password")
 	if !ok {

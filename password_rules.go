@@ -40,14 +40,11 @@ func passwordLength(pw string) int {
 	return passwordLengthOK
 }
 
-// The answers passwordRuleError gives; their numbers are the limits above.
 var (
 	errPasswordTooShort = apiErr(http.StatusBadRequest, "password_too_short", fmt.Sprintf("password must be at least %d characters", minPasswordLength))
 	errPasswordTooLong  = apiErr(http.StatusBadRequest, "password_too_long", fmt.Sprintf("password must be at most %d bytes", maxPasswordBytes))
 )
 
-// passwordRuleError returns the refusal for a new password that breaks the
-// length rules, or nil when it is fine.
 func passwordRuleError(pw string) error {
 	switch passwordLength(pw) {
 	case passwordTooShort:

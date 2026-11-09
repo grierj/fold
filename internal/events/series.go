@@ -2,7 +2,6 @@ package events
 
 import "time"
 
-// Existing is one stored occurrence, reduced to what a series edit needs.
 type Existing struct {
 	ID           uint
 	OriginalDate string
@@ -22,7 +21,6 @@ type Existing struct {
 	SeriesCancelled bool
 }
 
-// ActionKind is what a series edit does to one date.
 type ActionKind string
 
 const (
@@ -32,7 +30,6 @@ const (
 	ActionAdd     ActionKind = "add"
 )
 
-// Action is one row change from a series edit.
 type Action struct {
 	Kind ActionKind
 	ID   uint // set for move, cancel and restore

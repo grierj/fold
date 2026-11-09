@@ -122,9 +122,9 @@ type attemptLedger struct {
 	lastPrune time.Duration
 }
 
-// attemptState is the App's side of the lifecycle. The zero value is ready;
-// attemptsInit makes the key and the start time on first use, or at start-up
-// from serve, where a failure exits non-zero.
+// attemptsState is the App's side of the lifecycle. The zero value is ready;
+// init makes the key and the start time on first use, or at start-up from
+// serve, where a failure exits non-zero.
 type attemptsState struct {
 	once   sync.Once
 	err    error
@@ -155,8 +155,6 @@ func (a *App) attemptElapsed() time.Duration {
 	}
 	return a.now().Sub(a.attempts.start)
 }
-
-// --- the id ----------------------------------------------------------------
 
 func (a *App) attemptMAC(kind string, actor, subject uint, mintMs uint64, nonce []byte) []byte {
 	if err := a.attempts.init(); err != nil {
@@ -222,8 +220,6 @@ func (a *App) openAttempt(id, kind string, actor, subject uint) (nonce [16]byte,
 	return nonce, time.Duration(mintMs) * time.Millisecond, true
 }
 
-// --- the ledger ------------------------------------------------------------
-
 type submitResult int
 
 const (
@@ -233,7 +229,6 @@ const (
 	submitBusy
 )
 
-// prune drops entries past their last use. Callers hold l.mu.
 func (l *attemptLedger) pruneLocked(now time.Duration) {
 	if now-l.lastPrune < time.Minute {
 		return
@@ -273,7 +268,6 @@ func (l *attemptLedger) claim(n [16]byte, mint, now time.Duration) submitResult 
 	return submitOK
 }
 
-// look reads an entry without changing it.
 func (l *attemptLedger) look(n [16]byte) (attemptState, chan struct{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -359,7 +353,6 @@ func (a *App) submitAttempt(id, kind string, actor, subject uint) (*attemptClaim
 	}
 }
 
-// answerSubmit sends the refusal for a submission result other than submitOK.
 func answerSubmit(c *gin.Context, r submitResult) {
 	switch r {
 	case submitClosed:
@@ -398,8 +391,6 @@ func insertAttemptReceipt(tx *gorm.DB, nonce [16]byte) error {
 	}
 	return nil
 }
-
-// --- the actor seal ---------------------------------------------------------
 
 // currentAdminIn decides, on the actor's own row, that the session that sent
 // the request is still current and may act. It is one statement, taken FOR
@@ -480,8 +471,6 @@ func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID str
 	return u, true
 }
 
-// --- mint and settle routes --------------------------------------------------
-
 type attemptMintJSON struct {
 	AttemptID string `json:"attemptId"`
 }
@@ -521,13 +510,10 @@ func (a *App) apiAdminMintOperationAttempt(c *gin.Context) {
 	c.JSON(http.StatusOK, attemptMintJSON{AttemptID: id})
 }
 
-// answerRestoreDetected is the 503 every fenced route and the mint send once
-// the process has seen a restore.
 func answerRestoreDetected(c *gin.Context) {
 	fail(c, errRestoreDetected)
 }
 
-// settleFacts is what settle's seal read inside the committed transaction.
 type settleFacts struct {
 	state          attemptState
 	receipt        bool
@@ -643,7 +629,6 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 	}
 }
 
-// settleAnswer is the disclosure after an acknowledged settle COMMIT.
 func settleAnswer(f settleFacts) attemptSettleJSON {
 	switch f.state {
 	case attemptApplied:
@@ -668,8 +653,6 @@ func settleAnswer(f settleFacts) attemptSettleJSON {
 		return attemptSettleJSON{Result: settleChecking}
 	}
 }
-
-// --- the receipt sweep ------------------------------------------------------
 
 // sweepAttemptReceipts deletes receipts older than 24 hours, attemptSweepBatch
 // at a time, each batch its own transaction under its own 10-second context.

@@ -47,7 +47,6 @@ func videoRevealOf(ev *models.Event) string {
 	return ev.VideoReveal
 }
 
-// videoLinkOf is the event's link, or "" when it has none.
 func videoLinkOf(ev *models.Event) string {
 	if ev == nil || videoProviderOf(ev) == models.VideoProviderNone {
 		return ""
@@ -68,8 +67,8 @@ func validVideoURL(s string) bool {
 }
 
 // parseVideoEdits reads videoProvider, videoUrl and videoReveal from a
-// body over base (nil on create) and validates the effective values; the error is the 400 to answer with. none clears the URL; any other provider
-// needs a full https:// address of at most 2048 characters.
+// body over base (nil on create) and validates the effective values; the error
+// is the 400 to answer with.
 func parseVideoEdits(body eventBody, base *models.Event) (videoEdits, error) {
 	ed := videoEdits{
 		provider: models.VideoProviderNone,
@@ -154,10 +153,8 @@ func applyEventVideoReveal(j *eventJSON, ev *models.Event, isGoing, isManager bo
 	j.VideoURL, j.VideoHidden = videoShown(ev, isGoing, isManager)
 }
 
-// ---------------------------------------------------------------------------
 // POST /api/v1/events/video/jitsi: a new random Jitsi room URL, made
 // locally (no API call). Leaders, hosts and admins only.
-// ---------------------------------------------------------------------------
 
 // churchSlug is the room-name prefix from the church's name: lowercase,
 // a-z0-9 and hyphens, "fold" when nothing usable is left.

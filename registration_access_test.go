@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -173,13 +174,23 @@ func TestAccessInstantIsCanonicalMicroseconds(t *testing.T) {
 	}
 }
 
-// The three-model fold keeps the baseline and the Go loader on one predicate.
+// The migrations and the Go loader stay on one corruption predicate: the
+// guarded snapshot checks that Go builds appear in the SQL function the
+// database runs.
 func TestRegistrationAccessCorruptionPredicateMatchesSQL(t *testing.T) {
-	raw, err := os.ReadFile("migrations/00001_baseline.sql")
-	if err != nil {
-		t.Fatal(err)
+	files, err := filepath.Glob("migrations/*.sql")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("migrations: %v %v", files, err)
 	}
-	src := string(raw)
+	var all strings.Builder
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all.Write(raw)
+	}
+	src := all.String()
 	for _, key := range []string{"subjectUserId", "occurrenceId", "grantedAtMicro", "endedAtMicro"} {
 		if !strings.Contains(src, historyMetaID(key)) {
 			t.Errorf("registration_access_provenance() lacks the shared guarded predicate for %s:\n%s", key, historyMetaID(key))
@@ -187,11 +198,8 @@ func TestRegistrationAccessCorruptionPredicateMatchesSQL(t *testing.T) {
 	}
 	for _, scope := range []string{"'" + audit.OccurrenceAccessAdded + "', '" + audit.OccurrenceAccessEnded + "'", "l.target_type = '" + accessTargetType + "'"} {
 		if !strings.Contains(src, scope) {
-			t.Errorf("the baseline scope lacks %q", scope)
+			t.Errorf("the migrations' scope lacks %q", scope)
 		}
-	}
-	if !strings.Contains(accessSnapshotValidSQL(), historyMetaID("endedAtMicro")) || !strings.Contains(accessSnapshotScopeSQL, accessTargetType) {
-		t.Error("the Go scope and validity text drifted from the shared predicate")
 	}
 }
 

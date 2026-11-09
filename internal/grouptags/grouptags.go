@@ -14,7 +14,6 @@ func Parse(joined string) []string {
 	return Normalize(strings.Split(joined, ","))
 }
 
-// Normalize lowercases and trims each tag, dropping empty ones.
 func Normalize(tags []string) []string {
 	out := []string{}
 	for _, t := range tags {

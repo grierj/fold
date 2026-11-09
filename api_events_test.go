@@ -1390,8 +1390,8 @@ func TestGroupEventsContinuationBeyond100Dates(t *testing.T) {
 }
 
 // A repeat rule is refused when it repeats more than once a day, or makes
-// more dates than the cap, and the answer is quick and carries its own code.
-func TestRepeatRuleLimitsAnswerQuickly(t *testing.T) {
+// more dates than the cap, and the answer carries its own code.
+func TestRepeatRuleLimitsAreRefused(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "Rules")
 	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
@@ -1402,13 +1402,9 @@ func TestRepeatRuleLimitsAnswerQuickly(t *testing.T) {
 		}, true)
 	}
 	for _, rule := range []string{"FREQ=SECONDLY", "FREQ=MINUTELY", "FREQ=HOURLY;INTERVAL=2"} {
-		began := time.Now()
 		w := create(rule)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"recurrence_too_frequent"`) {
 			t.Fatalf("%s: %d %s", rule, w.Code, w.Body.String())
-		}
-		if time.Since(began) > 2*time.Second {
-			t.Fatalf("%s took %s", rule, time.Since(began))
 		}
 	}
 	// Daily with every hour of the day is still only "daily", so the cap

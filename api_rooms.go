@@ -18,14 +18,12 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Rooms (M2.1a, 9.1). Optional by design: while the rooms_enabled setting
 // is off, every room endpoint answers 404 and no room UI shows. Admins add,
 // edit and deactivate rooms; rooms are never deleted, so bookings keep
 // their history.
-// ---------------------------------------------------------------------------
 
-// Room field limits, matching the CHECKs in migration 00045.
+// Room field limits, matching the CHECKs in the baseline migration.
 const (
 	maxRoomName     = 100
 	maxRoomBuilding = 100
@@ -191,7 +189,6 @@ func equalIntPtr(a, b *int) bool {
 	return *a == *b
 }
 
-// roomNameTaken reports the one-name-per-building index.
 func roomNameTaken(err error) bool {
 	return pgConstraint(err, pgUniqueViolation, "idx_rooms_building_name")
 }
@@ -215,7 +212,6 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	// A new room is always active; deactivating is an edit.
 	body.Active = nil
 	room := models.Room{Active: true}
 	if _, err := body.apply(&room); err != nil {

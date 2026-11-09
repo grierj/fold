@@ -19,20 +19,17 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Series rooms (M2.1c, 9.2). "Book for the whole series" stores the room on
 // the event (default_room_id) and books every scheduled future date. A date
 // the room is busy on keeps a requested booking, holding nothing, and shows
 // on the event page as needing a room (DEC-103). Dates the daily extender or
 // a series edit adds later are booked in the series room the same way.
-// ---------------------------------------------------------------------------
 
 var (
 	errRoomGone   = apiErr(http.StatusNotFound, "", "room not found")
 	errRestricted = errRoomRestricted
 )
 
-// seriesRoomJSON is one bookable room as the series picker sees it.
 type seriesRoomJSON struct {
 	ID         uint   `json:"id"`
 	Name       string `json:"name"`
@@ -58,7 +55,6 @@ type needsRoomJSON struct {
 	Status   string `json:"status"`
 }
 
-// seriesBookingJSON says what booking a series did.
 type seriesBookingJSON struct {
 	DefaultRoom *occurrenceRoomJSON `json:"defaultRoom"`
 	Booked      int                 `json:"booked"`
@@ -93,8 +89,6 @@ func roomChoices(db *gorm.DB, p *policy.Person, windows []rooms.Window, eventID 
 	return out, nil
 }
 
-// apiSeriesRooms lists the rooms for a whole series, with busy counts over
-// its scheduled future dates, the series room, and the dates needing a room.
 func (a *App) apiSeriesRooms(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
 	if !ok {
@@ -141,7 +135,6 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 	c.JSON(http.StatusOK, seriesRoomsJSON{Rooms: choices, Dates: len(occs), DefaultRoom: a.seriesRoom(ev), NeedsRoom: needs, Pending: pending, Suggestions: suggestions})
 }
 
-// seriesRoom is the event's series room, or nil.
 func (a *App) seriesRoom(ev *models.Event) *occurrenceRoomJSON {
 	if ev.DefaultRoomID == nil {
 		return nil

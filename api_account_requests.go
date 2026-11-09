@@ -21,14 +21,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Account requests (M1.3, 5.10, DEC-4, DEC-8): self-signup and member
 // invite-a-friend create a pending AccountRequest an admin decides.
 // Nobody signs in until an admin approves; approval creates the account
 // and emails a set-password link. Teens need separate account consent.
-// Public answers never reveal whether an
-// email already has an account (10.1).
-// ---------------------------------------------------------------------------
+// Public answers never reveal whether an email already has an account (10.1).
 
 const (
 	selfSignupRequest = "request"
@@ -118,7 +115,6 @@ type accountRequestInput struct {
 	Website       string `json:"website"` // honeypot: people never fill this in
 }
 
-// validated is the cleaned input plus the age gate's verdict.
 type validatedRequest struct {
 	guardianEmail               string
 	name, email, phone, message string
@@ -281,7 +277,6 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	return true
 }
 
-// answerAccountRequest is the uniform success reply for each door.
 func (a *App) answerAccountRequest(c *gin.Context, source string) {
 	if source == models.RequestSelfSignup {
 		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
@@ -328,10 +323,6 @@ func (a *App) apiInviteFriend(c *gin.Context) {
 	}
 	a.storeAccountRequest(c, v, models.RequestMemberInvite, &me.ID)
 }
-
-// ---------------------------------------------------------------------------
-// Admin queue
-// ---------------------------------------------------------------------------
 
 // apiListAccountRequests closes overdue requests before it lists. The write in
 // a GET is deliberate: the daily accounts.expire_requests job runs once a day,
@@ -634,7 +625,7 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 }
 
 // apiSetSelfSignup turns self-signup between request (default) and off
-// (DEC-4). The setup wizard sets the same key in M4.2.
+// (DEC-4).
 func (a *App) apiSetSelfSignup(c *gin.Context) {
 	var body struct {
 		Mode string `json:"mode"`
@@ -690,10 +681,6 @@ func (a *App) expirePendingRequests() (int64, error) {
 	}
 	return done, nil
 }
-
-// ---------------------------------------------------------------------------
-// Decision and hint emails (C6: plain text through the minimal sender)
-// ---------------------------------------------------------------------------
 
 func (a *App) requestReceivedMessage(to, site string) foldmail.Message {
 	return foldmail.Message{

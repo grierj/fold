@@ -12,7 +12,6 @@ import (
 // batched by id; a single lookup is a batch of one. All of them return their
 // errors, so a failed read is never taken for "not visible" or "no member".
 
-// asPerson describes the signed-in user to policy; nil means signed out.
 func asPerson(u *models.User) *policy.Person {
 	if u == nil {
 		return nil
@@ -39,7 +38,6 @@ func asGroup(g *models.Group) policy.Group {
 	return policy.Group{Status: g.Status, Visibility: g.Visibility}
 }
 
-// membershipRel turns a membership row (any status) into policy facts.
 func membershipRel(m models.Membership) policy.Rel {
 	return relOfStatus(m.ID != 0, m.Status, m.Role)
 }
@@ -119,7 +117,6 @@ func userRels(db *gorm.DB, groupID uint, userIDs []uint) (map[uint]policy.Rel, e
 	return out, nil
 }
 
-// groupRel is groupRels for one group.
 func groupRel(db *gorm.DB, userID, groupID uint) (policy.Rel, error) {
 	rels, err := groupRels(db, userID, []uint{groupID})
 	return rels[groupID], err
@@ -183,7 +180,6 @@ func loadFactSet(db *gorm.DB, viewer *models.User, evs []models.Event, withDelet
 	return s, err
 }
 
-// of is the facts for one event of the batch.
 func (s factSet) of(ev *models.Event) eventFacts {
 	f := eventFacts{view: viewOf(ev, s.Hosted[ev.ID])}
 	if ev.GroupID != nil {
@@ -193,7 +189,6 @@ func (s factSet) of(ev *models.Event) eventFacts {
 	return f
 }
 
-// eventFacts is the policy input for one event and one viewer.
 type eventFacts struct {
 	group *models.Group
 	rel   policy.Rel
@@ -211,7 +206,6 @@ func viewOf(ev *models.Event, host bool) policy.EventView {
 	}
 }
 
-// eventFactsIn is the facts for one event: a batch of one.
 func eventFactsIn(db *gorm.DB, u *models.User, ev *models.Event) (eventFacts, error) {
 	s, err := loadFactSet(db, u, []models.Event{*ev}, false)
 	if err != nil {
@@ -220,8 +214,6 @@ func eventFactsIn(db *gorm.DB, u *models.User, ev *models.Event) (eventFacts, er
 	return s.of(ev), nil
 }
 
-// canSee, canManage and canRegister are the event rules with this viewer's
-// facts filled in.
 func (f eventFacts) canSee(me *models.User) bool {
 	return policy.CanSeeEvent(asPerson(me), f.view, asGroup(f.group), f.rel)
 }

@@ -53,7 +53,6 @@ type roomCalendarJSON struct {
 	Truncated bool                   `json:"truncated"`
 }
 
-// How many bookings one by-room response carries; past it, truncated.
 const maxRoomCalendarSlots = 2000
 
 // roomCalendarWindow is the church-calendar days the view covers: one day,

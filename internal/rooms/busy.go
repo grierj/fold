@@ -38,7 +38,7 @@ func HeldCondition(b, room, exceptOcc, want string) string {
 // BusyCounts counts, per room, the windows another confirmed booking holds
 // the room on. Each window is padded by the room's own default setup and
 // teardown (DEC-101), then probes the confirmed bookings' range index once
-// (migration 00050). A window's own occurrence never conflicts with itself.
+// (the baseline's range index). A window's own occurrence never conflicts with itself.
 // A nonzero exceptEvent also ignores every booking of that event's dates, so
 // re-picking a series' room never finds it busy with itself. Like the
 // exclusion constraint, it reads booking rows alone: cancelling a date or
