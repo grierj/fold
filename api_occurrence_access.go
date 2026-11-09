@@ -103,7 +103,7 @@ type occurrenceInvitationFacts struct {
 	accounts    map[uint]policy.ContactAccount
 	occurrences map[uint]models.EventOccurrence
 	events      map[uint]models.Event
-	groups      map[uint]models.Group
+	groups      map[uint]*models.Group
 }
 
 func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, now time.Time) (*occurrenceInvitationFacts, error) {
@@ -140,15 +140,9 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, no
 			groupIDs = append(groupIDs, *row.GroupID)
 		}
 	}
-	var groups []models.Group
-	if len(groupIDs) > 0 {
-		if err := tx.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
-			return nil, err
-		}
-	}
-	groupByID := map[uint]models.Group{}
-	for _, row := range groups {
-		groupByID[row.ID] = row
+	groupByID, err := groupsByID(tx, groupIDs, false)
+	if err != nil {
+		return nil, err
 	}
 	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID}, nil
 }
@@ -158,10 +152,7 @@ func (f *occurrenceInvitationFacts) group(ev *models.Event) *models.Group {
 	if ev.GroupID == nil {
 		return nil
 	}
-	if g, ok := f.groups[*ev.GroupID]; ok && g.ID != 0 {
-		return &g
-	}
-	return nil
+	return f.groups[*ev.GroupID]
 }
 
 // endReason preserves the scalar lifecycle precedence, including retained past
