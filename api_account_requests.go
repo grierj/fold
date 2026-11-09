@@ -115,12 +115,6 @@ func toAccountRequestJSON(r *models.AccountRequest, names publicNames) accountRe
 	return out
 }
 
-// accountRequestHit counts one public-form submission from ip and
-// reports the running count in the last hour (login_throttles, own key).
-func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
-	return a.throttleHit(ctx, accountRequestIPKey(ip), time.Hour)
-}
-
 // throttleHit counts one hit against key and reports the running count
 // inside the window. It lives in login_throttles, so it survives
 // restarts and is shared by every replica. Public forms each use their
@@ -200,7 +194,7 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 // answers the request itself and reports whether a row was stored.
 func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source string, requestedBy *uint) (stored bool) {
 	ctx := c.Request.Context()
-	hits, err := a.accountRequestHit(ctx, c.ClientIP())
+	hits, err := a.throttleHit(ctx, accountRequestIPKey(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return false
@@ -283,7 +277,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
-		if _, err := notifyAccountRequested(tx, &req, flags); err != nil {
+		if err := notifyAccountRequested(tx, &req, flags); err != nil {
 			return err
 		}
 		// A duplicate of a pending request is stored and flagged on the bell,
@@ -489,9 +483,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		if consentEvidence != nil && conversionLocked != nil {
 			consentActor = conversionLocked[me.ID]
 		} else if consentEvidence != nil {
-			if req.AccountType != models.AccountTeen {
-				return errConsentTeen
-			}
 			// An existing guest can be upgraded on the same row. No other
 			// existing account receives consent as a side effect of approval.
 			var existing models.User
@@ -587,7 +578,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if upgraded {
 				meta["upgradedGuest"] = true
 			}
-			if _, err := nominateTeenGuardian(tx, req, userID); err != nil {
+			if err := nominateTeenGuardian(tx, req, userID); err != nil {
 				return err
 			}
 		}
@@ -601,7 +592,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			if err := tx.First(&teen, userID).Error; err != nil {
 				return err
 			}
-			if _, err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
+			if err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
 				Scope: models.TeenConsentAccount, Status: models.ConsentGranted, EvidenceText: *consentEvidence,
 			}); err != nil {
 				return err

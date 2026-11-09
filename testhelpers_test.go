@@ -1282,3 +1282,25 @@ func outboxTo(t *testing.T, app *App, to string) []models.MailOutbox {
 	app.DB.Where("to_address = ?", to).Find(&rows)
 	return rows
 }
+
+// maxNoticeID is the newest stored notification id. A test that wants to know
+// which notices a call wrote takes it first and reads noticeIDsAfter after.
+func maxNoticeID(t *testing.T, db *gorm.DB) uint {
+	t.Helper()
+	var id uint
+	if err := db.Model(&models.Notification{}).Select("COALESCE(MAX(id), 0)").Scan(&id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// noticeIDsAfter lists, ascending, the notifications written after the id
+// maxNoticeID returned.
+func noticeIDsAfter(t *testing.T, db *gorm.DB, after uint) []uint {
+	t.Helper()
+	var ids []uint
+	if err := db.Model(&models.Notification{}).Where("id > ?", after).Order("id").Pluck("id", &ids).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}

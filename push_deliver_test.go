@@ -102,12 +102,12 @@ func pushTestApp(t *testing.T) (*App, *fakePush) {
 // hours off.
 func useFakePush(t *testing.T, app *App) *fakePush {
 	t.Helper()
-	if _, err := ensureVAPIDKeys(app.DB, app.Config.SessionSecret); err != nil {
+	if err := ensureVAPIDKeys(app.DB, app.Config.SessionSecret); err != nil {
 		t.Fatal(err)
 	}
 	f := &fakePush{status: map[string]int{}, err: map[string]bool{}, sent: map[string]int{}}
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
-	open := push.AlwaysOpen
+	open := push.Window{StartHour: 0, EndHour: 24} // never waits
 	app.pushWindow = &open
 	return f
 }
@@ -624,12 +624,11 @@ func TestCancellingADatePushesToRegistrants(t *testing.T) {
 	if err := app.DB.Create(&models.Registration{OccurrenceID: occ.ID, UserID: &pat.ID, Status: models.RegGoing}).Error; err != nil {
 		t.Fatal(err)
 	}
-	var ids []uint
+	before := maxNoticeID(t, app.DB)
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
-		var err error
-		ids, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
-		return err
+		return notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 	})
+	ids := noticeIDsAfter(t, app.DB, before)
 	if err != nil || len(ids) != 1 {
 		t.Fatalf("cancel notices %v %v", ids, err)
 	}

@@ -22,9 +22,6 @@ type Window struct {
 // DefaultWindow is 8 AM to 8 PM, the SMS default (DEC-9, DEC-25).
 var DefaultWindow = Window{StartHour: 8, EndHour: 20}
 
-// AlwaysOpen never waits.
-var AlwaysOpen = Window{StartHour: 0, EndHour: 24}
-
 func (w Window) valid() bool {
 	return 0 <= w.StartHour && w.StartHour < w.EndHour && w.EndHour <= 24
 }

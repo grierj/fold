@@ -40,10 +40,6 @@ const (
 	VisibilityInviteOnly = "invite_only" // members and admins only
 )
 
-// Where an event's visibility comes from (DEC-6). group follows the group,
-// including later changes. custom keeps the event's own value.
-const ()
-
 // Registration statuses (renamed from RSVP, M1.1a). Cancelled arrives
 // with the guest manage link (M1.4): the person withdrew a registration
 // they had made, which is not the same answer as declining an event.
@@ -643,7 +639,6 @@ type MailOutbox struct {
 // Notification delivery channels and statuses (5.3, 5.12).
 const (
 	DeliveryEmail = "email"
-	DeliverySMS   = "sms"
 	DeliveryPush  = "push"
 
 	DeliverySent       = "sent"

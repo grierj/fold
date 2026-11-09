@@ -194,7 +194,7 @@ func serve(stderr io.Writer) int {
 	// Web push keys (M3.13a): made on first boot, and again if
 	// SESSION_SECRET changed. A failure here costs only push, so the
 	// server still starts and the next boot tries again.
-	if _, err := ensureVAPIDKeys(db, cfg.SessionSecret); err != nil {
+	if err := ensureVAPIDKeys(db, cfg.SessionSecret); err != nil {
 		log.Printf("push: couldn't set up the web push keys: %v", err)
 	}
 	if vapidSubject(cfg) == "" {

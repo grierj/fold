@@ -148,7 +148,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
 		}
-		if _, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note); err != nil {
+		if err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note); err != nil {
 			return err
 		}
 		var meta map[string]any
@@ -832,7 +832,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					}
 					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled, TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 				}
-				_, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
+				err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
 				if err != nil {
 					return err
 				}
@@ -846,7 +846,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 				// Disabling keeps registration rows but frees every seat
 				// the account held on future dates, promoting into them.
-				_, err = a.promoteOnDisable(tx, u.ID, true)
+				err = a.promoteOnDisable(tx, u.ID, true)
 				if err != nil {
 					return err
 				}
@@ -854,14 +854,14 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 			}
 			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				_, err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
+				err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
 				if err != nil {
 					return err
 				}
 				// Registrations come back as they were when they fit;
 				// a row that would overfill is dropped and the person
 				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				_, err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
+				err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
 				if err != nil {
 					return err
 				}
@@ -1101,7 +1101,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			if err := eraseAccountCredentialsIn(tx, s); err != nil {
 				return err
 			}
-			_, err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
+			err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 			if err != nil {
 				return err
 			}
@@ -1165,7 +1165,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			}
 			// The deleted account no longer counts, so its seats and childcare
 			// spots are free: promote waiters now (Whittler, PR 109).
-			if _, err := a.promoteOnDisable(tx, u.ID, true); err != nil {
+			if err := a.promoteOnDisable(tx, u.ID, true); err != nil {
 				return err
 			}
 			// Invitations, guest signups and the dev outbox at the held address,

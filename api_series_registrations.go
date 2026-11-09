@@ -327,7 +327,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err := tx.SavePoint(savepoint).Error; err != nil {
 				return err
 			}
-			_, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+			err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
@@ -362,7 +362,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 					return err
 				}
 				if grant.ID != 0 {
-					_, err := endOccurrenceAccessIn(tx, &grant, accessScopeOf(&ev), policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
+					err := endRegistrationAccess(tx, &grant, accessScopeOf(&ev), policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP(), true)
 					if err != nil {
 						return err
 					}
@@ -572,14 +572,14 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 				change, err := prepareRegistration(current, o, userSubject(actor.ID), models.RegDeclined, 0, current.AttendanceMode,
 					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, dateNow)
 				if err == nil {
-					_, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+					err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 				}
 				if err == nil && current.AccessOrigin != "" {
 					// A removed row may hold a live exact-date grant: end it as
 					// context_changed (normal notice) so the delete trigger finds
 					// an ended grant and its snapshots. An ended grant keeps its
 					// own reason.
-					_, err = endOccurrenceAccessIn(tx, &current, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, dateNow, c.ClientIP())
+					err = endRegistrationAccess(tx, &current, accessScopeOf(&ev), policy.OccurrenceContextChanged, nil, dateNow, c.ClientIP(), true)
 				}
 				if err == nil {
 					err = tx.Delete(&models.Registration{}, current.ID).Error
@@ -596,7 +596,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			next.ChildcareCount, next.ChildcareAgesNote, next.ChildcareRequested = item.Before.ChildcareCount, item.Before.ChildcareAgesNote, item.Before.ChildcareRequested
 			next.Source, next.RegisteredBy, next.WaitlistedAt, next.PromotedAt = item.Before.Source, item.Before.RegisteredBy, item.Before.WaitlistedAt, item.Before.PromotedAt
 			change := registrationChange{old: current, next: next, found: true}
-			_, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
+			err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {

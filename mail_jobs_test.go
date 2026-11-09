@@ -237,7 +237,7 @@ func TestPasswordResetPreparationUsesSingleConnection(t *testing.T) {
 func TestPasswordResetSiteNameReadRespectsCancellation(t *testing.T) {
 	app := testApp(t)
 	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	old, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	old, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestPasswordResetPreparationFailureRollsBackAndRetries(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			app := testApp(t)
 			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-			old, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+			old, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -832,7 +832,7 @@ func TestApprovedSetupMailAndRedemptionLockOrders(t *testing.T) {
 			if err := app.DB.Where("kind = ?", kindAccountRequestMail).Delete(&models.Job{}).Error; err != nil {
 				t.Fatal(err)
 			}
-			old, err := createAccountToken(app.DB, models.TokenAccountSetup, user.ID, nil, tokenTTL)
+			old, _, err := issueAccountToken(app.DB, models.TokenAccountSetup, user.ID, nil, tokenTTL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2225,7 +2225,7 @@ func TestInvitationAcceptanceRefusesADeadlinePassedDuringAnUnchangedRowLockWait(
 func TestLockAndConsumeAccountTokenRefusesADeadlinePassedDuringALockWait(t *testing.T) {
 	app := testApp(t)
 	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	raw, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

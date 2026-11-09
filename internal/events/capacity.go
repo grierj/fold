@@ -14,19 +14,13 @@ import "time"
 const CutoffWindow = 2 * time.Hour
 
 // EffectiveCapacity is the occurrence override when set, else the event
-// capacity. Nil means unlimited.
+// capacity, for either pool (the remote pool passes its own pair). Nil means
+// unlimited; 0 is a real cap (no seats in that pool).
 func EffectiveCapacity(eventCapacity *int, override *int) *int {
 	if override != nil {
 		return override
 	}
 	return eventCapacity
-}
-
-// EffectiveRemoteCapacity is EffectiveCapacity for the remote pool:
-// the per-date remote override when set, else the event's remote
-// capacity. Nil means unlimited; 0 is a real cap (no remote seats).
-func EffectiveRemoteCapacity(eventRemoteCapacity *int, override *int) *int {
-	return EffectiveCapacity(eventRemoteCapacity, override)
 }
 
 // RemoteOffered reports whether a date offers remote attendance, not whether

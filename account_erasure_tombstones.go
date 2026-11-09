@@ -151,7 +151,7 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 		}
 		report.HouseholdsKept = hh.HouseholdsKept
 		// L10-L11 skip all address arms; each UPDATE selects unfinished work.
-		if _, err := a.promoteOnDisable(tx, id, false); err != nil {
+		if err := a.promoteOnDisable(tx, id, false); err != nil {
 			return err
 		}
 		if err := eraseDependentRecordsIn(tx, s, 0, ""); err != nil {

@@ -345,7 +345,7 @@ func TestVisibilityOverrideEmailsAdminsAndLeaders(t *testing.T) {
 	}
 }
 
-// eventCandidates is the shared series filter (#75): a soft-deleted group's
+// eventCandidates is the shared candidate loader (#75): a soft-deleted group's
 // events are never listed, not even for an admin, and a church-wide
 // public event is listed for a signed-out visitor.
 func TestEventCandidatesSkipsDeletedGroups(t *testing.T) {
@@ -360,17 +360,17 @@ func TestEventCandidatesSkipsDeletedGroups(t *testing.T) {
 	if err := app.DB.Create(&cw).Error; err != nil {
 		t.Fatal(err)
 	}
-	if vs, _ := app.eventCandidates(admin, app.DB, false, false); vs.ByID[ev.ID] == nil || vs.ByID[cw.ID] == nil {
+	if vs, _ := app.eventCandidates(admin, app.DB, false); vs.ByID[ev.ID] == nil || vs.ByID[cw.ID] == nil {
 		t.Fatalf("admin should see both before the delete: %v", vs.IDs)
 	}
 	if err := app.DB.Delete(&g).Error; err != nil {
 		t.Fatal(err)
 	}
-	vs, err := app.eventCandidates(admin, app.DB, false, false)
+	vs, err := app.eventCandidates(admin, app.DB, false)
 	if err != nil || vs.ByID[ev.ID] != nil {
 		t.Fatalf("deleted group's event listed for an admin: %v %v", vs.IDs, err)
 	}
-	if anon, _ := app.eventCandidates(nil, app.DB, false, false); anon.ByID[cw.ID] == nil {
+	if anon, _ := app.eventCandidates(nil, app.DB, false); anon.ByID[cw.ID] == nil {
 		t.Fatalf("public church-wide event missing for a visitor: %v", anon.IDs)
 	}
 }

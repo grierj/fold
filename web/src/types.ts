@@ -1375,12 +1375,10 @@ export interface ComposeEvent {
   dates: ComposeDate[];
 }
 
-// What the author may write to (GET /messages/compose). smsEnabled shows
-// the SMS tab, off until texting can be set up (DEC-117).
+// What the author may write to (GET /messages/compose).
 export interface ComposeOptions {
   canCompose: boolean;
   canMessageEveryone: boolean;
-  smsEnabled: boolean;
   // The church's switch for notifications on devices: off hides "Push
   // notification too" (DEC-124).
   pushEnabled: boolean;
