@@ -35,7 +35,6 @@ const (
 	notifyUnknownGrace = 7 * 24 * time.Hour
 )
 
-// notifyKinds registers the delivery jobs queued by notify.Send.
 func (a *App) notifyKinds() []jobs.Kind {
 	return []jobs.Kind{{
 		Type: notify.DeliverJob, Label: "Sending a notice by email and to devices",
@@ -256,7 +255,6 @@ func unknownKindNotice(db *gorm.DB, n *models.Notification) (outcome error, err 
 	return jobs.Later(time.Now().Add(notifyUnknownWait)), nil
 }
 
-// stopEmail records that a notice's kind no longer sends email.
 func stopEmail(db *gorm.DB, notificationID uint) error {
 	return updateEmailDelivery(db, notificationID, models.DeliverySuppressed, emailKindStopped, "")
 }

@@ -282,10 +282,8 @@ func pushWaitReason(opens time.Time, loc *time.Location) string {
 	return pushWaitPrefix + opens.In(loc).Format("3:04 PM")
 }
 
-// pushWaitUntil is the time a waiting row's reason names, as the history shows it.
 func pushWaitUntil(reason string) string { return strings.TrimPrefix(reason, pushWaitPrefix) }
 
-// messageReadPath is where a recipient reads an announcement in Fold.
 func messageReadPath(id uint) string { return "/messages/" + idString(id) + "/read" }
 
 var (

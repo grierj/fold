@@ -21,7 +21,6 @@ const (
 // MergeFields lists every field, in the order the composer offers them.
 var MergeFields = []string{FieldFirstName, FieldEventTitle, FieldEventTime, FieldEventLink, FieldManageLink}
 
-// IsEventField: the field needs a message to one event's people.
 func IsEventField(f string) bool { return f != FieldFirstName }
 
 // mergeRe matches anything in double braces, so a misspelled field
@@ -45,7 +44,6 @@ func FieldsIn(s string) []string {
 	return out
 }
 
-// IsMergeField: f is one of MergeFields.
 func IsMergeField(f string) bool {
 	for _, k := range MergeFields {
 		if k == f {

@@ -433,7 +433,6 @@ type SignedEntry struct {
 	IP         string
 }
 
-// WriteBatchSize is how many rows WriteAll sends in one statement.
 const WriteBatchSize = 1000
 
 type signedRow struct {

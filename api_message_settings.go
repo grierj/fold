@@ -16,7 +16,6 @@ import (
 
 var errReplyToInvalid = apiErr(http.StatusBadRequest, "reply_to_invalid", "enter one email address, or leave it empty")
 
-// saveSetting writes key = value and its audit row together.
 func (a *App) saveSetting(c *gin.Context, key, value, action string, meta map[string]any) error {
 	me := apiUser(c)
 	return a.DB.Transaction(func(tx *gorm.DB) error {
@@ -31,7 +30,6 @@ func (a *App) apiAdminGetGuardianCopies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"on": boolSettingIn(a.DB, settingGuardianCopies, false)})
 }
 
-// apiAdminSetGuardianCopies turns guardian copies on or off (DEC-19).
 func (a *App) apiAdminSetGuardianCopies(c *gin.Context) {
 	var body struct {
 		On *bool `json:"on"`

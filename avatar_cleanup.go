@@ -81,7 +81,6 @@ var (
 	errAvatarUnexpected = errors.New("avatar update changed no account")
 )
 
-// avatarCleanupType takes the default attempts.
 var avatarCleanupType = jobs.Type{Name: kindAvatarCleanup}
 
 // avatarCleanupJob is the whole payload: no key, no path, no name.
@@ -159,7 +158,6 @@ func lockAvatarRow(tx *gorm.DB, id uint) (avatarRow, error) {
 	return row, err
 }
 
-// checkAvatarSession compares the locked row with the request's snapshot.
 func checkAvatarSession(row avatarRow, snap *models.User) error {
 	current := models.User{ID: row.ID, Status: row.Status, PasswordHash: row.PasswordHash,
 		SessionVersion: row.SessionVersion, LogoutVersion: row.LogoutVersion}
@@ -353,7 +351,6 @@ func (a *App) queueAvatarCleanupFallback(id uint) {
 // Recovery sweep
 // ---------------------------------------------------------------------------
 
-// sweepAvatars is the daily avatar.sweep job.
 func (a *App) sweepAvatars(ctx context.Context, now time.Time) error {
 	return a.sweepAvatarsLimit(ctx, now, avatarSweepLimit)
 }
@@ -417,7 +414,6 @@ func sweepScanError(err, ctxErr error) error {
 	return errSweepScan
 }
 
-// fixedSweepError lets only the sweep's own fixed errors out.
 func fixedSweepError(err error) error {
 	switch err {
 	case nil, errSweepZone, errSweepUnsafe, errSweepScan, errSweepLookup, errSweepQueue, errSweepOutOfTime, errAvatarSweepFailed:
@@ -441,7 +437,6 @@ type avatarSweepRun struct {
 	capped                              bool
 }
 
-// add is ScanOwners' callback.
 func (s *avatarSweepRun) add(oe storage.OwnerEntries) error {
 	s.buf = append(s.buf, oe)
 	if len(s.buf) >= avatarSweepBatch {

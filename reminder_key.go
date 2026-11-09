@@ -22,7 +22,6 @@ func (k reminderKey) String() string {
 	return k.Kind + ":" + idString(k.Occ) + ":" + strconv.FormatInt(k.Start, 10) + ":" + strconv.Itoa(k.Minutes)
 }
 
-// parseReminderKey reads a key String wrote.
 func parseReminderKey(s string) (reminderKey, bool) {
 	parts := strings.Split(s, ":")
 	if len(parts) != 4 {
@@ -37,7 +36,6 @@ func parseReminderKey(s string) (reminderKey, bool) {
 	return reminderKey{Kind: parts[0], Occ: uint(occ), Start: start, Minutes: minutes}, true
 }
 
-// reminderKeyLike is the LIKE pattern for every key of kind.
 func reminderKeyLike(kind string) string { return kind + ":%" }
 
 // reminderKeySQL is the SQL that builds the key of kind and minutes for the
