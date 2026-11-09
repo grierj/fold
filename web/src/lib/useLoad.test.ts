@@ -131,3 +131,13 @@ it("refreshOnFocus fails closed and asks again when the window regains focus", a
   window.dispatchEvent(new Event("focus"));
   expect(fn).toHaveBeenCalledTimes(2);
 });
+
+it("close settles asks still waiting, whether the request had started or not", async () => {
+  const { result } = renderHook(() => useLoad(() => new Promise<number>(() => {}), []));
+  let started: Promise<unknown> = Promise.resolve();
+  let queued: Promise<unknown> = Promise.resolve();
+  act(() => { started = result.current.reload(); });
+  // Asked and closed in one turn: the request for this ask never starts.
+  act(() => { queued = result.current.retry(); result.current.close(); });
+  expect(await Promise.race([Promise.all([started, queued]), new Promise((r) => setTimeout(() => r("hung"), 500))])).toEqual(["stale", "stale"]);
+});

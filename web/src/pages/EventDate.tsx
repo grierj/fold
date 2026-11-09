@@ -39,7 +39,10 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   const load = useLoad(() => Dates.get(id, date).then((r) => r.occurrence), [id, date], { refreshOnFocus: true });
   const occurrence = load.data ?? null;
   const loaded = !load.loading;
-  const current = attempt && attempt.epoch === load.epoch() ? attempt : null;
+  const loadEpoch = load.epoch();
+  const current = attempt && attempt.epoch === loadEpoch ? attempt : null;
+  // Once a refresh has moved the load on, what the last answer or end did is history: forget it.
+  useEffect(() => { if (attempt && attempt.epoch !== loadEpoch) setAttempt(null); });
   const busy = current?.pending ?? false;
   const error = current?.error ?? "";
   const mounted = useRef(false);

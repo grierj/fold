@@ -327,3 +327,12 @@ it("shows no reminder lines to anyone the API doesn't send them to", async () =>
   mount(); await screen.findByText("One invited date");
   expect(screen.queryByText("Reminders")).not.toBeInTheDocument();
 });
+
+it("a mutation's error does not stay under the fresh data a later focus refresh brings", async () => {
+  vi.mocked(Dates.register).mockRejectedValue(new ApiError(409, "SECRET", { code: "event_full" }));
+  mount(); await userEvent.click(await screen.findByRole("button", { name: "Going" }));
+  await screen.findByRole("alert");
+  fireEvent(window, new Event("focus"));
+  await screen.findByText("One invited date");
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+});

@@ -63,11 +63,14 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
   latest.current = fn;
   const generation = useRef(0);
   const waiters = useRef<Array<(outcome: LoadOutcome) => void>>([]);
+  // The asks the request now in flight answers (taken from `waiters` when it started).
+  const inflight = useRef<Array<(outcome: LoadOutcome) => void>>([]);
 
   useEffect(() => {
     // The asks that triggered this run are answered by it.
     const mine = waiters.current;
     waiters.current = [];
+    inflight.current = mine;
     const settle = (outcome: LoadOutcome) => { for (const done of mine.splice(0)) done(outcome); };
     const run = ++generation.current;
     if (!enabled) {
@@ -107,6 +110,8 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
   }, []);
   const close = useCallback(() => {
     generation.current++;
+    // Nothing will answer the asks still waiting: they end stale now, not never.
+    for (const done of [...waiters.current.splice(0), ...inflight.current.splice(0)]) done("stale");
     setState({ data: undefined, error: null, loading: false, closed: true });
   }, []);
   const epoch = useCallback(() => generation.current, []);

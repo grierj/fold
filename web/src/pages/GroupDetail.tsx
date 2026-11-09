@@ -7,7 +7,7 @@ import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { canDemoteLeader, canMakeLeader, canAskForContact, canRegisterAsGuest, canRemoveMember, isActiveAdult } from "../lib/can";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { Events } from "../api/events";
@@ -288,7 +288,7 @@ function GroupDetailContent() {
   // reappear, and only the newest request may commit anything.
   const load = useLoad(() => fetchGroup(id ?? "", loadedDates.current), [id], { enabled: !!id });
   const detail = load.data ?? null;
-  if (detail) loadedDates.current = detail.upcomingEvents.length;
+  useEffect(() => { if (detail) loadedDates.current = detail.upcomingEvents.length; }, [detail]);
   const loading = load.loading;
   const notFound = load.error instanceof ApiError && load.error.status === 404;
   const error = load.error && !notFound ? errorText(load.error, "We couldn't load this group.") : null;
