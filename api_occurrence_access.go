@@ -362,14 +362,14 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 		if shownGroup != nil {
 			groupLocation = shownGroup.Location
 		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		manager = policy.CanManageEvent(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), rel)
-		attendees = policy.CanSeeAttendeeNames(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), gp, rel)
+		facts := vs.of(ev)
+		manager = facts.canManage(me)
+		attendees = policy.CanSeeAttendeeNames(asPerson(me), facts.view, asGroup(grp), rel)
 		if me != nil {
-			a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Find(&reg)
+			if err := a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Limit(1).Find(&reg).Error; err != nil {
+				jsonError(c, http.StatusInternalServerError, "could not load this date")
+				return dateOccurrenceJSON{}, false
+			}
 		}
 	} else {
 		ev = &invited.Event

@@ -80,7 +80,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	if len(vs.IDs) == 0 {
 		return out, false, nil
 	}
-	evs, byID, groups, rels, hosted := vs.Events, vs.ByID, vs.Groups, vs.Rels, vs.Hosted
+	evs, byID, groups, rels := vs.Events, vs.ByID, vs.Groups, vs.Rels
 	eventIDs = vs.IDs
 
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
@@ -175,14 +175,10 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	p := asPerson(me)
 	for i := range evs {
 		ev := &evs[i]
-		g, rel := groupAndRel(ev, groups, rels)
-		gp := policy.Group{}
-		if g != nil {
-			gp = asGroup(g)
-		}
-		showChildcare[ev.ID] = policy.CanSeeChildcare(p, viewOf(ev, hosted[ev.ID]), rel)
-		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, viewOf(ev, hosted[ev.ID]), gp, rel)
-		showDeclined[ev.ID] = policy.CanManageEvent(p, viewOf(ev, hosted[ev.ID]), rel)
+		f := vs.of(ev)
+		showChildcare[ev.ID] = policy.CanSeeChildcare(p, f.view, f.rel)
+		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, f.view, asGroup(f.group), f.rel)
+		showDeclined[ev.ID] = f.canManage(me)
 	}
 	// Managers need totals; everyone else only needs to know if a
 	// limited childcare pool is full. Skip dates that need neither.
@@ -275,18 +271,8 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		inst.RemoteSeatsUsed = remoteUsed
 		inst.RemoteSpotsLeft = spotsLeftFor(inst.RemoteCapacity, remoteUsed)
 		if r, ok := mine[o.ID]; ok {
-			s := r.Status
-			inst.MyRegistration = &s
-			gc := r.GuestCount
-			inst.MyGuestCount = &gc
-			inst.MyChildcareCount = &r.ChildcareCount
-			inst.MyChildcareAgesNote = &r.ChildcareAgesNote
-			m := attendanceModeOf(r.AttendanceMode)
-			inst.MyAttendanceMode = &m
-			if r.Status == models.RegWaitlisted {
-				if pos, perr := waitlistPosition(a.DB, o.ID, r.ID); perr == nil {
-					inst.MyWaitlistPosition = &pos
-				}
+			if err := inst.setMine(a.DB, &r); err != nil {
+				return out, false, err
 			}
 		}
 		// The video link is per date: going on this date (or running the
@@ -332,6 +318,23 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
 	return out, truncated, nil
+}
+
+// setMine fills the viewer's own answer on this date: their row, and their
+// place in line when they are waitlisted.
+func (o *occurrenceJSON) setMine(db *gorm.DB, r *models.Registration) error {
+	status, guests, childcare, note := r.Status, r.GuestCount, r.ChildcareCount, r.ChildcareAgesNote
+	mode := attendanceModeOf(r.AttendanceMode)
+	o.MyRegistration, o.MyGuestCount, o.MyChildcareCount, o.MyChildcareAgesNote, o.MyAttendanceMode =
+		&status, &guests, &childcare, &note, &mode
+	if r.Status == models.RegWaitlisted {
+		pos, err := waitlistPosition(db, o.ID, r.ID)
+		if err != nil {
+			return err
+		}
+		o.MyWaitlistPosition = &pos
+	}
+	return nil
 }
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
@@ -416,16 +419,20 @@ func toEventJSON(ev *models.Event) eventJSON {
 	return j
 }
 
-func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
-	return a.groupSummaries([]models.Group{*g})[0]
+func (a *App) groupSummary(g *models.Group) (groupSummaryJSON, error) {
+	out, err := a.groupSummaries([]models.Group{*g})
+	if err != nil {
+		return groupSummaryJSON{}, err
+	}
+	return out[0], nil
 }
 
 // groupSummaries is served only after the caller selects visible groups. Each
 // related kind is loaded once, regardless of the number of groups on the page.
-func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
+func (a *App) groupSummaries(groups []models.Group) ([]groupSummaryJSON, error) {
 	out := make([]groupSummaryJSON, 0, len(groups))
 	if len(groups) == 0 {
-		return out
+		return out, nil
 	}
 	ids, leaderIDs := make([]uint, 0, len(groups)), make([]uint, 0, len(groups))
 	for _, g := range groups {
@@ -435,14 +442,18 @@ func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
 		GroupID uint
 		Count   int64
 	}
-	a.DB.Model(&models.Membership{}).Select("memberships.group_id, count(*) AS count").Joins(listedUsers("memberships")).
-		Where("memberships.group_id IN ? AND memberships.status = ?", ids, models.MembershipActive).Group("memberships.group_id").Scan(&counts)
+	if err := a.DB.Model(&models.Membership{}).Select("memberships.group_id, count(*) AS count").Joins(listedUsers("memberships")).
+		Where("memberships.group_id IN ? AND memberships.status = ?", ids, models.MembershipActive).Group("memberships.group_id").Scan(&counts).Error; err != nil {
+		return nil, err
+	}
 	members := make(map[uint]int64, len(counts))
 	for _, row := range counts {
 		members[row.GroupID] = row.Count
 	}
 	var leaders []models.User
-	a.DB.Where("id IN ?", leaderIDs).Find(&leaders)
+	if err := a.DB.Where("id IN ?", leaderIDs).Find(&leaders).Error; err != nil {
+		return nil, err
+	}
 	names := make(map[uint]string, len(leaders))
 	for _, leader := range leaders {
 		names[leader.ID] = leader.PublicName()
@@ -451,10 +462,12 @@ func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
 		GroupID  uint
 		StartsAt time.Time
 	}
-	a.DB.Table("event_occurrences").Select("events.group_id, min(event_occurrences.starts_at) AS starts_at").
+	if err := a.DB.Table("event_occurrences").Select("events.group_id, min(event_occurrences.starts_at) AS starts_at").
 		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
 		Where("events.group_id IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at >= ?", ids, models.OccurrenceScheduled, time.Now().UTC()).
-		Group("events.group_id").Scan(&dates)
+		Group("events.group_id").Scan(&dates).Error; err != nil {
+		return nil, err
+	}
 	next := make(map[uint]*time.Time, len(dates))
 	for _, row := range dates {
 		if !row.StartsAt.IsZero() {
@@ -473,7 +486,7 @@ func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
 			DeletionRequested: g.DeletionRequested, MemberLimit: g.MemberLimit,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -740,7 +753,10 @@ func (a *App) apiListEvents(c *gin.Context) {
 		return
 	}
 	var eventIDs []uint
-	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
+	if err := a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load events")
+		return
+	}
 	listed, hasMore, err := a.occurrencesForEventsAfterErr(eventIDs, from, to, nil, apiUser(c), limit, cursor)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
@@ -1016,7 +1032,9 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		movedByID := map[uint]*models.EventOccurrence{}
 		if len(moved) > 0 {
 			var movedRows []models.EventOccurrence
-			tx.Where("id IN ?", moved).Find(&movedRows)
+			if err := tx.Where("id IN ?", moved).Find(&movedRows).Error; err != nil {
+				return err
+			}
 			for i := range movedRows {
 				movedByID[movedRows[i].ID] = &movedRows[i]
 			}
@@ -1310,13 +1328,6 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	groupLoc := ""
-	if ev.GroupID != nil {
-		var g models.Group
-		if err := a.DB.First(&g, *ev.GroupID).Error; err == nil {
-			groupLoc = g.Location // group-ok: loadManagedEvent, only managers reach here
-		}
-	}
 	var inst occurrenceJSON
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
@@ -1441,6 +1452,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 				return err
 			}
 		}
+		groupLoc := ""
+		if f.group != nil {
+			groupLoc = f.group.Location // group-ok: managers only, re-checked under the lock
+		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
 		inst.Room = a.occurrenceRooms(a.DB, []uint{o.ID})[o.ID]
 		applyVideoReveal(&inst, ev, false, true) // managers see the link
@@ -1468,20 +1483,13 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			inst.ChildcareSpotsLeft = spotsLeftFor(ev.ChildcareCapacity, n)
 		}
 		var mineReg models.Registration
-		if tx.Where("user_id = ? AND occurrence_id = ? AND status <> ?",
-			me.ID, o.ID, models.RegCancelled).First(&mineReg).Error == nil {
-			s := mineReg.Status
-			inst.MyRegistration = &s
-			gc := mineReg.GuestCount
-			inst.MyGuestCount = &gc
-			inst.MyChildcareCount = &mineReg.ChildcareCount
-			inst.MyChildcareAgesNote = &mineReg.ChildcareAgesNote
-			m := attendanceModeOf(mineReg.AttendanceMode)
-			inst.MyAttendanceMode = &m
-			if mineReg.Status == models.RegWaitlisted {
-				if pos, perr := waitlistPosition(tx, o.ID, mineReg.ID); perr == nil {
-					inst.MyWaitlistPosition = &pos
-				}
+		if err := tx.Where("user_id = ? AND occurrence_id = ? AND status <> ?",
+			me.ID, o.ID, models.RegCancelled).Limit(1).Find(&mineReg).Error; err != nil {
+			return err
+		}
+		if mineReg.ID != 0 {
+			if err := inst.setMine(tx, &mineReg); err != nil {
+				return err
 			}
 		}
 		return nil

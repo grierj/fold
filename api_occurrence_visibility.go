@@ -18,17 +18,12 @@ func (vs visibleSet) canSeeDate(viewer *models.User, ev *models.Event, occ *mode
 	if ev == nil {
 		return false
 	}
-	g, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-	if ev.GroupID != nil && g == nil {
+	f := vs.of(ev)
+	if ev.GroupID != nil && f.group == nil {
 		return false
 	}
-	gp := policy.Group{}
-	if g != nil {
-		gp = asGroup(g)
-	}
-	view := viewOf(ev, vs.Hosted[ev.ID])
-	view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
-	return policy.CanSeeEvent(asPerson(viewer), view, gp, rel)
+	f.view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
+	return f.canSee(viewer)
 }
 
 func dateEvent(ev *models.Event, occ *models.EventOccurrence) *models.Event {

@@ -63,7 +63,12 @@ func (a *App) apiListGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, roles)})
+	list, err := a.viewerGroupList(groups, roles)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": list})
 }
 
 // viewerRoles maps each listed group the viewer actively belongs to onto
@@ -96,8 +101,11 @@ func (a *App) viewerRoles(me *models.User, groups []models.Group) (map[uint]stri
 // summary carries the viewer's own role from roles, and the list runs by
 // next meeting, soonest first, then by name, with groups that have no
 // upcoming date last.
-func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) []groupSummaryJSON {
-	out := a.groupSummaries(groups)
+func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) ([]groupSummaryJSON, error) {
+	out, err := a.groupSummaries(groups)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
 		out[i].MyRole = roles[out[i].ID]
 	}
@@ -111,7 +119,18 @@ func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) []gr
 		}
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
-	return out
+	return out, nil
+}
+
+// respondGroup answers with one group's summary, or a 500 when it cannot be
+// built.
+func (a *App) respondGroup(c *gin.Context, status int, g *models.Group) {
+	summary, err := a.groupSummary(g)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load group")
+		return
+	}
+	c.JSON(status, gin.H{"group": summary})
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {
@@ -181,7 +200,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create group")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"group": a.groupSummary(&g)})
+	a.respondGroup(c, http.StatusCreated, &g)
 }
 
 const maxGroupUpcomingOccurrences = 25
@@ -251,7 +270,11 @@ func (a *App) apiGetGroup(c *gin.Context) {
 
 	memberList := []memberJSON{}
 	if policy.CanSeeRoster(p, asGroup(g), rel) {
-		memberList = a.rosterFor(g.ID, apiUser(c), policy.CanManageGroup(asPerson(apiUser(c)), rel))
+		var err error
+		if memberList, err = a.rosterFor(g.ID, me, policy.CanManageGroup(p, rel)); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not load group")
+			return
+		}
 	}
 
 	now := time.Now().UTC()
@@ -266,19 +289,36 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return
 	}
+	summary, err := a.groupSummary(g)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load group")
+		return
+	}
 	c.JSON(http.StatusOK, groupDetailJSON{
-		Group: a.groupSummary(g), Members: memberList, UpcomingEvents: upcoming,
+		Group: summary, Members: memberList, UpcomingEvents: upcoming,
 		Truncated: hasMore, HasMore: hasMore, NextCursor: nextGroupUpcomingCursor(g.ID, upcoming, hasMore),
 		CanManage: policy.CanManageGroup(p, rel), IsMember: rel.Member,
 	})
 }
 
+// respondRoster answers with the group's roster as its viewer may see it.
+func (a *App) respondRoster(c *gin.Context, groupID uint, manager bool) {
+	members, err := a.rosterFor(groupID, apiUser(c), manager)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load members")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
 // rosterFor exposes minor identities and badges only to the group's managers.
-func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []memberJSON {
+func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) ([]memberJSON, error) {
 	var members []models.Membership
-	a.DB.Preload("User").Joins(listedUsers("memberships")).
+	if err := a.DB.Preload("User").Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).
-		Order("memberships.joined_at").Find(&members)
+		Order("memberships.joined_at").Find(&members).Error; err != nil {
+		return nil, err
+	}
 	users := make(map[uint]*models.User, len(members))
 	for i := range members {
 		users[members[i].User.ID] = &members[i].User
@@ -299,7 +339,7 @@ func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []membe
 		}
 		out = append(out, item)
 	}
-	return out
+	return out, nil
 }
 
 func (a *App) apiUpdateGroup(c *gin.Context) {
@@ -514,7 +554,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update group")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(g)})
+	a.respondGroup(c, http.StatusOK, g)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +568,8 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 		return
 	}
 	u := apiUser(c)
+	// A pending or archived group is not there to join: 404 rather than the
+	// invite-only refusal CanJoinGroup would give.
 	if g.Status != models.GroupActive {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
@@ -599,7 +641,7 @@ func (a *App) apiGroupMembers(c *gin.Context) {
 		fail(c, errMembersOnly)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), policy.CanManageGroup(asPerson(apiUser(c)), rel))})
+	a.respondRoster(c, g.ID, policy.CanManageGroup(asPerson(apiUser(c)), rel))
 }
 
 func validGroupStatus(s string) bool {
@@ -698,7 +740,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not change role")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), true)})
+	a.respondRoster(c, g.ID, true)
 }
 
 // errRoleRefused means policy said no once the group row was locked.
@@ -933,9 +975,13 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 	}
 	u := apiUser(c)
 	var others int64
-	a.DB.Model(&models.Membership{}).Joins(listedUsers("memberships")).
+	if err := a.DB.Model(&models.Membership{}).Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.user_id <> ?", g.ID, models.MembershipActive, u.ID).
-		Count(&others)
+		Count(&others).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not request deletion")
+		return
+	}
+	// A non-leader's answer is a 403 of its own, not the "group has members" 409.
 	if !rel.Leader {
 		jsonError(c, http.StatusForbidden, "only a group leader can request deletion")
 		return
@@ -957,7 +1003,7 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		return
 	}
 	g.DeletionRequested = true
-	c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(g)})
+	a.respondGroup(c, http.StatusOK, g)
 }
 
 // apiCancelDeletion withdraws a leader's deletion request.
@@ -1033,8 +1079,11 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group, by *uint) error 
 	if err != nil {
 		return err
 	}
+	// The group is gone; a cover that will not delete is only an orphaned file.
 	if key, ok := uploadKeyFromURL(imageURL); ok {
-		_ = a.Uploads.Delete(ctx, key)
+		if err := a.Uploads.Delete(ctx, key); err != nil {
+			log.Printf("delete cover of group %d: %v", g.ID, err)
+		}
 	}
 	return nil
 }

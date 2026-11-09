@@ -366,12 +366,17 @@ type calendarFeedJSON struct {
 // errCalendarFeedGone means the person's link was not there under the lock.
 var errCalendarFeedGone = errors.New("calendar feed not found")
 
-func (a *App) calendarTokenFor(userID uint) *models.CalendarToken {
+// calendarTokenFor is the person's feed link, nil when they have none. A
+// failed read is an error, never "no link".
+func (a *App) calendarTokenFor(userID uint) (*models.CalendarToken, error) {
 	var tok models.CalendarToken
 	if err := a.DB.Where("user_id = ?", userID).First(&tok).Error; err != nil {
-		return nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return &tok
+	return &tok, nil
 }
 
 func calendarFeedOf(tok *models.CalendarToken) calendarFeedJSON {
@@ -390,7 +395,12 @@ func feedScopeOK(c *gin.Context, scope string) bool {
 }
 
 func (a *App) apiGetMyCalendarFeed(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(a.calendarTokenFor(apiUser(c).ID))})
+	tok, err := a.calendarTokenFor(apiUser(c).ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar link")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(tok)})
 }
 
 func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
@@ -403,7 +413,12 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 		return
 	}
 	scope := models.CalendarFeedMine
-	if existing := a.calendarTokenFor(me.ID); existing != nil {
+	existing, err := a.calendarTokenFor(me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not create the calendar link")
+		return
+	}
+	if existing != nil {
 		scope = existing.Scope
 	}
 	if body.Scope != nil {
@@ -464,13 +479,17 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 	if !feedScopeOK(c, scope) {
 		return
 	}
-	tok := a.calendarTokenFor(me.ID)
+	tok, err := a.calendarTokenFor(me.ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not change the calendar link")
+		return
+	}
 	if tok == nil {
 		jsonError(c, http.StatusNotFound, "calendar feed not found")
 		return
 	}
 	var current models.CalendarToken
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// Gate and person's lock first, as in create. The link is then read
 		// again under the lock for its old scope: it may be gone, since
 		// revoking a link takes no gate.

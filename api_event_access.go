@@ -45,7 +45,7 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 	inst.HostedBy = siteName
 }
 
-func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {
+func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) (eventJSON, error) {
 	j := toEventJSON(ev)
 	if f.canManage(me) {
 		applyEventVideoReveal(&j, ev, false, true)
@@ -59,14 +59,30 @@ func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) even
 		j.GroupVisibility = shown.Visibility
 	}
 	if policy.IsAdmin(asPerson(me)) && ev.GroupID == nil {
-		j.Hosts = a.eventHosts(ev.ID)
+		hosts, err := a.eventHosts(ev.ID)
+		if err != nil {
+			return j, err
+		}
+		j.Hosts = hosts
 	}
-	return j
+	return j, nil
 }
 
-func (a *App) eventHosts(eventID uint) []hostJSON {
+// respondEvent answers with the event as its viewer may see it.
+func (a *App) respondEvent(c *gin.Context, status int, ev *models.Event, me *models.User, f eventFacts) {
+	j, err := a.presentEvent(ev, me, f)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(status, gin.H{"event": j})
+}
+
+func (a *App) eventHosts(eventID uint) ([]hostJSON, error) {
 	var rows []models.EventHost
-	a.DB.Preload("User").Where("event_id = ?", eventID).Order("id").Find(&rows)
+	if err := a.DB.Preload("User").Where("event_id = ?", eventID).Order("id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
 	out := make([]hostJSON, 0, len(rows))
 	for _, h := range rows {
 		if h.User.ID == 0 {
@@ -74,7 +90,17 @@ func (a *App) eventHosts(eventID uint) []hostJSON {
 		}
 		out = append(out, hostJSON{UserID: h.UserID, Name: h.User.PublicName(), Email: h.User.Email})
 	}
-	return out
+	return out, nil
+}
+
+// respondHosts answers with a church-wide event's hosts.
+func (a *App) respondHosts(c *gin.Context, eventID uint) {
+	hosts, err := a.eventHosts(eventID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"hosts": hosts})
 }
 
 func (a *App) eventPermissions(me *models.User, f eventFacts) (manage, setVis bool) {
@@ -113,14 +139,14 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 // openEventIDs is church-wide events the viewer can see, plus group events
 // they can see whose group they cannot. Admins already see every group, so
 // an opened group event stays on that group's page for them.
-func (a *App) openEventIDs(u *models.User) []uint {
+func (a *App) openEventIDs(u *models.User) ([]uint, error) {
 	now := time.Now().UTC()
 	from, to := upcomingWindow(now)
 	// Only events with a date in the listed window can add anything (#75).
 	vs, err := a.dateCandidates(u, a.DB.Where(
 		"id IN (SELECT event_id FROM event_occurrences WHERE original_date >= ? AND original_date <= ?)", from, to))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	p := asPerson(u)
 	var out []uint
@@ -131,14 +157,18 @@ func (a *App) openEventIDs(u *models.User) []uint {
 			out = append(out, ev.ID)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (a *App) apiListOpenEvents(c *gin.Context) {
 	me := apiUser(c)
 	now := time.Now().UTC()
 	from, to := upcomingWindow(now)
-	listed, err := a.occurrencesForEventsErr(a.openEventIDs(me), from, to, &now, me)
+	ids, err := a.openEventIDs(me)
+	var listed []occurrenceJSON
+	if err == nil {
+		listed, err = a.occurrencesForEventsErr(ids, from, to, &now, me)
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
 		return
@@ -159,8 +189,13 @@ func (a *App) apiGetEvent(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
 		return
 	}
+	event, err := a.presentEvent(ev, apiUser(c), f)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"event":            a.presentEvent(ev, apiUser(c), f),
+		"event":            event,
 		"occurrences":      listed,
 		"canManage":        manage,
 		"canSetVisibility": setVis,
@@ -290,7 +325,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		return
 	}
 	// A new church-wide event has no group, and its creator is a host.
-	c.JSON(http.StatusCreated, gin.H{"event": a.presentEvent(&ev, creator, eventFacts{view: viewOf(&ev, true)})})
+	a.respondEvent(c, http.StatusCreated, &ev, creator, eventFacts{view: viewOf(&ev, true)})
 }
 
 // apiSetEventVisibility sets an event's own visibility (DEC-48). On a group
@@ -330,7 +365,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	}
 	opened := f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
 	if ev.Visibility == vis && ev.LeaderOpened == opened && !body.ResetOverrides {
-		c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
+		a.respondEvent(c, http.StatusOK, ev, me, f)
 		return
 	}
 	action := audit.VisibilityChanged
@@ -425,7 +460,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		return
 	}
 	f.view.Visibility = vis
-	c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
+	a.respondEvent(c, http.StatusOK, ev, me, f)
 }
 
 func (a *App) loadChurchEvent(c *gin.Context) (*models.Event, bool) {
@@ -501,7 +536,7 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"hosts": a.eventHosts(ev.ID)})
+	a.respondHosts(c, ev.ID)
 }
 
 // errEventGone: the church-wide event was deleted while the request waited.
@@ -561,7 +596,7 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"hosts": a.eventHosts(ev.ID)})
+	a.respondHosts(c, ev.ID)
 }
 
 // errHostGone and errLastHost stop the remove transaction after the handler

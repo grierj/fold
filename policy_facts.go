@@ -96,6 +96,23 @@ func groupRels(db *gorm.DB, userID uint, groupIDs []uint) (map[uint]policy.Rel, 
 	return out, nil
 }
 
+// userRels is groupRels turned around: each of the users' membership in one
+// group (any status). A user with no row is absent from the map.
+func userRels(db *gorm.DB, groupID uint, userIDs []uint) (map[uint]policy.Rel, error) {
+	out := map[uint]policy.Rel{}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	var ms []models.Membership
+	if err := db.Where("group_id = ? AND user_id IN ?", groupID, userIDs).Find(&ms).Error; err != nil {
+		return nil, err
+	}
+	for _, m := range ms {
+		out[m.UserID] = membershipRel(m)
+	}
+	return out, nil
+}
+
 // groupRel is groupRels for one group.
 func groupRel(db *gorm.DB, userID, groupID uint) (policy.Rel, error) {
 	rels, err := groupRels(db, userID, []uint{groupID})
