@@ -8,17 +8,15 @@ import (
 	"fmt"
 	"go/ast"
 	"go/format"
-	"go/parser"
 	"go/token"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"fold/internal/guardkit"
 
 	"fold/internal/audit"
 	"fold/models"
@@ -1054,32 +1052,18 @@ func auditCensusEntry(fset *token.FileSet, fn *ast.FuncDecl, lit *ast.CompositeL
 
 func readAuditSourceCensus(sources map[string][]byte) (auditSourceCensus, error) {
 	out := auditSourceCensus{Writers: map[string]string{}, Actions: map[string]bool{}}
-	names := make([]string, 0, len(sources))
-	for name := range sources {
-		names = append(names, name)
+	text := guardkit.Sources{}
+	for name, src := range sources {
+		text[name] = string(src)
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		src := sources[name]
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			return out, err
-		}
-		aliases := map[string]bool{}
-		for _, im := range file.Imports {
-			path, err := strconv.Unquote(im.Path.Value)
-			if err != nil {
-				return out, err
-			}
-			if path == "fold/internal/audit" {
-				alias := "audit"
-				if im.Name != nil {
-					alias = im.Name.Name
-				}
-				aliases[alias] = true
-			}
-		}
+	parsed := text.Parse(0)
+	if len(parsed.Problems) > 0 {
+		return out, errors.New(strings.Join(parsed.Problems, "; "))
+	}
+	fset := parsed.Fset
+	for _, pf := range parsed.Files {
+		name, file := pf.Path, pf.AST
+		aliases := guardkit.ImportNames(file, "fold/internal/audit")
 		// The registry covers both named constants and the one local action literal.
 		if name == "internal/audit/audit.go" {
 			for _, decl := range file.Decls {
@@ -1181,28 +1165,10 @@ func readAuditSourceCensus(sources map[string][]byte) (auditSourceCensus, error)
 func auditProductionSources(t *testing.T) map[string][]byte {
 	t.Helper()
 	sources := map[string][]byte{}
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for path, src := range guardkit.Production(t) {
+		if path != "account_erasure_audit.go" {
+			sources[path] = []byte(src)
 		}
-		if d.IsDir() {
-			if path != "." && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "vendor" || d.Name() == "testdata") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || path == "account_erasure_audit.go" {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		sources[filepath.ToSlash(path)] = src
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	return sources
 }

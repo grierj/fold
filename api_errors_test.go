@@ -3,36 +3,24 @@ package main
 import (
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // goSources is every non-test Go file's text, for the checks below.
 func goSources(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder
-	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	production := guardkit.Production(t)
+	for _, path := range production.Names() {
+		if path != "api_errors.go" {
+			b.WriteString(production[path])
 		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git" || d.Name() == "web") {
-			return filepath.SkipDir
-		}
-		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") && p != "api_errors.go" {
-			src, err := os.ReadFile(p)
-			if err != nil {
-				return err
-			}
-			b.Write(src)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	return b.String()
 }
