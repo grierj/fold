@@ -119,6 +119,17 @@ func fenceProblems(sources map[string]string) []string {
 				if k, ok := x.Key.(*ast.Ident); ok && k.Name == "Seal" && !inWrapper && fenceInContactChange(stack) {
 					bad = append(bad, fmt.Sprintf("%s:%d: a contactChange literal sets Seal outside %s", pf.Path, pos.Line, fenceWrapper))
 				}
+			case *ast.CompositeLit:
+				// Every contactChange literal is keyed, so a positional element
+				// cannot set Seal without naming it.
+				if fenceIsContactChangeLit(x, stack[:len(stack)-1]) {
+					for _, el := range x.Elts {
+						if _, keyed := el.(*ast.KeyValueExpr); !keyed {
+							bad = append(bad, fmt.Sprintf("%s:%d: a contactChange literal has positional elements; contactChange literals must be keyed", pf.Path, pos.Line))
+							break
+						}
+					}
+				}
 			}
 			return true
 		})
@@ -202,8 +213,47 @@ func fenceInContactChange(stack []ast.Node) bool {
 	if !ok {
 		return false
 	}
-	t, ok := guardkit.Unparen(cl.Type).(*ast.Ident)
-	return ok && t.Name == "contactChange"
+	return fenceIsContactChangeLit(cl, stack[:len(stack)-2])
+}
+
+// fenceIsContactChange reports whether t names contactChange or a pointer to it.
+func fenceIsContactChange(t ast.Expr) bool {
+	t = guardkit.Unparen(t)
+	if star, ok := t.(*ast.StarExpr); ok {
+		t = guardkit.Unparen(star.X)
+	}
+	id, ok := t.(*ast.Ident)
+	return ok && id.Name == "contactChange"
+}
+
+// fenceIsContactChangeLit reports whether cl builds a contactChange: by its own
+// type, or with the type elided inside a slice, array or map literal of them,
+// as an element or a map value. parents are cl's ancestors, outermost first.
+func fenceIsContactChangeLit(cl *ast.CompositeLit, parents []ast.Node) bool {
+	if cl.Type != nil {
+		return fenceIsContactChange(cl.Type)
+	}
+	if len(parents) == 0 {
+		return false
+	}
+	parent := parents[len(parents)-1]
+	if kv, ok := parent.(*ast.KeyValueExpr); ok && kv.Value == ast.Expr(cl) {
+		if len(parents) < 2 {
+			return false
+		}
+		parent = parents[len(parents)-2]
+	}
+	outer, ok := parent.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	switch t := guardkit.Unparen(outer.Type).(type) {
+	case *ast.ArrayType:
+		return fenceIsContactChange(t.Elt)
+	case *ast.MapType:
+		return fenceIsContactChange(t.Value)
+	}
+	return false
 }
 
 // fenceWrapperProblems checks the wrapper's one contactMutationCtx call.
@@ -508,6 +558,12 @@ func TestFencedTransactionsGuardCatchesBypasses(t *testing.T) {
 		{"a ticket step as a method value", route("\t_ = err\n}", "\tf := a.abandonRestoreTicket\n\t_ = f\n\t_ = err\n}")},
 		{"a seal set outside the wrapper", route("contactChange{UserID: 1}", "contactChange{UserID: 1, Seal: seal}")},
 		{"a seal assigned outside the wrapper", route("\t_ = err\n}", "\tchange.Seal = seal\n\t_ = err\n}")},
+		{"a seal set by a positional literal", route("contactChange{UserID: 1}", "contactChange{1, 0, 0, seal}")},
+		{"a positional literal behind a pointer", route("\t_ = err\n}", "\t_ = &contactChange{1, 0, 0, nil}\n\t_ = err\n}")},
+		{"a positional literal with its type elided", route("\t_ = err\n}", "\t_ = []contactChange{{1, 0, 0, seal}}\n\t_ = err\n}")},
+		{"a positional literal as an elided map value", route("\t_ = err\n}", "\t_ = map[string]contactChange{\"a\": {1, 0, 0, seal}}\n\t_ = err\n}")},
+		{"a keyed Seal with its type elided", route("\t_ = err\n}", "\t_ = []*contactChange{{UserID: 1, Seal: seal}}\n\t_ = err\n}")},
+		{"a positional literal in the wrapper", wrap("\tvar seal *contactSeal\n", "\tvar seal *contactSeal\n\t_ = contactChange{0, 0, 0, nil}\n")},
 		{"a fenced route calling contactMutationCtx", route("a.fencedContactMutation(ctx, contactChange{UserID: 1}, ", "a.contactMutationCtx(ctx, contactChange{UserID: 1}, ")},
 		{"a fenced route that also calls contactMutation", route("\t_ = err\n}", "\t_ = a.contactMutation(contactChange{}, nil)\n\t_ = err\n}")},
 		{"listed function gone", fenceSources(fenceWrapperBase, strings.ReplaceAll(fenceRoutesBase, "apiAdminSettleOperationAttempt", "renamed"))},
