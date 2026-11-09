@@ -1593,9 +1593,20 @@ func TestRunningAttemptCrossesTheSubmitWindow(t *testing.T) {
 	})
 	s.advance(2 * time.Minute) // 11m59s since the mint: the submit window has passed
 	settled := make(chan *httptest.ResponseRecorder, 1)
+	// settleBeforeTx runs after the middleware and just before the handler looks
+	// the attempt up and waits on it, with nothing but memory in between, so once
+	// it has run every later statement would be the wait's own.
+	atHandler := make(chan struct{})
+	s.app.settleBeforeTx = func() { close(atHandler) }
 	go func() { settled <- s.settleAs(c2, id, a.ID) }()
-	time.Sleep(400 * time.Millisecond) // the request has passed the middleware and is waiting
+	select {
+	case <-atHandler:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the settle request never reached its handler")
+	}
 	mark := len(s.rig.proxy.Events())
+	// A quiet window: that settle sends nothing while it waits can only be seen by
+	// letting time pass.
 	time.Sleep(600 * time.Millisecond)
 	if quiet := s.rig.proxy.Events()[mark:]; len(quiet) != 0 {
 		t.Fatalf("settle sent %d statements while waiting for the running attempt: %+v", len(quiet), quiet)

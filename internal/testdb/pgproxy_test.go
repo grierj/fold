@@ -315,6 +315,11 @@ func TestProxyRollbackModes(t *testing.T) {
 // the driver cancels and closes the connection the way it does for a context
 // that ended.
 func (r *proxyRig) sleeping(seconds string, within time.Duration) (uint32, <-chan error) {
+	// Open the pooled connection first, so the short deadline covers the
+	// statement and not a dial on a busy machine.
+	if err := r.via.Exec("SELECT 1").Error; err != nil {
+		r.t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), within)
 	r.t.Cleanup(cancel)
 	ch := make(chan error, 1)
@@ -354,7 +359,10 @@ func TestProxyCancelModes(t *testing.T) {
 		r.proxy.Arm(Faults{Match: "pg_sleep", Cancel: CancelDrop})
 		pid, ch := r.sleeping("1.5", 300*time.Millisecond)
 		r.awaitExpiry(ch)
-		time.Sleep(300 * time.Millisecond)
+		// The proxy logs the dropped cancel before the statement can end (it
+		// still has about a second of pg_sleep left), so the backend must be
+		// alive when that event is seen.
+		r.waitFor("the cancel to be dropped", 5*time.Second, func() bool { return len(r.proxy.Find(KindCancel, ActionDropped)) == 1 })
 		if !r.backendExists(pid) {
 			t.Fatal("the backend ended although the cancel was dropped")
 		}
@@ -372,7 +380,7 @@ func TestProxyCancelModes(t *testing.T) {
 		r.proxy.Arm(Faults{Match: "pg_sleep", Cancel: CancelHold})
 		pid, ch := r.sleeping("30", 300*time.Millisecond)
 		r.awaitExpiry(ch)
-		time.Sleep(300 * time.Millisecond)
+		r.waitFor("the cancel to be held", 5*time.Second, func() bool { return len(r.proxy.Find(KindCancel, ActionHeld)) == 1 })
 		if !r.backendExists(pid) {
 			t.Fatal("the backend ended while the cancel was held")
 		}
@@ -407,8 +415,10 @@ func TestProxyCloseModes(t *testing.T) {
 			r.direct.Raw("SELECT coalesce(state, '') FROM pg_stat_activity WHERE pid = ?", pid).Scan(&state)
 			return state == "idle"
 		})
+		// Both withheld closes are logged before anything could be forwarded, so
+		// once the proxy has recorded them the checks below are not racing it.
 		r.waitFor("the Terminate to be held", 5*time.Second, func() bool { return len(r.proxy.Find(KindTerminate, ActionHeld)) == 1 })
-		time.Sleep(300 * time.Millisecond)
+		r.waitFor("the FIN to be held", 5*time.Second, func() bool { return len(r.proxy.Find(KindFIN, ActionHeld)) == 1 })
 		if !r.backendExists(pid) {
 			t.Fatal("the backend ended although Terminate and FIN were withheld")
 		}
@@ -420,6 +430,9 @@ func TestProxyCloseModes(t *testing.T) {
 		}
 		r.proxy.ReleaseClose()
 		r.waitFor("the backend to end after the release", 5*time.Second, func() bool { return !r.backendExists(pid) })
+		// The proxy writes Terminate and only then logs the FIN, and the
+		// backend can end in between: wait for the event itself.
+		r.waitFor("the FIN to be forwarded", 5*time.Second, func() bool { return len(r.proxy.Find(KindFIN, ActionForwarded)) == 1 })
 		if fwd := r.proxy.Find(KindTerminate, ActionForwarded); len(fwd) != 1 {
 			t.Errorf("forwarded Terminates after the release = %d, want 1", len(fwd))
 		}
