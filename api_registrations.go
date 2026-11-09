@@ -63,8 +63,6 @@ type capacityEdits struct {
 	reminderSet     bool
 }
 
-// parseCapacityEdits parses the M1.5 capacity fields; the error is the 400 to
-// answer with.
 func parseCapacityEdits(body eventBody) (capacityEdits, error) {
 	var ed capacityEdits
 	var err error
@@ -89,7 +87,6 @@ func parseCapacityEdits(body eventBody) (capacityEdits, error) {
 	return ed, nil
 }
 
-// intPtrEqual reports whether two optional ints hold the same value.
 func intPtrEqual(a, b *int) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -153,7 +150,6 @@ func eventRunnerIDs(tx *gorm.DB, ev *models.Event) ([]uint, error) {
 	return ids, err
 }
 
-// eventGroupIDs is the event's group as the list loadNoticeFacts takes.
 func eventGroupIDs(ev *models.Event) []uint {
 	if ev.GroupID == nil {
 		return nil
@@ -210,7 +206,6 @@ func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	return vars, link, nil
 }
 
-// addPersonVar names a household registration's person in the notice.
 func addPersonVar(tx *gorm.DB, vars *notify.Vars, reg models.Registration) error {
 	if reg.HouseholdPersonID == nil {
 		return nil
@@ -495,12 +490,6 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Member registration (PUT /api/v1/events/:id/registrations), rewritten on
-// the locked path (M1.5).
-// ---------------------------------------------------------------------------
-
-// registrationChange is prepared before the batch writes anything.
 type registrationChange struct {
 	old         models.Registration
 	next        models.Registration
@@ -652,7 +641,6 @@ const (
 	metaAttendanceMode = "attendanceMode"
 )
 
-// droppedRegistrationMeta is registrationMeta as the restore's recovery reads it.
 type droppedRegistrationMeta struct {
 	RegistrationID uint   `json:"registrationId"`
 	PersonID       *uint  `json:"personId"`
@@ -733,7 +721,6 @@ func (e householdRegistrationError) apiAnswer() *apiError {
 	return base.with(gin.H{"personId": e.personID})
 }
 
-// householdRegistrationRefusals are the answers for the codes policy returns.
 var householdRegistrationRefusals = map[string]*apiError{
 	"household_link_pending":                    errHouseholdLinkPending,
 	"household_link_unconfirmed":                errHouseholdLinkUnconfirmed,
@@ -796,8 +783,8 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		seen[answer.PersonID] = true
 	}
-	// Household facts are read only when the answer names people, so a
-	// solo RSVP costs what it did before slice 2 (Whittler, PR 110).
+	// Household facts are read only when the answer names people, so a solo
+	// RSVP pays for none.
 	var acct models.HouseholdAccount
 	if len(body.People) > 0 {
 		var found bool
@@ -1103,12 +1090,6 @@ func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool 
 	}
 	return policy.CanRegisterEvent(asPerson(u), f.view, asGroup(f.group), f.rel)
 }
-
-// ---------------------------------------------------------------------------
-// Leader and host actions (DEC-20, DEC-30, M1.5). Every action is gated by
-// policy.CanManageEvent, runs on the locked path, and writes its audit row
-// in the same transaction as the change and its notification.
-// ---------------------------------------------------------------------------
 
 func (a *App) apiRemoveRegistration(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
@@ -1557,10 +1538,6 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// ---------------------------------------------------------------------------
-// Disabled and re-enabled accounts (DEC-38, DEC-47, M1.5).
-// ---------------------------------------------------------------------------
-
 // promoteOnDisable frees every seat a disabled account held on future
 // scheduled occurrences and promotes into them. The rows stay; they are
 // hidden and uncounted while the account is disabled.
@@ -1783,7 +1760,6 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 			r.Source = models.RegSourceAdmin
 		}
 		r.Status = models.RegGoing
-		// A manager's add carries no earlier link.
 		r.ManageTokenHash = ""
 		if mode != "" {
 			r.AttendanceMode = mode
@@ -1845,8 +1821,6 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// managerRegistrationOptions retains the original PATCH resolution for ordinary
-// manager adds. A request finalizer must supply its persisted final values.
 type managerRegistrationOptions struct {
 	approved     *verifiedOccurrenceAdd
 	mode         string

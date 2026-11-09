@@ -6,21 +6,19 @@ package policy
 
 import "time"
 
-// Group visibility values (C3). The same enum will be used on events.
+// Visibility values (C3), shared by groups and events.
 const (
 	Public     = "public"      // anyone, including signed-out visitors
 	Private    = "private"     // signed-in people
 	InviteOnly = "invite_only" // members (and admins) only; 404 to everyone else
 )
 
-// Group statuses.
 const (
 	GroupPending  = "pending"
 	GroupActive   = "active"
 	GroupArchived = "archived"
 )
 
-// ValidVisibility reports whether v is one of the three values.
 func ValidVisibility(v string) bool {
 	return v == Public || v == Private || v == InviteOnly
 }
@@ -37,13 +35,11 @@ type Person struct {
 	Inactive bool
 }
 
-// Group is what policy needs to know about a group.
 type Group struct {
 	Status     string
 	Visibility string
 }
 
-// Rel is a person's active membership in one group.
 type Rel struct {
 	Member bool // any active membership, leaders included
 	Leader bool // active membership with role=leader
@@ -191,7 +187,6 @@ func CanRequestDeletion(p *Person, r Rel, otherMembers int64) bool {
 	return p != nil && r.Leader && otherMembers == 0
 }
 
-// CanCancelDeletion: the group's leaders and admins.
 func CanCancelDeletion(p *Person, r Rel) bool { return CanManageGroup(p, r) }
 
 // EventView is what policy needs to know about an event. Host is true only
@@ -337,7 +332,6 @@ func CanRegisterGuest(ev EventView, g Group) bool {
 	return CanSeeEvent(nil, ev, g, Rel{})
 }
 
-// Video reveal settings (5.8, M1.8).
 const (
 	VideoRevealAlways         = "always"
 	VideoRevealRegisteredOnly = "registered_only"
@@ -384,8 +378,8 @@ func CanSeeVideoLinkInFeed(reveal, status string, inGroup, isManager bool) bool 
 	return false
 }
 
-// IsAdmin gates the admin area: approvals, users and roles, settings, and
-// (later) the audit log.
+// IsAdmin gates the admin area: approvals, users and roles, settings and
+// the audit log.
 func IsAdmin(p *Person) bool { return p != nil && p.Admin }
 
 // Contact is the person whose email or phone someone wants to see.
@@ -505,9 +499,7 @@ func CanInvite(p *Person, groupNamed, leadsTarget, leadsAnywhere bool) bool {
 	return leadsAnywhere
 }
 
-// ---------------------------------------------------------------------------
 // Households (section 6, "Accounts, ages, households"; DEC-8, DEC-32)
-// ---------------------------------------------------------------------------
 
 // Household person kinds (5.3) and guardian link statuses (DEC-32).
 const (
@@ -533,7 +525,7 @@ type HouseholdRel struct {
 	// A pending link is not guardianship yet (DEC-32).
 	Guardian bool
 	// EventManager: the viewer leads or hosts an event this person is
-	// registered for (registrations arrive in M1.9 slice 2).
+	// registered for.
 	EventManager bool
 }
 
@@ -710,7 +702,6 @@ func CanChangeTeenConsent(p *Person, confirmedGuardian bool) bool {
 	return p != nil && !p.Teen && (p.Admin || confirmedGuardian)
 }
 
-// HouseholdRegistrationProblem validates saved age and person-link facts.
 func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	if person.Deleted || person.Converted {
 		return "household_registration_holder_unavailable"
@@ -727,7 +718,7 @@ func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	if person.Kind != KindChild && person.Kind != KindTeen {
 		return "household_age_mismatch"
 	}
-	// PLAN 2.x bands: child under 13, teen 13 to 17 (Warden, PR 110 N1).
+	// PLAN 2.x bands: child under 13, teen 13 to 17.
 	// Nobody 18 or older is a child or teen, and a teen can't be under 13.
 	// A child who turned 13 stays registrable until the guardian updates
 	// the kind; the accounts.age_rollover job flags them (judgment call 39).
@@ -785,7 +776,6 @@ func CanSeeMinorRosterIdentity(p *Person, manager bool) bool {
 	return p != nil && (p.Admin || manager)
 }
 
-// CanUploadAvatar: teens have no public avatar (DEC-8).
 func CanUploadAvatar(p *Person) bool { return p != nil && !p.Teen }
 
 // EffectiveVisibility resolves only the date's ordinary visibility. It never
@@ -826,8 +816,6 @@ func CanReviewErasureReasons(actor ContactAccount, target *Person, activeAdmins 
 	return actor.Active && actor.adult() && IsAdmin(actor.Person) && CanDemoteOrDelete(actor.Person, target, activeAdmins)
 }
 
-// ErasureReasonFacts are the facts that put one (request, party) reason item in
-// a state.
 type ErasureReasonFacts struct {
 	// PartyDeleted: the party's account is soft deleted.
 	PartyDeleted bool
@@ -837,7 +825,6 @@ type ErasureReasonFacts struct {
 	ReasonBlank bool
 }
 
-// The three states of a reason item.
 const (
 	// ReasonItemLive: the party still has an account, so the deletion is the
 	// moment to decide.

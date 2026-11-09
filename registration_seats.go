@@ -33,14 +33,10 @@ func attendanceModeOf(mode string) string {
 	return models.AttendanceInPerson
 }
 
-// remoteUnavailable is whether mode asks for remote attendance the event does
-// not offer.
 func remoteUnavailable(ev *models.Event, mode string) bool {
 	return attendanceModeOf(mode) == models.AttendanceRemote && !ev.RemoteAvailable
 }
 
-// capacityForMode is the effective cap of one pool on one date: the
-// per-date override wins, nil is unlimited.
 func capacityForMode(ev *models.Event, o *models.EventOccurrence, mode string) *int {
 	if attendanceModeOf(mode) == models.AttendanceRemote {
 		return events.EffectiveCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride)
@@ -93,8 +89,6 @@ func seatsUsedMapForMode(db *gorm.DB, occurrenceIDs []uint, mode string) (map[ui
 	return out, nil
 }
 
-// spotsLeftFor is capacity minus used, never below 0; nil when the pool
-// is unlimited.
 func spotsLeftFor(cap *int, used int) *int {
 	if cap == nil {
 		return nil
@@ -242,24 +236,20 @@ func loadSeatTally(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence) (*s
 	return t, nil
 }
 
-// entry is r as a waitlist entry.
 func (t *seatTally) entry(r models.Registration) events.WaitEntry {
 	return events.WaitEntry{ID: r.ID, Seats: partySeats(r), Mode: attendanceModeOf(r.AttendanceMode), Childcare: effectiveChildcare(t.ev, r)}
 }
 
-// pick is the waitlist entries that fit, in line order.
 func (t *seatTally) pick(line []events.WaitEntry) []events.WaitEntry {
 	return events.PickPromotionsByPool(line, t.pools, t.care)
 }
 
-// fits is whether a going r fits what is left.
 func (t *seatTally) fits(r models.Registration) bool {
 	e := t.entry(r)
 	p := t.pools[e.Mode]
 	return events.Fits(p.Capacity, p.Used, e.Seats) && (e.Childcare == 0 || events.Fits(t.care.Capacity, t.care.Used, e.Childcare))
 }
 
-// take counts r's party as seated.
 func (t *seatTally) take(r models.Registration) {
 	e := t.entry(r)
 	p := t.pools[e.Mode]

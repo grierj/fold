@@ -37,7 +37,6 @@ var (
 	errAccessHistoryCorrupt = errors.New("occurrence access history is corrupt")
 )
 
-// accessTargetType is the audit target of the three access actions.
 const accessTargetType = "registration"
 
 // registrationAccessLiveSQL is models.Registration.AccessLive as a condition on
@@ -78,7 +77,6 @@ func accessScopeOf(ev *models.Event) accessScope {
 	return accessScope{EventID: ev.ID, Organizer: policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}}
 }
 
-// groupAccessScope is the scope of a date of one of a group's events.
 func groupAccessScope(eventID, groupID uint) accessScope {
 	return accessScope{EventID: eventID, Organizer: policy.OrganizerScope{Type: policy.ContactGroup, ID: groupID}}
 }
@@ -192,7 +190,6 @@ func optionalUint(v *uint) any {
 	return *v
 }
 
-// accessGrant is the provenance of one new grant.
 type accessGrant struct {
 	Origin                string
 	IssuerID              *uint
@@ -268,7 +265,6 @@ func endAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason 
 	return true, nil
 }
 
-// endRegistrationAccess ends a live grant and tells the person it ended.
 func endRegistrationAccess(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
 	ended, err := endAccess(tx, row, scope, reason, actor, now, ip)
 	if err != nil || !ended {

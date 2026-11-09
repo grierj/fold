@@ -18,11 +18,8 @@ import (
 // HorizonMonths is how far ahead occurrences are stored (5.3, 5.5).
 const HorizonMonths = 18
 
-// WallLayout is a local clock time with no offset: 2006-01-02T15:04.
 const WallLayout = "2006-01-02T15:04"
 
-// MaxDurationMinutes is seven days. Longer than a retreat, shorter than a
-// series.
 const MaxDurationMinutes = 7 * 24 * 60
 
 // MaxOccurrences is the most dates a series may have in the two years before
@@ -44,13 +41,10 @@ var ErrTooManyDates = errors.New("that repeat rule makes too many dates")
 // MINUTELY or SECONDLY).
 var ErrTooFrequent = errors.New("that repeat rule repeats more than once a day")
 
-// ErrBadStart means the start is not a YYYY-MM-DDTHH:MM wall clock.
 var ErrBadStart = errors.New("startsLocal must be YYYY-MM-DDTHH:MM")
 
-// ErrBadDuration means the duration is outside 1 minute to 7 days.
 var ErrBadDuration = errors.New("duration must be between 1 minute and 7 days")
 
-// Spec is the series rule. StartsLocal is a wall clock in TZID.
 type Spec struct {
 	StartsLocal     string
 	DurationMinutes int
@@ -59,7 +53,6 @@ type Spec struct {
 	Until           string // YYYY-MM-DD inclusive, or empty
 }
 
-// When is one generated occurrence.
 type When struct {
 	OriginalDate string
 	StartsAt     time.Time // UTC
@@ -96,13 +89,10 @@ func LoadZone(tzid string) (*time.Location, error) {
 	return loc, nil
 }
 
-// FormatWall renders t in loc with no offset.
 func FormatWall(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format(WallLayout)
 }
 
-// ValidDuration reports whether minutes is a length an event can have: at
-// least one minute and at most MaxDurationMinutes.
 func ValidDuration(minutes int) bool {
 	return minutes >= 1 && minutes <= MaxDurationMinutes
 }

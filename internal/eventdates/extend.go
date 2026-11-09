@@ -21,7 +21,6 @@ import (
 // It is not the migration lock, so a migrate and an extend can overlap.
 const LockID = 731002511
 
-// insertBatch keeps one insert under the Postgres parameter limit.
 const insertBatch = 500
 
 // AfterEnsure runs in the transaction that added an event's new dates
@@ -67,7 +66,6 @@ func Extend(db *gorm.DB, now time.Time, after AfterEnsure) error {
 	return errors.Join(errs...)
 }
 
-// Ensure generates occurrences for one event through the horizon.
 func Ensure(db *gorm.DB, ev *models.Event, now time.Time) error {
 	_, err := ensure(db, ev, now)
 	return err

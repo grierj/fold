@@ -58,7 +58,6 @@ func (v visibilityImpactJSON) empty() bool {
 	return len(v.Tightened) == 0 && len(v.LeaderOpened) == 0
 }
 
-// errNeedDecision: a leader-opened event has no keep/tighten decision.
 var errNeedDecision = errors.New("leader-opened events need a decision")
 
 // affectedEvents lists g's events more open than newVis, split into the
@@ -294,8 +293,6 @@ func (a *App) applyGroupTightening(tx *gorm.DB, actor *models.User, ip string, g
 	return impact, nil
 }
 
-// keptOpenReason is the audit and notice reason for a leader-opened event the
-// leader chose to keep open when the group became more private.
 func keptOpenReason(groupVis string) string {
 	return "Kept open when the group became " + visWord(groupVis) + "."
 }

@@ -43,8 +43,6 @@ type calendarOccurrenceJSON struct {
 	GroupDeleted bool `json:"groupDeleted,omitempty"`
 }
 
-// How many occurrences one calendar response carries. The answer says so
-// when there were more (truncated), so nothing is silently dropped.
 const maxCalendarOccurrences = 500
 
 func (a *App) calendarTime() time.Time { return a.now().UTC() }
@@ -84,7 +82,6 @@ func (a *App) apiCalendar(c *gin.Context) {
 		onlyGroup = &grp.ID
 	}
 
-	// Only events with a date in the window can add anything (#75).
 	q := a.DB.Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)",
 		windowStart.UTC(), windowEnd.UTC())
 	if onlyGroup != nil {
@@ -104,7 +101,6 @@ func (a *App) apiCalendar(c *gin.Context) {
 	if c.Query("childcare") == "1" {
 		q = q.Where("childcare_available = ?", true)
 	}
-	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
 	candidates := a.eventCandidates
 	if c.Query("deleted") == "1" {
 		candidates = a.deletedEventCandidates
@@ -150,15 +146,12 @@ func (a *App) apiCalendar(c *gin.Context) {
 		return occs[i].StartsAt.Before(occs[j].StartsAt)
 	})
 
-	// Only scheduled dates the viewer may see are looked up; the loop below
-	// skips every other date before it reads these facts.
 	occIDs := visibleOccurrenceIDs(vs, me, occs, scoped)
 	scopeFacts, err := a.loadCalendarScopeBatch(me, occIDs)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
 	}
-	// mine is ignored for signed-out discovery, as before.
 	justMine := me != nil && c.Query("mine") == "1"
 	scope := policy.CalendarScopeAll
 	if justMine {

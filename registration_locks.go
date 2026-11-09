@@ -31,7 +31,6 @@ import (
 //
 // TestErasureHouseholdLockCensus pins who calls lockHousehold.
 
-// lockOccurrence locks one occurrence row for a seat-changing write.
 func lockOccurrence(tx *gorm.DB, occurrenceID uint) (*models.EventOccurrence, error) {
 	var o models.EventOccurrence
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&o, occurrenceID).Error; err != nil {

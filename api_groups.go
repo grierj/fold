@@ -24,10 +24,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
-// Group endpoints
-// ---------------------------------------------------------------------------
-
 func (a *App) apiListGroups(c *gin.Context) {
 	search := c.Query("search")
 
@@ -116,8 +112,6 @@ func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) ([]g
 	return out, nil
 }
 
-// respondGroup answers with one group's summary, or a 500 when it cannot be
-// built.
 func (a *App) respondGroup(c *gin.Context, status int, g *models.Group) {
 	summary, err := a.groupSummary(g)
 	if err != nil {
@@ -177,7 +171,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		if err := tx.Create(&g).Error; err != nil {
 			return err
 		}
-		// The creator is the group's first leader.
 		if err := tx.Create(&models.Membership{
 			UserID: u.ID, GroupID: g.ID,
 			Role: models.MembershipLeader, Status: models.MembershipActive, JoinedAt: time.Now().UTC(),
@@ -296,7 +289,6 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	})
 }
 
-// respondRoster answers with the group's roster as its viewer may see it.
 func (a *App) respondRoster(c *gin.Context, groupID uint, manager bool) {
 	members, err := a.rosterFor(groupID, apiUser(c), manager)
 	if err != nil {
@@ -466,9 +458,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			(body.Status != nil && !policy.CanSetGroupStatus(asPerson(actor), rel, *body.Status)) {
 			return errForbidden
 		}
-		// Downstream visibility/audit helpers use the same fresh actor.
 		*u = *actor
-		// Start with current state; omitted columns are never written.
 		*g = locked
 		if body.Name != nil {
 			g.Name = patch.Name
@@ -551,10 +541,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	a.respondGroup(c, http.StatusOK, g)
 }
-
-// ---------------------------------------------------------------------------
-// Membership endpoints
-// ---------------------------------------------------------------------------
 
 func (a *App) apiJoinGroup(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
@@ -677,8 +663,6 @@ func (a *App) directoryQuery(u *models.User) *gorm.DB {
 			Where("user_id = ? AND status = ?", u.ID, models.MembershipActive))
 }
 
-// normalizeVisibility accepts public, private, or invite_only; empty means
-// public.
 func normalizeVisibility(visibility string) (string, string) {
 	visibility = strings.TrimSpace(visibility)
 	if visibility == "" {
@@ -738,7 +722,6 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 	a.respondRoster(c, g.ID, true)
 }
 
-// errRoleRefused means policy said no once the group row was locked.
 var errRoleRefused = apiErr(http.StatusForbidden, "", "forbidden")
 
 // errGroupNotApprovedForAdds: only admins add people to a pending or
@@ -1004,7 +987,6 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 	a.respondGroup(c, http.StatusOK, g)
 }
 
-// apiCancelDeletion withdraws a leader's deletion request.
 func (a *App) apiCancelDeletion(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, rel, ok := a.loadGroupFor(c, uint(id))
@@ -1022,8 +1004,6 @@ func (a *App) apiCancelDeletion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// clearDeletionRequest turns a deletion request off and resolves the
-// admins' task with outcome (kept, withdrawn).
 func (a *App) clearDeletionRequest(groupID uint, by *uint, outcome string) error {
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		return clearDeletionRequestIn(tx, groupID, by, outcome)
@@ -1038,8 +1018,6 @@ func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string)
 	return err
 }
 
-// auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
-// tells the other admins about a leadership change in the same transaction.
 func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	if err := audit.Write(tx, e); err != nil {
 		return err
@@ -1125,7 +1103,6 @@ type memberJSON struct {
 	Admin bool `json:"admin"`
 }
 
-// toMemberJSON renders a membership's user for the roster.
 func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 	avatarURL := ""
 	if m.User.AvatarKey != "" && m.User.AccountType != models.AccountTeen {
@@ -1159,7 +1136,6 @@ func joinTags(tags []string) string {
 	return strings.Join(clean, ",")
 }
 
-// relOf loads u's membership in one group; the zero Rel for a signed-out viewer.
 func (a *App) relOf(u *models.User, groupID uint) (policy.Rel, error) {
 	if u == nil {
 		return policy.Rel{}, nil
