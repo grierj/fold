@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
+	"fold/internal/httpx"
 	"fold/internal/providers"
 	"fold/models"
 	"github.com/gin-gonic/gin"
@@ -19,7 +21,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 )
 
@@ -215,18 +216,6 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-// The setup and outbox pages link the SPA's CSS bundle from index.html.
-func TestBuiltStylesheetReadsTheViteLink(t *testing.T) {
-	fsys := fstest.MapFS{"web/dist/index.html": {Data: []byte(`<head><script type="module" crossorigin src="/assets/index-a1.js"></script>
-<link rel="stylesheet" crossorigin href="/assets/index-B5rK.css"></head>`)}}
-	if got := builtStylesheet(fsys); got != "/assets/index-B5rK.css" {
-		t.Errorf("got %q", got)
-	}
-	if got := builtStylesheet(fstest.MapFS{}); got != "" {
-		t.Errorf("unbuilt: got %q", got)
-	}
-}
-
 // The setup page names its language and links the built CSS (no
 // /static/style.css any more), and a fresh install can load that CSS.
 func TestSetupPageUsesBuiltStylesheet(t *testing.T) {
@@ -241,7 +230,7 @@ func TestSetupPageUsesBuiltStylesheet(t *testing.T) {
 	if strings.Contains(body, "/static/") {
 		t.Error("setup page still links /static/")
 	}
-	css := builtStylesheet(distFS)
+	css := httpx.Stylesheet(distSub())
 	if css == "" {
 		t.Skip("web/dist not built")
 	}
@@ -278,28 +267,21 @@ func TestMemberHelpIsEmbedded(t *testing.T) {
 // whichever adapter the environment names, and a broken one stops the
 // server instead of dropping mail.
 func TestChooseMailer(t *testing.T) {
-	env := func(kv ...string) func(string) string {
-		m := map[string]string{}
-		for i := 0; i+1 < len(kv); i += 2 {
-			m[kv[i]] = kv[i+1]
-		}
-		return func(k string) string { return m[k] }
-	}
 	prod := Config{Env: "prod", EmailFrom: "Fold <noreply@example.com>"}
 	for _, tc := range []struct {
-		get  func(string) string
+		mod  func(*Config)
 		want string
 	}{
-		{env(), "none"},
-		{env("FOLD_POSTMARK_SERVER_TOKEN", "tok"), "postmark"},
-		{env("FOLD_EMAIL_PROVIDER", "smtp", "FOLD_POSTMARK_SERVER_TOKEN", "tok"), "smtp"},
-		{env(), "smtp"}, // with cfg.SMTPURL below
+		{func(*Config) {}, "none"},
+		{func(c *Config) { c.PostmarkServerToken = "tok" }, "postmark"},
+		{func(c *Config) {
+			c.EmailProvider, c.PostmarkServerToken, c.SMTPURL = "smtp", "tok", "smtp://localhost:25"
+		}, "smtp"},
+		{func(c *Config) { c.SMTPURL = "smtp://localhost:25" }, "smtp"},
 	} {
 		cfg := prod
-		if tc.want == "smtp" {
-			cfg.SMTPURL = "smtp://localhost:25" // Config, not the environment, holds it
-		}
-		s, err := chooseMailer(cfg, nil, tc.get)
+		tc.mod(&cfg)
+		s, err := chooseMailer(cfg, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.want, err)
 		}
@@ -307,9 +289,78 @@ func TestChooseMailer(t *testing.T) {
 			t.Errorf("chose %s, want %s", got, tc.want)
 		}
 	}
-	for _, get := range []func(string) string{env("FOLD_EMAIL_PROVIDER", "postmark"), env("FOLD_EMAIL_PROVIDER", "pigeon"), env("FOLD_EMAIL_PROVIDER", "smtp")} {
-		if _, err := chooseMailer(prod, nil, get); err == nil {
+	for _, provider := range []string{"postmark", "pigeon", "smtp"} {
+		cfg := prod
+		cfg.EmailProvider = provider
+		if _, err := chooseMailer(cfg, nil); err == nil {
 			t.Error("a provider without its settings should be refused")
+		}
+	}
+}
+
+// The embedded templates parse, and every page the server renders is among them.
+func TestPageTemplatesParse(t *testing.T) {
+	tmpl, err := pageTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"setup.html", "setup-unlock.html", "outbox.html"} {
+		if tmpl.Lookup(name) == nil {
+			t.Errorf("template %s is not embedded", name)
+		}
+	}
+}
+
+// The manifest names the Home Screen app after the church (DEC-124); a
+// short name over 12 characters becomes "Fold".
+func TestManifestCarriesTheChurchName(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	r := app.setupRouter()
+	read := func() (httpx.WebManifest, *httptest.ResponseRecorder) {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest("GET", "/manifest.webmanifest", nil))
+		var m httpx.WebManifest
+		if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+			t.Fatalf("manifest: %d %v %q", w.Code, err, w.Body.String())
+		}
+		return m, w
+	}
+	m, w := read()
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/manifest+json" || w.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("manifest response %d %v", w.Code, w.Header())
+	}
+	if m.Name != "Fold" || m.ShortName != "Fold" {
+		t.Fatalf("no church name: %+v", m)
+	}
+	if m.ID != "/" || m.StartURL != "/?source=homescreen" || m.Scope != "/" || m.Display != "standalone" || m.BackgroundColor == "" || m.ThemeColor == "" {
+		t.Fatalf("manifest fields: %+v", m)
+	}
+	var sizes []string
+	for _, i := range m.Icons {
+		sizes = append(sizes, i.Sizes+" "+i.Purpose)
+	}
+	if strings.Join(sizes, ",") != "192x192 ,512x512 ,512x512 maskable" {
+		t.Fatalf("icons: %v", sizes)
+	}
+	for _, i := range m.Icons {
+		if !strings.HasPrefix(i.Src, "/assets/brand/") || i.Type != "image/png" {
+			t.Fatalf("icon %+v", i)
+		}
+	}
+
+	for name, short := range map[string]string{
+		"Grace Church":           "Grace Church", // 12 characters
+		"Iglesia Fé y Esperanza": "Fold",
+		"Église Sœur":            "Église Sœur", // runes, not bytes
+	} {
+		app.DB.Where("key = ?", "site_name").Delete(&models.Setting{})
+		if err := app.DB.Create(&models.Setting{Key: "site_name", Value: name}).Error; err != nil {
+			t.Fatal(err)
+		}
+		m, _ := read()
+		if m.Name != name || m.ShortName != short {
+			t.Fatalf("%q: name %q, short_name %q", name, m.Name, m.ShortName)
 		}
 	}
 }

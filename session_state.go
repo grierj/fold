@@ -151,3 +151,24 @@ func answerStaleSession(c *gin.Context, err error) bool {
 	fail(c, errSecuritySession)
 	return true
 }
+
+// sessionVersion reads the password generation stored at login.
+// A cookie issued before this field existed has no value and counts as 0.
+func sessionVersion(s *sessions.Session) int { return sessionInt(s, sessionVersionKey) }
+
+// logoutVersion reads the logout generation stored at login (M7.2); an
+// older cookie has none and counts as 0, the column's default.
+func logoutVersion(s *sessions.Session) int { return sessionInt(s, sessionLogoutKey) }
+
+func sessionInt(s *sessions.Session, key string) int {
+	switch v := s.Values[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	default:
+		return 0
+	}
+}

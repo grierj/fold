@@ -212,7 +212,7 @@ func TestReasonPageStatementBoundAcrossBusyAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seals int
-	s.app.readBeforeSeal = func(*gorm.DB) { seals++ }
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) { seals++ }
 	hold, _ := beginOwnedTx(t, s.app.DB)
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
@@ -495,7 +495,7 @@ func TestReasonPageRefusalSequenceAndSeal(t *testing.T) {
 	// The seal fails after the scan and the view audit were written: the whole page
 	// rolls back and nothing is committed.
 	before := scans()
-	s.app.readBeforeSeal = func(*gorm.DB) {
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) {
 		if err := s.app.DB.Exec("UPDATE users SET session_version = session_version + 1 WHERE id = ?", s.admin.ID).Error; err != nil {
 			t.Error(err)
 		}

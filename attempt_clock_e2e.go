@@ -13,7 +13,7 @@ import (
 
 // A test-only clock for the browser tests of attempt ids (T07B-1c). An id's
 // age is the server's own monotonic time, which a browser cannot move, so this
-// file, compiled only with -tags e2eclock, adds an offset to that time and an
+// file, compiled only with -tags e2eclock, adds an offset to the App clock and an
 // admin-only route that changes it. It does nothing unless FOLD_E2E_CLOCK=1 is
 // set (web/e2e/server.sh sets it); it never exists in a build without the tag.
 func init() {
@@ -22,12 +22,7 @@ func init() {
 			return
 		}
 		var offset atomic.Int64
-		a.attemptClock = func() time.Duration {
-			if err := a.attempts.init(); err != nil {
-				panic(err)
-			}
-			return time.Since(a.attempts.start) + time.Duration(offset.Load())
-		}
+		a.clock = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
 		// POST {"offsetSeconds": N} sets how far ahead the attempt clock runs.
 		v1.POST("/e2e/attempt-clock", a.apiAuth(), a.apiAdmin(), func(c *gin.Context) {
 			var body struct {

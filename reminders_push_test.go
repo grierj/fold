@@ -40,7 +40,7 @@ func sweepAt(t *testing.T, app *App, now time.Time) {
 // deliverAt runs every waiting push job as if the clock read at.
 func deliverAt(t *testing.T, app *App, at time.Time) {
 	t.Helper()
-	app.pushClock = func() time.Time { return at }
+	app.clock = func() time.Time { return at }
 	makeDue(app)
 	runMessageJobs(t, app)
 }
@@ -178,7 +178,7 @@ func TestPushReminderOnlyGoingWithPushOn(t *testing.T) {
 func TestPushReminderMovesBeforeQuietHours(t *testing.T) {
 	f, fp, phone := pushReminderFixture(t)
 	w := push.DefaultWindow
-	f.app.pushWindow = &w
+	f.app.hooks.pushWindow = &w
 	f.app.DB.Model(f.teen).Update("timezone", "America/Denver")
 	day := f.groupOcc.StartsAt.AddDate(0, 0, 1)
 	start := time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, denverZone)
@@ -218,7 +218,7 @@ func TestPushReminderMovesBeforeQuietHours(t *testing.T) {
 func TestPushReminderSkippedPastEighteenHours(t *testing.T) {
 	f, fp, _ := pushReminderFixture(t)
 	w := push.Window{StartHour: 8, EndHour: 12}
-	f.app.pushWindow = &w
+	f.app.hooks.pushWindow = &w
 	f.app.DB.Model(f.teen).Update("timezone", "America/Denver")
 	day := f.groupOcc.StartsAt.AddDate(0, 0, 1)
 	start := time.Date(day.Year(), day.Month(), day.Day(), 8, 30, 0, 0, denverZone)
@@ -294,7 +294,7 @@ func TestPushReminderRechecksQuietHoursAtSend(t *testing.T) {
 		t.Run(c.late.String(), func(t *testing.T) {
 			f, fp, phone := pushReminderFixture(t)
 			w := push.DefaultWindow
-			f.app.pushWindow = &w
+			f.app.hooks.pushWindow = &w
 			f.app.DB.Model(f.teen).Update("timezone", "America/Denver")
 			day := f.groupOcc.StartsAt.AddDate(0, 0, 1)
 			moveDate(t, f.app, &f.groupOcc, time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, denverZone))
@@ -320,7 +320,7 @@ func TestPushReminderRechecksQuietHoursAtSend(t *testing.T) {
 func TestPushReminderLateSignUps(t *testing.T) {
 	f, fp, phone := pushReminderFixture(t)
 	w := push.DefaultWindow
-	f.app.pushWindow = &w
+	f.app.hooks.pushWindow = &w
 	due := f.groupOcc.StartsAt.Add(-2 * time.Hour) // 5:00 PM UTC, the church's clock
 	sweepAt(t, f.app, due.Add(30*time.Minute))
 	var js []models.Job

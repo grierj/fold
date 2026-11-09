@@ -761,3 +761,9 @@ func (a *App) groupsByIDUnscoped(ids map[uint]struct{}) (map[uint]*models.Group,
 	}
 	return out, nil
 }
+
+type hostJSON struct {
+	UserID uint   `json:"userId"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
+}

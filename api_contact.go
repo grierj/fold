@@ -588,21 +588,38 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 	}
 }
 
-// auditContactRejection is the narrow pre-domain hook used by CSRF/session
-// rejection sites. Only these explicit contact/add writes are covered. It never
+// refusalKind is the audit row a refused write to one family of routes leaves.
+type refusalKind struct{ action, target string }
+
+var (
+	refusedContact    = refusalKind{audit.ContactRefused, "contact_endpoint"}
+	refusedAdd        = refusalKind{audit.AddRefused, "add_endpoint"}
+	refusedOccurrence = refusalKind{audit.OccurrenceRefused, "occurrence_endpoint"}
+)
+
+// auditRefusals returns a registrar for routes on group whose CSRF and
+// authentication refusals are written to the audit log as kind. The route table
+// is the only list of those routes: the registrar records "METHOD /full/path",
+// and auditRefusal looks the matched route up. (The CSRF check is a global
+// middleware and runs before any route's own, so a route-level middleware could
+// not see its refusal; the registration records it instead.)
+func (a *App) auditRefusals(group *gin.RouterGroup, kind refusalKind) func(method, path string, handlers ...gin.HandlerFunc) {
+	return func(method, path string, handlers ...gin.HandlerFunc) {
+		a.refusalRoutes.Store(method+" "+group.BasePath()+path, kind)
+		group.Handle(method, path, handlers...)
+	}
+}
+
+// auditRefusal is the narrow pre-domain hook used by CSRF/session rejection
+// sites. Only the routes registered through auditRefusals are covered. It never
 // reads the request body, query, or claimed URL IDs; a trusted session, if any,
 // supplies the actor. Abort sites call it before writing their error response.
-func (a *App) auditContactRejection(c *gin.Context, reason string) error {
-	if c.Request.Method != http.MethodPost && !(c.Request.Method == http.MethodPut && c.FullPath() == "/api/v1/events/:id/dates/:date/registration") {
+func (a *App) auditRefusal(c *gin.Context, reason string) error {
+	v, ok := a.refusalRoutes.Load(c.Request.Method + " " + c.FullPath())
+	if !ok {
 		return nil
 	}
-	switch c.FullPath() {
-	case "/api/v1/events/:id/registrations/add", "/api/v1/events/:id/dates/:date/decline", "/api/v1/events/:id/dates/:date/block", "/api/v1/events/:id/dates/:date/registration", "/api/v1/add-requests", "/api/v1/add-requests/:id/decision", "/api/v1/add-requests/:id/withdraw", "/api/v1/add-requests/:id/complete", "/api/v1/contact-requests", "/api/v1/contact-requests/:id/decision",
-		"/api/v1/contact-requests/:id/withdraw", "/api/v1/contact-grants/:id/revoke",
-		"/api/v1/contact-grants/:id/reveal":
-	default:
-		return nil
-	}
+	kind := v.(refusalKind)
 	c.Header("Cache-Control", "no-store")
 	var actor *uint
 	if user, ok := a.authenticatedSessionUser(c); ok {
@@ -612,14 +629,7 @@ func (a *App) auditContactRejection(c *gin.Context, reason string) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		action, target := audit.ContactRefused, "contact_endpoint"
-		if strings.HasPrefix(c.FullPath(), "/api/v1/add-requests") {
-			action, target = audit.AddRefused, "add_endpoint"
-		}
-		if strings.HasPrefix(c.FullPath(), "/api/v1/events/:id/dates/") || c.FullPath() == "/api/v1/events/:id/registrations/add" {
-			action, target = audit.OccurrenceRefused, "occurrence_endpoint"
-		}
-		return audit.Write(tx, audit.Entry{Actor: actor, Action: action, TargetType: target, IP: c.ClientIP(), Meta: map[string]any{"reason": reason, "method": c.Request.Method, "route": c.FullPath()}})
+		return audit.Write(tx, audit.Entry{Actor: actor, Action: kind.action, TargetType: kind.target, IP: c.ClientIP(), Meta: map[string]any{"reason": reason, "method": c.Request.Method, "route": c.FullPath()}})
 	})
 }
 
