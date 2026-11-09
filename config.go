@@ -19,8 +19,7 @@ import (
 // environment. Other subcommands read only the variables they need (C11).
 type Config struct {
 	// Env is "dev" or "prod". Defaults to "prod" — the safe choice.
-	Env string
-	// Port the HTTP server listens on. Default defaultPort.
+	Env  string
 	Port string
 	// SessionSecret signs session cookies. Required in prod; a loud
 	// insecure default is used for dev only.
@@ -29,8 +28,7 @@ type Config struct {
 	SetupToken string
 	// DatabaseURL is the Postgres DSN, required everywhere (DEC-1, DEC-24),
 	// e.g. "postgres://user:pass@host:5432/dbname?sslmode=disable".
-	DatabaseURL string
-	// CookieSecure sets the Secure flag on cookies. Default true in prod.
+	DatabaseURL  string
 	CookieSecure bool
 	// SiteURL is the public base URL (used for CSRF origin checks behind
 	// proxies, e.g. "https://groups.example.org").
@@ -48,8 +46,7 @@ type Config struct {
 	// SMTPAllowInsecure permits plaintext for a trusted non-loopback relay.
 	// Default false; TLS verification is never disabled.
 	SMTPAllowInsecure bool
-	// EmailFrom is the From address on transactional email.
-	EmailFrom string
+	EmailFrom         string
 	// PostmarkWebhookSecret is the password in the URL Postmark posts its
 	// webhooks to (FOLD_POSTMARK_WEBHOOK_SECRET, M3.2b). Empty turns the
 	// endpoint off (404).
@@ -72,7 +69,6 @@ type Config struct {
 	PostmarkBroadcastStream     string
 }
 
-// minWebhookSecretLen is the shortest FOLD_POSTMARK_WEBHOOK_SECRET accepted.
 const minWebhookSecretLen = 24
 
 // defaultTrustedProxies is the fixed subnet of the compose network
@@ -120,7 +116,6 @@ func envPort() string { return getEnv("PORT", defaultPort) }
 
 func envPushHosts() ([]string, error) { return push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS")) }
 
-// databaseURL returns DATABASE_URL or the start-the-dev-database error.
 func databaseURL() (string, error) {
 	if v := os.Getenv("DATABASE_URL"); v != "" {
 		return v, nil
@@ -128,8 +123,6 @@ func databaseURL() (string, error) {
 	return "", errNoDatabaseURL
 }
 
-// parseTrustedProxies splits a comma-separated list of CIDRs or IPs and
-// rejects anything Gin would not accept.
 func parseTrustedProxies(s string) ([]string, error) {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -162,13 +155,10 @@ func isHTTPSURL(s string) bool {
 	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
-// siteURLMessage is the startup error for a SITE_URL that email links
-// cannot safely be built from.
 const siteURLMessage = "SITE_URL must be an https URL with a host: password-reset and invitation emails link to it, " +
 	"and an http:// link sends them in cleartext. Fix: set SITE_URL=https://<your domain> " +
 	"(docker-compose.yml builds it from DOMAIN in .env), or remove SITE_URL. Plain-HTTP testing belongs in APP_ENV=dev"
 
-// cookieSecureMessage is the startup error for COOKIE_SECURE=false outside dev.
 const cookieSecureMessage = "COOKIE_SECURE=false is not allowed when APP_ENV is not dev: session cookies would travel " +
 	"without the Secure flag and the HSTS header would be dropped. Fix: remove COOKIE_SECURE or set it to true; " +
 	"plain-HTTP testing belongs in APP_ENV=dev"
@@ -182,7 +172,6 @@ func shortSecretMessage(n int) string {
 		"or in the environment of `fold serve`. Changing it signs everyone out once.", n, minSessionSecretLen)
 }
 
-// minSessionSecretLen is the shortest SESSION_SECRET accepted outside dev.
 const minSessionSecretLen = 32
 
 // sessionSecret reads SESSION_SECRET: required outside dev, at least

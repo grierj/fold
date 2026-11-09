@@ -133,7 +133,7 @@ func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 	}
 }
 
-// --- Python (AGENTS "No Python"; b6c132e removed python3 from verify-fold) ---
+// --- Python (AGENTS "No Python") ---
 
 var pythonRe = regexp.MustCompile(`(?m)(^|[\s;|&(` + "`" + `$])python[23]?(\s|$)`)
 
@@ -200,7 +200,7 @@ func TestPythonGuardCatchesVerifyFoldPython(t *testing.T) {
 	}
 }
 
-// --- "Recommended", not "supported" (Grier; 98f1a9a reworded three) ---
+// --- "Recommended", not "supported" (Grier) ---
 
 var supportedRe = regexp.MustCompile(`(?i)\b(supported|unsupported|supports)\b`)
 
@@ -249,8 +249,8 @@ func TestSupportedGuardCatches98f1a9a(t *testing.T) {
 	}
 }
 
-// --- One Node version (.nvmrc): a21cc93 and 8c676ac each hand-edited CI,
-// the Dockerfile and docs, and PR #18 offered a non-LTS Node ---
+// --- One Node version (.nvmrc): CI, the Dockerfile and the docs follow it
+// instead of keeping their own copy ---
 
 var dockerNodeRe = regexp.MustCompile(`(?m)^FROM node:(\d+)`)
 var docNodeRe = regexp.MustCompile(`Node (\d+)( LTS)?\b`)
