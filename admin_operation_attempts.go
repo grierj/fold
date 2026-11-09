@@ -156,7 +156,6 @@ func (a *App) attemptElapsed() time.Duration {
 	return a.now().Sub(a.attempts.start)
 }
 
-
 func (a *App) attemptMAC(kind string, actor, subject uint, mintMs uint64, nonce []byte) []byte {
 	if err := a.attempts.init(); err != nil {
 		panic(err)
@@ -220,7 +219,6 @@ func (a *App) openAttempt(id, kind string, actor, subject uint) (nonce [16]byte,
 	// A forged-in-range value cannot overflow Duration: the mac vouches for it.
 	return nonce, time.Duration(mintMs) * time.Millisecond, true
 }
-
 
 type submitResult int
 
@@ -394,7 +392,6 @@ func insertAttemptReceipt(tx *gorm.DB, nonce [16]byte) error {
 	return nil
 }
 
-
 // currentAdminIn decides, on the actor's own row, that the session that sent
 // the request is still current and may act. It is one statement, taken FOR
 // SHARE NOWAIT so it never waits on a row lock, and it is the last locking
@@ -473,7 +470,6 @@ func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID str
 	}
 	return u, true
 }
-
 
 type attemptMintJSON struct {
 	AttemptID string `json:"attemptId"`
@@ -657,7 +653,6 @@ func settleAnswer(f settleFacts) attemptSettleJSON {
 		return attemptSettleJSON{Result: settleChecking}
 	}
 }
-
 
 // sweepAttemptReceipts deletes receipts older than 24 hours, attemptSweepBatch
 // at a time, each batch its own transaction under its own 10-second context.
