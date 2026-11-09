@@ -107,7 +107,7 @@ func useFakePush(t *testing.T, app *App) *fakePush {
 	}
 	f := &fakePush{status: map[string]int{}, err: map[string]bool{}, sent: map[string]int{}}
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
-	open := push.AlwaysOpen
+	open := push.Window{StartHour: 0, EndHour: 24} // never waits
 	app.pushWindow = &open
 	return f
 }
@@ -626,7 +626,7 @@ func TestCancellingADatePushesToRegistrants(t *testing.T) {
 	}
 	before := maxNoticeID(t, app.DB)
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
-		return notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+		return notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 	})
 	ids := noticeIDsAfter(t, app.DB, before)
 	if err != nil || len(ids) != 1 {

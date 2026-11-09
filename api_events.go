@@ -12,6 +12,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -1013,7 +1014,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				added = append(added, row.ID)
 			}
 		}
-		err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
+		err := notifyOccurrences(tx, me.ID, cancelled, notify.OccurrenceCancelled)
 		if err != nil {
 			return err
 		}
@@ -1263,7 +1264,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 			}
 			return res.Error
 		}
-		err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
+		err := notifyOccurrences(tx, apiUser(c).ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 		if err != nil {
 			return err
 		}
@@ -1551,5 +1552,5 @@ func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, oc
 		Meta: map[string]any{"dates": dates, "occurrenceIds": occIDs}, IP: ip}); err != nil {
 		return err
 	}
-	return notifyOccurrencesRestored(tx, actor, occIDs)
+	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceRestored)
 }

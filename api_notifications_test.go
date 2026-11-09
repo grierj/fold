@@ -576,7 +576,7 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 			Update("status", models.OccurrenceCancelled).Error; err != nil {
 			return err
 		}
-		return notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+		return notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 	})
 	reads := counter.Reads()
 	counter.Stop()

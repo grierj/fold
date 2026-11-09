@@ -601,24 +601,13 @@ func notifyNotRestored(tx *gorm.DB, actor *uint, g *models.Group, userID uint) e
 	return err
 }
 
-// notifyOccurrencesCancelled tells everyone going or waitlisted on
-// these dates (M1.5: maybe no longer gets one). A registrant who can't
-// see the group gets no group name, place, or link (PR #41). Each item
-// archives itself when the date would have ended.
-func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) error {
-	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceCancelled)
-}
-
-// notifyOccurrencesRestored tells the same people, by the same privacy
-// rules, that dates a series edit had cancelled are back on. Their
-// registrations were never touched by the cancellation, so the notice says
-// the sign-up is still there rather than asking them to register again.
-func notifyOccurrencesRestored(tx *gorm.DB, actor uint, occIDs []uint) error {
-	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceRestored)
-}
-
-// notifyOccurrences is the shared fan-out of the cancelled and restored
-// notices: one stored item per person per date.
+// notifyOccurrences tells everyone going or waitlisted on these dates that
+// the date was cancelled (OccurrenceCancelled; M1.5: maybe no longer gets one)
+// or, after a series edit had cancelled it, is back on (OccurrenceRestored;
+// their registrations were never touched, so that notice says the sign-up is
+// still there). A registrant who can't see the group gets no group name,
+// place, or link (PR #41). One stored item per person per date; each archives
+// itself when the date would have ended.
 func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) error {
 	if len(occIDs) == 0 {
 		return nil

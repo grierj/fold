@@ -48,10 +48,9 @@ type Urgency string
 
 // Urgency values (RFC 8030 5.3).
 const (
-	UrgencyVeryLow Urgency = "very-low"
-	UrgencyLow     Urgency = "low"
-	UrgencyNormal  Urgency = "normal"
-	UrgencyHigh    Urgency = "high"
+	UrgencyLow    Urgency = "low"
+	UrgencyNormal Urgency = "normal"
+	UrgencyHigh   Urgency = "high"
 )
 
 // Options are the delivery headers. TTL is required by RFC 8030; zero

@@ -2514,7 +2514,7 @@ func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
 							if fan == "event changed" {
 								err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
 							} else {
-								err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+								err = notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 							}
 							return err
 						})

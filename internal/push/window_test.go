@@ -66,7 +66,7 @@ func TestWindowCheck(t *testing.T) {
 			opens: at(ny, 2026, 11, 1, 8, 0), opensUTC: "2026-11-01T13:00:00Z"},
 		{name: "fall-back evening", t: at(ny, 2026, 10, 31, 23, 0), tzid: "America/New_York",
 			opens: at(ny, 2026, 11, 1, 8, 0), opensUTC: "2026-11-01T13:00:00Z"},
-		{name: "always open", t: at(denver, 2026, 10, 14, 3, 0), tzid: "America/Denver", window: AlwaysOpen, inside: true},
+		{name: "always open", t: at(denver, 2026, 10, 14, 3, 0), tzid: "America/Denver", window: Window{StartHour: 0, EndHour: 24}, inside: true},
 		{name: "a backwards window never holds a push", t: at(denver, 2026, 10, 14, 3, 0), tzid: "America/Denver", window: Window{StartHour: 20, EndHour: 8}, inside: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
