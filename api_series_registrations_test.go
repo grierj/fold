@@ -765,3 +765,179 @@ func TestSeriesRegistrationDisabledActorAndConcurrentNormalMutation(t *testing.T
 		t.Fatalf("disabled actor=%d %s", w.Code, w.Body.String())
 	}
 }
+
+// TestCanRegisterWithViewerKinds pins that single-date registration authority
+// (canRegisterIn), series register and series Undo are one decision: for every
+// kind of viewer and event visibility they give the same answer. Guests and
+// signed-out visitors have no session, so for them the series routes refuse
+// before authority is asked (a guest account fails lockActorIn, a visitor has
+// no cookie) and only the shared decision is compared.
+func TestCanRegisterWithViewerKinds(t *testing.T) {
+	inviteOnly := models.VisibilityInviteOnly
+	cases := []struct {
+		name       string
+		visibility string
+		override   *string
+	}{
+		{"public", models.VisibilityPublic, nil},
+		{"private", models.VisibilityPrivate, nil},
+		{"invite only", models.VisibilityInviteOnly, nil},
+		{"date override", models.VisibilityPublic, &inviteOnly},
+	}
+	viewers := []string{"signed out", "guest account", "member", "leader", "admin", "teen", "invited date only", "stranger"}
+	// Known answers by case order (public, private, invite only, date override):
+	// 1 allowed, 0 refused, -1 only compared. The teen is not pinned.
+	known := map[string][4]int{
+		"signed out":        {0, 0, 0, 0},
+		"guest account":     {1, 0, 0, 0},
+		"member":            {1, 1, 1, 1},
+		"leader":            {1, 1, 1, 1},
+		"admin":             {1, 1, 1, 1},
+		"teen":              {-1, -1, -1, -1},
+		"invited date only": {1, 1, 0, 0},
+		"stranger":          {1, 1, 0, 0},
+	}
+	for ci, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "viewer-leader", "password1234", models.RoleMember)
+			group := activeGroup(t, app, leader, "Viewer group", tc.visibility, "")
+			ev, occs := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 2)
+			if tc.override != nil {
+				if err := app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", ev.ID).Update("visibility_override", *tc.override).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Where("event_id = ?", ev.ID).Order("id").Find(&occs).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The series and Undo routes need authority for the series and for
+			// every date, so the shared decision is asked for both.
+			decide := func(u *models.User) bool {
+				if !app.canRegisterIn(app.DB, u, &ev) {
+					return false
+				}
+				for i := range occs {
+					if !app.canRegisterIn(app.DB, u, dateEvent(&ev, &occs[i])) {
+						return false
+					}
+				}
+				return true
+			}
+			for _, kind := range viewers {
+				name := "viewer-" + strings.ReplaceAll(kind, " ", "-")
+				var u *models.User
+				switch kind {
+				case "signed out":
+				case "guest account":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					if err := app.DB.Model(u).Update("status", models.UserGuest).Error; err != nil {
+						t.Fatal(err)
+					}
+					u.Status = models.UserGuest
+				case "member":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					addMember(t, app, u, &group, models.MembershipMember)
+				case "leader":
+					u = leader
+				case "admin":
+					u = newTestUser(t, app, name, "password1234", models.RoleAdmin)
+				case "teen":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					birth := time.Now().AddDate(-15, 0, 0)
+					if err := app.DB.Model(u).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "invited date only":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					uid := u.ID
+					reg := models.Registration{OccurrenceID: occs[0].ID, UserID: &uid, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceAdmin}
+					if err := app.DB.Create(&reg).Error; err != nil {
+						t.Fatal(err)
+					}
+					issuer := leader.ID
+					seedAccessGrant(t, app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer}, &issuer, time.Now().UTC())
+				case "stranger":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+				}
+				if u != nil {
+					if err := app.DB.First(u, u.ID).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := decide(u)
+				if pinned := known[kind][ci]; pinned >= 0 && want != (pinned == 1) {
+					t.Errorf("%s: shared decision=%v, want %v", kind, want, pinned == 1)
+				}
+				if got := canRegisterWith(u, viewOf(&ev, false), asGroup(&group), policy.Rel{}); u != nil && u.Status == models.UserGuest && got != (tc.visibility == models.VisibilityPublic) {
+					t.Errorf("%s: guest rule=%v for %s", kind, got, tc.visibility)
+				}
+
+				switch kind {
+				case "signed out":
+					c := newAPIClient(t, app)
+					c.fetchCSRF()
+					if w := c.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true); w.Code != http.StatusUnauthorized {
+						t.Errorf("%s: series register=%d", kind, w.Code)
+					}
+					continue
+				case "guest account":
+					if _, err := lockActorIn(app.DB, u, actorNoKeyUpdate); err == nil {
+						t.Errorf("%s: a guest account was accepted as a series actor", kind)
+					}
+					continue
+				}
+
+				client := loginAPI(t, app, name, "password1234")
+				// Undo: the actor holds an answer on every date and a receipt for it.
+				for i := range occs {
+					uid := u.ID
+					var have int64
+					if err := app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", occs[i].ID, uid).Count(&have).Error; err != nil {
+						t.Fatal(err)
+					}
+					if have == 0 {
+						reg := models.Registration{OccurrenceID: occs[i].ID, UserID: &uid, Status: models.RegMaybe, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}
+						if err := app.DB.Create(&reg).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var items []seriesUndoItem
+				for i := range occs {
+					var reg models.Registration
+					if err := app.DB.Where("occurrence_id = ? AND user_id = ?", occs[i].ID, u.ID).First(&reg).Error; err != nil {
+						t.Fatal(err)
+					}
+					items = append(items, seriesUndoItem{OccurrenceID: occs[i].ID, Date: models.FormatCalendarDate(occs[i].OriginalDate), After: undoState(reg)})
+				}
+				snapshot, err := json.Marshal(items)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := newRawToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Create(&models.SeriesUndoReceipt{TokenHash: hashToken(raw), ActorID: u.ID, EventID: ev.ID,
+					Snapshot: string(snapshot), ExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if undone := undoSeriesAnswer(client, ev.ID, raw, true).Code == http.StatusOK; undone != want {
+					t.Errorf("%s: series Undo allowed=%v, shared decision=%v", kind, undone, want)
+				}
+
+				w := client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+				registered := false
+				if w.Code == http.StatusOK {
+					var out seriesRegistrationResponse
+					decodeJSON(t, w, &out)
+					registered = len(out.Results) == len(occs)
+				}
+				if registered != want {
+					t.Errorf("%s: series register allowed=%v (%d), shared decision=%v", kind, registered, w.Code, want)
+				}
+			}
+		})
+	}
+}
