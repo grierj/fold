@@ -19,7 +19,7 @@ import (
 // environment. Other subcommands read only the variables they need (C11).
 type Config struct {
 	// Env is "dev" or "prod". Defaults to "prod" — the safe choice.
-	Env string
+	Env  string
 	Port string
 	// SessionSecret signs session cookies. Required in prod; a loud
 	// insecure default is used for dev only.
@@ -28,7 +28,7 @@ type Config struct {
 	SetupToken string
 	// DatabaseURL is the Postgres DSN, required everywhere (DEC-1, DEC-24),
 	// e.g. "postgres://user:pass@host:5432/dbname?sslmode=disable".
-	DatabaseURL string
+	DatabaseURL  string
 	CookieSecure bool
 	// SiteURL is the public base URL (used for CSRF origin checks behind
 	// proxies, e.g. "https://groups.example.org").
@@ -46,7 +46,7 @@ type Config struct {
 	// SMTPAllowInsecure permits plaintext for a trusted non-loopback relay.
 	// Default false; TLS verification is never disabled.
 	SMTPAllowInsecure bool
-	EmailFrom string
+	EmailFrom         string
 	// PostmarkWebhookSecret is the password in the URL Postmark posts its
 	// webhooks to (FOLD_POSTMARK_WEBHOOK_SECRET, M3.2b). Empty turns the
 	// endpoint off (404).

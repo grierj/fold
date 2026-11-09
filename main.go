@@ -368,12 +368,17 @@ var templatesFS embed.FS
 // pageTemplates parses the server-rendered pages (setup wizard, dev outbox)
 // from the binary once; every router shares the result.
 var pageTemplates = sync.OnceValues(func() (*template.Template, error) {
-	css := httpx.Stylesheet(distSub())
+	return parsePageTemplates(httpx.Stylesheet(distSub()))
+})
+
+// parsePageTemplates parses the pages with css, the SPA bundle's stylesheet
+// path (empty when the bundle is not built), as the page's one stylesheet link.
+func parsePageTemplates(css string) (*template.Template, error) {
 	return template.New("").Funcs(template.FuncMap{
 		"split":      strings.Split,
 		"stylesheet": func() string { return css },
 	}).ParseFS(templatesFS, "templates/*.html")
-})
+}
 
 //go:embed docs/MEMBERS.md
 var memberHelp []byte

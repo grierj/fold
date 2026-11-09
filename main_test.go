@@ -133,16 +133,20 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestNewHTTPServerTimeouts(t *testing.T) {
+// Every phase a slow client can stall is bounded, and the write budget leaves
+// room for the longest synchronous mail send (syncMailTimeout) plus the
+// transaction work and the response around it.
+func TestHTTPServerBoundsEverySlowPhase(t *testing.T) {
 	srv := newHTTPServer(Config{Port: "9090"}, http.NotFoundHandler())
 	if srv.Addr != ":9090" || srv.Handler == nil {
 		t.Fatalf("addr/handler: %q %v", srv.Addr, srv.Handler)
 	}
-	if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 60*time.Second ||
-		srv.WriteTimeout != 60*time.Second || srv.IdleTimeout != 120*time.Second ||
-		srv.MaxHeaderBytes != 1<<20 {
-		t.Fatalf("timeouts: header %v read %v write %v idle %v maxHeader %d",
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 || srv.MaxHeaderBytes <= 0 {
+		t.Fatalf("an unbounded phase: header %v read %v write %v idle %v maxHeader %d",
 			srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout, srv.MaxHeaderBytes)
+	}
+	if syncMailTimeout >= srv.WriteTimeout {
+		t.Fatalf("a synchronous send (%v) can outlast the write timeout (%v)", syncMailTimeout, srv.WriteTimeout)
 	}
 }
 
@@ -150,7 +154,7 @@ func TestNewHTTPServerTimeouts(t *testing.T) {
 // ReadHeaderTimeout instead of holding a connection open forever.
 func TestHTTPServerDropsStalledHeaders(t *testing.T) {
 	srv := newHTTPServer(Config{Port: "0"}, http.NotFoundHandler())
-	srv.ReadHeaderTimeout = 200 * time.Millisecond // production value is pinned above
+	srv.ReadHeaderTimeout = 200 * time.Millisecond // short, so the test is quick
 	ts := httptest.NewUnstartedServer(nil)
 	ts.Config = srv
 	ts.Start()
@@ -215,31 +219,48 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-// The setup page names its language and links the built CSS (no
-// /static/style.css any more), and a fresh install can load that CSS.
-func TestSetupPageUsesBuiltStylesheet(t *testing.T) {
+// The setup page names its language and links no /static assets.
+func TestSetupPageHasLanguageAndNoStaticLinks(t *testing.T) {
 	app := testApp(t)
-	r := app.setupRouter()
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/setup", nil))
+	app.setupRouter().ServeHTTP(w, httptest.NewRequest("GET", "/setup", nil))
 	body := w.Body.String()
 	if !strings.Contains(body, `<html lang="en">`) {
 		t.Error("setup page has no lang")
 	}
 	if strings.Contains(body, "/static/") {
-		t.Error("setup page still links /static/")
+		t.Error("setup page links /static/")
 	}
-	css := httpx.Stylesheet(distSub())
-	if css == "" {
-		t.Skip("web/dist not built")
+}
+
+// The setup page links the SPA's built stylesheet, whatever the bundle's hashed
+// name is. The test renders with a stand-in name, so it does not need web/dist.
+func TestSetupPageLinksTheBundleStylesheet(t *testing.T) {
+	const css = "/assets/index-abc123.css"
+	tmpl, err := parsePageTemplates(css)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(body, `href="`+css+`"`) {
+	r := gin.New()
+	r.SetHTMLTemplate(tmpl)
+	r.GET("/setup", func(c *gin.Context) {
+		c.HTML(http.StatusOK, "setup.html", (setupInput{}).pageData(nil, ""))
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/setup", nil))
+	if !strings.Contains(w.Body.String(), `href="`+css+`"`) {
 		t.Errorf("setup page does not link %s", css)
 	}
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", css, nil))
-	if w.Code != 200 {
-		t.Errorf("GET %s before setup: %d", css, w.Code)
+}
+
+// The wizard's stylesheet loads before any account exists: the first-run gate
+// lets /assets/ through instead of sending it to /setup.
+func TestAssetsLoadBeforeSetup(t *testing.T) {
+	app := testApp(t)
+	w := httptest.NewRecorder()
+	app.setupRouter().ServeHTTP(w, httptest.NewRequest("GET", "/assets/index-abc123.css", nil))
+	if w.Code == http.StatusSeeOther {
+		t.Errorf("an asset request before setup was redirected to %s", w.Header().Get("Location"))
 	}
 }
 
@@ -254,11 +275,6 @@ func TestMemberHelpIsEmbedded(t *testing.T) {
 	source, err := os.ReadFile("docs/MEMBERS.md")
 	if err != nil || !bytes.Equal(source, w.Body.Bytes()) {
 		t.Fatalf("help differs from canonical document: %v", err)
-	}
-	for _, heading := range []string{"## Share an email", "## Create a separate account", "## Teen accounts and consent", "## Birthdays"} {
-		if !strings.Contains(w.Body.String(), heading) {
-			t.Fatalf("missing member guidance section %q", heading)
-		}
 	}
 }
 

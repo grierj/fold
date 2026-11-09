@@ -107,7 +107,6 @@ func URL(name string) (string, error) {
 	return u.String(), nil
 }
 
-// Open connects GORM to database name.
 func Open(name string) (*gorm.DB, error) {
 	dsn, err := URL(name)
 	if err != nil {
