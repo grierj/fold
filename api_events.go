@@ -1445,7 +1445,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			!intPtrEqual(events.EffectiveCapacity(ev.RemoteCapacity, oldRemoteOverride),
 				events.EffectiveCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
-			err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
+			err := a.promoteLocked(tx, ev, &o, a.now().UTC(), &me.ID)
 			if err != nil {
 				return err
 			}

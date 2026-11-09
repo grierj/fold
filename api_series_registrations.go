@@ -71,10 +71,7 @@ type seriesRegistrationResponse struct {
 	CapacityLoss  []string                    `json:"capacityLoss,omitempty"`
 }
 
-const (
-	seriesUndoTTL        = 10 * time.Second
-	seriesUndoPendingTTL = 24 * time.Hour
-)
+const seriesUndoTTL = 10 * time.Second
 
 func (a *App) seriesTime() time.Time { return a.now().UTC() }
 
@@ -130,16 +127,18 @@ func registrationState(r models.Registration) seriesRegistrationState {
 }
 
 // seriesDateRefusals are the refusals one date of a series can give without
-// failing the others; the date's refusal carries the refusal's own code.
+// failing the others; the date's refusal carries the refusal value's own code.
 var seriesDateRefusals = []*apiError{errRemovedBlocked, errEventFull, errChildcareFull, errChildcareUnavailable, errRemoteNotAvailable}
 
-func seriesRefusalCode(err error) string {
+// seriesRefusal turns err into the refusal for one date, or says err is no
+// per-date refusal and must fail the whole request.
+func seriesRefusal(occurrenceID uint, date string, err error) (seriesRegistrationRefusal, bool) {
 	for _, refusal := range seriesDateRefusals {
 		if errors.Is(err, refusal) {
-			return refusal.Code
+			return seriesRegistrationRefusal{OccurrenceID: occurrenceID, Date: date, Code: refusal.Code}, true
 		}
 	}
-	return ""
+	return seriesRegistrationRefusal{}, false
 }
 
 func (a *App) apiRegisterSeries(c *gin.Context) {
@@ -193,7 +192,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	}
 	undoHash := hashToken(undoRaw)
 	var undoItems []seriesUndoItem
-	var undoReceiptID uint
+	var undoExpires time.Time
 
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Compatible order with membership, event, exact-date, and manager
@@ -238,7 +237,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			return errSeriesUnavailable
 		}
 		// Seeing one opened or explicitly invited date is not series authority.
-		if !policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {
+		if !canRegisterWith(actor, viewOf(&ev, false), gp, rel) {
 			return errSeriesUnavailable
 		}
 
@@ -305,14 +304,14 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			// A hidden per-date override is omitted rather than returned as a
 			// refusal, because even its date is not authorized result data.
 			dateView := viewOf(dateEvent(&ev, o), false)
-			if !policy.CanRegisterEvent(asPerson(actor), dateView, gp, rel) {
+			if !canRegisterWith(actor, dateView, gp, rel) {
 				continue
 			}
 			old := prior[o.ID]
 			change, err := prepareRegistration(old, o, userSubject(actor.ID), body.Status, guests, mode, care, nil, dateNow)
 			if err != nil {
-				if code := seriesRefusalCode(err); code != "" {
-					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Code: code})
+				if refusal, ok := seriesRefusal(o.ID, models.FormatCalendarDate(o.OriginalDate), err); ok {
+					response.Refusals = append(response.Refusals, refusal)
 					continue
 				}
 				return err
@@ -323,11 +322,11 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			}
 			err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, &actor.ID, c.ClientIP())
 			if err != nil {
-				if code := seriesRefusalCode(err); code != "" {
+				if refusal, ok := seriesRefusal(o.ID, models.FormatCalendarDate(o.OriginalDate), err); ok {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
 						return rollbackErr
 					}
-					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: models.FormatCalendarDate(o.OriginalDate), Code: code})
+					response.Refusals = append(response.Refusals, refusal)
 					continue
 				}
 				return err
@@ -368,6 +367,8 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err != nil {
 				return err
 			}
+			// Every lock this request waits on is already held, so reading the
+			// clock here starts the Undo window after the waits, not before them.
 			receiptNow := a.seriesTime()
 			// Only the latest receipt for an actor can still match their current
 			// state. Removing older receipts also bounds retained snapshot data;
@@ -375,16 +376,12 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err := tx.Where("expires_at <= ? OR actor_id = ?", receiptNow, actor.ID).Delete(&models.SeriesUndoReceipt{}).Error; err != nil {
 				return err
 			}
-			// The Undo window starts when the response is ready, not when this
-			// transaction began, because the transaction may wait on locks. The
-			// pending expiry keeps the row valid until finalizeSeriesUndoReceipt
-			// sets the real window, or suppresses Undo if a later action replaced it.
+			undoExpires = receiptNow.Add(seriesUndoTTL)
 			receipt := models.SeriesUndoReceipt{TokenHash: undoHash, ActorID: actor.ID, EventID: ev.ID,
-				Snapshot: string(snapshot), ExpiresAt: receiptNow.Add(seriesUndoPendingTTL), CreatedAt: receiptNow}
+				Snapshot: string(snapshot), ExpiresAt: undoExpires, CreatedAt: receiptNow}
 			if err := tx.Create(&receipt).Error; err != nil {
 				return err
 			}
-			undoReceiptID = receipt.ID
 		}
 		return nil
 	})
@@ -394,43 +391,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	}
 	sort.Slice(response.Results, func(i, j int) bool { return response.Results[i].Date < response.Results[j].Date })
 	sort.Slice(response.Refusals, func(i, j int) bool { return response.Refusals[i].Date < response.Refusals[j].Date })
-	if undoReceiptID != 0 {
-		if expires, ok := a.finalizeSeriesUndoReceipt(undoReceiptID, undoHash, actorAtRequest.ID, eventID); ok {
-			response.UndoToken, response.UndoExpiresAt = undoRaw, &expires
-		}
+	if !undoExpires.IsZero() {
+		response.UndoToken, response.UndoExpiresAt = undoRaw, &undoExpires
 	}
 	c.JSON(http.StatusOK, response)
-}
-
-// finalizeSeriesUndoReceipt starts the usable Undo interval after the
-// transaction has committed, so lock waits do not use it up. Its row lock makes
-// the refreshed time post-wait. The full identity predicate prevents a deleted
-// or replaced receipt from being recreated or extended by an older response.
-func (a *App) finalizeSeriesUndoReceipt(receiptID uint, tokenHash string, actorID, eventID uint) (time.Time, bool) {
-	var expires time.Time
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		var receipt models.SeriesUndoReceipt
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND actor_id = ? AND event_id = ? AND used_at IS NULL", receiptID, actorID, eventID).
-			First(&receipt).Error; err != nil {
-			return err
-		}
-		if receipt.TokenHash != tokenHash {
-			return gorm.ErrRecordNotFound
-		}
-		expires = a.seriesTime().Add(seriesUndoTTL)
-		res := tx.Model(&models.SeriesUndoReceipt{}).
-			Where("id = ? AND actor_id = ? AND event_id = ? AND used_at IS NULL", receiptID, actorID, eventID).
-			Update("expires_at", expires)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
-	})
-	return expires, err == nil
 }
 
 type seriesUndoInput struct {
@@ -497,7 +461,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			gp = asGroup(&group)
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, receipt.EventID).Error; err != nil ||
-			!policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {
+			!canRegisterWith(actor, viewOf(&ev, false), gp, rel) {
 			return errUndoAuthorityRevoked
 		}
 
@@ -527,7 +491,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		for i := range locked {
 			o := &locked[i]
 			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(undoNow) ||
-				!policy.CanRegisterEvent(asPerson(actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
+				!canRegisterWith(actor, viewOf(dateEvent(&ev, o), false), gp, rel) {
 				return errUndoDateEnded
 			}
 		}
@@ -582,11 +546,11 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			change := registrationChange{old: current, next: next, found: true}
 			err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, &actor.ID, c.ClientIP())
 			if err != nil {
-				if code := seriesRefusalCode(err); code != "" {
+				if refusal, ok := seriesRefusal(o.ID, item.Date, err); ok {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
 						return rollbackErr
 					}
-					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: item.Date, Code: code})
+					response.Refusals = append(response.Refusals, refusal)
 					if item.Before.Status == models.RegGoing {
 						response.CapacityLoss = append(response.CapacityLoss, item.Date)
 					}

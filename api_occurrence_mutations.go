@@ -492,7 +492,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "options_changed", ip)
 	}
 	count, ages := r.AddChildcareCount, r.AddChildcareAgesNote
-	registration, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, r.RequesterID,
+	registration, err := a.addAccountRegistrationLocked(tx, &ev, locked, r.SubjectUserID, &r.RequesterID,
 		managerRegistrationOptions{approved: &verifiedOccurrenceAdd{requestID: r.ID}, mode: r.AddAttendanceMode, guests: r.AddGuestCount, overCapacity: r.AddOverCapacity, care: childcareRequest{ChildcareCount: &count, ChildcareAgesNote: &ages}}, op.now, ip)
 	if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) {
 		op.completionProblem = "capacity"
