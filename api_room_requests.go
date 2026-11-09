@@ -74,21 +74,29 @@ func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event,
 	if dates != 1 {
 		change = fmt.Sprintf("%s for %d dates", room.Name, dates)
 	}
-	_, err := notify.Send(tx, notify.Msg{
-		Kind: notify.RoomRequested, To: adminIDs(tx), Actor: actor,
+	admins, err := activeAdminIDs(tx)
+	if err != nil {
+		return err
+	}
+	asker, err := askerName(tx, actor)
+	if err != nil {
+		return err
+	}
+	_, err = notify.Send(tx, notify.Msg{
+		Kind: notify.RoomRequested, To: admins, Actor: actor,
 		SubjectType: "room_request", SubjectID: req.ID, Link: roomRequestsLink,
-		Vars:      notify.Vars{Actor: askerName(tx, actor), Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
+		Vars:      notify.Vars{Actor: asker, Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
 		Data:      map[string]any{"requestId": req.ID, "eventId": ev.ID},
 		DedupeKey: fmt.Sprintf("room.requested:%d", req.ID),
 	})
 	return err
 }
 
-func askerName(tx *gorm.DB, id *uint) string {
+func askerName(tx *gorm.DB, id *uint) (string, error) {
 	if id == nil {
-		return ""
+		return "", nil
 	}
-	return nameIn(tx, *id)
+	return nameOf(tx, *id)
 }
 
 // closeEmptyRoomRequests withdraws pending requests none of whose dates

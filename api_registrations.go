@@ -217,8 +217,13 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 
 // eventNoticeVarsIn is eventNoticeVars for a single recipient: it loads
 // that one person's facts in tx, then builds the same Vars.
-func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string) {
-	return eventNoticeVars(ev, o, userID, loadNoticeFacts(tx, eventGroupIDs(ev), []uint{userID}))
+func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string, error) {
+	facts, err := loadNoticeFacts(tx, eventGroupIDs(ev), []uint{userID})
+	if err != nil {
+		return notify.Vars{}, "", err
+	}
+	vars, link := eventNoticeVars(ev, o, userID, facts)
+	return vars, link, nil
 }
 
 // addPersonVar names a household registration's person in the notice.
@@ -244,7 +249,10 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.ID == reg.ID {
 		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano), nil)
 	}
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if err := addPersonVar(tx, &vars, reg); err != nil {
 		return err
 	}
@@ -281,7 +289,10 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		return nil
 	}
 	// Vars are per recipient: the time renders in each leader's own zone.
-	facts := loadNoticeFacts(tx, eventGroupIDs(ev), to)
+	facts, err := loadNoticeFacts(tx, eventGroupIDs(ev), to)
+	if err != nil {
+		return err
+	}
 	end := noticeEnd(o)
 	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), not one lock
 	// query per leader or host.
@@ -319,7 +330,10 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		Order("users.id").Pluck("users.id", &userIDs).Error; err != nil {
 		return err
 	}
-	facts := loadNoticeFacts(tx, eventGroupIDs(ev), userIDs)
+	facts, err := loadNoticeFacts(tx, eventGroupIDs(ev), userIDs)
+	if err != nil {
+		return err
+	}
 	accesses, err := occurrenceNoticeAccesses(tx, []uint{o.ID})
 	if err != nil {
 		return err
@@ -356,17 +370,20 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	reg models.Registration, note string, actor *uint) error {
 	userID := registrationHolder(reg)
-	u := userIn(tx, userID)
-	if u == nil || u.Status == models.UserDisabled {
-		return nil
+	u, err := userIn(tx, userID)
+	if err != nil || u == nil || u.Status == models.UserDisabled {
+		return err
 	}
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if err := addPersonVar(tx, &vars, reg); err != nil {
 		return err
 	}
 	vars.Note = note
 	end := noticeEnd(o)
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
@@ -379,12 +396,15 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 // registration was dropped from a full occurrence (DEC-47).
 func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) error {
 	userID := registrationHolder(reg)
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if err := addPersonVar(tx, &vars, reg); err != nil {
 		return err
 	}
 	end := noticeEnd(o)
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},

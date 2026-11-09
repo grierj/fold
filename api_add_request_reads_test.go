@@ -138,7 +138,14 @@ func TestAddRequestPageReadBudgetAndScalarParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, r := range rs {
-			scalar, err := f.app.presentAddRequest(f.app.DB, op, r)
+			single, err := f.app.presentAddRequest(f.app.DB, op, r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(batch[i], single) {
+				t.Fatalf("row %d batch %+v page of one %+v", r.ID, batch[i], single)
+			}
+			scalar, err := f.app.scalarAddRequest(f.app.DB, op, r)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,4 +206,52 @@ func TestAddRequestPageReadBudgetAndScalarParity(t *testing.T) {
 	if w := f.admin.do("GET", "/api/v1/add-requests", nil, false); w.Code != 500 {
 		t.Fatal("read failure", w.Code, w.Body.String())
 	}
+}
+
+// scalarAddRequest is the test-only scalar presenter, kept as the page loader's
+// parity oracle: it decides from loadAddFacts, the loader the finalizers use,
+// one request at a time, so the page's batched facts are checked against them.
+func (a *App) scalarAddRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (addRequestJSON, error) {
+	f, err := a.loadAddFacts(tx, r, op.now)
+	if err != nil {
+		return addRequestJSON{}, err
+	}
+	p, actor := addRequestPolicy(r), contactAccount(op.actor, op.now, op.zone)
+	out := addRequestJSON{ID: r.ID, Purpose: r.Purpose, Reason: r.Reason, OverLimit: r.AddOverLimit, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, AdminDecision: r.AdminDecision, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
+		CanSubjectDecide: policy.AddRequestStatusAfterDecision(actor, policy.ContactSubject, policy.ContactApproved, p, f) != "", CanAdminDecide: policy.AddRequestStatusAfterDecision(actor, policy.ContactAdmin, policy.ContactApproved, p, f) != "", CanWithdraw: policy.CanWithdrawAddRequest(actor, p, op.now), CanComplete: policy.CanViewAddRequest(actor, p) && policy.CanFinalizeAddRequest(p, f)}
+	if r.Purpose == policy.RequestOccurrenceAdd {
+		out.Reason = ""
+		out.CompletionProblem = op.completionProblem
+		var ev models.Event
+		var occ models.EventOccurrence
+		if err := tx.Where("id = ?", r.ContextID).Limit(1).Find(&ev).Error; err != nil {
+			return out, err
+		}
+		if err := tx.Where("id = ? AND event_id = ?", r.OccurrenceID, r.ContextID).Limit(1).Find(&occ).Error; err != nil {
+			return out, err
+		}
+		if ev.ID != 0 && occ.ID != 0 {
+			out.EventTitle = ev.Title
+			if occ.TitleOverride != nil {
+				out.EventTitle = *occ.TitleOverride
+			}
+			out.Date, out.StartsAt, out.EndsAt, out.TZID = models.FormatCalendarDate(occ.OriginalDate), &occ.StartsAt, &occ.EndsAt, ev.TZID
+		}
+		return out, nil
+	}
+	out.ContextID, err = a.scalarContextVisible(tx, op.actor, r)
+	if err != nil {
+		return out, err
+	}
+	if out.ContextID != nil {
+		var g models.Group
+		if err = tx.First(&g, *out.ContextID).Error; err != nil {
+			return out, err
+		}
+		if shown := a.groupShownTo(op.actor, &g, relIn(tx, op.actor.ID, g.ID)); shown != nil {
+			out.GroupName = shown.Name
+		} // group-ok: groupShownTo applies current viewer visibility
+		out.RequesterName, out.SubjectName = nameIn(tx, r.RequesterID), nameIn(tx, r.SubjectUserID)
+	}
+	return out, nil
 }

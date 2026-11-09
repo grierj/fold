@@ -20,7 +20,6 @@ export const Notifications = {
     const got = await apiIfChanged<Badge>("/notifications/badge", etag);
     return got && { badge: got.data, etag: got.etag };
   },
-  seen: (ids: number[]) => api<unknown>("/notifications/seen", { method: "POST", body: { ids } }),
   read: (id: Id, read = true) => api<{ notification: Notification }>(path`/notifications/${id}/read`, { method: read ? "POST" : "DELETE" }),
   readAll: () => api<unknown>("/notifications/read-all", { method: "POST" }),
   archive: (id: Id, archived = true) =>

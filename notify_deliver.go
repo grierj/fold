@@ -11,21 +11,17 @@ import (
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
-	"fold/internal/providers"
 	"fold/models"
 
 	"gorm.io/gorm"
 )
 
-// One notice, emailed and pushed. Eight attempts on jobs.Backoff span
-// about an hour, the same as the message batch, and at most about 76
-// minutes with jitter. The send itself is bounded so a run stays inside
-// the job lease.
+// One notice, emailed and pushed (notify.DeliverJob). The send itself is
+// bounded so a run stays inside the job lease.
 const (
-	notifyDeliverAttempts = 8
-	deliverSendTimeout    = 60 * time.Second
-	kindNotifyReconcile   = "notify.reconcile"
-	notifyReconcileBatch  = 500
+	deliverSendTimeout   = 60 * time.Second
+	kindNotifyReconcile  = "notify.reconcile"
+	notifyReconcileBatch = 500
 	// emailKindStopped is the ledger reason when a kind no longer emails.
 	emailKindStopped = "this kind of notice no longer sends email"
 	// emailKindUnknown is the ledger reason when this version of Fold
@@ -39,19 +35,20 @@ const (
 	notifyUnknownGrace = 7 * 24 * time.Hour
 )
 
-// notifyDeliverJob is notify.deliver's payload: the notice id and nothing
-// else. The key in the jobs table is notify.deliver:<id>.
-type notifyDeliverJob struct {
-	NotificationID uint `json:"notificationId"`
-}
-
 // notifyKinds registers the delivery jobs queued by notify.Send.
 func (a *App) notifyKinds() []jobs.Kind {
 	return []jobs.Kind{{
-		Name: notify.DeliverKind, MaxAttempts: notifyDeliverAttempts,
-		Label: "Sending a notice by email and to devices",
+		Type: notify.DeliverJob, Label: "Sending a notice by email and to devices",
+		// Dismissing a dead delivery settles the notice's email row.
+		OnDismiss: func(tx *gorm.DB, payload json.RawMessage) error {
+			var p notify.DeliverPayload
+			if json.Unmarshal(payload, &p) != nil || p.NotificationID == 0 {
+				return nil
+			}
+			return updateEmailDelivery(tx, p.NotificationID, models.DeliverySuppressed, emailDismissed, "")
+		},
 		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p notifyDeliverJob
+			var p notify.DeliverPayload
 			if err := json.Unmarshal(payload, &p); err != nil {
 				return err
 			}
@@ -80,7 +77,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 				WHERE j.unique_key = ? || nd.notification_id)
 			ORDER BY nd.created_at, nd.id LIMIT ?`,
 			models.DeliveryEmail, models.DeliveryQueued, now.Add(-10*time.Minute), afterAt, afterID,
-			notify.DeliverKind+":", notifyReconcileBatch).
+			notify.DeliverKeyPrefix, notifyReconcileBatch).
 			Scan(&rows).Error; err != nil {
 			return err
 		}
@@ -107,7 +104,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 				WHERE nd.notification_id = n.id AND nd.channel = ?)
 			  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.unique_key = ? || n.id)
 			ORDER BY n.created_at, n.id LIMIT ?`,
-			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKind+":", notifyReconcileBatch).
+			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKeyPrefix, notifyReconcileBatch).
 			Scan(&rows).Error; err != nil {
 			return err
 		}
@@ -138,8 +135,7 @@ func requeueLostDeliveries(tx *gorm.DB, rows []models.NotificationDelivery, now 
 	}
 	specs := make([]jobs.Spec, 0, len(kept))
 	for _, row := range kept {
-		specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.ID},
-			RunAt: now, UniqueKey: notify.DeliverKey(row.ID), MaxAttempts: notifyDeliverAttempts})
+		specs = append(specs, notify.DeliverSpec(row.ID, now))
 	}
 	_, err = jobs.EnqueueMany(tx, specs)
 	return err
@@ -185,10 +181,10 @@ func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now t
 	for _, row := range eligible {
 		// A backfill is a late repair, not an ordinary send: a notice already resolved,
 		// expired or archived before the sweep found it stays bell-only, as push would
-		// drop it (pushStale). A notice the person read still mails; whether email skips
+		// drop it (notify.Settled). A notice the person read still mails; whether email skips
 		// read notices is R6 open question 3, left at its default (no). Ordinary sends
 		// and admin retries do not use this rule.
-		if pushStale(&row, now) == pushWhyStale {
+		if notify.Settled(&row, now) {
 			bellOnly = append(bellOnly, row)
 			continue
 		}
@@ -225,15 +221,14 @@ func (a *App) deliverOneNotification(ctx context.Context, id uint) error {
 	}
 	k, ok := notify.Lookup(n.Kind)
 	if !ok {
-		// Mirror the runner: past the grace the row is suppressed; until
-		// then the job waits and this writes nothing.
-		if time.Since(n.CreatedAt) > notifyUnknownGrace {
-			return updateEmailDelivery(a.DB.WithContext(ctx), n.ID, models.DeliverySuppressed, emailKindUnknown, "")
+		outcome, err := unknownKindNotice(a.DB.WithContext(ctx), &n)
+		if err != nil {
+			return err
 		}
-		return jobs.Later(time.Now().Add(notifyUnknownWait))
+		return outcome
 	}
 	if !k.AllowEmail {
-		if err := updateEmailDelivery(a.DB.WithContext(ctx), n.ID, models.DeliverySuppressed, emailKindStopped, ""); err != nil {
+		if err := stopEmail(a.DB.WithContext(ctx), n.ID); err != nil {
 			return err
 		}
 	}
@@ -248,6 +243,22 @@ func (a *App) deliverOneNotification(ctx context.Context, id uint) error {
 		return nil
 	}
 	return a.claimAndSendNotification(ctx, n.ID)
+}
+
+// unknownKindNotice is what a notice of a kind this build doesn't know gets,
+// mirroring the runner's unknown-kind rule: past the grace its email row is
+// suppressed; until then the job waits (outcome) without spending an
+// attempt and nothing is written.
+func unknownKindNotice(db *gorm.DB, n *models.Notification) (outcome error, err error) {
+	if time.Since(n.CreatedAt) > notifyUnknownGrace {
+		return nil, updateEmailDelivery(db, n.ID, models.DeliverySuppressed, emailKindUnknown, "")
+	}
+	return jobs.Later(time.Now().Add(notifyUnknownWait)), nil
+}
+
+// stopEmail records that a notice's kind no longer sends email.
+func stopEmail(db *gorm.DB, notificationID uint) error {
+	return updateEmailDelivery(db, notificationID, models.DeliverySuppressed, emailKindStopped, "")
 }
 
 // claimAndSendNotification claims the queued or deferred email row and
@@ -304,13 +315,10 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 	}
 	k, ok := notify.Lookup(n.Kind)
 	if !ok {
-		if time.Since(n.CreatedAt) > notifyUnknownGrace {
-			return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, emailKindUnknown, "")
-		}
-		return jobs.Later(time.Now().Add(notifyUnknownWait)), nil
+		return unknownKindNotice(tx, &n)
 	}
 	if !k.AllowEmail {
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, emailKindStopped, "")
+		return nil, stopEmail(tx, id)
 	}
 	u, off, suppressions, footer, err := readEmailRecipient(tx, n.UserID, !k.Required)
 	if err != nil {
@@ -327,20 +335,23 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, "optional email turned off", "")
 	}
 	if u == nil || (u.Status != models.UserActive && u.Status != models.UserGuest) {
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, "recipient not active", "")
+		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, reasonRecipientNotActive, "")
 	}
 	msg := a.notificationEmailMessage(&n, u, k, footer)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
-	providerID, sendErr := a.dispatchNotificationEmail(sendCtx, msg, suppressions)
+	res := sendTracked(sendCtx, mail.Unwrap(a.mailSender()), msg, suppressions)
+	switch res.outcome {
+	case sendSent:
+		return nil, updateEmailDelivery(tx, id, models.DeliverySent, "", res.providerID)
+	case sendSuppressed:
+		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, strings.TrimPrefix(res.err.Error(), "mail: "), "")
+	case sendPermanent, sendNotConfigured:
+		return nil, updateEmailDelivery(tx, id, models.DeliveryFailed, jobs.CleanError(res.err), "")
+	}
+	sendErr := res.err
 	switch {
-	case sendErr == nil:
-		return nil, updateEmailDelivery(tx, id, models.DeliverySent, "", providerID)
-	case mail.IsSuppressed(sendErr):
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, strings.TrimPrefix(sendErr.Error(), "mail: "), "")
-	case mail.IsPermanent(sendErr), mail.NotConfigured(sendErr):
-		return nil, updateEmailDelivery(tx, id, models.DeliveryFailed, jobs.CleanError(sendErr), "")
-	case sendErr != nil && ctx.Err() != nil:
+	case ctx.Err() != nil:
 		if err := updateEmailDelivery(tx, id, "", jobs.CleanError(sendErr), ""); err != nil {
 			return nil, err
 		}
@@ -404,21 +415,4 @@ func updateEmailDelivery(tx *gorm.DB, notificationID uint, status, reason, provi
 		Where("notification_id = ? AND channel = ? AND status IN ?", notificationID, models.DeliveryEmail,
 			[]string{models.DeliveryQueued, models.DeliveryDeferred}).
 		Updates(updates).Error
-}
-
-// dispatchNotificationEmail applies the suppression list already read with
-// the recipient, then sends. A nil mailer is the unconfigured sender: the
-// caller records that as failed and does not retry.
-func (a *App) dispatchNotificationEmail(ctx context.Context, msg mail.Message, suppressions []string) (string, error) {
-	if err := mail.Blocked(suppressions, msg); err != nil {
-		return "", err
-	}
-	if a.Mailer == nil {
-		return mail.NoSender{}.SendEmail(ctx, msg)
-	}
-	sender := mail.Unwrap(a.Mailer)
-	if tracked, ok := sender.(providers.EmailSender); ok {
-		return tracked.SendEmail(ctx, msg)
-	}
-	return "", sender.Send(ctx, msg)
 }

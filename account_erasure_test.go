@@ -768,7 +768,7 @@ func TestErasedPersonRendersAsMember(t *testing.T) {
 	if err := db.First(&ra, add.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	reads, err := loadContactPageReads(db, op, []models.ContactRequest{rc}, false)
+	reads, err := loadContactPageReads(db, op.actor.ID, []models.ContactRequest{rc}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,7 +891,7 @@ func TestQueuedAccountMailForErasedAccountSendsNothing(t *testing.T) {
 		{kindAccountRequestMail, requestMailJob{RequestID: approvedReq.ID, Case: requestMailApproved}},
 	}
 	for _, job := range queued {
-		if _, err := jobs.Enqueue(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := enqueueJob(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2597,7 +2597,7 @@ func TestQueuedDependentMailForErasedAccountSendsNothing(t *testing.T) {
 		{kindAccountRequestMail, requestMailJob{RequestID: rejected.ID, Case: requestMailRejected}},
 		{kindAccountRequestMail, requestMailJob{RequestID: conversion.ID, Case: requestMailConversionApproved}},
 	} {
-		if _, err := jobs.Enqueue(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := enqueueJob(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3666,7 +3666,7 @@ func TestErasureTestMessageProjectionDetectsDifferences(t *testing.T) {
 	app := testApp(t)
 	seed := erasureTestRecipientSeed(t, app)
 	db := app.DB
-	if _, err := jobs.Enqueue(db, kindMessageSend, messageSendJob{MessageID: seed.m1.ID}, time.Now(), "", 0); err != nil {
+	if _, err := enqueueJob(db, kindMessageSend, messageSendJob{MessageID: seed.m1.ID}, time.Now(), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	base := erasureTestMessageProjection(t, db, seed.labels)
@@ -4232,13 +4232,13 @@ const (
 func erasureSeedRequestTasks(t *testing.T, db *gorm.DB, r models.ContactRequest, admin uint) {
 	t.Helper()
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
+		if err := contactNotice(tx, r, roleSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
 			return err
 		}
 		if !r.NeedsAdmin {
 			return nil
 		}
-		err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
+		err := contactNotice(tx, r, roleAdminReview, []uint{admin}, "admin-review")
 		return err
 	})
 	if err != nil {

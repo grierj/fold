@@ -532,7 +532,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	if err := resolveContactTasks(tx, *r, &op.actor.ID, r.Status); err != nil {
 		return err
 	}
-	err = contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID}, "completed")
+	err = contactNotice(tx, *r, roleUpdated, []uint{r.RequesterID}, "completed")
 	return err
 }
 

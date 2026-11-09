@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -105,7 +104,7 @@ func presentGuardianLink(link models.GuardianLink, users map[uint]models.User, p
 		if user, ok := users[id]; ok {
 			return user.PublicName()
 		}
-		return "Someone"
+		return unknownPersonName
 	}
 	out := guardianLinkJSON{
 		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: name(link.GuardianUserID),
@@ -288,7 +287,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := a.completeTeenConversionIfReady(tx, &teen, today, c.ClientIP()); err != nil {
 				return err
 			}
-			if _, err := jobs.Enqueue(tx, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+			if _, err := guardianConsentMailType.Enqueue(tx, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), ""); err != nil {
 				return err
 			}
 		}

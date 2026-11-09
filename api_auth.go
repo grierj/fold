@@ -346,7 +346,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		if fresh.Status != models.UserActive || mail.NormalizeAddress(fresh.Email) != email {
 			return errTokenInvalid
 		}
-		if _, err := jobs.Enqueue(tx, kindPasswordResetMail, userMailJob{UserID: user.ID}, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := passwordResetMailType.Enqueue(tx, userMailJob{UserID: user.ID}, time.Now(), ""); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.PasswordResetRequested,

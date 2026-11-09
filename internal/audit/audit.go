@@ -369,6 +369,10 @@ const (
 	// counted to limit tests to 10 an hour (DEC-129). Target is the user.
 	PushTestSent = "push.test_sent"
 
+	// ContactPrivacyChanged records a person's own preference change, without
+	// copying their contact details into audit metadata.
+	ContactPrivacyChanged = "contact.privacy_changed"
+
 	// ContactReasonKept and ContactReasonRemoved: an admin deciding, during an
 	// account deletion, whether to keep or blank one contact-request reason
 	// (M7.4 T07B, owner decision 6). AddReasonKept and AddReasonRemoved are the

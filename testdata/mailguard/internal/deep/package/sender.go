@@ -8,4 +8,4 @@ type App struct{ Mailer mail.Sender }
 var shared = (&App{}).Mailer
 
 // The sender is the second result, declared in a different source file.
-func mailer() (error, mail.Adapter) { return nil, nil }
+func mailer() (error, mail.Sender) { return nil, nil }

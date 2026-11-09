@@ -126,7 +126,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 				return err
 			}
 			if value, supplied := updates["hide_contact_from_leaders"]; supplied && value != oldHidden {
-				if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: contactPrivacyChanged,
+				if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.ContactPrivacyChanged,
 					TargetType: "user", TargetID: u.ID, IP: c.ClientIP(),
 					Meta: map[string]any{"hideContactFromLeaders": value}}); err != nil {
 					return err
@@ -222,7 +222,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		_, err = jobs.Enqueue(tx, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "", directMailAttempts)
+		_, err = emailVerifyMailType.Enqueue(tx, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "")
 		return err
 	})
 	if answerStaleSession(c, err) {
@@ -251,7 +251,7 @@ func (a *App) sendEmailChangeNotice(to, newEmail, cancelRaw string) error {
 	link := a.emailBaseURL() + "/cancel-email-change?token=" + cancelRaw
 	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
 	defer cancel()
-	return a.Mailer.Send(ctx, mail.Message{
+	return sendTracked(ctx, a.mailSender(), mail.Message{
 		To:      to,
 		Subject: "Your Fold sign-in email is changing",
 		Text: fmt.Sprintf(`The sign-in email for your Fold account at %s is being changed to %s.
@@ -261,9 +261,9 @@ The change takes effect only after the new address is verified.
 If this wasn't you, cancel the pending change and end every current sign-in here:
 %s
 
-Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in 24 hours.`,
-			a.siteName(), newEmail, link),
-	})
+Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in %s.`,
+			a.siteName(), newEmail, link, tokenLifetime),
+	}, nil).err
 }
 
 // apiVerifyEmailChange redeems an email verification token: the new address

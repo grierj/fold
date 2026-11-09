@@ -31,7 +31,7 @@ func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
 func TestDevOutboxStoresMail(t *testing.T) {
 	db := testdb.Shared(t)
 	outbox := NewDevOutbox(db, "Fold <noreply@example.com>")
-	if err := outbox.Send(context.Background(), Message{
+	if err := sendOnly(outbox, Message{
 		To: "pat@example.com", Subject: "Reset your Fold password", Text: "link here",
 	}); err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestSMTPSendsThroughTestServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Send(context.Background(), Message{
+	if err := sendOnly(s, Message{
 		To: "sam@example.com", Subject: "Hello", Text: "plain body",
 	}); err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestSMTPRequiresEncryptionOutsideLoopback(t *testing.T) {
 			// identity used for TLS policy and certificate verification.
 			s.addr = fake.addr()
 			s.AllowInsecure = allow
-			err = s.Send(context.Background(), Message{To: "sam@example.com", Subject: "Secret link", Text: "token"})
+			err = sendOnly(s, Message{To: "sam@example.com", Subject: "Secret link", Text: "token"})
 			<-fake.done
 			if allow {
 				if err != nil || !strings.Contains(fake.data, "token") {
@@ -483,7 +483,7 @@ func testSender(t *testing.T, rawURL string, fake *fakeTLSSMTP) *SMTPSender {
 func TestSMTPStartTLS(t *testing.T) {
 	fake := newFakeTLSSMTP(t, false)
 	s := testSender(t, "smtp://"+fake.addr(), fake)
-	if err := s.Send(context.Background(), Message{
+	if err := sendOnly(s, Message{
 		To: "sam@example.com", Subject: "Hello", Text: "plain body",
 	}); err != nil {
 		t.Fatal(err)
@@ -499,7 +499,7 @@ func TestSMTPStartTLS(t *testing.T) {
 func TestSMTPImplicitTLS(t *testing.T) {
 	fake := newFakeTLSSMTP(t, true)
 	s := testSender(t, "smtps://"+fake.addr(), fake)
-	if err := s.Send(context.Background(), Message{
+	if err := sendOnly(s, Message{
 		To: "sam@example.com", Subject: "Hello", Text: "plain body",
 	}); err != nil {
 		t.Fatal(err)
@@ -517,7 +517,7 @@ func TestSMTPHeaderInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.Send(context.Background(), Message{
+	err = sendOnly(s, Message{
 		To: "a@example.com\r\nBcc: victim@example.com", Subject: "Hi", Text: "x",
 	})
 	if err == nil || !strings.Contains(err.Error(), "newline") {
@@ -525,7 +525,7 @@ func TestSMTPHeaderInjection(t *testing.T) {
 	}
 	fake := newFakeTLSSMTP(t, true)
 	s2 := testSender(t, "smtps://"+fake.addr(), fake)
-	if err := s2.Send(context.Background(), Message{
+	if err := sendOnly(s2, Message{
 		To: "sam@example.com", Subject: "Hi\r\nBcc: victim@example.com", Text: "body",
 	}); err != nil {
 		t.Fatal(err)
@@ -537,7 +537,7 @@ func TestSMTPHeaderInjection(t *testing.T) {
 }
 
 func TestNoSenderFails(t *testing.T) {
-	if err := (NoSender{}).Send(context.Background(), Message{To: "a@b.c"}); err == nil || !NotConfigured(err) {
+	if err := sendOnly((NoSender{}), Message{To: "a@b.c"}); err == nil || !NotConfigured(err) {
 		t.Fatal("NoSender sent")
 	}
 	if NotConfigured(errors.New("other")) {
@@ -553,7 +553,7 @@ func TestSMTPAddsDateMessageIDAndEncodesSubject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Send(context.Background(), Message{
+	if err := sendOnly(s, Message{
 		To: "sam@example.com", Subject: "Café night", Text: "plain body",
 	}); err != nil {
 		t.Fatal(err)
@@ -596,4 +596,10 @@ func TestIsPermanent(t *testing.T) {
 			t.Errorf("%v: %v, want %v", tc.err, got, tc.want)
 		}
 	}
+}
+
+// sendOnly sends m and drops the provider id.
+func sendOnly(s Sender, m Message) error {
+	_, err := s.SendEmail(context.Background(), m)
+	return err
 }

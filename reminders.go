@@ -6,11 +6,13 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"fold/internal/content"
+	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -38,15 +40,31 @@ const (
 	// reminder time, still goes as soon as it can (before the date starts).
 	reminderLookahead = 2 * time.Hour
 	reminderLookback  = 6 * time.Hour
-	// longestReminder bounds the sweep's scan to dates it could reach.
-	longestReminder = 10080 * time.Minute
 )
+
+// longestReminder bounds the sweep's scan to dates it could reach: the
+// longest of the choices below.
+var longestReminder = time.Duration(slices.Max(reminderChoices)) * time.Minute
 
 // Reminder times a leader can choose (DEC-133), in minutes before the
 // date; 0 is off.
 var reminderChoices = []int{0, 120, 1440, 2880, 10080}
 
-var errReminderTime = apiErr(http.StatusBadRequest, "event_reminder_time", "reminderEmailMinutes must be 0 (off), 120, 1440, 2880 or 10080")
+var errReminderTime = apiErr(http.StatusBadRequest, "event_reminder_time", reminderChoicesText())
+
+// reminderChoicesText names the choices: "reminderEmailMinutes must be 0
+// (off), 120, 1440, 2880 or 10080".
+func reminderChoicesText() string {
+	var words []string
+	for _, c := range reminderChoices {
+		if c == 0 {
+			words = append(words, "0 (off)")
+		} else {
+			words = append(words, strconv.Itoa(c))
+		}
+	}
+	return "reminderEmailMinutes must be " + strings.Join(words[:len(words)-1], ", ") + " or " + words[len(words)-1]
+}
 
 func validReminderMinutes(m int) bool {
 	for _, c := range reminderChoices {
@@ -63,6 +81,8 @@ const (
 	reminderWaitlist = "waitlist"
 )
 
+var reminderSendType = jobs.Type{Name: kindReminderSend}
+
 type reminderJob struct {
 	OccurrenceID uint  `json:"occurrenceId"`
 	StartsAt     int64 `json:"startsAt"`
@@ -70,7 +90,7 @@ type reminderJob struct {
 }
 
 func (a *App) reminderKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindReminderSend, Label: "Sending an event reminder", MaxAttempts: jobs.DefaultMaxAttempts,
+	return []jobs.Kind{{Type: reminderSendType, Label: "Sending an event reminder",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
 			var p reminderJob
 			if err := json.Unmarshal(payload, &p); err != nil {
@@ -82,9 +102,9 @@ func (a *App) reminderKinds() []jobs.Kind {
 
 // hourlyKinds are queued once an hour (jobs_daily.go).
 func (a *App) hourlyKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindReminderSweep, Label: "Lining up event reminders", MaxAttempts: jobs.DefaultMaxAttempts,
+	return []jobs.Kind{{Type: jobs.Type{Name: kindReminderSweep}, Hourly: true, Label: "Lining up event reminders",
 		Run: func(ctx context.Context, _ json.RawMessage) error { return a.sweepReminders(ctx, time.Now()) }},
-		{Name: kindNotifyReconcile, Label: "Checking for notices that still need sending", MaxAttempts: jobs.DefaultMaxAttempts,
+		{Type: jobs.Type{Name: kindNotifyReconcile}, Hourly: true, Label: "Checking for notices that still need sending",
 			Run: func(ctx context.Context, _ json.RawMessage) error { return a.reconcileNotifications(ctx, time.Now()) }}}
 }
 
@@ -116,9 +136,8 @@ func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 		if at.Before(now) {
 			at = now
 		}
-		key := kindReminderSend + ":" + historyID(r.ID) + ":" + strconv.FormatInt(r.StartsAt.Unix(), 10) + ":" + strconv.Itoa(r.Minutes)
-		if _, err := jobs.Enqueue(a.DB.WithContext(ctx), kindReminderSend, reminderJob{OccurrenceID: r.ID, StartsAt: r.StartsAt.Unix(), Minutes: r.Minutes},
-			at, key, jobs.DefaultMaxAttempts); err != nil {
+		key := reminderKey{Kind: kindReminderSend, Occ: r.ID, Start: r.StartsAt.Unix(), Minutes: r.Minutes}.String()
+		if _, err := reminderSendType.Enqueue(a.DB.WithContext(ctx), reminderJob{OccurrenceID: r.ID, StartsAt: r.StartsAt.Unix(), Minutes: r.Minutes}, at, key); err != nil {
 			return err
 		}
 	}
@@ -188,7 +207,7 @@ func (a *App) sendReminder(ctx context.Context, p reminderJob, now time.Time) er
 // writeReminder writes one reminder message, or finds the one already
 // written, and returns its id if it still needs preparing (0 if not).
 func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence, p reminderJob, kind string, now time.Time) (uint, error) {
-	key := kind + ":" + historyID(occ.ID) + ":" + strconv.FormatInt(p.StartsAt, 10) + ":" + strconv.Itoa(p.Minutes)
+	key := reminderKey{Kind: kind, Occ: occ.ID, Start: p.StartsAt, Minutes: p.Minutes}.String()
 	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{reminderStatus(kind)}})
 	subject, body := reminderText(kind, occurrencePlace(ev, occ), p.Minutes)
 	clean := content.SanitizeHTML(body)
@@ -236,7 +255,7 @@ func reminderText(kind, place string, minutes int) (string, string) {
 		// Inside the last two hours the waitlist no longer moves on its own
 		// (DEC-80), so the note doesn't promise a spot by email.
 		promise := "If a spot opens, we'll let you know."
-		if minutes <= 120 {
+		if time.Duration(minutes)*time.Minute <= events.CutoffWindow {
 			promise = "The organizers can still add you if a spot opens."
 		}
 		return "Still on the waitlist: {{event_title}} on {{event_time}}",
@@ -387,7 +406,7 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 		GROUP BY m.id ORDER BY m.id`,
 		[]string{models.RecipientSent, models.RecipientDelivered},
 		[]string{models.RecipientBounced, models.RecipientComplained, models.RecipientFailed}, models.RecipientSuppressed, models.RecipientQueued,
-		models.DeliveryPush, reminderPushKind+":%",
+		models.DeliveryPush, reminderKeyLike(reminderPushKind),
 		occ.ID, models.MessageCategoryReminder).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -428,38 +447,9 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 	return out, nil
 }
 
-// defaultReminderMinutes is a new event's reminder time: 1 day (DEC-133).
-const defaultReminderMinutes = 1440
-
-// createEvent inserts ev. GORM leaves a zero value out of an INSERT, so the
-// columns' defaults (1 day, push on) would replace a leader's "Off"; an
-// Off is written explicitly after. A caller builds ev with ReminderPush
-// true unless the leader turned it off.
-func createEvent(tx *gorm.DB, ev *models.Event) error {
-	// Create reads the columns' defaults back into ev, so the choices are
-	// kept from before it.
-	emailOff, pushOff := ev.ReminderEmailMinutes == 0, !ev.ReminderPush
-	if err := tx.Create(ev).Error; err != nil {
-		return err
-	}
-	off := map[string]any{}
-	if emailOff {
-		ev.ReminderEmailMinutes = 0
-		off["reminder_email_minutes"] = 0
-	}
-	if pushOff {
-		ev.ReminderPush = false
-		off["reminder_push"] = false
-	}
-	if len(off) == 0 {
-		return nil
-	}
-	return tx.Model(ev).Updates(off).Error
-}
-
 // reminderAlreadyCovers reports whether a reminder of this kind already
 // went for the date at a time still inside the new reminder's lead: its
-// own reminder time (from its key: kind:occ:start:minutes) is less than
+// own reminder time (from its reminderKey) is less than
 // p.Minutes before the new one. A date moved an hour later sends no second
 // email; a date moved a week later does, and so does a changed reminder
 // time (a 1-day reminder shortened to 2 hours sends the 2-hour one too:
@@ -467,7 +457,7 @@ func createEvent(tx *gorm.DB, ev *models.Event) error {
 func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) (bool, error) {
 	var keys []string
 	if err := db.Model(&models.Message{}).Where("occurrence_id = ? AND category = ? AND reminder_key LIKE ? AND status IN ?",
-		occID, models.MessageCategoryReminder, kind+":%", []string{models.MessageSending, models.MessageSent}).
+		occID, models.MessageCategoryReminder, reminderKeyLike(kind), []string{models.MessageSending, models.MessageSent}).
 		Pluck("reminder_key", &keys).Error; err != nil {
 		return false, err
 	}
@@ -480,22 +470,17 @@ func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) 
 }
 
 // reminderKeyCovers compares a reminder already written under key
-// (kind:occ:start:minutes) with the one p would send: same is the very
+// (a reminderKey) with the one p would send: same is the very
 // same reminder (date, start and time alike); covers is another one whose
 // time is less than p.Minutes before p's (reminderAlreadyCovers' rule).
 func reminderKeyCovers(key string, p reminderJob) (same, covers bool) {
-	parts := strings.Split(key, ":")
-	if len(parts) != 4 {
+	k, ok := parseReminderKey(key)
+	if !ok {
 		return false, false
 	}
-	start, err1 := strconv.ParseInt(parts[2], 10, 64)
-	minutes, err2 := strconv.Atoi(parts[3])
-	if err1 != nil || err2 != nil {
-		return false, false
-	}
-	if start == p.StartsAt && minutes == p.Minutes {
+	if k.Start == p.StartsAt && k.Minutes == p.Minutes {
 		return true, false
 	}
-	at, was := p.StartsAt-int64(p.Minutes)*60, start-int64(minutes)*60
+	at, was := p.StartsAt-int64(p.Minutes)*60, k.Start-int64(k.Minutes)*60
 	return false, at-was < int64(p.Minutes)*60
 }

@@ -200,11 +200,11 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 	default:
 		// The answer says an email is on its way, so the job is durably queued
 		// before it is given (R6-4).
-		if _, err := jobs.Enqueue(a.DB, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := guardianConsentMailType.Enqueue(a.DB, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), ""); err != nil {
 			log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
 			jsonError(c, http.StatusInternalServerError, "could not send the consent email")
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in 24 hours."})
+	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in " + tokenLifetime + "."})
 }

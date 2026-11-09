@@ -224,7 +224,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			// failure as a failed stored request. It uses no request context,
 			// like the stored paths' transactions: a client that disconnects
 			// cannot turn the durable write into a failure.
-			if _, err := jobs.Enqueue(a.DB, kindAccountExistsMail, userMailJob{UserID: existing.ID}, time.Now(), "", directMailAttempts); err != nil {
+			if _, err := accountExistsMailType.Enqueue(a.DB, userMailJob{UserID: existing.ID}, time.Now(), ""); err != nil {
 				log.Printf("account-exists hint: %s", jobs.CleanError(err))
 				jsonError(c, http.StatusInternalServerError, "could not save your request")
 				return false
@@ -268,7 +268,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		// emailed about the first one (#91). The job is queued with the
 		// request, so neither exists without the other.
 		if source == models.RequestSelfSignup && !flags.Duplicate && !flags.Honeypot {
-			_, err := jobs.Enqueue(tx, kindAccountRequestMail, requestMailJob{RequestID: req.ID, Case: requestMailReceived}, time.Now(), "", directMailAttempts)
+			_, err := accountRequestMailType.Enqueue(tx, requestMailJob{RequestID: req.ID, Case: requestMailReceived}, time.Now(), "")
 			return err
 		}
 		return nil
@@ -590,7 +590,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		default:
 			mailCase = requestMailExists
 		}
-		if _, err := jobs.Enqueue(tx, kindAccountRequestMail, requestMailJob{RequestID: req.ID, Case: mailCase}, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := accountRequestMailType.Enqueue(tx, requestMailJob{RequestID: req.ID, Case: mailCase}, time.Now(), ""); err != nil {
 			return err
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
@@ -737,10 +737,10 @@ func (a *App) accountApprovedMessage(to, raw, site string, needsConsent bool) fo
 		Subject: fmt.Sprintf("Your %s account is approved", site),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
-Set your password here (the link works once and expires in 24 hours):
+Set your password here (the link works once and expires in %s):
 %s%s
 
-After that you can sign in with this email address.`, site, link, extra),
+After that you can sign in with this email address.`, site, tokenLifetime, link, extra),
 	}
 }
 

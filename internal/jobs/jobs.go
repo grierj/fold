@@ -25,19 +25,60 @@ import (
 	"gorm.io/gorm"
 )
 
-// Kind is one sort of job: its handler and how many attempts it gets.
-// A handler does its own transactions; returning an error retries it. It must
-// be safe to run twice (a retry, or a lease taken back from a worker that
-// was slow rather than gone) and should finish well within the lease.
-type Kind struct {
-	Name        string
+// Type names one sort of job and owns how many attempts it gets. It is what
+// a caller holds to queue work, so the count is stated once, beside the
+// kind, and every enqueue takes it from here. A kind's registered Kind embeds
+// the same Type.
+type Type struct {
+	Name string
+	// MaxAttempts is the attempts a job of this type gets; 0 means
+	// DefaultMaxAttempts.
 	MaxAttempts int
+}
+
+// Attempts is the count a job of this type is queued with.
+func (t Type) Attempts() int {
+	if t.MaxAttempts <= 0 {
+		return DefaultMaxAttempts
+	}
+	return t.MaxAttempts
+}
+
+// Spec is one job of this type for EnqueueMany.
+func (t Type) Spec(payload any, runAt time.Time, uniqueKey string) Spec {
+	return Spec{Type: t, Payload: payload, RunAt: runAt, UniqueKey: uniqueKey}
+}
+
+// Enqueue adds a job of this type to run at runAt. A uniqueKey that some job
+// already has (in any status) adds nothing and reports false, so scheduling
+// the same work twice is harmless; "" means no key.
+func (t Type) Enqueue(db *gorm.DB, payload any, runAt time.Time, uniqueKey string) (bool, error) {
+	n, err := EnqueueMany(db, []Spec{t.Spec(payload, runAt, uniqueKey)})
+	return n == 1, err
+}
+
+// Kind is one registered sort of job: its type, its handler and what an
+// admin and the schedulers need to know about it. A handler does its own
+// transactions; returning an error retries it. It must be safe to run twice
+// (a retry, or a lease taken back from a worker that was slow rather than
+// gone) and should finish well within the lease.
+type Kind struct {
+	Type
 	// Label says what the job does, in plain words, on the System page.
 	Label string
 	// Daily: the job is queued again every church day, so a dead one is
-	// retried by tomorrow's run anyway.
-	Daily bool
-	Run   func(ctx context.Context, payload json.RawMessage) error
+	// retried by tomorrow's run anyway. Hourly: it is queued once every UTC
+	// hour. The schedulers queue a kind with neither only on demand.
+	Daily  bool
+	Hourly bool
+	// DailyPayload, when set, is the payload of the day's job; day is the
+	// church date, YYYY-MM-DD.
+	DailyPayload func(day string) any
+	// OnDismiss, when set, runs in the transaction in which an admin sets a
+	// dead job of this kind aside, with the job's payload, so the kind can
+	// settle whatever the job was going to do.
+	OnDismiss func(tx *gorm.DB, payload json.RawMessage) error
+	Run       func(ctx context.Context, payload json.RawMessage) error
 }
 
 // Defaults (PLAN 5.5: FOLD_JOB_POLL=1s).
@@ -49,28 +90,19 @@ const (
 	maxErrorLen = 2000
 )
 
-// Enqueue adds a job to run at runAt. A uniqueKey that some job already
-// has (in any status) adds nothing and reports false, so scheduling the
-// same work twice is harmless; "" means no key.
-func Enqueue(db *gorm.DB, kind string, payload any, runAt time.Time, uniqueKey string, maxAttempts int) (bool, error) {
-	n, err := EnqueueMany(db, []Spec{{Kind: kind, Payload: payload, RunAt: runAt, UniqueKey: uniqueKey, MaxAttempts: maxAttempts}})
-	return n == 1, err
-}
-
-// Spec is one job for EnqueueMany, with Enqueue's arguments.
+// Spec is one job for EnqueueMany, built by Type.Spec.
 type Spec struct {
-	Kind        string
-	Payload     any
-	RunAt       time.Time
-	UniqueKey   string
-	MaxAttempts int
+	Type      Type
+	Payload   any
+	RunAt     time.Time
+	UniqueKey string
 }
 
 // enqueueBatch is how many jobs one INSERT adds (well inside Postgres's
 // parameter limit at 6 columns a row).
 const enqueueBatch = 500
 
-// EnqueueMany adds jobs as Enqueue does, in INSERTs of up to 500 rows, and
+// EnqueueMany adds jobs as Type.Enqueue does, in INSERTs of up to 500 rows, and
 // reports how many it added: a job whose unique key some job already has
 // is skipped.
 func EnqueueMany(db *gorm.DB, specs []Spec) (int64, error) {
@@ -89,11 +121,7 @@ func EnqueueMany(db *gorm.DB, specs []Spec) (int64, error) {
 				body = []byte("{}")
 			}
 		}
-		attempts := s.MaxAttempts
-		if attempts <= 0 {
-			attempts = DefaultMaxAttempts
-		}
-		job := models.Job{Kind: s.Kind, Payload: string(body), RunAt: s.RunAt.UTC(), Status: models.JobQueued, MaxAttempts: attempts}
+		job := models.Job{Kind: s.Type.Name, Payload: string(body), RunAt: s.RunAt.UTC(), Status: models.JobQueued, MaxAttempts: s.Type.Attempts()}
 		if s.UniqueKey != "" {
 			key := s.UniqueKey
 			job.UniqueKey = &key

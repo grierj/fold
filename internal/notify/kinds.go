@@ -165,14 +165,18 @@ func (k Kind) RenderForPush(v Vars) (title, body string, ok bool) {
 // and contact kinds, and for rows about someone in a household (research
 // 2.4): they name nobody. The stored SafePushTitle is replaced with the
 // church's name (site_name) when the push is sent (DEC-134 B), since the
-// registry looks nothing up. (Variables, not constants: a dotted string
-// constant in this file reads as a kind key to TestEveryKindConstIsRegistered.)
-var (
+// registry looks nothing up.
+const (
 	SafePushTitle = "Fold"
 	SafePushBody  = "Open Fold to review an update."
 )
 
 func safePush(Vars) (string, string) { return SafePushTitle, SafePushBody }
+
+// IsSafePush reports whether a stored push is the safe text, whose title the
+// sender replaces with the church's name. It is the one place that knows how
+// the safe text is recognised.
+func IsSafePush(title, body string) bool { return title == SafePushTitle && body == SafePushBody }
 
 // RenderForEmail renders k for email: the kind's RenderEmail when set,
 // the link-only safe variant when the kind has one, Render otherwise.

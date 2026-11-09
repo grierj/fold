@@ -1425,7 +1425,7 @@ func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
 			daily = k
 		}
 	}
-	if _, err := jobs.Enqueue(db, kindTombstoneSweep, tombstonePageJob{Day: "2026-11-06"}, time.Now(), "measured-sweep", jobs.DefaultMaxAttempts); err != nil {
+	if _, err := enqueueJob(db, kindTombstoneSweep, tombstonePageJob{Day: "2026-11-06"}, time.Now(), "measured-sweep", jobs.DefaultMaxAttempts); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()

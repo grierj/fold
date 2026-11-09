@@ -550,10 +550,6 @@ func TestStateChangesLeaveUpdatedAtAlone(t *testing.T) {
 			}
 		}
 	}
-	if err := Seen(db, uid, ids); err != nil {
-		t.Fatal(err)
-	}
-	unchanged("seen")
 	if found, err := SetRead(db, uid, plain[0], true); !found || err != nil {
 		t.Fatal("read", err)
 	}

@@ -71,7 +71,7 @@ if grep -n 'gateHoldMs\|GATE_HOLD_MS' "$HERE/qc1-measure.sh" "$HERE/qc1/lib.sh";
 
 # --- the scheduler (V-05): FOLD_WORKERS=0 does not stop it -----------------------------------------
 # The app starts its scheduler whatever the worker count (jobs_daily.go startJobs).
-grep -q 'go func() {' "$ROOT/jobs_daily.go"; grep -q 'queueHourly(a.DB, hourly, now)' "$ROOT/jobs_daily.go"; grep -q 'a.Config.Workers <= 0' "$ROOT/jobs_daily.go"
+grep -q 'go func() {' "$ROOT/jobs_daily.go"; grep -q 'queueHourly(a.DB, kinds, now)' "$ROOT/jobs_daily.go"; grep -q 'a.Config.Workers <= 0' "$ROOT/jobs_daily.go"
 sed -n '/^func (a \*App) startJobs/,/^}/p' "$ROOT/jobs_daily.go" | sed -n '/Workers <= 0/,/runner.Start/p' | grep -q 'WARNING: FOLD_WORKERS=0'
 # hour = 3600000 ms. A window is contaminated in the 15 s after the app started and in the first 5 s of a full hour.
 APP=1700000000000                      # app started

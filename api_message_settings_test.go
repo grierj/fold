@@ -32,7 +32,7 @@ func TestGuardianCopiesSetting(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("save %v: %d %s", on, w.Code, w.Body.String())
 		}
-		if got := app.settingValue(settingGuardianCopies) == "true"; got != on {
+		if got := settingText(t, app, settingGuardianCopies) == "true"; got != on {
 			t.Fatalf("stored %v, want %v", got, on)
 		}
 	}
@@ -58,13 +58,13 @@ func TestReplyToSetting(t *testing.T) {
 		}
 	}
 	w := root.do("PUT", "/api/v1/admin/settings/reply-to", map[string]any{"address": " office@example.org "}, true)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"address":"office@example.org"`) || app.replyToAddress() != "office@example.org" {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"address":"office@example.org"`) || settingText(t, app, settingReplyTo) != "office@example.org" {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(root.do("GET", "/api/v1/admin/settings/reply-to", nil, false).Body.String(), "office@example.org") {
 		t.Fatal("read back")
 	}
-	if w := root.do("PUT", "/api/v1/admin/settings/reply-to", map[string]any{"address": ""}, true); w.Code != http.StatusOK || app.replyToAddress() != "" {
+	if w := root.do("PUT", "/api/v1/admin/settings/reply-to", map[string]any{"address": ""}, true); w.Code != http.StatusOK || settingText(t, app, settingReplyTo) != "" {
 		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
 	}
 	if auditCount(t, app, audit.ReplyToChanged) != 2 {

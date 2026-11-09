@@ -172,6 +172,10 @@ type User struct {
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
+// UnnamedMember is the name shown for someone with neither a display name nor
+// a name. SQL that orders or shows names passes it as a parameter.
+const UnnamedMember = "Member"
+
 // PublicName returns the name shown in the UI. It never falls back to the
 // email, which is contact information.
 func (u *User) PublicName() string {
@@ -181,7 +185,7 @@ func (u *User) PublicName() string {
 	if u.Name != "" {
 		return u.Name
 	}
-	return "Member"
+	return UnnamedMember
 }
 
 // PublicNameSQL is PublicName as a SQL expression over the users columns of
@@ -192,7 +196,7 @@ func PublicNameSQL(alias string) string {
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return "COALESCE(NULLIF(" + prefix + "display_name, ''), NULLIF(" + prefix + "name, ''), 'Member')"
+	return "COALESCE(NULLIF(" + prefix + "display_name, ''), NULLIF(" + prefix + "name, ''), '" + UnnamedMember + "')"
 }
 
 // PasswordCost is the bcrypt cost of new password hashes. Tests lower it to
@@ -663,6 +667,14 @@ const (
 	DeliveryDeferred   = "deferred"
 	DeliveryDelivered  = "delivered"
 	DeliveryBounced    = "bounced"
+)
+
+// The reasons a bounce or complaint report leaves on a delivery or a message
+// recipient (the email webhook writes them; the history reads them back).
+const (
+	BounceSoft      = "soft bounce"
+	BounceHard      = "hard bounce"
+	BounceComplaint = "marked as spam"
 )
 
 // NotificationDelivery records one email (later SMS) send of a stored
