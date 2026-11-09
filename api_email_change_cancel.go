@@ -19,7 +19,7 @@ func (a *App) apiCancelEmailChange(c *gin.Context) {
 		Token string `json:"token"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -34,7 +34,7 @@ func (a *App) apiCancelEmailChange(c *gin.Context) {
 			TargetType: "user", TargetID: user.ID, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errTokenInvalid) {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	if err != nil {

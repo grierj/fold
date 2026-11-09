@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ const (
 // date; 0 is off.
 var reminderChoices = []int{0, 120, 1440, 2880, 10080}
 
-const errReminderTime = "reminderEmailMinutes must be 0 (off), 120, 1440, 2880 or 10080"
+var errReminderTime = apiErr(http.StatusBadRequest, "event_reminder_time", "reminderEmailMinutes must be 0 (off), 120, 1440, 2880 or 10080")
 
 func validReminderMinutes(m int) bool {
 	for _, c := range reminderChoices {

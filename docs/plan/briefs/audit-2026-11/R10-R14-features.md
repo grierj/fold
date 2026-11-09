@@ -31,7 +31,7 @@ Shared rules for both items:
   may see. Resolve any `waiting` rows with `notify.Resolve`
   (`internal/notify/notify.go:184`) where the subject is decided.
 - JSON is camelCase under `/api/v1`. A new error a person can act on gets an
-  entry in `errorCodes` (`api_errors.go:20`) plus a line in `ERROR_COPY`
+  declared `apiErr` value (`api_error_values.go`, formerly the `errorCodes` map) plus a line in `ERROR_COPY`
   (`web/src/lib/errors.ts:13`). New response types get a pair in
   `tsContracts` (`guards_test.go:66`) so `web/src/types.ts` stays matched to
   the Go structs. Names render with `User.PublicName()`, never the email.

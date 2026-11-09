@@ -45,7 +45,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 func TestLimitBodyRefusesOversizedRequests(t *testing.T) {
 	r := gin.New()
-	r.Use(LimitBody(10, refuse))
+	r.Use(LimitBody(10, func(c *gin.Context) { refuse(c, http.StatusRequestEntityTooLarge, "request too large") }))
 	r.POST("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	post := func(body string) int {
 		w := httptest.NewRecorder()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 
@@ -61,7 +62,7 @@ const restoreFenceKey = "restore_fence"
 // errRestoreDetected: the counter is at or below the floor, or its row is gone,
 // so the database was restored under the running process. The transaction
 // rolled back; nothing it was going to do happened.
-var errRestoreDetected = errors.New("the database was restored while Fold was running")
+var errRestoreDetected = apiErr(http.StatusServiceUnavailable, "restore_detected", "the database was restored while Fold was running")
 
 // errRestoreFenceKey is returned to a settings writer that would write the
 // barrier's own row with a key it did not name in a literal.

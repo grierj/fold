@@ -41,11 +41,6 @@ const (
 	guestIPLimit = 10
 )
 
-var (
-	errGuestEventGone  = errors.New("event date no longer open to guests")
-	errGuestHasAccount = errors.New("email already has an account")
-)
-
 // guestRegistrationJSON is what the confirm and manage pages show a
 // signed-out visitor: the event as they may see it, and the status of
 // their registration. It carries no email and no attendee names.
@@ -151,18 +146,17 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	}
 	name := strings.TrimSpace(body.Name)
 	if name == "" || len(name) > 100 {
-		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
+		fail(c, errNameRequired100)
 		return
 	}
 	email := foldmail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
-		jsonError(c, http.StatusBadRequest, "enter a valid email address")
+		fail(c, errEnterValidEmail)
 		return
 	}
 	if !body.Over18 {
 		// The age gate on the guest door (5.10): nothing is stored.
-		jsonError(c, http.StatusBadRequest,
-			"Ask a parent or guardian to register you. Guests registering on their own must be 18 or older.")
+		fail(c, errGuestUnder18)
 		return
 	}
 	hits, err := a.throttleHit(c.Request.Context(), guestIPKey(c.ClientIP()), time.Hour)
@@ -320,18 +314,18 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		}
 		occ, err := lockOccurrence(tx, signup.OccurrenceID)
 		if err != nil {
-			return errGuestEventGone
+			return errDateClosed
 		}
 		var ev models.Event
 		if err := tx.First(&ev, occ.EventID).Error; err != nil {
-			return errGuestEventGone
+			return errDateClosed
 		}
 		var grp *models.Group
 		gp := policy.Group{}
 		if ev.GroupID != nil {
 			var g models.Group
 			if err := tx.First(&g, *ev.GroupID).Error; err != nil {
-				return errGuestEventGone
+				return errDateClosed
 			}
 			grp = &g
 			gp = asGroup(&g)
@@ -340,13 +334,13 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		// tightened, or the date was cancelled.
 		if occ.Status != models.OccurrenceScheduled ||
 			!policy.CanRegisterGuest(viewOf(dateEvent(&ev, occ), false), gp) {
-			return errGuestEventGone
+			return errDateClosed
 		}
 		if found && user.Status != models.UserGuest {
 			// An account arrived for this address after the form. The
 			// person proved the mailbox is theirs by opening the link,
 			// so saying so reveals nothing to a stranger.
-			return errGuestHasAccount
+			return errEmailTakenSignIn
 		}
 		// A guest who confirms again already holds their row; like
 		// registerLocked, their own seats do not count against them.
@@ -462,25 +456,14 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
-		return
-	case errors.Is(err, errGuestEventGone):
-		jsonError(c, http.StatusConflict, "that event date is no longer open for guest registration")
-		return
-	case errors.Is(err, errGuestHasAccount):
-		jsonError(c, http.StatusConflict, "that email already has an account; sign in to register")
-		return
-	case errors.Is(err, errRemovedBlocked):
-		jsonError(c, http.StatusConflict, errRemovedBlocked.Error())
+		fail(c, errLinkExpired)
 		return
 	case err != nil:
-		jsonError(c, http.StatusInternalServerError, "could not confirm your registration")
+		fail(c, err)
 		return
 	}
 	if fullNoWaitlist {
-		body := errorBody(http.StatusConflict, "This event is full")
-		body["full"] = true
-		c.JSON(http.StatusConflict, body)
+		fail(c, errEventFullNoWaitlist)
 		return
 	}
 	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, guestZone, askedAccount); err != nil {

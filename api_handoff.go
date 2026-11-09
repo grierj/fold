@@ -99,8 +99,14 @@ func (a *App) apiAdminSoleLedGroups(c *gin.Context) {
 // errNeedSuccessors means some sole-led groups have no valid successor.
 type errNeedSuccessors struct{ groups []soleLedGroupJSON }
 
-func (errNeedSuccessors) Error() string {
-	return "every group this person leads alone needs a new leader"
+func (errNeedSuccessors) Error() string { return errNeedsSuccessor.Message }
+
+// Is matches the declared refusal this error answers with.
+func (errNeedSuccessors) Is(target error) bool { return target == errNeedsSuccessor }
+
+// apiAnswer is the 400 with the groups still missing a successor.
+func (e errNeedSuccessors) apiAnswer() *apiError {
+	return errNeedsSuccessor.with(gin.H{"groups": e.groups})
 }
 
 // handOffLeadership runs inside the delete or disable transaction. For each
@@ -195,18 +201,6 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		}
 	}
 	return nil
-}
-
-// needSuccessors answers 400 with the groups still missing a successor.
-func needSuccessors(c *gin.Context, err error) bool {
-	var need errNeedSuccessors
-	if !errors.As(err, &need) {
-		return false
-	}
-	body := errorBody(http.StatusBadRequest, need.Error())
-	body["groups"] = need.groups
-	c.JSON(http.StatusBadRequest, body)
-	return true
 }
 
 // demoteEverywhere makes every leadership of userID a plain membership, with

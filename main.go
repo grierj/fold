@@ -294,7 +294,9 @@ func (a *App) setupRouter() *gin.Engine {
 	r.Use(stampRequestStart(), httpx.AccessLog(), gin.Recovery(), httpx.SecurityHeaders(a.Config.CookieSecure))
 	// Cap every request body before anything parses it (the CSRF check
 	// reads form fields, and Gin spools big multipart bodies to disk).
-	r.Use(httpx.LimitBody(maxRequestBytes, jsonError))
+	r.Use(httpx.LimitBody(maxRequestBytes, func(c *gin.Context) {
+		c.JSON(errRequestTooLarge.Status, errRequestTooLarge.body())
+	}))
 	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
 	// validated the list; an empty one trusts nobody.
 	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {

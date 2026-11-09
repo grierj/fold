@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"unicode/utf8"
 
@@ -39,32 +40,30 @@ func passwordLength(pw string) int {
 	return passwordLengthOK
 }
 
-// The messages passwordRuleError sends. api_errors.go keys its error codes on
-// them, so they are written out here; TestPasswordMessagesStateTheLimits keeps
-// the numbers in them equal to the limits above.
-const (
-	errPasswordTooShort = "password must be at least 10 characters"
-	errPasswordTooLong  = "password must be at most 72 bytes"
+// The answers passwordRuleError gives; their numbers are the limits above.
+var (
+	errPasswordTooShort = apiErr(http.StatusBadRequest, "password_too_short", fmt.Sprintf("password must be at least %d characters", minPasswordLength))
+	errPasswordTooLong  = apiErr(http.StatusBadRequest, "password_too_long", fmt.Sprintf("password must be at most %d bytes", maxPasswordBytes))
 )
 
-// passwordRuleError returns the message for a new password that breaks the
-// length rules, or "" when it is fine.
-func passwordRuleError(pw string) string {
+// passwordRuleError returns the refusal for a new password that breaks the
+// length rules, or nil when it is fine.
+func passwordRuleError(pw string) error {
 	switch passwordLength(pw) {
 	case passwordTooShort:
 		return errPasswordTooShort
 	case passwordTooLong:
 		return errPasswordTooLong
 	}
-	return ""
+	return nil
 }
 
 // checkNewPassword answers 400 and returns false when pw breaks the length
 // rules. Every handler that sets a password calls it before hashing, so a
 // too-long password is a clear 400 instead of a bcrypt 500.
 func checkNewPassword(c *gin.Context, pw string) bool {
-	if msg := passwordRuleError(pw); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if err := passwordRuleError(pw); err != nil {
+		fail(c, err)
 		return false
 	}
 	return true

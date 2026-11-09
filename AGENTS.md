@@ -159,8 +159,19 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   red; status is never color alone; copy is plain, warm, second person. Prove a UI change with
   `.cursor/skills/verify-ui` and the 390px screenshots. Reference: Meetup, then ChurchTrac; familiar
   beats original.
-- Errors (DEC-61): a new error a person can act on gets a code in `api_errors.go` and a line in
-  `ERROR_COPY` (what happened, what to do next). DEC-52 decides what is never an error.
+- Errors (DEC-61): an error a person can act on is an `*apiError` value (`api_errors.go`), declared once
+  as a package variable with its status, code and message, `var errX = apiErr(http.StatusConflict, "x", "...")`
+  (`api_error_values.go` holds the ones with no better home), and a line in `ERROR_COPY` (what happened, what to
+  do next). Domain code returns the value, wraps it with `%w` or compares with `errors.Is`; a handler answers any
+  error with `fail(c, err)`: the value's own status, code, message and extra keys, anything else a logged 500 with
+  no detail. One refusal that must answer differently in two places is two values (`apiErrWith(base, gin.H{...})`
+  adds body keys and still matches the base; `errEventFullNoWaitlist`); a body that carries data is an error
+  with an `apiAnswer()` method (`errNeedSuccessors`, `householdRegistrationError`). A message built at run time
+  uses `apiErrf` (not declared; the code is written at the call). `jsonError(c, status, msg)` is only for a message
+  with no code of its own: its code is the general one for the status. A declared message is written once, in its
+  declaration (`TestDeclaredMessagesAreWrittenOnce`); `apiErr` runs only as a package-level initializer
+  (`TestAPIErrorsAreDeclaredAtPackageLevel`). `errSecuritySession` is itself the 401. DEC-52 decides what is
+  never an error.
 - Account deletion outcomes (R4-CTX, R4-3b-1): `apiAdminDeleteUser` runs the whole erasure in
   `a.contactMutationCtx(ctx, ...)` with one `adminDeleteBudget` (40 s) context made from
   `context.Background()`, never the request's, so a disconnect cannot abort a commit. Classify its error only
@@ -171,8 +182,9 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   released the gate and the user lock), at most three attempts within `deleteRetryWindow` (2 s), each rebuilt from the
   target's id alone; a 55P03 inside a `*contactRollbackError` stops with no further BEGIN, and it and exhaustion both answer 409
   `delete_household_busy`: nothing was deleted because COMMIT was never sent, which is not the same as the locks being
-  released (that is what the acknowledgment proves, and an unacknowledged ROLLBACK lacks). 40P01 is never retried. These three codes go through
-  `jsonErrorCode` and need an `ERROR_COPY` line, not an `api_errors.go` entry. Return is not release: after a client
+  released (that is what the acknowledgment proves, and an unacknowledged ROLLBACK lacks). 40P01 is never retried. These three codes are
+  declared values (`errDeleteOutcomeUnknown`, `errDeleteTimedOut`, `errDeleteHouseholdBusy`), real copy on a
+  5xx on purpose, answered with `fail(c, ...)`, and need an `ERROR_COPY` line. Return is not release: after a client
   deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
   `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
 - Sessions (`session_state.go`): "this request's session is still current" is decided in one place,
@@ -184,7 +196,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   Never compare the versions or `CanSignIn` by hand. Ending every session is `endAllSessionsIn` (epoch
   bump plus `revokeAccountTokens`); a bump alone uses `sessionVersionBump()`. The cookie's keys are the
   `session*Key` constants and `setSessionLogin`/`clearSessionLogin`; `errSecuritySession` is answered
-  401 by `answerStaleSession`/`jsonStaleSession`.
+  401 by `fail(c, errSecuritySession)` (`answerStaleSession` when the caller only wants that case).
 - Membership rules live in `internal/policy` (`CanRemoveMember`, `CanBeSuccessor`, role changes).
   Removal keeps the row with `status=removed` (DEC-35); voluntary departure keeps `status=left`
   (DEC-86); neither counts as active. Adding anyone to a group goes through `changeRole`, which
@@ -606,7 +618,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_api_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens`; a line that must keep a hex says why with `color-ok:` |
-| Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed`; `web/e2e/friendly-errors.spec.ts` |
+| Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestDeclaredAPIErrorsKeepTheirAnswers`, `TestDeclaredMessagesAreWrittenOnce`; `web/e2e/friendly-errors.spec.ts` |
 | Main pages (including event, scheduling, Join and My groups) have no moderate, serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`; setup page in `web/e2e/seed.setup.ts` |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (its error names the file to move to) |
 | Source guards read the whole production tree, not a directory glob | `guardkit.ReadProduction` and its skip rules (`internal/guardkit/guardkit_test.go`: `TestReadProductionSkipRules`, `TestParseReportsUnparsableFilesAndKeepsGoing`), `TestContactRequestTextGuardReadsTheRealTree`; a guard about one package says so with `Parsed.Package` |

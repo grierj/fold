@@ -413,7 +413,7 @@ func TestDailyLimitCopyMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "already sent "+strconv.Itoa(dailyMessagesPerGroup)+" messages") || !strings.Contains(errMessageDailyLimit, strconv.Itoa(dailyMessagesPerGroup)) {
+	if !strings.Contains(string(b), "already sent "+strconv.Itoa(dailyMessagesPerGroup)+" messages") || !strings.Contains(errMessageDailyLimit.Message, strconv.Itoa(dailyMessagesPerGroup)) {
 		t.Fatal("the message_daily_limit copy doesn't match dailyMessagesPerGroup")
 	}
 }

@@ -115,27 +115,18 @@ func lockedHostActor(locked map[uint]*models.User, actor *models.User) error {
 	return nil
 }
 
-// hostRefusal is why a person cannot be made a host: the status and wording
-// the handler answers with.
-type hostRefusal struct {
-	status int
-	msg    string
-}
-
-func (r *hostRefusal) Error() string { return r.msg }
-
 // hostEligibility is the one rule for who may host, used by the unlocked
 // preflight (hostCandidate) and by every recheck under lockHostUsers. A nil u
 // is an account that no longer exists.
-func hostEligibility(actor, u *models.User) *hostRefusal {
+func hostEligibility(actor, u *models.User) *apiError {
 	if u == nil {
-		return &hostRefusal{http.StatusNotFound, "no account with that email"}
+		return errNoAccount
 	}
 	if u.Status != models.UserActive {
-		return &hostRefusal{http.StatusBadRequest, "that account can't host an event"}
+		return errCannotHost
 	}
 	if !policy.CanAssignHost(asPerson(actor), asPerson(u)) {
-		return &hostRefusal{http.StatusBadRequest, "teens can't host an event"}
+		return errTeenHost
 	}
 	return nil
 }
@@ -200,8 +191,15 @@ type soleHostEventsJSON struct {
 // valid replacement, or the list changed while the request waited.
 type errNeedHostSuccessors struct{ data soleHostEventsJSON }
 
-func (errNeedHostSuccessors) Error() string {
-	return "every church-wide event this person hosts alone needs a new host"
+func (errNeedHostSuccessors) Error() string { return errNeedsHostSuccessor.Message }
+
+// Is matches the declared refusal this error answers with.
+func (errNeedHostSuccessors) Is(target error) bool { return target == errNeedsHostSuccessor }
+
+// apiAnswer is the 400 with the events still missing a host and who may host
+// them.
+func (e errNeedHostSuccessors) apiAnswer() *apiError {
+	return errNeedsHostSuccessor.with(gin.H{"events": e.data.Events, "candidates": e.data.Candidates})
 }
 
 // soleHostEventsFor builds the events a person hosts alone, from the seats it
@@ -397,20 +395,6 @@ func lockHostedEvents(tx *gorm.DB, ids []uint) (map[uint]bool, error) {
 		locked[e.ID] = true
 	}
 	return locked, nil
-}
-
-// needHostSuccessors answers 400 with the events still missing a host and who
-// may host them.
-func needHostSuccessors(c *gin.Context, err error) bool {
-	var need errNeedHostSuccessors
-	if !errors.As(err, &need) {
-		return false
-	}
-	body := errorBody(http.StatusBadRequest, need.Error())
-	body["events"] = need.data.Events
-	body["candidates"] = need.data.Candidates
-	c.JSON(http.StatusBadRequest, body)
-	return true
 }
 
 // deletionHostPlan is step (1)-(6) of the deletion's host handling, in the

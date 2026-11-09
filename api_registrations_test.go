@@ -40,7 +40,11 @@ func TestParseRemoteCapacity(t *testing.T) {
 		{name: "negative date", raw: "-2", allowZero: true, wantError: "remote seat limit for this date must be a whole number from 0 to 100000, or empty"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, set, msg := parseRemoteCapacity(json.RawMessage(tt.raw), tt.allowZero)
+			got, set, err := parseRemoteCapacity(json.RawMessage(tt.raw), tt.allowZero)
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
 			if !intPtrEqual(got, tt.want) || set != tt.wantSet || msg != tt.wantError {
 				t.Fatalf("got (%v, %t, %q), want (%v, %t, %q)", got, set, msg, tt.want, tt.wantSet, tt.wantError)
 			}

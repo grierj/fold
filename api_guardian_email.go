@@ -135,7 +135,7 @@ func (a *App) apiPreviewGuardianEmail(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	c.JSON(http.StatusOK, preview)
@@ -146,7 +146,7 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 		Token string `json:"token"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
@@ -166,7 +166,7 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 		return a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: payload.Scope, Status: payload.Status, ConfirmedGuardian: true})
 	})
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

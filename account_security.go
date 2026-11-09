@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"time"
 
 	"fold/models"
@@ -10,7 +11,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var errSecuritySession = errors.New("account credentials changed")
+// errSecuritySession: the session the request carried is no longer current
+// (credentials changed, account disabled, erased or signed out elsewhere), so
+// it is signed out: 401.
+var errSecuritySession = apiErr(http.StatusUnauthorized, "", "unauthorized")
 
 // lockCurrentCredentials binds a password proof to the freshly locked account.
 // Callers check expected.CheckPassword before entering the transaction, keeping

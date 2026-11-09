@@ -29,10 +29,10 @@ import (
 )
 
 var (
-	errDepartureNotFound    = errors.New("departure context not found")
-	errDepartureForbidden   = errors.New("departure forbidden")
-	errDepartureUnavailable = errors.New("this departure is no longer available; refresh the group and check membership and leadership")
-	errDepartureStale       = errors.New("this departure changed; review the updated dates before trying again")
+	errDepartureNotFound    = apiErr(http.StatusNotFound, "", "group not found")
+	errDepartureForbidden   = apiErr(http.StatusForbidden, "", "forbidden")
+	errDepartureUnavailable = apiErr(http.StatusConflict, "departure_unavailable", "this departure is no longer available; refresh the group and check membership and leadership")
+	errDepartureStale       = apiErr(http.StatusConflict, "departure_stale", "this departure changed; review the updated dates before trying again")
 )
 
 const departureSnapshotVersion = 3
@@ -487,18 +487,8 @@ func (a *App) departurePreview(c *gin.Context, subjectID uint) {
 		facts, loadErr = loadDepartureFacts(tx, actor, uint(groupID64), subjectID, time.Now().UTC())
 		return loadErr
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	switch {
-	case errors.Is(err, errDepartureNotFound):
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	case errors.Is(err, errDepartureForbidden):
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	case errors.Is(err, errDepartureUnavailable):
-		jsonError(c, http.StatusConflict, errDepartureUnavailable.Error())
-		return
-	case err != nil:
-		jsonError(c, http.StatusInternalServerError, "could not preview group departure")
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	snapshot, err := a.newDepartureSnapshot(facts)
@@ -777,7 +767,7 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 	bodyErr := c.ShouldBindJSON(&body)
 	body.Note = strings.TrimSpace(body.Note)
 	if len(body.Note) > 500 {
-		jsonError(c, http.StatusBadRequest, "note must be at most 500 characters")
+		fail(c, errNoteTooLong500)
 		return
 	}
 	actorAtRequest := apiUser(c)
@@ -824,21 +814,8 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 		result, err = a.applyDeparture(tx, current, locked, keep, now, body.Note, c.ClientIP())
 		return err
 	})
-	switch {
-	case errors.Is(err, errDepartureNotFound):
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	case errors.Is(err, errDepartureForbidden):
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	case errors.Is(err, errDepartureUnavailable):
-		jsonError(c, http.StatusConflict, errDepartureUnavailable.Error())
-		return
-	case errors.Is(err, errDepartureStale):
-		jsonError(c, http.StatusConflict, errDepartureStale.Error())
-		return
-	case err != nil:
-		jsonError(c, http.StatusInternalServerError, "could not complete group departure")
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"departure": result})

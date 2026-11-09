@@ -121,15 +121,15 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		MemberLimit json.RawMessage `json:"memberLimit"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Name) == "" {
-		jsonError(c, http.StatusBadRequest, "name is required")
+		fail(c, errNameRequired)
 		return
 	}
 	name := strings.TrimSpace(body.Name)
 	description := strings.TrimSpace(body.Description)
 	location := strings.TrimSpace(body.Location)
 	tags := joinTags(body.Tags)
-	if msg := validateGroupText(name, description, location, tags); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if err := validateGroupText(name, description, location, tags); err != nil {
+		fail(c, err)
 		return
 	}
 	visibility, msg := normalizeVisibility(body.Visibility)
@@ -202,7 +202,7 @@ func parseGroupUpcomingPage(c *gin.Context, groupID uint) (int, *groupUpcomingCu
 	if raw, present := c.GetQuery("limit"); present {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > 100 {
-			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			fail(c, errInvalidUpcomingPage)
 			return 0, nil, false
 		}
 		limit = n
@@ -212,7 +212,7 @@ func parseGroupUpcomingPage(c *gin.Context, groupID uint) (int, *groupUpcomingCu
 		cursor = &groupUpcomingCursor{}
 		data, err := base64.RawURLEncoding.DecodeString(raw)
 		if len(raw) > 512 || err != nil || json.Unmarshal(data, cursor) != nil || cursor.GroupID != groupID || cursor.ID == 0 || cursor.StartsAt.IsZero() {
-			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			fail(c, errInvalidUpcomingPage)
 			return 0, nil, false
 		}
 	}
@@ -329,11 +329,11 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if name == "" {
-			jsonError(c, http.StatusBadRequest, "name is required")
+			fail(c, errNameRequired)
 			return
 		}
 		if len(name) > maxGroupNameLen {
-			jsonError(c, http.StatusBadRequest, "name is too long")
+			fail(c, errNameTooLong)
 			return
 		}
 		patch.Name = name
@@ -342,7 +342,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	if body.Description != nil {
 		description := strings.TrimSpace(*body.Description)
 		if len(description) > maxDescriptionLen {
-			jsonError(c, http.StatusBadRequest, "description is too long")
+			fail(c, errDescriptionTooLong)
 			return
 		}
 		patch.Description = description
@@ -351,7 +351,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	if body.Tags != nil {
 		tags := joinTags(body.Tags)
 		if len(tags) > maxTagsLen {
-			jsonError(c, http.StatusBadRequest, "tags are too long")
+			fail(c, errTagsTooLong)
 			return
 		}
 		patch.Tags = tags
@@ -365,7 +365,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	if body.Location != nil {
 		location := strings.TrimSpace(*body.Location)
 		if len(location) > maxLocationLen {
-			jsonError(c, http.StatusBadRequest, "location is too long")
+			fail(c, errLocationTooLong)
 			return
 		}
 		patch.Location = location
@@ -527,9 +527,9 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 	if !policy.CanJoinGroup(asPerson(u), asGroup(g), rel) {
 		switch {
 		case rel.Removed:
-			jsonError(c, http.StatusForbidden, "A leader removed you from this group")
+			fail(c, errRemovedFromGroup)
 		default:
-			jsonError(c, http.StatusForbidden, "this group is invite only")
+			fail(c, errInviteOnly)
 		}
 		return
 	}
@@ -541,13 +541,13 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 		switch err {
 		case nil:
 		case errGroupFull:
-			groupFull(c)
+			fail(c, errGroupFull)
 			return
 		case errSecuritySession:
-			jsonStaleSession(c)
+			fail(c, errSecuritySession)
 			return
 		case errRoleRefused:
-			jsonError(c, http.StatusForbidden, "you can't join this group")
+			fail(c, errCannotJoin)
 			return
 		default:
 			jsonError(c, http.StatusInternalServerError, "could not join group")
@@ -578,7 +578,7 @@ func (a *App) apiGroupMembers(c *gin.Context) {
 		return
 	}
 	if !policy.CanSeeRoster(asPerson(apiUser(c)), asGroup(g), rel) {
-		jsonError(c, http.StatusForbidden, "only members can see who is in this group")
+		fail(c, errMembersOnly)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), policy.CanManageGroup(asPerson(apiUser(c)), rel))})
@@ -592,20 +592,20 @@ func validGroupStatus(s string) bool {
 	return false
 }
 
-func validateGroupText(name, description, location, tags string) string {
+func validateGroupText(name, description, location, tags string) error {
 	if len(name) > maxGroupNameLen {
-		return "name is too long"
+		return errNameTooLong
 	}
 	if len(description) > maxDescriptionLen {
-		return "description is too long"
+		return errDescriptionTooLong
 	}
 	if len(location) > maxLocationLen {
-		return "location is too long"
+		return errLocationTooLong
 	}
 	if len(tags) > maxTagsLen {
-		return "tags are too long"
+		return errTagsTooLong
 	}
-	return ""
+	return nil
 }
 
 // likeContains builds a LIKE pattern that matches the text as a substring.
@@ -687,11 +687,10 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 	switch err {
 	case nil:
 	case errSecuritySession:
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return
 	case errRoleRefused:
-		jsonError(c, http.StatusBadRequest,
-			"only adult members can be made leaders, and a group must keep at least one leader")
+		fail(c, errLeaderRuleMembers)
 		return
 	default:
 		jsonError(c, http.StatusInternalServerError, "could not change role")
@@ -701,23 +700,11 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 }
 
 // errRoleRefused means policy said no once the group row was locked.
-var errRoleRefused = errors.New("role change refused")
-
-// errGroupFull: the group is at its member limit and nobody chose to go over
-// it (DEC-39).
-var errGroupFull = errors.New("group full")
+var errRoleRefused = apiErr(http.StatusForbidden, "", "forbidden")
 
 // errGroupNotApprovedForAdds: only admins add people to a pending or
 // archived group (policy.CanAddToGroup).
-var errGroupNotApprovedForAdds = errors.New("this group isn't approved yet; you can add people once an admin approves it")
-
-// groupFull answers 409 for errGroupFull. full:true tells the SPA it may
-// offer a leader or admin the explicit over-limit choice.
-func groupFull(c *gin.Context) {
-	body := errorBody(http.StatusConflict, "This group is full")
-	body["full"] = true
-	c.JSON(http.StatusConflict, body)
-}
+var errGroupNotApprovedForAdds = apiErr(http.StatusConflict, "group_add_not_approved", "this group isn't approved yet; you can add people once an admin approves it")
 
 // memberAddOptions distinguishes direct manager adds from self-join and role
 // changes. Regular adds preserve an active member's role; admin adds may change it.
@@ -742,7 +729,7 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole s
 // changeRoleIn requires the contact gate and caller-owned transaction. It locks
 // users before the group/membership capacity protocol and never commits or sends emails.
 func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions, allow func(*models.User, *models.User, policy.Rel, policy.Rel, int) bool) error {
-	sessionErr := errSecuritySession
+	var sessionErr error = errSecuritySession
 	if add != nil {
 		sessionErr = errPeopleAddForbidden
 	}
@@ -918,28 +905,14 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		return
 	}
 	if policy.TeenAddNeedsApproval(asPerson(&target)) {
-		jsonError(c, 409, errTeenAddApproval.Error())
+		fail(c, errTeenAddApproval)
 		return
 	}
 	err := a.changeRole(c, g, target.ID, models.MembershipMember, body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), actor)
 	})
-	switch err {
-	case errTeenAddApproval:
-		jsonError(c, 409, errTeenAddApproval.Error())
-		return
-	case nil:
-	case errGroupFull:
-		groupFull(c)
-		return
-	case errGroupNotApprovedForAdds:
-		jsonError(c, http.StatusConflict, err.Error())
-		return
-	case errRoleRefused, errPeopleAddForbidden:
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not add member")
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	a.membershipAdded(c, g, target.ID)
@@ -963,7 +936,7 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		return
 	}
 	if !policy.CanRequestDeletion(asPerson(u), rel, others) {
-		jsonError(c, http.StatusBadRequest, "the group still has other members")
+		fail(c, errGroupHasMembers)
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"time"
 
 	"fold/internal/accounts"
@@ -9,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-var errConversionConsent = errors.New("this approved account is waiting for consent and guardian confirmation; ask your church office before changing their identity or removing them")
+var errConversionConsent = apiErr(http.StatusConflict, "household_conversion_consent", "this approved account is waiting for consent and guardian confirmation; ask your church office before changing their identity or removing them")
 
 type stagedTeenConversion struct {
 	request    models.AccountRequest

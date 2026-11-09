@@ -97,7 +97,7 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, 
 			found = found || k == *body.Category
 		}
 		if !found {
-			jsonError(c, http.StatusBadRequest, "that kind of email can't be changed here")
+			fail(c, errEmailKindUnknown)
 			return false
 		}
 		kinds = []string{*body.Category}
@@ -116,14 +116,14 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string, 
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
 		if session != nil {
-			jsonStaleSession(c)
+			fail(c, errSecuritySession)
 		} else {
 			jsonError(c, http.StatusNotFound, "not found")
 		}
 		return false
 	}
-	if errors.Is(err, errUnboundEmailLink) {
-		jsonError(c, http.StatusForbidden, errEmailLinkTurnOn)
+	if errors.Is(err, errEmailLinkTurnOn) {
+		fail(c, err)
 		return false
 	}
 	if err != nil {
@@ -208,12 +208,12 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 		// Plain characters only: no NUL (Postgres refuses it) or other control,
 		// line-separator or text-direction characters in an email footer.
 		if r != '\n' && (unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029') {
-			jsonError(c, http.StatusBadRequest, errChurchAddressCharacters)
+			fail(c, errChurchAddressCharacters)
 			return
 		}
 	}
 	if utf8.RuneCountInString(addr) > maxChurchAddress || len(lines) > 6 {
-		jsonError(c, http.StatusBadRequest, errChurchAddressLong)
+		fail(c, errChurchAddressLong)
 		return
 	}
 	if err := a.saveSetting(c, settingChurchAddress, addr, audit.ChurchAddressChanged, map[string]any{"set": addr != ""}); err != nil {
@@ -223,9 +223,9 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"address": addr})
 }
 
-const errChurchAddressLong = "the address must be at most 300 characters on 6 lines"
+var errChurchAddressLong = apiErr(http.StatusBadRequest, "church_address_long", "the address must be at most 300 characters on 6 lines")
 
-const errChurchAddressCharacters = "the address has a character that can't go in an email"
+var errChurchAddressCharacters = apiErr(http.StatusBadRequest, "church_address_characters", "the address has a character that can't go in an email")
 
 // churchAddress is the church's postal address for footers, or "".
 func (a *App) churchAddress() string {

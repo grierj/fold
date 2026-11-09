@@ -21,16 +21,15 @@ import (
 )
 
 var (
-	errConversionUnavailable = errors.New("this person cannot create an account yet; check their birth date, account type and guardian link")
-	errConversionEmail       = errors.New("that email is unavailable; use a different email")
-	errConversionOpen        = errors.New("cancel the current invitation before choosing a different email")
-	errConversionHolder      = errors.New("a responsible account is unavailable; ask your church office to check it")
-	errConversionPerson      = errors.New("this household person was removed or already has an account; reject this request")
-	errConversionPending     = errors.New("this account is waiting for an admin; wait for their decision")
-	errConversionRetry       = errors.New("household changed while locking")
-	errConversionDetails     = errors.New("this person's details changed after they accepted; ask the household to send a new invitation")
-	errConversionAdult       = errors.New("this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation")
-	errConversionInviter     = errors.New("the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation")
+	errConversionUnavailable = apiErr(http.StatusConflict, "household_conversion_unavailable", "this person cannot create an account yet; check their birth date, account type and guardian link")
+	errConversionEmail       = apiErr(http.StatusConflict, "household_conversion_email", "that email is unavailable; use a different email")
+	errConversionOpen        = apiErr(http.StatusConflict, "household_conversion_open", "cancel the current invitation before choosing a different email")
+	errConversionHolder      = apiErr(http.StatusConflict, "household_conversion_holder", "a responsible account is unavailable; ask your church office to check it")
+	errConversionPerson      = apiErr(http.StatusConflict, "household_conversion_person", "this household person was removed or already has an account; reject this request")
+	errConversionPending     = apiErr(http.StatusConflict, "household_conversion_approval", "this account is waiting for an admin; wait for their decision")
+	errConversionDetails     = apiErr(http.StatusConflict, "household_conversion_details", "this person's details changed after they accepted; ask the household to send a new invitation")
+	errConversionAdult       = apiErr(http.StatusConflict, "household_conversion_adult", "this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation")
+	errConversionInviter     = apiErr(http.StatusConflict, "household_conversion_inviter", "the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation")
 )
 
 // conversionJSON has no id, so a suppressed send can't be told apart from
@@ -193,21 +192,16 @@ func (a *App) loadConversionPerson(c *gin.Context) (*models.HouseholdPerson, boo
 	return &person, true
 }
 
+// conversionError answers a conversion failure: the invitation is not usable,
+// the email was taken meanwhile, or the refusal it carries.
 func conversionError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, errConsentForbidden), errors.Is(err, errConsentTeen), errors.Is(err, errConsentEvidence), errors.Is(err, errConsentEvidenceLong):
-		consentError(c, err)
-	case errors.Is(err, errConversionRetry):
-		jsonError(c, http.StatusConflict, "this household changed while approving; try again")
-	case errors.Is(err, errConversionDetails), errors.Is(err, errConversionAdult), errors.Is(err, errConversionInviter), errors.Is(err, errConversionPerson), errors.Is(err, errConversionPending), errors.Is(err, errConversionConsent), errors.Is(err, errConversionUnavailable), errors.Is(err, errConversionEmail), errors.Is(err, errConversionOpen), errors.Is(err, errConversionHolder):
-		jsonError(c, http.StatusConflict, err.Error())
 	case errors.Is(err, errTokenInvalid), errors.Is(err, gorm.ErrRecordNotFound):
-		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
+		fail(c, errInvitationExpired)
 	case emailTaken(err):
-		jsonError(c, http.StatusConflict, errConversionEmail.Error())
+		fail(c, errConversionEmail)
 	default:
-		log.Printf("household conversion: %v", err)
-		jsonError(c, http.StatusInternalServerError, "could not save household invitation")
+		fail(c, err)
 	}
 }
 
@@ -260,7 +254,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		}
 		body.Email = mail.NormalizeAddress(body.Email)
 		if !validEmail(body.Email) {
-			jsonError(c, http.StatusBadRequest, "enter a valid email address")
+			fail(c, errEnterValidEmail)
 			return
 		}
 	}

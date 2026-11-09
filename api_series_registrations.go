@@ -129,21 +129,19 @@ func registrationState(r models.Registration) seriesRegistrationState {
 		ChildcareAgesNote: r.ChildcareAgesNote}
 }
 
+// seriesDateRefusals are the refusals one date of a series can give without
+// failing the others; the date's refusal carries the refusal's own code.
+var seriesDateRefusals = []*apiError{errRemovedBlocked, errEventFull, errChildcareFull, errChildcareUnavailable, errRemoteNotAvailable}
+
+// seriesRefusalCode is the code of err when it is one of seriesDateRefusals,
+// else "".
 func seriesRefusalCode(err error) string {
-	switch {
-	case errors.Is(err, errRemovedBlocked):
-		return "registration_removed"
-	case errors.Is(err, errEventFull):
-		return "event_full"
-	case errors.Is(err, errChildcareFull):
-		return "childcare_full"
-	case errors.Is(err, errChildcareUnavailable):
-		return "childcare_not_available"
-	case errors.Is(err, errRemoteNotAvailable):
-		return "remote_not_available"
-	default:
-		return ""
+	for _, refusal := range seriesDateRefusals {
+		if errors.Is(err, refusal) {
+			return refusal.Code
+		}
 	}
+	return ""
 }
 
 func (a *App) apiRegisterSeries(c *gin.Context) {
@@ -152,16 +150,16 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if parseErr != nil || eventID64 == 0 || decoder.Decode(&body) != nil || !validAnswer(body.Status) {
-		jsonError(c, http.StatusBadRequest, "status and scope are required")
+		fail(c, errSeriesAnswerInvalid)
 		return
 	}
 	if body.Scope != seriesScopeAllFuture && body.Scope != seriesScopeThisAndFollowing {
-		jsonError(c, http.StatusBadRequest, "scope must be all_future or this_and_following")
+		fail(c, errSeriesScopeInvalid)
 		return
 	}
 	if body.Scope == seriesScopeThisAndFollowing {
 		if _, err := models.ParseCalendarDate(body.Date); err != nil {
-			jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
+			fail(c, errSeriesDateInvalid)
 			return
 		}
 	}
@@ -173,12 +171,12 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		mode = *body.AttendanceMode
 	}
 	if !validMode(mode) {
-		jsonError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
+		fail(c, errInvalidAttendanceMode)
 		return
 	}
 	care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
-	if msg := care.problem(nil); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if err := care.problem(nil); err != nil {
+		fail(c, err)
 		return
 	}
 	guests := 0
@@ -274,10 +272,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		// candidate query waited.
 
 		if guests < 0 || guests > ev.GuestsAllowed {
-			return errSeriesGuests
+			return errTooManyGuests
 		}
-		if care.problem(&ev) != "" {
-			return errSeriesChildcareUnavailable
+		if care.problem(&ev) != nil {
+			return errChildcareUnavailable
 		}
 
 		// One read for the actor's answers on every selected date.
@@ -390,19 +388,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, errSeriesUnavailable):
-			jsonError(c, http.StatusNotFound, "series not found")
-		case errors.Is(err, errSeriesNoDates):
-			jsonError(c, http.StatusConflict, "this series has no future dates to answer")
-		case errors.Is(err, errSeriesGuests):
-			jsonErrorCode(c, http.StatusBadRequest, "too_many_guests", "too many guests")
-		case errors.Is(err, errSeriesChildcareUnavailable):
-			jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
-		default:
-			log.Printf("series registration: %v", err)
-			jsonError(c, http.StatusInternalServerError, "could not save registration")
-		}
+		fail(c, err)
 		return
 	}
 	// Stable ordering is part of the mutation/result boundary even if future
@@ -458,7 +444,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if parseErr != nil || eventID64 == 0 || decoder.Decode(&body) != nil || body.Token == "" {
-		jsonError(c, http.StatusBadRequest, "undo token is required")
+		fail(c, errUndoTokenRequired)
 		return
 	}
 	actorAtRequest := apiUser(c)
@@ -470,53 +456,53 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		// and bulk registration mutations and avoiding a receipt/contact inversion.
 		var receipt models.SeriesUndoReceipt
 		if err := tx.Where("token_hash = ?", hashToken(body.Token)).First(&receipt).Error; err != nil {
-			return errSeriesUndoUnavailable
+			return errUndoNotFound
 		}
 		if receipt.ActorID != actorAtRequest.ID {
-			return errSeriesUndoOtherActor
+			return errUndoOtherActor
 		}
 		if receipt.EventID != uint(eventID64) {
-			return errSeriesUndoUnavailable
+			return errUndoNotFound
 		}
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
 		actor, err := lockActorIn(tx, actorAtRequest, actorNoKeyUpdate)
 		if err != nil {
-			return errSeriesUndoAuthority
+			return errUndoAuthorityRevoked
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", receipt.ID).First(&receipt).Error; err != nil {
-			return errSeriesUndoUnavailable
+			return errUndoNotFound
 		}
 		if receipt.UsedAt != nil {
-			return errSeriesUndoUsed
+			return errUndoUsed
 		}
 		var items []seriesUndoItem
 		if err := json.Unmarshal([]byte(receipt.Snapshot), &items); err != nil || len(items) == 0 {
-			return errSeriesUndoUnavailable
+			return errUndoNotFound
 		}
 		var ev models.Event
 		if err := tx.First(&ev, receipt.EventID).Error; err != nil || ev.RRule == "" {
-			return errSeriesUndoAuthority
+			return errUndoAuthorityRevoked
 		}
 		gp, rel := policy.Group{}, policy.Rel{}
 		if ev.GroupID != nil {
 			var group models.Group
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, *ev.GroupID).Error; err != nil {
-				return errSeriesUndoAuthority
+				return errUndoAuthorityRevoked
 			}
 			gp, rel = asGroup(&group), relIn(tx, actor.ID, group.ID)
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, receipt.EventID).Error; err != nil ||
 			!policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {
-			return errSeriesUndoAuthority
+			return errUndoAuthorityRevoked
 		}
 
 		locked := make([]models.EventOccurrence, len(items))
 		for i, item := range items {
 			o, err := lockOccurrence(tx, item.OccurrenceID)
 			if err != nil || o.EventID != ev.ID {
-				return errSeriesUndoEnded
+				return errUndoDateEnded
 			}
 			locked[i] = *o
 			var current models.Registration
@@ -524,7 +510,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 				return err
 			}
 			if !sameUndoState(undoState(current), item.After) {
-				return errSeriesUndoChanged
+				return errUndoChanged
 			}
 		}
 
@@ -533,13 +519,13 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		// ExpiresAt is expired.
 		undoNow := a.seriesTime()
 		if !undoNow.Before(receipt.ExpiresAt) {
-			return errSeriesUndoExpired
+			return errUndoExpired
 		}
 		for i := range locked {
 			o := &locked[i]
 			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(undoNow) ||
 				!policy.CanRegisterEvent(asPerson(actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
-				return errSeriesUndoEnded
+				return errUndoDateEnded
 			}
 		}
 		receipt.UsedAt = &undoNow
@@ -551,7 +537,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			o := &locked[i]
 			dateNow := a.seriesTime()
 			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(dateNow) {
-				return errSeriesUndoEnded
+				return errUndoDateEnded
 			}
 			var current models.Registration
 			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).First(&current).Error; err != nil {
@@ -627,41 +613,11 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		return tx.Where("expires_at <= ?", a.seriesTime()).Delete(&models.SeriesUndoReceipt{}).Error
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, errSeriesUndoOtherActor):
-			jsonError(c, http.StatusForbidden, "this Undo belongs to someone else")
-		case errors.Is(err, errSeriesUndoExpired):
-			jsonError(c, http.StatusConflict, "the Undo time has ended")
-		case errors.Is(err, errSeriesUndoUsed):
-			jsonError(c, http.StatusConflict, "this Undo was already used")
-		case errors.Is(err, errSeriesUndoChanged):
-			jsonError(c, http.StatusConflict, "an answer changed after this action; refresh before trying again")
-		case errors.Is(err, errSeriesUndoAuthority):
-			jsonError(c, http.StatusConflict, "you can no longer answer this series")
-		case errors.Is(err, errSeriesUndoEnded):
-			jsonError(c, http.StatusConflict, "one of these dates is no longer open")
-		case errors.Is(err, errSeriesUndoUnavailable):
-			jsonError(c, http.StatusNotFound, "Undo not found")
-		default:
-			log.Printf("series undo: %v", err)
-			jsonError(c, http.StatusInternalServerError, "could not undo registration")
-		}
+		fail(c, err)
 		return
 	}
 	sort.Strings(response.CapacityLoss)
 	c.JSON(http.StatusOK, response)
 }
 
-var (
-	errSeriesUnavailable          = errors.New("series unavailable")
-	errSeriesNoDates              = errors.New("series has no future dates")
-	errSeriesGuests               = errors.New("series guest count invalid")
-	errSeriesChildcareUnavailable = errors.New("series childcare unavailable")
-	errSeriesUndoUnavailable      = errors.New("series undo unavailable")
-	errSeriesUndoOtherActor       = errors.New("series undo other actor")
-	errSeriesUndoExpired          = errors.New("series undo expired")
-	errSeriesUndoUsed             = errors.New("series undo used")
-	errSeriesUndoChanged          = errors.New("series undo state changed")
-	errSeriesUndoAuthority        = errors.New("series undo authority revoked")
-	errSeriesUndoEnded            = errors.New("series undo occurrence ended")
-)
+var errSeriesUnavailable = apiErr(http.StatusNotFound, "", "series not found")

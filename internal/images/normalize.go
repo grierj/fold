@@ -51,17 +51,16 @@ func Ext(mime string) (string, bool) {
 	return ext, ok
 }
 
-// These strings are the API's error messages; api_errors.go gives each a code,
-// so their text must not change on its own.
+// The reasons an upload is refused. The package knows nothing of the API:
+// the root package maps each to its declared answer (imageRefusal), and any
+// other error from ReadUpload is a server fault.
 var (
-	ErrMissing    = errors.New("missing file")
-	ErrEmpty      = errors.New("empty file")
-	ErrFileSize   = errors.New("file too large (max 5MB)") // keep in step with MaxUploadBytes (TestFileSizeMessageNamesTheLimit)
-	ErrNotAllowed = errors.New("only JPEG, PNG, and GIF images are allowed")
-	ErrServer     = errors.New("server error")
-	ErrTooLarge   = errors.New("that image is too large to process")
-	ErrUnreadable = errors.New("cannot read file")
-	ErrWebP       = errors.New("WebP images are not supported; use a JPEG or PNG")
+	ErrEmpty      = errors.New("empty upload")
+	ErrFileSize   = errors.New("upload over the size limit")
+	ErrNotAllowed = errors.New("not a JPEG, PNG or GIF")
+	ErrTooLarge   = errors.New("image dimensions over the limit")
+	ErrUnreadable = errors.New("image cannot be decoded")
+	ErrWebP       = errors.New("WebP is not supported")
 )
 
 // Normalize re-encodes the image in f (already sniffed as mime) and

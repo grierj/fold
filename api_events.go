@@ -35,12 +35,12 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 		Timezone string `json:"timezone"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "timezone is required")
+		fail(c, errTimezoneRequired)
 		return
 	}
 	tz := strings.TrimSpace(body.Timezone)
 	if _, err := events.LoadZone(tz); err != nil {
-		jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
+		fail(c, errInvalidTimezone)
 		return
 	}
 	if err := setSettingIn(a.DB, settingTimezone, tz); err != nil {
@@ -558,7 +558,7 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 		return spec, nil, false
 	}
 	if len(spec.RRule) > maxRecurrenceLen {
-		jsonError(c, http.StatusBadRequest, "recurrence rule is too long")
+		fail(c, errRecurrenceRuleTooLong)
 		return spec, nil, false
 	}
 	// Check against the window Ensure and Extend will really generate, so a
@@ -596,15 +596,25 @@ func padWallHour(s string) string {
 // specError answers a rejected series rule. A rule that makes too many dates
 // has its own code so the page can say what to change.
 func specError(c *gin.Context, err error) {
-	if errors.Is(err, events.ErrTooManyDates) {
-		jsonErrorCode(c, http.StatusBadRequest, "recurrence_too_many", err.Error())
-		return
-	}
-	if errors.Is(err, events.ErrTooFrequent) {
-		jsonErrorCode(c, http.StatusBadRequest, "recurrence_too_frequent", err.Error())
-		return
+	for _, r := range specRefusals {
+		if errors.Is(err, r.from) {
+			fail(c, r.answer)
+			return
+		}
 	}
 	jsonError(c, http.StatusBadRequest, err.Error())
+}
+
+// specRefusals answer the series-rule errors internal/events owns, which
+// cannot name an HTTP answer. Their wording is the events package's.
+var specRefusals = []struct {
+	from   error
+	answer *apiError
+}{
+	{events.ErrTooManyDates, apiErr(http.StatusBadRequest, "recurrence_too_many", events.ErrTooManyDates.Error())},
+	{events.ErrTooFrequent, apiErr(http.StatusBadRequest, "recurrence_too_frequent", events.ErrTooFrequent.Error())},
+	{events.ErrBadStart, errInvalidStart},
+	{events.ErrBadDuration, errInvalidDuration},
 }
 
 func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEdits, vid videoEdits) {
@@ -673,15 +683,15 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 
 func textOK(c *gin.Context, title, description, location string) bool {
 	if len(title) > maxGroupNameLen {
-		jsonError(c, http.StatusBadRequest, "title is too long")
+		fail(c, errTitleTooLong)
 		return false
 	}
 	if len(description) > maxDescriptionLen {
-		jsonError(c, http.StatusBadRequest, "description is too long")
+		fail(c, errDescriptionTooLong)
 		return false
 	}
 	if len(location) > maxLocationLen {
-		jsonError(c, http.StatusBadRequest, "location is too long")
+		fail(c, errLocationTooLong)
 		return false
 	}
 	return true
@@ -791,13 +801,13 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		reason = strings.TrimSpace(*body.VisibilityReason)
 	}
 	if len(reason) > 500 {
-		jsonError(c, http.StatusBadRequest, "reason is too long")
+		fail(c, errReasonTooLong)
 		return
 	}
 	if body.Visibility != nil && strings.TrimSpace(*body.Visibility) != "" {
 		vis := strings.TrimSpace(*body.Visibility)
 		if !policy.CanSetEventVisibility(asPerson(me), viewOf(&ev, false), rel, vis) {
-			jsonError(c, http.StatusBadRequest, "that visibility isn't allowed on this event")
+			fail(c, errVisibilityNotAllowed)
 			return
 		}
 		ev.Visibility = vis
@@ -838,11 +848,8 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
 		return err
 	})
-	if createRoomFailed(c, err) {
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not create event")
+		fail(c, err)
 		return
 	}
 	j := toEventJSON(&ev)
@@ -1208,7 +1215,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return
 	}
 	if _, err := models.ParseCalendarDate(body.Date); err != nil {
-		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
+		fail(c, errSeriesDateInvalid)
 		return
 	}
 	var occ models.EventOccurrence
@@ -1251,7 +1258,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	date := c.Param("date")
 	if _, err := models.ParseCalendarDate(date); err != nil {
-		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
+		fail(c, errSeriesDateInvalid)
 		return
 	}
 	var body struct {
@@ -1273,41 +1280,41 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	visibility, visibilitySet, visErr := parseDateVisibility(body.Visibility)
 	if visErr != nil || len(body.Reason) > 500 {
-		jsonError(c, 400, "that visibility isn't allowed on this event")
+		fail(c, errVisibilityNotAllowed)
 		return
 	}
-	newOverride, overrideSet, capMsg := parseCapacity(body.CapacityOverride)
-	if capMsg != "" {
-		jsonError(c, http.StatusBadRequest, capMsg)
+	newOverride, overrideSet, capErr := parseCapacity(body.CapacityOverride)
+	if capErr != nil {
+		fail(c, capErr)
 		return
 	}
-	newRemoteOverride, remoteOverrideSet, capMsg := parseRemoteCapacity(body.RemoteCapacityOverride, true)
-	if capMsg != "" {
-		jsonError(c, http.StatusBadRequest, capMsg)
+	newRemoteOverride, remoteOverrideSet, capErr := parseRemoteCapacity(body.RemoteCapacityOverride, true)
+	if capErr != nil {
+		fail(c, capErr)
 		return
 	}
 	// Validate everything that doesn't need the row before the lock.
 	if body.DurationMinutes != nil &&
 		(*body.DurationMinutes < 1 || *body.DurationMinutes > events.MaxDurationMinutes) {
-		jsonError(c, http.StatusBadRequest, "duration must be between 1 minute and 7 days")
+		fail(c, errInvalidDuration)
 		return
 	}
 	var wallStart *time.Time
 	if body.StartsLocal != nil {
 		t, _, err := events.ParseWall(strings.TrimSpace(*body.StartsLocal), ev.TZID)
 		if err != nil {
-			jsonError(c, http.StatusBadRequest, err.Error())
+			specError(c, err)
 			return
 		}
 		u := t.UTC()
 		wallStart = &u
 	}
 	if body.Location != nil && len(strings.TrimSpace(*body.Location)) > maxLocationLen {
-		jsonError(c, http.StatusBadRequest, "location is too long")
+		fail(c, errLocationTooLong)
 		return
 	}
 	if body.Title != nil && len(strings.TrimSpace(*body.Title)) > maxGroupNameLen {
-		jsonError(c, http.StatusBadRequest, "title is too long")
+		fail(c, errTitleTooLong)
 		return
 	}
 	me := apiUser(c)
@@ -1489,7 +1496,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		c.JSON(409, gin.H{"needsDecision": true, "impact": impact})
 		return
 	case errors.Is(err, errDateVisibility):
-		jsonError(c, 400, "that visibility isn't allowed on this event")
+		fail(c, errVisibilityNotAllowed)
 		return
 	case errors.Is(err, errOccurrenceNotFound):
 		jsonError(c, http.StatusNotFound, "that date is not on this event")

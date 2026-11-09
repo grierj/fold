@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"net/http"
 	"strings"
 
 	"fold/internal/mail"
@@ -132,7 +132,7 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 func clearOptOutOnTurnOn(scope string, session *models.User, link *unsubscribeLink) func(*gorm.DB, *models.User) (bool, error) {
 	return func(tx *gorm.DB, fresh *models.User) (bool, error) {
 		if session == nil && !link.boundTo(fresh.Email) {
-			return false, errUnboundEmailLink
+			return false, errEmailLinkTurnOn
 		}
 		if mail.NormalizeAddress(fresh.Email) == "" {
 			return false, nil
@@ -142,6 +142,4 @@ func clearOptOutOnTurnOn(scope string, session *models.User, link *unsubscribeLi
 	}
 }
 
-const errEmailLinkTurnOn = "this link can only turn email off; sign in or use a newer email to turn it on"
-
-var errUnboundEmailLink = errors.New(errEmailLinkTurnOn)
+var errEmailLinkTurnOn = apiErr(http.StatusForbidden, "email_link_turn_on", "this link can only turn email off; sign in or use a newer email to turn it on")

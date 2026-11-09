@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
@@ -143,19 +142,13 @@ func endAllSessionsIn(tx *gorm.DB, user *models.User, set map[string]any) error 
 	return revokeAccountTokens(tx, user.ID)
 }
 
-// jsonStaleSession is the one answer to errSecuritySession: the session the
-// request carried is no longer current, so it is signed out (401).
-func jsonStaleSession(c *gin.Context) {
-	jsonError(c, http.StatusUnauthorized, "unauthorized")
-}
-
-// answerStaleSession answers errSecuritySession with jsonStaleSession and
+// answerStaleSession answers errSecuritySession (401, signed out) and
 // reports whether it did.
 func answerStaleSession(c *gin.Context, err error) bool {
 	if !errors.Is(err, errSecuritySession) {
 		return false
 	}
-	jsonStaleSession(c)
+	fail(c, errSecuritySession)
 	return true
 }
 
