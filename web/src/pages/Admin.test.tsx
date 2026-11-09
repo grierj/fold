@@ -14,6 +14,7 @@ import { ApiError } from "../api/core";
 import { ERROR_COPY, errorText } from "../lib/errors";
 import { ContactHistory } from "../api/contactHistory";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
+import { QC1_WEB } from "../test/qc1Facts";
 import { AdminPage } from "./Admin";
 
 // One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
@@ -424,6 +425,16 @@ it("offers a teen Ask to add without a leader-role shortcut", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(AdminGroups.addMember).not.toHaveBeenCalled();
+});
+
+// The QC-1 harness reaches a person's Delete panel by this search box, row and menu (deploy/digitalocean/qc1/app-facts.json).
+it("lets the QC-1 harness find a person and reach Delete", async () => {
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [user(2, "Pat"), user(3, "Quinn")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  await userEvent.type(await screen.findByRole("searchbox", { name: QC1_WEB.labels.usersSearch }), "pat");
+  const row = screen.getAllByRole("row").filter((r) => r.textContent?.includes("Pat"))[0];
+  await userEvent.click(within(row).getAllByRole("button", { name: new RegExp(`^${QC1_WEB.labels.moreForPrefix}`) })[0]);
+  expect(screen.getByRole("menuitem", { name: QC1_WEB.labels.menuDelete })).toBeInTheDocument();
 });
 
 it("keeps Edit first in the user's More menu and opens the edit form", async () => {

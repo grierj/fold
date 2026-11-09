@@ -468,7 +468,7 @@ together, or changes 3+ tables. Smaller work is exempt.
 `make dev` (dev Postgres from `deploy/docker-compose.dev.yml`, Go server, Vite), `make test`
 (against `DATABASE_URL`, root package sharded, starts the dev DB if unset), `make lint` (shell, Go
 vet/gofmt/staticcheck, web), `make e2e` (Playwright in parallel shards on fresh databases),
-`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded). Run the
+`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded) (its type check skips tests via `web/tsconfig.build.json`, so the image build needs only `web/`; `make lint-web` type-checks everything, tests included). Run the
 build once before `make dev` to try push: the Go server serves `/sw.js` from `web/dist`.
 `make compose-smoke` boots the shipped Compose stack (app and Postgres) and checks `/healthz`,
 the redirect to `/setup`, and that 5432 and 8080 are not published off loopback. CI's `compose`
@@ -693,4 +693,5 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | A session is "still current" by `sessionCurrent` alone; no code compares a row's session or logout version by hand | `TestSessionEpochsAreComparedOnlyBySessionCurrent` (parse-only; `==`/`!=` with a `.SessionVersion` or `.LogoutVersion` operand in the root package, outside `session_state.go` and the signed-link binding in `api_guardian_email.go`), `TestSessionCurrentPredicate`, `TestLockActorInRefusesEveryStaleSession` |
 | The recovery level the binary reports equals `deploy/recovery-policy`, and R4-RP's tooling refuses a lower level on every scripted path; no release at level 1 or above before R4-6c-R's tooling and procedure land | `TestRecoveryPolicyFileMatchesConstant`, `TestVersionJSONReportsRecoveryPolicy`; the tooling refusal is R4-RP's; the publication gate is review only |
 | The test-only attempt clock exists only in a binary built with `-tags e2eclock` and run with `FOLD_E2E_CLOCK=1` | The build tag and `attempt_clock_e2e.go`'s admin-and-CSRF route; that no shipped build sets the tag is review only (no test) |
+| QC and deploy scripts never grep application source; what the QC-1 harness takes from the application (limits, statements, selectors, labels, copy) is `deploy/digitalocean/qc1/app-facts.json` | `TestQC1AppFacts`, `TestQC1PlanMarkersAreWhatTheApplicationSends`, `TestQC1LoaderColumnsFitTheSchema`, `TestSchedulerRunsWithoutWorkers` (Go, beside the code) and `web/src/components/ReasonReviewSection.test.tsx` (Vitest, the rendered DOM); a refactor that changes a fact fails there, and `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .` regenerates the `go` section for review |
 | Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |
