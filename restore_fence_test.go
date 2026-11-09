@@ -961,7 +961,7 @@ func TestRestoreFenceDelayedAcknowledgment(t *testing.T) {
 			}
 			if s.rig != nil {
 				for _, e := range s.rig.proxy.Events()[mark:] {
-					if strings.Contains(e.SQL, "pg_advisory_xact_lock") || strings.Contains(e.SQL, "restore_fence") {
+					if strings.Contains(e.SQL, "pg_advisory_xact_lock") || isRestoreFenceStatement(e.SQL) {
 						t.Errorf("settle after the detection sent %q", e.SQL)
 					}
 				}
@@ -1218,4 +1218,12 @@ func TestRestoreFenceFencedIdAcrossARestart(t *testing.T) {
 	if s.counter() != counter || s.receipts() != receipts || fresh.restoreFenceFloor() != mark || s.deleted(a.ID) {
 		t.Fatal("the new App's answers moved the counter, the receipts or the account before any transaction")
 	}
+}
+
+// isRestoreFenceStatement reports whether wire SQL is one of the restore
+// fence's two statements. The key travels as a bind parameter, so the text is
+// recognised by the statements themselves.
+func isRestoreFenceStatement(sql string) bool {
+	return strings.Contains(sql, "restore_fence") || strings.Contains(sql, "(value::bigint + 1)::text") ||
+		strings.Contains(sql, "INSERT INTO settings (key, value) VALUES (")
 }

@@ -844,7 +844,7 @@ func TestDeletionDeadline(t *testing.T) {
 			t.Fatalf("delete: %d %s, want 503 delete_timed_out", w.Code, w.Body.String())
 		}
 		for _, e := range r.proxy.Events()[before:] {
-			if strings.Contains(strings.ToUpper(e.SQL), "BEGIN") || strings.Contains(e.SQL, "restore_fence") ||
+			if strings.Contains(strings.ToUpper(e.SQL), "BEGIN") || isRestoreFenceStatement(e.SQL) ||
 				strings.Contains(e.SQL, "set_config") || strings.Contains(e.SQL, "pg_advisory_xact_lock") {
 				t.Errorf("a statement reached the server for an expired budget: %q", e.SQL)
 			}
@@ -1869,7 +1869,7 @@ func TestDeletionTrickledBody(t *testing.T) {
 		fenceEvents := func() []testdb.Event {
 			var out []testdb.Event
 			for _, e := range r.proxy.Events()[mark:] {
-				if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "restore_fence") {
+				if e.Kind == testdb.KindStatement && isRestoreFenceStatement(e.SQL) {
 					out = append(out, e)
 				}
 			}
