@@ -1037,7 +1037,7 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 
 // eraseContactRequestReasonsIn writes the decisions and blanks the removed
 // reasons. It is the only writer of contact_requests.reason (the guard in
-// guards_test.go allows its one UPDATE literal here and its one call in
+// guards_contact_text_test.go allows its one UPDATE literal here and its one call in
 // apiAdminDeleteUser's callback, directly after eraseContactRequestTextIn).
 // Decisions go in batches of reasonBlankBatch inside the same transaction: for
 // each batch the signed audit rows are written first, then that batch's removes

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fold/internal/guardkit"
 
 	"fold/internal/testdb"
 	"fold/models"
@@ -102,14 +103,11 @@ func sqlWritesWords(s string) bool {
 // in the boot step and takeRestoreTicket. restoreFenceKey is referenced only
 // there too.
 func fenceWriterProblems(sources map[string]string) []string {
-	var bad []string
-	fset := token.NewFileSet()
-	for path, src := range sources {
-		tree, err := parser.ParseFile(fset, path, src, 0)
-		if err != nil {
-			bad = append(bad, path+": cannot parse: "+err.Error())
-			continue
-		}
+	parsed := guardkit.Sources(sources).Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
+	fset := parsed.Fset
+	for _, pf := range parsed.Files {
+		path, tree := pf.Path, pf.AST
 		for _, d := range tree.Decls {
 			fd, isFunc := d.(*ast.FuncDecl)
 			ast.Inspect(d, func(n ast.Node) bool {
@@ -138,13 +136,7 @@ func fenceWriterProblems(sources map[string]string) []string {
 }
 
 func TestRestoreFenceHasTwoWriters(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	for _, v := range fenceWriterProblems(sources) {
 		t.Error(v)
 	}
@@ -180,17 +172,12 @@ var settingsWriteRe = regexp.MustCompile(`(?i)(insert\s+into|update|delete\s+fro
 // writer and its function must refuse the barrier's row with
 // refuseRestoreFenceKey. Raw SQL that writes settings is only restore_fence.go's.
 func settingsWriterProblems(sources map[string]string) []string {
-	var bad []string
-	fset := token.NewFileSet()
-	trees := map[string]*ast.File{}
+	parsed := guardkit.Sources(sources).Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
+	fset := parsed.Fset
 	consts := map[string]bool{}
-	for path, src := range sources {
-		tree, err := parser.ParseFile(fset, path, src, 0)
-		if err != nil {
-			bad = append(bad, path+": cannot parse: "+err.Error())
-			continue
-		}
-		trees[path] = tree
+	for _, pf := range parsed.Files {
+		tree := pf.AST
 		for _, d := range tree.Decls {
 			if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.CONST {
 				for _, sp := range gd.Specs {
@@ -209,7 +196,8 @@ func settingsWriterProblems(sources map[string]string) []string {
 		id, ok := sel.X.(*ast.Ident)
 		return ok && id.Name == "models"
 	}
-	for path, tree := range trees {
+	for _, pf := range parsed.Files {
+		path, tree := pf.Path, pf.AST
 		for _, d := range tree.Decls {
 			fd, isFunc := d.(*ast.FuncDecl)
 			refuses := false
@@ -223,13 +211,7 @@ func settingsWriterProblems(sources map[string]string) []string {
 					return true
 				})
 			}
-			var stack []ast.Node
-			ast.Inspect(d, func(n ast.Node) bool {
-				if n == nil {
-					stack = stack[:len(stack)-1]
-					return true
-				}
-				stack = append(stack, n)
+			guardkit.InspectStack(d, func(n ast.Node, stack []ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.BasicLit:
 					if path != "restore_fence.go" && x.Kind == token.STRING && settingsWriteRe.MatchString(x.Value) {
@@ -279,13 +261,7 @@ func settingsWriterProblems(sources map[string]string) []string {
 }
 
 func TestSettingsWritersRefuseTheFenceKey(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	for _, v := range settingsWriterProblems(sources) {
 		t.Error(v)
 	}

@@ -17,7 +17,7 @@ const (
 )
 
 // Categories lists every category; the SQL CHECK and the TS union must
-// match it (TestNotificationCategoriesMatch in guards_test.go).
+// match it (TestNotificationCategoriesMatch in guards_web_test.go).
 var Categories = []string{CatAdmin, CatGroups, CatEvents, CatMessages, CatSafety}
 
 // Kind keys. Add a kind here and register it; TestEveryKindConstIsRegistered
