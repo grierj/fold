@@ -63,37 +63,30 @@ type capacityEdits struct {
 	reminderSet     bool
 }
 
-// parseCapacityEdits parses the M1.5 capacity fields, answering 400 on a
-// bad value.
-func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
+// parseCapacityEdits parses the M1.5 capacity fields; the error is the 400 to
+// answer with.
+func parseCapacityEdits(body eventBody) (capacityEdits, error) {
 	var ed capacityEdits
 	var err error
-	ed.cap, ed.capSet, err = parseCapacity(body.Capacity)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.cap, ed.capSet, err = parseCapacity(body.Capacity); err != nil {
+		return ed, err
 	}
-	ed.guests, ed.guestsSet, err = parseGuestsAllowed(body.GuestsAllowed)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.guests, ed.guestsSet, err = parseGuestsAllowed(body.GuestsAllowed); err != nil {
+		return ed, err
 	}
-	ed.remoteCap, ed.remoteCapSet, err = parseRemoteCapacity(body.RemoteCapacity, false)
-	if err != nil {
-		fail(c, err)
-		return ed, false
+	if ed.remoteCap, ed.remoteCapSet, err = parseRemoteCapacity(body.RemoteCapacity, false); err != nil {
+		return ed, err
 	}
-	if !parseChildcareEdits(c, body, &ed) {
-		return ed, false
+	if err := parseChildcareEdits(body, &ed); err != nil {
+		return ed, err
 	}
 	if body.ReminderEmailMinutes != nil {
 		if !validReminderMinutes(*body.ReminderEmailMinutes) {
-			fail(c, errReminderTime)
-			return ed, false
+			return ed, errReminderTime
 		}
 		ed.reminder, ed.reminderSet = *body.ReminderEmailMinutes, true
 	}
-	return ed, true
+	return ed, nil
 }
 
 // intPtrEqual reports whether two optional ints hold the same value.

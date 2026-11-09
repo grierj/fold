@@ -68,10 +68,9 @@ func validVideoURL(s string) bool {
 }
 
 // parseVideoEdits reads videoProvider, videoUrl and videoReveal from a
-// body over base (nil on create) and validates the effective values,
-// answering 400 on a bad one. none clears the URL; any other provider
+// body over base (nil on create) and validates the effective values; the error is the 400 to answer with. none clears the URL; any other provider
 // needs a full https:// address of at most 2048 characters.
-func parseVideoEdits(c *gin.Context, body eventBody, base *models.Event) (videoEdits, bool) {
+func parseVideoEdits(body eventBody, base *models.Event) (videoEdits, error) {
 	ed := videoEdits{
 		provider: models.VideoProviderNone,
 		reveal:   models.VideoRevealRegisteredOnly,
@@ -93,34 +92,29 @@ func parseVideoEdits(c *gin.Context, body eventBody, base *models.Event) (videoE
 	switch ed.provider {
 	case models.VideoProviderNone, models.VideoProviderLink, models.VideoProviderJitsi:
 	default:
-		fail(c, errInvalidVideoProvider)
-		return ed, false
+		return ed, errInvalidVideoProvider
 	}
 	switch ed.reveal {
 	case models.VideoRevealAlways, models.VideoRevealRegisteredOnly:
 	default:
-		fail(c, errInvalidVideoReveal)
-		return ed, false
+		return ed, errInvalidVideoReveal
 	}
 	if len(ed.url) > maxVideoURLLen {
-		fail(c, errVideoLinkTooLong)
-		return ed, false
+		return ed, errVideoLinkTooLong
 	}
 	if ed.provider == models.VideoProviderNone {
 		// A supplied address is still validated, then cleared: none
 		// means the event has no video link.
 		if ed.url != "" && !validVideoURL(ed.url) {
-			fail(c, errInvalidVideoUrl)
-			return ed, false
+			return ed, errInvalidVideoUrl
 		}
 		ed.url = ""
-		return ed, true
+		return ed, nil
 	}
 	if !validVideoURL(ed.url) {
-		fail(c, errInvalidVideoUrl)
-		return ed, false
+		return ed, errInvalidVideoUrl
 	}
-	return ed, true
+	return ed, nil
 }
 
 // videoShown is the one reveal rule for a viewer: the event's link when

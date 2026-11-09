@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/events"
 	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
@@ -227,38 +226,33 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		Hosts      []string `json:"hosts"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
+		fail(c, errStartRequired)
 		return
 	}
 	if body.Title == nil || strings.TrimSpace(*body.Title) == "" {
 		fail(c, errTitleRequired)
 		return
 	}
+	creator := apiUser(c)
 	vis := models.VisibilityPublic
 	if body.Visibility != nil && strings.TrimSpace(*body.Visibility) != "" {
 		vis = strings.TrimSpace(*body.Visibility)
 	}
-	if vis == models.VisibilityInviteOnly {
-		fail(c, errChurchEventInviteOnly)
+	// The creator hosts the event they make (a church-wide event has no group
+	// to lead it), so policy decides on their host facts.
+	if !policy.CanSetEventVisibility(asPerson(creator), policy.EventView{ChurchWide: true, Host: true}, policy.Rel{}, vis) {
+		if vis == models.VisibilityInviteOnly {
+			fail(c, errChurchEventInviteOnly)
+		} else {
+			fail(c, errChurchEventVisibility)
+		}
 		return
 	}
-	if vis != models.VisibilityPublic && vis != models.VisibilityPrivate {
-		jsonError(c, http.StatusBadRequest, "visibility must be public or private")
+	ev, err := a.draftEvent(body.eventBody, models.Event{Visibility: vis, CreatedBy: creator.ID})
+	if err != nil {
+		fail(c, err)
 		return
 	}
-	ed, ok := parseCapacityEdits(c, body.eventBody)
-	if !ok {
-		return
-	}
-	vid, ok := parseVideoEdits(c, body.eventBody, nil)
-	if !ok {
-		return
-	}
-	spec, _, ok := a.specFrom(c, body.eventBody, nil, true)
-	if !ok {
-		return
-	}
-	creator := apiUser(c)
 	hostIDs := []uint{creator.ID}
 	seen := map[uint]bool{creator.ID: true}
 	for _, email := range body.Hosts {
@@ -276,15 +270,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		seen[u.ID] = true
 		hostIDs = append(hostIDs, u.ID)
 	}
-	ev := models.Event{
-		Visibility: vis, CreatedBy: creator.ID,
-		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
-	}
-	applySpec(&ev, spec, body.eventBody, ed, vid)
-	if !eventTextOK(c, ev.Title, ev.Description, ev.Location) {
-		return
-	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// The creator and every listed host are locked FOR SHARE, in ascending
 		// id, before anything is written, and the rules are checked again on
 		// the locked rows: a disabling, demotion or deletion that committed
@@ -301,24 +287,16 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 				return r
 			}
 		}
-		if err := createEvent(tx, &ev); err != nil {
-			return err
-		}
-		for _, id := range hostIDs {
-			if err := tx.Create(&models.EventHost{EventID: ev.ID, UserID: id, AddedBy: creator.ID}).Error; err != nil {
-				return err
-			}
-		}
-		if err := audit.Write(tx, audit.Entry{Actor: &creator.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"churchWide": true, "visibility": ev.Visibility, "hostIds": hostIDs}, IP: c.ClientIP()}); err != nil {
-			return err
-		}
-		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
-			return err
-		}
+		meta := map[string]any{"churchWide": true, "visibility": ev.Visibility, "hostIds": hostIDs}
 		// Church-wide events are created by admins, whose bookings never wait.
-		err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
-		return err
+		return a.createEventIn(tx, &ev, creator, c.ClientIP(), body.RoomID, meta, func() error {
+			for _, id := range hostIDs {
+				if err := tx.Create(&models.EventHost{EventID: ev.ID, UserID: id, AddedBy: creator.ID}).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		fail(c, err)
@@ -356,7 +334,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	}
 	me := apiUser(c)
 	if !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
-		jsonError(c, http.StatusForbidden, "you can't change this event")
+		fail(c, errCannotChangeEvent)
 		return
 	}
 	if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
@@ -576,12 +554,10 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 			}
 		}
 		if !found {
-			jsonError(c, http.StatusNotFound, "that person isn't a host")
-			return errHostGone
+			return errNotAHost
 		}
 		if !policy.EventKeepsHost(seats, uint(uid)) {
-			fail(c, errNeedsHost)
-			return errLastHost
+			return errNeedsHost
 		}
 		if err := tx.Where("event_id = ? AND user_id = ?", ev.ID, uid).Delete(&models.EventHost{}).Error; err != nil {
 			return err
@@ -589,9 +565,6 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostRemoved, TargetType: "event", TargetID: ev.ID,
 			Meta: map[string]any{"userId": uid}, IP: c.ClientIP()})
 	})
-	if err == errHostGone || err == errLastHost {
-		return
-	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -599,16 +572,8 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 	a.respondHosts(c, ev.ID)
 }
 
-// errHostGone and errLastHost stop the remove transaction after the handler
-// has already written the response status.
-var (
-	errHostGone = errSent("host gone")
-	errLastHost = errSent("last host")
-)
-
-type errSent string
-
-func (e errSent) Error() string { return string(e) }
+// errNotAHost: the person is not among the event's hosts.
+var errNotAHost = apiErr(http.StatusNotFound, "", "that person isn't a host")
 
 // visibleSet is the events one viewer may see out of a query, with the
 // lookups callers need afterwards. Events keeps the query's order.

@@ -273,7 +273,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errNotManager):
-		jsonError(c, http.StatusForbidden, "you can't change this event")
+		fail(c, errCannotChangeEvent)
 	case errors.Is(err, errRoomGone):
 		jsonError(c, http.StatusNotFound, "room not found")
 	case errors.Is(err, errRestricted):
@@ -566,7 +566,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		GroupID *uint `json:"groupId"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
+		fail(c, errStartRequired)
 		return
 	}
 	me := apiUser(c)
@@ -581,8 +581,9 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "admin required")
 		return
 	}
-	_, whens, ok := a.specFrom(c, body.eventBody, nil, true)
-	if !ok {
+	_, whens, err := a.specFrom(body.eventBody, nil, true)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	now := time.Now()
@@ -593,8 +594,9 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 			upcoming = append(upcoming, rooms.Window{Start: w.StartsAt, End: w.EndsAt})
 		}
 	}
-	ed, ok := parseCapacityEdits(c, body.eventBody)
-	if !ok {
+	ed, err := parseCapacityEdits(body.eventBody)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	list, err := roomChoices(a.DB, asPerson(me), windows, 0, ed.cap)

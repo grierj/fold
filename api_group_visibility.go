@@ -422,7 +422,7 @@ func (a *App) apiEventVisibilityImpact(c *gin.Context) {
 		return
 	}
 	if !f.canManage(apiUser(c)) {
-		jsonError(c, http.StatusForbidden, "you can't change this event")
+		fail(c, errCannotChangeEvent)
 		return
 	}
 	vis, msg := normalizeVisibility(c.Query("visibility"))

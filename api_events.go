@@ -539,7 +539,7 @@ type eventBody struct {
 // checks it against the window Ensure will really generate, and returns
 // those dates. A rule that passes here cannot fail later as a 500 or leave
 // the daily extender stuck.
-func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, []events.When, bool) {
+func (a *App) specFrom(body eventBody, base *models.Event, creating bool) (events.Spec, []events.When, error) {
 	spec := events.Spec{TZID: churchZoneOrUTC(a.DB).String()}
 	if base != nil {
 		spec.StartsLocal = base.StartsLocal
@@ -567,12 +567,10 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	}
 	spec.StartsLocal = padWallHour(spec.StartsLocal)
 	if creating && (body.StartsLocal == nil || body.DurationMinutes == nil) {
-		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
-		return spec, nil, false
+		return spec, nil, errStartRequired
 	}
 	if len(spec.RRule) > maxRecurrenceLen {
-		fail(c, errRecurrenceRuleTooLong)
-		return spec, nil, false
+		return spec, nil, errRecurrenceRuleTooLong
 	}
 	// Check against the window Ensure and Extend will really generate, so a
 	// rule that passes here cannot fail later as a 500 or a stuck extender.
@@ -583,16 +581,14 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	}
 	whens, err := events.Expand(spec, window)
 	if err != nil {
-		specError(c, err)
-		return spec, nil, false
+		return spec, nil, specAnswer(err)
 	}
 	for _, when := range whens {
 		if _, err := models.ParseCalendarDate(when.OriginalDate); err != nil {
-			specError(c, err)
-			return spec, nil, false
+			return spec, nil, specAnswer(err)
 		}
 	}
-	return spec, whens, true
+	return spec, whens, nil
 }
 
 // padWallHour makes 2026-10-20T9:00 into 2026-10-20T09:00. ParseWall accepts
@@ -606,16 +602,15 @@ func padWallHour(s string) string {
 	return s
 }
 
-// specError answers a rejected series rule. A rule that makes too many dates
-// has its own code so the page can say what to change.
-func specError(c *gin.Context, err error) {
+// specAnswer is the answer to a rejected series rule. A rule that makes too
+// many dates has its own code so the page can say what to change.
+func specAnswer(err error) error {
 	for _, r := range specRefusals {
 		if errors.Is(err, r.from) {
-			fail(c, r.answer)
-			return
+			return r.answer
 		}
 	}
-	jsonError(c, http.StatusBadRequest, err.Error())
+	return apiErrf(http.StatusBadRequest, "", "%s", err.Error())
 }
 
 // specRefusals answer the series-rule errors internal/events owns, which
@@ -694,16 +689,6 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	ev.VideoReveal = vid.reveal
 }
 
-// eventTextOK answers the first text field that is too long, as the request's
-// refusal.
-func eventTextOK(c *gin.Context, title, description, location string) bool {
-	if err := validateEventText(title, description, location); err != nil {
-		fail(c, err)
-		return false
-	}
-	return true
-}
-
 func parseDateWindow(c *gin.Context) (from, to string, ok bool) {
 	now := time.Now().UTC()
 	from = c.Query("from")
@@ -768,6 +753,48 @@ func (a *App) apiListEvents(c *gin.Context) {
 	})
 }
 
+// draftEvent validates an event body and applies it to ev (the caller's
+// starting values: its group, visibility, creator), the part of creating an
+// event that group and church-wide events share. The error is the answer.
+func (a *App) draftEvent(body eventBody, ev models.Event) (models.Event, error) {
+	ed, err := parseCapacityEdits(body)
+	if err != nil {
+		return ev, err
+	}
+	vid, err := parseVideoEdits(body, nil)
+	if err != nil {
+		return ev, err
+	}
+	spec, _, err := a.specFrom(body, nil, true)
+	if err != nil {
+		return ev, err
+	}
+	ev.ReminderEmailMinutes, ev.ReminderPush = defaultReminderMinutes, true
+	applySpec(&ev, spec, body, ed, vid)
+	return ev, validateEventText(ev.Title, ev.Description, ev.Location)
+}
+
+// createEventIn saves a drafted event in the caller's transaction: the row,
+// its created audit entry (with meta), whatever the caller adds after the row
+// (hosts, a visibility override), the dates, and the series room booking.
+func (a *App) createEventIn(tx *gorm.DB, ev *models.Event, creator *models.User, ip string, roomID *uint, meta map[string]any, after func() error) error {
+	if err := createEvent(tx, ev); err != nil {
+		return err
+	}
+	if err := audit.Write(tx, audit.Entry{Actor: &creator.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: ip}); err != nil {
+		return err
+	}
+	if after != nil {
+		if err := after(); err != nil {
+			return err
+		}
+	}
+	if err := events.Ensure(tx, ev, time.Now().UTC()); err != nil {
+		return err
+	}
+	return a.bookCreatedSeries(tx, ev, roomID, creator, ip)
+}
+
 func (a *App) apiCreateEvent(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, rel, ok := a.loadManagedGroupID(c, uint(id))
@@ -776,35 +803,18 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	}
 	var body eventBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
-		return
-	}
-	ed, ok := parseCapacityEdits(c, body)
-	if !ok {
-		return
-	}
-	vid, ok := parseVideoEdits(c, body, nil)
-	if !ok {
-		return
-	}
-
-	spec, _, ok := a.specFrom(c, body, nil, true)
-	if !ok {
-		return
-	}
-	gid := g.ID
-	ev := models.Event{
-		// The group's visibility is copied once; later group changes only
-		// tighten it (DEC-48).
-		GroupID: &gid, Visibility: g.Visibility,
-		CreatedBy:            apiUser(c).ID,
-		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
-	}
-	applySpec(&ev, spec, body, ed, vid)
-	if !eventTextOK(c, ev.Title, ev.Description, ev.Location) {
+		fail(c, errStartRequired)
 		return
 	}
 	me := apiUser(c)
+	gid := g.ID
+	// The group's visibility is copied once; later group changes only
+	// tighten it (DEC-48).
+	ev, err := a.draftEvent(body, models.Event{GroupID: &gid, Visibility: g.Visibility, CreatedBy: me.ID})
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	reason := ""
 	if body.VisibilityReason != nil {
 		reason = strings.TrimSpace(*body.VisibilityReason)
@@ -822,15 +832,12 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		ev.Visibility = vis
 		ev.LeaderOpened = policy.MoreOpen(vis, g.Visibility)
 	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := createEvent(tx, &ev); err != nil {
-			return err
-		}
-		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"groupId": g.ID, "churchWide": false, "visibility": ev.Visibility}, IP: c.ClientIP()}); err != nil {
-			return err
-		}
-		if ev.Visibility != g.Visibility {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		meta := map[string]any{"groupId": g.ID, "churchWide": false, "visibility": ev.Visibility}
+		return a.createEventIn(tx, &ev, me, c.ClientIP(), body.RoomID, meta, func() error {
+			if ev.Visibility == g.Visibility {
+				return nil
+			}
 			action := audit.VisibilityChanged
 			if ev.LeaderOpened {
 				action = audit.VisibilityOverride
@@ -845,17 +852,10 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 				return err
 			}
 			if ev.LeaderOpened {
-				err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
-				if err != nil {
-					return err
-				}
+				return notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
 			}
-		}
-		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
-			return err
-		}
-		err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
-		return err
+			return nil
+		})
 	})
 	if err != nil {
 		fail(c, err)
@@ -872,16 +872,11 @@ func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
 		return nil, false
 	}
 	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
-		jsonError(c, http.StatusForbidden, "you can't change this event")
+		fail(c, errCannotChangeEvent)
 		return nil, false
 	}
 	return ev, true
 }
-
-// errAnswered means the handler already wrote the response (a validation
-// failure inside a transaction); the transaction rolls back and nothing more
-// is sent.
-var errAnswered = errors.New("response already sent")
 
 func (a *App) apiUpdateEvent(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
@@ -893,8 +888,9 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	ed, ok := parseCapacityEdits(c, body)
-	if !ok {
+	ed, err := parseCapacityEdits(body)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	me := apiUser(c)
@@ -902,9 +898,9 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	var locked models.Event
 	// Everything that depends on the stored row is read from the locked row
 	// inside the transaction, so a concurrent edit is never overwritten with
-	// values built from a stale copy. Validation failures answer the request
-	// themselves and return errAnswered to roll back (nothing is written yet).
-	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+	// values built from a stale copy. A validation failure is returned as its
+	// answer and rolls back (nothing is written yet).
+	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
@@ -913,12 +909,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			return err
 		}
 		if !f.canManage(me) {
-			jsonError(c, http.StatusForbidden, "you can't change this event")
-			return errAnswered
+			return errCannotChangeEvent
 		}
-		spec, whens, ok := a.specFrom(c, body, &locked, false)
-		if !ok {
-			return errAnswered
+		spec, whens, err := a.specFrom(body, &locked, false)
+		if err != nil {
+			return err
 		}
 		title, description, location := locked.Title, locked.Description, locked.Location
 		if body.Title != nil {
@@ -930,12 +925,12 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if body.Location != nil {
 			location = strings.TrimSpace(*body.Location)
 		}
-		if !eventTextOK(c, title, description, location) {
-			return errAnswered
+		if err := validateEventText(title, description, location); err != nil {
+			return err
 		}
-		vid, ok := parseVideoEdits(c, body, &locked)
-		if !ok {
-			return errAnswered
+		vid, err := parseVideoEdits(body, &locked)
+		if err != nil {
+			return err
 		}
 		var occs []models.EventOccurrence
 		if err := tx.Where("event_id = ?", ev.ID).Find(&occs).Error; err != nil {
@@ -1131,7 +1126,8 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, errAnswered):
+		case isAPIError(err):
+			fail(c, err)
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			jsonError(c, http.StatusNotFound, "event not found")
 		default:
@@ -1317,7 +1313,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	if body.StartsLocal != nil {
 		t, _, err := events.ParseWall(strings.TrimSpace(*body.StartsLocal), ev.TZID)
 		if err != nil {
-			specError(c, err)
+			fail(c, specAnswer(err))
 			return
 		}
 		u := t.UTC()
