@@ -595,5 +595,5 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not send the message again")
 		return
 	}
-	a.respondMessage(c, http.StatusOK, m, nil)
+	a.respondMessage(c, http.StatusOK, m)
 }

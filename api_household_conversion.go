@@ -346,7 +346,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 	if resend {
 		status = http.StatusOK
 	}
-	c.JSON(status, gin.H{"conversion": conversionMetadata(&inv)})
+	c.JSON(status, householdConversionResponseJSON{Conversion: conversionMetadata(&inv)})
 }
 
 // createConversionApprovalRequest holds adult credentials until approval.

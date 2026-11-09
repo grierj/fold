@@ -240,21 +240,25 @@ func messageErrorFor(stored string, admin bool) string {
 	return whyProvider
 }
 
-func (a *App) respondMessage(c *gin.Context, status int, m *models.Message, extra gin.H) {
+// freshMessageJSON reloads m and presents it to the caller, answering the 500
+// itself (false) when either read fails.
+func (a *App) freshMessageJSON(c *gin.Context, m *models.Message) (messageJSON, bool) {
 	if err := a.DB.First(m, m.ID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
-		return
+		return messageJSON{}, false
 	}
 	facts, err := a.loadMessageFacts([]models.Message{*m})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
-		return
+		return messageJSON{}, false
 	}
-	out := gin.H{"message": toMessageJSON(m, apiUser(c), facts)}
-	for k, v := range extra {
-		out[k] = v
+	return toMessageJSON(m, apiUser(c), facts), true
+}
+
+func (a *App) respondMessage(c *gin.Context, status int, m *models.Message) {
+	if out, ok := a.freshMessageJSON(c, m); ok {
+		c.JSON(status, messageResponseJSON{Message: out})
 	}
-	c.JSON(status, out)
 }
 
 // canCompose: the composer is for admins and anyone who leads an approved
@@ -471,7 +475,7 @@ func (a *App) apiAudiencePreview(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not count who gets this message")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"summary": s})
+	c.JSON(http.StatusOK, audienceSummaryResponseJSON{Summary: s})
 }
 
 type messageBody struct {
@@ -598,7 +602,7 @@ func (a *App) apiCreateMessage(c *gin.Context) {
 		return
 	}
 	m.PushAlert = pushAlert
-	a.respondMessage(c, http.StatusCreated, &m, nil)
+	a.respondMessage(c, http.StatusCreated, &m)
 }
 
 // loadMessage finds a message whose page and history the viewer may see
@@ -677,7 +681,7 @@ func (a *App) loadOwnMessage(c *gin.Context) (*models.Message, bool) {
 
 func (a *App) apiGetMessage(c *gin.Context) {
 	if m, ok := a.loadMessage(c); ok {
-		a.respondMessage(c, http.StatusOK, m, nil)
+		a.respondMessage(c, http.StatusOK, m)
 	}
 }
 
@@ -826,7 +830,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the message")
 		return
 	}
-	a.respondMessage(c, http.StatusOK, m, nil)
+	a.respondMessage(c, http.StatusOK, m)
 }
 
 // apiScheduleMessage sets a draft (or a scheduled message) to go out at a
@@ -891,7 +895,9 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not schedule the message")
 		return
 	}
-	a.respondMessage(c, http.StatusOK, m, gin.H{"summary": s})
+	if out, ok := a.freshMessageJSON(c, m); ok {
+		c.JSON(http.StatusOK, messageScheduledResponseJSON{Message: out, Summary: s})
+	}
 }
 
 var errLocked = errors.New("message locked")
@@ -921,5 +927,5 @@ func (a *App) apiCancelMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not cancel the message")
 		return
 	}
-	a.respondMessage(c, http.StatusOK, m, nil)
+	a.respondMessage(c, http.StatusOK, m)
 }

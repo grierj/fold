@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RoomPickerItem, SeriesBooking, SeriesRoom } from "../types";
-import { busyDatesNote, roomOptionLabel, seriesBookingMessage, seriesRoomLabel } from "./roomLabels";
+import { busyDatesNote, parseRoomLabel, roomOptionLabel, seriesBookingMessage, seriesRoomLabel } from "./roomLabels";
 
 const hall = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, tooSmall: false } as const;
 
@@ -17,6 +17,18 @@ describe("room option labels", () => {
     expect(seriesRoomLabel(room, 8)).toBe("Fellowship Hall · Main (80 seats) — in use on 3 of 8 dates");
     expect(seriesRoomLabel(room, 1)).toBe("Fellowship Hall · Main (80 seats) — in use at this time");
     expect(seriesRoomLabel({ ...room, busyDates: 0 } as SeriesRoom, 8)).toBe("Fellowship Hall · Main (80 seats)");
+  });
+});
+
+describe("parseRoomLabel", () => {
+  it("reads back what the labels write", () => {
+    const room = { ...hall, busy: true, tooSmall: true } as RoomPickerItem;
+    expect(parseRoomLabel(roomOptionLabel(room, "used by this group"))).toEqual({
+      room: "Fellowship Hall · Main", seats: 80, notes: ["in use at this time", "may be too small", "used by this group"],
+    });
+    expect(parseRoomLabel(roomOptionLabel({ ...hall, capacity: 1, busy: false } as RoomPickerItem))).toEqual({ room: "Fellowship Hall · Main", seats: 1, notes: [] });
+    expect(parseRoomLabel(roomOptionLabel({ ...hall, capacity: null, busy: false } as RoomPickerItem))).toEqual({ room: "Fellowship Hall · Main", seats: null, notes: [] });
+    expect(parseRoomLabel(seriesRoomLabel({ ...hall, busyDates: 3 } as SeriesRoom, 8))).toEqual({ room: "Fellowship Hall · Main", seats: 80, notes: ["in use on 3 of 8 dates"] });
   });
 });
 

@@ -62,7 +62,7 @@ func (a *App) apiListGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": list})
+	c.JSON(http.StatusOK, groupListResponseJSON{Groups: list})
 }
 
 // viewerRoles maps each listed group the viewer actively belongs to onto
@@ -124,7 +124,7 @@ func (a *App) respondGroup(c *gin.Context, status int, g *models.Group) {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return
 	}
-	c.JSON(status, gin.H{"group": summary})
+	c.JSON(status, groupResponseJSON{Group: summary})
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {
@@ -303,7 +303,7 @@ func (a *App) respondRoster(c *gin.Context, groupID uint, manager bool) {
 		jsonError(c, http.StatusInternalServerError, "could not load members")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": members})
+	c.JSON(http.StatusOK, membersResponseJSON{Members: members})
 }
 
 // rosterFor exposes minor identities and badges only to the group's managers.

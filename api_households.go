@@ -439,7 +439,7 @@ func (a *App) apiGetMyHousehold(c *gin.Context) {
 	u := apiUser(c)
 	acct, found := householdAccountIn(a.DB, u.ID)
 	if !found {
-		c.JSON(http.StatusOK, gin.H{"household": nil})
+		c.JSON(http.StatusOK, myHouseholdResponseJSON{})
 		return
 	}
 	if !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, true)) {
@@ -456,7 +456,7 @@ func (a *App) apiGetMyHousehold(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load your household")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"household": out})
+	c.JSON(http.StatusOK, myHouseholdResponseJSON{Household: &out})
 }
 
 // apiUpdateMyHousehold renames the household or sets its address.
@@ -528,7 +528,7 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load your household")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"household": out})
+	c.JSON(http.StatusOK, householdResponseJSON{Household: out})
 }
 
 // householdPersonInput is the add/edit body. Fields are pointers so an
@@ -709,7 +709,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"person": row})
+	c.JSON(http.StatusCreated, householdPersonResponseJSON{Person: row})
 }
 
 // loadMyHouseholdPerson loads a person in the user's household for an
@@ -874,7 +874,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"person": row})
+	c.JSON(http.StatusOK, householdPersonResponseJSON{Person: row})
 }
 
 // apiDeleteHouseholdPerson removes a person from the user's household:

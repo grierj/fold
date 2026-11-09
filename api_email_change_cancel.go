@@ -44,5 +44,5 @@ func (a *App) apiCancelEmailChange(c *gin.Context) {
 	// Never refresh the subject's cookie, nor clear an unrelated account's
 	// cookie. Epoch invalidation ends all subject sessions, including this
 	// browser if it belongs to them; the SPA refreshes its auth state.
-	c.JSON(http.StatusOK, gin.H{"cancelled": true})
+	c.JSON(http.StatusOK, emailChangeCancelledResponseJSON{Cancelled: true})
 }

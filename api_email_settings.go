@@ -179,7 +179,7 @@ func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load email settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"emailSettings": s})
+	c.JSON(http.StatusOK, emailSettingsChangeResponseJSON{EmailSettings: s})
 }
 
 // maxChurchAddress and maxChurchAddressLines bound the footer address.
@@ -194,7 +194,7 @@ func (a *App) apiAdminGetChurchAddress(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the address")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"address": address})
+	c.JSON(http.StatusOK, settingAddressResponseJSON{Address: address})
 }
 
 // apiAdminSetChurchAddress saves the church's postal address for email
@@ -225,7 +225,7 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the address")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"address": addr})
+	c.JSON(http.StatusOK, settingAddressResponseJSON{Address: addr})
 }
 
 // churchAddressLines is the one normalization of a postal address: no carriage

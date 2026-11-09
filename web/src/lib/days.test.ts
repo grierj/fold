@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDays, addMonths, weekdayIndex } from "./days";
+import { addDays, addMonths, daysBetween, weekdayIndex } from "./days";
 
 describe("day math", () => {
   it("steps across both daylight-saving changes without losing or repeating a day", () => {
@@ -10,6 +10,13 @@ describe("day math", () => {
     expect(addDays("2026-11-01", 1)).toBe("2026-11-02");
     expect(addDays("2026-11-02", -1)).toBe("2026-11-01");
     expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+  });
+
+  it("counts calendar days across a daylight-saving change", () => {
+    expect(daysBetween("2026-10-31", "2026-11-02")).toBe(2);
+    expect(daysBetween("2026-03-07", "2026-03-09")).toBe(2);
+    expect(daysBetween("2026-11-02", "2026-11-01")).toBe(-1);
+    expect(daysBetween("2026-05-04", "2026-05-04")).toBe(0);
   });
 
   it("moves by months from the 1st", () => {

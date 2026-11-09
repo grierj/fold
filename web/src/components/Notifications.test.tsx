@@ -194,6 +194,26 @@ describe("NotificationBell", () => {
     expect(api.archive).toHaveBeenLastCalledWith(1, false);
   });
 
+  it("keeps a row that could not be archived and says so under it", async () => {
+    api.archive.mockRejectedValue(new Error("down"));
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" }));
+    expect(await screen.findByText("Couldn't archive this. Try again.")).toBeInTheDocument();
+    expect(screen.getByText("Pat made Sam a leader")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("tells you when Undo did not work and leaves it to try again", async () => {
+    api.archive.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("down"));
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Couldn't undo that. Try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  });
+
   it("Escape closes the panel and returns focus to the bell", async () => {
     renderBell();
     const bell = await screen.findByRole("button", { name: /Alerts/ });

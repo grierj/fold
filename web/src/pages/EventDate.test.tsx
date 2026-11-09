@@ -221,7 +221,7 @@ it("lays the date out like the event page card: back link, when line, tile, plac
   mount();
   const title = await screen.findByRole("heading", { level: 1, name: "One invited date" });
   const back = screen.getByRole("link", { name: "Back to calendar" });
-  expect(back).toHaveTextContent("‹ Calendar");
+  expect(back).toHaveTextContent("CalendarBack to calendar");
   expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const card = screen.getByRole("region", { name: "This event date" });
   expect(within(card).getByText(/^Tuesday, Dec 1(, \d{4})? · \d/)).toBeInTheDocument();

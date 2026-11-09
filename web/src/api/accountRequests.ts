@@ -1,4 +1,11 @@
-import type { AccountRequest, AccountRequestConfirmation, AccountRequestDecision, AgeBand } from "../types";
+import type {
+  AccountRequestConfirmation,
+  AccountRequestDecision,
+  AccountRequestsResponse,
+  AgeBand,
+  NoticeResponse,
+  SelfSignupResponse,
+} from "../types";
 import { api, path, query, type Id } from "./core";
 
 export interface AccountRequestInput {
@@ -15,14 +22,14 @@ export interface AccountRequestInput {
 // Account requests (M1.3, DEC-4): self-signup waits for an admin; the
 // answer is the same whether or not the email already has an account.
 export const AccountRequests = {
-  create: (data: AccountRequestInput) => api<{ message: string }>("/account-requests", { method: "POST", body: data }),
-  inviteFriend: (data: AccountRequestInput) => api<{ message: string }>("/account-requests/invite-friend", { method: "POST", body: data }),
+  create: (data: AccountRequestInput) => api<NoticeResponse>("/account-requests", { method: "POST", body: data }),
+  inviteFriend: (data: AccountRequestInput) => api<NoticeResponse>("/account-requests/invite-friend", { method: "POST", body: data }),
   confirm: (token: string, password: string) =>
     api<AccountRequestConfirmation>("/account-requests/confirm", { method: "POST", body: { token, password }, rotatesCsrf: true }),
 };
 
 export const AdminAccountRequests = {
-  list: (status = "pending") => api<{ requests: AccountRequest[] }>(`/admin/account-requests${query({ status })}`),
+  list: (status = "pending") => api<AccountRequestsResponse>(`/admin/account-requests${query({ status })}`),
   // fromNotification: the inline Approve on a clean adult request (DEC-44).
   approve: (id: Id, note?: string, fromNotification?: number, accountConsentEvidenceText?: string) =>
     api<AccountRequestDecision>(path`/admin/account-requests/${id}/approve`, {
@@ -32,5 +39,5 @@ export const AdminAccountRequests = {
   reject: (id: Id, note?: string) =>
     api<AccountRequestDecision>(path`/admin/account-requests/${id}/reject`, { method: "POST", body: { note: note || undefined } }),
   setSelfSignup: (mode: "request" | "off") =>
-    api<{ selfSignup: "request" | "off" }>("/admin/self-signup", { method: "PUT", body: { mode } }),
+    api<SelfSignupResponse>("/admin/self-signup", { method: "PUT", body: { mode } }),
 };

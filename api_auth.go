@@ -282,7 +282,7 @@ func (a *App) apiMyGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": list})
+	c.JSON(http.StatusOK, groupListResponseJSON{Groups: list})
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	if err != nil || !ipOK || !addrOK {
 		log.Printf("password reset rate limited: ip=%s err=%v", c.ClientIP(), err)
-		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: resetRequestMessage})
 		return
 	}
 
@@ -336,7 +336,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	// reveal whether the account exists (#93).
 	(&models.User{}).CheckPassword("not a real password")
 	if !found {
-		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: resetRequestMessage})
 		return
 	}
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
@@ -361,10 +361,10 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		// Logged, not leaked: an error status here would tell the caller
 		// the account exists.
 		log.Printf("password reset for user %d: %s", user.ID, jobs.CleanError(err))
-		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: resetRequestMessage})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+	c.JSON(http.StatusOK, noticeResponseJSON{Message: resetRequestMessage})
 }
 
 // redeemPasswordLink is the one redemption of an emailed set-password link
@@ -428,7 +428,7 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
+	c.JSON(http.StatusOK, userResponseJSON{User: a.toUserJSON(&fresh)})
 }
 
 // signInSession stores only an eligible login. Password setup/reset can also

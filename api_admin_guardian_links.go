@@ -308,5 +308,5 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		jsonError(c, http.StatusInternalServerError, "could not load the guardian link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"guardianLink": linkJSON})
+	c.JSON(http.StatusOK, guardianLinkResponseJSON{GuardianLink: linkJSON})
 }

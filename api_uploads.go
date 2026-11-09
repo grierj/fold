@@ -112,7 +112,7 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not store avatar")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"avatarUrl": avatarURL})
+	c.JSON(http.StatusOK, avatarUploadResponseJSON{AvatarURL: avatarURL})
 }
 
 // apiDeleteAvatar removes the current user's avatar.
@@ -189,7 +189,7 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 	if oldKey, ok := uploadKeyFromURL(oldURL); ok {
 		_ = a.Uploads.Delete(ctx, oldKey)
 	}
-	c.JSON(http.StatusOK, gin.H{"imageUrl": g.ImageURL})
+	c.JSON(http.StatusOK, coverUploadResponseJSON{ImageURL: g.ImageURL})
 }
 
 // apiDeleteGroupCover removes a group's uploaded cover image.

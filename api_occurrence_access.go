@@ -263,7 +263,7 @@ type dateOccurrenceJSON struct {
 
 func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 	if out, ok := a.loadOccurrenceDate(c); ok {
-		c.JSON(http.StatusOK, gin.H{"occurrence": out})
+		c.JSON(http.StatusOK, eventDateResponseJSON{Occurrence: out})
 	}
 }
 

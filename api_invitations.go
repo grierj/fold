@@ -238,7 +238,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	if g != nil {
 		inv.Group = *g
 	}
-	c.JSON(http.StatusCreated, gin.H{"invitation": a.toInvitationJSON(&inv)})
+	c.JSON(http.StatusCreated, invitationResponseJSON{Invitation: a.toInvitationJSON(&inv)})
 }
 
 // apiGetInvitation shows what an invitation is for, so the public accept

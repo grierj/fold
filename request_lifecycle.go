@@ -158,10 +158,10 @@ func readRequests[T any](a *App, c *gin.Context, k *requestKind, single bool, pr
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"request": out[0]})
+		c.JSON(http.StatusOK, requestResponseJSON[T]{Request: out[0]})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"requests": out})
+	c.JSON(http.StatusOK, requestsResponseJSON[T]{Requests: out})
 }
 
 // decisionReasonsSQL is decisionReasons as a SQL list. The values are the four

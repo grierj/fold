@@ -2,15 +2,19 @@ import type { RoomPickerItem, SeriesBooking, SeriesRoom } from "../types";
 import { roomName } from "./place";
 import { count } from "./plural";
 
-// The words the room pickers use, in one place. e2e/helpers.ts `pickRoom`
-// reads the option label back (" — " separators, "(N seats)"), so a change to
-// the shape of a label changes that helper with it.
+// The words the room pickers use, in one place. `parseRoomLabel` reads a label
+// back (e2e/helpers.ts `pickRoom` uses it), so the shape of a label and the
+// reader of it change together.
 
 export const NO_ROOM = "none";
 
 // An admin's reason for double-booking may be this long.
 // Mirrors maxOverlapReason in api_room_bookings.go.
 export const OVERLAP_REASON_MAX = 500;
+
+// What separates the room from each note that follows it.
+const NOTE_SEPARATOR = " — ";
+const note = (text: string) => `${NOTE_SEPARATOR}${text}`;
 
 // " (80 seats)", or nothing for a room with no size.
 function seatsSuffix(room: { capacity: number | null }): string {
@@ -21,15 +25,25 @@ function seatsSuffix(room: { capacity: number | null }): string {
 // then what a leader should know before choosing it, then why it was suggested,
 // if it was (last, so a phone that clips the option still shows the busy note).
 export function roomOptionLabel(room: RoomPickerItem, reason?: string): string {
-  return `${roomName(room)}${seatsSuffix(room)}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
+  return `${roomName(room)}${seatsSuffix(room)}${room.busy ? note("in use at this time") : ""}${room.tooSmall ? note("may be too small") : ""}${reason ? note(reason) : ""}`;
+}
+
+// A picker label read back: the room as `roomName` words it, its seats (null for
+// a room with no size) and the notes after it, in order. The notes depend on
+// what else is booked, so a caller who wants "which room" compares `room` only.
+/** @public e2e/helpers.ts pickRoom reads the pickers' labels back with it. */
+export function parseRoomLabel(label: string): { room: string; seats: number | null; notes: string[] } {
+  const [head, ...notes] = label.split(NOTE_SEPARATOR);
+  const sized = /^(.*) \((\d+) seats?\)$/.exec(head);
+  return sized ? { room: sized[1], seats: Number(sized[2]), notes } : { room: head, seats: null, notes };
 }
 
 // The same for the whole-series picker: how many of the dates something else
 // holds the room on. `dates` is how many dates the booking would cover.
 export function seriesRoomLabel(room: SeriesRoom, dates: number, reason?: string): string {
   let busy = "";
-  if (room.busyDates > 0) busy = dates <= 1 ? " — in use at this time" : ` — in use on ${room.busyDates} of ${dates} dates`;
-  return `${roomName(room)}${seatsSuffix(room)}${busy}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
+  if (room.busyDates > 0) busy = note(dates <= 1 ? "in use at this time" : `in use on ${room.busyDates} of ${dates} dates`);
+  return `${roomName(room)}${seatsSuffix(room)}${busy}${room.tooSmall ? note("may be too small") : ""}${reason ? note(reason) : ""}`;
 }
 
 // What picking a room will do to the dates it is busy on, said before it is

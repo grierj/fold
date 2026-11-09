@@ -198,7 +198,7 @@ func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessag
 // would get them; apiPreviewMessageHTML is the HTML part, for an iframe.
 func (a *App) apiPreviewMessage(c *gin.Context) {
 	if _, r, ok := a.renderedForViewer(c); ok {
-		c.JSON(http.StatusOK, gin.H{"preview": r})
+		c.JSON(http.StatusOK, messagePreviewResponseJSON{Preview: r})
 	}
 }
 
@@ -309,5 +309,5 @@ func answerTestSend(c *gin.Context, res sendResult) {
 		fail(c, errMessageTestFail)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusOK, messageTestResponseJSON{OK: true})
 }

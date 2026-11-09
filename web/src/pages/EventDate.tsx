@@ -1,5 +1,5 @@
 import { canRegisterAsGuest } from "../lib/can";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { Dates, Events } from "../api/events";
@@ -12,9 +12,11 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Choices, Field, FormError, Input, Radio } from "../components/ui/Field";
 import { SegmentButton } from "../components/ui/SegmentButton";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { heldIn } from "../lib/when";
 import { dateLine } from "../lib/repeat";
 import { placeLine } from "../lib/place";
+import { ChevronLeftIcon } from "../components/icons";
 import { DateBadge } from "../components/DateBadge";
 import { answerLine } from "../components/AnswerLine";
 import { DateActions } from "../components/DateActions";
@@ -29,45 +31,34 @@ export function EventDatePage() {
 
 function DateDetail({ id, date }: { id: string; date: string }) {
   const { user } = useAuth();
-  const [occurrence, setOccurrence] = useState<EventDate | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [revision, setRevision] = useState(0);
-  const generation = useRef(0);
+  // What the last answer or end is doing, tied to the load generation it started in: a refresh
+  // (this page's own or a focus one) makes it count for nothing, even if it resolves in the same turn.
+  const [attempt, setAttempt] = useState<{ epoch: number; pending: boolean; error: string } | null>(null);
+  // Failed authority refreshes always fail closed, including network errors, and so does
+  // coming back to the window: what this person may do here may have changed meanwhile.
+  const load = useLoad(() => Dates.get(id, date).then((r) => r.occurrence), [id, date], { refreshOnFocus: true });
+  const occurrence = load.data ?? null;
+  const loaded = !load.loading;
+  const current = attempt && attempt.epoch === load.epoch() ? attempt : null;
+  const busy = current?.pending ?? false;
+  const error = current?.error ?? "";
   const mounted = useRef(false);
-  const clear = useCallback(() => { setOccurrence(null); setBusy(false); setError(""); }, []);
-  const refresh = useCallback(() => {
-    // Invalidate synchronously, before React commits: a late mutation must not
-    // restore disclosures even if it resolves in the same turn as focus.
-    generation.current++; clear(); setLoaded(false); setRevision((n) => n + 1);
-  }, [clear]);
-  useEffect(() => {
-    mounted.current = true;
-    const current = ++generation.current;
-    clear(); setLoaded(false);
-    Dates.get(id, date).then(({ occurrence: row }) => {
-      if (generation.current === current) { setOccurrence(row); setLoaded(true); }
-    }).catch(() => {
-      // Failed authority refreshes always fail closed, including network errors.
-      if (generation.current === current) { clear(); setLoaded(true); }
-    });
-    window.addEventListener("focus", refresh);
-    return () => { mounted.current = false; generation.current++; window.removeEventListener("focus", refresh); };
-  }, [id, date, revision, refresh, clear]);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  // The date is gone for this person: drop it and anything still on its way.
+  const gone = () => load.close();
 
   async function answer(status: "going" | "maybe" | "declined", options: { attendanceMode?: AttendanceMode; guestCount?: number }) {
     if (!occurrence || !(occurrence.canDecline || occurrence.canRegister) || busy || (status === "declined" && (!occurrence.canRegister || occurrence.canDecline))) return;
-    const current = generation.current;
-    setBusy(true); setError("");
+    const epoch = load.epoch();
+    setAttempt({ epoch, pending: true, error: "" });
     try {
       if (occurrence.canDecline && status !== "declined") await Dates.register(id, date, { status, ...options });
       else await Events.register(Number(id), { date, status, ...options });
-      if (generation.current === current) refresh();
+      if (load.epoch() === epoch) void load.retry();
     } catch (e) {
       if (!mounted.current) return;
-      if (e instanceof ApiError && [401, 403, 404].includes(e.status)) { generation.current++; clear(); setLoaded(true); }
-      else if (generation.current === current) { setBusy(false); setError(errorText(e)); }
+      if (e instanceof ApiError && [401, 403, 404].includes(e.status)) gone();
+      else if (load.epoch() === epoch) setAttempt({ epoch, pending: false, error: errorText(e) });
     }
   }
   async function end(action: "decline" | "block") {
@@ -76,17 +67,17 @@ function DateDetail({ id, date }: { id: string; date: string }) {
       ? "Can't go to this date? This ends your invitation and access to this date only. Other accepted dates stay yours."
       : "Don't add me again? This ends your invitation to this date and stops future manager adds from this organizer (the group's leaders, or this event's hosts). Other accepted dates stay yours. It does not stop you choosing to register where you are eligible.";
     if (!window.confirm(copy)) return;
-    const current = generation.current;
-    setBusy(true); setError("");
+    const epoch = load.epoch();
+    setAttempt({ epoch, pending: true, error: "" });
     try {
       await Dates.end(id, date, action);
       // A successful end revokes this date even if a focus read raced it.
       // Unlike an answer response, it must also invalidate newer pending reads.
-      if (mounted.current) { generation.current++; clear(); setLoaded(true); }
+      if (mounted.current) gone();
     } catch (e) {
       if (!mounted.current) return;
-      if (e instanceof ApiError && [401, 403, 404].includes(e.status)) { generation.current++; clear(); setLoaded(true); }
-      else if (generation.current === current) { setBusy(false); setError(errorText(e)); }
+      if (e instanceof ApiError && [401, 403, 404].includes(e.status)) gone();
+      else if (load.epoch() === epoch) setAttempt({ epoch, pending: false, error: errorText(e) });
     }
   }
   const zone = occurrence && heldIn(occurrence.startsAt, occurrence.tzid);
@@ -98,7 +89,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
     <div className="fold-page-header">
       <div>
         {/* The link says where it goes for screen readers and is also not confused with the nav's Calendar tab. */}
-        <ButtonLink variant="link" to="/calendar"><span aria-hidden="true">‹ Calendar</span><span className="sr-only">Back to calendar</span></ButtonLink>
+        <ButtonLink variant="link" to="/calendar"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Calendar</span><span className="sr-only">Back to calendar</span></ButtonLink>
         <h1 className="text-3xl font-bold">{occurrence?.title || "Event date"}</h1>
         {/* hostedBy with no group can be a church-wide event or a hidden group's fallback, so it keeps "Hosted by" (DEC-99). */}
         {occurrence?.visibility && <EventIntro hostedBy={occurrence.hostedBy} groupName={occurrence.groupName} groupId={occurrence.groupId} />}

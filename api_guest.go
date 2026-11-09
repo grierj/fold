@@ -168,16 +168,16 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		// No 429 here (DEC-52): refusing out loud would confirm the
 		// address is being mailed. The emails simply stop.
 		log.Printf("guest registration rate limited: ip=%s", c.ClientIP())
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
 	if ok, err := a.throttleAllow(c.Request.Context(), guestSiteKey(), publicSignupSiteLimit, time.Hour); err != nil || !ok {
 		log.Printf("guest registration site limit: err=%v", err)
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
 	if strings.TrimSpace(body.Website) != "" {
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
 	// Every in-budget submission pays the same bcrypt cost before account
@@ -200,12 +200,12 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 				return
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
 	if a.guestVerifyLimited(email, time.Now().UTC()) {
 		log.Printf("guest verification emails to one address limited (DEC-52)")
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
 	// Only the hash is kept. Delivery rotates it and mints the link the guest
@@ -237,7 +237,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+	c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 }
 
 // guestVerifyLimited reports whether this address has used up its
@@ -644,7 +644,7 @@ func (a *App) apiGetGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"registration": display})
+	c.JSON(http.StatusOK, guestRegistrationResponseJSON{Registration: display})
 }
 
 func (a *App) apiCancelGuestRegistration(c *gin.Context) {
@@ -713,7 +713,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"registration": display})
+	c.JSON(http.StatusOK, guestRegistrationResponseJSON{Registration: display})
 }
 
 // ---------------------------------------------------------------------------

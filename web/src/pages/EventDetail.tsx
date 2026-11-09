@@ -2,7 +2,7 @@ import { canRegisterAsGuest } from "../lib/can";
 import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { Events } from "../api/events";
@@ -25,8 +25,9 @@ import { DateActions } from "../components/DateActions";
 import { formatTime, heldIn } from "../lib/when";
 import { placeLine } from "../lib/place";
 import { dateLine, whenLine } from "../lib/repeat";
-import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
+import type { EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "../components/Missing";
 
@@ -50,14 +51,10 @@ function EventDetailContent() {
   const manageDate = useSearchParams()[0].get("manage");
   const { user, loading: authLoading, isAdmin, canCompose } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
-  const [page, setPage] = useState<EventDetailResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const seriesFeedbackRevision = useRef(0);
-  const loadRevision = useRef(0);
   const rsvpMutationGate = useRsvpMutationGate();
   const editorRef = useRef<HTMLDivElement>(null);
   // Rooms changed (a series room, a date's room, a cancelled or moved date): ask for the dates that need one again.
@@ -74,37 +71,17 @@ function EventDetailContent() {
     editor?.querySelector<HTMLElement>("input, textarea, select")?.focus({ preventScroll: true });
   }, [editing]);
 
-  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
-  // invalidates protected data immediately, and only the newest request may
-  // commit page, error, not-found or loading state.
-  const load = useCallback(async (quiet = false, failClosed = false) => {
-    if (!id) return;
-    const revision = ++loadRevision.current;
-    if (failClosed) {
-      setPage(null);
-      setLoading(true);
-    } else if (!quiet) {
-      setLoading(true);
-    }
-    setError(null);
-    setNotFound(false);
-    try {
-      const next = await Events.get(id);
-      if (loadRevision.current === revision) setPage(next);
-    } catch (e) {
-      if (loadRevision.current !== revision) return;
-      if (e instanceof ApiError && e.status === 404) setNotFound(true);
-      else setError(errorText(e, "We couldn't load this event."));
-    } finally {
-      if (loadRevision.current === revision) setLoading(false);
-    }
-  }, [id]);
+  // `reload` keeps ordinary RSVP drafts mounted; `retry` (also what a terminal
+  // refresh calls) drops the page at once, so protected data cannot linger, and
+  // only the newest request may commit anything.
+  const load = useLoad(() => Events.get(id ?? ""), [id], { enabled: !!id });
+  const page = load.data ?? null;
+  const loading = load.loading;
+  const notFound = load.error instanceof ApiError && load.error.status === 404;
+  const error = deleteError ?? (load.error && !notFound ? errorText(load.error, "We couldn't load this event.") : null);
+  const setPage = load.setData;
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  function handleRsvp() { void load(true); }
+  function handleRsvp() { void load.reload(); }
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
     setPage((current) => current ? {
@@ -128,7 +105,7 @@ function EventDetailContent() {
     return (
       <div className="fold-page fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Event unavailable</h1>
-        <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load()} />
+        <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load.retry()} />
       </div>
     );
   }
@@ -144,11 +121,12 @@ function EventDetailContent() {
 
   async function deleteEvent() {
     if (!confirm(`Delete “${title}”? This removes every date and its registrations.`)) return;
+    setDeleteError(null);
     try {
       await Events.delete(event.id);
       navigate("/", { replace: true });
     } catch (e) {
-      setError(errorText(e, "We couldn't delete the event."));
+      setDeleteError(errorText(e, "We couldn't delete the event."));
     }
   }
 
@@ -189,7 +167,7 @@ function EventDetailContent() {
 
 
       {isAdmin && event.churchWide && (
-        <HostEditor eventId={event.id} hosts={event.hosts ?? []} onChanged={() => void load()} />
+        <HostEditor eventId={event.id} hosts={event.hosts ?? []} onChanged={() => void load.retry()} />
       )}
 
       {canManage && editing && (
@@ -198,8 +176,8 @@ function EventDetailContent() {
             series={{ ...event, eventId: event.id }}
             idPrefix={`ev${event.id}`}
             roomDate={single ? next.date : undefined}
-            onRoomChanged={() => { setRoomsRevision((n) => n + 1); void load(true); }}
-            onSaved={() => { setEditing(false); setRoomsRevision((n) => n + 1); void load(); }}
+            onRoomChanged={() => { setRoomsRevision((n) => n + 1); void load.reload(); }}
+            onSaved={() => { setEditing(false); setRoomsRevision((n) => n + 1); void load.retry(); }}
             onClose={() => setEditing(false)}
           />
           {canSetVisibility && (
@@ -211,7 +189,7 @@ function EventDetailContent() {
               groupVisibility={event.groupVisibility}
               visibility={event.visibility}
               leaderOpened={event.leaderOpened}
-              onSaved={() => void load()}
+              onSaved={() => void load.retry()}
             />
           )}
         </div>
@@ -248,8 +226,8 @@ function EventDetailContent() {
             seriesFeedback={seriesFeedback}
             mutationGate={rsvpMutationGate}
             onSeriesFeedback={reportSeriesFeedback}
-            onTerminalRefresh={() => void load(true, true)}
-            onChanged={() => { setRoomsRevision((n) => n + 1); void load(true); }}
+            onTerminalRefresh={() => void load.retry()}
+            onChanged={() => { setRoomsRevision((n) => n + 1); void load.reload(); }}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />}
         </CompactDates>
@@ -325,6 +303,7 @@ function DateRow({
     editor?.scrollIntoView?.({ block: "start" });
   }, [editRequest, editingDate]);
   const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const time = formatTime(instance.startsAt);
   const held = heldIn(instance.startsAt, instance.tzid);
   const place = placeLine(instance.room, instance.location);
@@ -332,11 +311,12 @@ function DateRow({
   async function cancel() {
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
     setCancelling(true);
+    setCancelError(null);
     try {
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onChanged();
     } catch (e) {
-      alert(errorText(e, "We couldn't cancel that date."));
+      setCancelError(errorText(e, "We couldn't cancel that date."));
       setCancelling(false);
     }
   }
@@ -377,6 +357,7 @@ function DateRow({
         ) : instance.videoHidden ? (
           <div className="text-sm text-text-muted">Tap Going below to get the video link.</div>
         ) : null}
+        {cancelError && <FormError>{cancelError}</FormError>}
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}

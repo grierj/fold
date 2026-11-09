@@ -99,7 +99,7 @@ func (a *App) pushEnabled() bool { return boolSettingIn(a.DB, settingPushEnabled
 // apiAdminGetPushEnabled is the church's switch for notifications on
 // devices (DEC-124, default on).
 func (a *App) apiAdminGetPushEnabled(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"on": a.pushEnabled()})
+	c.JSON(http.StatusOK, settingOnResponseJSON{On: a.pushEnabled()})
 }
 
 // apiAdminSetPushEnabled turns notifications on devices on or off for the
@@ -123,7 +123,7 @@ func (a *App) apiAdminSetPushEnabled(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the setting")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"on": *body.On})
+	c.JSON(http.StatusOK, settingOnResponseJSON{On: *body.On})
 }
 
 func (a *App) pushHosts() *push.AllowList {
@@ -348,7 +348,7 @@ func (a *App) apiPushTurnOff(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"push": s})
+	c.JSON(http.StatusOK, pushSettingsResponseJSON{Push: s})
 }
 
 // apiPushTest sends one test notification to this browser's device, now,

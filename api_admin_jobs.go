@@ -159,7 +159,7 @@ func (a *App) decideDeadJob(c *gin.Context, action string, decide func(tx *gorm.
 	case !handled:
 		fail(c, errJobHandled)
 	default:
-		c.JSON(http.StatusOK, gin.H{"status": newStatus})
+		c.JSON(http.StatusOK, adminJobStatusResponseJSON{Status: newStatus})
 	}
 }
 

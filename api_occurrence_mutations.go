@@ -385,7 +385,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		return
 	}
 	if operation == operationRegister {
-		c.JSON(http.StatusOK, gin.H{"registration": result})
+		c.JSON(http.StatusOK, dateRegistrationResponseJSON{Registration: result})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

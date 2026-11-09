@@ -60,7 +60,7 @@ export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, coun
   }
 }
 
-/** @public test seam for the digest vectors. */
+/** @public test seam for the digest vectors; the e2e helper builds its review from it. */
 export function digestPreimage(ids: readonly string[], hashes: Uint8Array, count: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(HEADER + count * ITEM);
   let at = 0;
@@ -249,7 +249,7 @@ export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, c
 
 
 /** Packs two-bit codes (1 keep, 2 remove) for count items as standard padded base64. */
-/** @public test seam for the digest vectors. */
+/** @public test seam for the digest vectors; the e2e helper builds its review from it. */
 export function encodeChoices(codes: Uint8Array, count: number): string {
   const packed = new Uint8Array(Math.ceil(count / 4));
   for (let i = 0; i < count; i++) packed[i >> 2] |= codes[i] << ((i & 3) * 2);

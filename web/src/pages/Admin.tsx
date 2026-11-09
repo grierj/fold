@@ -54,6 +54,7 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ContactHistory } from "../api/contactHistory";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
+import { formatShortDay } from "../lib/when";
 
 type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "settings" | "system";
 
@@ -255,7 +256,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
               ? `Invited by ${request.requestedByName || "a member"}`
               : request.source === "household_conversion"
                 ? `Household account, invited by ${request.requestedByName || "a member"}`
-                : "Self-signup"}, asked {new Date(request.createdAt).toLocaleDateString()}
+                : "Self-signup"}, asked {formatShortDay(request.createdAt)}
           </div>
           {request.message && <p className="text-text-muted mt-3 whitespace-pre-wrap">{request.message}</p>}
           {request.guardianEmail && <p className="text-sm text-text-muted mt-3 break-words">Nominated guardian: {request.guardianEmail}. Approval asks an admin to check the link if this adult has an active account. Otherwise, help the adult join, then ask them to claim the teen from their profile.</p>}

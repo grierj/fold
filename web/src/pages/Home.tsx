@@ -6,6 +6,7 @@ import { DateBadge } from "../components/DateBadge";
 import { GroupDirectory } from "../components/GroupDirectory";
 import { ComingUp } from "../components/ComingUp";
 import { dayOf, formatTime, greeting } from "../lib/when";
+import { daysBetween } from "../lib/days";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useAuth } from "../auth";
 import { churchName, useSite } from "../lib/useSite";
@@ -39,7 +40,7 @@ export function Home() {
   // The continuation includes every preview date, even when the first one is
   // ongoing or the whole schedule starts beyond the calendar's usual 30 days.
   const churchFrom = openEvents.length ? dayOf(openEvents[0].startsAt) : "";
-  const churchDays = openEvents.length ? Math.max(30, (Date.parse(dayOf(openEvents[openEvents.length - 1].startsAt)) - Date.parse(churchFrom)) / 86_400_000 + 1) : 30;
+  const churchDays = openEvents.length ? Math.max(30, daysBetween(churchFrom, dayOf(openEvents[openEvents.length - 1].startsAt)) + 1) : 30;
   return (
     <div className="fold-page">
       {user ? (

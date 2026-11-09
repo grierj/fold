@@ -1,13 +1,14 @@
 import type {
   Badge,
   EmailKind,
+  EmailSettingsChangeResponse,
   EmailSettingsLinkResponse,
-  Notification,
   NotificationFeed,
   NotificationFilter,
-  NotificationSettings as NotificationSettingsData,
+  NotificationResponse,
+  NotificationSettingsResponse,
   PushConfig,
-  PushSettings,
+  PushSettingsResponse,
   PushSubscribeResponse,
   PushTestResponse,
 } from "../types";
@@ -20,10 +21,10 @@ export const Notifications = {
     const got = await apiIfChanged<Badge>("/notifications/badge", etag);
     return got && { badge: got.data, etag: got.etag };
   },
-  read: (id: Id, read = true) => api<{ notification: Notification }>(path`/notifications/${id}/read`, { method: read ? "POST" : "DELETE" }),
+  read: (id: Id, read = true) => api<NotificationResponse>(path`/notifications/${id}/read`, { method: read ? "POST" : "DELETE" }),
   readAll: () => api<unknown>("/notifications/read-all", { method: "POST" }),
   archive: (id: Id, archived = true) =>
-    api<{ notification: Notification }>(path`/notifications/${id}/archive`, { method: archived ? "POST" : "DELETE" }),
+    api<NotificationResponse>(path`/notifications/${id}/archive`, { method: archived ? "POST" : "DELETE" }),
 };
 
 // One email switch (DEC-97, DEC-115): a kind of email, or with no category
@@ -34,12 +35,12 @@ export interface EmailSettingsChange {
 }
 
 export const NotificationSettings = {
-  get: () => api<{ settings: NotificationSettingsData }>("/me/notification-settings"),
+  get: () => api<NotificationSettingsResponse>("/me/notification-settings"),
   update: (change: EmailSettingsChange) =>
-    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: change }),
+    api<NotificationSettingsResponse>("/me/notification-settings", { method: "PUT", body: change }),
   // One Push switch (DEC-122): an optional kind on every device.
   updatePush: (category: EmailKind["category"], off: boolean) =>
-    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: { channel: "push", category, off } }),
+    api<NotificationSettingsResponse>("/me/notification-settings", { method: "PUT", body: { channel: "push", category, off } }),
 };
 
 // Notifications on this device (M3.13b). A device is named by its endpoint,
@@ -49,7 +50,7 @@ export const Push = {
   // Past 30 saves an hour, saved is false with the line to show (DEC-129).
   save: (subscription: PushSubscriptionJSON) => api<PushSubscribeResponse>("/push/subscriptions", { method: "PUT", body: subscription }),
   remove: (endpoint: string) => api<Record<string, never>>("/push/subscriptions", { method: "DELETE", body: { endpoint } }),
-  turnOffEverywhere: () => api<{ push: PushSettings }>("/push/turn-off", { method: "POST" }),
+  turnOffEverywhere: () => api<PushSettingsResponse>("/push/turn-off", { method: "POST" }),
   test: (endpoint: string) => api<PushTestResponse>("/push/test", { method: "POST", body: { endpoint } }),
 };
 
@@ -58,5 +59,5 @@ export const Push = {
 export const EmailSettingsLink = {
   get: (token: string) => api<EmailSettingsLinkResponse>(path`/email-settings/${token}`),
   update: (token: string, change: EmailSettingsChange) =>
-    api<{ emailSettings: NotificationSettingsData }>(path`/email-settings/${token}`, { method: "PUT", body: change }),
+    api<EmailSettingsChangeResponse>(path`/email-settings/${token}`, { method: "PUT", body: change }),
 };

@@ -1,4 +1,4 @@
-import type { AddRequest, AttendanceMode } from "../types";
+import type { AddRequestResponse, AddRequestsResponse, AttendanceMode } from "../types";
 import { api, path, query, type Id } from "./core";
 
 type AddScope = { contextType: "group"; contextId: number; overLimit?: boolean } | {
@@ -9,11 +9,11 @@ type AddScope = { contextType: "group"; contextId: number; overLimit?: boolean }
 export type AddRequestInput = AddScope & { selectionId: string; reason?: string };
 
 export const Adds = {
-  create: (body: AddRequestInput) => api<{ request: AddRequest }>("/add-requests", { method: "POST", body }),
-  requests: (before?: number) => api<{ requests: AddRequest[] }>(`/add-requests${query({ before })}`),
-  request: (id: Id) => api<{ request: AddRequest }>(path`/add-requests/${id}`),
+  create: (body: AddRequestInput) => api<AddRequestResponse>("/add-requests", { method: "POST", body }),
+  requests: (before?: number) => api<AddRequestsResponse>(`/add-requests${query({ before })}`),
+  request: (id: Id) => api<AddRequestResponse>(path`/add-requests/${id}`),
   decide: (id: Id, party: "subject" | "admin", decision: "approved" | "denied") =>
-    api<{ request: AddRequest }>(path`/add-requests/${id}/decision`, { method: "POST", body: { party, decision } }),
-  withdraw: (id: Id) => api<{ request: AddRequest }>(path`/add-requests/${id}/withdraw`, { method: "POST" }),
-  complete: (id: Id) => api<{ request: AddRequest }>(path`/add-requests/${id}/complete`, { method: "POST" }),
+    api<AddRequestResponse>(path`/add-requests/${id}/decision`, { method: "POST", body: { party, decision } }),
+  withdraw: (id: Id) => api<AddRequestResponse>(path`/add-requests/${id}/withdraw`, { method: "POST" }),
+  complete: (id: Id) => api<AddRequestResponse>(path`/add-requests/${id}/complete`, { method: "POST" }),
 };

@@ -49,7 +49,7 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save timezone")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"timezone": tz})
+	c.JSON(http.StatusOK, timezoneResponseJSON{Timezone: tz})
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +866,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	}
 	j := toEventJSON(&ev)
 	applyEventVideoReveal(&j, &ev, false, true) // the creator leads the group or is an admin
-	c.JSON(http.StatusCreated, gin.H{"event": j})
+	c.JSON(http.StatusCreated, eventSeriesResponseJSON{Event: j})
 }
 
 func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
@@ -1128,7 +1128,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	ev = &locked
 	j := toEventJSON(ev)
 	applyEventVideoReveal(&j, ev, false, true) // the locked row was re-checked: only managers reach here
-	c.JSON(http.StatusOK, gin.H{"event": j})
+	c.JSON(http.StatusOK, eventSeriesResponseJSON{Event: j})
 }
 
 // lockManagedEventIn locks the event row and checks again, on the locked row,
@@ -1522,7 +1522,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update this date")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
+	c.JSON(http.StatusOK, occurrenceResponseJSON{Occurrence: inst})
 }
 
 // restoreSeriesDates records dates a series edit just brought back and tells

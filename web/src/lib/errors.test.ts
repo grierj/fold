@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/core";
-import { ERROR_COPY, errorCode, errorText } from "./errors";
+import { ERROR_COPY, errorCode, errorText, needsDecision } from "./errors";
 
 describe("errorText", () => {
   it("never shows the server's text", () => {
@@ -32,5 +32,14 @@ describe("errorText", () => {
   it("falls back to the general line for an unknown code", () => {
     expect(errorText(new ApiError(418, "teapot", { code: "teapot" }))).toBe(ERROR_COPY.server_error);
     expect(errorCode(new ApiError(418, "teapot", { code: "teapot" }))).toBe("");
+  });
+});
+
+describe("needsDecision", () => {
+  it("is the 409 that carries the flag, and nothing else", () => {
+    expect(needsDecision(new ApiError(409, "x", { needsDecision: true }))).toBe(true);
+    expect(needsDecision(new ApiError(409, "x", {}))).toBe(false);
+    expect(needsDecision(new ApiError(400, "x", { needsDecision: true }))).toBe(false);
+    expect(needsDecision(new Error("x"))).toBe(false);
   });
 });

@@ -38,7 +38,7 @@ func (a *App) apiGetNotificationSettings(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": s})
+	c.JSON(http.StatusOK, notificationSettingsResponseJSON{Settings: s})
 }
 
 // apiUpdateNotificationSettings changes one switch. Email (DEC-115): a kind
@@ -80,5 +80,5 @@ func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": s})
+	c.JSON(http.StatusOK, notificationSettingsResponseJSON{Settings: s})
 }

@@ -95,7 +95,7 @@ func (a *App) apiAdminSoleLedGroups(c *gin.Context) {
 		}
 		out = append(out, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status, Candidates: candidates})
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, soleLedGroupsResponseJSON{Groups: out})
 }
 
 // errNeedSuccessors means some sole-led groups have no valid successor.

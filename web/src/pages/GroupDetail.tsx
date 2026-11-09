@@ -7,7 +7,7 @@ import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { canDemoteLeader, canMakeLeader, canAskForContact, canRegisterAsGuest, canRemoveMember, isActiveAdult } from "../lib/can";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { Events } from "../api/events";
@@ -37,7 +37,8 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen } from "../lib/when";
-import { errorText } from "../lib/errors";
+import { errorText, needsDecision } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { FormError, HiddenFileInput } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
@@ -86,6 +87,7 @@ function EventRow({
   const navigate = useNavigate();
   const { canCompose } = useAuth();
   const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [editor, setEditor] = useState<null | "date" | "series">(null);
   const time = formatTime(instance.startsAt);
   const loc = placeLine(instance.room, instance.location);
@@ -94,11 +96,12 @@ function EventRow({
   async function cancel() {
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
     setCancelling(true);
+    setCancelError(null);
     try {
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onCancelled(instance.eventId, instance.date);
     } catch (e) {
-      alert(errorText(e, "We couldn't cancel that date."));
+      setCancelError(errorText(e, "We couldn't cancel that date."));
     } finally {
       setCancelling(false);
     }
@@ -122,6 +125,7 @@ function EventRow({
       />}
     >
         {showDescription && instance.description && <p className="text-sm text-text-muted whitespace-pre-wrap">{instance.description}</p>}
+        {cancelError && <FormError>{cancelError}</FormError>}
         {instance.overridden && <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>}
         <Attendance instance={instance} />
         {loggedIn && (
@@ -229,15 +233,32 @@ export function GroupDetail() {
   return <GroupDetailContent key={`${id}:${loading}:${user?.id}:${user?.role}:${user?.status}:${user?.accountType}`} />;
 }
 
+// Dates keyed by id, soonest first; a date in both lists keeps the newer row.
+function mergeDates(old: EventOccurrence[], fresh: EventOccurrence[]): EventOccurrence[] {
+  const dates = new Map(old.map((date) => [date.id, date]));
+  for (const date of fresh) dates.set(date.id, date);
+  return [...dates.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id - b.id);
+}
+
+// The group with its first page of dates, then as many more pages as were
+// already on screen (`loaded`), so a refresh after an RSVP or edit renews every
+// shown date, not just the first. Continuation metadata belongs to the last
+// page fetched; the rows describe all loaded dates, not a series total.
+async function fetchGroup(id: string, loaded: number): Promise<GroupDetailResponse> {
+  let next = await Groups.get(id);
+  let dates = mergeDates([], next.upcomingEvents);
+  while (next.hasMore && next.nextCursor && dates.length < loaded) {
+    next = await Groups.get(id, { cursor: next.nextCursor });
+    dates = mergeDates(dates, next.upcomingEvents);
+  }
+  return { ...next, upcomingEvents: dates };
+}
+
 function GroupDetailContent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin, canCompose } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
-  const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("events");
   const sectionsRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
@@ -253,71 +274,44 @@ function GroupDetailContent() {
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
-  const loadRevision = useRef(0);
-  const detailRef = useRef<GroupDetailResponse | null>(null);
-  detailRef.current = detail;
   const [loadingMore, setLoadingMore] = useState(false);
+  // A failed "Load more" is shown until the page is asked for again (the epoch moves).
+  const [moreFailure, setMoreFailure] = useState<{ text: string; epoch: number } | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  // A refresh keeps as many dates as are on screen, not just the first page.
+  const loadedDates = useRef(0);
   const rsvpMutationGate = useRsvpMutationGate();
 
-  // Quiet refreshes keep ordinary RSVP drafts mounted. Authority-changing
-  // refreshes invalidate protected data immediately, and only the newest
-  // request may commit detail, error, not-found, loading or navigation state.
-  const load = useCallback(async ({ quiet = false, failClosed = false, append = false, onLoaded, onFailure }: {
-    quiet?: boolean;
-    append?: boolean;
-    failClosed?: boolean;
-    onLoaded?: () => void;
-    onFailure?: (error: unknown) => void;
-  } = {}) => {
-    if (!id) return;
-    const previous = detailRef.current;
-    if (append && (!previous?.hasMore || !previous.nextCursor)) return;
-    const revision = ++loadRevision.current;
-    setLoadingMore(append);
-    if (failClosed) {
-      setDetail(null);
-      setLoading(true);
-    } else if (!quiet) {
-      setLoading(true);
-    }
-    setError(null);
-    setNotFound(false);
-    try {
-      let next = append
-        ? await Groups.get(id, { cursor: previous!.nextCursor })
-        : await Groups.get(id);
-      if (loadRevision.current !== revision) return;
-      const dates = new Map((append ? previous!.upcomingEvents : []).map((date) => [date.id, date]));
-      for (const date of next.upcomingEvents) dates.set(date.id, date);
-      // Refresh every loaded page, not just the first 25 dates, after an RSVP
-      // or edit. Commit atomically so stale authority cannot reappear.
-      const target = append ? 0 : previous?.upcomingEvents.length ?? 0;
-      while (next.hasMore && next.nextCursor && dates.size < target) {
-        next = await Groups.get(id, { cursor: next.nextCursor });
-        if (loadRevision.current !== revision) return;
-        for (const date of next.upcomingEvents) dates.set(date.id, date);
-      }
-      // Continuation metadata belongs to the last fetched page, while the
-      // visible rows and counts describe all loaded dates, not a series total.
-      setDetail({ ...next, upcomingEvents: [...dates.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id - b.id) });
-      onLoaded?.();
-    } catch (e) {
-      if (loadRevision.current !== revision) return;
-      if (onFailure) onFailure(e);
-      else if (e instanceof ApiError && e.status === 404) setNotFound(true);
-      else setError(errorText(e, "We couldn't load this group."));
-    } finally {
-      if (loadRevision.current === revision) {
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    }
-  }, [id]);
+  // `reload` keeps ordinary RSVP drafts mounted; `retry` (also what a
+  // terminal refresh calls) drops the page at once, so stale authority cannot
+  // reappear, and only the newest request may commit anything.
+  const load = useLoad(() => fetchGroup(id ?? "", loadedDates.current), [id], { enabled: !!id });
+  const detail = load.data ?? null;
+  if (detail) loadedDates.current = detail.upcomingEvents.length;
+  const loading = load.loading;
+  const notFound = load.error instanceof ApiError && load.error.status === 404;
+  const error = load.error && !notFound ? errorText(load.error, "We couldn't load this group.") : null;
+  const setDetail = load.setData;
+  const moreError = moreFailure && moreFailure.epoch === load.epoch() ? moreFailure.text : null;
+  const refresh = load.reload;
 
-  useEffect(() => {
-    void load();
-    return () => { ++loadRevision.current; };
-  }, [load]);
+  // Adds the next page of dates to the ones on screen.
+  async function loadMore() {
+    if (!id || !detail?.hasMore || !detail.nextCursor) return;
+    const stamp = load.epoch();
+    setLoadingMore(true);
+    setMoreFailure(null);
+    try {
+      const next = await Groups.get(id, { cursor: detail.nextCursor });
+      if (load.epoch() !== stamp) return;
+      setDetail((old) => old && { ...next, upcomingEvents: mergeDates(old.upcomingEvents, next.upcomingEvents) });
+    } catch (e) {
+      if (load.epoch() === stamp) setMoreFailure({ text: errorText(e, "We couldn't load this group."), epoch: stamp });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   if (loading || authLoading) {
     return (
@@ -341,7 +335,7 @@ function GroupDetailContent() {
     return (
       <div className="fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Group unavailable</h1>
-        <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load()} />
+        <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load.retry()} />
       </div>
     );
   }
@@ -378,10 +372,11 @@ function GroupDetailContent() {
     }
     setJoinBusy(true);
     try {
+      setJoinError(null);
       await Groups.join(id!);
-      await load();
+      await load.retry();
     } catch (e) {
-      alert(errorText(e, "That didn't work."));
+      setJoinError(errorText(e, "That didn't work."));
     } finally {
       setJoinBusy(false);
     }
@@ -396,17 +391,15 @@ function GroupDetailContent() {
     const summary = departureResult(result);
     if (result.action === "remove") {
       setDepartureStatus(summary);
-      await load({ quiet: true });
+      await refresh();
       return;
     }
-    await load({
-      failClosed: true,
-      onLoaded: () => setDepartureStatus(summary),
-      onFailure: () => navigate("/my-groups", { replace: true, state: { departureStatus: summary } }),
-    });
+    const outcome = await load.retry();
+    if (outcome === "loaded") setDepartureStatus(summary);
+    else if (outcome === "failed") navigate("/my-groups", { replace: true, state: { departureStatus: summary } });
   }
 
-  function handleRsvp() { void load({ quiet: true }); }
+  function handleRsvp() { void refresh(); }
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
     setDetail((current) => current ? {
@@ -448,7 +441,7 @@ function GroupDetailContent() {
       await commitEdit(review.data, decisions);
       setReview(null);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
+      if (needsDecision(e)) {
         // The events changed since the preview; show the new list.
         setReview({ data: review.data, impact: await Groups.visibilityImpact(id!, review.data.visibility) });
         setReviewError("The group's events changed. Please review them again.");
@@ -477,7 +470,7 @@ function GroupDetailContent() {
       ...(openedEvents ? { openedEvents } : {}),
     });
     setEditing(false);
-    await load();
+    await load.retry();
   }
 
   async function setRole(memberId: number, name: string, role: "leader" | "member") {
@@ -489,7 +482,7 @@ function GroupDetailContent() {
     setMemberError(null);
     try {
       await Groups.setRole(id!, memberId, role);
-      await load();
+      await load.retry();
     } catch (e) {
       setMemberError(errorText(e, "We couldn't change that role."));
     } finally {
@@ -509,7 +502,7 @@ function GroupDetailContent() {
     setMemberError(null);
     try {
       await Groups.requestDeletion(id!);
-      await load();
+      await load.retry();
     } catch (e) {
       setMemberError(errorText(e, "We couldn't send the deletion request."));
     } finally {
@@ -522,7 +515,7 @@ function GroupDetailContent() {
     setMemberError(null);
     try {
       await Groups.cancelDeletion(id!);
-      await load();
+      await load.retry();
     } catch (e) {
       setMemberError(errorText(e, "We couldn't cancel the request."));
     } finally {
@@ -534,10 +527,11 @@ function GroupDetailContent() {
     setCoverBusy(true);
     try {
       const resized = await prepareUpload(file, 1600);
+      setCoverError(null);
       await GroupCover.upload(id!, resized);
-      await load();
+      await load.retry();
     } catch (e) {
-      alert(errorText(e, "We couldn't upload the cover photo."));
+      setCoverError(errorText(e, "We couldn't upload the cover photo."));
     } finally {
       setCoverBusy(false);
     }
@@ -634,6 +628,8 @@ function GroupDetailContent() {
       </div>
 
       <div className="pt-6">
+        {joinError && <div className="mb-4"><ErrorNotice message={joinError} /></div>}
+        {coverError && <div className="mb-4"><ErrorNotice message={coverError} /></div>}
         {departureStatus && <p role="status" className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm">{departureStatus}</p>}
         {editing && review && (
           <>
@@ -709,7 +705,7 @@ function GroupDetailContent() {
                     </ButtonLink>
                   </div>
                 )}
-                {error && <ErrorNotice message={error} onRetry={() => void load({ quiet: true })} />}
+                {(error ?? moreError) && <ErrorNotice message={(error ?? moreError)!} onRetry={() => void refresh()} />}
                 {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
                 <CompactDates dates={nextDates} loadedOnly={detail.hasMore} noun="events">
                   {(m) => <EventRow
@@ -727,12 +723,12 @@ function GroupDetailContent() {
                     seriesFeedback={seriesFeedback}
                     mutationGate={rsvpMutationGate}
                     onSeriesFeedback={reportSeriesFeedback}
-                    onTerminalRefresh={() => void load({ quiet: true, failClosed: true })}
+                    onTerminalRefresh={() => void load.retry()}
                     onCancelled={handleCancelled}
-                    onChanged={() => void load({ quiet: true })}
+                    onChanged={() => void refresh()}
                   />}
                 </CompactDates>
-                {detail.hasMore && <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>{loadingMore ? "Loading dates…" : "Load more dates"}</Button>}
+                {detail.hasMore && <Button variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading dates…" : "Load more dates"}</Button>}
                 {group.visibility === "public" && group.status === "active" && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
@@ -804,7 +800,7 @@ function GroupDetailContent() {
                     {memberError && <FormError layout="mb-3">{memberError}</FormError>}
                     {canManage && <div className="mb-4"><AddPeople
                       groupId={group.id} groupName={group.name} memberCount={group.memberCount} memberLimit={group.memberLimit}
-                      canSearch={isActiveAdult(user)} onAdded={() => load({ quiet: true })}
+                      canSearch={isActiveAdult(user)} onAdded={async () => { await refresh(); }}
                     /></div>}
                     <PeopleList rows={members ?? []} noun="members" filters={[
                       { value: "leader", label: "Leaders", matches: (m) => m.role === "leader" },
@@ -892,7 +888,7 @@ function GroupDetailContent() {
           subjectId={departureTarget.subjectId}
           allowNote={departureTarget.allowNote}
           onCancel={() => setDepartureTarget(null)}
-          onUnavailable={() => load({ quiet: true })}
+          onUnavailable={async () => { await refresh(); }}
           onCompleted={completedDeparture}
         />
       )}
