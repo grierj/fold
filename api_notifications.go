@@ -229,11 +229,11 @@ func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 	return ids, err
 }
 
-func leaderIDs(tx *gorm.DB, groupID uint) []uint {
+func leaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
 	var ids []uint
-	tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = ?", groupID, models.MembershipLeader, models.MembershipActive).
-		Pluck("user_id", &ids)
-	return ids
+	err := tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = ?", groupID, models.MembershipLeader, models.MembershipActive).
+		Pluck("user_id", &ids).Error
+	return ids, err
 }
 
 // publicNames keeps historical display names for one response. Like nameIn,
@@ -412,8 +412,12 @@ func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool,
 	if approved {
 		kind = notify.GroupApproved
 	}
-	_, err := notify.Send(tx, notify.Msg{
-		Kind: kind, To: leaderIDs(tx, g.ID), Actor: &actor,
+	leaders, err := leaderIDs(tx, g.ID)
+	if err != nil {
+		return err
+	}
+	_, err = notify.Send(tx, notify.Msg{
+		Kind: kind, To: leaders, Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: "/groups/" + strconv.FormatUint(uint64(g.ID), 10),
 		Vars: notify.Vars{Group: g.Name, Note: note}, // group-ok: its own leaders
 		// No dedupe key: the pending → decided transition sends it once, and a
@@ -691,8 +695,12 @@ func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, user
 // notifyVisibilityOverride tells the group's other leaders and the admins
 // that an event is more open than its group (DEC-17, DEC-28).
 func notifyVisibilityOverride(tx *gorm.DB, actor uint, ev *models.Event, g *models.Group, newVis, note string) error {
-	_, err := notify.Send(tx, notify.Msg{
-		Kind: notify.VisibilityOverride, To: append(leaderIDs(tx, g.ID), adminIDs(tx)...), Actor: &actor,
+	leaders, err := leaderIDs(tx, g.ID)
+	if err != nil {
+		return err
+	}
+	_, err = notify.Send(tx, notify.Msg{
+		Kind: notify.VisibilityOverride, To: append(leaders, adminIDs(tx)...), Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
 		Vars: notify.Vars{Actor: nameIn(tx, actor), Event: firstNonEmpty(ev.Title, g.Name), // group-ok: leaders and admins only
 			Visibility: visWord(newVis), GroupVis: visWord(g.Visibility), Note: note},

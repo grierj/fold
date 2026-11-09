@@ -30,7 +30,9 @@ func TestAttendeeProvenanceReadIsBoundedToPageDates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.DB.Callback().Query().Remove(callback)
-	app.attendeeNames([]models.EventOccurrence{occ}, map[uint]bool{eid: true}, nil, map[uint]bool{eid: true}, nil, app.requestFacts())
+	if _, _, err := app.attendeeNames([]models.EventOccurrence{occ}, map[uint]bool{eid: true}, nil, map[uint]bool{eid: true}, nil, app.requestFacts()); err != nil {
+		t.Fatal(err)
+	}
 	// The flag is the row's own provenance, so there is no second table to bound:
 	// the one read is limited to the page's dates and joins no access table.
 	if !strings.Contains(sql, "registrations.occurrence_id IN (") || strings.Contains(sql, "occurrence_accesses") || !strings.Contains(sql, "registrations.access_ended_at IS NULL") {
@@ -259,7 +261,10 @@ func TestSubjectFactsChurchLocalBirthday(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f := app.loadSubjectFacts(app.DB, []models.Registration{row}, holder)
+			f := app.requestFacts()
+			if err := f.load(app.DB, []models.Registration{row}, holder); err != nil {
+				t.Fatal(err)
+			}
 			if !f.today.IsZero() || f.clock == nil {
 				t.Fatal("facts eagerly chose UTC instead of a lazy church clock")
 			}
@@ -278,7 +283,10 @@ func TestSubjectFactsChurchLocalBirthday(t *testing.T) {
 		})
 	}
 	// Account-only facts never read the church time zone, including eligibility.
-	f := app.loadSubjectFacts(app.DB, []models.Registration{{UserID: &holder.ID}}, holder)
+	f := app.requestFacts()
+	if err := f.load(app.DB, []models.Registration{{UserID: &holder.ID}}, holder); err != nil {
+		t.Fatal(err)
+	}
 	called := false
 	f.clock = func() time.Time { called = true; return time.Now() }
 	_ = f.attendee(models.Registration{UserID: &holder.ID}, models.EventOccurrence{}, holder, false, false, time.Now())

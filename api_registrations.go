@@ -212,15 +212,27 @@ func lockOccurrence(tx *gorm.DB, occurrenceID uint) (*models.EventOccurrence, er
 	return &o, nil
 }
 
-// hostIDs lists the hosts of a church-wide event whose accounts still exist,
-// in ascending id. A deleted account's leftover host row is not a host.
-func hostIDs(tx *gorm.DB, eventID uint) []uint {
+// eventRunnerIDs are the people who run an event: its group's leaders, or a
+// church-wide event's hosts whose accounts still exist (a deleted account's
+// leftover host row is not a host), in ascending id.
+func eventRunnerIDs(tx *gorm.DB, ev *models.Event) ([]uint, error) {
+	if ev.GroupID != nil {
+		return leaderIDs(tx, *ev.GroupID)
+	}
 	var ids []uint
-	tx.Model(&models.EventHost{}).
+	err := tx.Model(&models.EventHost{}).
 		Joins("JOIN users u ON u.id = event_hosts.user_id AND u.deleted_at IS NULL").
-		Where("event_hosts.event_id = ?", eventID).Order("event_hosts.user_id").
-		Pluck("event_hosts.user_id", &ids)
-	return ids
+		Where("event_hosts.event_id = ?", ev.ID).Order("event_hosts.user_id").
+		Pluck("event_hosts.user_id", &ids).Error
+	return ids, err
+}
+
+// eventGroupIDs is the event's group as the list loadNoticeFacts takes.
+func eventGroupIDs(ev *models.Event) []uint {
+	if ev.GroupID == nil {
+		return nil
+	}
+	return []uint{*ev.GroupID}
 }
 
 // noticeEnd is when a date's notices stop mattering: its end, or its start
@@ -273,11 +285,17 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 // eventNoticeVarsIn is eventNoticeVars for a single recipient: it loads
 // that one person's facts in tx, then builds the same Vars.
 func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string) {
-	var groupIDs []uint
-	if ev.GroupID != nil {
-		groupIDs = []uint{*ev.GroupID}
+	return eventNoticeVars(ev, o, userID, loadNoticeFacts(tx, eventGroupIDs(ev), []uint{userID}))
+}
+
+// addPersonVar names a household registration's person in the notice.
+func addPersonVar(tx *gorm.DB, vars *notify.Vars, reg models.Registration) error {
+	if reg.HouseholdPersonID == nil {
+		return nil
 	}
-	return eventNoticeVars(ev, o, userID, loadNoticeFacts(tx, groupIDs, []uint{userID}))
+	name, err := householdPersonName(tx, *reg.HouseholdPersonID)
+	vars.Person = name
+	return err
 }
 
 // notifyRegistrationPromoted tells one person they are in off the
@@ -294,8 +312,8 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano), nil)
 	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
-	if reg.HouseholdPersonID != nil {
-		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
+	if err := addPersonVar(tx, &vars, reg); err != nil {
+		return err
 	}
 	if actor != nil && *actor == userID {
 		actor = nil
@@ -322,21 +340,15 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 // inside the 2-hour cutoff, so they can promote by hand. Admins get it
 // only when they also lead or host.
 func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, actor *uint) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return err
 	}
 	if len(to) == 0 {
 		return nil
 	}
 	// Vars are per recipient: the time renders in each leader's own zone.
-	var groupIDs []uint
-	if ev.GroupID != nil {
-		groupIDs = []uint{*ev.GroupID}
-	}
-	facts := loadNoticeFacts(tx, groupIDs, to)
+	facts := loadNoticeFacts(tx, eventGroupIDs(ev), to)
 	end := noticeEnd(o)
 	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), not one lock
 	// query per leader or host.
@@ -374,11 +386,7 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		Order("users.id").Pluck("users.id", &userIDs).Error; err != nil {
 		return err
 	}
-	var groupIDs []uint
-	if ev.GroupID != nil {
-		groupIDs = []uint{*ev.GroupID}
-	}
-	facts := loadNoticeFacts(tx, groupIDs, userIDs)
+	facts := loadNoticeFacts(tx, eventGroupIDs(ev), userIDs)
 	accesses, err := occurrenceNoticeAccesses(tx, []uint{o.ID})
 	if err != nil {
 		return err
@@ -424,8 +432,8 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 		return nil
 	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
-	if reg.HouseholdPersonID != nil {
-		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
+	if err := addPersonVar(tx, &vars, reg); err != nil {
+		return err
 	}
 	vars.Note = note
 	end := noticeEnd(o)
@@ -443,8 +451,8 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) error {
 	userID := registrationHolder(reg)
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
-	if reg.HouseholdPersonID != nil {
-		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
+	if err := addPersonVar(tx, &vars, reg); err != nil {
+		return err
 	}
 	end := noticeEnd(o)
 	_, err := notify.Send(tx, notify.Msg{
@@ -489,14 +497,18 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	if len(tally.pick(line)) == 0 {
 		return nil
 	}
-	facts := a.loadSubjectFacts(tx, wl, nil)
-	access := map[uint]bool{}
-	if facts.today, err = churchClockIn(tx, now); err != nil {
+	facts, err := a.loadEligibilityFacts(tx, wl, now, nil)
+	if err != nil {
 		return err
 	}
+	access := map[uint]bool{}
 	entries := make([]events.WaitEntry, 0, len(wl))
 	for _, r := range wl {
-		if !facts.eligible(a, tx, r, ev, access, now) {
+		ok, err := facts.eligible(a, tx, r, ev, access, now)
+		if err != nil {
+			return err
+		}
+		if !ok {
 			continue
 		}
 		entries = append(entries, tally.entry(r))
@@ -699,6 +711,30 @@ func auditRegistration(tx *gorm.DB, actor uint, action string, eventID uint, old
 		actorID = &actor
 	}
 	return audit.Write(tx, audit.Entry{Actor: actorID, Action: action, TargetType: "event", TargetID: eventID, Meta: meta, IP: ip})
+}
+
+// The keys of registrationMeta that the app reads back as domain state: the
+// restore's dropped answers (appendRecoverableRegistrations,
+// previouslyRegisteredPerson) are found only in the audit log. The writer keeps
+// literal keys (the audit census pins them); TestRegistrationAuditKeysAreShared
+// proves it writes every key the readers use, with the same names.
+const (
+	metaRegistrationID = "registrationId"
+	metaUserID         = "userId"
+	metaPersonID       = "personId"
+	metaRegisteredBy   = "registeredBy"
+	metaOccurrenceID   = "occurrenceId"
+	metaAttendanceMode = "attendanceMode"
+)
+
+// droppedRegistrationMeta is registrationMeta as the restore's recovery reads it.
+type droppedRegistrationMeta struct {
+	RegistrationID uint   `json:"registrationId"`
+	PersonID       *uint  `json:"personId"`
+	UserID         *uint  `json:"userId"`
+	RegisteredBy   *uint  `json:"registeredBy"`
+	OccurrenceID   uint   `json:"occurrenceId"`
+	AttendanceMode string `json:"attendanceMode"`
 }
 
 func registrationMeta(r models.Registration) map[string]any {
@@ -1044,14 +1080,22 @@ func (a *App) apiRegister(c *gin.Context) {
 		for _, ch := range changes {
 			candidates = append(candidates, ch.next)
 		}
-		var facts subjectFacts
+		facts := newSubjectFacts(today)
 		if len(body.People) > 0 {
-			facts = a.loadSubjectFacts(tx, candidates, &holder)
-			facts.today = today
+			if err := facts.load(tx, candidates, &holder); err != nil {
+				return err
+			}
 		}
 		access := map[uint]bool{}
 		for _, r := range candidates {
-			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, access, now) {
+			if r.HouseholdPersonID == nil {
+				continue
+			}
+			ok, err := facts.eligible(a, tx, r, ev, access, now)
+			if err != nil {
+				return err
+			}
+			if !ok {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
@@ -1640,10 +1684,6 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 	if err := tx.First(&holder, userID).Error; err != nil {
 		return err
 	}
-	today, err := churchClockIn(tx, now)
-	if err != nil {
-		return err
-	}
 	holder.Status = intendedStatus
 	var regs []models.Registration
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").Where("(registrations.user_id = ? OR registrations.registered_by = ?) AND registrations.status IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at > ?", userID, userID, []string{models.RegGoing, models.RegWaitlisted}, models.OccurrenceScheduled, now).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
@@ -1653,7 +1693,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 	var o *models.EventOccurrence
 	var ev models.Event
 	var tally *seatTally
-	var facts subjectFacts
+	var facts *subjectFacts
 	var access map[uint]bool
 	for _, r := range regs {
 		if currentID != r.OccurrenceID {
@@ -1676,14 +1716,17 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 					currentRegs = append(currentRegs, candidate)
 				}
 			}
-			facts = a.loadSubjectFacts(tx, currentRegs, nil)
-			facts.today = today
-			facts.users[holder.ID] = &holder
+			if facts, err = a.loadEligibilityFacts(tx, currentRegs, now, &holder); err != nil {
+				return err
+			}
 			access = map[uint]bool{}
 		}
 		fits := true
 		if r.HouseholdPersonID != nil {
-			fits = facts.eligible(a, tx, r, &ev, access, now)
+			var err error
+			if fits, err = facts.eligible(a, tx, r, &ev, access, now); err != nil {
+				return err
+			}
 		} else {
 			fits = a.canRegisterDate(tx, &holder, &ev, o)
 		}
@@ -1731,14 +1774,20 @@ func lockRegistrationHolder(tx *gorm.DB, registrationID, occurrenceID uint) erro
 	return tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, registrationHolder(r)).Error
 }
 
-func previouslyRegisteredPerson(tx *gorm.DB, eventID, occurrenceID, personID, holderID uint) bool {
+// previouslyRegisteredPerson is whether holderID has registered personID for the
+// date: a live row, or the audit row of an answer a restore dropped.
+func previouslyRegisteredPerson(tx *gorm.DB, eventID, occurrenceID, personID, holderID uint) (bool, error) {
 	var n int64
-	tx.Model(&models.Registration{}).Where("occurrence_id = ? AND household_person_id = ? AND registered_by = ?", occurrenceID, personID, holderID).Count(&n)
-	if n > 0 {
-		return true
+	if err := tx.Model(&models.Registration{}).Where("occurrence_id = ? AND household_person_id = ? AND registered_by = ?", occurrenceID, personID, holderID).Count(&n).Error; err != nil {
+		return false, err
 	}
-	tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'event' AND target_id = ? AND meta_json->>'personId' = ? AND meta_json->>'registeredBy' = ? AND meta_json->>'occurrenceId' = ?", audit.RegistrationNotRestored, eventID, strconv.FormatUint(uint64(personID), 10), strconv.FormatUint(uint64(holderID), 10), strconv.FormatUint(uint64(occurrenceID), 10)).Count(&n)
-	return n > 0
+	if n > 0 {
+		return true, nil
+	}
+	err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'event' AND target_id = ? AND "+
+		"meta_json->>'"+metaPersonID+"' = ? AND meta_json->>'"+metaRegisteredBy+"' = ? AND meta_json->>'"+metaOccurrenceID+"' = ?",
+		audit.RegistrationNotRestored, eventID, strconv.FormatUint(uint64(personID), 10), strconv.FormatUint(uint64(holderID), 10), strconv.FormatUint(uint64(occurrenceID), 10)).Count(&n).Error
+	return n > 0, err
 }
 
 func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date string, personID, holderID uint, mode string, namedCare *bool, overCapacity bool) {
@@ -1778,15 +1827,23 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		acct, found := householdAccountIn(tx, holderID)
-		links := guardianLinksForPeople(tx, []uint{personID})
 		today, err := churchClockIn(tx, now)
 		if err != nil {
 			return err
 		}
+		facts := newSubjectFacts(today)
+		if err := facts.load(tx, []models.Registration{subject.row(o.ID)}, &holder); err != nil {
+			return err
+		}
+		previously, err := previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID)
+		if err != nil {
+			return err
+		}
 		f := eventFactsIn(tx, actor, ev)
-		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], today), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
-		if problem != "" {
+		acct, found := facts.accounts[holderID]
+		manager := policy.HouseholdManager{Person: asPerson(actor), ManagesEvent: policy.CanManageEvent(asPerson(actor), f.view, f.rel), PreviouslyRegistered: previously}
+		holderFacts := householdHolderOf(&holder, acct, found, &person, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
+		if problem := policy.CanManageHouseholdRegistration(manager, holderFacts, householdFacts(&person, facts.links[personID], today)); problem != "" {
 			return householdRegistrationError{code: problem}
 		}
 		var old models.Registration

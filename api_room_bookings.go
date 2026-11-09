@@ -560,17 +560,15 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 // the date is told too (no Actor): the move saved, and a lost room is easy
 // to miss on a page that no longer shows it.
 func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return err
 	}
 	change := "1 date"
 	if len(dates) > 1 {
 		change = fmt.Sprintf("%d dates", len(dates))
 	}
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RoomLost, To: to,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change}, // group-ok: the event's own leaders and hosts

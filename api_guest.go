@@ -606,24 +606,12 @@ func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, o
 		return errTokenInvalid
 	}
 	if reg.HouseholdPersonID != nil {
-		var person models.HouseholdPerson
-		if err := tx.First(&person, *reg.HouseholdPersonID).Error; err != nil {
-			return err
-		}
-		var account models.HouseholdAccount
-		if err := tx.Where("user_id = ? AND household_id = ?", holder.ID, person.HouseholdID).First(&account).Error; err != nil {
-			return err
-		}
-		var links []models.GuardianLink
-		if err := tx.Where("person_id = ?", person.ID).Find(&links).Error; err != nil {
-			return err
-		}
-		today, err := churchClockIn(tx, time.Now().UTC())
+		facts, err := a.loadEligibilityFacts(tx, []models.Registration{*reg}, time.Now().UTC(), &holder)
 		if err != nil {
 			return err
 		}
-		hr := householdRelOf(account, true)
-		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, today), holder.CanSignIn(), allowed, allowed) != "" {
+		person := facts.people[*reg.HouseholdPersonID]
+		if person == nil || facts.householdProblem(&holder, person, allowed) != "" {
 			return errTokenInvalid
 		}
 	}

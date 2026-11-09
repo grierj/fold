@@ -2695,20 +2695,21 @@ func TestInvitedDeclineRetrySerializesWithErasure(t *testing.T) {
 	})
 }
 
-// hostIDs lists the hosts whose accounts still exist, so a deleted host's
-// leftover row is neither a recipient nor a reason to build the notice.
-func TestHostIDsOmitsDeletedHosts(t *testing.T) {
+// eventRunnerIDs lists a church-wide event's hosts whose accounts still exist,
+// so a deleted host's leftover row is neither a recipient nor a reason to build
+// the notice.
+func TestEventRunnerIDsOmitsDeletedHosts(t *testing.T) {
 	s := newHostScene(t)
 	ev := churchEvent(t, s.a, "Hosts", s.target.Email)
 	tomb := tombstoneHost(t, s.app, ev.ID, s.adminA.ID, "gone")
-	if got := hostIDs(s.app.DB, ev.ID); !sameIDs(got, s.adminA.ID, s.target.ID) {
-		t.Fatalf("hostIDs = %v, want the two live hosts and not %d", got, tomb.ID)
+	if got, err := eventRunnerIDs(s.app.DB, &models.Event{ID: ev.ID}); err != nil || !sameIDs(got, s.adminA.ID, s.target.ID) {
+		t.Fatalf("eventRunnerIDs = %v, %v, want the two live hosts and not %d", got, err, tomb.ID)
 	}
 	if err := s.app.DB.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", s.target.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if got := hostIDs(s.app.DB, ev.ID); !sameIDs(got, s.adminA.ID) {
-		t.Fatalf("hostIDs after the target's deletion = %v", got)
+	if got, err := eventRunnerIDs(s.app.DB, &models.Event{ID: ev.ID}); err != nil || !sameIDs(got, s.adminA.ID) {
+		t.Fatalf("eventRunnerIDs after the target's deletion = %v, %v", got, err)
 	}
 }
 

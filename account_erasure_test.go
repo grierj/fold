@@ -1334,7 +1334,7 @@ type erasureTestPoint struct {
 
 	Table       string
 	Where       *erasureTestWhere
-	Assign      map[string]any // matched against Statement.Dest when it is a map[string]any
+	Assign      map[string]any // matched against Statement.Dest: a map[string]any, or the fields of a struct (a Save)
 	Locking     bool           // a FOR clause is present
 	Operation   string         // testDBOperationKey in the statement context
 	SQLContains string
@@ -1454,6 +1454,24 @@ func (w erasureTestWhere) matches(stmt *gorm.Statement) bool {
 	return false
 }
 
+// erasureTestAssigned is the value an update statement assigns to col: from a
+// map[string]any destination, or from the field of a struct destination (a Save).
+func erasureTestAssigned(stmt *gorm.Statement, col string) (any, bool) {
+	if dest, ok := stmt.Dest.(map[string]any); ok {
+		got, ok := dest[col]
+		return got, ok
+	}
+	if stmt.Schema == nil || !stmt.ReflectValue.IsValid() || stmt.ReflectValue.Kind() != reflect.Struct {
+		return nil, false
+	}
+	field, ok := stmt.Schema.FieldsByDBName[col]
+	if !ok {
+		return nil, false
+	}
+	got, _ := field.ValueOf(stmt.Context, stmt.ReflectValue)
+	return got, true
+}
+
 func (p erasureTestPoint) matches(stmt *gorm.Statement) bool {
 	if p.Table != "" && stmt.Table != p.Table {
 		return false
@@ -1461,16 +1479,10 @@ func (p erasureTestPoint) matches(stmt *gorm.Statement) bool {
 	if p.Where != nil && !p.Where.matches(stmt) {
 		return false
 	}
-	if len(p.Assign) > 0 {
-		dest, ok := stmt.Dest.(map[string]any)
-		if !ok {
+	for col, want := range p.Assign {
+		got, ok := erasureTestAssigned(stmt, col)
+		if !ok || !erasureTestEqual(got, want) {
 			return false
-		}
-		for col, want := range p.Assign {
-			got, ok := dest[col]
-			if !ok || !erasureTestEqual(got, want) {
-				return false
-			}
 		}
 	}
 	if p.Locking {
