@@ -17,6 +17,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -223,7 +224,21 @@ func TestQC1PlanMarkersAreWhatTheApplicationSends(t *testing.T) {
 // and scenario.sql. Each names the columns it inserts into contact_requests:
 // every one must exist, and every column a row cannot do without (NOT NULL,
 // no default) must be among them, so a migration that adds one fails here and
-// not hours into a measurement.
+// not hours into a measurement. The list itself is pinned (qc1LoaderColumns), as
+// the grep it replaces pinned it, so a column dropped from both files fails
+// here, and so does a new column of the table that nobody has decided about.
+// qc1LoaderColumns are the columns filler.sql and scenario.sql insert, in order.
+// qc1LoaderLeftToDefaults are the other columns of contact_requests: nullable or
+// defaulted, and not part of the rows the measurements read (denied group_add
+// requests). A migration that adds a column to the table fails
+// TestQC1LoaderColumnsFitTheSchema until the new column is in one of the two
+// lists (and, for the first, in both SQL files).
+var (
+	qc1LoaderColumns = []string{"id", "requester_id", "subject_user_id", "context_type", "context_id", "fields", "reason", "needs_admin",
+		"subject_decision", "subject_decided_by", "subject_decided_at", "admin_decision", "status", "created_at", "expires_at", "completed_at", "purpose"}
+	qc1LoaderLeftToDefaults = []string{"add_attendance_mode", "add_childcare_ages_note", "add_childcare_count", "add_guest_count", "add_over_capacity", "add_over_limit", "admin_decided_at", "admin_decided_by", "completed_target_id", "end_reason", "occurrence_id", "withdrawn_by_id"}
+)
+
 func TestQC1LoaderColumnsFitTheSchema(t *testing.T) {
 	app := testApp(t)
 	var existing []string
@@ -249,6 +264,13 @@ func TestQC1LoaderColumnsFitTheSchema(t *testing.T) {
 		for _, c := range strings.Split(string(m[1]), ",") {
 			listed[strings.TrimSpace(c)] = true
 		}
+		var order []string
+		for _, c := range strings.Split(string(m[1]), ",") {
+			order = append(order, strings.TrimSpace(c))
+		}
+		if !reflect.DeepEqual(order, qc1LoaderColumns) {
+			t.Errorf("%s inserts %v, not the pinned %v. If the loaders should change, change qc1LoaderColumns and both files together", file, order, qc1LoaderColumns)
+		}
 		have := map[string]bool{}
 		for _, c := range existing {
 			have[c] = true
@@ -262,6 +284,20 @@ func TestQC1LoaderColumnsFitTheSchema(t *testing.T) {
 			if !listed[c] {
 				t.Errorf("%s does not give %q, which contact_requests requires (NOT NULL, no default)", file, c)
 			}
+		}
+	}
+	known := map[string]bool{}
+	for _, c := range append(append([]string{}, qc1LoaderColumns...), qc1LoaderLeftToDefaults...) {
+		known[c] = true
+	}
+	for _, c := range existing {
+		if !known[c] {
+			t.Errorf("contact_requests has a column %q the QC-1 loaders have not decided about: add it to qc1LoaderColumns (and to both INSERT lists in deploy/digitalocean/qc1) or to qc1LoaderLeftToDefaults", c)
+		}
+	}
+	for _, c := range qc1LoaderLeftToDefaults {
+		if !slices.Contains(existing, c) {
+			t.Errorf("qc1LoaderLeftToDefaults names %q, which contact_requests no longer has", c)
 		}
 	}
 }
