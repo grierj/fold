@@ -48,6 +48,8 @@ done
 # The dev shard: its own port, database ("<db>_e2e_dev") and seed, in dev mode. Left out of the
 # durations that E2E_RECORD_DURATIONS writes (its messages.spec.ts run is a second one).
 mapfile -t dev_specs < <(grep -l '/dev/outbox' e2e/*.spec.ts | xargs -n1 basename | sort)
+# With no spec named, playwright would run the whole suite in dev mode.
+if ((${#dev_specs[@]} == 0)); then echo "run.sh: no spec mentions /dev/outbox; the dev shard has nothing to run" >&2; exit 1; fi
 E2E_APP_ENV=dev E2E_SHARD=dev E2E_PORT=$((18090 + shards + 1)) E2E_OUTPUT_DIR="test-results/shard-dev" \
 	PLAYWRIGHT_JSON_OUTPUT_NAME="$tmp/dev.json" \
 	npx playwright test --reporter=list,json seed "${dev_specs[@]}" "$@" >"$tmp/dev.log" 2>&1 &
