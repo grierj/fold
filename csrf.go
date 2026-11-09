@@ -40,7 +40,6 @@ func csrfToken(s *sessions.Session) (string, bool) {
 	return t, true
 }
 
-// csrfField renders the hidden form field carrying the token.
 func csrfField(token string) template.HTML {
 	return template.HTML(fmt.Sprintf(
 		`<input type="hidden" name="%s" value="%s">`,

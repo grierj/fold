@@ -3878,19 +3878,27 @@ func TestReasonSpentBudget(t *testing.T) {
 		}
 	}
 	// spend sleeps until less than the reserve is left of the deletion's budget.
-	spend := func(started time.Time) {
-		time.Sleep(time.Until(started.Add(budget - reserve/2)))
+	// It counts from the first hook call, which lies inside the budget however
+	// slowly the request got going, so the budget is never more than
+	// reserve/2 from spent when it wakes; a clock taken in the test before the
+	// request would leave more than the reserve on a loaded machine.
+	var first time.Time
+	spend := func() {
+		time.Sleep(time.Until(first.Add(budget - reserve/2)))
 	}
 
 	t.Run("between streamed rows", func(t *testing.T) {
 		setAdminDeleteBounds(t, budget, reserve)
 		s, reqs, review := setup(t, 4)
+		first = time.Time{}
 		prevEvery, prevHook := reasonGuardEvery, reasonRowHook
 		reasonGuardEvery = 1
-		started := time.Now()
 		reasonRowHook = func(seen uint64) {
+			if first.IsZero() {
+				first = time.Now()
+			}
 			if seen == 2 {
-				spend(started)
+				spend()
 			}
 		}
 		t.Cleanup(func() { reasonGuardEvery, reasonRowHook = prevEvery, prevHook })
@@ -3907,11 +3915,14 @@ func TestReasonSpentBudget(t *testing.T) {
 		reasonBlankBatch = 2
 		t.Cleanup(func() { reasonBlankBatch = prevBatch })
 		s, reqs, review := setup(t, 5)
+		first = time.Time{}
 		prevHook := reasonBatchHook
-		started := time.Now()
 		reasonBatchHook = func(batch int) {
+			if first.IsZero() {
+				first = time.Now()
+			}
 			if batch == 1 {
-				spend(started)
+				spend()
 			}
 		}
 		t.Cleanup(func() { reasonBatchHook = prevHook })

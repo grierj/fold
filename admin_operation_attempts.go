@@ -122,9 +122,9 @@ type attemptLedger struct {
 	lastPrune time.Duration
 }
 
-// attemptState is the App's side of the lifecycle. The zero value is ready;
-// attemptsInit makes the key and the start time on first use, or at start-up
-// from serve, where a failure exits non-zero.
+// attemptsState is the App's side of the lifecycle. The zero value is ready;
+// init makes the key and the start time on first use, or at start-up from
+// serve, where a failure exits non-zero.
 type attemptsState struct {
 	once   sync.Once
 	err    error

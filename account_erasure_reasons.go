@@ -197,7 +197,7 @@ var reasonColIndex = func() map[string]int {
 }()
 
 // reasonProjection is the SQL text projection of the hashed columns
-// (reviewHashColumns): bigint as text, text as it is, boolean as 't' or 'f',
+// (reasonColumns): bigint as text, text as it is, boolean as 't' or 'f',
 // timestamptz as its exact microsecond epoch (or 'infinity' and '-infinity'),
 // and NULL stays NULL in every kind.
 func reasonProjection() string {

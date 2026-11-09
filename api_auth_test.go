@@ -757,6 +757,11 @@ func TestReauthenticationReservationHoldsUnderParallelRequests(t *testing.T) {
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)
 	c := loginAPI(t, app, "alice", "password1234")
 	const burst = 3 * emailFailureLimit
+	// Each request needs one connection at a time. Without a cap the burst opens
+	// a connection per request, and when the shared server is out of them the
+	// session lookup fails and the request answers 401, which says nothing
+	// about the reservation.
+	capConnections(t, app.DB, 8)
 	codes := make(chan int, burst)
 	var wg sync.WaitGroup
 	for i := range burst {
@@ -932,4 +937,17 @@ func TestLoginRotatesCSRFToken(t *testing.T) {
 	if w := c.do("POST", "/api/v1/auth/logout", nil, true); w.Code != http.StatusOK {
 		t.Fatalf("fresh token: %d %s", w.Code, w.Body.String())
 	}
+}
+
+// capConnections limits db's pool to n open connections for the test, for a
+// burst of parallel requests that would otherwise open one each.
+func capConnections(t *testing.T, db *gorm.DB, n int) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := sqlDB.Stats().MaxOpenConnections
+	sqlDB.SetMaxOpenConns(n)
+	t.Cleanup(func() { sqlDB.SetMaxOpenConns(was) })
 }

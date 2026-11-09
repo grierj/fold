@@ -25,14 +25,12 @@ const (
 	sessionLogoutKey  = "logoutVersion"
 )
 
-// setSessionLogin stores u as the signed-in account with its current epochs.
 func setSessionLogin(s *sessions.Session, u *models.User) {
 	s.Values[sessionUserKey] = u.ID
 	s.Values[sessionVersionKey] = u.SessionVersion
 	s.Values[sessionLogoutKey] = u.LogoutVersion
 }
 
-// clearSessionLogin removes the signed-in account and its epochs.
 func clearSessionLogin(s *sessions.Session) {
 	delete(s.Values, sessionUserKey)
 	delete(s.Values, sessionVersionKey)
@@ -142,8 +140,6 @@ func endAllSessionsIn(tx *gorm.DB, user *models.User, set map[string]any) error 
 	return revokeAccountTokens(tx, user.ID)
 }
 
-// answerStaleSession answers errSecuritySession (401, signed out) and
-// reports whether it did.
 func answerStaleSession(c *gin.Context, err error) bool {
 	if !errors.Is(err, errSecuritySession) {
 		return false
