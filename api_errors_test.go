@@ -284,3 +284,28 @@ var (
 		"http.StatusServiceUnavailable": true, "http.StatusGatewayTimeout": true,
 	}
 )
+
+// The answers clients and the SPA act on by status as well as code: sign-in
+// lockout and the leader's invitation limit are the only 429s (DEC-52), a stale
+// session is 401, and the deletion outcomes keep the statuses AGENTS.md
+// "Account deletion outcomes" and the restore barrier specify.
+func TestCriticalAnswersKeepTheirStatus(t *testing.T) {
+	for _, c := range []struct {
+		err    *apiError
+		status int
+		code   string
+	}{
+		{errSecuritySession, http.StatusUnauthorized, "signed_out"},
+		{errLockedOut, http.StatusTooManyRequests, "locked_out"},
+		{errInvitationLimit, http.StatusTooManyRequests, "invite_limit"},
+		{errDeleteOutcomeUnknown, http.StatusInternalServerError, "delete_outcome_unknown"},
+		{errDeleteTimedOut, http.StatusServiceUnavailable, "delete_timed_out"},
+		{errDeleteHouseholdBusy, http.StatusConflict, "delete_household_busy"},
+		{errRestoreDetected, http.StatusServiceUnavailable, "restore_detected"},
+		{errActorBusy, http.StatusConflict, "admin_account_busy"},
+	} {
+		if c.err.Status != c.status || c.err.Code != c.code {
+			t.Errorf("%s answers %d %q, want %d %q", c.err.Message, c.err.Status, c.err.Code, c.status, c.code)
+		}
+	}
+}
