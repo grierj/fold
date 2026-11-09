@@ -54,9 +54,10 @@ func TestGroupDetailGuardCatchesPR41Leak(t *testing.T) {
 
 // --- One list filter for event visibility ---
 //
-// Series lists go through eventCandidates; date lists load dateCandidates then
-// apply visibleSet.canSeeDate. Candidate parents never authorize a series.
-// Both paths skip missing groups; policy loops elsewhere duplicate the filter.
+// Event lists load candidates (dateCandidates or eventCandidates) then apply
+// visibleSet.canSeeDate. Candidate parents never authorize a series, so no
+// function loops over events calling policy.CanSeeEvent; the loader itself
+// skips events whose group is missing.
 
 func TestOneEventVisibilityFilter(t *testing.T) {
 	parsed := guardkit.Production(t).Parse(0)
@@ -68,7 +69,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 		f := pf.AST
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Name.Name == "eventCandidates" {
+			if !ok || fn.Body == nil {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -84,7 +85,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 				ast.Inspect(body, func(m ast.Node) bool {
 					if call, ok := m.(*ast.CallExpr); ok {
 						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
-							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use eventCandidates for series, or dateCandidates and canSeeDate for dates", fset.Position(call.Pos()), fn.Name.Name)
+							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; load candidates with dateCandidates or eventCandidates and filter dates with canSeeDate", fset.Position(call.Pos()), fn.Name.Name)
 						}
 					}
 					return true

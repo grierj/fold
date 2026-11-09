@@ -204,8 +204,12 @@ func (a *App) fromNotification(c *gin.Context, id *uint, action string, subjectI
 // "Already approved by Pat" instead of an error (6.4).
 func (a *App) alreadyHandled(c *gin.Context, kind string, subjectID uint) {
 	by, outcome, _ := notify.LastResolution(a.DB, kind, subjectID)
+	var ids []uint
+	if by != nil {
+		ids = []uint{*by}
+	}
 	c.JSON(http.StatusConflict, gin.H{
-		"error": "This was already handled", "resolvedBy": a.actorName(by), "resolution": outcome,
+		"error": "This was already handled", "resolvedBy": publicNamesIn(a.DB, ids).actorName(by), "resolution": outcome,
 	})
 }
 
@@ -411,31 +415,33 @@ func (f *noticeFacts) zone(userID uint) *time.Location {
 const approvalsLink = "/admin?tab=approvals"
 
 // notifyGroupPending asks every admin to approve a new group (a task).
-func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{
+func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) error {
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.GroupPending, To: adminIDs(tx), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: approvalsLink,
 		Vars:      notify.Vars{Actor: nameIn(tx, actor), Group: g.Name}, // group-ok: admin tasks go to admins
 		Data:      map[string]any{"groupId": g.ID},
 		DedupeKey: fmt.Sprintf("group.pending:%d", g.ID),
 	})
+	return err
 }
 
 // notifyGroupDecided tells a pending group's leaders how an admin decided
 // it (DEC-96), in the decision's transaction. A leader may always see their
 // own group, approved or not.
-func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool, note string) ([]uint, error) {
+func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool, note string) error {
 	kind := notify.GroupRejected
 	if approved {
 		kind = notify.GroupApproved
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: kind, To: leaderIDs(tx, g.ID), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: "/groups/" + strconv.FormatUint(uint64(g.ID), 10),
 		Vars: notify.Vars{Group: g.Name, Note: note}, // group-ok: its own leaders
 		// No dedupe key: the pending → decided transition sends it once, and a
 		// group set back to pending and decided again earns a new notice.
 	})
+	return err
 }
 
 // notifyAccountRequested asks every admin to decide an account
@@ -443,7 +449,7 @@ func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool,
 // inline Approve (DEC-44); teens and flagged requests are Review-only.
 // The row names the requester for admins but never their contact
 // details, and the email variant names nobody at all.
-func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags models.RequestFlags) ([]uint, error) {
+func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags models.RequestFlags) error {
 	source := "Self-signup"
 	if req.Source == models.RequestGuestUpgrade {
 		source = "Guest asking for an account"
@@ -458,7 +464,7 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 		actor = req.RequestedBy
 	}
 	eligible := policy.InlineApproveAccountOK(req.AccountType, flags.HasWarnings())
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.AccountRequested, To: adminIDs(tx), Actor: actor,
 		SubjectType: "account_request", SubjectID: req.ID, Link: approvalsLink,
 		Vars:            notify.Vars{Person: req.Name, Change: source, Teen: req.AccountType == models.AccountTeen},
@@ -467,6 +473,7 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 		SuppressActions: !eligible,
 		BellOnly:        flags.Duplicate || flags.Honeypot,
 	})
+	return err
 }
 
 // notifyGuardianLinkPending asks every admin to confirm a guardian link
@@ -474,7 +481,7 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 // go to admins only, so they name the guardian and the person; the email
 // variant names nobody. Resolved on confirm and reject (and withdrawn
 // when the person is removed before a decision).
-func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *models.HouseholdPerson) ([]uint, error) {
+func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *models.HouseholdPerson) error {
 	vars := notify.Vars{Actor: nameIn(tx, link.GuardianUserID)}
 	data := map[string]any{"guardianLinkId": link.ID}
 	if person != nil {
@@ -485,28 +492,30 @@ func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *m
 		vars.Person, vars.Change, vars.Teen = nameIn(tx, *link.TeenUserID), "teen_account", true
 		data["teenUserId"] = *link.TeenUserID
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.HouseholdLinkPending, To: adminIDs(tx), Actor: &link.GuardianUserID,
 		SubjectType: "guardian_link", SubjectID: link.ID, Link: approvalsLink,
 		Vars:      vars,
 		Data:      data,
 		DedupeKey: fmt.Sprintf("household.link_pending:%d", link.ID),
 	})
+	return err
 }
 
 // notifyDeletionRequested asks every admin to delete or keep a group.
-func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{
+func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) error {
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.GroupDeletion, To: adminIDs(tx), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: approvalsLink,
 		Vars: notify.Vars{Actor: nameIn(tx, actor), Group: g.Name}, // group-ok: admin tasks go to admins
 		Data: map[string]any{"groupId": g.ID},
 	})
+	return err
 }
 
 // notifyLeadership tells the other admins about a leadership change, from
 // the RoleChanged or MemberRemoved entry just written (DEC-31).
-func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
+func notifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	var userID uint
 	switch v := e.Meta["userId"].(type) {
 	case uint:
@@ -520,7 +529,7 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	switch {
 	case e.Action == audit.MemberRemoved:
 		if oldRole != models.MembershipLeader {
-			return nil, nil // removing a plain member isn't a leadership change
+			return nil // removing a plain member isn't a leadership change
 		}
 		change = "removed_from_group"
 	case newRole == models.MembershipLeader:
@@ -536,17 +545,16 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	if e.Actor != nil {
 		actor = nameIn(tx, *e.Actor)
 	}
-	ids, err := notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.LeadershipChanged, To: adminIDs(tx), Actor: e.Actor,
 		SubjectType: "group", SubjectID: g.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
 		Vars: notify.Vars{Actor: actor, Person: nameIn(tx, userID), Group: g.Name, Change: change}, // group-ok: leadership notices go to admins
 		Data: map[string]any{"groupId": g.ID, "userId": userID},
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	mine, err := notifyYourRole(tx, e, &g, userID, oldRole, newRole)
-	return append(ids, mine...), err
+	return notifyYourRole(tx, e, &g, userID, oldRole, newRole)
 }
 
 // notifyYourRole tells the person whose role changed that they now lead
@@ -554,9 +562,9 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 // every RoleChanged entry (a leader's or admin's change, a handoff), never
 // a removal, which has its own notices. Someone who changed their own role
 // is skipped (the Actor rule in notify.Send).
-func notifyYourRole(tx *gorm.DB, e audit.Entry, g *models.Group, userID uint, oldRole, newRole string) ([]uint, error) {
+func notifyYourRole(tx *gorm.DB, e audit.Entry, g *models.Group, userID uint, oldRole, newRole string) error {
 	if e.Action != audit.RoleChanged || userID == 0 || g.ID == 0 {
-		return nil, nil
+		return nil
 	}
 	var change string
 	switch {
@@ -565,53 +573,44 @@ func notifyYourRole(tx *gorm.DB, e audit.Entry, g *models.Group, userID uint, ol
 	case oldRole == models.MembershipLeader && newRole == models.MembershipMember:
 		change = "member"
 	default:
-		return nil, nil
+		return nil
 	}
 	vars, link := notify.Vars{Change: change}, "/my-groups"
 	if canSeeGroupIn(tx, userIn(tx, userID), g) {
 		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.YourRole, To: []uint{userID}, Actor: e.Actor,
 		SubjectType: "group", SubjectID: g.ID, Link: link, Vars: vars,
 	})
+	return err
 }
 
 // notifyNotRestored tells a re-enabled person they were left out of a full
 // group (DEC-47). Their membership is already gone in tx, so an
 // invite-only group's name and link are left out.
-func notifyNotRestored(tx *gorm.DB, actor *uint, g *models.Group, userID uint) ([]uint, error) {
+func notifyNotRestored(tx *gorm.DB, actor *uint, g *models.Group, userID uint) error {
 	vars, link := notify.Vars{}, "/"
 	if canSeeGroupIn(tx, userIn(tx, userID), g) {
 		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.MemberNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "group", SubjectID: g.ID, Link: link, Vars: vars,
 	})
+	return err
 }
 
-// notifyOccurrencesCancelled tells everyone going or waitlisted on
-// these dates (M1.5: maybe no longer gets one). A registrant who can't
-// see the group gets no group name, place, or link (PR #41). Each item
-// archives itself when the date would have ended.
-func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
-	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceCancelled)
-}
-
-// notifyOccurrencesRestored tells the same people, by the same privacy
-// rules, that dates a series edit had cancelled are back on. Their
-// registrations were never touched by the cancellation, so the notice says
-// the sign-up is still there rather than asking them to register again.
-func notifyOccurrencesRestored(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
-	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceRestored)
-}
-
-// notifyOccurrences is the shared fan-out of the cancelled and restored
-// notices: one stored item per person per date.
-func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]uint, error) {
+// notifyOccurrences tells everyone going or waitlisted on these dates that
+// the date was cancelled (OccurrenceCancelled; M1.5: maybe no longer gets one)
+// or, after a series edit had cancelled it, is back on (OccurrenceRestored;
+// their registrations were never touched, so that notice says the sign-up is
+// still there). A registrant who can't see the group gets no group name,
+// place, or link (PR #41). One stored item per person per date; each archives
+// itself when the date would have ended.
+func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) error {
 	if len(occIDs) == 0 {
-		return nil, nil
+		return nil
 	}
 	var rows []struct {
 		UserID uint
@@ -621,10 +620,10 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 		Where("registrations.occurrence_id IN ? AND registrations.status IN ?", occIDs,
 			[]string{models.RegGoing, models.RegWaitlisted}).
 		Order("occ_id, user_id").Scan(&rows).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if len(rows) == 0 {
-		return nil, nil
+		return nil
 	}
 	// Load the occurrences, their events and every recipient's facts
 	// once (issue #76); the loop below only writes notices.
@@ -655,12 +654,11 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 	facts := loadNoticeFacts(tx, groupIDs, userIDs)
 	accesses, err := occurrenceNoticeAccesses(tx, occIDs)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var ids []uint
 	// One bulk lock for the whole fan-out (ascending user ID), rather than a
 	// lock query inside each per-person Send below.
-	err = notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
+	return notify.WithRecipients(tx, userIDs, func(scope *notify.Scope) error {
 		for _, r := range rows {
 			o := occByID[r.OccID]
 			if o == nil {
@@ -680,7 +678,7 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 			if end.IsZero() {
 				end = o.StartsAt
 			}
-			sent, err := notify.Send(tx, notify.Msg{
+			_, err := notify.Send(tx, notify.Msg{
 				Kind: kind, To: []uint{r.UserID}, Actor: &actor,
 				SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 				Data: map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
@@ -692,40 +690,37 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]u
 			if err != nil {
 				return err
 			}
-			ids = append(ids, sent...)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 // notifyRegistrationCancelled tells someone who can no longer see an event
 // that their registrations were cancelled. It names neither the group nor
 // the place and links nowhere private (PR #41).
-func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) ([]uint, error) {
+func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) error {
 	u := userIn(tx, userID)
 	if u == nil || u.Status == models.UserDisabled {
-		return nil, nil
+		return nil
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationCancelled, To: []uint{userID}, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: ev.Title},
 	})
+	return err
 }
 
 // notifyVisibilityOverride tells the group's other leaders and the admins
 // that an event is more open than its group (DEC-17, DEC-28).
-func notifyVisibilityOverride(tx *gorm.DB, actor uint, ev *models.Event, g *models.Group, newVis, note string) ([]uint, error) {
-	return notify.Send(tx, notify.Msg{
+func notifyVisibilityOverride(tx *gorm.DB, actor uint, ev *models.Event, g *models.Group, newVis, note string) error {
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.VisibilityOverride, To: append(leaderIDs(tx, g.ID), adminIDs(tx)...), Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
 		Vars: notify.Vars{Actor: nameIn(tx, actor), Event: firstNonEmpty(ev.Title, g.Name), // group-ok: leaders and admins only
 			Visibility: visWord(newVis), GroupVis: visWord(g.Visibility), Note: note},
 		Data: map[string]any{"eventId": ev.ID, "groupId": g.ID},
 	})
+	return err
 }
 
 func firstNonEmpty(a, b string) string {
@@ -799,15 +794,6 @@ func visWord(v string) string {
 	default:
 		return "closed"
 	}
-}
-
-func (a *App) nameOf(id uint) string { return nameIn(a.DB, id) }
-
-func (a *App) actorName(id *uint) string {
-	if id == nil {
-		return "Fold"
-	}
-	return a.nameOf(*id)
 }
 
 // ---------------------------------------------------------------------------

@@ -1372,3 +1372,37 @@ func TestMissingUploadRootIsFixedText(t *testing.T) {
 		t.Fatalf("Exists = %v %v", ok, err)
 	}
 }
+
+// Exists reports whether key is a stored regular file. A symlink, FIFO,
+// directory or missing entry is false with no error. Only the tests ask this
+// (production code never needs it), so it is not part of Store.
+func (s *LocalStore) Exists(_ context.Context, key string) (bool, error) {
+	kind, owner, name, err := ParseKey(key)
+	if err != nil {
+		return false, ErrInvalidKey
+	}
+	root, err := os.OpenRoot(s.Dir)
+	if err != nil {
+		return false, errReadFailed
+	}
+	defer root.Close()
+	kindRoot, ownerRoot, err := openOwnerDir(root, kind, owner, false)
+	switch err {
+	case nil:
+	case errNoDir:
+		return false, nil
+	case ErrUnsafeOwner:
+		return false, ErrUnsafeOwner
+	default:
+		return false, errReadFailed
+	}
+	defer kindRoot.Close()
+	defer ownerRoot.Close()
+	if _, err := lstatEntry(ownerRoot, name); err != nil {
+		if err == errNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}

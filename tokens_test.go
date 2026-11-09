@@ -81,7 +81,7 @@ func TestConsumeAccountTokenRechecksAtClaim(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			app := testApp(t)
 			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-			raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+			raw, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,7 +175,7 @@ func TestRotateAccountTokenPreservesPayloadAndDeadlineAndRequiresLiveState(t *te
 			app := testApp(t)
 			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
 			other := newTestUser(t, app, "bob", "password1234", models.RoleMember)
-			if _, err := createAccountToken(app.DB, models.TokenEmailVerify, user.ID, map[string]any{"new_email": "new@example.com"}, time.Hour); err != nil {
+			if _, _, err := issueAccountToken(app.DB, models.TokenEmailVerify, user.ID, map[string]any{"new_email": "new@example.com"}, time.Hour); err != nil {
 				t.Fatal(err)
 			}
 			var before models.AccountToken

@@ -216,7 +216,7 @@ func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) int
 	}
 	// The same in-person count capacity uses: listed accounts only, remote
 	// attendees aside. A failed count leaves just the cap; it's a warning.
-	going, _ := seatsUsed(db, occ.ID)
+	going, _ := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson)
 	if going > want {
 		want = going
 	}
@@ -439,7 +439,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 			return errBusy
 		}
 		if result == bookedPending {
-			_, err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
+			err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
 			if err != nil {
 				return err
 			}
@@ -560,7 +560,7 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 // which dates lost their room, in one notice (9.2). The person who moved
 // the date is told too (no Actor): the move saved, and a lost room is easy
 // to miss on a page that no longer shows it.
-func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) ([]uint, error) {
+func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) error {
 	var to []uint
 	if ev.GroupID != nil {
 		to = leaderIDs(tx, *ev.GroupID)
@@ -571,12 +571,13 @@ func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) ([]uint, erro
 	if len(dates) > 1 {
 		change = fmt.Sprintf("%d dates", len(dates))
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.RoomLost, To: to,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change}, // group-ok: the event's own leaders and hosts
 		Data: map[string]any{"eventId": ev.ID, "dates": dates},
 	})
+	return err
 }
 
 // placeLine is a date's place (PLAN 14.5 "Where rooms show"), as

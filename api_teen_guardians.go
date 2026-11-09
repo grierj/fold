@@ -41,34 +41,34 @@ func unresolvedGuardianNominations(db *gorm.DB) ([]guardianNominationJSON, error
 
 // A nomination is contact information on an approved request, never authority.
 // Unknown addresses remain on the request so the admin can help the adult join.
-func nominateTeenGuardian(tx *gorm.DB, req *models.AccountRequest, teenID uint) ([]uint, error) {
+func nominateTeenGuardian(tx *gorm.DB, req *models.AccountRequest, teenID uint) error {
 	if req.AccountType != models.AccountTeen || req.GuardianEmail == "" {
-		return nil, nil
+		return nil
 	}
 	var guardian models.User
 	res := tx.Where("email = ? AND account_type = ? AND status = ?", req.GuardianEmail, models.AccountAdult, models.UserActive).Limit(1).Find(&guardian)
 	if res.Error != nil || res.RowsAffected == 0 {
-		return nil, res.Error
+		return res.Error
 	}
 	var teen models.User
 	if err := tx.First(&teen, teenID).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if teen.AccountType != models.AccountTeen || guardian.ID == teen.ID {
-		return nil, nil
+		return nil
 	}
 	return requestTeenGuardian(tx, guardian.ID, teen.ID, nil, "signup", req.IP)
 }
 
-func requestTeenGuardian(tx *gorm.DB, guardianID, teenID uint, actor *uint, source, ip string) ([]uint, error) {
+func requestTeenGuardian(tx *gorm.DB, guardianID, teenID uint, actor *uint, source, ip string) error {
 	link := models.GuardianLink{GuardianUserID: guardianID, TeenUserID: &teenID, Status: models.GuardianPending}
 	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&link)
 	if res.Error != nil || res.RowsAffected == 0 {
-		return nil, res.Error
+		return res.Error
 	}
 	if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.GuardianLinkRequested, TargetType: "guardian_link", TargetID: link.ID,
 		Meta: map[string]any{"guardianUserId": guardianID, "teenUserId": teenID, "source": source}, IP: ip}); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyGuardianLinkPending(tx, &link, nil)
 }
@@ -109,7 +109,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 			if guardian.Status != models.UserActive || guardian.SessionVersion != me.SessionVersion || !policy.CanRequestGuardianLink(asPerson(guardian)) || target.AccountType != models.AccountTeen {
 				return errGuardianUnavailable
 			}
-			_, err = requestTeenGuardian(tx, me.ID, teen.ID, &me.ID, "claim", c.ClientIP())
+			err = requestTeenGuardian(tx, me.ID, teen.ID, &me.ID, "claim", c.ClientIP())
 			return err
 		})
 	} else {
@@ -228,7 +228,7 @@ func (a *App) apiGuardianChangeConsent(c *gin.Context) {
 		if err != nil || guardian.SessionVersion != me.SessionVersion {
 			return errConsentForbidden
 		}
-		_, err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})
+		err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})
 		return err
 	})
 	if err != nil {

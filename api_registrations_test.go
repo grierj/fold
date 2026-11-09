@@ -154,7 +154,7 @@ func TestConcurrentGoingRespectsCapacity(t *testing.T) {
 	if got := countRegs(t, app, occ.ID, models.RegWaitlisted); got != 40 {
 		t.Fatalf("waitlisted = %d, want 40", got)
 	}
-	used, err := seatsUsed(app.DB, occ.ID)
+	used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,10 +871,10 @@ func TestRemotePoolFillsSeparatelyFromInPerson(t *testing.T) {
 	if got := regMode(t, app, uRe.ID, occ.ID); got != models.AttendanceRemote {
 		t.Fatalf("remote registration mode = %q", got)
 	}
-	if used, err := seatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson); err != nil || used != 1 {
 		t.Fatalf("in-person seats = %d (%v), want 1", used, err)
 	}
-	if used, err := remoteSeatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote); err != nil || used != 1 {
 		t.Fatalf("remote seats = %d (%v), want 1", used, err)
 	}
 
@@ -1013,7 +1013,7 @@ func TestSwitchingModeReRegistersInNewPool(t *testing.T) {
 	if got := regMode(t, app, uSw.ID, occ.ID); got != models.AttendanceRemote {
 		t.Fatalf("waitlisted switch mode = %q, want remote", got)
 	}
-	if used, _ := seatsUsed(app.DB, occ.ID); used != 0 {
+	if used, _ := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson); used != 0 {
 		t.Fatalf("in-person seats after switch = %d, want 0 (seat freed)", used)
 	}
 
@@ -1509,7 +1509,7 @@ func TestHouseholdBatchAnswersAndStableHolder(t *testing.T) {
 		}
 		ids[r.RegistrationID] = true
 	}
-	if used, err := seatsUsed(app.DB, result.Registration.OccurrenceID); err != nil || used != 2 {
+	if used, err := seatsUsedForMode(app.DB, result.Registration.OccurrenceID, models.AttendanceInPerson); err != nil || used != 2 {
 		t.Fatalf("seats %d: %v", used, err)
 	}
 	if used, err := childcareUsedFor(app.DB, result.Registration.OccurrenceID, 0); err != nil || used != 1 {
@@ -1638,7 +1638,7 @@ func TestConcurrentHouseholdAndAccountSeats(t *testing.T) {
 	}
 	var o models.EventOccurrence
 	app.DB.Where("event_id = ?", eventID).First(&o)
-	if got, err := seatsUsed(app.DB, o.ID); err != nil || got != 10 {
+	if got, err := seatsUsedForMode(app.DB, o.ID, models.AttendanceInPerson); err != nil || got != 10 {
 		t.Fatalf("seats %d: %v", got, err)
 	}
 	if countRegs(t, app, o.ID, models.RegWaitlisted) != 10 {
@@ -2512,9 +2512,9 @@ func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
 						return app.DB.Transaction(func(tx *gorm.DB) error {
 							var err error
 							if fan == "event changed" {
-								_, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
+								err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
 							} else {
-								_, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+								err = notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 							}
 							return err
 						})
@@ -2582,19 +2582,17 @@ func TestSiblingFanOutsLockRecipientsOncePerBatch(t *testing.T) {
 					}
 				}
 				locks := countRecipientLocks(t, app.DB)
-				var ids []uint
+				before := maxNoticeID(t, app.DB)
 				err := app.DB.Transaction(func(tx *gorm.DB) error {
-					var err error
 					if fan == "event changed" {
-						ids, err = notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
-					} else {
-						ids, err = notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
+						return notifyEventChanged(tx, &ev, &occ, "time", leader.ID)
 					}
-					return err
+					return notifyWaitlistCutoff(tx, &ev, &occ, &leader.ID)
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
+				ids := noticeIDsAfter(t, app.DB, before)
 				if len(ids) != tc.people {
 					t.Fatalf("%d notices, want %d", len(ids), tc.people)
 				}

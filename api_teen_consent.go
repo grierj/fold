@@ -78,36 +78,34 @@ type teenConsentChange struct {
 
 // changeTeenConsent is shared by admin, guardian, email and approval paths.
 // The caller holds the actor and teen user locks, rechecks authentication,
-// and supplies any guardian authority from a locked, confirmed link. It
-// returns notification IDs for delivery only after the transaction commits.
-func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models.User, change teenConsentChange) ([]uint, error) {
+// and supplies any guardian authority from a locked, confirmed link.
+func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models.User, change teenConsentChange) error {
 	if actor.Status != models.UserActive || !policy.CanChangeTeenConsent(asPerson(actor), change.ConfirmedGuardian) {
-		return nil, errConsentForbidden
+		return errConsentForbidden
 	}
 	if teen.AccountType != models.AccountTeen || teen.DeletedAt.Valid {
-		return nil, errConsentTeen
+		return errConsentTeen
 	}
 	if (change.Scope != models.TeenConsentAccount && change.Scope != models.TeenConsentSMS && change.Scope != models.TeenConsentPhotos) ||
 		(change.Status != models.ConsentGranted && change.Status != models.ConsentRevoked) {
-		return nil, errConsentInvalid
+		return errConsentInvalid
 	}
 	evidence := strings.TrimSpace(change.EvidenceText)
 	if len(evidence) > 1000 {
-		return nil, errConsentEvidenceLong
+		return errConsentEvidenceLong
 	}
 	role := models.ConsentGuardian
 	if policy.IsAdmin(asPerson(actor)) && !change.ConfirmedGuardian {
 		role = models.ConsentAdmin
 		if change.Status == models.ConsentGranted && evidence == "" {
-			return nil, errConsentEvidence
+			return errConsentEvidence
 		}
 	}
 	row := models.TeenConsent{TeenUserID: teen.ID, Scope: change.Scope, Status: change.Status,
 		GrantedBy: actor.ID, GranterRole: role, EvidenceText: evidence}
 	if err := tx.Create(&row).Error; err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	if change.Scope == models.TeenConsentAccount {
 		status := teen.Status
 		if change.Status == models.ConsentRevoked {
@@ -120,39 +118,33 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			// memberships and seats are not counted twice. Pending teens are
 			// already listed, so their initial grant needs no restore.
 			if teen.Status == models.UserDisabled && status != models.UserDisabled {
-				ids, err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP())
-				if err != nil {
-					return nil, err
+				if err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP()); err != nil {
+					return err
 				}
-				mailed = append(mailed, ids...)
-				ids, err = a.restoreRegistrations(tx, teen.ID, status, actor.ID, c.ClientIP(), time.Now().UTC())
-				if err != nil {
-					return nil, err
+				if err := a.restoreRegistrations(tx, teen.ID, status, actor.ID, c.ClientIP(), time.Now().UTC()); err != nil {
+					return err
 				}
-				mailed = append(mailed, ids...)
 			}
 			// Every account-status transition ends old sessions, including
 			// legacy pending cookies. A newly consented teen logs in afresh.
 			updates := map[string]any{"status": status, "session_version": gorm.Expr("session_version + 1")}
 			if err := tx.Model(teen).Updates(updates).Error; err != nil {
-				return nil, err
+				return err
 			}
 			if status == models.UserDisabled {
 				if err := revokeAccountTokens(tx, teen.ID); err != nil {
-					return nil, err
+					return err
 				}
-				ids, err := a.promoteOnDisable(tx, teen.ID, true)
-				if err != nil {
-					return nil, err
+				if err := a.promoteOnDisable(tx, teen.ID, true); err != nil {
+					return err
 				}
-				mailed = append(mailed, ids...)
 			}
 			teen.Status = status
 		}
 	}
 	if change.Scope == models.TeenConsentAccount {
 		if err := a.completeTeenConversionIfReady(tx, teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	action := audit.TeenConsentGranted
@@ -161,27 +153,26 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	}
 	if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "teen_consent", TargetID: row.ID,
 		Meta: map[string]any{"teenUserId": teen.ID, "scope": change.Scope, "status": change.Status, "granterRole": role, "evidenceText": evidence}, IP: c.ClientIP()}); err != nil {
-		return nil, err
+		return err
 	}
 	// Evidence stays in the admin history and audit. Notifications contain no
 	// birth date, contact information or consent evidence.
 	var admins []uint
 	if err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Pluck("id", &admins).Error; err != nil {
-		return nil, err
+		return err
 	}
-	ids, err := notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: admins, Actor: &actor.ID,
+	_, err := notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: admins, Actor: &actor.ID,
 		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/admin?tab=users",
 		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
-	mailed = append(mailed, ids...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var family []uint
 	if err := tx.Model(&models.GuardianLink{}).
 		Joins("JOIN users ON users.id = guardian_links.guardian_user_id AND users.deleted_at IS NULL AND users.status = ?", models.UserActive).
 		Where("teen_user_id = ? AND guardian_links.status = ?", teen.ID, models.GuardianConfirmed).
 		Pluck("guardian_user_id", &family).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if teen.Status == models.UserActive {
 		family = append(family, teen.ID)
@@ -196,11 +187,10 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			familyOnly = append(familyOnly, id)
 		}
 	}
-	ids, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: familyOnly, Actor: &actor.ID,
+	_, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: familyOnly, Actor: &actor.ID,
 		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/profile",
 		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
-	mailed = append(mailed, ids...)
-	return mailed, err
+	return err
 }
 
 func consentError(c *gin.Context, err error) {
@@ -261,7 +251,7 @@ func (a *App) apiChangeTeenConsent(c *gin.Context) {
 		if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
 			return errConsentForbidden
 		}
-		_, err = a.changeTeenConsent(tx, c, teen, actor, teenConsentChange{Scope: body.Scope, Status: body.Status, EvidenceText: body.EvidenceText})
+		err = a.changeTeenConsent(tx, c, teen, actor, teenConsentChange{Scope: body.Scope, Status: body.Status, EvidenceText: body.EvidenceText})
 		return err
 	})
 	if err != nil {

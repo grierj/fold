@@ -261,11 +261,11 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := a.factsForIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
+		if f := eventFactsIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
 			return errNotManager
 		}
 		var err error
-		out, _, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
+		out, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
 		return err
 	})
 	switch {
@@ -290,9 +290,8 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 // admin's reason double-books it.
 //
 // With approval on (DEC-102), a leader's or host's free dates wait on one
-// request for the whole series (DEC-106); busy ones are lost as above. The
-// notification ids to email (the admins' task) are returned.
-func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, reason, ip string) (seriesBookingJSON, []uint, error) {
+// request for the whole series (DEC-106); busy ones are lost as above.
+func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, reason, ip string) (seriesBookingJSON, error) {
 	out := seriesBookingJSON{Lost: []string{}}
 	me := asPerson(user)
 	if !policy.CanDoubleBookRoom(me) {
@@ -302,20 +301,20 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID, models.OccurrenceScheduled, time.Now()).
 		Order("id").Find(&occs).Error; err != nil {
-		return out, nil, err
+		return out, err
 	}
 	// Dates first, then the room: the same lock order as one date's booking.
 	var room *models.Room
 	if roomID != nil {
 		r, err := lockRoom(tx, *roomID)
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !r.Active) {
-			return out, nil, errRoomGone
+			return out, errRoomGone
 		}
 		if err != nil {
-			return out, nil, err
+			return out, err
 		}
 		if !policy.CanBookRoom(me, true, r.Restricted) {
-			return out, nil, errRestricted
+			return out, errRestricted
 		}
 		room = r
 		out.DefaultRoom = &occurrenceRoomJSON{ID: r.ID, Name: r.Name, Building: r.Building}
@@ -329,7 +328,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if needsApproval {
 		var err error
 		if req, err = openRoomRequest(tx, ev.ID, room.ID, &user.ID, true); err != nil {
-			return out, nil, err
+			return out, err
 		}
 		requestID = &req.ID
 	}
@@ -344,7 +343,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if len(ids) > 0 {
 		if err := tx.Raw(`SELECT b.*, r.restricted FROM room_bookings b JOIN rooms r ON r.id = b.room_id
 			WHERE b.occurrence_id IN ?`, ids).Scan(&current).Error; err != nil {
-			return out, nil, err
+			return out, err
 		}
 	}
 	byDate := make(map[uint]int, len(current))
@@ -371,7 +370,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 				continue
 			}
 			if err := tx.Delete(&models.RoomBooking{}, b.ID).Error; err != nil {
-				return out, nil, err
+				return out, err
 			}
 			released++
 		}
@@ -381,7 +380,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 		result, err := placeBooking(tx, occ, room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes,
 			placement{by: &user.ID, reason: reason, keepRequested: true, requestID: requestID})
 		if err != nil {
-			return out, nil, err
+			return out, err
 		}
 		switch result {
 		case bookedRequested:
@@ -392,28 +391,27 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 			out.Booked++
 		}
 	}
-	var emailed []uint
 	if req != nil && out.Pending == 0 {
 		if err := tx.Delete(req).Error; err != nil {
-			return out, nil, err
+			return out, err
 		}
 		req = nil
 	}
 	if req != nil {
 		var err error
-		if emailed, err = notifyRoomRequested(tx, req, ev, room, out.Pending, &user.ID); err != nil {
-			return out, nil, err
+		if err = notifyRoomRequested(tx, req, ev, room, out.Pending, &user.ID); err != nil {
+			return out, err
 		}
 	}
 	// Replaced bookings may have been other requests' last dates.
 	if err := closeEmptyRoomRequests(tx); err != nil {
-		return out, nil, err
+		return out, err
 	}
 	// Until an admin approves it, the series room's new dates keep going to
 	// an admin, even if this request is withdrawn or had nothing to wait on.
 	if err := tx.Model(&models.Event{}).Where("id = ?", ev.ID).
 		Updates(map[string]any{"default_room_id": roomID, "default_room_pending": needsApproval}).Error; err != nil {
-		return out, nil, err
+		return out, err
 	}
 	ev.DefaultRoomID, ev.DefaultRoomPending = roomID, needsApproval
 	meta := map[string]any{"eventId": ev.ID, "roomId": roomID, "previousRoomId": oldRoom,
@@ -424,7 +422,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if req != nil {
 		meta["requestId"] = req.ID
 	}
-	return out, emailed, audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingSeries, TargetType: "event", TargetID: ev.ID,
+	return out, audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingSeries, TargetType: "event", TargetID: ev.ID,
 		Meta: meta, IP: ip})
 }
 
@@ -435,23 +433,23 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 //
 // A series room not yet approved (default_room_pending) books new dates as
 // a request while approval is on: into the waiting series request, or a
-// new one if that was withdrawn. Notification ids to email are returned.
-func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uint) ([]string, []uint, error) {
+// new one if that was withdrawn.
+func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uint) ([]string, error) {
 	if ev.DefaultRoomID == nil || len(occurrenceIDs) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 	var occs []models.EventOccurrence
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id IN ? AND status = ? AND starts_at > now() AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = event_occurrences.id)",
 			occurrenceIDs, models.OccurrenceScheduled).Order("id").Find(&occs).Error; err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(occs) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 	room, err := lockRoom(tx, *ev.DefaultRoomID)
 	if err != nil || !room.Active {
-		return nil, nil, err
+		return nil, err
 	}
 	var req *models.RoomRequest
 	opened := false
@@ -459,7 +457,7 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 		var open []models.RoomRequest
 		if err := tx.Where("event_id = ? AND room_id = ? AND series AND status = ?", ev.ID, room.ID, models.RoomRequestPending).
 			Limit(1).Find(&open).Error; err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if len(open) == 1 {
 			req = &open[0]
@@ -467,14 +465,14 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 			// Asked for by whoever asked for the series room last.
 			var last []models.RoomRequest
 			if err := tx.Where("event_id = ? AND room_id = ? AND series", ev.ID, room.ID).Order("id DESC").Limit(1).Find(&last).Error; err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			var asker *uint
 			if len(last) == 1 {
 				asker = last[0].RequestedBy
 			}
 			if req, err = openRoomRequest(tx, ev.ID, room.ID, asker, true); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			opened = true
 		}
@@ -489,7 +487,7 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 		result, err := placeBooking(tx, &occs[i], room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes,
 			placement{by: by, keepRequested: true, requestID: requestID})
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		switch result {
 		case bookedRequested:
@@ -499,34 +497,32 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 		}
 	}
 	if !opened {
-		return lost, nil, nil
+		return lost, nil
 	}
 	if waiting == 0 {
-		return lost, nil, tx.Delete(req).Error
+		return lost, tx.Delete(req).Error
 	}
-	emailed, err := notifyRoomRequested(tx, req, ev, room, waiting, req.RequestedBy)
-	return lost, emailed, err
+	return lost, notifyRoomRequested(tx, req, ev, room, waiting, req.RequestedBy)
 }
 
 // settleDateRooms brings an event's bookings in line after its dates
 // changed: moved dates take their bookings along, added or restored dates
 // get the series room, and the leaders or hosts hear once about every date
-// that ended up without its room. Notification ids to email are returned.
-func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uint) ([]uint, error) {
+// that ended up without its room.
+func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uint) error {
 	lost, err := moveRoomBookings(tx, moved)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	more, emailed, err := bookSeriesRoom(tx, ev, added, by)
+	more, err := bookSeriesRoom(tx, ev, added, by)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	lost = append(lost, more...)
 	if len(lost) == 0 {
-		return emailed, nil
+		return nil
 	}
-	ids, err := notifyRoomLost(tx, ev, lost)
-	return append(emailed, ids...), err
+	return notifyRoomLost(tx, ev, lost)
 }
 
 // afterExtend books the series room for dates the daily extender adds;
@@ -547,8 +543,7 @@ func (a *App) afterExtend() events.AfterEnsure {
 				Pluck("id", &ids).Error; err != nil {
 				return err
 			}
-			_, err := settleDateRooms(tx, ev, nil, ids, nil)
-			return err
+			return settleDateRooms(tx, ev, nil, ids, nil)
 		}()
 		if err != nil {
 			log.Printf("occurrences: event %d: series room: %v", ev.ID, err)
@@ -612,17 +607,16 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 }
 
 // bookCreatedSeries books the room picked on a create form for every date
-// of the new event, in the creating transaction. Notification ids to email
-// (an approval task) are returned.
-func (a *App) bookCreatedSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, ip string) ([]uint, error) {
+// of the new event, in the creating transaction.
+func (a *App) bookCreatedSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, ip string) error {
 	if roomID == nil {
-		return nil, nil
+		return nil
 	}
 	if !a.roomsEnabled() {
-		return nil, errRoomGone
+		return errRoomGone
 	}
-	_, emailed, err := bookWholeSeries(tx, ev, roomID, user, "", ip)
-	return emailed, err
+	_, err := bookWholeSeries(tx, ev, roomID, user, "", ip)
+	return err
 }
 
 // createRoomFailed answers a create whose room couldn't be booked.

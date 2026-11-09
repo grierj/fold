@@ -88,7 +88,7 @@ type ScanStats struct {
 // The local-filesystem implementation ships now. An S3-compatible
 // implementation can replace it later without changing callers: implement
 // this interface (Put to the bucket, URL as a presigned or public object
-// URL, Delete/Exists against the bucket) and wire it in main() based on
+// URL, Delete against the bucket) and wire it in main() based on
 // config. Keys are opaque to callers — always generated server-side by
 // NewKey, never taken from user input.
 //
@@ -114,8 +114,6 @@ type Store interface {
 	URL(key string) string
 	// Delete removes a blob. A missing key is not an error.
 	Delete(ctx context.Context, key string) error
-	// Exists reports whether key is stored.
-	Exists(ctx context.Context, key string) (bool, error)
 	// CleanOwner removes the avatar owner's objects except the exact keep
 	// key, at most CleanBatch per call, and returns ErrMoreRemain when more
 	// may remain. It rejects any owner that is not an avatar owner with
@@ -488,39 +486,6 @@ func (s *LocalStore) Delete(_ context.Context, key string) error {
 		return errRemoveFailed
 	}
 	return nil
-}
-
-// Exists reports whether key is a stored regular file. A symlink, FIFO,
-// directory or missing entry is false with no error.
-func (s *LocalStore) Exists(_ context.Context, key string) (bool, error) {
-	kind, owner, name, err := ParseKey(key)
-	if err != nil {
-		return false, ErrInvalidKey
-	}
-	root, err := os.OpenRoot(s.Dir)
-	if err != nil {
-		return false, errReadFailed
-	}
-	defer root.Close()
-	kindRoot, ownerRoot, err := openOwnerDir(root, kind, owner, false)
-	switch err {
-	case nil:
-	case errNoDir:
-		return false, nil
-	case ErrUnsafeOwner:
-		return false, ErrUnsafeOwner
-	default:
-		return false, errReadFailed
-	}
-	defer kindRoot.Close()
-	defer ownerRoot.Close()
-	if _, err := lstatEntry(ownerRoot, name); err != nil {
-		if err == errNotFound {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }
 
 // Open returns the stored file for key. It returns only a regular file that

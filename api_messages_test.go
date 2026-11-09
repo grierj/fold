@@ -151,18 +151,6 @@ func TestComposeOptionsForOneEvent(t *testing.T) {
 	}
 }
 
-// The SMS tab stays hidden until texting can be set up (DEC-117, M3.7).
-func TestComposeOptionsSayTextingIsOff(t *testing.T) {
-	f := newComposeFixture(t)
-	for _, c := range []*apiClient{f.admin, f.leader, f.member} {
-		var raw map[string]any
-		decodeJSON(t, c.do("GET", "/api/v1/messages/compose", nil, false), &raw)
-		if on, ok := raw["smsEnabled"].(bool); !ok || on {
-			t.Fatalf("smsEnabled: %v", raw["smsEnabled"])
-		}
-	}
-}
-
 // The session says whether to offer Messages in the nav (M3.4c): leaders,
 // hosts and admins, not plain members.
 func TestSessionSaysWhoCanCompose(t *testing.T) {

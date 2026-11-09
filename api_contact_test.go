@@ -1015,7 +1015,7 @@ func TestGroupAskCompletionClearsObsoleteDeletionRequest(t *testing.T) {
 		if err := tx.Model(f.group).Update("deletion_requested", true).Error; err != nil {
 			return err
 		}
-		_, err := notifyDeletionRequested(tx, f.group, f.leader.ID)
+		err := notifyDeletionRequested(tx, f.group, f.leader.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

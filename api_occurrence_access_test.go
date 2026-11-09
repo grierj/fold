@@ -496,7 +496,7 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 	}{
 		{"event_occurrences", func() error { _, err := occurrenceInvitationReadsIn(f.app.DB, rows, now); return err }},
 		{"registrations", func() error {
-			_, err := f.app.reconcileOccurrenceAccesses(f.app.DB, now, contactChange{EventID: f.event.ID})
+			err := f.app.reconcileOccurrenceAccesses(f.app.DB, now, contactChange{EventID: f.event.ID})
 			return err
 		}},
 	} {

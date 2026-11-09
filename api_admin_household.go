@@ -227,7 +227,7 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 		}
 		meta := map[string]any{"personId": person.ID, "kind": person.Kind, "holderUserId": holder.ID}
 		if policy.NeedsGuardianLink(person.Kind) {
-			link, _, err := createGuardianLink(tx, guardian.ID, &person)
+			link, err := createGuardianLink(tx, guardian.ID, &person)
 			if err != nil {
 				return err
 			}

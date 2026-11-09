@@ -569,16 +569,14 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 		}
 	}
 
+	before := maxNoticeID(t, app.DB)
 	counter := countDBReads(t, app.DB)
-	var ids []uint
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID).
 			Update("status", models.OccurrenceCancelled).Error; err != nil {
 			return err
 		}
-		var err error
-		ids, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
-		return err
+		return notifyOccurrences(tx, leader.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 	})
 	reads := counter.Reads()
 	counter.Stop()
@@ -589,6 +587,7 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 	if reads > 20 {
 		t.Fatalf("cancel-date notices used %d reads for 30 registrants, want <= 20", reads)
 	}
+	ids := noticeIDsAfter(t, app.DB, before)
 	if len(ids) != 30 {
 		t.Fatalf("notices sent = %d, want 30", len(ids))
 	}

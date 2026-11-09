@@ -250,10 +250,10 @@ func TestGenerateJitsiLink(t *testing.T) {
 		t.Fatalf("signed-out jitsi: %d %s, want 401", w.Code, w.Body.String())
 	}
 
-	// The settings steer the domain and the slug.
+	// jitsi_domain steers the host; the slug follows the church name (site_name).
 	for _, s := range []models.Setting{
 		{Key: "jitsi_domain", Value: "meet.example.org"},
-		{Key: "church_name", Value: "Grace Community Church!"},
+		{Key: "site_name", Value: "Grace Community Church!"},
 	} {
 		if err := app.DB.Create(&s).Error; err != nil {
 			t.Fatal(err)
@@ -261,10 +261,10 @@ func TestGenerateJitsiLink(t *testing.T) {
 	}
 	got := generateJitsi(t, admin, http.StatusOK)
 	if !strings.HasPrefix(got, "https://meet.example.org/grace-community-church-") {
-		t.Fatalf("jitsi url with settings = %q", got)
+		t.Fatalf("jitsi url with a church name = %q", got)
 	}
 	if !jitsiURLRe.MatchString(got) {
-		t.Fatalf("jitsi url shape with settings: %q", got)
+		t.Fatalf("jitsi url shape with a church name: %q", got)
 	}
 }
 

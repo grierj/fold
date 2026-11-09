@@ -47,19 +47,13 @@ func hashToken(raw string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// createAccountToken stores a single-use hashed token of kind for userID.
+// issueAccountToken stores a single-use hashed token of kind for userID.
 // payload carries kind-specific data (for example the new email address).
-// It returns the raw token, which goes to the person's email. Issuing a
-// token revokes every still-unused token of the same kind for the user, so
-// at most one live link exists per kind: requesting a fresh reset link
-// kills the previous one instead of leaving it usable until expiry.
-func createAccountToken(tx *gorm.DB, kind string, userID uint, payload map[string]any, ttl time.Duration) (string, error) {
-	raw, _, err := issueAccountToken(tx, kind, userID, payload, ttl)
-	return raw, err
-}
-
-// issueAccountToken is createAccountToken for callers that also need the new
-// row's ID, such as a job that rotates the capability at delivery time.
+// It returns the raw token, which goes to the person's email, and the row's
+// ID, which a job that rotates the capability at delivery time needs. Issuing
+// a token revokes every still-unused token of the same kind for the user, so
+// at most one live link exists per kind: requesting a fresh reset link kills
+// the previous one instead of leaving it usable until expiry.
 func issueAccountToken(tx *gorm.DB, kind string, userID uint, payload map[string]any, ttl time.Duration) (string, uint, error) {
 	raw, err := newRawToken()
 	if err != nil {

@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"net/http"
 	"time"
 )
 
@@ -32,10 +31,4 @@ type Event struct {
 	At     time.Time `json:"at"`
 	// Key identifies the report itself, so a redelivered one is handled once.
 	Key string `json:"key"`
-}
-
-// WebhookParser turns one verified webhook request body into events. An
-// event kind Fold doesn't use yields no events and no error.
-type WebhookParser interface {
-	ParseWebhook(h http.Header, body []byte) ([]Event, error)
 }

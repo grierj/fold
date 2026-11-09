@@ -84,7 +84,7 @@ type Result struct {
 // the occurrence's override, else its event's stored value.
 const effectiveVisibility = "COALESCE(o.visibility_override, e.visibility)"
 
-// CountingUsagePredicate is the one test for which usages count toward
+// countingUsagePredicate is the one test for which usages count toward
 // suggestions for s (9.3 Rule 1). It is a SQL condition over a confirmed
 // room booking b, its occurrence o, its event e and the event's live group
 // g (nil for a church-wide event), with its arguments.
@@ -95,7 +95,7 @@ const effectiveVisibility = "COALESCE(o.visibility_override, e.visibility)"
 //
 // A usage started within the last 12 months or still to come; deleted
 // events and events of deleted groups never count.
-func CountingUsagePredicate(s Subject) (string, []any) {
+func countingUsagePredicate(s Subject) (string, []any) {
 	since := s.Now.AddDate(0, -usageLookback, 0)
 	counts := []string{effectiveVisibility + " IN ('" + public + "', '" + private + "')"}
 	args := []any{since}
@@ -124,9 +124,9 @@ type roomUsage struct {
 	busyDates  int
 }
 
-// NormalizeTags lowercases and trims tags as the Home tag filter compares
+// normalizeTags lowercases and trims tags as the Home tag filter compares
 // them, dropping empty ones.
-func NormalizeTags(tags []string) []string {
+func normalizeTags(tags []string) []string {
 	out := []string{}
 	for _, t := range tags {
 		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
@@ -139,7 +139,7 @@ func NormalizeTags(tags []string) []string {
 // Suggest ranks rooms for s (9.3 Rules 2 to 4): two reads, the counting
 // usages per candidate room and, for those rooms, their conflicts.
 func Suggest(db *gorm.DB, s Subject) (Result, error) {
-	tags := NormalizeTags(s.Tags)
+	tags := normalizeTags(s.Tags)
 	// "The next 8" dates: soonest first, whatever order they came in.
 	windows := append([]Window(nil), s.Windows...)
 	sort.Slice(windows, func(i, j int) bool { return windows[i].Start.Before(windows[j].Start) })
@@ -148,7 +148,7 @@ func Suggest(db *gorm.DB, s Subject) (Result, error) {
 	}
 	res := Result{Suggestions: []Suggestion{}, Dates: len(windows)}
 
-	pred, args := CountingUsagePredicate(s)
+	pred, args := countingUsagePredicate(s)
 	group := uint(0)
 	if s.GroupID != nil {
 		group = *s.GroupID

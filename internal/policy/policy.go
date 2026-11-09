@@ -214,10 +214,6 @@ func MoreOpen(eventVis, groupVis string) bool {
 	return openness(eventVis) > openness(groupVis)
 }
 
-// Openness ranks a visibility: invite_only 0, private 1, public 2.
-// Anything unexpected is 0 (closed).
-func Openness(v string) int { return openness(v) }
-
 // CanSeeEvent: admins see every event. A group that isn't active is limited
 // to its leaders, even when the event is more open. Otherwise the event's
 // own visibility applies (DEC-48). Seeing the event does not reveal the group.
