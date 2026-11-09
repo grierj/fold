@@ -37,7 +37,7 @@ read -r class obj <<<"$(qc1_gate_key)"
 [[ "$class" == 4607820 && "$obj" == 1145261902 ]]
 # Go's maxRequestBytes, with << binding tighter than +.
 [[ "$(qc1_max_request_bytes "$ROOT")" == 6291456 ]]
-mkdir "$WORK/fakeroot"; printf 'const maxUploadBytes = 1 << 20\n' >"$WORK/fakeroot/api_profile.go"; printf 'x\n' >"$WORK/fakeroot/main.go"
+mkdir "$WORK/fakeroot"; printf 'const maxUploadBytes = 1 << 20\n' >"$WORK/fakeroot/api_uploads.go"; printf 'x\n' >"$WORK/fakeroot/main.go"
 refused 'cannot read' qc1_max_request_bytes "$WORK/fakeroot"
 
 
@@ -1569,7 +1569,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
 cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$ROOT/api_profile.go" "$ROOT/main.go" "$CLONE/"
+cp "$ROOT/api_uploads.go" "$ROOT/main.go" "$CLONE/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone

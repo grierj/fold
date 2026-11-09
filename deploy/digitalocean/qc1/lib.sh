@@ -70,7 +70,7 @@ qc1_gate_key() {
 # Go binds << tighter than +, which bash arithmetic does not.
 qc1_max_request_bytes() { # repo-root
   local root="$1" up req a b c d
-  up="$(sed -n 's/^const maxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/api_profile.go")"
+  up="$(sed -n 's/^const maxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/api_uploads.go")"
   req="$(sed -n 's/^const maxRequestBytes = maxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
   [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read maxUploadBytes or maxRequestBytes' >&2; return 1; }
   read -r a b <<<"$up"; read -r c d <<<"$req"
