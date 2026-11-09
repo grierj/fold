@@ -203,6 +203,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   locks the group row and checks `policy.GroupHasRoom` (DEC-39) and `policy.CanAddToGroup`.
   Leading a pending or archived group grants no power to add people or invite anyone into Fold
   (DEC-88; `policy.LeadsApprovedGroup`, `CanInviteIntoGroup`).
+- Registrations: seat decisions go through the ledger in `registration_seats.go` (`poolFits`, `seatChange`, `seatTally`;
+  party size and childcare demand each have one SQL and one Go form, `TestSeatSQLMatchesGoRules`). Registration rows are
+  written only by `saveRegistration` and `promoteRegistration` (`registration_rows.go`: the status decides what is cleared;
+  the access columns stay with `registration_access.go`). A household person's holder is judged by
+  `subjectFacts.householdProblem` (`policy.CanRegisterHouseholdPerson`); `listedRegistrations` only pre-filters
+  (`TestListedRegistrationsPrefilterMatchesPolicy`). The dropped-answer audit keys are `meta*` in `api_registrations.go`
+  (`TestRegistrationAuditKeysAreShared`). Lock order for these writes is written beside the helpers in `registration_locks.go`.
 - Permissions: every check is a pure function in `internal/policy` (PLAN section 6) with table
   tests. Handlers load facts and call it; never inline role checks or read `Group.LeaderID`
   (display only). Leadership is `Membership.Role = leader`; a group can have several leaders.

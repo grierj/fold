@@ -10,7 +10,6 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // registrationSubject keeps the two identity namespaces separate. Only the
@@ -86,11 +85,6 @@ func listedRegistrations() string {
  AND ha.household_id = registration_person.household_id AND ha.relation IN ('adult','guardian'))))`
 }
 
-func lockHousehold(tx *gorm.DB, id uint) error {
-	var h models.Household
-	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&h, id).Error
-}
-
 func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink, now time.Time) policy.HouseholdPerson {
 	status, _ := effectiveLink(links)
 	out := policy.HouseholdPerson{Kind: person.Kind, LinkStatus: status, Deleted: person.DeletedAt.Valid, Converted: person.ConvertedUserID != nil}
@@ -104,19 +98,36 @@ func householdFacts(person *models.HouseholdPerson, links []models.GuardianLink,
 // eligibleRegistration reads current eligibility without taking earlier-order
 // holder/household locks after the caller has locked an occurrence.
 func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) (bool, error) {
-	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
-	var err error
-	if f.today, err = churchClockIn(tx, now); err != nil {
+	f, err := a.loadEligibilityFacts(tx, []models.Registration{r}, now, nil)
+	if err != nil {
 		return false, err
 	}
-	return f.eligible(a, tx, r, ev, map[uint]bool{}, now), nil
+	return f.eligible(a, tx, r, ev, map[uint]bool{}, now)
+}
+
+// loadEligibilityFacts loads what eligible reads for regs and pins the household
+// clock to the church-local date at now. holder, when given, stands in for that
+// account's stored row (a holder who is about to be re-enabled).
+func (a *App) loadEligibilityFacts(tx *gorm.DB, regs []models.Registration, now time.Time, holder *models.User) (*subjectFacts, error) {
+	today, err := churchClockIn(tx, now)
+	if err != nil {
+		return nil, err
+	}
+	f := newSubjectFacts(today)
+	if err := f.load(tx, regs, holder); err != nil {
+		return nil, err
+	}
+	if holder != nil {
+		f.users[holder.ID] = holder
+	}
+	return f, nil
 }
 
 // eligible is whether r still stands; now is the caller's one reading of the clock.
-func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool, now time.Time) bool {
+func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool, now time.Time) (bool, error) {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
-		return false
+		return false, nil
 	}
 	allowed, loaded := access[holder.ID]
 	if !loaded {
@@ -125,44 +136,66 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 	}
 	if !allowed && r.UserID != nil && r.ID != 0 {
 		var grant models.Registration
-		if tx.Where("registrations.id = ? AND "+registrationAccessLiveSQL, r.ID).Limit(1).Find(&grant).Error == nil && grant.ID != 0 {
+		if err := tx.Where("registrations.id = ? AND "+registrationAccessLiveSQL, r.ID).Limit(1).Find(&grant).Error; err != nil {
+			return false, err
+		}
+		if grant.ID != 0 {
 			live, err := liveOccurrenceInvitationIn(tx, grant, now)
-			allowed = err == nil && live
+			if err != nil {
+				return false, err
+			}
+			allowed = live
 		}
 	}
-	if !allowed || (r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable) {
-		return false
+	if !allowed || remoteUnavailable(ev, r.AttendanceMode) {
+		return false, nil
 	}
 	if r.HouseholdPersonID == nil {
-		return true
+		return true, nil
 	}
 	person := f.people[*r.HouseholdPersonID]
-	if person == nil {
-		return false
+	if person == nil || f.householdProblem(holder, person, allowed) != "" {
+		return false, nil
 	}
-	acct, found := f.accounts[holder.ID]
-	rel := householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID)
-	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], f.day()), holder.Status == models.UserActive, allowed, allowed) != "" {
-		return false
-	}
-	return !r.ChildcareRequested || (person.Kind == models.HouseholdChild && r.AttendanceMode != models.AttendanceRemote)
+	return !r.ChildcareRequested || (person.Kind == models.HouseholdChild && r.AttendanceMode != models.AttendanceRemote), nil
 }
 
-func householdPersonName(tx *gorm.DB, id uint) string {
-	var p models.HouseholdPerson
-	if tx.First(&p, id).Error != nil {
-		return "Household member"
+// householdHolderOf is the responsible adult of a household registration as
+// policy reads it. found says whether acct is the holder's household account;
+// it only counts when it belongs to the person's household. access is whether
+// the holder may register for the event.
+func householdHolderOf(holder *models.User, acct models.HouseholdAccount, found bool, person *models.HouseholdPerson, access bool) policy.HouseholdHolder {
+	return policy.HouseholdHolder{
+		Person: asPerson(holder),
+		Rel:    householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID),
+		Active: holder.CanSignIn(),
+		Access: access,
 	}
-	return p.FullName()
+}
+
+// householdProblem is why person cannot stand under holder, or "". It is the one
+// reading of the household rule for eligible and for the manage link; the
+// listedRegistrations SQL only pre-filters by the same holder and person facts
+// (TestListedRegistrationsPrefilterMatchesPolicy).
+func (f *subjectFacts) householdProblem(holder *models.User, person *models.HouseholdPerson, access bool) string {
+	acct, found := f.accounts[holder.ID]
+	return policy.CanRegisterHouseholdPerson(householdHolderOf(holder, acct, found, person, access), householdFacts(person, f.links[person.ID], f.day()))
+}
+
+func householdPersonName(tx *gorm.DB, id uint) (string, error) {
+	var p models.HouseholdPerson
+	if err := tx.First(&p, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "Household member", nil
+		}
+		return "", err
+	}
+	return p.FullName(), nil
 }
 
 // reconcileHouseholdPerson runs while the household is locked, and locks
 // affected dates in ID order before cancelling or clearing invalid requests.
-func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor uint, ip string) error {
-	var actorID *uint
-	if actor != 0 {
-		actorID = &actor
-	}
+func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor *uint, ip string) error {
 	var regs []models.Registration
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
@@ -205,15 +238,12 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 				r.ChildcareRequested = false
 			} else {
 				r.Status = models.RegCancelled
-				r.ManageTokenHash = ""
-				r.WaitlistedAt = nil
-				r.PromotedAt = nil
 			}
 		}
 		if r.Status == old.Status && r.ChildcareRequested == old.ChildcareRequested {
 			continue
 		}
-		if err := tx.Omit(registrationSaveOmits()...).Save(&r).Error; err != nil {
+		if err := saveRegistration(tx, &r); err != nil {
 			return err
 		}
 		if err := auditRegistration(tx, actor, audit.RegistrationChanged, ev.ID, old, r, ip); err != nil {
@@ -225,7 +255,7 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			}
 		}
 		if old.Status == models.RegGoing {
-			if err := a.promoteLocked(tx, &ev, o, now, actorID); err != nil {
+			if err := a.promoteLocked(tx, &ev, o, now, actor); err != nil {
 				return err
 			}
 		}
@@ -287,13 +317,6 @@ func (f *subjectFacts) day() time.Time {
 	return f.today
 }
 
-func (a *App) loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
-	f := a.requestFacts()
-	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(db)) }
-	f.load(db, regs, viewer)
-	return *f
-}
-
 func newSubjectFacts(today time.Time) *subjectFacts {
 	return &subjectFacts{people: map[uint]*models.HouseholdPerson{}, links: map[uint][]models.GuardianLink{}, households: map[uint]models.Household{}, users: map[uint]*models.User{}, accounts: map[uint]models.HouseholdAccount{}, loadedAccounts: map[uint]bool{}, today: today}
 }
@@ -307,7 +330,7 @@ func (a *App) requestFacts() *subjectFacts {
 
 // load adds the facts for regs and viewer that aren't loaded yet, so one
 // request can share a single set of facts across its lists (Whittler, PR 110).
-func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *models.User) {
+func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *models.User) error {
 	var personIDs, userIDs, householdIDs []uint
 	seenUser := map[uint]bool{}
 	addUser := func(id uint) {
@@ -331,7 +354,9 @@ func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *mod
 	}
 	if len(personIDs) > 0 {
 		var people []models.HouseholdPerson
-		db.Where("id IN ?", personIDs).Find(&people)
+		if err := db.Where("id IN ?", personIDs).Find(&people).Error; err != nil {
+			return err
+		}
 		seenHousehold := map[uint]bool{}
 		for i := range people {
 			p := &people[i]
@@ -341,25 +366,35 @@ func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *mod
 				householdIDs = append(householdIDs, p.HouseholdID)
 			}
 		}
-		for id, links := range guardianLinksForPeople(db, personIDs) {
-			f.links[id] = links
+		links, err := loadGuardianLinks(db, personIDs)
+		if err != nil {
+			return err
+		}
+		for id, l := range links {
+			f.links[id] = l
 		}
 	}
 	if len(householdIDs) > 0 {
 		var households []models.Household
-		db.Where("id IN ?", householdIDs).Find(&households)
+		if err := db.Where("id IN ?", householdIDs).Find(&households).Error; err != nil {
+			return err
+		}
 		for _, h := range households {
 			f.households[h.ID] = h
 		}
 	}
 	if len(userIDs) > 0 {
 		var users []models.User
-		db.Where("id IN ?", userIDs).Find(&users)
+		if err := db.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+			return err
+		}
 		for i := range users {
 			f.users[users[i].ID] = &users[i]
 		}
 		var accts []models.HouseholdAccount
-		db.Where("user_id IN ?", userIDs).Find(&accts)
+		if err := db.Where("user_id IN ?", userIDs).Find(&accts).Error; err != nil {
+			return err
+		}
 		for _, acct := range accts {
 			f.accounts[acct.UserID] = acct
 		}
@@ -367,6 +402,7 @@ func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *mod
 			f.loadedAccounts[id] = true
 		}
 	}
+	return nil
 }
 
 func (f subjectFacts) relation(viewer *models.User, person *models.HouseholdPerson, manager bool) policy.HouseholdRel {
@@ -445,7 +481,7 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 	return &out
 }
 
-func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, managers map[uint]bool, me *models.User, facts *subjectFacts) (map[uint][]attendeeJSON, map[uint][]attendeeJSON) {
+func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, managers map[uint]bool, me *models.User, facts *subjectFacts) (map[uint][]attendeeJSON, map[uint][]attendeeJSON, error) {
 	out, removed := map[uint][]attendeeJSON{}, map[uint][]attendeeJSON{}
 	var ids []uint
 	byID := map[uint]models.EventOccurrence{}
@@ -456,7 +492,7 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 		}
 	}
 	if len(ids) == 0 {
-		return out, removed
+		return out, removed, nil
 	}
 	var rows []struct {
 		models.Registration
@@ -464,12 +500,16 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 	}
 	// The leader-added flag is the row's own live manager-add provenance: no
 	// second table, so the page's dates in the outer filter are the only bound.
-	a.DB.Model(&models.Registration{}).Select("registrations.*, (registrations.access_origin = ? AND registrations.access_granted_at IS NOT NULL AND registrations.access_ended_at IS NULL) AS leader_added", policy.OccurrenceOriginManagerAdd).Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
+	if err := a.DB.Model(&models.Registration{}).Select("registrations.*, (registrations.access_origin = ? AND registrations.access_granted_at IS NOT NULL AND registrations.access_ended_at IS NULL) AS leader_added", policy.OccurrenceOriginManagerAdd).Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
 	registrations := make([]models.Registration, 0, len(rows))
 	for _, row := range rows {
 		registrations = append(registrations, row.Registration)
 	}
-	facts.load(a.DB, registrations, me)
+	if err := facts.load(a.DB, registrations, me); err != nil {
+		return nil, nil, err
+	}
 	now := time.Now().UTC()
 	for _, row := range rows {
 		r := row.Registration
@@ -491,23 +531,31 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 			out[o.ID] = append(out[o.ID], *dto)
 		}
 	}
-	a.appendRecoverableRegistrations(kept, managers, me, removed, now, facts)
-	return out, removed
+	if err := a.appendRecoverableRegistrations(kept, managers, me, removed, now, facts); err != nil {
+		return nil, nil, err
+	}
+	return out, removed, nil
 }
 
-func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User, facts *subjectFacts) map[uint][]myHouseholdRegistrationJSON {
+func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User, facts *subjectFacts) (map[uint][]myHouseholdRegistrationJSON, error) {
 	out := map[uint][]myHouseholdRegistrationJSON{}
 	if viewer == nil {
-		return out
+		return out, nil
 	}
-	facts.load(a.DB, nil, viewer)
+	if err := facts.load(a.DB, nil, viewer); err != nil {
+		return nil, err
+	}
 	acct, found := facts.accounts[viewer.ID]
 	if !found || !policy.CanManageHousehold(asPerson(viewer), householdRelOf(acct, found)) {
-		return out
+		return out, nil
 	}
 	var regs []models.Registration
-	a.DB.Joins("JOIN household_people ON household_people.id = registrations.household_person_id AND household_people.deleted_at IS NULL AND household_people.converted_user_id IS NULL").Where("household_people.household_id = ? AND registrations.occurrence_id IN ? AND registrations.status <> ?", acct.HouseholdID, occurrenceIDs, models.RegCancelled).Find(&regs)
-	facts.load(a.DB, regs, viewer)
+	if err := a.DB.Joins("JOIN household_people ON household_people.id = registrations.household_person_id AND household_people.deleted_at IS NULL AND household_people.converted_user_id IS NULL").Where("household_people.household_id = ? AND registrations.occurrence_id IN ? AND registrations.status <> ?", acct.HouseholdID, occurrenceIDs, models.RegCancelled).Find(&regs).Error; err != nil {
+		return nil, err
+	}
+	if err := facts.load(a.DB, regs, viewer); err != nil {
+		return nil, err
+	}
 	for _, r := range regs {
 		person := facts.people[*r.HouseholdPersonID]
 		holder := facts.users[registrationHolder(r)]
@@ -526,13 +574,14 @@ func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User, fact
 		var pos *int
 		if !unavailable && status == models.RegWaitlisted {
 			n, err := waitlistPosition(a.DB, r.OccurrenceID, r.ID)
-			if err == nil {
-				pos = &n
+			if err != nil {
+				return nil, err
 			}
+			pos = &n
 		}
 		out[r.OccurrenceID] = append(out[r.OccurrenceID], myHouseholdRegistrationJSON{RegistrationID: r.ID, PersonID: person.ID, RegisteredBy: registrationHolder(r), HolderName: name, Status: status, AttendanceMode: r.AttendanceMode, WaitlistPosition: pos, ChildcareRequested: r.ChildcareRequested, Unavailable: unavailable})
 	}
-	return out
+	return out, nil
 }
 
 func householdGoingMap(db *gorm.DB, occurrenceIDs []uint, viewer *models.User, remoteOnly bool) (map[uint]bool, error) {
@@ -556,9 +605,9 @@ func householdGoingMap(db *gorm.DB, occurrenceIDs []uint, viewer *models.User, r
 
 // Recovery data comes only from this event's audited dropped rows. It is
 // revalidated for the manager and holder before exposing any person facts.
-func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, managers map[uint]bool, me *models.User, out map[uint][]attendeeJSON, now time.Time, facts *subjectFacts) {
+func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, managers map[uint]bool, me *models.User, out map[uint][]attendeeJSON, now time.Time, facts *subjectFacts) error {
 	if me == nil {
-		return
+		return nil
 	}
 	var eventIDs []uint
 	byOcc := map[uint]models.EventOccurrence{}
@@ -569,21 +618,16 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		}
 	}
 	if len(eventIDs) == 0 {
-		return
+		return nil
 	}
 	var logs []models.AuditLog
-	a.DB.Where("action = ? AND target_type = 'event' AND target_id IN ?", audit.RegistrationNotRestored, eventIDs).Order("id DESC").Find(&logs)
+	if err := a.DB.Where("action = ? AND target_type = 'event' AND target_id IN ?", audit.RegistrationNotRestored, eventIDs).Order("id DESC").Find(&logs).Error; err != nil {
+		return err
+	}
 	var regs []models.Registration
 	seen := map[[2]uint]bool{}
 	for _, log := range logs {
-		var meta struct {
-			RegistrationID uint   `json:"registrationId"`
-			PersonID       *uint  `json:"personId"`
-			UserID         *uint  `json:"userId"`
-			RegisteredBy   *uint  `json:"registeredBy"`
-			OccurrenceID   uint   `json:"occurrenceId"`
-			AttendanceMode string `json:"attendanceMode"`
-		}
+		var meta droppedRegistrationMeta
 		if json.Unmarshal([]byte(log.MetaJSON), &meta) != nil {
 			continue
 		}
@@ -607,12 +651,17 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		}
 		seen[key] = true
 		var n int64
-		subject.query(a.DB, o.ID).Model(&models.Registration{}).Count(&n)
+		if err := subject.query(a.DB, o.ID).Model(&models.Registration{}).Count(&n).Error; err != nil {
+			return err
+		}
 		if n != 0 {
 			continue
 		}
 		var holder models.User
-		if a.DB.First(&holder, subject.holderID).Error != nil || holder.Status != models.UserActive {
+		if err := a.DB.Limit(1).Find(&holder, subject.holderID).Error; err != nil {
+			return err
+		}
+		if holder.ID == 0 || holder.Status != models.UserActive {
 			continue
 		}
 		// A page that cannot read the church zone leaves the row out.
@@ -621,7 +670,9 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		}
 		regs = append(regs, r)
 	}
-	facts.load(a.DB, regs, me)
+	if err := facts.load(a.DB, regs, me); err != nil {
+		return err
+	}
 	for _, r := range regs {
 		o := byOcc[r.OccurrenceID]
 		dto := facts.attendee(r, o, me, true, false, now)
@@ -629,6 +680,7 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 			out[o.ID] = append(out[o.ID], *dto)
 		}
 	}
+	return nil
 }
 
 // householdSubjectFrom validates a pair already loaded in the household batch.

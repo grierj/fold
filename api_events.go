@@ -200,13 +200,19 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	}
 	// One set of household facts and one church-local clock per request.
 	facts := a.requestFacts()
-	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	names, removed, err := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	if err != nil {
+		return out, false, err
+	}
 	guardians := a.confirmedContactGuardians(me, facts.users)
 	for _, o := range kept {
 		presentAttendeeContacts(names[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
 		presentAttendeeContacts(removed[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
 	}
-	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
+	ownHousehold, err := a.myHouseholdAnswers(ids, me, facts)
+	if err != nil {
+		return out, false, err
+	}
 	// Only a household account can have registered someone by name.
 	householdVideo := map[uint]bool{}
 	if me != nil {
@@ -1034,7 +1040,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			err := notifyEventChanged(tx, &locked, o, variant, me.ID)
+			err := notifyEventChanged(tx, &locked, o, variant, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1066,7 +1072,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					// combined notice above.
 					continue
 				}
-				err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
+				err := notifyEventChanged(tx, &locked, &occs[i], "place", &me.ID)
 				if err != nil {
 					return err
 				}
@@ -1178,7 +1184,7 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 		// with its snapshots: end any live grant as event_deleted, no notices
 		// (the dates are about to disappear). Already-ended grants keep their
 		// own reason.
-		if err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC(), false); err != nil {
+		if err := endLiveAccessOnDates(tx, occIDs, policy.OccurrenceEventDeleted, time.Now().UTC()); err != nil {
 			return err
 		}
 		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.Registration{}).Error; err != nil {
@@ -1426,7 +1432,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			if timeChanged && placeChanged {
 				variant = "time and place"
 			}
-			err := notifyEventChanged(tx, ev, &o, variant, me.ID)
+			err := notifyEventChanged(tx, ev, &o, variant, &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1452,13 +1458,13 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
-		used, err := seatsUsedForMode(tx, o.ID, models.AttendanceInPerson)
+		used, err := seatsUsedForMode(tx, o.ID, models.AttendanceInPerson, 0)
 		if err != nil {
 			return err
 		}
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
-		remoteUsed, err := seatsUsedForMode(tx, o.ID, models.AttendanceRemote)
+		remoteUsed, err := seatsUsedForMode(tx, o.ID, models.AttendanceRemote, 0)
 		if err != nil {
 			return err
 		}
