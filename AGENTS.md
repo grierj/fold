@@ -178,6 +178,19 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - Permissions: every check is a pure function in `internal/policy` (PLAN section 6) with table
   tests. Handlers load facts and call it; never inline role checks or read `Group.LeaderID`
   (display only). Leadership is `Membership.Role = leader`; a group can have several leaders.
+- Time zones (`zones.go`): the church's zone is read with `churchZoneIn(tx)` on the caller's connection and
+  returns an error for a failed read or a stored value that is no zone; only `churchZoneOrUTC` logs and shows UTC, for
+  pages, emails, notices, push quiet hours and reminders that must still go out. A person's zone is `userZone(tz, church)`
+  (`userZoneIn` reads the church only when needed); an event's is `eventZone(tzid)`. Household ages count from
+  `churchClockIn(tx, now)`; a transaction takes `now` once and passes it down. All parse with `events.LoadZone`, which
+  refuses "Local".
+- Settings (`settings.go`): every key is a constant there; read with `settingIn`/`boolSettingIn`/`siteNameIn`, write only
+  with `setSettingIn`, which refuses the restore-fence key. Keys derived from `SESSION_SECRET` come from `deriveKey`
+  (`keys.go`); a new use gets a new `purpose:vN`, and an existing purpose's bytes never change. SQLSTATE checks use
+  `pgCode`/`pgConstraint` (`pgerrors.go`); long id lists go through `eachChunk` (`chunks.go`); several users are locked
+  with `lockUsersByID` (`user_locks.go`). Enum values (visibility, group status, account status, video reveal) are owned by
+  `internal/policy`, and `models` aliases them; `models.CurrentRegStatuses` and `models.MembershipActive` name the
+  common status sets.
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in the same transaction as
   the change. Admin notices are separate stored notification rows written in that transaction.
 - Migrations: every schema change is a **new** goose file `NNNNN_name.sql`; never edit an old one; the one exception is the pre-live baseline window in DEC-138.

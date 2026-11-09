@@ -1674,9 +1674,10 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if locked.Status != models.OccurrenceScheduled {
 			return errOccurrenceNotFound
 		}
+		now := time.Now().UTC()
 		// Recipient controls apply to every account-add sibling, even before
 		// the final request/provenance stage switches ordinary adds over.
-		f, err := a.loadOccurrenceAddFacts(tx, models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: me.ID, SubjectUserID: holder.ID, ContextType: policy.ContactEvent, ContextID: ev.ID, OccurrenceID: &locked.ID}, time.Now().UTC())
+		f, err := a.loadOccurrenceAddFacts(tx, models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: me.ID, SubjectUserID: holder.ID, ContextType: policy.ContactEvent, ContextID: ev.ID, OccurrenceID: &locked.ID}, now)
 		if err != nil {
 			return err
 		}
@@ -1689,7 +1690,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if holder.Status != models.UserGuest && (!f.Subject.Active || (f.Subject.AgeYears != nil && *f.Subject.AgeYears < 18)) {
 			return refuse(errDateAddApproval)
 		}
-		registration, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, time.Now().UTC(), c.ClientIP())
+		registration, err := a.addAccountRegistrationLocked(tx, ev, locked, target.ID, me.ID, managerRegistrationOptions{mode: addMode, guests: guestCount, overCapacity: overCap, care: body.childcareRequest}, now, c.ClientIP())
 		if errors.Is(err, errEventFull) || errors.Is(err, errChildcareFull) || errors.Is(err, errChildcareUnavailable) || errors.Is(err, errRemoteNotAvailable) {
 			return refuse(err)
 		}
@@ -1697,7 +1698,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			return err
 		}
 		if holder.Status == models.UserActive {
-			err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, time.Now().UTC(), c.ClientIP())
+			err = a.recordManagerOccurrenceAdd(tx, ev, locked, registration, actor.ID, nil, false, now, c.ClientIP())
 			if err != nil {
 				return err
 			}

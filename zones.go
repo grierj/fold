@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"fold/internal/events"
@@ -25,7 +26,7 @@ func churchZoneIn(tx *gorm.DB) (*time.Location, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !found || v == "" {
+	if !found || strings.TrimSpace(v) == "" {
 		return time.UTC, nil
 	}
 	loc, err := events.LoadZone(v)
