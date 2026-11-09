@@ -109,7 +109,6 @@ var (
 	errReasonInvariant = errors.New("the reason review changed an unexpected number of rows")
 )
 
-
 // parseRequestID reads a canonical signed decimal request id. It refuses a
 // plus sign, a leading zero, "-0", whitespace, an empty string and anything
 // outside int64 (R4-C04); no positivity is assumed.
@@ -136,7 +135,6 @@ func pgBigintArray[T int64 | uint](ids []T) string {
 	b.WriteByte('}')
 	return b.String()
 }
-
 
 type reasonColumn struct{ name, kind string }
 
@@ -278,7 +276,6 @@ func validReviewHash(h string) bool {
 	return true
 }
 
-
 // reasonRow is one contact_requests row as the review reads it. Every id is
 // int64 and the row is filled by a raw scan, never through
 // models.ContactRequest (whose ids are uint).
@@ -368,7 +365,6 @@ func scanReasonRowsWith(rows *sql.Rows, key []byte, viewer, party int64, wantHex
 	return rows.Err()
 }
 
-
 // reasonSource is the part of a request the scanner decides from.
 type reasonSource struct {
 	ID, RequesterID, SubjectUserID int64
@@ -405,7 +401,6 @@ const (
 	reasonScanInitialSQL      = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT ?"
 	reasonScanContinuationSQL = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > ?::bigint ORDER BY id LIMIT ?"
 )
-
 
 type reasonPageBody struct {
 	After *string `json:"after"`
@@ -698,7 +693,6 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 		fail(c, errReasonReviewBusy)
 	}
 }
-
 
 // reasonDecision is one decided item. It holds no text and no hash.
 type reasonDecision struct {
