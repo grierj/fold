@@ -51,6 +51,10 @@ type App struct {
 	setupMu   sync.RWMutex
 	setupDone bool
 
+	// refusalRoutes maps "METHOD /route/template" to the refusalKind its CSRF and
+	// session refusals are audited as (auditRefusals, api_contact.go).
+	refusalRoutes sync.Map
+
 	// Push sends web push (M3.13). nil builds the default from Config on
 	// first use (pushClient); tests point its HTTP transport at a fake.
 	Push     *push.Client

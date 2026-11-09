@@ -52,7 +52,7 @@ func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, ok := a.userFromSession(c)
 		if !ok {
-			if err := a.auditContactRejection(c, "authentication"); err != nil {
+			if err := a.auditRefusal(c, "authentication"); err != nil {
 				jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
 				c.Abort()
 				return
@@ -165,23 +165,26 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/people/search", a.apiAuth(), a.apiSearchPeople)
 
 	// Direct contact: authenticated review, explicit audited disclosure only.
-	v1.POST("/add-requests", a.apiAuth(), a.apiCreateAddRequest)
+	addRoutes := a.auditRefusals(v1, refusedAdd)
+	contactRoutes := a.auditRefusals(v1, refusedContact)
+	occurrenceRoutes := a.auditRefusals(v1, refusedOccurrence)
+	addRoutes(http.MethodPost, "/add-requests", a.apiAuth(), a.apiCreateAddRequest)
 	v1.GET("/add-requests", a.apiAuth(), a.apiListAddRequests)
 	v1.GET("/add-requests/:id", a.apiAuth(), a.apiGetAddRequest)
-	v1.POST("/add-requests/:id/decision", a.apiAuth(), a.apiDecideAddRequest)
-	v1.POST("/add-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawAddRequest)
-	v1.POST("/add-requests/:id/complete", a.apiAuth(), a.apiCompleteAddRequest)
-	v1.POST("/contact-requests", a.apiAuth(), a.apiCreateContactRequest)
+	addRoutes(http.MethodPost, "/add-requests/:id/decision", a.apiAuth(), a.apiDecideAddRequest)
+	addRoutes(http.MethodPost, "/add-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawAddRequest)
+	addRoutes(http.MethodPost, "/add-requests/:id/complete", a.apiAuth(), a.apiCompleteAddRequest)
+	contactRoutes(http.MethodPost, "/contact-requests", a.apiAuth(), a.apiCreateContactRequest)
 	v1.GET("/contact-requests", a.apiAuth(), a.apiListContactRequests)
 	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
-	v1.POST("/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
-	v1.POST("/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
+	contactRoutes(http.MethodPost, "/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
+	contactRoutes(http.MethodPost, "/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
 	v1.GET("/admin/contact-history/people", a.apiAuth(), a.apiContactHistoryPeople)
 	v1.GET("/admin/users/:id/contact-history", a.apiAuth(), a.apiContactHistory)
 	v1.GET("/admin/users/:id/contact-history.csv", a.apiAuth(), a.apiExportContactHistory)
 	v1.GET("/contact-grants", a.apiAuth(), a.apiListContactGrants)
-	v1.POST("/contact-grants/:id/revoke", a.apiAuth(), a.apiRevokeContactGrant)
-	v1.POST("/contact-grants/:id/reveal", a.apiAuth(), a.apiRevealContactGrant)
+	contactRoutes(http.MethodPost, "/contact-grants/:id/revoke", a.apiAuth(), a.apiRevokeContactGrant)
+	contactRoutes(http.MethodPost, "/contact-grants/:id/reveal", a.apiAuth(), a.apiRevealContactGrant)
 
 	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
@@ -346,9 +349,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/events/:id/dates/:date", a.optionalUser(), a.apiGetOccurrenceDate)
 	v1.GET("/events/:id/dates/:date/calendar.ics", a.optionalUser(), a.apiOccurrenceCalendar)
 	v1.GET("/events/:id/occurrences/:date/visibility-impact", a.apiAuth(), a.apiDateVisibilityImpact)
-	v1.POST("/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
-	v1.POST("/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
-	v1.PUT("/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)
+	occurrenceRoutes(http.MethodPost, "/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
+	occurrenceRoutes(http.MethodPost, "/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
+	occurrenceRoutes(http.MethodPut, "/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)
@@ -368,7 +371,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// directly (over capacity only by explicit choice).
 	v1.POST("/events/:id/registrations/remove", a.apiAuth(), a.apiRemoveRegistration)
 	v1.POST("/events/:id/registrations/promote", a.apiAuth(), a.apiPromoteRegistration)
-	v1.POST("/events/:id/registrations/add", a.apiAuth(), a.apiAddRegistration)
+	occurrenceRoutes(http.MethodPost, "/events/:id/registrations/add", a.apiAuth(), a.apiAddRegistration)
 	// Guest registration (M1.4): the form and the emailed verification
 	// link are public; the manage token in the confirmation email is
 	// the credential for cancelling. All POSTs ride the CSRF flow like

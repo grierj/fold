@@ -859,7 +859,7 @@ var auditWriterCensus = map[string]string{
 	"api_auth.go:apiConfirmPasswordReset":                         "ca2949268c280855e19fb399c0a1a707a9d9a827fcfcf552b0e6bd255de50fc2",
 	"api_auth.go:apiRequestPasswordReset":                         "dc3a3d5d37afce904a46dd6dd87342be9b49ea3b9379a2d2556f0f889158683e",
 	"api_contact.go:addAuditAction":                               "ea9a9c1e495429e447216252cea05dc7ac323e24fa12a30a4191429f7de7aaf8",
-	"api_contact.go:auditContactRejection":                        "8f4a0a44cefad81ea6960135662ecc6fbb1b0d752c5aa267b7a39118034f3673",
+	"api_contact.go:auditRefusal":                                 "bfe884ae54cfeb1f8224d9cf33ad758168262cbc65502778d8d0561890191f6d",
 	"api_contact_history.go:apiExportContactHistory":              "5df09267b49abc795ee0f42a03f5d376bd233f87e77455d53e529b8068a97a24",
 	"api_departure.go:applyDeparture":                             "835354a095c0a480e8499c4ecb04f74092dfd2bce845699898fb141b9b9ab9a2",
 	"api_email_change_cancel.go:apiCancelEmailChange":             "edb9bc16427aa877d8e6cea6227d100ff8c6d3124e9ee1aea9abc3ecc48ce1da",
