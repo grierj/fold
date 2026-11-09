@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,46 +46,6 @@ var (
 	errOccurrenceGateRetry = errors.New("retry invitation mutation under contact gate")
 )
 
-// parseCapacity reads an event capacity from a body: null clears it to
-// unlimited, a positive whole number sets it. It mirrors the group
-// member limit's number-or-null JSON pattern (DEC-39). raw is nil when
-// the field is absent.
-func parseCapacity(raw *json.RawMessage) (cap *int, set bool, err error) {
-	if raw == nil {
-		return nil, false, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
-		return nil, true, nil
-	}
-	var n int
-	if json.Unmarshal(*raw, &n) != nil || n < 1 || n > 100000 {
-		return nil, false, errInvalidCapacity
-	}
-	return &n, true, nil
-}
-
-// parseRemoteCapacity permits 0 only for a per-date override, to close
-// remote seats on that date. For an event, uncheck remote attendance.
-func parseRemoteCapacity(raw json.RawMessage, allowZero bool) (cap *int, set bool, err error) {
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, true, nil
-	}
-	var n int
-	if json.Unmarshal(raw, &n) != nil || n < 0 || n > 100000 {
-		if allowZero {
-			return nil, false, errInvalidRemoteCapacityOverride
-		}
-		return nil, false, errInvalidRemoteCapacity
-	}
-	if n == 0 && !allowZero {
-		return nil, false, errRemoteCapacityZero
-	}
-	return &n, true, nil
-}
-
 // capacityEdits holds the parsed M1.5 capacity fields from an event
 // body: capacity (nil clears to unlimited), waitlistEnabled, and
 // guestsAllowed (0-5, null clears to 0), plus the remote pool's cap
@@ -102,23 +61,6 @@ type capacityEdits struct {
 	childcareCapSet bool
 	reminder        int
 	reminderSet     bool
-}
-
-// parseGuestsAllowed reads guestsAllowed from a body: null clears it to
-// 0 (no extra guests), a whole number 0-5 sets the per-registration
-// guest cap. raw is nil when the field is absent.
-func parseGuestsAllowed(raw *json.RawMessage) (n int, set bool, err error) {
-	if raw == nil {
-		return 0, false, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
-		return 0, true, nil
-	}
-	var v int
-	if json.Unmarshal(*raw, &v) != nil || v < 0 || v > 5 {
-		return 0, false, errInvalidGuests
-	}
-	return v, true, nil
 }
 
 // parseCapacityEdits parses the M1.5 capacity fields, answering 400 on a

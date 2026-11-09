@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -15,24 +13,6 @@ var (
 	errChildcareUnavailable = apiErr(http.StatusBadRequest, "childcare_not_available", "this event doesn't offer childcare")
 	errChildcareFull        = apiErr(http.StatusConflict, "childcare_full", "childcare is full for this date")
 )
-
-// A value RawMessage distinguishes an omitted capacity from explicit null.
-func parseChildcareCapacity(raw json.RawMessage) (*int, bool, error) {
-	if len(raw) == 0 {
-		return nil, false, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, true, nil
-	}
-	var n int
-	if json.Unmarshal(raw, &n) != nil || n < 0 || n > 100000 {
-		return nil, false, errInvalidChildcareCapacity
-	}
-	if n == 0 {
-		return nil, false, errChildcareCapacityZero
-	}
-	return &n, true, nil
-}
 
 func parseChildcareEdits(c *gin.Context, body eventBody, ed *capacityEdits) bool {
 	var err error
@@ -63,14 +43,14 @@ type childcareRequest struct {
 // skips the checks that depend on the event's childcare setting.
 func (r childcareRequest) problem(ev *models.Event) error {
 	if r.ChildcareCount != nil {
-		if *r.ChildcareCount < 0 || *r.ChildcareCount > 20 {
+		if *r.ChildcareCount < 0 || *r.ChildcareCount > maxChildcareCount {
 			return errInvalidChildcareCount
 		}
 		if ev != nil && *r.ChildcareCount > 0 && !ev.ChildcareAvailable {
 			return errChildcareUnavailable
 		}
 	}
-	if r.ChildcareAgesNote != nil && utf8.RuneCountInString(strings.TrimSpace(*r.ChildcareAgesNote)) > 200 {
+	if r.ChildcareAgesNote != nil && utf8.RuneCountInString(strings.TrimSpace(*r.ChildcareAgesNote)) > maxChildcareAgesNote {
 		return errChildcareAgeNoteTooLong
 	}
 	return nil
