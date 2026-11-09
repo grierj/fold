@@ -107,7 +107,7 @@ function NotificationRow({
           className="absolute right-1 top-1 h-11 px-3 text-sm text-primary font-semibold hover:underline"
           aria-label={`Restore: ${n.title}`}
           disabled={feed.offline}
-          onClick={() => feed.unarchive(n).catch(() => {})}
+          onClick={() => void feed.unarchive(n)}
         >
           Restore
         </button>
@@ -118,7 +118,7 @@ function NotificationRow({
           aria-label={`Archive: ${n.title}`}
           disabled={feed.offline}
           title={feed.offline ? "Reconnect to do this" : "Archive"}
-          onClick={() => feed.archive(n).then(() => onArchived(n)).catch(() => {})}
+          onClick={() => void feed.archive(n).then((done) => { if (done) onArchived(n); })}
         >
           <span aria-hidden="true" className="text-2xl font-semibold leading-none">×</span>
         </Button>
@@ -129,7 +129,7 @@ function NotificationRow({
 
 // ArchivedToast: "Archived · Undo", 8 s, paused while hovered or focused
 // (WCAG 2.2.1).
-function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: () => void; onClose: () => void }) {
+function ArchivedToast({ item, failed, onUndo, onClose }: { item: Notification; failed: boolean; onUndo: () => void; onClose: () => void }) {
   const [paused, setPaused] = useState(false);
   useEffect(() => {
     if (paused) return;
@@ -145,7 +145,7 @@ function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: 
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
     >
-      Archived
+      {failed ? "Couldn't undo that. Try again." : "Archived"}
       <button className="min-h-11 min-w-11 font-semibold underline" onClick={onUndo}>
         Undo
       </button>
@@ -281,18 +281,23 @@ function splitByDay(rows: Notification[]): [string, Notification[]][] {
 
 export function useArchiveToast(feed: Feed) {
   const [toast, setToast] = useState<Notification | null>(null);
+  const [failed, setFailed] = useState(false);
   const close = useCallback(() => setToast(null), []);
+  const show = useCallback((n: Notification) => { setFailed(false); setToast(n); }, []);
   const node = toast ? (
     <ArchivedToast
       item={toast}
+      failed={failed}
       onClose={close}
       onUndo={() => {
-        feed.unarchive(toast).catch(() => {});
-        setToast(null);
+        void feed.unarchive(toast).then((done) => {
+          if (done) setToast(null);
+          else setFailed(true);
+        });
       }}
     />
   ) : null;
-  return { onArchived: setToast, toast: node };
+  return { onArchived: show, toast: node };
 }
 
 // The count on the bell and the tab; the accessible name carries the same count.

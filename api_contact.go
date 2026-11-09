@@ -176,7 +176,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		return err
 	})
 	if !c.Writer.Written() {
-		c.JSON(http.StatusCreated, gin.H{"request": out})
+		c.JSON(http.StatusCreated, requestResponseJSON[contactRequestJSON]{Request: out})
 	}
 }
 
@@ -234,7 +234,7 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 		return err
 	})
 	if !c.Writer.Written() {
-		c.JSON(http.StatusOK, gin.H{"request": out})
+		c.JSON(http.StatusOK, requestResponseJSON[contactRequestJSON]{Request: out})
 	}
 }
 func (a *App) apiWithdrawContactRequest(c *gin.Context) {
@@ -274,7 +274,7 @@ func (a *App) apiListContactGrants(c *gin.Context) {
 		return err
 	})
 	if !c.Writer.Written() {
-		c.JSON(http.StatusOK, gin.H{"grants": out})
+		c.JSON(http.StatusOK, contactGrantsResponseJSON{Grants: out})
 	}
 }
 func (a *App) apiRevokeContactGrant(c *gin.Context) { a.useContactGrant(c, false) }
@@ -549,7 +549,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		return err
 	})
 	if !c.Writer.Written() {
-		c.JSON(http.StatusCreated, gin.H{"request": out})
+		c.JSON(http.StatusCreated, requestResponseJSON[addRequestJSON]{Request: out})
 	}
 }
 func (a *App) apiListAddRequests(c *gin.Context) {
@@ -683,6 +683,6 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 		return err
 	})
 	if !c.Writer.Written() {
-		c.JSON(200, gin.H{"request": out})
+		c.JSON(200, requestResponseJSON[addRequestJSON]{Request: out})
 	}
 }

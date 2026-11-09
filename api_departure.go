@@ -492,7 +492,7 @@ func (a *App) departurePreview(c *gin.Context, subjectID uint) {
 		return
 	}
 	preview := departurePreviewFromFacts(facts, snapshot)
-	c.JSON(http.StatusOK, gin.H{"departure": preview})
+	c.JSON(http.StatusOK, departurePreviewResponseJSON{Departure: preview})
 }
 
 func (a *App) apiLeaveGroupDeparturePreview(c *gin.Context) {
@@ -800,7 +800,7 @@ func (a *App) departureConfirm(c *gin.Context, subjectID uint) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"departure": result})
+	c.JSON(http.StatusOK, departureConfirmationResponseJSON{Departure: result})
 }
 
 func (a *App) apiLeaveGroupConfirmed(c *gin.Context) {

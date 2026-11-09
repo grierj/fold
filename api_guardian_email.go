@@ -205,5 +205,5 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in " + tokenLifetime + "."})
+	c.JSON(http.StatusOK, noticeResponseJSON{Message: "Check your email for a consent link. It expires in " + tokenLifetime + "."})
 }

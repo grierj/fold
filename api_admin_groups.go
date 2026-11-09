@@ -31,7 +31,7 @@ func (a *App) respondGroups(c *gin.Context, groups []models.Group) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, groupListResponseJSON{Groups: out})
 }
 
 // apiApproveGroup and apiRejectGroup decide a pending group. Both are
@@ -162,7 +162,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 			jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"group": summary})
+		c.JSON(http.StatusOK, groupResponseJSON{Group: summary})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

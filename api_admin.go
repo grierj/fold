@@ -49,7 +49,7 @@ func (a *App) apiAdminListUsers(c *gin.Context) {
 		row.EmailSuppression = suppressed[mail.AddressHash(users[i].Email)]
 		out = append(out, row)
 	}
-	c.JSON(http.StatusOK, gin.H{"users": out})
+	c.JSON(http.StatusOK, usersResponseJSON{Users: out})
 }
 
 // apiAdminCreateUser adds an account. Without a password it starts
@@ -135,7 +135,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create user")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"user": a.toUserJSON(&u)})
+	c.JSON(http.StatusCreated, userResponseJSON{User: a.toUserJSON(&u)})
 }
 
 // emailTaken reports a violation of the unique login email on users, and no
@@ -473,7 +473,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	}
 	var updated models.User
 	a.DB.First(&updated, u.ID)
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
+	c.JSON(http.StatusOK, userResponseJSON{User: a.toUserJSON(&updated)})
 }
 
 type deleteUserBody struct {

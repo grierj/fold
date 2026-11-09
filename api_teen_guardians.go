@@ -96,7 +96,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	allowed, err := a.targetAllow(c.Request.Context(), guardianClaimAddrKey(email))
 	if err != nil || !allowed || hits > accountRequestIPLimit {
 		log.Printf("guardian claim limited: actor=%d err=%v", me.ID, err)
-		c.JSON(http.StatusOK, gin.H{"message": guardianClaimThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: guardianClaimThanks})
 		return
 	}
 	var teen models.User
@@ -119,7 +119,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	if err != nil {
 		log.Printf("guardian claim: actor=%d err=%v", me.ID, err)
 	}
-	c.JSON(http.StatusOK, gin.H{"message": guardianClaimThanks})
+	c.JSON(http.StatusOK, noticeResponseJSON{Message: guardianClaimThanks})
 }
 
 func guardianLinkUsable(guardian, teen *models.User, link *models.GuardianLink) bool {
@@ -232,7 +232,7 @@ func (a *App) apiMyGuardianTeens(c *gin.Context) {
 			row.PhotosConsent = granted
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"teens": out})
+	c.JSON(http.StatusOK, guardianTeensResponseJSON{Teens: out})
 }
 
 func ownTeenLink(db *gorm.DB, c *gin.Context) (*models.GuardianLink, error) {

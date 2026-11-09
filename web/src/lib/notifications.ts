@@ -102,8 +102,9 @@ export interface Feed {
   reload: () => void;
   showMore: () => void;
   open: (n: Notification) => void;
-  archive: (n: Notification) => Promise<void>;
-  unarchive: (n: Notification) => Promise<void>;
+  // True when the server did it; false when it did not (the row says so in `rowError`).
+  archive: (n: Notification) => Promise<boolean>;
+  unarchive: (n: Notification) => Promise<boolean>;
   readAll: () => Promise<void>;
   approve: (n: Notification) => Promise<void>;
   rowError: Record<number, string>;
@@ -187,26 +188,34 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
   const open = useCallback((n: Notification) => {
     if (n.read) return;
     patch(n.id, { read: true });
-    Api.read(n.id).then(notificationsChanged).catch(() => {});
+    // If the server did not take it, the row goes back to unread rather than claiming a read it doesn't have.
+    Api.read(n.id).then(notificationsChanged).catch(() => patch(n.id, { read: false }));
   }, []);
 
-  const archive = useCallback(async (n: Notification) => {
-    await Api.archive(n.id, true);
-    setState((s) => ({ ...s, items: s.items.filter((x) => x.id !== n.id) }));
+  // Archiving and restoring change a row only when the server did it; if it
+  // did not, the row stays as it was and says so under itself.
+  const setArchived = useCallback(async (n: Notification, archived: boolean) => {
+    setRowError((e) => ({ ...e, [n.id]: "" }));
+    try {
+      await Api.archive(n.id, archived);
+    } catch {
+      setRowError((e) => ({ ...e, [n.id]: archived ? "Couldn't archive this. Try again." : "Couldn't restore this. Try again." }));
+      return false;
+    }
+    if (archived) setState((s) => ({ ...s, items: s.items.filter((x) => x.id !== n.id) }));
     notificationsChanged();
+    return true;
   }, []);
-
-  const unarchive = useCallback(async (n: Notification) => {
-    await Api.archive(n.id, false);
-    notificationsChanged();
-  }, []);
+  const archive = useCallback((n: Notification) => setArchived(n, true), [setArchived]);
+  const unarchive = useCallback((n: Notification) => setArchived(n, false), [setArchived]);
 
   const readAll = useCallback(async () => {
     try {
       await Api.readAll();
     } catch {
-      // Like the archive actions: the rows stay as they were, so nothing
-      // changed on screen. (The "Couldn't refresh" line is about reloads.)
+      // On purpose: a failed "mark all read" changes nothing on screen (the
+      // rows stay unread) and the reload below shows the truth; the next
+      // tap tries again. (The "Couldn't refresh" line is about reloads.)
     }
     notificationsChanged();
   }, []);

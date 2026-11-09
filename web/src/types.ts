@@ -316,6 +316,7 @@ export interface EventHostRow {
   email: string;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON; the api layer reaches it through a *Response envelope. */
 export interface EventSeries {
   id: number;
   groupId?: number;
@@ -502,6 +503,7 @@ export interface InvitationContext {
   site: string;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON; the api layer reaches it through a *Response envelope. */
 export interface HouseholdConversion {
   email: string;
   expiresAt: string;
@@ -958,6 +960,7 @@ export interface Room {
 
 // A room's calendar-feed link (M2.2b). url is only in the response that
 // made the link; afterwards an admin sees only that a link is on.
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON; the api layer reaches it through a *Response envelope. */
 export interface RoomFeed {
   hasToken: boolean;
   createdAt: string | null;
@@ -1201,6 +1204,7 @@ export interface Message {
 
 // GET /messages/:id/read: an announcement as its reader got it (the page a
 // push opens), and nothing about who else got it.
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON; the api layer reaches it through a *Response envelope. */
 export interface MessageRead {
   id: number;
   subject: string;
@@ -1634,4 +1638,237 @@ export type NewEventInput = EventInput & Required<Pick<EventInput, "startsLocal"
 export interface Badge {
   unread: number;
   waiting: number;
+}
+
+// Response envelopes: the one-key (or few-key) objects the API wraps its answers in.
+// Each pairs with a Go struct in tsContracts (guards_web_test.go).
+
+export interface NoticeResponse {
+  message: string;
+}
+
+export interface AddRequestResponse {
+  request: AddRequest;
+}
+
+export interface MessageResponse {
+  message: Message;
+}
+
+export interface GroupListResponse {
+  groups: GroupSummary[];
+}
+
+export interface UserResponse {
+  user: User;
+}
+
+export interface SettingOnResponse {
+  on: boolean;
+}
+
+export interface GroupResponse {
+  group: GroupSummary;
+}
+
+export interface EventSeriesResponse {
+  event: EventSeries;
+}
+
+export interface CalendarFeedResponse {
+  calendarFeed: CalendarFeed;
+}
+
+export interface SettingAddressResponse {
+  address: string;
+}
+
+export interface NotificationSettingsResponse {
+  settings: NotificationSettings;
+}
+
+export interface ContactRequestResponse {
+  request: ContactRequest;
+}
+
+export interface RoomFeedResponse {
+  feed: RoomFeed;
+}
+
+export interface AdminJobStatusResponse {
+  status: string;
+}
+
+export interface RoomResponse {
+  room: Room;
+}
+
+export interface GuestRegistrationResponse {
+  registration: GuestRegistration;
+}
+
+export interface HouseholdPersonResponse {
+  person: HouseholdPerson;
+}
+
+export interface NotificationResponse {
+  notification: Notification;
+}
+
+export interface MembersResponse {
+  members: Member[];
+}
+
+export interface EventHostsResponse {
+  hosts: EventHostRow[];
+}
+
+export interface GuardianLinkResponse {
+  guardianLink: GuardianLink;
+}
+
+export interface DeparturePreviewResponse {
+  departure: DeparturePreview;
+}
+
+export interface HouseholdConversionResponse {
+  conversion: HouseholdConversion;
+}
+
+export interface UsersResponse {
+  users: User[];
+}
+
+export interface JitsiLinkResponse {
+  url: string;
+}
+
+export interface TimezoneResponse {
+  timezone: string;
+}
+
+export interface GuardianTeensResponse {
+  teens: GuardianTeen[];
+}
+
+export interface AudienceSummaryResponse {
+  summary: AudienceSummary;
+}
+
+export interface SelfSignupResponse {
+  selfSignup: "request" | "off";
+}
+
+export interface RoomsEnabledResponse {
+  roomsEnabled: boolean;
+}
+
+export interface RoomRequestsResponse {
+  requests: RoomRequest[];
+}
+
+export interface ContactRequestsResponse {
+  requests: ContactRequest[];
+}
+
+export interface AddRequestsResponse {
+  requests: AddRequest[];
+}
+
+export interface AccountRequestsResponse {
+  requests: AccountRequest[];
+}
+
+export interface DateRegistrationResponse {
+  registration: RegistrationResponse;
+}
+
+export interface PushSettingsResponse {
+  push: PushSettings;
+}
+
+export interface MessagePreviewResponse {
+  preview: MessagePreview;
+}
+
+export interface MessageTestResponse {
+  ok: boolean;
+}
+
+export interface OccurrenceResponse {
+  occurrence: EventOccurrence;
+}
+
+export interface EventDateResponse {
+  occurrence: EventDate;
+}
+
+export interface RoomApprovalResponse {
+  needApproval: boolean;
+}
+
+export interface MessageScheduledResponse {
+  message: Message;
+  summary: AudienceSummary;
+}
+
+export interface MessageReadResponse {
+  message: MessageRead;
+}
+
+export interface RoomLocationsResponse {
+  locations: TypedLocation[];
+}
+
+export interface InvitationResponse {
+  invitation: Invitation;
+}
+
+export interface CoverUploadResponse {
+  imageUrl: string;
+}
+
+export interface AvatarUploadResponse {
+  avatarUrl: string;
+}
+
+export interface MyHouseholdResponse {
+  household: Household | null;
+}
+
+export interface HouseholdResponse {
+  household: Household;
+}
+
+export interface CalendarFeedRevokedResponse {
+  calendarFeed: CalendarFeed;
+  hadLink: boolean;
+}
+
+export interface SoleLedGroupsResponse {
+  groups: SoleLedGroup[];
+}
+
+export interface ContactGrantsResponse {
+  grants: ContactGrant[];
+}
+
+export interface OpenEventsResponse {
+  events: EventOccurrence[];
+}
+
+export interface EmailSettingsChangeResponse {
+  emailSettings: NotificationSettings;
+}
+
+export interface EmailSuppressionClearedResponse {
+  cleared: number;
+}
+
+export interface EmailChangeCancelledResponse {
+  cancelled: true;
+}
+
+export interface RoomBookingResponse {
+  booking: RoomBooking | null;
 }

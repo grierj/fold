@@ -4,7 +4,7 @@ import { ButtonLink } from "../components/ui/Button";
 
 // This is a public explanation after password setup, not an authenticated
 // holding screen. The shared shell keeps public groups and events available.
-export default function WaitingForConsent() {
+export function WaitingForConsentPage() {
   const { user } = useAuth();
   if (user) return <Navigate to="/" replace />;
   return <div className="fold-auth space-y-4">

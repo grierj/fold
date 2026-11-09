@@ -1,4 +1,4 @@
-import type { SessionResponse, User } from "../types";
+import type { NoticeResponse, SessionResponse, UserResponse } from "../types";
 import { api } from "./core";
 
 export const Auth = {
@@ -14,7 +14,7 @@ export const Auth = {
   // Password reset (M1.2): the response is uniform for known and unknown
   // addresses, so the message is shown as-is.
   requestPasswordReset: (email: string) =>
-    api<{ message: string }>("/auth/password-reset", { method: "POST", body: { email } }),
+    api<NoticeResponse>("/auth/password-reset", { method: "POST", body: { email } }),
   confirmPasswordReset: (token: string, password: string) =>
-    api<{ user: User }>("/auth/password-reset/confirm", { method: "POST", body: { token, password }, rotatesCsrf: true }),
+    api<UserResponse>("/auth/password-reset/confirm", { method: "POST", body: { token, password }, rotatesCsrf: true }),
 };

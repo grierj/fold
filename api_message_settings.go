@@ -27,7 +27,7 @@ func (a *App) saveSetting(c *gin.Context, key, value, action string, meta map[st
 }
 
 func (a *App) apiAdminGetGuardianCopies(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"on": boolSettingIn(a.DB, settingGuardianCopies, false)})
+	c.JSON(http.StatusOK, settingOnResponseJSON{On: boolSettingIn(a.DB, settingGuardianCopies, false)})
 }
 
 func (a *App) apiAdminSetGuardianCopies(c *gin.Context) {
@@ -46,7 +46,7 @@ func (a *App) apiAdminSetGuardianCopies(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the setting")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"on": *body.On})
+	c.JSON(http.StatusOK, settingOnResponseJSON{On: *body.On})
 }
 
 func (a *App) apiAdminGetReplyTo(c *gin.Context) {
@@ -55,7 +55,7 @@ func (a *App) apiAdminGetReplyTo(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the address")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"address": address})
+	c.JSON(http.StatusOK, settingAddressResponseJSON{Address: address})
 }
 
 // apiAdminSetReplyTo sets where replies to announcements go: one plain
@@ -77,5 +77,5 @@ func (a *App) apiAdminSetReplyTo(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the setting")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"address": addr})
+	c.JSON(http.StatusOK, settingAddressResponseJSON{Address: addr})
 }

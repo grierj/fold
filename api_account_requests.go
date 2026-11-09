@@ -279,10 +279,10 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 
 func (a *App) answerAccountRequest(c *gin.Context, source string) {
 	if source == models.RequestSelfSignup {
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Thanks — an admin will review it, and your friend will hear from us then."})
+	c.JSON(http.StatusOK, noticeResponseJSON{Message: "Thanks — an admin will review it, and your friend will hear from us then."})
 }
 
 // apiCreateAccountRequest is the public self-signup door (DEC-4): it
@@ -359,7 +359,7 @@ func (a *App) apiListAccountRequests(c *gin.Context) {
 	for i := range rows {
 		out = append(out, toAccountRequestJSON(&rows[i], names))
 	}
-	c.JSON(http.StatusOK, gin.H{"requests": out})
+	c.JSON(http.StatusOK, accountRequestsResponseJSON{Requests: out})
 }
 
 func (a *App) loadAccountRequest(c *gin.Context) (*models.AccountRequest, bool) {
@@ -647,7 +647,7 @@ func (a *App) apiSetSelfSignup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the setting")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"selfSignup": body.Mode})
+	c.JSON(http.StatusOK, selfSignupResponseJSON{SelfSignup: body.Mode})
 }
 
 // expirePendingRequests marks every overdue pending request expired,

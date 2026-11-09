@@ -476,7 +476,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the room")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"booking": booking})
+	c.JSON(http.StatusOK, roomBookingResponseJSON{Booking: booking})
 }
 
 // releaseRoomBookings frees the rooms of dates that were cancelled, in the

@@ -17,6 +17,13 @@ export function addMonths(day: string, n: number): string {
   return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 10);
 }
 
+// Whole calendar days from `from` to `to` (negative when `to` is earlier).
+export function daysBetween(from: string, to: string): number {
+  const [fy, fm, fd] = parts(from);
+  const [ty, tm, td] = parts(to);
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
+}
+
 // 0 = Sunday, the weekday of the calendar day itself.
 export function weekdayIndex(day: string): number {
   const [y, m, d] = parts(day);

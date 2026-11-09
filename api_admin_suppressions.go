@@ -84,7 +84,7 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not clear the email block")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"cleared": cleared})
+	c.JSON(http.StatusOK, emailSuppressionClearedResponseJSON{Cleared: cleared})
 }
 
 // emailSuppressionJSON is why Fold stopped mailing an address: hard_bounce
