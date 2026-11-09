@@ -123,16 +123,7 @@ func userIn(tx *gorm.DB, id uint) (*models.User, error) {
 	return &u, nil
 }
 
-// canSeeGroupIn is canSeeGroup against tx, so it sees the transaction's
-// own changes (a membership just removed, a visibility just changed).
-func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
-	if u == nil || g == nil {
-		return false
-	}
-	return policy.CanSeeGroup(asPerson(u), asGroup(g), relIn(tx, u.ID, g.ID))
-}
-
-// userCanSeeGroupIn is canSeeGroupIn for a notice writer: it loads the
+// userCanSeeGroupIn says whether a person may see a group, for a notice writer: it loads the
 // person and their membership in tx and returns a failed read as an error,
 // so a notice never leaves out (or includes) a group's name on a guess.
 func userCanSeeGroupIn(tx *gorm.DB, userID uint, g *models.Group) (bool, error) {
@@ -208,7 +199,7 @@ func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) (*noticeFacts, error
 	return f, nil
 }
 
-// canSeeGroup is canSeeGroupIn against the preloaded facts: the same
+// canSeeGroup is userCanSeeGroupIn against the preloaded facts: the same
 // policy call, with the membership relIn would have loaded.
 func (f *noticeFacts) canSeeGroup(userID uint, g *models.Group) bool {
 	u := f.viewers[userID]
