@@ -198,7 +198,7 @@ func writePushReminderPlans(db *gorm.DB, occ *models.EventOccurrence, plans []pu
 		// stays: that person gets no push reminder for it. The date has no
 		// restore count to put in the key, and it needs a cancel and a
 		// restore inside the last 20 hours before the date.
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, 500).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, rowBatch).Error; err != nil {
 			return err
 		}
 		return enqueuePushReminderJobs(tx, id, at)

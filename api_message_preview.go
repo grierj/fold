@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -103,29 +104,13 @@ func (a *App) sampleValues(m *models.Message, me *models.User) (map[string]strin
 			return nil, err
 		}
 	}
-	title := ev.Title
-	if au.Type == policy.AudienceOccurrence && occ.TitleOverride != nil && *occ.TitleOverride != "" {
-		title = *occ.TitleOverride
-	}
-	a.setEventFields(vals, ev.ID, title)
+	facts := newMessageEvent(ev, au, occ.TitleOverride)
+	var startsAt *time.Time
 	if found {
-		vals[content.FieldEventTime] = eventTimeText(occ.StartsAt, ev.TZID)
+		startsAt = &occ.StartsAt
 	}
+	maps.Copy(vals, a.eventFields(facts, startsAt))
 	return vals, nil
-}
-
-// setEventFields sets the fields every message about an event can use: its
-// title, and its page as both the event link and (until a reader's own date
-// is known) the manage link.
-func (a *App) setEventFields(vals map[string]string, eventID uint, title string) {
-	link := a.emailLink("/events/" + idString(eventID))
-	vals[content.FieldEventTitle], vals[content.FieldEventLink], vals[content.FieldManageLink] = title, link, link
-}
-
-// eventTimeText is a date's start on its event's clock, as a merge field and
-// a reminder's subject show it.
-func eventTimeText(startsAt time.Time, tzid string) string {
-	return formatWhen(startsAt, eventZone(tzid))
 }
 
 func firstName(name string) string {

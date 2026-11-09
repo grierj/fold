@@ -82,7 +82,8 @@ type messageReminderJSON struct {
 // (the date's title, its time on the event's clock); any other field
 // stays as written.
 func reminderSubject(subject string, d messageReminderJSON) string {
-	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", eventTimeText(d.StartsAt, d.TZID)).Replace(subject)
+	vals := messageEvent{ID: d.EventID, Title: d.EventTitle, TZID: d.TZID}.fields("", &d.StartsAt)
+	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", vals[content.FieldEventTitle], "{{"+content.FieldEventTime+"}}", vals[content.FieldEventTime]).Replace(subject)
 }
 
 // reminderKind is going, waitlist or push, from a reminder's key (a

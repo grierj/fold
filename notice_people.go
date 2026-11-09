@@ -29,10 +29,6 @@ const unknownPersonName = "Someone"
 // it includes soft-deleted users and never falls back to an email address.
 type publicNames map[uint]string
 
-// Bound the IN expansion well below PostgreSQL's 65,535 bind parameters;
-// account-request history can supply an unbounded number of distinct people.
-const publicNamesBatchSize = 1000
-
 func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 	names := publicNames{}
 	unique := make([]uint, 0, len(ids))
@@ -42,7 +38,7 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 			unique = append(unique, id)
 		}
 	}
-	err := eachChunk(unique, publicNamesBatchSize, func(batch []uint) error {
+	err := eachChunk(unique, lookupChunk, func(batch []uint) error {
 		var users []models.User
 		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", batch).Find(&users).Error; err != nil {
 			return err

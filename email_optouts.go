@@ -47,7 +47,7 @@ func (o emailOff) Off(userID uint, address, scope string) bool {
 // earlier opt-in cannot override a retained choice at the destination address.
 // Callers pass the actual destination, including a queued message's snapshot.
 // Each chunk reads both arms in one statement, at READ COMMITTED's statement
-// snapshot, with at most 500 destinations and hashes computed only in Go.
+// snapshot, with at most rowBatch destinations and hashes computed only in Go.
 func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 	out := emailOff{account: map[uint]map[string]bool{}, address: map[string]map[string]bool{}}
 	idsSeen, addressesSeen := map[uint]bool{}, map[string]bool{}
@@ -71,7 +71,7 @@ func readEmailOff(db *gorm.DB, dests []emailDest) (emailOff, error) {
 		}
 		unique = append(unique, d)
 	}
-	if err := eachChunk(unique, 500, func(chunk []emailDest) error {
+	if err := eachChunk(unique, rowBatch, func(chunk []emailDest) error {
 		var ids []uint
 		var hashes []string
 		addresses := map[string]string{}

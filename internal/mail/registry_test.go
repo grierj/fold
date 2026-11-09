@@ -39,7 +39,7 @@ func harnesses() []harness {
 	return []harness{
 		{"devoutbox", func(t *testing.T) (providers.EmailSender, func() []sent) {
 			db := testdb.Shared(t)
-			s, err := providers.NewEmail("devoutbox", providers.Settings{DB: db, From: "Fold <noreply@example.com>"})
+			s, err := NewSender("devoutbox", providers.Settings{From: "Fold <noreply@example.com>"}, db)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -347,7 +347,7 @@ func TestChooseEmailProvider(t *testing.T) {
 			t.Errorf("Choose(dev=%v): %q, want %q", tc.dev, got, tc.want)
 		}
 	}
-	if _, err := providers.NewEmail("carrier-pigeon", providers.Settings{}); err == nil || !strings.Contains(err.Error(), "devoutbox, postmark, smtp") {
+	if _, err := providers.NewEmail("carrier-pigeon", providers.Settings{}); err == nil || !strings.Contains(err.Error(), "postmark, smtp") {
 		t.Fatalf("unknown provider: %v", err)
 	}
 }

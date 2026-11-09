@@ -137,6 +137,12 @@ type Kind struct {
 	// Default off.
 	AllowPush  bool
 	PushRender func(Vars) (title, body string)
+	// PushSafeText marks a kind whose push can be the safe text
+	// (SafePushTitle and SafePushBody): always, for a safety kind (register
+	// sets it), or for a row about a household person. The sender replaces
+	// the title of such a push with the church's name; the text of a kind
+	// without the flag is never rewritten, whatever it says.
+	PushSafeText bool
 	// PushSoon marks a change to a dated event or to someone's place on
 	// one ("you're in", removed). Its rows name the date: the occurrence
 	// as their subject (SubjectType "occurrence"), or the event as their
@@ -168,10 +174,12 @@ const (
 
 func safePush(Vars) (string, string) { return SafePushTitle, SafePushBody }
 
-// IsSafePush reports whether a stored push is the safe text, whose title the
-// sender replaces with the church's name. It is the one place that knows how
-// the safe text is recognised.
-func IsSafePush(title, body string) bool { return title == SafePushTitle && body == SafePushBody }
+// IsSafePush reports whether a stored push of kind k is the safe text, whose
+// title the sender replaces with the church's name. Only a kind flagged
+// PushSafeText can have it; this is the one place that recognises the text.
+func (k Kind) IsSafePush(title, body string) bool {
+	return k.PushSafeText && title == SafePushTitle && body == SafePushBody
+}
 
 // RenderForEmail renders k for email: the kind's RenderEmail when set,
 // the link-only safe variant when the kind has one, Render otherwise.
@@ -192,7 +200,7 @@ func register(k Kind) {
 	// Safety, consent and contact kinds push only the safe text (DEC-124),
 	// whatever the entry says.
 	if k.Category == CatSafety && k.AllowPush {
-		k.PushRender = safePush
+		k.PushRender, k.PushSafeText = safePush, true
 	}
 	registry[k.Key] = k
 }
@@ -554,7 +562,7 @@ func init() {
 			return title, body
 		},
 		// A row about someone in the household names nobody (research 2.4).
-		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
+		AllowPush: true, PushSoon: true, PushSafeText: true, PushRender: func(v Vars) (string, string) {
 			if v.Person != "" {
 				return safePush(v)
 			}
@@ -576,7 +584,7 @@ func init() {
 			return "Registration removed: " + or(v.Event, "an event"), body
 		},
 		// The leader's note stays in Fold.
-		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
+		AllowPush: true, PushSoon: true, PushSafeText: true, PushRender: func(v Vars) (string, string) {
 			if v.Person != "" {
 				return safePush(v)
 			}

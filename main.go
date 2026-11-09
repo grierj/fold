@@ -254,7 +254,7 @@ func chooseMailer(cfg Config, db *gorm.DB) (mail.Sender, error) {
 	if strings.HasSuffix(mail.Address(cfg.EmailFrom), "@localhost") && !cfg.IsDev() {
 		log.Println("WARNING: FOLD_EMAIL_FROM is a localhost address; providers will refuse to send it. Set it to an address at your church's domain")
 	}
-	sender, err := providers.NewEmail(name, providers.Settings{Get: settings, DB: db, From: cfg.EmailFrom})
+	sender, err := mail.NewSender(name, providers.Settings{Get: settings, From: cfg.EmailFrom}, db)
 	if err != nil {
 		return nil, err
 	}
