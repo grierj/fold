@@ -47,6 +47,73 @@ func TestDeclaredAPIErrorsKeepTheirAnswers(t *testing.T) {
 	}
 }
 
+// Every declared error is pinned: either it is in the old table or here. These
+// are the ones the old table did not hold: answers sent with jsonErrorCode or
+// a status-only code, and the sentinels that now carry their own answer.
+var newErrorTable = []struct {
+	status  int
+	code    string
+	message string
+}{
+	{http.StatusConflict, "needs_reason_review", "the account has contact-request reasons to review"},
+	{http.StatusConflict, "reason_review_changed", "the contact-request reasons changed since they were reviewed"},
+	{http.StatusForbidden, "reason_review_not_allowed", "only an adult admin can review these reasons"},
+	{http.StatusConflict, "reason_review_outdated", "the page that made this review is out of date"},
+	{http.StatusConflict, "delete_reason_busy", "someone was changing a request that involves this person, so nothing was deleted"},
+	{http.StatusServiceUnavailable, "reason_review_busy", "could not load the reasons"},
+	{http.StatusUnauthorized, "signed_out", "unauthorized"},
+	{http.StatusConflict, "admin_account_busy", "your own account was being updated, so nothing was changed"},
+	{http.StatusForbidden, "not_allowed", "forbidden"},
+	{http.StatusConflict, "attempt_closed", "this attempt was already used or settled"},
+	{http.StatusServiceUnavailable, "attempt_busy", "too many attempts are being tracked"},
+	{http.StatusConflict, "attempt_expired", "this attempt is too old to run"},
+	{http.StatusInternalServerError, "delete_outcome_unknown", "could not confirm whether the account was deleted"},
+	{http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted"},
+	{http.StatusConflict, "delete_household_busy", "someone was changing this person's household, so nothing was deleted"},
+	{http.StatusBadRequest, "invalid", "a teen account waiting for consent becomes active only when consent is granted"},
+	{http.StatusNotFound, "not_found", "user not found"},
+	{http.StatusNotFound, "not_found", "group not found"},
+	{http.StatusBadRequest, "too_many_guests", "too many guests"},
+	{http.StatusBadRequest, "invalid", "server error"},
+	{http.StatusNotFound, "not_found", "event not found"},
+	{http.StatusBadRequest, "recurrence_too_many", "that repeat rule makes too many dates"},
+	{http.StatusBadRequest, "recurrence_too_frequent", "that repeat rule repeats more than once a day"},
+	{http.StatusNotFound, "not_found", "household person not found"},
+	{http.StatusNotFound, "not_found", "person not found"},
+	{http.StatusNotFound, "not_found", "that date is not on this event"},
+	{http.StatusNotFound, "not_found", "room not found"},
+	{http.StatusNotFound, "not_found", "series not found"},
+	{http.StatusInternalServerError, "server_error", "Session error"},
+	{http.StatusInternalServerError, "server_error", "Failed to generate CSRF token"},
+	{http.StatusInternalServerError, "server_error", "could not complete contact operation"},
+	{http.StatusServiceUnavailable, "restore_detected", "the database was restored while Fold was running"},
+}
+
+// No declared error is unpinned: each is in one of the two tables.
+func TestEveryDeclaredAPIErrorIsPinned(t *testing.T) {
+	for _, e := range declaredAPIErrors {
+		pinned := false
+		for _, old := range oldErrorTable {
+			pinned = pinned || (old.message == e.Message && old.status == e.Status && old.code == e.Code)
+		}
+		for _, n := range newErrorTable {
+			pinned = pinned || (n.message == e.Message && n.status == e.Status && n.code == e.Code)
+		}
+		if !pinned {
+			t.Errorf("declared apiError %d %q %q is in neither table; add it to newErrorTable", e.Status, e.Code, e.Message)
+		}
+	}
+	for _, n := range newErrorTable {
+		found := false
+		for _, e := range declaredAPIErrors {
+			found = found || (n.message == e.Message && n.status == e.Status && n.code == e.Code)
+		}
+		if !found {
+			t.Errorf("newErrorTable row %d %q %q is not declared", n.status, n.code, n.message)
+		}
+	}
+}
+
 // A declared error is a real answer: an error status, a code and a message.
 func TestDeclaredAPIErrorsAreComplete(t *testing.T) {
 	for _, e := range declaredAPIErrors {

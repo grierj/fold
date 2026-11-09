@@ -168,8 +168,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   adds body keys and still matches the base; `errEventFullNoWaitlist`); a body that carries data is an error
   with an `apiAnswer()` method (`errNeedSuccessors`, `householdRegistrationError`). A message built at run time
   uses `apiErrf` (not declared; the code is written at the call). `jsonError(c, status, msg)` is only for a message
-  with no code of its own: its code is the general one for the status. A declared message never goes through
-  `jsonError` (`TestJSONErrorSendsNoDeclaredMessage`); `apiErr` runs only as a package-level initializer
+  with no code of its own: its code is the general one for the status. A declared message is written once, in its
+  declaration (`TestDeclaredMessagesAreWrittenOnce`); `apiErr` runs only as a package-level initializer
   (`TestAPIErrorsAreDeclaredAtPackageLevel`). `errSecuritySession` is itself the 401. DEC-52 decides what is
   never an error.
 - Account deletion outcomes (R4-CTX, R4-3b-1): `apiAdminDeleteUser` runs the whole erasure in
@@ -618,7 +618,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore`, `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_api_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens`; a line that must keep a hex says why with `color-ok:` |
-| Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestDeclaredAPIErrorsKeepTheirAnswers`, `TestJSONErrorSendsNoDeclaredMessage`; `web/e2e/friendly-errors.spec.ts` |
+| Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestDeclaredAPIErrorsKeepTheirAnswers`, `TestDeclaredMessagesAreWrittenOnce`; `web/e2e/friendly-errors.spec.ts` |
 | Main pages (including event, scheduling, Join and My groups) have no moderate, serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`; setup page in `web/e2e/seed.setup.ts` |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (its error names the file to move to) |
 | Source guards read the whole production tree, not a directory glob | `guardkit.ReadProduction` and its skip rules (`internal/guardkit/guardkit_test.go`: `TestReadProductionSkipRules`, `TestParseReportsUnparsableFilesAndKeepsGoing`), `TestContactRequestTextGuardReadsTheRealTree`; a guard about one package says so with `Parsed.Package` |

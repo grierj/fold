@@ -911,22 +911,8 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 	err := a.changeRole(c, g, target.ID, models.MembershipMember, body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), actor)
 	})
-	switch err {
-	case errTeenAddApproval:
-		fail(c, errTeenAddApproval)
-		return
-	case nil:
-	case errGroupFull:
-		fail(c, errGroupFull)
-		return
-	case errGroupNotApprovedForAdds:
+	if err != nil {
 		fail(c, err)
-		return
-	case errRoleRefused, errPeopleAddForbidden:
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not add member")
 		return
 	}
 	a.membershipAdded(c, g, target.ID)

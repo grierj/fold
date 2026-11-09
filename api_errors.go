@@ -17,8 +17,8 @@ import (
 // and API clients.
 //
 // An error a person can act on is an *apiError value, declared once with its
-// status, code and message (api_error_values.go beside the code that raises
-// it). Domain code returns the value, wraps it with %w, or compares to it
+// status, code and message (beside the code that raises it, or in
+// api_error_values.go). Domain code returns the value, wraps it with %w, or compares to it
 // with errors.Is, and a handler answers any error with fail(c, err): the code
 // travels with the error, so rewording a message never changes it.
 // TestWebErrorCopyCoversEveryCode keeps the SPA's map in step with every
@@ -27,7 +27,7 @@ import (
 // jsonError(c, status, msg) is only for a message with no code of its own:
 // its code is the general one for the status (statusCodes), and the SPA says
 // something general ("We couldn't save that. Please try again."). It must
-// not carry a declared apiError's message (TestJSONErrorSendsNoDeclaredMessage).
+// not carry a declared apiError's message (TestDeclaredMessagesAreWrittenOnce).
 
 // apiError is an error with its HTTP answer: status, code, message, and any
 // extra JSON keys the body carries.

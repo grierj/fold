@@ -1370,21 +1370,12 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
 	})
 	switch err {
-	case errTeenAddApproval:
-		fail(c, errTeenAddApproval)
-		return
 	case nil:
-	case errGroupFull:
-		fail(c, errGroupFull)
-		return
-	case errPeopleAddForbidden:
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	case errRoleRefused:
+	case errRoleRefused: // here the refusal is the leader rule
 		fail(c, errLeaderRuleAdults)
 		return
 	default:
-		jsonError(c, http.StatusInternalServerError, "could not add member")
+		fail(c, err)
 		return
 	}
 	a.membershipAdded(c, &g, u.ID)
