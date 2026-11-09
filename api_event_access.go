@@ -471,7 +471,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		}
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
-		if policy.Openness(vis) < policy.Openness(oldVis) {
+		if policy.MoreOpen(oldVis, vis) {
 			err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
 			if err != nil {
 				return err

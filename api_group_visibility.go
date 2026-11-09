@@ -373,7 +373,7 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 // is more private, with the registrants that would be cancelled.
 func eventImpactOf(tx *gorm.DB, ev *models.Event, newVis string) (visibilityImpactJSON, error) {
 	impact := visibilityImpactJSON{Visibility: newVis, Tightened: []impactEventJSON{}, LeaderOpened: []impactEventJSON{}}
-	if policy.Openness(newVis) < policy.Openness(ev.Visibility) {
+	if policy.MoreOpen(ev.Visibility, newVis) {
 		var err error
 		impact.Tightened, err = toImpact(tx, []models.Event{*ev}, newVis, time.Now().UTC())
 		if err != nil {
