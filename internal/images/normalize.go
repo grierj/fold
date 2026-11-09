@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -57,7 +56,7 @@ func Ext(mime string) (string, bool) {
 var (
 	ErrMissing    = errors.New("missing file")
 	ErrEmpty      = errors.New("empty file")
-	ErrFileSize   = fmt.Errorf("file too large (max %dMB)", MaxUploadBytes>>20)
+	ErrFileSize   = errors.New("file too large (max 5MB)") // keep in step with MaxUploadBytes (TestFileSizeMessageNamesTheLimit)
 	ErrNotAllowed = errors.New("only JPEG, PNG, and GIF images are allowed")
 	ErrServer     = errors.New("server error")
 	ErrTooLarge   = errors.New("that image is too large to process")
