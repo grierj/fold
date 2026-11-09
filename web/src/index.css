@@ -20,7 +20,7 @@
    the semantic roles below, which a later dark theme overrides. */
 @theme {
   /* Tailwind's own palette is off: only these colors exist, and the color
-     guard (guards_test.go) keeps hex values and scale steps out of
+     guard (guards_web_test.go) keeps hex values and scale steps out of
      components. */
   --color-*: initial;
 
