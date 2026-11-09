@@ -43,3 +43,4 @@ web/playwright-report/
 
 # TypeScript incremental build info (6cad41a removed a committed one).
 *.tsbuildinfo
+testdata/date_projector/*.got
