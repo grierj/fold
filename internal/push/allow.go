@@ -18,7 +18,7 @@ import (
 // SSRF defence (research 2.8). A browser hands Fold a URL and Fold POSTs to
 // it, so the endpoint must be an https URL on a known push service, and
 // the address it resolves to must be public. Both are checked on every
-// send; slice b checks Allowed again when a device subscribes.
+// send; apiPushSubscribe checks Allowed again when a device subscribes.
 
 // DefaultHosts are the browsers' push services. A host matches itself and
 // its subdomains on a dot boundary (Safari uses web.push.apple.com, Edge

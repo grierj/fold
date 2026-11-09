@@ -19,7 +19,6 @@ import (
 
 const approvalsLink = "/admin?tab=approvals"
 
-// notifyGroupPending asks every admin to approve a new group (a task).
 func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) error {
 	admins, err := activeAdminIDs(tx)
 	if err != nil {
@@ -61,7 +60,6 @@ func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool,
 	return err
 }
 
-// notifyDeletionRequested asks every admin to delete or keep a group.
 func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) error {
 	admins, err := activeAdminIDs(tx)
 	if err != nil {

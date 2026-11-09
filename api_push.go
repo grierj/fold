@@ -51,7 +51,6 @@ var (
 	errPushKindLocked     = apiErr(http.StatusBadRequest, "push_kind_locked", "that kind of notification can't be turned off")
 )
 
-// pushConfigJSON is what the card needs before it asks the browser.
 type pushConfigJSON struct {
 	// Enabled is the church's switch (push_enabled, default on).
 	Enabled bool `json:"enabled"`
@@ -59,7 +58,6 @@ type pushConfigJSON struct {
 	PublicKey string `json:"publicKey"`
 }
 
-// pushDeviceJSON is one device with push on, by its server-made label.
 type pushDeviceJSON struct {
 	ID         uint      `json:"id"`
 	Label      string    `json:"label"`
@@ -128,7 +126,6 @@ func (a *App) apiAdminSetPushEnabled(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"on": *body.On})
 }
 
-// pushHosts is the allow-list the client sends to.
 func (a *App) pushHosts() *push.AllowList {
 	if h := a.pushClient().Hosts; h != nil {
 		return h
@@ -163,7 +160,6 @@ func (a *App) apiPushConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, pushConfigJSON{Enabled: a.pushEnabled(), PublicKey: public})
 }
 
-// pushSubscriptionBody is a browser's PushSubscription.toJSON().
 type pushSubscriptionBody struct {
 	Endpoint string `json:"endpoint"`
 	Keys     struct {
@@ -433,7 +429,6 @@ func (a *App) apiPushTest(c *gin.Context) {
 	}
 }
 
-// pushSettingsFor is the push section of the settings payload.
 func (a *App) pushSettingsFor(db *gorm.DB, u *models.User) (pushSettingsJSON, error) {
 	out := pushSettingsJSON{Devices: []pushDeviceJSON{}, Kinds: []emailKindJSON{}}
 	var rows []models.Consent

@@ -42,10 +42,8 @@ import (
 const (
 	// reminderPushKind is the push reminder's kind in its key and on the
 	// date page.
-	reminderPushKind = "push"
-	// pushReminderLead is how long before the start it is due.
-	pushReminderLead = 2 * time.Hour
-	// pushReminderMinutes is pushReminderLead in the key's unit.
+	reminderPushKind    = "push"
+	pushReminderLead    = 2 * time.Hour
 	pushReminderMinutes = int(pushReminderLead / time.Minute)
 	// pushReminderMaxMove is how much earlier quiet hours may move it.
 	pushReminderMaxMove = 18 * time.Hour
@@ -65,7 +63,6 @@ func pushReminderKey(occID uint, start time.Time) string {
 	return reminderKey{Kind: reminderPushKind, Occ: occID, Start: start.Unix(), Minutes: pushReminderMinutes}.String()
 }
 
-// pushReminderStart is the start a push reminder key names.
 func pushReminderStart(key *string) (int64, bool) {
 	if key == nil {
 		return 0, false
@@ -398,8 +395,6 @@ func reminderPushText(title string, start time.Time, loc *time.Location, now tim
 	return head, when
 }
 
-// pushReminderCandidate is one going person on one date the sweep may
-// still have to plan.
 type pushReminderCandidate struct {
 	OccurrenceID uint
 	StartsAt     time.Time
@@ -407,7 +402,6 @@ type pushReminderCandidate struct {
 	Timezone     string
 }
 
-// pushReminderCandidates is sweepPushReminders' one read (see there).
 func pushReminderCandidates(db *gorm.DB, now time.Time) ([]pushReminderCandidate, error) {
 	var cands []pushReminderCandidate
 	err := db.Raw(`SELECT DISTINCT o.id AS occurrence_id, o.starts_at, u.id AS user_id, u.timezone
