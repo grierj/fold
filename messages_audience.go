@@ -396,7 +396,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 		// Guests get transactional mail and reminders for the event they
 		// registered for, nothing else (PLAN 7.4); a reminder's guests go
 		// on through the checks below.
-		case u.Status == models.UserGuest && category != notify.CatEvents:
+		case u.Status == models.UserGuest && !guestMayGet(category):
 			f.Skip = skipGuest
 		case u.Status != models.UserActive && u.Status != models.UserGuest:
 			// Disabled accounts and teens waiting for account consent
@@ -415,6 +415,11 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 	}
 	return out, nil
 }
+
+// guestMayGet says whether a guest gets mail of this category: transactional
+// mail and reminders for the event they registered for, nothing else
+// (PLAN 7.4). The snapshot and the send both ask it.
+func guestMayGet(category string) bool { return category == notify.CatEvents }
 
 // skipOptedOutOf is the skip reason for someone who turned off a message's
 // kind of email: messages from leaders (DEC-119), or event updates for a

@@ -283,7 +283,7 @@ func (a *App) pushQuietHours() push.Window {
 // This matters most for a push that waited out quiet hours.
 func pushStale(n *models.Notification, now time.Time) string {
 	switch {
-	case n.ArchivedAt != nil, n.ExpiresAt != nil && !n.ExpiresAt.After(now), n.Waiting && n.ResolvedAt != nil:
+	case notify.Settled(n, now):
 		return pushWhyStale
 	case !n.Waiting && n.ReadAt != nil:
 		return pushWhyRead

@@ -8,7 +8,6 @@ import (
 	"html"
 	"log"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -67,11 +66,6 @@ func (a *App) messageKinds() []jobs.Kind {
 				return a.deliverMessageBatch(ctx, p)
 			}},
 	}
-}
-
-// backgroundKinds are the job kinds queued by events, not by the day.
-func (a *App) backgroundKinds() []jobs.Kind {
-	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds(), a.notifyKinds(), a.mailKinds(), a.avatarKinds(), a.erasureKinds())
 }
 
 // enqueueMessageSend queues message.send for a message scheduled at when.
@@ -538,7 +532,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			// Who the reader is now: someone disabled or opted out since
 			// the snapshot doesn't get it.
-			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder) {
+			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && guestMayGet(messageCategory(&m))) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
 			}
 			// D11: check the actual destination after claiming each row, including

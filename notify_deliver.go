@@ -181,10 +181,10 @@ func queueReconciledNotifications(tx *gorm.DB, rows []models.Notification, now t
 	for _, row := range eligible {
 		// A backfill is a late repair, not an ordinary send: a notice already resolved,
 		// expired or archived before the sweep found it stays bell-only, as push would
-		// drop it (pushStale). A notice the person read still mails; whether email skips
+		// drop it (notify.Settled). A notice the person read still mails; whether email skips
 		// read notices is R6 open question 3, left at its default (no). Ordinary sends
 		// and admin retries do not use this rule.
-		if pushStale(&row, now) == pushWhyStale {
+		if notify.Settled(&row, now) {
 			bellOnly = append(bellOnly, row)
 			continue
 		}
@@ -221,15 +221,14 @@ func (a *App) deliverOneNotification(ctx context.Context, id uint) error {
 	}
 	k, ok := notify.Lookup(n.Kind)
 	if !ok {
-		// Mirror the runner: past the grace the row is suppressed; until
-		// then the job waits and this writes nothing.
-		if time.Since(n.CreatedAt) > notifyUnknownGrace {
-			return updateEmailDelivery(a.DB.WithContext(ctx), n.ID, models.DeliverySuppressed, emailKindUnknown, "")
+		outcome, err := unknownKindNotice(a.DB.WithContext(ctx), &n)
+		if err != nil {
+			return err
 		}
-		return jobs.Later(time.Now().Add(notifyUnknownWait))
+		return outcome
 	}
 	if !k.AllowEmail {
-		if err := updateEmailDelivery(a.DB.WithContext(ctx), n.ID, models.DeliverySuppressed, emailKindStopped, ""); err != nil {
+		if err := stopEmail(a.DB.WithContext(ctx), n.ID); err != nil {
 			return err
 		}
 	}
@@ -244,6 +243,22 @@ func (a *App) deliverOneNotification(ctx context.Context, id uint) error {
 		return nil
 	}
 	return a.claimAndSendNotification(ctx, n.ID)
+}
+
+// unknownKindNotice is what a notice of a kind this build doesn't know gets,
+// mirroring the runner's unknown-kind rule: past the grace its email row is
+// suppressed; until then the job waits (outcome) without spending an
+// attempt and nothing is written.
+func unknownKindNotice(db *gorm.DB, n *models.Notification) (outcome error, err error) {
+	if time.Since(n.CreatedAt) > notifyUnknownGrace {
+		return nil, updateEmailDelivery(db, n.ID, models.DeliverySuppressed, emailKindUnknown, "")
+	}
+	return jobs.Later(time.Now().Add(notifyUnknownWait)), nil
+}
+
+// stopEmail records that a notice's kind no longer sends email.
+func stopEmail(db *gorm.DB, notificationID uint) error {
+	return updateEmailDelivery(db, notificationID, models.DeliverySuppressed, emailKindStopped, "")
 }
 
 // claimAndSendNotification claims the queued or deferred email row and
@@ -300,13 +315,10 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 	}
 	k, ok := notify.Lookup(n.Kind)
 	if !ok {
-		if time.Since(n.CreatedAt) > notifyUnknownGrace {
-			return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, emailKindUnknown, "")
-		}
-		return jobs.Later(time.Now().Add(notifyUnknownWait)), nil
+		return unknownKindNotice(tx, &n)
 	}
 	if !k.AllowEmail {
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, emailKindStopped, "")
+		return nil, stopEmail(tx, id)
 	}
 	u, off, suppressions, footer, err := readEmailRecipient(tx, n.UserID, !k.Required)
 	if err != nil {

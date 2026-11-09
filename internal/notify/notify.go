@@ -711,3 +711,10 @@ func Prune(db *gorm.DB, now time.Time) (int64, error) {
 		Delete(&models.Notification{})
 	return res.RowsAffected, res.Error
 }
+
+// Settled reports whether n is past needing anyone: archived, expired, or a
+// task someone resolved. Delivery that waits (a push held for quiet hours) or
+// runs late (a backfill) drops a settled notice.
+func Settled(n *models.Notification, now time.Time) bool {
+	return n.ArchivedAt != nil || (n.ExpiresAt != nil && !n.ExpiresAt.After(now)) || (n.Waiting && n.ResolvedAt != nil)
+}

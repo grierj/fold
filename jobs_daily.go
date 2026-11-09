@@ -228,3 +228,8 @@ func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
 		log.Printf("jobs: could not alert the admins to dead job #%d: %v", jobID, err)
 	}
 }
+
+// backgroundKinds are the job kinds queued by events, not by the day.
+func (a *App) backgroundKinds() []jobs.Kind {
+	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds(), a.notifyKinds(), a.mailKinds(), a.avatarKinds(), a.erasureKinds())
+}

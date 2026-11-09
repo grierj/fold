@@ -322,7 +322,7 @@ func (s pickySender) SendEmail(ctx context.Context, m mail.Message) (string, err
 	if m.To == s.bad {
 		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: s.code, Msg: "no"})
 	}
-	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+	return mail.Unwrap(s.next).SendEmail(ctx, m)
 }
 
 func (pickySender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "picky"} }
@@ -464,7 +464,7 @@ func (s failSetSender) SendEmail(ctx context.Context, m mail.Message) (string, e
 	if s.bad[m.To] {
 		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 550, Msg: "no"})
 	}
-	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+	return mail.Unwrap(s.next).SendEmail(ctx, m)
 }
 
 func (failSetSender) Capabilities() providers.EmailCaps {
