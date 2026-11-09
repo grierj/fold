@@ -490,7 +490,7 @@ func recipientPushOptions(rowID uint, ttl time.Duration) push.Options {
 // sendPush sends body to t's device and records what the push service said.
 // sentWhy is the sent row's reason ("" for an optional push).
 func (a *App) sendPush(ctx context.Context, t pushTarget, body []byte, opts push.Options, sentWhy string) error {
-	return a.pushOutcome(ctx, t, a.pushClient().Send(ctx, pushSubscription(t.dev), body, opts), sentWhy)
+	return a.pushOutcome(ctx, t, a.pushClient().Send(ctx, pushSubscription(t.dev), body, opts), sentWhy, false)
 }
 
 func pushDevicesLeft(db *gorm.DB, userID uint) (bool, error) {
@@ -504,6 +504,15 @@ func pushDevicesLeft(db *gorm.DB, userID uint) (bool, error) {
 func (a *App) markPushUsed(id uint) {
 	if err := a.DB.Exec(`UPDATE push_subscriptions SET last_used_at = now(), failed_at = NULL
 		WHERE id = ? AND (last_used_at < now() - interval '1 day' OR failed_at IS NOT NULL)`, id).Error; err != nil {
+		log.Printf("push: device %d: marking it used: %v", id, err)
+	}
+}
+
+// stampPushUsed stamps a device that took the person's own test, every
+// time, and clears an earlier failure.
+func (a *App) stampPushUsed(id uint) {
+	if err := a.DB.Model(&models.PushSubscription{}).Where("id = ?", id).
+		UpdateColumns(map[string]any{"last_used_at": time.Now().UTC(), "failed_at": nil}).Error; err != nil {
 		log.Printf("push: device %d: marking it used: %v", id, err)
 	}
 }
@@ -532,15 +541,28 @@ func (a *App) pushBody(n *models.Notification, note push.Notification) ([]byte, 
 }
 
 // pushOutcome records what the push service said about t's device;
-// sentWhy is the sent row's reason ("" for an optional push).
-func (a *App) pushOutcome(ctx context.Context, t pushTarget, res push.Result, sentWhy string) error {
+// sentWhy is the sent row's reason ("" for an optional push). ownTest is
+// the person's own test send: it is the proof the device works, and the
+// device cap evicts by last use, so it stamps the device every time (a
+// delivery stamps at most once a day); and a test nobody retries, so a
+// refusal or a failure is logged and leaves the device as it was. A device
+// the push service says is gone is dropped the same way for both.
+func (a *App) pushOutcome(ctx context.Context, t pushTarget, res push.Result, sentWhy string, ownTest bool) error {
 	dev, what := t.dev, t.what
 	record := func(status, reason string) error { return t.record(a, status, reason) }
+	if ownTest && res.Status != push.Accepted && res.Status != push.Gone {
+		log.Printf("push: %s to device %d for user %d: %s (%d)", what, dev.ID, dev.UserID, res.Status, res.Code)
+		return nil
+	}
 	switch res.Status {
 	case push.Accepted:
 		// It went: nothing below may turn this into a retry, which would
 		// send it again.
-		a.markPushUsed(dev.ID)
+		if ownTest {
+			a.stampPushUsed(dev.ID)
+		} else {
+			a.markPushUsed(dev.ID)
+		}
 		if err := record(models.DeliverySent, sentWhy); err != nil {
 			log.Printf("push: %s: recording the delivery: %v", what, err)
 		}

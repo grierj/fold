@@ -863,7 +863,7 @@ func TestPublicNamesInBatches(t *testing.T) {
 	if err := app.DB.Delete(deleted).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, size := range []int{0, 1, publicNamesBatchSize - 1, publicNamesBatchSize, publicNamesBatchSize + 1, 2*publicNamesBatchSize + 1, 65536} {
+	for _, size := range []int{0, 1, lookupChunk - 1, lookupChunk, lookupChunk + 1, 2*lookupChunk + 1, 65536} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			ids := make([]uint, size)
 			for i := range ids {
@@ -881,7 +881,7 @@ func TestPublicNamesInBatches(t *testing.T) {
 			names := publicNamesIn(app.DB, input)
 			reads := counter.Reads()
 			counter.Stop()
-			if want := int64((size + publicNamesBatchSize - 1) / publicNamesBatchSize); reads != want {
+			if want := int64((size + lookupChunk - 1) / lookupChunk); reads != want {
 				t.Fatalf("%d unique IDs: %d reads, want %d", size, reads, want)
 			}
 			if len(names) != size {
@@ -905,7 +905,7 @@ func TestPublicNamesInBatches(t *testing.T) {
 func TestPublicNamesInBatchFailureUsesOnlyFallbacks(t *testing.T) {
 	app := testApp(t)
 	person := newTestUser(t, app, "historical actor", "pw", models.RoleMember)
-	ids := make([]uint, 2*publicNamesBatchSize+1)
+	ids := make([]uint, 2*lookupChunk+1)
 	for i := range ids {
 		ids[i] = uint(1000000 + i)
 	}

@@ -35,6 +35,8 @@ import (
 const (
 	kindMessageSend  = "message.send"
 	kindMessageBatch = "message.deliver_batch"
+	// messageBatchSize is the recipients one message.deliver_batch job sends:
+	// the work a single job holds a worker for.
 	messageBatchSize = 50
 )
 
@@ -244,7 +246,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 			return stillDue(tx, m.ID)
 		}
 		if len(rows) > 0 {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, 500).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, rowBatch).Error; err != nil {
 				return err
 			}
 		}

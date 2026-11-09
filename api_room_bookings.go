@@ -618,20 +618,17 @@ func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occur
 	return out
 }
 
-// roomsChunk keeps one rooms lookup under the Postgres parameter limit.
-const roomsChunk = 10000
-
 // roomsFor is occurrenceRooms, reporting a failed read. A feed's dates come
-// in chunks of 10,000, so a list of dates under that pays one read.
+// in chunks of lookupChunk ids, so a list of dates under that pays one read.
 func roomsFor(db *gorm.DB, occurrenceIDs []uint) (map[uint]*occurrenceRoomJSON, error) {
 	out := map[uint]*occurrenceRoomJSON{}
-	err := eachChunk(occurrenceIDs, roomsChunk, func(chunk []uint) error {
-		return roomsChunkInto(db, chunk, out)
+	err := eachChunk(occurrenceIDs, lookupChunk, func(chunk []uint) error {
+		return lookupChunkInto(db, chunk, out)
 	})
 	return out, err
 }
 
-func roomsChunkInto(db *gorm.DB, occurrenceIDs []uint, out map[uint]*occurrenceRoomJSON) error {
+func lookupChunkInto(db *gorm.DB, occurrenceIDs []uint, out map[uint]*occurrenceRoomJSON) error {
 	var rows []struct {
 		OccurrenceID uint
 		ID           uint
