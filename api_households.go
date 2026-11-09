@@ -402,8 +402,10 @@ func createGuardianLink(tx *gorm.DB, guardianID uint, person *models.HouseholdPe
 // link is audited (DEC-32 rows are never purged).
 func revokeGuardianLinks(tx *gorm.DB, c *gin.Context, actor uint, person *models.HouseholdPerson) error {
 	var links []models.GuardianLink
-	tx.Where("person_id = ? AND status IN ?", person.ID,
-		[]string{models.GuardianPending, models.GuardianConfirmed}).Find(&links)
+	if err := tx.Where("person_id = ? AND status IN ?", person.ID,
+		[]string{models.GuardianPending, models.GuardianConfirmed}).Find(&links).Error; err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	for _, link := range links {
 		res := tx.Model(&models.GuardianLink{}).Where("id = ? AND status = ?", link.ID, link.Status).

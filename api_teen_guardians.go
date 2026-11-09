@@ -122,6 +122,43 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": guardianClaimThanks})
 }
 
+// guardianLinkUsable: the guardian can still act for this teen through this
+// confirmed link.
+func guardianLinkUsable(guardian, teen *models.User, link *models.GuardianLink) bool {
+	return guardian.Status == models.UserActive && policy.CanRequestGuardianLink(asPerson(guardian)) &&
+		teen.AccountType == models.AccountTeen && link.Status == models.GuardianConfirmed
+}
+
+// readTeenGuardian loads the same three rows as lockedTeenGuardian without
+// the contact gate or any row lock, for a page that only shows them. A change
+// that lands between this read and the page is harmless; whatever the page
+// leads to is decided under lockedTeenGuardian.
+func readTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.User, *models.User, *models.GuardianLink, error) {
+	var guardian, teen models.User
+	var link models.GuardianLink
+	for _, load := range []struct {
+		dest any
+		id   uint
+	}{{&guardian, guardianID}, {&teen, teenID}} {
+		if err := tx.First(load.dest, load.id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, nil, nil, errGuardianUnavailable
+			}
+			return nil, nil, nil, err
+		}
+	}
+	if err := tx.Where("id = ? AND guardian_user_id = ? AND teen_user_id = ?", linkID, guardianID, teenID).First(&link).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, nil, errGuardianUnavailable
+		}
+		return nil, nil, nil, err
+	}
+	if !guardianLinkUsable(&guardian, &teen, &link) {
+		return nil, nil, nil, errGuardianUnavailable
+	}
+	return &guardian, &teen, &link, nil
+}
+
 // Consent and link changes share this order: both users by ID, then link.
 func lockedTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.User, *models.User, *models.GuardianLink, error) {
 	guardian, teen, err := lockConsentUsers(tx, guardianID, teenID)
@@ -135,7 +172,7 @@ func lockedTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.U
 		}
 		return nil, nil, nil, err
 	}
-	if guardian.Status != models.UserActive || !policy.CanRequestGuardianLink(asPerson(guardian)) || teen.AccountType != models.AccountTeen || link.Status != models.GuardianConfirmed {
+	if !guardianLinkUsable(guardian, teen, &link) {
 		return nil, nil, nil, errGuardianUnavailable
 	}
 	return guardian, teen, &link, nil

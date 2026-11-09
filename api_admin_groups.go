@@ -38,7 +38,9 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 		Tags             []string `json:"tags"`
 		FromNotification *uint    `json:"fromNotification"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	// Tags are the admin's to change only when they sent some; otherwise the
 	// leader's own edits stay as they are.
 	var tags *string
@@ -88,7 +90,9 @@ func (a *App) apiRejectGroup(c *gin.Context) {
 		FromNotification *uint  `json:"fromNotification"`
 		Message          string `json:"message"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	// An optional message to the leaders, carried on their notice (DEC-96).
 	message := strings.TrimSpace(body.Message)
 	if utf8.RuneCountInString(message) > maxRejectMessage {
@@ -161,7 +165,10 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 
 func (a *App) apiAdminListGroups(c *gin.Context) {
 	var groups []models.Group
-	a.DB.Order("name").Find(&groups)
+	if err := a.DB.Order("name").Find(&groups).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 

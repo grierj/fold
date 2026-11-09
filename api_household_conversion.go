@@ -641,7 +641,11 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if err != nil {
 		return 0, err
 	}
-	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
+	personLinks, err := loadGuardianLinks(tx, []uint{person.ID})
+	if err != nil {
+		return 0, err
+	}
+	if facts := householdFacts(&person, personLinks[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
 		return 0, errConversionAdult
 	}
 	inviter := locked[inv.InvitedBy]
@@ -669,8 +673,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 		if err := tx.Create(&user).Error; err != nil {
 			return 0, err
 		}
-		links := guardianLinksForPeople(tx, []uint{person.ID})[person.ID]
-		for _, link := range links {
+		for _, link := range personLinks[person.ID] {
 			if link.Status != models.GuardianConfirmed {
 				continue
 			}

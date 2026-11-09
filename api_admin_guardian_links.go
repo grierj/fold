@@ -41,14 +41,18 @@ type guardianLinkJSON struct {
 	DecidedAt      *time.Time `json:"decidedAt,omitempty"`
 }
 
-func (a *App) toGuardianLinkJSON(link *models.GuardianLink) guardianLinkJSON {
-	return a.guardianLinksJSON([]models.GuardianLink{*link})[0]
+func (a *App) toGuardianLinkJSON(link *models.GuardianLink) (guardianLinkJSON, error) {
+	out, err := a.guardianLinksJSON([]models.GuardianLink{*link})
+	if err != nil {
+		return guardianLinkJSON{}, err
+	}
+	return out[0], nil
 }
 
-func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON {
+func (a *App) guardianLinksJSON(links []models.GuardianLink) ([]guardianLinkJSON, error) {
 	out := make([]guardianLinkJSON, 0, len(links))
 	if len(links) == 0 {
-		return out
+		return out, nil
 	}
 	var userIDs, personIDs []uint
 	for _, link := range links {
@@ -61,14 +65,18 @@ func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON 
 		}
 	}
 	var users []models.User
-	a.DB.Unscoped().Where("id IN ?", userIDs).Find(&users)
+	if err := a.DB.Unscoped().Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+		return nil, err
+	}
 	userByID := make(map[uint]models.User, len(users))
 	for _, user := range users {
 		userByID[user.ID] = user
 	}
 	var people []models.HouseholdPerson
 	if len(personIDs) > 0 {
-		a.DB.Unscoped().Where("id IN ?", personIDs).Find(&people)
+		if err := a.DB.Unscoped().Where("id IN ?", personIDs).Find(&people).Error; err != nil {
+			return nil, err
+		}
 	}
 	personByID := make(map[uint]models.HouseholdPerson, len(people))
 	var householdIDs []uint
@@ -78,7 +86,9 @@ func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON 
 	}
 	var households []models.Household
 	if len(householdIDs) > 0 {
-		a.DB.Where("id IN ?", householdIDs).Find(&households)
+		if err := a.DB.Where("id IN ?", householdIDs).Find(&households).Error; err != nil {
+			return nil, err
+		}
 	}
 	householdByID := make(map[uint]models.Household, len(households))
 	for _, household := range households {
@@ -87,7 +97,7 @@ func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON 
 	for _, link := range links {
 		out = append(out, presentGuardianLink(link, userByID, personByID, householdByID))
 	}
-	return out
+	return out, nil
 }
 
 func presentGuardianLink(link models.GuardianLink, users map[uint]models.User, people map[uint]models.HouseholdPerson, households map[uint]models.Household) guardianLinkJSON {
@@ -128,8 +138,15 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 		return
 	}
 	var rows []models.GuardianLink
-	q.Find(&rows)
-	out := a.guardianLinksJSON(rows)
+	if err := q.Find(&rows).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list guardian links")
+		return
+	}
+	out, err := a.guardianLinksJSON(rows)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list guardian links")
+		return
+	}
 	nominations, err := unresolvedGuardianNominations(a.DB)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
@@ -162,7 +179,9 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		CheckNote string `json:"checkNote"`
 		Note      string `json:"note"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	note := strings.TrimSpace(body.CheckNote)
 	if note == "" {
 		note = strings.TrimSpace(body.Note)
@@ -205,6 +224,14 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			}
 		}
 		if link.PersonID != nil {
+			// The teen branch rechecks the admin under the gate and the user
+			// locks; so does this one, before the household is locked.
+			if err := lockContacts(tx); err != nil {
+				return err
+			}
+			if _, err := lockAdminIn(tx, me, actorShare); err != nil {
+				return err
+			}
 			var person models.HouseholdPerson
 			if err := tx.First(&person, *link.PersonID).Error; err != nil {
 				return err
@@ -277,5 +304,10 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	var fresh models.GuardianLink
 	a.DB.First(&fresh, link.ID)
-	c.JSON(http.StatusOK, gin.H{"guardianLink": a.toGuardianLinkJSON(&fresh)})
+	linkJSON, err := a.toGuardianLinkJSON(&fresh)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the guardian link")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"guardianLink": linkJSON})
 }

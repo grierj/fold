@@ -28,7 +28,10 @@ import (
 
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
-	a.DB.Order("lower(name), email").Find(&users)
+	if err := a.DB.Order("lower(name), email").Find(&users).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list users")
+		return
+	}
 	var historyIDs []uint
 	if err := a.DB.Model(&models.TeenConsent{}).Distinct().Pluck("teen_user_id", &historyIDs).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list users")

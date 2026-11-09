@@ -334,6 +334,11 @@ func (a *App) apiInviteFriend(c *gin.Context) {
 // Admin queue
 // ---------------------------------------------------------------------------
 
+// apiListAccountRequests closes overdue requests before it lists. The write in
+// a GET is deliberate: the daily accounts.expire_requests job runs once a day,
+// and without this the pending queue (and its bell tasks) would show an
+// overdue request an admin can no longer act on until the next run. It is
+// idempotent and an error only logs; the list is still served.
 func (a *App) apiListAccountRequests(c *gin.Context) {
 	if _, err := a.expirePendingRequests(); err != nil {
 		log.Printf("account requests: expire: %v", err)
@@ -349,7 +354,10 @@ func (a *App) apiListAccountRequests(c *gin.Context) {
 		return
 	}
 	var rows []models.AccountRequest
-	q.Find(&rows)
+	if err := q.Find(&rows).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list requests")
+		return
+	}
 	ids := []uint{}
 	for _, r := range rows {
 		if r.RequestedBy != nil {
@@ -387,7 +395,9 @@ func (a *App) apiApproveAccountRequest(c *gin.Context) {
 		FromNotification           *uint   `json:"fromNotification"`
 		AccountConsentEvidenceText *string `json:"accountConsentEvidenceText"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	if !a.fromNotification(c, body.FromNotification, notify.ActionApproveAccount, req.ID) {
 		return
 	}
@@ -410,7 +420,9 @@ func (a *App) apiRejectAccountRequest(c *gin.Context) {
 		Note             string `json:"note"`
 		FromNotification *uint  `json:"fromNotification"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if !bindOptionalJSON(c, &body) {
+		return
+	}
 	if !a.fromNotification(c, body.FromNotification, "reject", req.ID) {
 		return
 	}

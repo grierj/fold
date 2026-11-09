@@ -99,16 +99,33 @@ func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken,
 	return row, payload, nil
 }
 
+// guardianEmailActors decides a link's use under the gate and row locks.
 func (a *App) guardianEmailActors(tx *gorm.DB, payload guardianEmailAuthority) (*models.User, *models.User, error) {
 	guardian, teen, _, err := lockedTeenGuardian(tx, payload.GuardianID, payload.TeenID, payload.LinkID)
 	if err != nil {
 		return nil, nil, errTokenInvalid
 	}
-	consentID, err := latestAccountConsentID(tx, teen.ID)
-	if err != nil || consentID != payload.ConsentID || guardian.SessionVersion != payload.SessionVersion || mail.NormalizeAddress(guardian.Email) != payload.GuardianEmail {
+	return guardian, teen, guardianEmailStillBinds(tx, payload, guardian, teen)
+}
+
+// guardianEmailPreviewActors is the same decision for the public page that
+// only shows who the link is for: a plain read, no gate and no locks, so
+// anyone holding a link cannot queue behind (or hold up) every contact writer.
+func (a *App) guardianEmailPreviewActors(tx *gorm.DB, payload guardianEmailAuthority) (*models.User, *models.User, error) {
+	guardian, teen, _, err := readTeenGuardian(tx, payload.GuardianID, payload.TeenID, payload.LinkID)
+	if err != nil {
 		return nil, nil, errTokenInvalid
 	}
-	return guardian, teen, nil
+	return guardian, teen, guardianEmailStillBinds(tx, payload, guardian, teen)
+}
+
+// guardianEmailStillBinds: the facts the link was signed over still hold.
+func guardianEmailStillBinds(tx *gorm.DB, payload guardianEmailAuthority, guardian, teen *models.User) error {
+	consentID, err := latestAccountConsentID(tx, teen.ID)
+	if err != nil || consentID != payload.ConsentID || guardian.SessionVersion != payload.SessionVersion || mail.NormalizeAddress(guardian.Email) != payload.GuardianEmail {
+		return errTokenInvalid
+	}
+	return nil
 }
 
 func (a *App) apiPreviewGuardianEmail(c *gin.Context) {
@@ -118,7 +135,7 @@ func (a *App) apiPreviewGuardianEmail(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		_, teen, err := a.guardianEmailActors(tx, payload)
+		_, teen, err := a.guardianEmailPreviewActors(tx, payload)
 		if err != nil {
 			return err
 		}
@@ -172,11 +189,22 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 	me := apiUser(c)
 	allowed, err := a.targetAllow(c.Request.Context(), guardianEmailAddrKey(me.Email))
 	if err != nil {
-		log.Printf("guardian consent email limited: actor=%d err=%s", me.ID, jobs.CleanError(err))
-	} else if !allowed {
+		log.Printf("guardian consent email limit check: actor=%d err=%s", me.ID, jobs.CleanError(err))
+		jsonError(c, http.StatusInternalServerError, "could not send the consent email")
+		return
+	}
+	switch {
+	case !allowed:
+		// Over the limit answers the ordinary success (DEC-52); nothing is queued.
 		log.Printf("guardian consent email limited: actor=%d", me.ID)
-	} else if _, err := jobs.Enqueue(a.DB, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
-		log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
+	default:
+		// The answer says an email is on its way, so the job is durably queued
+		// before it is given (R6-4).
+		if _, err := jobs.Enqueue(a.DB, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+			log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
+			jsonError(c, http.StatusInternalServerError, "could not send the consent email")
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in 24 hours."})
 }

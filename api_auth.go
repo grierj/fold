@@ -261,8 +261,11 @@ func (a *App) canComposeOrLog(me *models.User) bool {
 func (a *App) apiMyGroups(c *gin.Context) {
 	u := apiUser(c)
 	var memberships []models.Membership
-	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, models.MembershipActive).
-		Order("joined_at").Find(&memberships)
+	if err := a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, models.MembershipActive).
+		Order("joined_at").Find(&memberships).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load your groups")
+		return
+	}
 	groups := make([]models.Group, 0, len(memberships))
 	roles := make(map[uint]string, len(memberships))
 	for i := range memberships {
