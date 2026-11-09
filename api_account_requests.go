@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -429,7 +428,6 @@ func (a *App) apiRejectAccountRequest(c *gin.Context) {
 	a.decideAccountRequest(c, req, false, strings.TrimSpace(body.Note), nil)
 }
 
-var errRequestHandled = errors.New("account request already decided")
 var errConsentExistingAccount = apiErr(http.StatusConflict, "consent_existing_account", "that email already has an account; approve without consent and review the account separately")
 
 func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, approve bool, note string, consentEvidence *string) {
