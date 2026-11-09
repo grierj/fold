@@ -418,7 +418,7 @@ func pushReminderCandidates(db *gorm.DB, now time.Time) ([]pushReminderCandidate
 		WHERE o.status = ? AND e.reminder_push AND o.starts_at > ? AND o.starts_at BETWEEN ? AND ?
 		  AND EXISTS (SELECT 1 FROM push_subscriptions d WHERE d.user_id = u.id)
 		  AND NOT EXISTS (SELECT 1 FROM messages m JOIN message_recipients mr ON mr.message_id = m.id AND mr.user_id = u.id AND mr.channel = ?
-			WHERE m.reminder_key = ` + reminderKeySQL("o", reminderPushKind, pushReminderMinutes) + `)
+			WHERE m.reminder_key = `+reminderKeySQL("o", reminderPushKind, pushReminderMinutes)+`)
 		ORDER BY o.starts_at, o.id, u.id`,
 		models.RegGoing, models.UserActive, models.OccurrenceScheduled, now,
 		now.Add(pushReminderLead-reminderLookback), now.Add(pushReminderLead+pushReminderMaxMove+reminderLookahead),
