@@ -77,9 +77,8 @@ func (a *App) apiCalendar(c *gin.Context) {
 	var onlyGroup *uint
 	if raw := strings.TrimSpace(c.Query("group")); raw != "" {
 		id, _ := strconv.Atoi(raw)
-		var grp models.Group
-		if err := a.DB.First(&grp, id).Error; err != nil || !a.canSeeGroup(me, &grp) {
-			jsonError(c, http.StatusNotFound, "group not found")
+		grp, _, ok := a.loadGroupFor(c, uint(id))
+		if !ok {
 			return
 		}
 		onlyGroup = &grp.ID
@@ -106,7 +105,11 @@ func (a *App) apiCalendar(c *gin.Context) {
 		q = q.Where("childcare_available = ?", true)
 	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
-	vs, err := a.eventCandidates(me, q, c.Query("deleted") == "1")
+	candidates := a.eventCandidates
+	if c.Query("deleted") == "1" {
+		candidates = a.deletedEventCandidates
+	}
+	vs, err := candidates(me, q)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
@@ -178,7 +181,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		}
 		_, rel := groupAndRel(ev, groups, rels)
 		status := scopeFacts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, me != nil, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
+		decision := calendarScopeDecision(scope, me != nil, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
 		if !decision.Include {
 			continue
 		}

@@ -72,16 +72,15 @@ type contactHistoryJSON struct {
 	NextBefore string                    `json:"nextBefore,omitempty"`
 }
 
-func historyID(n uint) string { return strconv.FormatUint(uint64(n), 10) }
 func historyOptionalID(n *uint) string {
 	if n == nil {
 		return ""
 	}
-	return historyID(*n)
+	return idString(*n)
 }
 func contactHistoryDTO(e contactHistoryEntry) contactHistoryEntryJSON {
 	return contactHistoryEntryJSON{
-		ID: historyID(e.ID), At: e.At, Action: e.Action,
+		ID: idString(e.ID), At: e.At, Action: e.Action,
 		ActorID: historyOptionalID(e.ActorID), RequesterID: historyOptionalID(e.RequesterID), SubjectUserID: historyOptionalID(e.SubjectUserID),
 		Purpose: e.Purpose, RequestID: historyOptionalID(e.RequestID), AccessID: historyOptionalID(e.AccessID),
 		ContextType: e.ContextType, ContextID: historyOptionalID(e.ContextID), OccurrenceID: historyOptionalID(e.OccurrenceID),
@@ -362,7 +361,7 @@ func (a *App) apiContactHistory(c *gin.Context) {
 	out := contactHistoryJSON{Entries: make([]contactHistoryEntryJSON, 0, len(entries))}
 	if len(entries) > f.Limit {
 		entries = entries[:f.Limit]
-		out.NextBefore = historyID(entries[len(entries)-1].ID)
+		out.NextBefore = idString(entries[len(entries)-1].ID)
 	}
 	for _, entry := range entries {
 		out.Entries = append(out.Entries, contactHistoryDTO(entry))
@@ -391,7 +390,7 @@ func contactHistoryCSVCell(value string) string {
 	return value
 }
 func historyCSVRecord(e contactHistoryEntry) []string {
-	cells := []string{historyID(e.ID), e.At.UTC().Format(time.RFC3339Nano), e.Action, historyOptionalID(e.ActorID), historyOptionalID(e.RequesterID), historyOptionalID(e.SubjectUserID), e.Purpose, historyOptionalID(e.RequestID), historyOptionalID(e.AccessID), e.ContextType, historyOptionalID(e.ContextID), historyOptionalID(e.OccurrenceID), e.Fields, e.Outcome, e.Party, e.Decision}
+	cells := []string{idString(e.ID), e.At.UTC().Format(time.RFC3339Nano), e.Action, historyOptionalID(e.ActorID), historyOptionalID(e.RequesterID), historyOptionalID(e.SubjectUserID), e.Purpose, historyOptionalID(e.RequestID), historyOptionalID(e.AccessID), e.ContextType, historyOptionalID(e.ContextID), historyOptionalID(e.OccurrenceID), e.Fields, e.Outcome, e.Party, e.Decision}
 	for i := range cells {
 		cells[i] = contactHistoryCSVCell(cells[i])
 	}

@@ -14,6 +14,7 @@ import (
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/internal/testdb"
 	"fold/models"
 	"fold/storage"
@@ -558,7 +559,7 @@ func setLimit(t *testing.T, c *apiClient, g *models.Group, limit any) {
 	}
 }
 
-func activeCount(app *App, g *models.Group) int64 { return memberCount(app.DB, g.ID) }
+func activeCount(app *App, g *models.Group) int64 { return int64(membersIn(app.DB, g.ID)) }
 
 func boolInt(b bool) int {
 	if b {
@@ -1305,6 +1306,22 @@ func noticeIDsAfter(t *testing.T, db *gorm.DB, after uint) []uint {
 	return ids
 }
 
+// enqueueJob queues one job of a throwaway type with the given attempts, for
+// tests that seed the table with a kind of their own.
+func enqueueJob(db *gorm.DB, kind string, payload any, at time.Time, key string, attempts int) (bool, error) {
+	return jobs.Type{Name: kind, MaxAttempts: attempts}.Enqueue(db, payload, at, key)
+}
+
+// settingText is the stored, trimmed value of key.
+func settingText(t *testing.T, app *App, key string) string {
+	t.Helper()
+	v, err := settingValueIn(app.DB, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 // useAttemptClock makes the App's clock read elapsed time since its attempt
 // state started: the process's monotonic time, advanced by hand.
 func (a *App) useAttemptClock(elapsed func() time.Duration) {
@@ -1314,4 +1331,30 @@ func (a *App) useAttemptClock(elapsed func() time.Duration) {
 		}
 		return a.attempts.start.Add(elapsed())
 	}
+}
+
+// relIn, leadersIn and membersIn read group facts for assertions; a failed
+// read is a test panic.
+func relIn(db *gorm.DB, userID, groupID uint) policy.Rel {
+	rel, err := groupRel(db, userID, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return rel
+}
+
+func leadersIn(db *gorm.DB, groupID uint) int {
+	n, err := leaderCount(db, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+func membersIn(db *gorm.DB, groupID uint) int {
+	n, err := memberCount(db, groupID)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }

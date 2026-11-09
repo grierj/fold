@@ -141,7 +141,7 @@ func TestDeadJobAlertSerializesWithAdminErasure(t *testing.T) {
 		app := testApp(t)
 		kept := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 		victim := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
-		if _, err := jobs.Enqueue(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
+		if _, err := enqueueJob(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
 			t.Fatal(err)
 		}
 		return erasureScene{app: app, victim: victim,
@@ -174,11 +174,11 @@ func TestAvatarJobKindsAreRegistered(t *testing.T) {
 		return jobs.Kind{}, false
 	}
 	sweep, ok := find(app.dailyKinds(), "avatar.sweep")
-	if !ok || !sweep.Daily || sweep.Label != "Finding leftover profile photos" || sweep.MaxAttempts != jobs.DefaultMaxAttempts {
+	if !ok || !sweep.Daily || sweep.Label != "Finding leftover profile photos" || sweep.Attempts() != jobs.DefaultMaxAttempts {
 		t.Fatalf("avatar.sweep: %+v %v", sweep, ok)
 	}
 	cleanup, ok := find(app.backgroundKinds(), "avatar.cleanup")
-	if !ok || cleanup.Daily || cleanup.Label != "Removing old profile photos" || cleanup.MaxAttempts != jobs.DefaultMaxAttempts {
+	if !ok || cleanup.Daily || cleanup.Label != "Removing old profile photos" || cleanup.Attempts() != jobs.DefaultMaxAttempts {
 		t.Fatalf("avatar.cleanup: %+v %v", cleanup, ok)
 	}
 	for _, name := range []string{"avatar.sweep", "avatar.cleanup"} {

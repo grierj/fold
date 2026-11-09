@@ -108,12 +108,12 @@ func (a *App) loadGuestOccurrence(c *gin.Context, date string) (*models.EventOcc
 		jsonError(c, 404, "event not found")
 		return nil, false
 	}
-	f := eventFactsIn(a.DB, nil, dateEvent(&ev, &occ))
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
+	f, err := eventFactsIn(a.DB, nil, dateEvent(&ev, &occ))
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load this date")
+		return nil, false
 	}
-	if !policy.CanRegisterGuest(f.view, gp) {
+	if !policy.CanRegisterGuest(f.view, asGroup(f.group)) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, false
 	}
@@ -194,7 +194,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 			// the account has then. A failed write is the same failure as a
 			// failed stored registration. No request context: a disconnect
 			// cannot abort the durable write, as in the stored path.
-			if _, err := jobs.Enqueue(a.DB, kindAccountExistsMail, userMailJob{UserID: existing.ID}, time.Now(), "", directMailAttempts); err != nil {
+			if _, err := accountExistsMailType.Enqueue(a.DB, userMailJob{UserID: existing.ID}, time.Now(), ""); err != nil {
 				log.Printf("account-exists hint: %s", jobs.CleanError(err))
 				jsonError(c, http.StatusInternalServerError, "could not save your registration")
 				return
@@ -230,7 +230,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		if err := tx.Create(&signup).Error; err != nil {
 			return err
 		}
-		_, err := jobs.Enqueue(tx, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "", directMailAttempts)
+		_, err := guestVerifyMailType.Enqueue(tx, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "")
 		return err
 	}); err != nil {
 		log.Printf("guest registration: %s", jobs.CleanError(err))
@@ -411,8 +411,9 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		display = a.guestDisplayWith(a.siteName, &reg, occ, &ev, grp)
 		display.WaitlistPosition = waitlistPos
 		guestEmail = signup.Email
-		guestZone = recipientZone(tx, user.ID)
-		return nil
+		var zoneErr error
+		guestZone, zoneErr = recipientZone(tx, user.ID)
+		return zoneErr
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):
@@ -758,12 +759,12 @@ func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
 	defer cancel()
-	return a.Mailer.Send(ctx, foldmail.Message{
+	return sendTracked(ctx, a.mailSender(), foldmail.Message{
 		To:      to,
 		Subject: headline,
 		Text: intro + fmt.Sprintf(`
 
 Can't come after all? Cancel your registration here:
 %s`, link),
-	})
+	}, nil).err
 }

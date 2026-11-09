@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -123,8 +124,10 @@ func (a *App) audienceEventIDs(db *gorm.DB, au audienceJSON) ([]uint, error) {
 	switch au.Type {
 	case policy.AudienceOccurrence:
 		var occ models.EventOccurrence
-		if err := db.Select("id, event_id").First(&occ, au.OccurrenceID).Error; err != nil {
+		if err := db.Select("id, event_id").First(&occ, au.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errAudienceGone
+		} else if err != nil {
+			return nil, err
 		}
 		return []uint{occ.EventID}, nil
 	case policy.AudienceEventSeries:
@@ -143,7 +146,8 @@ func (a *App) audienceTargets(db *gorm.DB, me *models.User, au audienceJSON) ([]
 		if err := db.First(&g, au.GroupID).Error; err != nil {
 			return nil, errAudienceGone
 		}
-		return []policy.MessageTarget{{Group: asGroup(&g), Rel: relIn(db, me.ID, g.ID)}}, nil
+		rel, err := groupRel(db, me.ID, g.ID)
+		return []policy.MessageTarget{{Group: asGroup(&g), Rel: rel}}, err
 	}
 	ids, err := a.audienceEventIDs(db, au)
 	if err != nil || len(ids) == 0 {
@@ -156,35 +160,17 @@ func (a *App) audienceTargets(db *gorm.DB, me *models.User, au audienceJSON) ([]
 	if len(evs) != len(dedupeIDs(ids)) {
 		return nil, errAudienceGone
 	}
-	gset := map[uint]struct{}{}
-	for _, ev := range evs {
-		if ev.GroupID != nil {
-			gset[*ev.GroupID] = struct{}{}
-		}
-	}
-	groups, err := a.groupsByID(gset)
-	if err != nil {
-		return nil, err
-	}
-	rels, err := a.relsFor(me, gset)
-	if err != nil {
-		return nil, err
-	}
-	hosted, err := a.hostedEventIDs(me, ids)
+	facts, err := loadFactSet(db, me, evs, false)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]policy.MessageTarget, 0, len(evs))
-	for _, ev := range evs {
-		t := policy.MessageTarget{IsEvent: true, Event: policy.EventView{ChurchWide: ev.GroupID == nil, Host: hosted[ev.ID]}}
-		if ev.GroupID != nil {
-			g := groups[*ev.GroupID]
-			if g == nil {
-				return nil, errAudienceGone
-			}
-			t.Group, t.Rel = asGroup(g), rels[g.ID]
+	for i := range evs {
+		f := facts.of(&evs[i])
+		if evs[i].GroupID != nil && f.group == nil {
+			return nil, errAudienceGone
 		}
-		out = append(out, t)
+		out = append(out, policy.MessageTarget{IsEvent: true, Event: f.view, Group: asGroup(f.group), Rel: f.rel})
 	}
 	return out, nil
 }
@@ -216,7 +202,10 @@ func (a *App) audienceUserIDs(db *gorm.DB, au audienceJSON, now time.Time) ([]ui
 	case policy.AudienceOccurrence:
 		err = regs(db.Where("registrations.occurrence_id = ?", au.OccurrenceID))
 	case policy.AudienceEventSeries, policy.AudienceEvents:
-		events, _ := a.audienceEventIDs(db, au)
+		var events []uint
+		if events, err = a.audienceEventIDs(db, au); err != nil {
+			return nil, err
+		}
 		err = regs(db.Joins("JOIN event_occurrences o ON o.id = registrations.occurrence_id").
 			Where("o.event_id IN ? AND o.status = ? AND o.starts_at >= ?", events, models.OccurrenceScheduled, now))
 	case policy.AudienceGroup:
@@ -363,11 +352,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 				return err
 			}
 			for a, rs := range reasons {
-				for _, r := range rs {
-					if suppressed[a] != models.SuppressComplaint {
-						suppressed[a] = r
-					}
-				}
+				suppressed[a] = mail.StrongestReason(rs)
 			}
 		}
 		dests := make([]emailDest, 0, len(part))
@@ -394,7 +379,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 		// Guests get transactional mail and reminders for the event they
 		// registered for, nothing else (PLAN 7.4); a reminder's guests go
 		// on through the checks below.
-		case u.Status == models.UserGuest && category != notify.CatEvents:
+		case u.Status == models.UserGuest && !guestMayGet(category):
 			f.Skip = skipGuest
 		case u.Status != models.UserActive && u.Status != models.UserGuest:
 			// Disabled accounts and teens waiting for account consent
@@ -413,6 +398,11 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 	}
 	return out, nil
 }
+
+// guestMayGet says whether a guest gets mail of this category: transactional
+// mail and reminders for the event they registered for, nothing else
+// (PLAN 7.4). The snapshot and the send both ask it.
+func guestMayGet(category string) bool { return category == notify.CatEvents }
 
 // skipOptedOutOf is the skip reason for someone who turned off a message's
 // kind of email: messages from leaders (DEC-119), or event updates for a

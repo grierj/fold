@@ -216,7 +216,7 @@ func TestQueuePushForQueuesOneJobPerDeviceOnce(t *testing.T) {
 		laptop := newPushDevice(t, app, u, "laptop")
 		other := newTestUser(t, app, "other", "password123456", models.RoleMember)
 		newPushDevice(t, app, other, "other-phone")
-		id, _ := seedNotifyDeliver(t, app, u, notifyDeliverAttempts)
+		id, _ := seedNotifyDeliver(t, app, u, notify.DeliverJob.MaxAttempts)
 		var n models.Notification
 		if err := app.DB.First(&n, id).Error; err != nil {
 			t.Fatal(err)
@@ -405,13 +405,13 @@ func TestPushDeliverLastAttemptRecordsFailure(t *testing.T) {
 	f.set(phone.path, http.StatusInternalServerError)
 	n := sendNotice(t, app, notify.GroupApproved, u)
 	runPushJobs(t, app, n, phone)
-	for range pushDeliverAttempts {
+	for range pushDeliverType.Attempts() {
 		app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Update("run_at", time.Now().Add(-time.Second))
 		drainJobs(t, app)
 	}
 	var j models.Job
 	app.DB.Where("kind = ?", kindPushDeliver).First(&j)
-	if j.Status != models.JobDead || f.count(phone.path) != pushDeliverAttempts {
+	if j.Status != models.JobDead || f.count(phone.path) != pushDeliverType.Attempts() {
 		t.Fatalf("job %s after %d sends", j.Status, f.count(phone.path))
 	}
 	var dev models.PushSubscription
@@ -725,7 +725,7 @@ func TestPushLogsKeepSecretsOut(t *testing.T) {
 	n := sendNotice(t, app, notify.GroupApproved, u)
 	runPushJobs(t, app, n, devices...)
 	// Through to the last attempt, so dead jobs keep their final error.
-	for range pushDeliverAttempts {
+	for range pushDeliverType.Attempts() {
 		app.DB.Model(&models.Job{}).Where("status = ?", models.JobFailed).Update("run_at", time.Now().Add(-time.Second))
 		drainJobs(t, app)
 	}

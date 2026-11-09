@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
 	"time"
 
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/internal/jobs"
 	"fold/internal/notify"
-	"fold/models"
 
 	"gorm.io/gorm"
 )
@@ -23,19 +23,24 @@ import (
 // doneJobsKept is how long finished jobs stay in the table.
 const doneJobsKept = 30 * 24 * time.Hour
 
+// kindOccurrencesExtend also runs once at every start (startJobs).
+const kindOccurrencesExtend = "occurrences.extend"
+
+var occurrencesExtendType = jobs.Type{Name: kindOccurrencesExtend}
+
 // dailyKinds are the daily tasks. Each returns its error so the worker
 // retries it with backoff; a task that keeps failing is dead and shows on
 // the admin System page (DEC-111). Every one is safe to run twice.
 func (a *App) dailyKinds() []jobs.Kind {
 	daily := func(name, label string, run func(ctx context.Context, now time.Time) error) jobs.Kind {
-		return jobs.Kind{Name: name, Label: label, Daily: true, MaxAttempts: jobs.DefaultMaxAttempts, Run: func(ctx context.Context, _ json.RawMessage) error {
+		return jobs.Kind{Type: jobs.Type{Name: name}, Label: label, Daily: true, Run: func(ctx context.Context, _ json.RawMessage) error {
 			return run(ctx, time.Now().UTC())
 		}}
 	}
 	return []jobs.Kind{
 		// Stored occurrences reach 18 months ahead (DEC-89).
-		daily("occurrences.extend", "Adding upcoming event dates", func(ctx context.Context, now time.Time) error {
-			return events.ExtendLocked(ctx, a.DB, now, a.afterExtend())
+		daily(kindOccurrencesExtend, "Adding upcoming event dates", func(ctx context.Context, now time.Time) error {
+			return eventdates.ExtendLocked(ctx, a.DB, now, a.afterExtend())
 		}),
 		// Contact requests expire and grants end (5.11).
 		daily("contact.sweep", "Closing expired contact requests and grants", a.sweepContacts),
@@ -74,8 +79,8 @@ func (a *App) dailyKinds() []jobs.Kind {
 			return err
 		}),
 		// Daily discovery starts from zero; each continuation keeps this date.
-		{Name: kindTombstoneSweep, Label: "Finding deleted accounts to finish erasing", Daily: true,
-			MaxAttempts: jobs.DefaultMaxAttempts, Run: a.runTombstonePageJob},
+		{Type: tombstoneSweepType, Label: "Finding deleted accounts to finish erasing", Daily: true,
+			DailyPayload: func(day string) any { return tombstonePageJob{Day: day} }, Run: a.runTombstonePageJob},
 		// Photo folders a crash or a bad upload left behind (R4-5).
 		daily(kindAvatarSweep, "Finding leftover profile photos", a.sweepAvatars),
 		// Receipts of admin deletions older than 24 hours (T07B-1b).
@@ -87,14 +92,20 @@ func (a *App) dailyKinds() []jobs.Kind {
 	}
 }
 
+// allJobKinds is every job kind the server runs, once: the daily and hourly
+// tasks and the kinds queued by events. The runner, the schedulers and the
+// System page all read this list.
+func (a *App) allJobKinds() []jobs.Kind {
+	return slices.Concat(a.dailyKinds(), a.hourlyKinds(), a.backgroundKinds())
+}
+
 // startJobs starts the workers (FOLD_WORKERS, 0 for none) and the daily
 // scheduler. The scheduler runs even with no workers here, so another
 // process's workers still find the day's tasks. It returns a function that
 // waits for running jobs to finish after ctx ends.
 func (a *App) startJobs(ctx context.Context) func() {
-	kinds := a.dailyKinds()
-	hourly := a.hourlyKinds()
-	runner := a.newRunner(append(append(kinds, hourly...), a.backgroundKinds()...)...)
+	kinds := a.allJobKinds()
+	runner := a.newRunner(kinds...)
 	runner.Poll = a.Config.JobPoll
 	if a.Config.Workers <= 0 {
 		log.Println("WARNING: FOLD_WORKERS=0; background jobs will not run in this process")
@@ -102,7 +113,7 @@ func (a *App) startJobs(ctx context.Context) func() {
 	wait := runner.Start(ctx, a.Config.Workers)
 	// Dates are extended at every start, as before jobs: a new build may
 	// change how far ahead they go. It is safe to run twice.
-	if _, err := jobs.Enqueue(a.DB, "occurrences.extend", nil, time.Now(), "", jobs.DefaultMaxAttempts); err != nil {
+	if _, err := occurrencesExtendType.Enqueue(a.DB, nil, time.Now(), ""); err != nil {
 		log.Printf("jobs: queue date extension: %v", err)
 	}
 	go func() {
@@ -112,7 +123,7 @@ func (a *App) startJobs(ctx context.Context) func() {
 			// is queued under a guessed day; try again shortly. A stored value
 			// that is no zone uses UTC, so the daily jobs still run.
 			next := 30 * time.Second
-			if err := queueHourly(a.DB, hourly, now); err != nil {
+			if err := queueHourly(a.DB, kinds, now); err != nil {
 				log.Printf("jobs: queue hourly tasks: %v", err)
 			}
 			if zone, err := churchZoneLenient(a.DB); err != nil {
@@ -134,31 +145,38 @@ func (a *App) startJobs(ctx context.Context) func() {
 	return wait
 }
 
-// queueDaily queues each daily task for the church's date in zone. A kind
-// that fails to queue doesn't stop the others; the first error is returned.
+// queueDaily queues each daily task among kinds for the church's date in zone.
+// A kind that fails to queue doesn't stop the others; the first error is
+// returned.
 func (a *App) queueDaily(kinds []jobs.Kind, now time.Time, zone *time.Location) error {
 	day := now.In(zone).Format("2006-01-02")
 	var first error
 	for _, k := range kinds {
-		var payload any
-		if k.Name == kindTombstoneSweep {
-			payload = tombstonePageJob{Day: day}
+		if !k.Daily {
+			continue
 		}
-		if _, err := jobs.Enqueue(a.DB, k.Name, payload, now, k.Name+":"+day, k.MaxAttempts); err != nil && first == nil {
+		var payload any
+		if k.DailyPayload != nil {
+			payload = k.DailyPayload(day)
+		}
+		if _, err := k.Enqueue(a.DB, payload, now, k.Name+":"+day); err != nil && first == nil {
 			first = err
 		}
 	}
 	return first
 }
 
-// queueHourly queues each hourly task once for the UTC hour now falls in
+// queueHourly queues each hourly task among kinds once for the UTC hour now falls in
 // (`<kind>:<YYYY-MM-DDTHH>`), so restarts and several processes queue it
 // once.
 func queueHourly(db *gorm.DB, kinds []jobs.Kind, now time.Time) error {
 	hour := now.UTC().Format("2006-01-02T15")
 	var first error
 	for _, k := range kinds {
-		if _, err := jobs.Enqueue(db, k.Name, nil, now, k.Name+":"+hour, k.MaxAttempts); err != nil && first == nil {
+		if !k.Hourly {
+			continue
+		}
+		if _, err := k.Enqueue(db, nil, now, k.Name+":"+hour); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -188,17 +206,10 @@ func (a *App) newRunner(kinds ...jobs.Kind) *jobs.Runner {
 // job id only). Neither the job's payload nor its error text reaches it.
 func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		var status string
-		if err := tx.Raw("SELECT status FROM jobs WHERE id = ? FOR UPDATE", jobID).Scan(&status).Error; err != nil {
+		if dead, err := jobs.LockDead(tx, jobID); err != nil || !dead {
 			return err
 		}
-		if status != models.JobDead {
-			return nil
-		}
-		var open int64
-		if err := tx.Model(&models.Notification{}).
-			Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", notify.SystemJobDead, jobID).
-			Count(&open).Error; err != nil || open > 0 {
+		if open, err := notify.OpenTask(tx, notify.SystemJobDead, jobID); err != nil || open {
 			return err
 		}
 		admins, err := activeAdminIDs(tx)
@@ -216,4 +227,9 @@ func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
 	if err != nil {
 		log.Printf("jobs: could not alert the admins to dead job #%d: %v", jobID, err)
 	}
+}
+
+// backgroundKinds are the job kinds queued by events, not by the day.
+func (a *App) backgroundKinds() []jobs.Kind {
+	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds(), a.notifyKinds(), a.mailKinds(), a.avatarKinds(), a.erasureKinds())
 }

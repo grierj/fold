@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+
 	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"strconv"
 	"time"
 )
@@ -19,17 +20,12 @@ func (vs visibleSet) canSeeDate(viewer *models.User, ev *models.Event, occ *mode
 	if ev == nil {
 		return false
 	}
-	g, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-	if ev.GroupID != nil && g == nil {
+	f := vs.of(ev)
+	if ev.GroupID != nil && f.group == nil {
 		return false
 	}
-	gp := policy.Group{}
-	if g != nil {
-		gp = asGroup(g)
-	}
-	view := viewOf(ev, vs.Hosted[ev.ID])
-	view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
-	return policy.CanSeeEvent(asPerson(viewer), view, gp, rel)
+	f.view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
+	return f.canSee(viewer)
 }
 
 func dateEvent(ev *models.Event, occ *models.EventOccurrence) *models.Event {
@@ -53,13 +49,6 @@ func (a *App) canRegisterDate(tx *gorm.DB, u *models.User, ev *models.Event, occ
 		return false
 	}
 	return a.canRegisterIn(tx, u, dateEvent(ev, occ))
-}
-
-func laterTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
 }
 
 var errDateVisibility = errors.New("invalid date visibility")
@@ -107,26 +96,34 @@ func dateImpactOf(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, ne
 
 // Caller holds the contact gate, event and occurrence locks. Cancellation,
 // audit and stored notices share the same transaction as the date edit.
-func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) error {
+//
+// group is the event's group as it will be once the surrounding change is
+// saved (a group edit passes its in-memory copy), or nil to read it. keep
+// records the date as deliberately kept open: it audits and notifies as an
+// override even though nothing changes.
+func (a *App) changeDateVisibility(tx *gorm.DB, actor *models.User, ip string, ev *models.Event, occ *models.EventOccurrence, group *models.Group, value *string, reason string, keep bool) error {
 	old := occ.VisibilityOverride
 	if !keep && ((old == nil && value == nil) || (old != nil && value != nil && *old == *value)) {
 		return nil
 	}
 	before, after := policy.EffectiveVisibility(ev.Visibility, old), policy.EffectiveVisibility(ev.Visibility, value)
 
-	f := eventFactsIn(tx, apiUser(c), ev)
-	if f.group != nil && len(groupVisibility) > 0 {
-		f.group.Visibility = groupVisibility[0]
+	if group == nil {
+		f, err := eventFactsIn(tx, actor, ev)
+		if err != nil {
+			return err
+		}
+		group = f.group
 	}
 	action := audit.VisibilityChanged
-	if f.group != nil && policy.MoreOpen(after, f.group.Visibility) {
+	if group != nil && policy.MoreOpen(after, group.Visibility) {
 		action = audit.VisibilityOverride
 	}
 	meta := map[string]any{"original_date": models.FormatCalendarDate(occ.OriginalDate), "oldVisibility": old, "newVisibility": value, "reason": reason}
-	if f.group != nil {
-		meta["groupVisibility"] = f.group.Visibility
+	if group != nil {
+		meta["groupVisibility"] = group.Visibility
 	}
-	if err := audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: action, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
+	if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: ip}); err != nil {
 		return err
 	}
 	occ.VisibilityOverride = value
@@ -134,14 +131,14 @@ func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event
 		return err
 	}
 	if policy.MoreOpen(before, after) && !keep {
-		if err := a.cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID); err != nil {
+		if err := a.cancelDateLosers(tx, actor, ip, ev, after, time.Now().UTC(), occ.ID); err != nil {
 			return err
 		}
 	}
-	if action == audit.VisibilityOverride && f.group != nil {
+	if action == audit.VisibilityOverride && group != nil {
 		date := *ev
 		date.Title = ev.Title + " · " + models.FormatCalendarDate(occ.OriginalDate)
-		if err := notifyVisibilityOverride(tx, apiUser(c).ID, &date, f.group, after, reason); err != nil {
+		if err := notifyVisibilityOverride(tx, actor.ID, &date, group, after, reason); err != nil {
 			return err
 		}
 	}
@@ -160,15 +157,15 @@ func (a *App) apiDateVisibilityImpact(c *gin.Context) {
 	}
 	var occ models.EventOccurrence
 	if !isCalendarDate(c.Param("date")) || a.DB.Where("event_id = ? AND original_date = ?", ev.ID, c.Param("date")).First(&occ).Error != nil {
-		jsonError(c, 404, "event not found")
+		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
 	impact, err := dateImpactOf(a.DB, ev, &occ, policy.EffectiveVisibility(ev.Visibility, value))
 	if err != nil {
-		jsonError(c, 500, "could not preview visibility")
+		jsonError(c, http.StatusInternalServerError, "could not preview visibility")
 		return
 	}
-	c.JSON(200, impact)
+	c.JSON(http.StatusOK, impact)
 }
 
 func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) (visibilityImpactJSON, error) {
@@ -177,7 +174,7 @@ func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) 
 		return impact, err
 	}
 	var dates []models.EventOccurrence
-	if err := tx.Where("event_id = ? AND starts_at > ? AND visibility_override IS NOT NULL", ev.ID, time.Now().UTC()).Find(&dates).Error; err != nil {
+	if err := futureOverrides(tx, ev.ID).Find(&dates).Error; err != nil {
 		return impact, err
 	}
 	impact.FutureOverrides = int64(len(dates))
@@ -194,17 +191,13 @@ func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) 
 }
 
 // Explicit dates are reviewed independently of their parent's opened marker.
-func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]models.EventOccurrence, map[uint]*models.Event, error) {
+func openedDates(tx *gorm.DB, groupID uint, oldVis, next string) ([]models.EventOccurrence, map[uint]*models.Event, error) {
 	evs := map[uint]*models.Event{}
 	if !policy.MoreOpen(oldVis, next) {
 		return nil, evs, nil
 	}
 	var rows []models.Event
-	q := tx.Where("group_id = ?", groupID).Order("id")
-	if lock {
-		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	if err := q.Find(&rows).Error; err != nil {
+	if err := tx.Where("group_id = ?", groupID).Order("id").Find(&rows).Error; err != nil {
 		return nil, nil, err
 	}
 	ids := []uint{}
@@ -216,11 +209,7 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]m
 		return nil, evs, nil
 	}
 	var dates []models.EventOccurrence
-	q = tx.Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", ids, time.Now().UTC()).Order("id")
-	if lock {
-		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	if err := q.Find(&dates).Error; err != nil {
+	if err := futureOverrides(tx, ids...).Order("id").Find(&dates).Error; err != nil {
 		return nil, nil, err
 	}
 	out := []models.EventOccurrence{}
@@ -232,26 +221,15 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]m
 	return out, evs, nil
 }
 
-func dateDecisionKey(id uint) string { return "date:" + strconv.FormatUint(uint64(id), 10) }
+// futureOverrides selects the upcoming dates of the events that carry their own
+// visibility.
+func futureOverrides(tx *gorm.DB, eventIDs ...uint) *gorm.DB {
+	return tx.Model(&models.EventOccurrence{}).
+		Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", eventIDs, time.Now().UTC())
+}
+
+func dateDecisionKey(id uint) string { return "date:" + idString(id) }
 
 func (vs visibleSet) canSeeSeries(viewer *models.User, ev *models.Event) bool {
 	return vs.canSeeDate(viewer, ev, &models.EventOccurrence{})
-}
-
-// Preserve the established full-series wire contract for authorized readers,
-// but do not serialize even empty series keys on an opened hidden-series date.
-func (o occurrenceJSON) MarshalJSON() ([]byte, error) {
-	type wire occurrenceJSON
-	body, err := json.Marshal(wire(o))
-	if err != nil || !o.hideSeries {
-		return body, err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil {
-		return nil, err
-	}
-	for _, key := range []string{"recurrenceRule", "rruleUntil", "seriesStartsLocal", "seriesTitle", "seriesLocation", "seriesDurationMinutes", "seriesVisibility"} {
-		delete(fields, key)
-	}
-	return json.Marshal(fields)
 }

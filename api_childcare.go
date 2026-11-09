@@ -14,22 +14,19 @@ var (
 	errChildcareFull        = apiErr(http.StatusConflict, "childcare_full", "childcare is full for this date")
 )
 
-func parseChildcareEdits(c *gin.Context, body eventBody, ed *capacityEdits) bool {
+func parseChildcareEdits(body eventBody, ed *capacityEdits) error {
 	var err error
 	ed.childcareCap, ed.childcareCapSet, err = parseChildcareCapacity(body.ChildcareCapacity)
 	if err != nil {
-		fail(c, err)
-		return false
+		return err
 	}
 	if body.ChildcareNotes != nil && utf8.RuneCountInString(strings.TrimSpace(*body.ChildcareNotes)) > 500 {
-		fail(c, errChildcareNotesTooLong)
-		return false
+		return errChildcareNotesTooLong
 	}
 	if body.ChildcareAges != nil && utf8.RuneCountInString(strings.TrimSpace(*body.ChildcareAges)) > 100 {
-		fail(c, errChildcareAgesTooLong)
-		return false
+		return errChildcareAgesTooLong
 	}
-	return true
+	return nil
 }
 
 // Absent request fields preserve the registration, including when childcare

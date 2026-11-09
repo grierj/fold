@@ -1,4 +1,8 @@
-package events
+// Package eventdates keeps an event's occurrence rows in step with its rule:
+// it generates them at creation and extends the rolling horizon daily. The
+// clock itself (rules, wall times, expansion) is internal/events and has no
+// database; this is the part that writes rows and takes the advisory lock.
+package eventdates
 
 import (
 	"context"
@@ -6,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"fold/internal/events"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -74,14 +79,14 @@ func ensure(db *gorm.DB, ev *models.Event, now time.Time) ([]string, error) {
 	if ev.RRuleUntil != nil {
 		until = models.FormatCalendarDate(*ev.RRuleUntil)
 	}
-	start, _, err := ParseWall(ev.StartsLocal, ev.TZID)
+	start, _, err := events.ParseWall(ev.StartsLocal, ev.TZID)
 	if err != nil {
 		return nil, fmt.Errorf("event %d: %w", ev.ID, err)
 	}
-	whens, err := Expand(Spec{
+	whens, err := events.Expand(events.Spec{
 		StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
 		TZID: ev.TZID, RRule: ev.RRule, Until: until,
-	}, WindowEnd(start, now))
+	}, events.WindowEnd(start, now))
 	if err != nil {
 		return nil, fmt.Errorf("event %d: %w", ev.ID, err)
 	}

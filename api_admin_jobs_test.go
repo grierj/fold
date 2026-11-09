@@ -90,7 +90,7 @@ func TestDeadNoticeJobDecisions(t *testing.T) {
 
 func deadJob(t *testing.T, app *App, kind, key, lastError string) models.Job {
 	t.Helper()
-	if _, err := jobs.Enqueue(app.DB, kind, map[string]string{"email": "secret@example.com"}, time.Now(), key, 1); err != nil {
+	if _, err := enqueueJob(app.DB, kind, map[string]string{"email": "secret@example.com"}, time.Now(), key, 1); err != nil {
 		t.Fatal(err)
 	}
 	var j models.Job
@@ -107,7 +107,7 @@ func TestSystemPageListsDeadJobsForAdmins(t *testing.T) {
 	admin, member := loginAPI(t, app, "admin", "password1234"), loginAPI(t, app, "member", "password1234")
 	extend := deadJob(t, app, "occurrences.extend", "occurrences.extend:2026-10-30", "connection refused")
 	deadJob(t, app, "mystery.kind", "mystery:1", "no handler")
-	jobs.Enqueue(app.DB, "accounts.age_rollover", nil, time.Now(), "alive", 0) // queued, not listed
+	enqueueJob(app.DB, "accounts.age_rollover", nil, time.Now(), "alive", 0) // queued, not listed
 
 	if w := member.do("GET", "/api/v1/admin/jobs", nil, false); w.Code != http.StatusForbidden {
 		t.Fatalf("member: %d", w.Code)
@@ -323,7 +323,7 @@ const (
 // deadAlertKinds is one generic job that always fails; the payload and the
 // error text carry things an alert must never repeat.
 func deadAlertKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: deadAlertKind, MaxAttempts: 1,
+	return []jobs.Kind{{Type: jobs.Type{Name: deadAlertKind, MaxAttempts: 1},
 		Run: func(context.Context, json.RawMessage) error { return errors.New(deadAlertErrText) }}}
 }
 
@@ -331,7 +331,7 @@ func deadAlertKinds() []jobs.Kind {
 // app's runner, so it dies and OnDead fires.
 func killDeadAlertJob(t *testing.T, app *App) uint {
 	t.Helper()
-	if _, err := jobs.Enqueue(app.DB, deadAlertKind, map[string]string{"note": deadAlertSecret}, time.Now(), "", 1); err != nil {
+	if _, err := enqueueJob(app.DB, deadAlertKind, map[string]string{"note": deadAlertSecret}, time.Now(), "", 1); err != nil {
 		t.Fatal(err)
 	}
 	var job models.Job
@@ -465,7 +465,7 @@ func TestDeadJobAlertRaces(t *testing.T) {
 		a1 := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 		a2 := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
 		app.DB.Model(&models.Job{}).Where("true").Delete(&models.Job{})
-		if _, err := jobs.Enqueue(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
+		if _, err := enqueueJob(app.DB, deadAlertKind, nil, time.Now(), "", 1); err != nil {
 			t.Fatal(err)
 		}
 		var job models.Job

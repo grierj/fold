@@ -11,6 +11,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/rooms"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -30,9 +31,10 @@ import (
 
 const maxOverlapReason = 500
 
-// paddedRangeSQL is the one expression for a booking's held time; the
-// table's CHECK compares padded_range against the same formula.
-const paddedRangeSQL = `tstzrange(?::timestamptz - make_interval(mins => ?::int), ?::timestamptz + make_interval(mins => ?::int), '[)')`
+// paddedRangeSQL is rooms.PaddedRange with four placeholders: start, setup,
+// end, teardown. The table's CHECK compares padded_range against the same
+// formula.
+var paddedRangeSQL = rooms.PaddedRange("?", "?", "?", "?")
 
 // heldByOverlap reports an admin's double-booking holding a room for the
 // given padded time. Double-bookings sit outside the exclusion constraint,
@@ -40,9 +42,9 @@ const paddedRangeSQL = `tstzrange(?::timestamptz - make_interval(mins => ?::int)
 // everyone else (9.2).
 func heldByOverlap(tx *gorm.DB, roomID, occurrenceID uint, start, end time.Time, setup, teardown int) (bool, error) {
 	var held bool
-	// The status is a literal so the planner can use idx_room_bookings_overlap.
-	err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings WHERE room_id = ? AND status = 'confirmed' AND allow_overlap
-		AND occurrence_id <> ? AND padded_range && `+paddedRangeSQL+`)`,
+	// The same held test as every busy check, narrowed to double-bookings so
+	// the planner can use idx_room_bookings_overlap.
+	err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings b WHERE `+rooms.HeldCondition("b", "?", "?", paddedRangeSQL)+` AND b.allow_overlap)`,
 		roomID, occurrenceID, start, setup, end, teardown).Scan(&held).Error
 	return held, err
 }
@@ -106,7 +108,11 @@ func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, s
 		}
 		if free && p.requestID != nil {
 			// The insert proved the room free; the booking then waits for an
-			// admin, holding nothing until it is confirmed.
+			// admin, holding nothing until it is confirmed. It can't be
+			// inserted as requested to begin with: room_bookings_no_overlap
+			// covers confirmed rows only, so a requested insert never meets
+			// the conflict, and the other way to ask (a second held-by test)
+			// would be one more busy definition (rooms.HeldCondition).
 			return bookedPending, tx.Exec(`UPDATE room_bookings SET status = ?, request_id = ?, updated_at = now() WHERE occurrence_id = ?`,
 				models.BookingRequested, *p.requestID, occ.ID).Error
 		}
@@ -222,6 +228,21 @@ func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) (in
 
 func tooSmall(capacity *int, want int) bool { return capacity != nil && want > *capacity }
 
+// activeRoomsBusy lists the active rooms in picker order with how many of
+// the windows another confirmed booking holds each on (rooms.BusyCounts).
+func activeRoomsBusy(db *gorm.DB, windows []rooms.Window, exceptEvent uint) ([]models.Room, map[uint]int, error) {
+	var list []models.Room
+	if err := db.Where("active").Order("lower(building), lower(name)").Find(&list).Error; err != nil {
+		return nil, nil, err
+	}
+	ids := make([]uint, len(list))
+	for i, r := range list {
+		ids[i] = r.ID
+	}
+	busy, err := rooms.BusyCounts(db, ids, windows, exceptEvent)
+	return list, busy, err
+}
+
 // apiDateRooms lists the rooms the caller may book for a date, marking busy
 // and too-small ones, with the date's current booking.
 func (a *App) apiDateRooms(c *gin.Context) {
@@ -230,23 +251,10 @@ func (a *App) apiDateRooms(c *gin.Context) {
 		return
 	}
 	me := asPerson(apiUser(c))
-	var rooms []models.Room
-	if err := a.DB.Where("active").Order("lower(building), lower(name)").Find(&rooms).Error; err != nil {
+	list, busy, err := activeRoomsBusy(a.DB, []rooms.Window{{Start: occ.StartsAt, End: occ.EndsAt, OccurrenceID: occ.ID}}, 0)
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
-	}
-	var busy []uint
-	if err := a.DB.Raw(`SELECT DISTINCT r.id FROM rooms r JOIN room_bookings b ON b.room_id = r.id
-		WHERE b.status = ? AND b.occurrence_id <> ?
-		AND b.padded_range && tstzrange(?::timestamptz - make_interval(mins => r.default_setup_minutes::int),
-			?::timestamptz + make_interval(mins => r.default_teardown_minutes::int), '[)')`,
-		models.BookingConfirmed, occ.ID, occ.StartsAt, occ.EndsAt).Scan(&busy).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not list rooms")
-		return
-	}
-	isBusy := make(map[uint]bool, len(busy))
-	for _, id := range busy {
-		isBusy[id] = true
 	}
 	want, err := seatsWanted(a.DB, ev, occ)
 	if err != nil {
@@ -254,12 +262,12 @@ func (a *App) apiDateRooms(c *gin.Context) {
 		return
 	}
 	out := []roomPickerJSON{}
-	for _, r := range rooms {
+	for _, r := range list {
 		if !policy.CanBookRoom(me, true, r.Restricted) {
 			continue
 		}
 		out = append(out, roomPickerJSON{ID: r.ID, Name: r.Name, Building: r.Building, Capacity: r.Capacity,
-			Features: r.Features, Restricted: r.Restricted, Busy: isBusy[r.ID], TooSmall: tooSmall(r.Capacity, want)})
+			Features: r.Features, Restricted: r.Restricted, Busy: busy[r.ID] > 0, TooSmall: tooSmall(r.Capacity, want)})
 	}
 	booking, err := a.dateBooking(a.DB, occ.ID, want)
 	if err != nil {
@@ -329,7 +337,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	me := asPerson(user)
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		fail(c, errReasonTooLong500)
+		fail(c, errOverlapReasonTooLong)
 		return
 	}
 	if (body.SetupMinutes != nil || body.TeardownMinutes != nil) && !policy.CanAdjustBookingPadding(me) {
@@ -337,7 +345,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		return
 	}
 	for _, m := range []*int{body.SetupMinutes, body.TeardownMinutes} {
-		if m != nil && (*m < 0 || *m > maxRoomPadding) {
+		if m != nil && (*m < 0 || *m > rooms.MaxPaddingMinutes) {
 			fail(c, errInvalidSetupMinutes)
 			return
 		}
@@ -579,7 +587,8 @@ func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) error {
 
 // placeLine is a date's place (PLAN 14.5 "Where rooms show"), as
 // web/src/lib/place.ts writes it: the room and its building lead, and a
-// typed location follows as a detail.
+// typed location follows as a detail. Both run the cases in
+// web/src/lib/place-cases.json (TestPlaceLineSharesCasesWithTheWeb).
 func placeLine(room *occurrenceRoomJSON, location string) string {
 	if room == nil {
 		return location
@@ -631,7 +640,7 @@ func roomsChunkInto(db *gorm.DB, occurrenceIDs []uint, out map[uint]*occurrenceR
 	}
 	err := db.Raw(`SELECT b.occurrence_id, r.id, r.name, r.building FROM room_bookings b JOIN rooms r ON r.id = b.room_id
 		WHERE b.occurrence_id IN ? AND b.status = ?
-		AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = 'true')`, occurrenceIDs, models.BookingConfirmed, settingRoomsEnabled).Scan(&rows).Error
+		AND `+settingOnSQL, occurrenceIDs, models.BookingConfirmed, settingRoomsEnabled).Scan(&rows).Error
 	for _, r := range rows {
 		out[r.OccurrenceID] = &occurrenceRoomJSON{ID: r.ID, Name: r.Name, Building: r.Building}
 	}

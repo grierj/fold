@@ -80,7 +80,7 @@ func (a *App) loadCalendarScopeBatch(viewer *models.User, occurrenceIDs []uint) 
 	return out, err
 }
 
-func calendarScopeDecision(scope policy.CalendarScope, signedIn, authorized bool, ev *models.Event, occ *models.EventOccurrence, rel policy.Rel, hosted, household, exact bool, ownStatus string, now time.Time) policy.CalendarDecision {
+func calendarScopeDecision(scope policy.CalendarScope, signedIn bool, ev *models.Event, occ *models.EventOccurrence, rel policy.Rel, hosted, household, exact bool, ownStatus string, now time.Time) policy.CalendarDecision {
 	publicDate := false
 	churchWide := false
 	if ev != nil {
@@ -88,7 +88,7 @@ func calendarScopeDecision(scope policy.CalendarScope, signedIn, authorized bool
 		publicDate = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride) == models.VisibilityPublic
 	}
 	return policy.DecideCalendar(scope, policy.CalendarFacts{
-		Authorized: authorized, GroupMember: rel.Member, ChurchWide: churchWide,
+		Authorized: true, GroupMember: rel.Member, ChurchWide: churchWide,
 		Host: hosted, OwnStatus: ownStatus, HouseholdDate: household,
 		ExactDate: exact, PublicDate: publicDate, StartsAt: occ.StartsAt,
 		SignedOut: !signedIn,

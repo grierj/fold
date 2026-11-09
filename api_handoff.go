@@ -35,7 +35,7 @@ type soleLedGroupJSON struct {
 // soleLedGroups lists the groups, in any status, where userID is the only
 // active leader.
 func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
-	// The count is leaderCount's as a correlated subquery: active leaders
+	// The count is leaderCount's (group_members.go) as a correlated subquery: active leaders
 	// whose accounts still exist and aren't disabled.
 	var groups []models.Group
 	err := db.Where(`id IN (SELECT group_id FROM memberships
@@ -49,23 +49,21 @@ func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
 
 // successorCandidates: the group's other active members who may lead, then
 // every admin who isn't already listed.
-func successorCandidates(db *gorm.DB, groupID, leaving uint) []successorJSON {
+func successorCandidates(db *gorm.DB, groupID, leaving uint) ([]successorJSON, error) {
 	var users []models.User
-	db.Where(`id <> ? AND status = ? AND (role = ? OR id IN (SELECT user_id FROM memberships
+	if err := db.Where(`id <> ? AND status = ? AND (role = ? OR id IN (SELECT user_id FROM memberships
 		WHERE group_id = ? AND status = ?))`, leaving, models.UserActive, models.RoleAdmin, groupID, models.MembershipActive).
-		Order("name, id").Find(&users)
+		Order("name, id").Find(&users).Error; err != nil {
+		return nil, err
+	}
 	// One query for the candidates' memberships in this group, any status.
 	ids := make([]uint, len(users))
 	for i := range users {
 		ids[i] = users[i].ID
 	}
-	rels := map[uint]policy.Rel{}
-	if len(ids) > 0 {
-		var ms []models.Membership
-		db.Where("group_id = ? AND user_id IN ?", groupID, ids).Find(&ms)
-		for _, m := range ms {
-			rels[m.UserID] = membershipRel(m)
-		}
+	rels, err := userRels(db, groupID, ids)
+	if err != nil {
+		return nil, err
 	}
 	out := []successorJSON{}
 	for i := range users {
@@ -74,7 +72,7 @@ func successorCandidates(db *gorm.DB, groupID, leaving uint) []successorJSON {
 			out = append(out, successorJSON{ID: users[i].ID, Name: users[i].PublicName(), Admin: p.Admin})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // apiAdminSoleLedGroups: GET /admin/users/:id/sole-leader-groups.
@@ -90,8 +88,12 @@ func (a *App) apiAdminSoleLedGroups(c *gin.Context) {
 	}
 	out := []soleLedGroupJSON{}
 	for _, g := range groups {
-		out = append(out, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status,
-			Candidates: successorCandidates(a.DB, g.ID, u.ID)})
+		candidates, err := successorCandidates(a.DB, g.ID, u.ID)
+		if err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not list groups")
+			return
+		}
+		out = append(out, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status, Candidates: candidates})
 	}
 	c.JSON(http.StatusOK, gin.H{"groups": out})
 }
@@ -130,14 +132,21 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if sid != 0 && sid != leaving {
 			// Only a missing user is the caller's mistake (400).
 			if err := tx.First(&s, sid).Error; err == nil {
-				valid = s.Status == models.UserActive && policy.CanBeSuccessor(asPerson(&s), relIn(tx, sid, g.ID))
+				rel, err := groupRel(tx, sid, g.ID)
+				if err != nil {
+					return err
+				}
+				valid = policy.CanBeSuccessor(asPerson(&s), rel)
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
 		}
 		if !valid {
-			missing = append(missing, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status,
-				Candidates: successorCandidates(tx, g.ID, leaving)})
+			candidates, err := successorCandidates(tx, g.ID, leaving)
+			if err != nil {
+				return err
+			}
+			missing = append(missing, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status, Candidates: candidates})
 			continue
 		}
 		picks[g.ID] = sid
@@ -155,7 +164,7 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if err := tx.Where("user_id = ? AND group_id = ?", sid, g.ID).Limit(1).Find(&m).Error; err != nil {
 			return err
 		}
-		oldRole := "none"
+		oldRole := roleNone
 		if membershipRel(m).Member {
 			oldRole = m.Role
 		}
@@ -252,12 +261,16 @@ func restoreMemberships(tx *gorm.DB, userID, actor uint, ip string) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, m.GroupID).Error; err != nil {
 			return err
 		}
-		if !policy.GroupHasRoom(g.MemberLimit, int(memberCount(tx, g.ID))) {
+		members, err := memberCount(tx, g.ID)
+		if err != nil {
+			return err
+		}
+		if !policy.GroupHasRoom(g.MemberLimit, members) {
 			// Full: left out. A leader can add them over the limit (DEC-47).
 			if err := tx.Delete(&m).Error; err != nil {
 				return err
 			}
-			meta := map[string]any{"userId": userID, "count": memberCount(tx, g.ID), "limit": *g.MemberLimit}
+			meta := map[string]any{"userId": userID, "count": members, "limit": *g.MemberLimit}
 			if err := audit.Write(tx, audit.Entry{
 				Actor: actorID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
 				Meta: meta, IP: ip,

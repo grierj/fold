@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"strings"
 
 	"fold/internal/providers"
@@ -29,27 +30,16 @@ func (e *ErrSuppressed) Error() string {
 // complaint stops optional and broadcast mail while account mail still goes.
 // Every send pays one indexed read.
 type Suppressing struct {
-	inner Adapter
+	inner Sender
 	db    *gorm.DB
 }
 
-// Adapter is what every email adapter is: a Sender that also reports ids.
-type Adapter interface {
-	Sender
-	providers.EmailSender
-}
-
 // WithSuppressions wraps inner with the suppression check.
-func WithSuppressions(db *gorm.DB, inner Adapter) *Suppressing {
+func WithSuppressions(db *gorm.DB, inner Sender) *Suppressing {
 	return &Suppressing{inner: inner, db: db}
 }
 
 func (s *Suppressing) Capabilities() providers.EmailCaps { return s.inner.Capabilities() }
-
-func (s *Suppressing) Send(ctx context.Context, m Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
 
 func (s *Suppressing) SendEmail(ctx context.Context, m Message) (string, error) {
 	// One read per send (OpenSuppressionReasons with a single address).
@@ -83,13 +73,34 @@ func Unwrap(s Sender) Sender {
 // already read the reasons (a notification batch) sends through Unwrap
 // after asking this.
 func Blocked(reasons []string, m Message) error {
+	r := StrongestReason(reasons)
+	if r == "" || (r == models.SuppressComplaint && !m.Optional && m.Stream != providers.StreamBroadcast) {
+		return nil
+	}
+	return &ErrSuppressed{Reason: r}
+}
+
+// StrongestReason is the one reason that stands for an address with these
+// open reasons wherever Fold shows or applies one: the composer's count, the
+// refusal a send reports and the admin list. What stops the most mail wins
+// (DEC-112): a hard bounce, then a manual suppression (both stop all mail),
+// then a spam complaint (optional and broadcast mail only). "" when none.
+func StrongestReason(reasons []string) string {
+	best, bestRank := "", len(suppressionRank)
 	for _, r := range reasons {
-		if r != models.SuppressComplaint || m.Optional || m.Stream == providers.StreamBroadcast {
-			return &ErrSuppressed{Reason: r}
+		rank := slices.Index(suppressionRank, r)
+		if rank < 0 {
+			// A reason this build doesn't know stops all mail, as a manual one does.
+			rank = slices.Index(suppressionRank, models.SuppressManual)
+		}
+		if rank < bestRank {
+			best, bestRank = r, rank
 		}
 	}
-	return nil
+	return best
 }
+
+var suppressionRank = []string{models.SuppressHardBounce, models.SuppressManual, models.SuppressComplaint}
 
 // NormalizeAddress is the one way Fold turns an email address into the form
 // it matches against stored addresses: surrounding whitespace trimmed, then

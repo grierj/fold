@@ -26,6 +26,7 @@ var legacyNoticeDeliveryNames = map[string]bool{
 // mailerSendFiles may deliver application mail, each with its reason. The
 // synchronous account exceptions below are methods, never whole-file grants.
 var mailerSendFiles = map[string]string{
+	"mail_send.go":           "sendTracked, the one place a sender is called; its callers are the files below",
 	"notify_deliver.go":      "the notify.deliver job sends notice mail",
 	"mail_jobs.go":           "direct account mail is sent by durable jobs after preparation commits",
 	"messages_send.go":       "announcement mail goes through its own send path",
@@ -110,7 +111,7 @@ func mailSources(trees ...*ast.File) func(ast.Expr) mailSource {
 	results := map[string][]mailSource{}
 	isSenderType := func(name string) bool {
 		switch name {
-		case "Sender", "Adapter", "SMTPSender", "Postmark", "DevOutbox", "Suppressing", "NoSender":
+		case "Sender", "SMTPSender", "Postmark", "DevOutbox", "Suppressing", "NoSender":
 			return true
 		}
 		return false
@@ -360,8 +361,13 @@ func parsedMailViolations(file string, positions *token.FileSet, tree *ast.File,
 				bad = append(bad, at+" (write the notice with notify.Send; delivery is automatic (R6))")
 			}
 			if id.Name == "runInBackground" {
-				bad = append(bad, at+" (queue durable work with jobs.Enqueue; untracked background mail is forbidden)")
+				bad = append(bad, at+" (queue durable work with a jobs.Type's Enqueue; untracked background mail is forbidden)")
 			}
+		}
+		// sendTracked is the sender call in a trench coat: it may be named only
+		// where a send itself may be.
+		if id, ok := node.(*ast.Ident); ok && checkMailer && id.Name == "sendTracked" && !mailSendAllowed(file, parents) {
+			bad = append(bad, at+" (mail a notice with notify.Send or enqueue an ID-based direct-mail job; sendTracked is for delivery files)")
 		}
 		if sel, ok := node.(*ast.SelectorExpr); ok && checkMailer {
 			// A named exception must stay synchronous at its call site too,
@@ -496,6 +502,19 @@ func TestNoticeGuardCatchesPostCommitDelivery(t *testing.T) {
 	}
 }
 
+// sendTracked sends mail, so the guard treats naming it as it treats a send.
+func TestMailGuardCatchesSendTrackedOutsideDelivery(t *testing.T) {
+	src := "package main\nfunc example() { sendTracked(ctx, sender, msg, nil) }\n"
+	if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 {
+		t.Fatalf("guard missed sendTracked in a handler file: %v", bad)
+	}
+	for file := range mailerSendFiles {
+		if bad := noticeDeliveryViolations(file, src, true); len(bad) != 0 {
+			t.Errorf("%s may call sendTracked: %v", file, bad)
+		}
+	}
+}
+
 func TestMailGuardCatchesBypasses(t *testing.T) {
 	for _, tc := range []struct {
 		name, imports, body string
@@ -534,7 +553,7 @@ func TestMailGuardCatchesBypasses(t *testing.T) {
 }
 
 func TestMailGuardFollowsConcreteSendersAndConstructors(t *testing.T) {
-	for _, senderType := range []string{"Sender", "Adapter", "SMTPSender", "Postmark", "DevOutbox", "Suppressing", "NoSender"} {
+	for _, senderType := range []string{"Sender", "SMTPSender", "Postmark", "DevOutbox", "Suppressing", "NoSender"} {
 		for _, ptr := range []string{"", "*"} {
 			for _, declaration := range []string{
 				"func example(sender " + ptr + "delivery." + senderType + ") { sender.Send(ctx, msg) }",
@@ -572,7 +591,6 @@ func TestMailGuardFollowsConcreteSendersAndConstructors(t *testing.T) {
 	}
 	for _, body := range []string{
 		"var s *Postmark; s.Send(ctx, msg)",
-		"var s Adapter; s.Send(ctx, msg)",
 		"NoSender{}.Send(ctx, msg)",
 		"s, _ := NewSMTP(url, from); s.Send(ctx, msg)",
 		"WithSuppressions(db, inner).Send(ctx, msg)",
@@ -589,7 +607,7 @@ func TestMailGuardFollowsMultipleResultPositions(t *testing.T) {
 		{"func mailer() (delivery.Sender, error) { return nil, nil }", "s, err := mailer(); s.Send(ctx, msg)"},
 		{"func (a *App) mailer() (delivery.Sender, error) { return nil, nil }", "s, err := a.mailer(); s.Send(ctx, msg)"},
 		{"func mailer() (error, *delivery.Postmark) { return nil, nil }", "err, s := mailer(); s.Send(ctx, msg)"},
-		{"func mailer() (int, delivery.Adapter, error) { return 0, nil, nil }", "_, s, err := mailer(); s.Send(ctx, msg)"},
+		{"func mailer() (int, delivery.Sender, error) { return 0, nil, nil }", "_, s, err := mailer(); s.Send(ctx, msg)"},
 		{"func mailer() (first, second delivery.Sender, err error) { return }", "_, s, err := mailer(); s.Send(ctx, msg)"},
 		{"func mailer() (error, delivery.Sender) { return nil, nil }", "var err, s = mailer(); s.Send(ctx, msg)"},
 		{"func mailer() (error, delivery.Sender) { return nil, nil }", "var s any; var err error; err, s = mailer(); s.Send(ctx, msg)"},

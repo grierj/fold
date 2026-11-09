@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,6 +33,9 @@ func TestPromotionEmailCarriesVideoLink(t *testing.T) {
 	}
 }
 
+// kindKeyShape is what a kind key looks like: lower-case words joined by dots.
+var kindKeyShape = regexp.MustCompile(`^[a-z0-9_]+(\.[a-z0-9_]+)+$`)
+
 // Every string constant in kinds.go whose value looks like a kind key
 // ("thing.event") must be registered, so a forgotten register call fails
 // here instead of at Send time (#79).
@@ -54,7 +58,7 @@ func TestEveryKindConstIsRegistered(t *testing.T) {
 					continue
 				}
 				key, _ := strconv.Unquote(lit.Value)
-				if !strings.Contains(key, ".") {
+				if !kindKeyShape.MatchString(key) {
 					continue
 				}
 				found++

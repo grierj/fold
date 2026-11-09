@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log"
 	"net/http"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/internal/providers"
+	"fold/internal/userlock"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -36,10 +36,6 @@ const (
 	kindMessageSend  = "message.send"
 	kindMessageBatch = "message.deliver_batch"
 	messageBatchSize = 50
-	// Attempts: a batch rides out a provider outage of about an hour (30 seconds doubling, the
-	// jobs backoff) before its rows are marked failed.
-	messageSendAttempts  = 5
-	messageBatchAttempts = 8
 )
 
 type messageSendJob struct {
@@ -53,7 +49,7 @@ type messageBatchJob struct {
 
 func (a *App) messageKinds() []jobs.Kind {
 	return []jobs.Kind{
-		{Name: kindMessageSend, Label: "Getting an announcement ready to send", MaxAttempts: messageSendAttempts,
+		{Type: messageSendType, Label: "Getting an announcement ready to send",
 			Run: func(ctx context.Context, payload json.RawMessage) error {
 				var p messageSendJob
 				if err := json.Unmarshal(payload, &p); err != nil {
@@ -61,7 +57,7 @@ func (a *App) messageKinds() []jobs.Kind {
 				}
 				return a.prepareMessage(ctx, p.MessageID)
 			}},
-		{Name: kindMessageBatch, Label: "Sending an announcement", MaxAttempts: messageBatchAttempts,
+		{Type: messageBatchType, Label: "Sending an announcement",
 			Run: func(ctx context.Context, payload json.RawMessage) error {
 				var p messageBatchJob
 				if err := json.Unmarshal(payload, &p); err != nil {
@@ -72,17 +68,10 @@ func (a *App) messageKinds() []jobs.Kind {
 	}
 }
 
-// backgroundKinds are the job kinds queued by events, not by the day.
-func (a *App) backgroundKinds() []jobs.Kind {
-	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds(), a.notifyKinds(), a.mailKinds(), a.avatarKinds(), a.erasureKinds())
-}
-
 // enqueueMessageSend queues message.send for a message scheduled at when.
-// The key carries the time, so rescheduling queues a new job and the old
-// one finds the message not yet due and does nothing.
+// The key carries the time (messageSendKey).
 func enqueueMessageSend(tx *gorm.DB, id uint, when time.Time) error {
-	_, err := jobs.Enqueue(tx, kindMessageSend, messageSendJob{MessageID: id}, when,
-		"message.send:"+historyID(id)+":"+strconv.FormatInt(when.Unix(), 10), messageSendAttempts)
+	_, err := messageSendType.Enqueue(tx, messageSendJob{MessageID: id}, when, messageSendKey(id, when))
 	return err
 }
 
@@ -126,8 +115,10 @@ func (a *App) prepareMessage(ctx context.Context, id uint) error {
 	if err != nil && jobs.LastAttempt(ctx) {
 		log.Printf("message %d: couldn't prepare it: %s", id, jobs.CleanError(err))
 		var m models.Message
-		if a.DB.Select("id, author_id").First(&m, id).Error == nil {
+		if lookup := a.DB.Select("id, author_id").First(&m, id).Error; lookup == nil {
 			return a.refuseMessage(a.DB, &m, nil, whyNotPrepared)
+		} else if !errors.Is(lookup, gorm.ErrRecordNotFound) {
+			log.Printf("message %d: couldn't load it to say why: %s", id, jobs.CleanError(lookup))
 		}
 	}
 	return err
@@ -282,10 +273,9 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 }
 
 // lockSnapshotUsers locks every user a snapshot names (each row's recipient
-// and, for a guardian copy, the teen it is about) FOR KEY SHARE, ascending id,
-// 500 to a query, and returns the ones that still exist and are not deleted.
-// The read has no soft-delete scope: a deleted row is still locked, and
-// reported as gone.
+// and, for a guardian copy, the teen it is about) as notify.Send locks its
+// recipients (userlock.KeyShareLive) and returns the ones that still exist
+// and are not deleted.
 func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bool, error) {
 	var ids []uint
 	for _, r := range rows {
@@ -294,30 +284,7 @@ func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bo
 			ids = append(ids, *r.CopyOfUserID)
 		}
 	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	type snapshotUser struct {
-		ID        uint
-		DeletedAt *time.Time
-	}
-	live := map[uint]bool{}
-	err := eachChunk(ids, 500, func(chunk []uint) error {
-		var got []snapshotUser
-		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", chunk).Order("id").
-			Clauses(clause.Locking{Strength: "KEY SHARE"}).Find(&got).Error; err != nil {
-			return err
-		}
-		for _, u := range got {
-			if u.DeletedAt == nil {
-				live[u.ID] = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return live, nil
+	return userlock.KeyShareLive(tx, ids)
 }
 
 // revalidateSnapshotRows applies what lockSnapshotUsers found: an email row
@@ -345,16 +312,13 @@ func revalidateSnapshotRows(rows []models.MessageRecipient, live map[uint]bool) 
 }
 
 // enqueueBatches queues message.deliver_batch jobs of 50 for ids. gen is
-// "" for the first send and a fresh value for each "Try again", so a
-// retry's keys never collide with the jobs already done.
+// "" for the first send and a fresh value for each "Try again"
+// (messageBatchKeyPrefix).
 func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
-	prefix := "message.batch:" + historyID(messageID) + ":"
-	if gen != "" {
-		prefix += gen + ":"
-	}
+	prefix := messageBatchKeyPrefix(messageID, gen)
 	return eachChunk(ids, messageBatchSize, func(batch []uint) error {
-		_, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
-			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts)
+		_, err := messageBatchType.Enqueue(tx, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
+			prefix+idString(batch[0])+":"+idString(batch[len(batch)-1]))
 		return err
 	})
 }
@@ -541,10 +505,19 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	if err != nil {
 		return err
 	}
-	footer := footerFacts{site: a.siteName(), address: a.churchAddress()}
-	from := a.messageFromName(db, &m, footer.site)
-	replyTo := a.replyToAddress()
-	sender := mail.Unwrap(a.Mailer)
+	footer, err := footerFactsIn(db)
+	if err != nil {
+		return err
+	}
+	from, err := messageFromName(db, &m, footer.site)
+	if err != nil {
+		return err
+	}
+	replyTo, err := replyToAddressIn(db)
+	if err != nil {
+		return err
+	}
+	sender := mail.Unwrap(a.mailSender())
 	optOut := categoryScope(messageCategory(&m))
 	last := jobs.LastAttempt(ctx)
 	for _, row := range rows {
@@ -559,7 +532,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			// Who the reader is now: someone disabled or opted out since
 			// the snapshot doesn't get it.
-			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder) {
+			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && guestMayGet(messageCategory(&m))) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
 			}
 			// D11: check the actual destination after claiming each row, including
@@ -578,31 +551,23 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 				return err
 			}
 			msg.FromName, msg.ReplyTo = from, replyTo
-			var providerID string
-			err = mail.Blocked(blocked[mail.NormalizeAddress(row.Address)], msg)
-			if err == nil {
-				if tracked, ok := sender.(providers.EmailSender); ok {
-					providerID, err = tracked.SendEmail(ctx, msg)
-				} else {
-					err = sender.Send(ctx, msg)
-				}
-			}
+			res := sendTracked(ctx, sender, msg, blocked[mail.NormalizeAddress(row.Address)])
 			switch {
-			case err == nil:
-				return markRecipient(tx, row.ID, models.RecipientSent, "", providerID, "")
-			case mail.IsSuppressed(err):
+			case res.outcome == sendSent:
+				return markRecipient(tx, row.ID, models.RecipientSent, "", res.providerID, "")
+			case res.outcome == sendSuppressed:
 				// The same words the snapshot uses for these people.
 				why := skipNotWorking
-				if s := (*mail.ErrSuppressed)(nil); errors.As(err, &s) && s.Reason == models.SuppressComplaint {
+				if s := (*mail.ErrSuppressed)(nil); errors.As(res.err, &s) && s.Reason == models.SuppressComplaint {
 					why = skipComplained
 				}
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, why, "", "")
-			case mail.NotConfigured(err):
+			case res.outcome == sendNotConfigured:
 				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", whyNoSender)
-			case mail.IsPermanent(err), last:
-				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(err))
+			case res.outcome == sendPermanent, last:
+				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(res.err))
 			default:
-				return errors.Join(errStopBatch, err)
+				return errors.Join(errStopBatch, res.err)
 			}
 		})
 		if err != nil {
@@ -654,23 +619,29 @@ func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string]
 
 // messageFromName is "Pat Lee via First Church" (PLAN 7.8): the author's
 // name in the From header over the church's own address, kept short.
-func (a *App) messageFromName(db *gorm.DB, m *models.Message, site string) string {
+func messageFromName(db *gorm.DB, m *models.Message, site string) (string, error) {
 	name := site
-	var author models.User
-	if m.AuthorID != nil && db.Select("id, name, display_name").First(&author, *m.AuthorID).Error == nil {
-		name = author.PublicName() + " via " + site
+	if m.AuthorID != nil {
+		var author models.User
+		err := db.Select("id, name, display_name").First(&author, *m.AuthorID).Error
+		switch {
+		case err == nil:
+			name = author.PublicName() + " via " + site
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return "", err
+		}
 	}
-	return clipRunes(name, 120)
+	return clipRunes(name, 120), nil
 }
 
-// replyToAddress is the church office address replies go to (DEC-130),
+// replyToAddressIn is the church office address replies go to (DEC-130),
 // or "" when none is set or it isn't one plain address.
-func (a *App) replyToAddress() string {
-	addr := a.settingValue(settingReplyTo)
-	if addr == "" || !validEmail(addr) {
-		return ""
+func replyToAddressIn(db *gorm.DB) (string, error) {
+	addr, err := settingValueIn(db, settingReplyTo)
+	if err != nil || addr == "" || !validEmail(addr) {
+		return "", err
 	}
-	return addr
+	return addr, nil
 }
 
 // messageEmail renders m for one row's reader. A guardian copy is the
@@ -716,10 +687,11 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 		return out, err
 	}
 	var ev models.Event
-	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; err != nil {
-		return out, nil
+	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return out, nil // the event is gone: the fields stay unset
+	} else if err != nil {
+		return nil, err
 	}
-	loc := eventZone(ev.TZID)
 	statuses := au.Statuses
 	if len(statuses) == 0 {
 		statuses = defaultRegStatuses
@@ -745,17 +717,18 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if au.Type == policy.AudienceOccurrence {
 		// One date: its own title, when it has one.
 		var occ models.EventOccurrence
-		if db.Select("id, title_override").First(&occ, au.OccurrenceID).Error == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
+		if err := db.Select("id, title_override").First(&occ, au.OccurrenceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		} else if err == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
 			title = *occ.TitleOverride
 		}
 	}
-	link := a.emailLink("/events/" + historyID(ev.ID))
 	for id := range out {
-		out[id][content.FieldEventTitle], out[id][content.FieldEventLink], out[id][content.FieldManageLink] = title, link, link
+		a.setEventFields(out[id], ev.ID, title)
 	}
 	for _, d := range dates {
 		if v := out[d.UID]; v != nil {
-			v[content.FieldEventTime] = formatWhen(d.StartsAt, loc)
+			v[content.FieldEventTime] = eventTimeText(d.StartsAt, ev.TZID)
 			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
 		}
 	}
@@ -779,7 +752,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 	db := a.DB.WithContext(ctx)
 	live := func(kind string) string {
 		return `NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = '` + kind + `' AND j.status IN ('queued', 'running', 'failed')
-			AND (j.payload->>'messageId')::bigint = messages.id)`
+			AND (j.payload->>'` + messageJobIDField + `')::bigint = messages.id)`
 	}
 	var stuck []models.Message
 	if err := db.Select("id, author_id").Where("status = ? AND category <> ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, models.MessageCategoryReminder, now.Add(-time.Hour)).
@@ -823,7 +796,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 // in the church's day. Admins have no limit; their sends are audited.
 const dailyMessagesPerGroup = 5
 
-var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", "you've sent 5 messages to these people today")
+var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", fmt.Sprintf("you've sent %d messages to these people today", dailyMessagesPerGroup))
 
 // dailyLimitReached reports whether scheduling message id for when would
 // pass the limit for any group or church-wide event its audience reaches.
@@ -868,7 +841,7 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 // group ("g<id>", including its events) or a church-wide event ("e<id>").
 func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 	if au.Type == policy.AudienceGroup {
-		return []string{"g" + historyID(au.GroupID)}, nil
+		return []string{"g" + idString(au.GroupID)}, nil
 	}
 	ids, err := a.audienceEventIDs(a.DB, au)
 	if err != nil || len(ids) == 0 {
@@ -881,9 +854,9 @@ func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 	out := []string{}
 	seen := map[string]bool{}
 	for _, ev := range evs {
-		k := "e" + historyID(ev.ID)
+		k := "e" + idString(ev.ID)
 		if ev.GroupID != nil {
-			k = "g" + historyID(*ev.GroupID)
+			k = "g" + idString(*ev.GroupID)
 		}
 		if !seen[k] {
 			seen[k] = true

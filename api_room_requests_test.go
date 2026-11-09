@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/internal/notify"
 	"fold/models"
 
@@ -139,7 +139,7 @@ func TestRoomApprovalSeries(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ? AND original_date = ?", series.ID, last).Delete(&models.EventOccurrence{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
+	if err := eventdates.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if reqs = listRequests(t, f.admin); len(reqs) != 1 || reqs[0].Dates != 4 {
@@ -236,7 +236,7 @@ func TestRoomApprovalSeriesRoomStaysUnapproved(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ? AND original_date = ?", series.ID, last).Delete(&models.EventOccurrence{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
+	if err := eventdates.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 0 {
@@ -253,7 +253,7 @@ func TestRoomApprovalSeriesRoomStaysUnapproved(t *testing.T) {
 	if err := f.app.DB.Where("event_id = ? AND original_date = ?", series.ID, last).Delete(&models.EventOccurrence{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
+	if err := eventdates.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
 		t.Fatal(err)
 	}
 	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 1 {

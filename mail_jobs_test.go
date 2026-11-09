@@ -28,7 +28,6 @@ import (
 
 type directMailSenderFunc func(context.Context, mail.Message) error
 
-func (f directMailSenderFunc) Send(ctx context.Context, msg mail.Message) error { return f(ctx, msg) }
 func (f directMailSenderFunc) SendEmail(ctx context.Context, msg mail.Message) (string, error) {
 	return "", f(ctx, msg)
 }
@@ -2541,7 +2540,8 @@ func TestGuardianConsentMailAndAuthorityChangesLockOrders(t *testing.T) {
 				sender := app.Mailer
 				app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
 					delivered = msg.Text
-					return sender.Send(ctx, msg)
+					_, err := sender.SendEmail(ctx, msg)
+					return err
 				})
 				work := func(operation string) func(*gorm.DB) error {
 					return func(db *gorm.DB) error {

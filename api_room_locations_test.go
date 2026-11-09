@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/events"
 	"fold/models"
 )
 
@@ -146,5 +147,61 @@ func TestRoomLocationMatchingEdges(t *testing.T) {
 	}
 	if w := f.admin.do("GET", "/api/v1/admin/rooms/locations", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("locations while rooms are off: %d", w.Code)
+	}
+}
+
+// The SQL and the Go form of the rule answer alike for every combination of
+// a date's override, the event's place and the group's, and for a
+// church-wide event (no group row at all).
+func TestEffectivePlaceSQLAgreesWithGo(t *testing.T) {
+	db := testApp(t).DB
+	u := models.User{Email: "a@example.com", Name: "A", Role: models.RoleAdmin, Status: models.UserActive}
+	if err := db.Create(&u).Error; err != nil {
+		t.Fatal(err)
+	}
+	empty, own := "", "Room 4"
+	overrides := []*string{nil, &empty, &own}
+	start := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	for _, evPlace := range []string{"", "Hall"} {
+		for _, grPlace := range []string{"", "Church"} {
+			for _, churchWide := range []bool{false, true} {
+				for _, over := range overrides {
+					ev := models.Event{Title: "E", Location: evPlace, Visibility: "public", StartsLocal: "2026-01-01T10:00", DurationMinutes: 60, TZID: "UTC", CreatedBy: u.ID}
+					if !churchWide {
+						g := models.Group{Name: "G", LeaderID: u.ID, Status: "active", Visibility: "public", Location: grPlace}
+						if err := db.Create(&g).Error; err != nil {
+							t.Fatal(err)
+						}
+						ev.GroupID = &g.ID
+					}
+					if err := db.Create(&ev).Error; err != nil {
+						t.Fatal(err)
+					}
+					occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), StartsAt: start, EndsAt: start.Add(time.Hour),
+						Status: models.OccurrenceScheduled, LocationOverride: over}
+					if err := db.Create(&occ).Error; err != nil {
+						t.Fatal(err)
+					}
+					groupPlace := grPlace
+					if churchWide {
+						groupPlace = ""
+					}
+					var effective, series, viaSubquery string
+					if err := db.Raw(`SELECT `+events.EffectivePlaceSQL("o.location_override", "e.location", "g.location")+`, `+events.SeriesPlaceSQL("e.location", "g.location")+`,
+						`+events.SeriesPlaceSQL("e.location", "(SELECT g2.location FROM groups g2 WHERE g2.id = e.group_id)")+` FROM event_occurrences o JOIN events e ON e.id = o.event_id
+						LEFT JOIN groups g ON g.id = e.group_id WHERE o.id = ?`, occ.ID).Row().Scan(&effective, &series, &viaSubquery); err != nil {
+						t.Fatal(err)
+					}
+					if want := events.EffectivePlace(evPlace, over, groupPlace); effective != want {
+						t.Errorf("event %q group %q wide %v override %v: SQL %q, Go %q", evPlace, grPlace, churchWide, over, effective, want)
+					}
+					if want := events.SeriesPlace(evPlace, groupPlace); series != want {
+						t.Errorf("event %q group %q wide %v: series SQL %q, Go %q", evPlace, grPlace, churchWide, series, want)
+					} else if viaSubquery != want {
+						t.Errorf("event %q group %q wide %v: subquery form %q, Go %q", evPlace, grPlace, churchWide, viaSubquery, want)
+					}
+				}
+			}
+		}
 	}
 }

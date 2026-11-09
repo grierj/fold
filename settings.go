@@ -73,14 +73,18 @@ func boolSettingIn(tx *gorm.DB, key string, def bool) bool {
 	return def
 }
 
-// settingValue is the trimmed value of key, or "" when it is missing or the
-// read failed.
-func (a *App) settingValue(key string) string {
-	v, _, err := settingIn(a.DB, key)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(v)
+// settingOnSQL is boolSettingIn(key, false) as a SQL condition with the key
+// as its one argument, for a query that must read the switch in the same
+// statement (the rooms lookup pays one read whether rooms are on or off).
+// TestSettingOnSQLAgreesWithTheGoReader pins it to the Go reader.
+const settingOnSQL = `EXISTS (SELECT 1 FROM settings WHERE key = ? AND btrim(value) = 'true')`
+
+// settingValueIn is the trimmed value of key, or "" when it is missing. A
+// failed read is an error: a send must not go out without the church's
+// footer address or reply-to because the database blinked.
+func settingValueIn(tx *gorm.DB, key string) (string, error) {
+	v, _, err := settingIn(tx, key)
+	return strings.TrimSpace(v), err
 }
 
 // siteNameIn is the church's name, or defaultSiteName while none is set. It

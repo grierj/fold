@@ -45,10 +45,11 @@ type adminDeliverySummaryJSON struct {
 // maxDeadJobsListed bounds the System page; it says when there are more.
 const maxDeadJobsListed = 100
 
-// jobKinds is every job kind the server runs, by name, for its label.
+// jobKinds is every job kind the server runs, by name, for its label and
+// what dismissing one settles.
 func (a *App) jobKinds() map[string]jobs.Kind {
 	out := map[string]jobs.Kind{}
-	for _, k := range append(append(a.dailyKinds(), a.hourlyKinds()...), a.backgroundKinds()...) {
+	for _, k := range a.allJobKinds() {
 		out[k.Name] = k
 	}
 	return out
@@ -105,11 +106,15 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 var errJobHandled = apiErr(http.StatusConflict, "job_handled", "that task was already handled; refresh the list")
 
 // decideDeadJob moves one dead job to status, audited, or answers why not.
-func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]any) {
+func (a *App) decideDeadJob(c *gin.Context, action string, decide func(tx *gorm.DB, id uint) (bool, error)) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 63)
 	if err != nil {
 		jsonError(c, http.StatusNotFound, "job not found")
 		return
+	}
+	newStatus := models.JobQueued
+	if action == audit.JobDismissed {
+		newStatus = models.JobDismissed
 	}
 	me := apiUser(c)
 	var job models.Job
@@ -123,17 +128,14 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 			return err
 		}
 		// Only a dead job changes; two admins can't both act on one.
-		res := tx.Model(&models.Job{}).Where("id = ? AND status = ?", job.ID, models.JobDead).Updates(updates)
-		if res.Error != nil || res.RowsAffected == 0 {
-			return res.Error
+		done, err := decide(tx, job.ID)
+		if err != nil || !done {
+			return err
 		}
 		handled = true
-		if action == audit.JobDismissed && job.Kind == notify.DeliverKind {
-			var p notifyDeliverJob
-			if json.Unmarshal([]byte(job.Payload), &p) == nil && p.NotificationID != 0 {
-				if err := updateEmailDelivery(tx, p.NotificationID, models.DeliverySuppressed, emailDismissed, ""); err != nil {
-					return err
-				}
+		if k := a.jobKinds()[job.Kind]; action == audit.JobDismissed && k.OnDismiss != nil {
+			if err := k.OnDismiss(tx, json.RawMessage(job.Payload)); err != nil {
+				return err
 			}
 		}
 		// The alert for this death is done: close every admin's copy. The status
@@ -158,18 +160,17 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 	case !handled:
 		fail(c, errJobHandled)
 	default:
-		c.JSON(http.StatusOK, gin.H{"status": updates["status"]})
+		c.JSON(http.StatusOK, gin.H{"status": newStatus})
 	}
 }
 
 // apiAdminRetryJob queues a dead job again, from its first attempt.
 func (a *App) apiAdminRetryJob(c *gin.Context) {
-	a.decideDeadJob(c, audit.JobRetried, map[string]any{"status": models.JobQueued, "attempts": 0,
-		"run_at": time.Now(), "locked_at": nil, "locked_by": "", "updated_at": time.Now()})
+	a.decideDeadJob(c, audit.JobRetried, jobs.Retry)
 }
 
 // apiAdminDismissJob sets a dead job aside without running it; finished
 // jobs' cleanup removes it later.
 func (a *App) apiAdminDismissJob(c *gin.Context) {
-	a.decideDeadJob(c, audit.JobDismissed, map[string]any{"status": models.JobDismissed, "updated_at": time.Now()})
+	a.decideDeadJob(c, audit.JobDismissed, jobs.Dismiss)
 }

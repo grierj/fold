@@ -81,6 +81,11 @@ func (a *App) apiReadMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
 		return
 	}
+	from, err := messageFromName(a.DB, &m, a.siteName())
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the message")
+		return
+	}
 	vals := values[me.ID]
 	sentAt := m.SentAt
 	if sentAt == nil {
@@ -92,7 +97,7 @@ func (a *App) apiReadMessage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": messageReadJSON{
 		ID:       m.ID,
 		Subject:  strings.TrimSpace(content.Merge(m.Subject, vals, false)),
-		From:     a.messageFromName(a.DB, &m, a.siteName()),
+		From:     from,
 		SentAt:   sentAt,
 		BodyHTML: content.SanitizeHTML(content.Merge(unlinkMissingFields(m.BodyHTML, vals), vals, true)),
 	}})
