@@ -19,7 +19,6 @@ import (
 // Jitsi link generator.
 
 const (
-	settingJitsiDomain = "jitsi_domain"
 	defaultJitsiDomain = "meet.jit.si"
 	maxVideoURLLen     = 2048
 )
@@ -211,7 +210,7 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 	if !allowed {
 		var leads, hosts int64
 		a.DB.Model(&models.Membership{}).
-			Where("user_id = ? AND role = ? AND status = ?", me.ID, models.MembershipLeader, "active").
+			Where("user_id = ? AND role = ? AND status = ?", me.ID, models.MembershipLeader, models.MembershipActive).
 			Count(&leads)
 		a.DB.Model(&models.EventHost{}).Where("user_id = ?", me.ID).Count(&hosts)
 		allowed = leads > 0 || hosts > 0
@@ -232,11 +231,11 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 // meet.jit.si. A value that isn't a plain host name also falls back to the
 // default, so a typo in settings can't mint links onto a malformed host.
 func (a *App) jitsiDomain() string {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", settingJitsiDomain).First(&s).Error; err != nil {
+	v, found, err := settingIn(a.DB, settingJitsiDomain)
+	if err != nil || !found {
 		return defaultJitsiDomain
 	}
-	d := strings.TrimSpace(s.Value)
+	d := strings.TrimSpace(v)
 	d = strings.TrimPrefix(d, "https://")
 	d = strings.TrimPrefix(d, "http://")
 	if i := strings.Index(d, "/"); i >= 0 {

@@ -26,13 +26,10 @@ const { list, auth, site, calendar, openEvents } = vi.hoisted(() => ({
   list: vi.fn(), auth: vi.fn(), site: vi.fn(), calendar: vi.fn(), openEvents: vi.fn(),
 }));
 vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api", async (importActual) => ({
-  ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Groups: { list },
-  Events: { listOpen: openEvents },
-  Site: { get: site },
-  Calendar: { list: calendar },
-}));
+vi.mock("../api/groups", () => ({ Groups: { list } }));
+vi.mock("../api/events", () => ({ Events: { listOpen: openEvents } }));
+vi.mock("../api/site", () => ({ Site: { get: site } }));
+vi.mock("../api/calendar", () => ({ Calendar: { list: calendar } }));
 function listLikeTheAPI(search = "", tags: string[] = []) {
   const want = tags.map((t) => t.toLowerCase());
   return Promise.resolve({
@@ -167,7 +164,7 @@ describe("Home tag filters", () => {
 // AUDIT: the home page once showed the server's raw "boom".
 describe("Home load failure", () => {
   it("says what happened in plain words, never the server's text", async () => {
-    const { ApiError } = await vi.importActual<typeof import("../api")>("../api");
+    const { ApiError } = await vi.importActual<typeof import("../api/core")>("../api/core");
     list.mockReset();
     list.mockRejectedValue(new ApiError(500, "boom", { error: "server error", code: "server_error" }));
     renderHome();
@@ -199,6 +196,13 @@ describe("Home signed out (DEC-94)", () => {
 
   it("drops Request an account when self-signup is off", async () => {
     site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off" });
+    renderHome();
+    expect(await screen.findByRole("link", { name: "Browse public events" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
+  });
+
+  it("hides Request an account when the setting can't be read, but still offers the rest", async () => {
+    site.mockRejectedValue(new TypeError("offline"));
     renderHome();
     expect(await screen.findByRole("link", { name: "Browse public events" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
@@ -301,7 +305,6 @@ describe("Home signed in (DEC-94)", () => {
     expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Church events" })).not.toBeInTheDocument();
     expect(openEvents).not.toHaveBeenCalled();
-    expect(site).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Search groups")).toBeInTheDocument();
   });
 
@@ -370,7 +373,7 @@ describe("Home signed in (DEC-94)", () => {
   });
 
   it("keeps a calendar failure to its own section, and retries", async () => {
-    const { ApiError } = await vi.importActual<typeof import("../api")>("../api");
+    const { ApiError } = await vi.importActual<typeof import("../api/core")>("../api/core");
     calendar.mockRejectedValueOnce(new ApiError(500, "boom", { error: "server error", code: "server_error" }));
     renderHome();
     const alert = await screen.findByRole("alert");

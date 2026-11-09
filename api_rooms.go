@@ -13,7 +13,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -24,8 +23,6 @@ import (
 // edit and deactivate rooms; rooms are never deleted, so bookings keep
 // their history.
 // ---------------------------------------------------------------------------
-
-const settingRoomsEnabled = "rooms_enabled"
 
 // Room field limits, matching the CHECKs in migration 00045.
 const (
@@ -38,8 +35,7 @@ const (
 )
 
 func (a *App) roomsEnabled() bool {
-	var s models.Setting
-	return a.DB.Where("key = ?", settingRoomsEnabled).First(&s).Error == nil && s.Value == "true"
+	return boolSettingIn(a.DB, settingRoomsEnabled, false)
 }
 
 // roomsOn hides every room route while rooms are off, before auth, so a
@@ -197,8 +193,7 @@ func equalIntPtr(a, b *int) bool {
 
 // roomNameTaken reports the one-name-per-building index.
 func roomNameTaken(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_rooms_building_name"
+	return pgConstraint(err, pgUniqueViolation, "idx_rooms_building_name")
 }
 
 func (a *App) apiAdminListRooms(c *gin.Context) {
@@ -211,7 +206,7 @@ func (a *App) apiAdminListRooms(c *gin.Context) {
 	for i := range rooms {
 		out = append(out, toRoomJSON(&rooms[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "needApproval": roomApprovalOn(a.DB)})
+	c.JSON(http.StatusOK, adminRoomsJSON{Rooms: out, NeedApproval: roomApprovalOn(a.DB)})
 }
 
 func (a *App) apiAdminCreateRoom(c *gin.Context) {
@@ -311,9 +306,7 @@ func (a *App) apiSetRoomsEnabled(c *gin.Context) {
 	me := apiUser(c)
 	value := strconv.FormatBool(*body.Enabled)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where(models.Setting{Key: settingRoomsEnabled}).
-			Assign(models.Setting{Value: value}).
-			FirstOrCreate(&models.Setting{}).Error; err != nil {
+		if err := setSettingIn(tx, settingRoomsEnabled, value); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomsEnabledChanged,

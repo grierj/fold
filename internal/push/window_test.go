@@ -74,7 +74,7 @@ func TestWindowCheck(t *testing.T) {
 			if w == (Window{}) {
 				w = DefaultWindow
 			}
-			inside, opens := w.Check(tc.t, tc.tzid, denver)
+			inside, opens := w.Check(tc.t, zoneOf(tc.tzid, denver))
 			if inside != tc.inside {
 				t.Fatalf("inside = %v, want %v", inside, tc.inside)
 			}
@@ -91,21 +91,6 @@ func TestWindowCheck(t *testing.T) {
 				t.Errorf("opening %s is not after %s", opens, tc.t)
 			}
 		})
-	}
-}
-
-func TestZoneFallsBack(t *testing.T) {
-	denver := mustZone(t, "America/Denver")
-	if got := Zone("Asia/Tokyo", denver).String(); got != "Asia/Tokyo" {
-		t.Errorf("own zone: %s", got)
-	}
-	for _, tz := range []string{"", "  ", "Local", "Not/AZone"} {
-		if got := Zone(tz, denver); got != denver {
-			t.Errorf("%q: %s, want the church's", tz, got)
-		}
-	}
-	if got := Zone("", nil); got != time.UTC {
-		t.Errorf("no church zone: %s, want UTC", got)
 	}
 }
 
@@ -149,7 +134,7 @@ func TestWindowLastAllowed(t *testing.T) {
 			if w == (Window{}) {
 				w = DefaultWindow
 			}
-			got, ok := w.LastAllowed(tc.t, tc.tzid, denver, within)
+			got, ok := w.LastAllowed(tc.t, zoneOf(tc.tzid, denver), within)
 			if ok != tc.ok {
 				t.Fatalf("ok = %v (%s), want %v", ok, got, tc.ok)
 			}
@@ -157,7 +142,7 @@ func TestWindowLastAllowed(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tc.want)
 			}
 			if ok {
-				if inside, _ := w.Check(got, tc.tzid, denver); !inside {
+				if inside, _ := w.Check(got, zoneOf(tc.tzid, denver)); !inside {
 					t.Errorf("%s is outside the window", got)
 				}
 				if got.After(tc.t) || tc.t.Sub(got) > within {
@@ -166,4 +151,13 @@ func TestWindowLastAllowed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// zoneOf is the test tables' stand-in for the caller's zone resolution: the
+// named zone, else fallback (the root package's userZone does this for real).
+func zoneOf(tzid string, fallback *time.Location) *time.Location {
+	if loc, err := time.LoadLocation(tzid); tzid != "" && err == nil {
+		return loc
+	}
+	return fallback
 }

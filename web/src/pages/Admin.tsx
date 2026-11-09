@@ -9,7 +9,14 @@ import { Badge } from "../components/ui/Badge";
 import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminJobs, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
+import { Admin, AdminGroups, AdminJobs } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
+import { AdminGuardianLinks } from "../api/guardians";
+import { AdminRooms, RoomRequests } from "../api/rooms";
+import { AdminUsers } from "../api/adminUsers";
+import { ApiError } from "../api/core";
+import { Groups } from "../api/groups";
+import { Invitations } from "../api/invitations";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
@@ -22,7 +29,7 @@ import { PushEnabledSetting } from "../components/admin/PushEnabledSetting";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AdminDeliverySummary, AdminJob, AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
+import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -36,11 +43,13 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Chip } from "../components/ui/Chip";
 import { usePage } from "../lib/usePage";
+import { useLoad } from "../lib/useLoad";
+import { invalidateSite, useSite } from "../lib/useSite";
 import { PageCount, Pagination } from "../components/ui/Pagination";
 import { SearchBox } from "../components/ui/SearchBox";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ContactHistory } from "../contact-history-api";
+import { ContactHistory } from "../api/contactHistory";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 
 type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "settings" | "system";
@@ -1177,27 +1186,16 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 // ---------------------------------------------------------------------------
 
 function ChurchTimezone() {
-  const [tz, setTz] = useState("");
-  const [saved, setSaved] = useState("");
+  const { site, error: siteError, loading, retry } = useSite();
+  // What the admin typed, or null to show the saved zone.
+  const [edited, setEdited] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  const saved = site?.timezone ?? "";
+  const tz = edited ?? saved;
   // Leaving with an unsaved zone asks first (DEC-98).
   const { guard } = useUnsavedChanges(saved !== "" && tz.trim() !== saved);
-
-  useEffect(() => {
-    let alive = true;
-    Site.get()
-      .then((s) => {
-        if (!alive) return;
-        setTz(s.timezone);
-        setSaved(s.timezone);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -1206,8 +1204,8 @@ function ChurchTimezone() {
     setOk(false);
     try {
       const r = await Admin.setTimezone(tz.trim());
-      setTz(r.timezone);
-      setSaved(r.timezone);
+      invalidateSite({ timezone: r.timezone });
+      setEdited(null);
       setOk(true);
     } catch (err) {
       setError(errorText(err, "We couldn't save the time zone."));
@@ -1216,6 +1214,8 @@ function ChurchTimezone() {
     }
   }
 
+  if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the church time zone.")} onRetry={retry} /></div>;
+  if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
   return (
     <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
       {guard}
@@ -1224,7 +1224,7 @@ function ChurchTimezone() {
           forChurchSetting
           value={tz}
           onChange={(v) => {
-            setTz(v);
+            setEdited(v);
             setOk(false);
           }}
         />
@@ -1246,16 +1246,11 @@ function InviteTab() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [groupId, setGroupId] = useState("");
-  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const groupsLoad = useLoad(async () => (await Groups.list()).groups, []);
+  const groups = groupsLoad.data ?? [];
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    Groups.list()
-      .then((res) => setGroups(res.groups))
-      .catch(() => {});
-  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -1283,6 +1278,7 @@ function InviteTab() {
     <Form noValidate onSubmit={submit} className="fold-form max-w-xl space-y-5">
       {error && <FormError>{error}</FormError>}
       {status && <p role="status" className="text-success text-sm">{status}</p>}
+      {groupsLoad.error != null && <ErrorNotice message={errorText(groupsLoad.error, "We couldn't load the groups.")} onRetry={groupsLoad.retry} />}
       <p className="text-sm text-text-muted">
         They'll get an email link, set a password, and join with an active account. No
         approval step.
@@ -1326,44 +1322,36 @@ function InviteTab() {
 // no open mode; every request waits for an admin either way. It is one on/off
 // choice, so it saves when changed and goes back if saving fails (DEC-98).
 function SelfSignupSetting() {
-  const [mode, setMode] = useState<"request" | "off">("request");
+  const { site, error: siteError, loading, retry } = useSite();
+  // The choice shown while a save is in flight; null means show the saved one.
+  const [pending, setPending] = useState<"request" | "off" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    Site.get()
-      .then((s) => {
-        if (!alive) return;
-        setMode(s.selfSignup);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // An unreadable setting is not shown as On or Off.
+  const mode = pending ?? site?.selfSignup;
 
   async function change(next: "request" | "off") {
     // The options are disabled while a save is in flight, so changes are one
     // at a time and a failure goes back to the value from before this save.
-    const previous = mode;
     setSaving(true);
-    setMode(next);
+    setPending(next);
     setError(null);
     setOk(false);
     try {
       const r = await AdminAccountRequests.setSelfSignup(next);
-      setMode(r.selfSignup);
+      invalidateSite({ selfSignup: r.selfSignup });
       setOk(true);
     } catch (err) {
-      setMode(previous);
       setError(errorText(err, "We couldn't save that setting."));
     } finally {
+      setPending(null);
       setSaving(false);
     }
   }
 
+  if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the self-signup setting.")} onRetry={retry} /></div>;
+  if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
   return (
     <div className="mb-6 max-w-xl space-y-2">
       <Choices legend="Self-signup" hint="People ask for an account on /join. Turning this off never removes existing accounts.">
@@ -1394,7 +1382,7 @@ function SelfSignupSetting() {
 // saves when changed and goes back if saving fails (DEC-98). Turning it on
 // shows the Rooms tab at once; turning it off hides rooms and deletes nothing.
 // `enabled` is what AdminPage already read from /site (null until it answers).
-function RoomsSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
+function RoomsSetting({ enabled }: { enabled: boolean | null }) {
   // The choice shown while a save is in flight; null means show `enabled`.
   const [pending, setPending] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1408,7 +1396,7 @@ function RoomsSetting({ enabled, onChanged }: { enabled: boolean | null; onChang
     setOk(false);
     try {
       const r = await AdminRooms.setEnabled(next);
-      onChanged(r.roomsEnabled);
+      invalidateSite({ roomsEnabled: r.roomsEnabled });
       setOk(true);
     } catch (err) {
       setError(errorText(err, "We couldn't save that setting."));
@@ -1478,124 +1466,72 @@ export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  // Whether rooms are on: unknown (null) until /site answers. The Rooms tab
-  // exists only while they are on; a bookmarked one waits for the answer.
-  const [roomsEnabled, setRoomsEnabled] = useState<boolean | null>(null);
+  // Whether rooms are on: unknown (null) until /site answers, and still
+  // unknown if it fails (the settings page shows that, rather than "off").
+  // The Rooms tab exists only while they are on; a bookmarked one waits for the answer.
+  const { site, error: siteReadError, retry: retrySite } = useSite();
+  const roomsEnabled = site ? site.roomsEnabled === true : null;
   // /site failing leaves roomsEnabled unknown; a bookmarked Rooms tab then says so and offers a retry.
-  const [siteError, setSiteError] = useState<string | null>(null);
+  const siteError = siteReadError ? errorText(siteReadError, "We couldn't load the rooms.") : null;
   const roomsShown = roomsEnabled === true || (roomsEnabled === null && requestedTab === "rooms");
   const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", "system", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
     ? requestedTab as AdminTab : "approvals";
   const [pendingCount, setPendingCount] = useState(0);
-  const [users, setUsers] = useState<User[]>([]);
-  const [usersLoading, setUsersLoading] = useState(true);
+  const adminReady = !authLoading && !!user && isAdmin;
+  // A delete that must wait for a fresh list (history_unavailable) is released
+  // only by a load that began after it and worked (lib/deleteReload.ts).
+  const usersLoad = useLoad(async () => {
+    const started = reloadStarted();
+    const { users } = await AdminUsers.list();
+    reloadSucceeded(started);
+    return users;
+  }, [], { enabled: adminReady });
   // Counts for the Users and Groups chips; unknown (null) until loaded, so a
   // failed load shows no number rather than a wrong one.
-  const [userCount, setUserCount] = useState<number | null>(null);
+  const userCount = usersLoad.data ? usersLoad.data.length : null;
   // The groups list is loaded once here and shared: the Groups chip counts it
   // and the Groups tab shows it, so a delete or a decision updates one place.
-  const [groups, setGroups] = useState<GroupSummary[] | null>(null);
-  const [groupsError, setGroupsError] = useState<string | null>(null);
-  const groupCount = groups ? groups.length : null;
-  // Loaded once here like the groups: the Rooms chip counts the list the tab shows.
-  const [rooms, setRooms] = useState<Room[] | null>(null);
-  const [roomsError, setRoomsError] = useState<string | null>(null);
-  const roomCount = rooms ? rooms.length : null;
-  // Whether bookings wait for an admin, and the open requests (M2.1d). Both load with the rooms.
-  const [needApproval, setNeedApproval] = useState<boolean | null>(null);
-  const [requests, setRequests] = useState<RoomRequest[] | null>(null);
-  const [requestsError, setRequestsError] = useState<string | null>(null);
-  // Background tasks that ran out of attempts (M3.1b): loaded here so the
-  // System chip can count them.
-  const [deadJobs, setDeadJobs] = useState<AdminJob[] | null>(null);
-  const [moreJobs, setMoreJobs] = useState(false);
-  const [jobsError, setJobsError] = useState<string | null>(null);
-  const [deliveries, setDeliveries] = useState<AdminDeliverySummary | null>(null);
-  // The jobs as the server sent them with `deliveries`, for the email line only.
-  const [snapshotJobs, setSnapshotJobs] = useState<AdminJob[] | null>(null);
-
-  const loadUsers = useCallback(async () => {
-    // A delete that must wait for a fresh list (history_unavailable) is released
-    // only by a load that began after it and worked (lib/deleteReload.ts).
-    const started = reloadStarted();
-    try {
-      const { users } = await AdminUsers.list();
-      setUsers(users);
-      setUserCount(users.length);
-      reloadSucceeded(started);
-    } catch {
-      // Users tab shows its own empty state on failure.
-    } finally {
-      setUsersLoading(false);
-    }
-  }, []);
-
   // A failed load keeps any list already shown and leaves the count unknown
   // otherwise; the Groups tab offers a retry.
-  const loadGroups = useCallback(async () => {
-    setGroupsError(null);
-    try {
-      const { groups } = await AdminGroups.list();
-      setGroups(groups);
-    } catch (e) {
-      setGroupsError(errorText(e, "We couldn't load the groups."));
-    }
-  }, []);
-  const loadRooms = useCallback(async () => {
-    setRoomsError(null);
-    try {
-      const { rooms, needApproval } = await AdminRooms.list();
-      setRooms(rooms);
-      setNeedApproval(needApproval === true);
-    } catch (e) {
-      setRoomsError(errorText(e, "We couldn't load the rooms."));
-    }
-  }, []);
-  const loadRequests = useCallback(async () => {
-    setRequestsError(null);
-    try {
-      const { requests } = await RoomRequests.list();
-      setRequests(requests);
-    } catch (e) {
-      setRequestsError(errorText(e, "We couldn't load the bookings waiting for approval."));
-    }
-  }, []);
-  const loadJobs = useCallback(async () => {
-    setJobsError(null);
-    try {
-      const { jobs, more, deliveries } = await AdminJobs.list();
-      setDeadJobs(jobs);
-      setSnapshotJobs(jobs);
-      setDeliveries(deliveries ?? null);
-      setMoreJobs(more);
-    } catch (e) {
-      setJobsError(errorText(e, "We couldn't load the background tasks."));
-    }
-  }, []);
-  const jobRemoved = useCallback((id: number) => setDeadJobs((prev) => prev && prev.filter((j) => j.id !== id)), []);
-  const requestRemoved = useCallback((id: number) => setRequests((prev) => prev && prev.filter((r) => r.id !== id)), []);
-  const loadSite = useCallback(() => {
-    setSiteError(null);
-    Site.get().then((s) => setRoomsEnabled(!!s.roomsEnabled), (e) => setSiteError(errorText(e, "We couldn't load the rooms.")));
-  }, []);
-  const roomSaved = useCallback((room: Room) => setRooms((prev) => sortRooms([...(prev ?? []).filter((r) => r.id !== room.id), room])), []);
-  const groupDeleted = useCallback((id: number) => setGroups((prev) => prev && prev.filter((g) => g.id !== id)), []);
-
-  useEffect(() => {
-    if (!authLoading && user && isAdmin) {
-      loadUsers();
-      void loadGroups();
-      loadSite();
-      void loadJobs();
-    } else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite, loadJobs]);
-
-  useEffect(() => {
-    if (roomsEnabled) {
-      void loadRooms();
-      void loadRequests();
-    }
-  }, [roomsEnabled, loadRooms, loadRequests]);
+  const groupsLoad = useLoad(async () => (await AdminGroups.list()).groups, [], { enabled: adminReady });
+  const groups = groupsLoad.data ?? null;
+  const groupsError = groupsLoad.error ? errorText(groupsLoad.error, "We couldn't load the groups.") : null;
+  const loadGroups = groupsLoad.reload;
+  const groupCount = groups ? groups.length : null;
+  // Loaded once here like the groups: the Rooms chip counts the list the tab shows.
+  // Whether bookings wait for an admin comes with it (M2.1d).
+  const roomsLoad = useLoad(async () => {
+    const { rooms, needApproval } = await AdminRooms.list();
+    return { rooms, needApproval: needApproval === true };
+  }, [], { enabled: adminReady && roomsEnabled === true });
+  const rooms = roomsLoad.data?.rooms ?? null;
+  const needApproval = roomsLoad.data ? roomsLoad.data.needApproval : null;
+  const roomsError = roomsLoad.error ? errorText(roomsLoad.error, "We couldn't load the rooms.") : null;
+  const roomCount = rooms ? rooms.length : null;
+  const requestsLoad = useLoad(async () => (await RoomRequests.list()).requests, [], { enabled: adminReady && roomsEnabled === true });
+  const requests = requestsLoad.data ?? null;
+  const requestsError = requestsLoad.error ? errorText(requestsLoad.error, "We couldn't load the bookings waiting for approval.") : null;
+  // Background tasks that ran out of attempts (M3.1b): loaded here so the
+  // System chip can count them.
+  const jobsLoad = useLoad(() => AdminJobs.list(), [], { enabled: adminReady });
+  const jobsError = jobsLoad.error ? errorText(jobsLoad.error, "We couldn't load the background tasks.") : null;
+  // The jobs as the server sent them with `deliveries`, for the email line only.
+  const snapshotJobs = jobsLoad.data ? jobsLoad.data.jobs : null;
+  const deliveries = jobsLoad.data?.deliveries ?? null;
+  const moreJobs = jobsLoad.data?.more ?? false;
+  // Rows removed here show gone at once, before the reload returns.
+  const [removedJobs, setRemovedJobs] = useState<number[]>([]);
+  useEffect(() => setRemovedJobs([]), [jobsLoad.data]);
+  const deadJobs = snapshotJobs && snapshotJobs.filter((j) => !removedJobs.includes(j.id));
+  const loadJobs = jobsLoad.reload;
+  const jobRemoved = useCallback((id: number) => setRemovedJobs((prev) => [...prev, id]), []);
+  const { setData: setRequests } = requestsLoad;
+  const requestRemoved = useCallback((id: number) => setRequests((prev) => prev && prev.filter((r) => r.id !== id)), [setRequests]);
+  const { setData: setRoomsData } = roomsLoad;
+  const roomSaved = useCallback((room: Room) => setRoomsData((prev) => prev && { ...prev, rooms: sortRooms([...prev.rooms.filter((r) => r.id !== room.id), room]) }), [setRoomsData]);
+  const setNeedApproval = useCallback((on: boolean) => setRoomsData((prev) => prev && { ...prev, needApproval: on }), [setRoomsData]);
+  const { setData: setGroups } = groupsLoad;
+  const groupDeleted = useCallback((id: number) => setGroups((prev) => prev && prev.filter((g) => g.id !== id)), [setGroups]);
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
@@ -1643,26 +1579,31 @@ export function AdminPage() {
         <div className="fold-section"><PushEnabledSetting /></div>
         <div className="fold-section"><ChurchTimezone /></div>
         <div className="fold-section"><SelfSignupSetting /></div>
-        <div className="fold-section"><RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} /></div>
+        <div className="fold-section"><RoomsSetting enabled={roomsEnabled} /></div>
         {roomsEnabled === true && <div className="fold-section"><RoomApprovalSetting enabled={needApproval} onChanged={setNeedApproval} /></div>}
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
-      {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
+      {tab === "groups" && <GroupsTab users={usersLoad.data ?? []} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
       {tab === "rooms" && (roomsEnabled === true ? (
         <div className="space-y-8">
           <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
-            reload={loadRequests} onRemoved={requestRemoved}>
-            <RoomsTab rooms={rooms} error={roomsError} reload={loadRooms} onSaved={roomSaved} />
+            reload={requestsLoad.reload} onRemoved={requestRemoved}>
+            <RoomsTab rooms={rooms} error={roomsError} reload={roomsLoad.reload} onSaved={roomSaved} />
           </RoomRequestsList>
           <MatchLocations rooms={rooms} />
         </div>
       ) : (
         <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
-          reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />
+          reload={roomsEnabled === null ? retrySite : roomsLoad.reload} onSaved={roomSaved} />
       ))}
       {tab === "users" && (
-        usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
+        usersLoad.loading ? <Skeleton kind="lines" /> : usersLoad.data ? (
+          <>
+            {usersLoad.error != null && <ErrorNotice message={errorText(usersLoad.error, "We couldn't refresh the users.")} onRetry={usersLoad.reload} />}
+            <UsersTab users={usersLoad.data} reload={usersLoad.reload} />
+          </>
+        ) : <ErrorNotice message={errorText(usersLoad.error, "We couldn't load the users.")} onRetry={usersLoad.retry} />
       )}
       {tab === "invite" && <InviteTab />}
       {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} deliveries={deliveries} lineJobs={snapshotJobs} />}

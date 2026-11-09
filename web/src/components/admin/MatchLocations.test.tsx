@@ -2,14 +2,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminRooms, ApiError } from "../../api";
+import { AdminRooms } from "../../api/rooms";
+import { ApiError } from "../../api/core";
 import type { Room, TypedLocation } from "../../types";
 import { MatchLocations } from "./MatchLocations";
 
-vi.mock("../../api", async (actual) => ({
-  ...(await actual<typeof import("../../api")>()),
-  AdminRooms: { locations: vi.fn(), matchLocation: vi.fn() },
-}));
+vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), AdminRooms: { locations: vi.fn(), matchLocation: vi.fn() } }));
 
 const room = (id: number, name: string, extra: Partial<Room> = {}): Room => ({
   id, name, building: "", capacity: null, features: "", notes: "", active: true, restricted: false,

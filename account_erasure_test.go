@@ -11192,7 +11192,7 @@ func TestAgesNoteErasureRaceRolloverThenErasure(t *testing.T) {
 		Audit: []agesRaceAuditWant{
 			agesRaceEndRow(p, policy.ContactEnded, policy.ContactTurned18),
 			{Type: "user", ID: u.ID, Action: audit.UserTurned18, Meta: map[string]any{
-				"previousStatus": models.UserActive, "status": models.UserActive, "churchDate": now.In(churchZone(db)).Format("2006-01-02")}},
+				"previousStatus": models.UserActive, "status": models.UserActive, "churchDate": now.In(churchZoneOrUTC(db)).Format("2006-01-02")}},
 		},
 		Notices: []agesRaceNoticeWant{
 			agesRaceUpdated(leader.ID, p, policy.ContactEnded),

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, Notifications as Api, type Badge } from "../api";
-import type { Notification, NotificationFilter } from "../types";
+import { ApiError } from "../api/core";
+import { Admin } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
+import { Notifications as Api } from "../api/notifications";
+import type { Badge, Notification, NotificationFilter } from "../types";
 import { syncAppBadge } from "./push";
 
 // Everything here lives in memory only: no notification state goes to
@@ -209,9 +212,9 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
       // Inline Approve exists on exactly two kinds (DEC-44); the server
       // allow-lists both and refuses anything else (6.6).
       if (n.kind === "account.requested") {
-        await Api.approveAccountRequest(n.subjectId, n.id);
+        await AdminAccountRequests.approve(n.subjectId, undefined, n.id);
       } else {
-        await Api.approveGroup(n.subjectId, n.id);
+        await Admin.approve(n.subjectId, undefined, n.id);
       }
       patch(n.id, {
         waiting: false, actions: [],

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -609,30 +608,6 @@ func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 	data["csrfField"] = csrfField(c.GetString("csrfToken"))
 	data["SiteName"] = a.siteName()
 	c.HTML(code, name, data)
-}
-
-func (a *App) siteName() string {
-	name, err := siteNameIn(a.DB)
-	if err != nil {
-		return "Fold"
-	}
-	return name
-}
-
-// siteNameIn uses the caller's connection and context. Mail preparation passes
-// its transaction so this read needs no second connection and failures retry.
-func siteNameIn(db *gorm.DB) (string, error) {
-	var s models.Setting
-	if err := db.Where("key = ?", "site_name").First(&s).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "Fold", nil
-		}
-		return "", err
-	}
-	if s.Value == "" {
-		return "Fold", nil
-	}
-	return s.Value, nil
 }
 
 // setupRequired redirects everything to the setup wizard until an admin

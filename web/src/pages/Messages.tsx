@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
-import { Messages } from "../messages-api";
+import { Messages } from "../api/messages";
 import type { ComposeOptions, Message } from "../types";
 import { errorText } from "../lib/errors";
 import { audienceLabel, statusLabel } from "../lib/messages";
 import { reminderAudience, reminderRowTitle } from "../lib/reminders";
 import { browserTimeZone, dayOf, formatDayHeading, formatWhen } from "../lib/when";
-import { useChurchZoneLoad } from "../lib/useEventZone";
+import { useChurchZoneLoad } from "../lib/useSite";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { SearchBox } from "../components/ui/SearchBox";
 import { Field, Select } from "../components/ui/Field";

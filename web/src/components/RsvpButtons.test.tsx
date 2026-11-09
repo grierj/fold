@@ -5,14 +5,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RsvpButtons, type SeriesFeedbackSignal } from "./RsvpButtons";
 import { Button } from "./ui/Button";
-import { ApiError, Events } from "../api";
+import { ApiError } from "../api/core";
+import { Events } from "../api/events";
 import { occurrence } from "../test/occurrence";
 import type { RegistrationBatch } from "../types";
 
-vi.mock("../api", async (importActual) => ({
-  ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() },
-}));
+vi.mock("../api/events", () => ({ Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() } }));
 
 
 describe("RsvpButtons", () => {

@@ -7,6 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// minPasswordLength is the minimum for local-account passwords, enforced at
+// setup, admin creation, password change, and admin password reset. The setup
+// template states the requirement next to the field: keep them in sync.
+const minPasswordLength = 10
+
 // maxPasswordBytes is the longest password bcrypt accepts: it refuses more
 // than 72 bytes (ErrPasswordTooLong) rather than truncating. The limit is in
 // bytes, not characters, so accents and emoji use it up faster. The setup
@@ -34,14 +39,22 @@ func passwordLength(pw string) int {
 	return passwordLengthOK
 }
 
+// The messages passwordRuleError sends. api_errors.go keys its error codes on
+// them, so they are written out here; TestPasswordMessagesStateTheLimits keeps
+// the numbers in them equal to the limits above.
+const (
+	errPasswordTooShort = "password must be at least 10 characters"
+	errPasswordTooLong  = "password must be at most 72 bytes"
+)
+
 // passwordRuleError returns the message for a new password that breaks the
 // length rules, or "" when it is fine.
 func passwordRuleError(pw string) string {
 	switch passwordLength(pw) {
 	case passwordTooShort:
-		return "password must be at least 10 characters"
+		return errPasswordTooShort
 	case passwordTooLong:
-		return "password must be at most 72 bytes"
+		return errPasswordTooLong
 	}
 	return ""
 }

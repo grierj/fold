@@ -628,7 +628,7 @@ func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // erasureTestSendKey names one message by its recipient address and subject.
-func erasureTestSendKey(to, subject string) string { return normalizeEmail(to) + "|" + subject }
+func erasureTestSendKey(to, subject string) string { return mail.NormalizeAddress(to) + "|" + subject }
 
 type erasureTestBlockKey struct {
 	reached     chan struct{}

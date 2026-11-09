@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Contacts } from "../contact-api";
+import { Contacts } from "../api/contacts";
 import type { ContactGrant, ContactReveal } from "../types";
 import { errorText } from "../lib/errors";
 import { formatWhen } from "../lib/when";

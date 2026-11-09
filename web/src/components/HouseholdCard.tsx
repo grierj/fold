@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Households, type HouseholdPersonInput } from "../api";
+import { Households, type HouseholdPersonInput } from "../api/households";
 import type { Household, HouseholdAccount, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { formatBirthDate, formatWhen } from "../lib/when";

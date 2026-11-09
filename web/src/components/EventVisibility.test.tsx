@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { EventVisibilityControl } from "./EventVisibility";
 
 const { setVisibility, visibilityImpact } = vi.hoisted(() => ({ setVisibility: vi.fn(), visibilityImpact: vi.fn() }));
-vi.mock("../api", () => ({ ApiError: class extends Error {}, Events: { setVisibility, visibilityImpact } }));
+vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
+vi.mock("../api/events", () => ({ Events: { setVisibility, visibilityImpact } }));
 
 // Making one event more private previews and confirms, like a group (DEC-48).
 describe("event tightening", () => {

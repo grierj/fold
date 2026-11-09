@@ -22,7 +22,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -290,7 +289,7 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"guardianLinks": out, "nominations": nominations})
+	c.JSON(http.StatusOK, guardianLinksResponseJSON{GuardianLinks: out, Nominations: nominations})
 }
 
 func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }
@@ -416,7 +415,11 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
 				return err
 			}
-			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP()); err != nil {
+			today, err := churchClockIn(tx, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			if err := a.completeTeenConversionIfReady(tx, &teen, today, c.ClientIP()); err != nil {
 				return err
 			}
 			if _, err := jobs.Enqueue(tx, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
@@ -499,7 +502,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
 		jsonError(c, http.StatusBadRequest, "a valid email is required")
 		return
@@ -574,10 +577,10 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"user": a.toUserJSON(&u)})
 }
 
-// emailTaken reports a unique-email violation.
+// emailTaken reports a violation of the unique login email on users, and no
+// other unique index.
 func emailTaken(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return pgConstraint(err, pgUniqueViolation, "uni_users_email")
 }
 
 func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
@@ -681,12 +684,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
 	}
 	if body.Email != nil {
-		email := normalizeEmail(*body.Email)
+		email := mail.NormalizeAddress(*body.Email)
 		if !validEmail(email) {
 			jsonError(c, http.StatusBadRequest, "a valid email is required")
 			return
 		}
-		if email != normalizeEmail(u.Email) {
+		if email != mail.NormalizeAddress(u.Email) {
 			updates["email"] = email
 			bump = true
 		}
@@ -873,7 +876,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if err := tx.Model(u).Updates(updates).Error; err != nil {
 				return err
 			}
-			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP())
+			today, err := churchClockIn(tx, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			return a.completeTeenConversionIfReady(tx, u, today, c.ClientIP())
 		})
 		if needSuccessors(c, err) {
 			return

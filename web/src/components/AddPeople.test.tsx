@@ -2,15 +2,15 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Groups, Invitations, People } from "../api";
+import { ApiError } from "../api/core";
+import { Groups } from "../api/groups";
+import { Invitations } from "../api/invitations";
+import { People } from "../api/people";
 import { AddPeople } from "./AddPeople";
 
-vi.mock("../api", async (actual) => ({
-  ...(await actual<typeof import("../api")>()),
-  People: { search: vi.fn() },
-  Groups: { addMember: vi.fn() },
-  Invitations: { create: vi.fn() },
-}));
+vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { addMember: vi.fn() } }));
+vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
 
 const pat = { selectionId: "opaque-pat", displayName: "Pat Lee", teen: false, sharedGroups: [], otherGroups: [] };
 const onAdded = vi.fn();

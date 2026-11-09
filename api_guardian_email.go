@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -39,12 +40,18 @@ type guardianEmailPreviewJSON struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-func (a *App) guardianEmailSignature(nonce string, authority guardianEmailAuthority) string {
-	mac := hmac.New(sha256.New, a.Config.SessionSecret)
+// guardianEmailSignature signs the link under its own key derived from
+// SESSION_SECRET, not the secret itself, which also signs session cookies.
+func (a *App) guardianEmailSignature(nonce string, authority guardianEmailAuthority) (string, error) {
+	key, err := deriveKey(a.Config.SessionSecret, "guardian-email:v1")
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte("fold:teen-consent:v1\n" + nonce + "\n"))
 	b, _ := json.Marshal(authority)
 	mac.Write(b)
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
 func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
@@ -56,21 +63,22 @@ func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
 // Issuing another email for one link replaces that link only. A guardian
 // with two teens can use both emails independently.
 func (a *App) createGuardianEmailToken(tx *gorm.DB, guardian, teen *models.User, linkID uint) (string, error) {
-	if len(a.Config.SessionSecret) == 0 {
-		return "", fmt.Errorf("consent email signing key is unavailable")
-	}
 	consentID, err := latestAccountConsentID(tx, teen.ID)
 	if err != nil {
 		return "", err
 	}
 	expires := time.Now().UTC().Add(tokenTTL).Truncate(time.Second)
-	payload := guardianEmailAuthority{GuardianID: guardian.ID, GuardianEmail: normalizeEmail(guardian.Email), SessionVersion: guardian.SessionVersion,
+	payload := guardianEmailAuthority{GuardianID: guardian.ID, GuardianEmail: mail.NormalizeAddress(guardian.Email), SessionVersion: guardian.SessionVersion,
 		LinkID: linkID, TeenID: teen.ID, Scope: models.TeenConsentAccount, Status: models.ConsentGranted, ConsentID: consentID, ExpiresUnix: expires.Unix()}
 	nonce, err := newRawToken()
 	if err != nil {
 		return "", err
 	}
-	raw := nonce + "." + a.guardianEmailSignature(nonce, payload)
+	sig, err := a.guardianEmailSignature(nonce, payload)
+	if err != nil {
+		return "", err
+	}
+	raw := nonce + "." + sig
 	if err := tx.Where("kind = ? AND user_id = ? AND used_at IS NULL AND payload->>'linkId' = ?", models.TokenTeenConsent, guardian.ID, fmt.Sprint(linkID)).Delete(&models.AccountToken{}).Error; err != nil {
 		return "", err
 	}
@@ -81,7 +89,7 @@ func (a *App) createGuardianEmailToken(tx *gorm.DB, guardian, teen *models.User,
 func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken, guardianEmailAuthority, error) {
 	var payload guardianEmailAuthority
 	parts := strings.Split(raw, ".")
-	if len(parts) != 2 || len(parts[0]) != 43 || len(parts[1]) != 43 || len(a.Config.SessionSecret) == 0 {
+	if len(parts) != 2 || len(parts[0]) != 43 || len(parts[1]) != 43 {
 		return nil, payload, errTokenInvalid
 	}
 	var row models.AccountToken
@@ -90,8 +98,11 @@ func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken,
 		return nil, payload, errTokenInvalid
 	}
 	if json.Unmarshal([]byte(row.Payload), &payload) != nil || payload.GuardianID != row.UserID ||
-		payload.Scope != models.TeenConsentAccount || payload.Status != models.ConsentGranted || payload.ExpiresUnix != row.ExpiresAt.Unix() ||
-		!hmac.Equal([]byte(parts[1]), []byte(a.guardianEmailSignature(parts[0], payload))) {
+		payload.Scope != models.TeenConsentAccount || payload.Status != models.ConsentGranted || payload.ExpiresUnix != row.ExpiresAt.Unix() {
+		return nil, payload, errTokenInvalid
+	}
+	want, err := a.guardianEmailSignature(parts[0], payload)
+	if err != nil || !hmac.Equal([]byte(parts[1]), []byte(want)) {
 		return nil, payload, errTokenInvalid
 	}
 	return &row, payload, nil
@@ -103,7 +114,7 @@ func (a *App) guardianEmailActors(tx *gorm.DB, payload guardianEmailAuthority) (
 		return nil, nil, errTokenInvalid
 	}
 	consentID, err := latestAccountConsentID(tx, teen.ID)
-	if err != nil || consentID != payload.ConsentID || guardian.SessionVersion != payload.SessionVersion || normalizeEmail(guardian.Email) != payload.GuardianEmail {
+	if err != nil || consentID != payload.ConsentID || guardian.SessionVersion != payload.SessionVersion || mail.NormalizeAddress(guardian.Email) != payload.GuardianEmail {
 		return nil, nil, errTokenInvalid
 	}
 	return guardian, teen, nil

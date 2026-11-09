@@ -2,15 +2,13 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminRooms, ApiError } from "../../api";
+import { AdminRooms } from "../../api/rooms";
+import { ApiError } from "../../api/core";
 import { ERROR_COPY } from "../../lib/errors";
 import type { Room } from "../../types";
 import { RoomsTab, sortRooms } from "./RoomsTab";
 
-vi.mock("../../api", async (actual) => ({
-  ...(await actual<typeof import("../../api")>()),
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), getFeed: vi.fn(), makeFeed: vi.fn(), revokeFeed: vi.fn() },
-}));
+vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), getFeed: vi.fn(), makeFeed: vi.fn(), revokeFeed: vi.fn() } }));
 
 const room = (id: number, name: string, extra: Partial<Room> = {}): Room => ({
   id, name, building: "", capacity: null, features: "", notes: "", active: true, restricted: false,

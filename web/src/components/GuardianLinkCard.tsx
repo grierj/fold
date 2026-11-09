@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AdminGuardianLinks } from "../api";
+import { AdminGuardianLinks } from "../api/guardians";
 import type { GuardianLink } from "../types";
 import { errorText } from "../lib/errors";
 import { formatBirthDate } from "../lib/when";

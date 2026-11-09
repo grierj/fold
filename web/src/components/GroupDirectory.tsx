@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigationType, useSearchParams } from "react-router-dom";
-import { Groups } from "../api";
+import { Groups } from "../api/groups";
 import { useAuth } from "../auth";
 import type { GroupSummary } from "../types";
 import { errorText } from "../lib/errors";

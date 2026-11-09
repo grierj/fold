@@ -14,12 +14,8 @@ const api = vi.hoisted(() => ({
   get: vi.fn(),
   updatePush: vi.fn(),
 }));
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  Push: { config: api.config, save: api.save, remove: api.remove, turnOffEverywhere: api.turnOffEverywhere, test: api.test },
-  NotificationSettings: { get: api.get, updatePush: api.updatePush },
-  Site: { get: async () => ({ name: "Grace Church", timezone: "America/Boise", selfSignup: "request", roomsEnabled: false }) },
-}));
+vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), Push: { config: api.config, save: api.save, remove: api.remove, turnOffEverywhere: api.turnOffEverywhere, test: api.test }, NotificationSettings: { get: api.get, updatePush: api.updatePush } }));
+vi.mock("../api/site", async (orig) => ({ ...(await orig<typeof import("../api/site")>()), Site: { get: async () => ({ name: "Grace Church", timezone: "America/Boise", selfSignup: "request", roomsEnabled: false }) } }));
 
 // Signed in as person 5; this browser remembers its subscription is theirs.
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 5 } }) }));

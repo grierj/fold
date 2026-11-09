@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Contacts } from "../contact-api";
+import { Contacts } from "../api/contacts";
 import type { ContactGrant } from "../types";
 import { errorText } from "../lib/errors";
 import { ContactGrantCard } from "./ContactGrantCard";

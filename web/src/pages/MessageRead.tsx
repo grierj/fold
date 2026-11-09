@@ -1,10 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense } from "react";
 import { useParams } from "react-router-dom";
 import { ChevronLeftIcon } from "../components/icons";
 import { useAuth } from "../auth";
-import { Messages } from "../messages-api";
-import type { MessageRead } from "../types";
+import { Messages } from "../api/messages";
 import { errorCode, errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { formatWhen, lowerLead } from "../lib/when";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { ButtonLink } from "../components/ui/Button";
@@ -21,18 +21,9 @@ const RichTextView = lazy(() => import("../components/messages/RichTextEditor").
 // didn't get it hears that it isn't here.
 export function MessageReadPage() {
   const { id } = useParams<{ id: string }>();
-  const [message, setMessage] = useState<MessageRead | null>(null);
-  const [failed, setFailed] = useState<{ text: string; missing: boolean } | null>(null);
-  const [reload, setReload] = useState(0);
-
-  useEffect(() => {
-    let alive = true;
-    setFailed(null);
-    Messages.read(Number(id))
-      .then(({ message: m }) => { if (alive) setMessage(m); })
-      .catch((e) => { if (alive) setFailed({ text: errorText(e, "We couldn't open this message."), missing: errorCode(e) === "not_found" }); });
-    return () => { alive = false; };
-  }, [id, reload]);
+  const load = useLoad(async () => (await Messages.read(Number(id))).message, [id]);
+  const message = load.data ?? null;
+  const failed = load.error ? { text: errorText(load.error, "We couldn't open this message."), missing: errorCode(load.error) === "not_found" } : null;
 
   // Back to Messages for those who can open it (authors, admins), else Home.
   const { isAdmin, canCompose } = useAuth();
@@ -50,7 +41,7 @@ export function MessageReadPage() {
   if (failed) {
     return page(<>
       <h1 className="text-3xl font-bold">Message</h1>
-      <ErrorNotice message={failed.text} onRetry={() => setReload((n) => n + 1)} />
+      <ErrorNotice message={failed.text} onRetry={load.retry} />
     </>);
   }
   if (!message) return page(<Skeleton kind="page" label="Loading the message…" />);

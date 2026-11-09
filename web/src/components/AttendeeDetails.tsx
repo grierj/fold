@@ -1,5 +1,5 @@
 import { ContactDetails } from "./ContactDetails";
-import { attendeeSubject } from "../api";
+import { attendeeSubject } from "../lib/attendee";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Attendee, HouseholdAttendee, RegisteredBy } from "../types";
 import { Button } from "./ui/Button";

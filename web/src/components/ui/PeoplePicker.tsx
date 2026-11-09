@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { People } from "../../api";
+import { People } from "../../api/people";
 import type { PeopleSearchResponse, PersonSearchResult } from "../../types";
 import { errorText } from "../../lib/errors";
 import { Avatar } from "../Avatar";

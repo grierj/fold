@@ -1,7 +1,7 @@
 import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Auth as AuthApi } from "../api";
+import { Auth as AuthApi } from "../api/auth";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
@@ -13,7 +13,7 @@ export function ResetPassword() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
   const navigate = useNavigate();
-  const { refresh } = useAuth();
+  const { signedIn } = useAuth();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +33,7 @@ export function ResetPassword() {
       const result = await AuthApi.confirmPasswordReset(token, password);
       setPassword("");
       setConfirm("");
-      await refresh();
-      navigate(result.user.status === "pending_consent" ? "/waiting-for-consent" : "/", { replace: true });
+      navigate(await signedIn(result), { replace: true });
     } catch (e) {
       setError(
         errorCode(e) === "link_expired"

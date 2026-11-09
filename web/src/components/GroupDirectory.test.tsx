@@ -3,12 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { GroupSummary } from "../types";
-import { Groups } from "../api";
+import { Groups } from "../api/groups";
 import { DirectoryPositionProvider } from "../lib/directoryPosition";
 import { GroupDirectory } from "./GroupDirectory";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 } }) }));
-vi.mock("../api", () => ({ Groups: { list: vi.fn() } }));
+vi.mock("../api/groups", () => ({ Groups: { list: vi.fn() } }));
 const groups: GroupSummary[] = Array.from({ length: 50 }, (_, i) => ({
   id: i + 1, name: `Group ${String(i + 1).padStart(2, "0")}`, description: "", tags: [i % 2 ? "music" : "study"],
   imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Lee", memberCount: 10,

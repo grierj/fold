@@ -6,12 +6,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const get = vi.fn();
 const create = vi.fn();
 const setScope = vi.fn();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  CalendarFeeds: { get: () => get(), create: (s: string) => create(s), setScope: (s: string) => setScope(s), revoke: vi.fn() },
-}));
+vi.mock("../api/profile", async (orig) => ({ ...(await orig<typeof import("../api/profile")>()), CalendarFeeds: { get: () => get(), create: (s: string) => create(s), setScope: (s: string) => setScope(s), revoke: vi.fn() } }));
 
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { CalendarFeedCard } from "./CalendarFeedCard";
 
 const renderCard = () => render(<MemoryRouter><CalendarFeedCard /></MemoryRouter>);

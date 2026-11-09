@@ -2,15 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { EmailSettingsChange } from "../api";
+import type { EmailSettingsChange } from "../api/notifications";
 import type { NotificationSettings } from "../types";
 
-const get = vi.fn<typeof import("../api").EmailSettingsLink.get>();
-const update = vi.fn<typeof import("../api").EmailSettingsLink.update>();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  EmailSettingsLink: { get: (t: string) => get(t), update: (t: string, c: EmailSettingsChange) => update(t, c) },
-}));
+const get = vi.fn<typeof import("../api/notifications").EmailSettingsLink.get>();
+const update = vi.fn<typeof import("../api/notifications").EmailSettingsLink.update>();
+vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), EmailSettingsLink: { get: (t: string) => get(t), update: (t: string, c: EmailSettingsChange) => update(t, c) } }));
 
 let signedIn = false;
 vi.mock("../auth", async (orig) => ({
@@ -18,7 +15,7 @@ vi.mock("../auth", async (orig) => ({
   useAuth: () => ({ user: signedIn ? { id: 1, name: "Sam" } : null }),
 }));
 
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { EmailSettingsPage } from "./EmailSettings";
 
 const kinds = [

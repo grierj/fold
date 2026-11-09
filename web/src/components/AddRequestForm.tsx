@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useState } from "react";
-import { Adds, type AddRequestInput } from "../add-api";
+import { Adds, type AddRequestInput } from "../api/adds";
 import type { AddRequest, PersonSearchResult } from "../types";
 import { ERROR_COPY, errorText } from "../lib/errors";
 import { Button, ButtonLink } from "./ui/Button";

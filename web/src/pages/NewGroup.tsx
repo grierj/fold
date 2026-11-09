@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { GroupCover, Groups } from "../api";
+import { useNavigate } from "react-router-dom";
+import { GroupCover, Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
 import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
 import { useAuth } from "../auth";
@@ -9,23 +9,9 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 
 export function NewGroup() {
-  const { user, loading, isAdmin } = useAuth();
+  const { isAdmin } = useAuth();
   const navigate = useNavigate();
   const [created, setCreated] = useState<GroupSummary | null>(null);
-
-  if (!loading && !user) {
-    return (
-      <div className="fold-auth">
-        <p className="text-text-muted">
-          You need to{" "}
-          <Link to="/login" state={{ from: "/groups/new" }} className="text-primary font-semibold">
-            log in
-          </Link>{" "}
-          to start a group.
-        </p>
-      </div>
-    );
-  }
 
   async function create(data: GroupFormData) {
     const { group } = await Groups.create({

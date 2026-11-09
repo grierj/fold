@@ -933,17 +933,3 @@ func TestLoginRotatesCSRFToken(t *testing.T) {
 		t.Fatalf("fresh token: %d %s", w.Code, w.Body.String())
 	}
 }
-
-// normalizeEmail and the mail package's address normalization must stay the
-// same expression, since suppression lookups and logins share addresses.
-func TestNormalizeEmailMatchesMailNormalizeAddress(t *testing.T) {
-	for _, x := range []string{
-		"", " ", "pat@example.com", " Pat@Example.COM ", "PAT@EXAMPLE.COM",
-		"\tpat@example.com\n", " pat@example.com ", "pat@example.com ",
-		"ÅSA@EXAMPLE.COM", "åsa@example.com", " Åsa@Example.com\r\n",
-	} {
-		if got, want := normalizeEmail(x), foldmail.NormalizeAddress(x); got != want {
-			t.Errorf("normalizeEmail(%q) = %q, mail.NormalizeAddress = %q", x, got, want)
-		}
-	}
-}

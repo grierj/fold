@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Messages } from "../../messages-api";
+import { Messages } from "../../api/messages";
 import type { Message, MessageHistoryRecipient, MessageRecipientCounts, MessageRecipients } from "../../types";
 import { failedLine, HISTORY_WORDS, historyLine, pushBadge } from "../../lib/messages";
 import { Badge } from "../ui/Badge";

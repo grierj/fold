@@ -170,7 +170,10 @@ var settingsWriteRe = regexp.MustCompile(`(?i)(insert\s+into|update|delete\s+fro
 // through models.Setting: a key spelled as a literal or a package constant is
 // fixed; any other key (a parameter, a field, a variable) is a non-literal
 // writer and its function must refuse the barrier's row with
-// refuseRestoreFenceKey. Raw SQL that writes settings is only restore_fence.go's.
+// refuseRestoreFenceKey. The one such writer is setSettingIn (settings.go),
+// which every settings setter calls; when settings.go is among the sources it
+// must declare setSettingIn and that function must make the refusal. Raw SQL
+// that writes settings is only restore_fence.go's.
 func settingsWriterProblems(sources map[string]string) []string {
 	parsed := guardkit.Sources(sources).Parse(0)
 	bad := append([]string(nil), parsed.Problems...)
@@ -196,6 +199,7 @@ func settingsWriterProblems(sources map[string]string) []string {
 		id, ok := sel.X.(*ast.Ident)
 		return ok && id.Name == "models"
 	}
+	sawSetter := false
 	for _, pf := range parsed.Files {
 		path, tree := pf.Path, pf.AST
 		for _, d := range tree.Decls {
@@ -210,6 +214,12 @@ func settingsWriterProblems(sources map[string]string) []string {
 					}
 					return true
 				})
+			}
+			if path == "settings.go" && isFunc && fd.Name.Name == "setSettingIn" {
+				sawSetter = true
+				if !refuses {
+					bad = append(bad, fmt.Sprintf("%s:%d: setSettingIn does not refuse restore_fence", path, fset.Position(fd.Pos()).Line))
+				}
 			}
 			guardkit.InspectStack(d, func(n ast.Node, stack []ast.Node) bool {
 				switch x := n.(type) {
@@ -257,11 +267,17 @@ func settingsWriterProblems(sources map[string]string) []string {
 			})
 		}
 	}
+	if _, ok := sources["settings.go"]; ok && !sawSetter {
+		bad = append(bad, "settings.go does not declare setSettingIn, the one settings writer")
+	}
 	return bad
 }
 
 func TestSettingsWritersRefuseTheFenceKey(t *testing.T) {
 	sources := guardkit.Production(t)
+	if _, ok := sources["settings.go"]; !ok {
+		t.Fatal("settings.go, home of setSettingIn, is not in the production tree")
+	}
 	for _, v := range settingsWriterProblems(sources) {
 		t.Error(v)
 	}
@@ -281,6 +297,14 @@ func TestSettingsWritersRefuseTheFenceKey(t *testing.T) {
 	} {
 		if len(settingsWriterProblems(map[string]string{"x.go": src})) == 0 {
 			t.Errorf("%s: the census accepted it", name)
+		}
+	}
+	for name, src := range map[string]string{
+		"setSettingIn without the refusal": "package main\nfunc setSettingIn(tx *gorm.DB, key, value string) error { return tx.Create(&models.Setting{Key: key, Value: value}).Error }\n",
+		"no setSettingIn":                  "package main\nfunc other() {}\n",
+	} {
+		if len(settingsWriterProblems(map[string]string{"settings.go": src})) == 0 {
+			t.Errorf("%s: the census accepted settings.go", name)
 		}
 	}
 }

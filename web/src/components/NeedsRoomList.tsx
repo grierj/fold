@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { SeriesRooms, Site } from "../api";
+import { SeriesRooms } from "../api/rooms";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
+import { useRoomsEnabled } from "../lib/useSite";
 import { formatDayLong } from "../lib/when";
 import type { NeedsRoom } from "../types";
 import { RoomField } from "./RoomField";
@@ -26,10 +28,8 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
   onPick: (date: string) => void;
 }) {
   // Null until the site settings are read; they don't change while this is open.
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [needs, setNeeds] = useState<NeedsRoom[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
+  // A church with rooms off, or a site we can't read, sees no list at all.
+  const enabled = useRoomsEnabled() === true;
   const [own, setOwn] = useState(0);
   const [all, setAll] = useState(false);
   // The off-page date whose Room control is open under its row.
@@ -39,31 +39,28 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
   const watching = useRef<string | null>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
 
+  const list = useLoad(() => SeriesRooms.list(eventId), [eventId], { enabled });
+  // A change on the page, or in a row's own control, asks again without blanking the list.
+  const stamp = `${revision}:${own}`;
+  const asked = useRef(stamp);
+  const { reload } = list;
   useEffect(() => {
-    let alive = true;
-    // A church with rooms off, or a site we can't read, sees no list at all.
-    Site.get().then((site) => { if (alive) setEnabled(site.roomsEnabled === true); }, () => { if (alive) setEnabled(false); });
-    return () => { alive = false; };
-  }, []);
-
+    if (asked.current === stamp) return;
+    asked.current = stamp;
+    if (enabled) reload();
+  }, [stamp, enabled, reload]);
+  const needs: NeedsRoom[] = list.data?.needsRoom ?? [];
+  const error = list.error ? errorText(list.error, "We couldn't load the dates that need a room.") : null;
+  const loaded = list.data;
   useEffect(() => {
-    if (!enabled) return;
-    let alive = true;
-    SeriesRooms.list(eventId).then((res) => {
-      if (!alive) return;
-      setNeeds(res.needsRoom);
-      setError(null);
-      const was = watching.current;
-      if (was && !res.needsRoom.some((n) => n.date === was)) {
-        watching.current = null;
-        setOpen(null);
-        setNotice(`${formatDayLong(was)} has a room now.`);
-      }
-    }, (e) => {
-      if (alive) setError(errorText(e, "We couldn't load the dates that need a room."));
-    });
-    return () => { alive = false; };
-  }, [enabled, eventId, revision, retry, own]);
+    if (!loaded) return;
+    const was = watching.current;
+    if (was && !loaded.needsRoom.some((n) => n.date === was)) {
+      watching.current = null;
+      setOpen(null);
+      setNotice(`${formatDayLong(was)} has a room now.`);
+    }
+  }, [loaded]);
 
   useEffect(() => {
     if (notice) noticeRef.current?.focus();
@@ -75,7 +72,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
     return (
       <div className="mt-6 space-y-2">
         <FormError>{error}</FormError>
-        <Button variant="secondary" onClick={() => setRetry((n) => n + 1)}>Try again</Button>
+        <Button variant="secondary" onClick={list.retry}>Try again</Button>
       </div>
     );
   }

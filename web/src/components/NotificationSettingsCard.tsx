@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { NotificationSettings } from "../api";
-import type { EmailSettingsChange } from "../api";
+import { NotificationSettings } from "../api/notifications";
+import type { EmailSettingsChange } from "../api/notifications";
 import type { NotificationSettings as Settings } from "../types";
 import { EmailSettings } from "./EmailSettings";
 import { PushDeviceCard } from "./PushDeviceCard";

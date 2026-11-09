@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { EmailSettingsChange } from "../api";
+import type { EmailSettingsChange } from "../api/notifications";
 import type { EmailKind, NotificationSettings } from "../types";
 import { errorText } from "../lib/errors";
 import { Checkbox, Choices, FormError } from "./ui/Field";

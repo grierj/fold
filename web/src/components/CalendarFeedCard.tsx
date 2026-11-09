@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CalendarFeeds } from "../api";
+import { useRef, useState } from "react";
+import { CalendarFeeds } from "../api/profile";
 import type { CalendarFeed } from "../types";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { Button } from "./ui/Button";
 import { Choices, Field, FormError, Input, Radio } from "./ui/Field";
 import { Skeleton } from "./ui/Skeleton";
 import { ErrorNotice } from "./ErrorNotice";
 
 export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean }) {
-  const [loaded, setLoaded] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // A failed load must never look like "no link yet": Create would
+  // then quietly replace a link that works (M17-REVIEW M1).
+  const feed = useLoad(() => CalendarFeeds.get(), []);
+  const loaded = feed.data !== undefined;
+  const loadError = feed.error ? errorText(feed.error, "We couldn't load your calendar link.") : null;
   const [hasToken, setHasToken] = useState(false);
   const [scope, setScope] = useState<CalendarFeed["scope"]>("mine");
   const [link, setLink] = useState<string | null>(null);
@@ -17,32 +21,14 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const linkRef = useRef<HTMLInputElement>(null);
-  const alive = useRef(true);
 
-  const load = useCallback(() => {
-    setLoaded(false);
-    setLoadError(null);
-    CalendarFeeds.get()
-      .then((r) => {
-        if (!alive.current) return;
-        setHasToken(r.calendarFeed.hasToken);
-        setScope(r.calendarFeed.scope);
-        setLoaded(true);
-      })
-      .catch((err) => {
-        // A failed load must never look like "no link yet": Create would
-        // then quietly replace a link that works (M17-REVIEW M1).
-        if (alive.current) setLoadError(errorText(err, "We couldn't load your calendar link."));
-      });
-  }, []);
-
-  useEffect(() => {
-    alive.current = true;
-    load();
-    return () => {
-      alive.current = false;
-    };
-  }, [load]);
+  // Each answer fills the form's state in the render that first sees it.
+  const [applied, setApplied] = useState(feed.data);
+  if (feed.data && feed.data !== applied) {
+    setApplied(feed.data);
+    setHasToken(feed.data.calendarFeed.hasToken);
+    setScope(feed.data.calendarFeed.scope);
+  }
 
   async function create() {
     setBusy(true);
@@ -125,7 +111,7 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
         It keeps itself up to date.
       </p>
       {loadError ? (
-        <ErrorNotice message={loadError} onRetry={load} />
+        <ErrorNotice message={loadError} onRetry={feed.retry} />
       ) : !loaded ? (
         <Skeleton kind="lines" count={2} label="Loading your calendar link…" />
       ) : (

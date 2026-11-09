@@ -217,8 +217,7 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 	}
 	suggestions := a.roomSuggestions(suggestFor{person: asPerson(apiUser(c)), eventID: ev.ID, groupID: ev.GroupID,
 		visibility: ev.Visibility, capacity: ev.Capacity, windows: windowsOf(occs)}, offeredRooms(rooms))
-	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(occs), "defaultRoom": a.seriesRoom(ev), "needsRoom": needs, "pending": pending,
-		"suggestions": suggestions})
+	c.JSON(http.StatusOK, seriesRoomsJSON{Rooms: rooms, Dates: len(occs), DefaultRoom: a.seriesRoom(ev), NeedsRoom: needs, Pending: pending, Suggestions: suggestions})
 }
 
 // seriesRoom is the event's series room, or nil.
@@ -604,7 +603,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 	// picked on the form (DEC-110).
 	suggestions := a.roomSuggestions(suggestFor{person: asPerson(me), groupID: body.GroupID,
 		visibility: createVisibility(body.Visibility, group), capacity: ed.cap, windows: upcoming, tags: groupTags(group)}, offeredRooms(list))
-	c.JSON(http.StatusOK, gin.H{"rooms": list, "dates": len(windows), "suggestions": suggestions})
+	c.JSON(http.StatusOK, roomsCheckJSON{Rooms: list, Dates: len(windows), Suggestions: suggestions})
 }
 
 // bookCreatedSeries books the room picked on a create form for every date

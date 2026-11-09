@@ -2,12 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Adds } from "../add-api";
-import { ApiError } from "../api";
+import { Adds } from "../api/adds";
+import { ApiError } from "../api/core";
 import { addRequest } from "../test/addRequest";
 import { AddRequestForm } from "./AddRequestForm";
 
-vi.mock("../add-api", () => ({ Adds: { create: vi.fn() } }));
+vi.mock("../api/adds", () => ({ Adds: { create: vi.fn() } }));
 const person = { selectionId: "opaque", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] };
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(Adds.create).mockResolvedValue({ request: addRequest() }); vi.spyOn(window, "confirm").mockReturnValue(true); });
 function mount(group = true, full = false) { render(<MemoryRouter><AddRequestForm person={person} scope={group ? { contextType: "group", contextId: 3 } : { contextType: "event", contextId: 4, occurrenceId: 41, attendanceMode: "remote", guestCount: 2 }} full={full} onClose={() => {}} /></MemoryRouter>); }

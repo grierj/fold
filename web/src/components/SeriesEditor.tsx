@@ -1,7 +1,7 @@
 import { Form } from "./ui/Form";
 import { childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
 import { useState } from "react";
-import { Events } from "../api";
+import { Events } from "../api/events";
 import { bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 import { errorText } from "../lib/errors";
 import { useDirty } from "../lib/useDirty";
@@ -18,7 +18,7 @@ import { SeriesRoomField } from "./SeriesRoomField";
 import { focusSeatLimit, isSeatsError, seatsFrom, seatsProblem, type SeatsValue } from "./SeatsField";
 import { focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
 import { focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
-import type { VideoProvider, VideoReveal } from "../types";
+import type { EventInput, VideoProvider, VideoReveal } from "../types";
 
 
 export interface SeriesFields {
@@ -165,30 +165,7 @@ export function SeriesEditor({
     // Only send capacity fields that changed: on the group page the
     // initial capacity is the date's effective value, and an untouched
     // field must not clobber a per-date override.
-    const body: {
-      title: string;
-      description: string;
-      startsLocal: string;
-      durationMinutes: number;
-      tzid: string;
-      location: string;
-      recurrenceRule: string;
-      rruleUntil: string;
-      capacity?: number | null;
-      waitlistEnabled?: boolean;
-      guestsAllowed?: number;
-      childcareAvailable?: boolean;
-      childcareCapacity?: number | null;
-      childcareAges?: string;
-      childcareNotes?: string;
-      remoteAvailable?: boolean;
-      remoteCapacity?: number | null;
-      videoProvider?: VideoProvider;
-      videoUrl?: string;
-      videoReveal?: VideoReveal;
-      reminderEmailMinutes?: number;
-      reminderPush?: boolean;
-    } = {
+    const body: EventInput = {
       title: title.trim(),
       description: description.trim(),
       startsLocal: `${date}T${time}`,

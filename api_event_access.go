@@ -9,6 +9,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -269,7 +270,7 @@ func (a *App) apiGetEvent(c *gin.Context) {
 }
 
 func (a *App) hostCandidate(actor *models.User, email string) (*models.User, int, string) {
-	email = normalizeEmail(email)
+	email = mail.NormalizeAddress(email)
 	if email == "" {
 		return nil, http.StatusBadRequest, "email is required"
 	}

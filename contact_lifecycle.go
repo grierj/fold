@@ -14,7 +14,6 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -139,8 +138,7 @@ func classifyContactErr(err error) contactOutcome {
 	if errors.Is(err, errCommitReserve) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return outcomeTimedOut
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "57014" {
+	if pgCode(err) == pgQueryCanceled {
 		return outcomeTimedOut
 	}
 	return outcomeFailed
@@ -351,18 +349,6 @@ func contactAccount(u *models.User, now time.Time, zone *time.Location) policy.C
 	}
 	return out
 }
-func contactZone(tx *gorm.DB) (*time.Location, error) {
-	var setting models.Setting
-	err := tx.Where("key = ?", settingTimezone).First(&setting).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return time.UTC, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return time.LoadLocation(setting.Value)
-}
-
 func contactUser(tx *gorm.DB, id uint) (*models.User, error) {
 	var u models.User
 	err := tx.First(&u, id).Error
@@ -384,7 +370,7 @@ func (a *App) loadContactFacts(tx *gorm.DB, s policy.ContactScope, now time.Time
 	if err != nil {
 		return f, nil, err
 	}
-	zone, err := contactZone(tx)
+	zone, err := churchZoneIn(tx)
 	if err != nil {
 		return f, nil, err
 	}
@@ -670,7 +656,7 @@ func (a *App) loadGroupAddFacts(tx *gorm.DB, r models.ContactRequest, now time.T
 	if r.Purpose != policy.RequestGroupAdd || r.ContextType != policy.ContactGroup {
 		return f, nil
 	}
-	zone, err := contactZone(tx)
+	zone, err := churchZoneIn(tx)
 	if err != nil {
 		return f, err
 	}

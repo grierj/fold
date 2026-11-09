@@ -103,7 +103,7 @@ func losersForDate(tx *gorm.DB, ev *models.Event, newVis string, now time.Time, 
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Joins("JOIN users ON users.id = COALESCE(registrations.user_id,registrations.registered_by)").
 		Where("event_occurrences.event_id = ? AND event_occurrences.starts_at > ?", ev.ID, now).
-		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted})
+		Where("registrations.status IN ?", models.CurrentRegStatuses)
 	if occurrenceID != 0 {
 		q = q.Where("event_occurrences.id = ?", occurrenceID)
 	} else {
@@ -142,7 +142,7 @@ func losersForDate(tx *gorm.DB, ev *models.Event, newVis string, now time.Time, 
 			return q.Where("1 = 0")
 		}
 		return q.Where("users.role <> ?", models.RoleAdmin).
-			Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = users.id AND memberships.group_id = ? AND memberships.status = 'active')", *ev.GroupID)
+			Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = users.id AND memberships.group_id = ? AND memberships.status = ?)", *ev.GroupID, models.MembershipActive)
 	default:
 		return q.Where("1 = 0")
 	}

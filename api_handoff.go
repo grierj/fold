@@ -39,10 +39,10 @@ func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
 	// whose accounts still exist and aren't disabled.
 	var groups []models.Group
 	err := db.Where(`id IN (SELECT group_id FROM memberships
-		WHERE user_id = ? AND role = ? AND status = 'active')
+		WHERE user_id = ? AND role = ? AND status = ?)
 		AND (SELECT count(*) FROM memberships m `+listedUsers("m")+`
-		WHERE m.group_id = groups.id AND m.role = ? AND m.status = 'active') = 1`,
-		userID, models.MembershipLeader, models.MembershipLeader).
+		WHERE m.group_id = groups.id AND m.role = ? AND m.status = ?) = 1`,
+		userID, models.MembershipLeader, models.MembershipActive, models.MembershipLeader, models.MembershipActive).
 		Order("name").Find(&groups).Error
 	return groups, err
 }
@@ -51,8 +51,8 @@ func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
 // every admin who isn't already listed.
 func successorCandidates(db *gorm.DB, groupID, leaving uint) []successorJSON {
 	var users []models.User
-	db.Where(`id <> ? AND status = 'active' AND (role = ? OR id IN (SELECT user_id FROM memberships
-		WHERE group_id = ? AND status = 'active'))`, leaving, models.RoleAdmin, groupID).
+	db.Where(`id <> ? AND status = ? AND (role = ? OR id IN (SELECT user_id FROM memberships
+		WHERE group_id = ? AND status = ?))`, leaving, models.UserActive, models.RoleAdmin, groupID, models.MembershipActive).
 		Order("name, id").Find(&users)
 	// One query for the candidates' memberships in this group, any status.
 	ids := make([]uint, len(users))
@@ -153,7 +153,7 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if membershipRel(m).Member {
 			oldRole = m.Role
 		}
-		m.UserID, m.GroupID, m.Role, m.Status = sid, g.ID, models.MembershipLeader, "active"
+		m.UserID, m.GroupID, m.Role, m.Status = sid, g.ID, models.MembershipLeader, models.MembershipActive
 		if m.JoinedAt.IsZero() {
 			m.JoinedAt = time.Now().UTC()
 		}
@@ -215,7 +215,7 @@ func needSuccessors(c *gin.Context, err error) bool {
 func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) error {
 	actor := apiUser(c)
 	var led []models.Membership
-	if err := tx.Where("user_id = ? AND role = ? AND status = 'active'", userID, models.MembershipLeader).
+	if err := tx.Where("user_id = ? AND role = ? AND status = ?", userID, models.MembershipLeader, models.MembershipActive).
 		Find(&led).Error; err != nil {
 		return err
 	}
@@ -248,7 +248,7 @@ func restoreMemberships(tx *gorm.DB, userID, actor uint, ip string) error {
 	}
 	var kept []models.Membership
 	// Stable order (by group) so concurrent restores lock groups the same way.
-	if err := tx.Where("user_id = ? AND status = 'active'", userID).Order("group_id").Find(&kept).Error; err != nil {
+	if err := tx.Where("user_id = ? AND status = ?", userID, models.MembershipActive).Order("group_id").Find(&kept).Error; err != nil {
 		return err
 	}
 	for _, m := range kept {
@@ -275,12 +275,12 @@ func restoreMemberships(tx *gorm.DB, userID, actor uint, ip string) error {
 			}
 			continue
 		}
-		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": "active"}).Error; err != nil {
+		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": models.MembershipActive}).Error; err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{
 			Actor: actorID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
-			Meta: map[string]any{"userId": userID, "status": "active"}, IP: ip,
+			Meta: map[string]any{"userId": userID, "status": models.MembershipActive}, IP: ip,
 		}); err != nil {
 			return err
 		}

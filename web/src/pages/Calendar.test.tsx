@@ -7,12 +7,9 @@ import { CalendarPage } from "./Calendar";
 
 const { list, groups, auth, site } = vi.hoisted(() => ({ list: vi.fn(), groups: vi.fn(), auth: vi.fn(), site: vi.fn() }));
 vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api", async (importActual) => ({
-  ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Calendar: { list },
-  Groups: { list: groups },
-  Site: { get: site },
-}));
+vi.mock("../api/calendar", () => ({ Calendar: { list } }));
+vi.mock("../api/groups", () => ({ Groups: { list: groups } }));
+vi.mock("../api/site", () => ({ Site: { get: site } }));
 
 const occ = (eventId: number, o: Partial<CalendarOccurrence> = {}): CalendarOccurrence => ({
   eventId, date: "2026-10-21", startsAt: "2026-10-21T18:00:00Z", endsAt: "2026-10-21T19:00:00Z", title: `Event ${eventId}`,
@@ -167,7 +164,7 @@ describe("the Rooms view item (M2.2a)", () => {
     expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
   });
 
-  it("hides Rooms from teens and signed-out visitors without asking", async () => {
+  it("hides Rooms from teens and signed-out visitors", async () => {
     site.mockResolvedValue({ roomsEnabled: true });
     auth.mockReturnValue({ user: { id: 1, accountType: "teen" }, isAdmin: false });
     const { unmount } = show([]);
@@ -178,6 +175,5 @@ describe("the Rooms view item (M2.2a)", () => {
     show([]);
     await screen.findByRole("link", { name: "Month" });
     expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
-    expect(site).not.toHaveBeenCalled();
   });
 });

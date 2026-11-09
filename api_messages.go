@@ -82,10 +82,7 @@ type messageReminderJSON struct {
 // (the date's title, its time on the event's clock); any other field
 // stays as written.
 func reminderSubject(subject string, d messageReminderJSON) string {
-	loc, err := time.LoadLocation(d.TZID)
-	if err != nil {
-		loc = time.UTC
-	}
+	loc := eventZone(d.TZID)
 	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
 }
 
@@ -389,7 +386,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 	groups := []models.Group{}
 	gq := a.DB.Where("status = ?", models.GroupActive).Order("lower(name)")
 	if !p.Admin {
-		gq = gq.Where("id IN (SELECT group_id FROM memberships WHERE user_id = ? AND role = ? AND status = 'active')", me.ID, models.MembershipLeader)
+		gq = gq.Where("id IN (SELECT group_id FROM memberships WHERE user_id = ? AND role = ? AND status = ?)", me.ID, models.MembershipLeader, models.MembershipActive)
 	}
 	if err := gq.Find(&groups).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the composer")
