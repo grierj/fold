@@ -42,7 +42,7 @@ var throttleSQLAllowed = map[string]map[string]bool{
 		"reserveLoginAttempt": true, "countThrottleHit": true, "lockLoginKeysAtLimit": true,
 		"pruneLoginThrottles": true, "refundLoginAttempts": true, "clearLoginKey": true,
 	},
-	"account_erasure.go":          {"eraseOwnedThrottleKeysIn": true},
+	"account_erasure.go": {"eraseOwnedThrottleKeysIn": true},
 }
 
 // loginThrottlesTable matches the table name as a whole word, so a schema
