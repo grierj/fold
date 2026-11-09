@@ -192,7 +192,7 @@ func (a *App) fromNotification(c *gin.Context, id *uint, action string, subjectI
 		return false
 	}
 	if !notify.Allows(n.Kind, action) || n.SubjectID == nil || *n.SubjectID != subjectID {
-		jsonError(c, http.StatusForbidden, "that action can't be taken from a notification")
+		fail(c, errOpenPageInstead)
 		return false
 	}
 	return true

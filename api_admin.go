@@ -55,7 +55,7 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 	if body.Tags != nil {
 		joined := joinTags(body.Tags)
 		if len(joined) > maxTagsLen {
-			jsonError(c, http.StatusBadRequest, "tags are too long")
+			fail(c, errTagsTooLong)
 			return
 		}
 		tags = &joined
@@ -102,11 +102,11 @@ func (a *App) apiRejectGroup(c *gin.Context) {
 	// An optional message to the leaders, carried on their notice (DEC-96).
 	message := strings.TrimSpace(body.Message)
 	if utf8.RuneCountInString(message) > maxRejectMessage {
-		jsonError(c, http.StatusBadRequest, "message must be 500 characters or fewer")
+		fail(c, errMessageTooLong500)
 		return
 	}
 	if hasContactDetails(message) {
-		jsonError(c, http.StatusBadRequest, "leave contact details out of the message")
+		fail(c, errMessageHasContact)
 		return
 	}
 	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil, message)
@@ -322,11 +322,11 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		note = strings.TrimSpace(body.Note)
 	}
 	if confirm && note == "" {
-		jsonError(c, http.StatusBadRequest, "a check note is required to confirm this link")
+		fail(c, errCheckNoteRequired)
 		return
 	}
 	if len(note) > 500 {
-		jsonError(c, http.StatusBadRequest, "check note must be at most 500 characters")
+		fail(c, errCheckNoteTooLong)
 		return
 	}
 	// DEC-79: an admin cannot confirm their own guardian link while another
@@ -337,7 +337,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
 	}
 	errHandled := errors.New("already handled")
-	errSelfConfirm := errors.New("another admin must confirm your own guardian link")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if link.TeenUserID != nil {
 			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
@@ -381,7 +380,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 				return err
 			}
 			if otherAdmins > 0 {
-				return errSelfConfirm
+				return errSelfConfirmBlocked
 			}
 		}
 		now := time.Now().UTC()
@@ -433,16 +432,8 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		a.alreadyHandled(c, notify.HouseholdLinkPending, link.ID)
 		return
 	}
-	if errors.Is(err, errSelfConfirm) || errors.Is(err, errConsentForbidden) {
-		jsonError(c, http.StatusForbidden, err.Error())
-		return
-	}
-	if errors.Is(err, errConversionRetry) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionDetails) {
-		conversionError(c, err)
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not decide that link")
+		fail(c, err)
 		return
 	}
 	var fresh models.GuardianLink
@@ -504,12 +495,12 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	}
 	email := mail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
-		jsonError(c, http.StatusBadRequest, "a valid email is required")
+		fail(c, errValidEmailRequired)
 		return
 	}
 	name := strings.TrimSpace(body.Name)
 	if name == "" || len(name) > 100 {
-		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
+		fail(c, errNameRequired100)
 		return
 	}
 	if body.Password != "" && !checkNewPassword(c, body.Password) {
@@ -561,7 +552,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	}
 	if err != nil {
 		if emailTaken(err) {
-			jsonError(c, http.StatusConflict, "an account with that email already exists")
+			fail(c, errEmailTaken)
 			return
 		}
 		jsonError(c, http.StatusInternalServerError, "could not create user")
@@ -603,25 +594,63 @@ func adminCountIn(tx *gorm.DB) (int, error) {
 	return int(n), nil
 }
 
-// errAdminRule is the last-admin or self rule, decided under the contact gate
-// on locked facts. msg is the answer the pre-gate check gives for the same
-// case; the handler maps it to a 400.
-type errAdminRule struct{ msg string }
+// The deletion's answers that name an outcome (R4-CTX; classifyContactErr
+// decides which). The first two are real copy on a 5xx on purpose.
+var (
+	errDeleteOutcomeUnknown = apiErr(http.StatusInternalServerError, "delete_outcome_unknown", "could not confirm whether the account was deleted")
+	errDeleteTimedOut       = apiErr(http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted")
+	errDeleteHouseholdBusy  = apiErr(http.StatusConflict, "delete_household_busy", "someone was changing this person's household, so nothing was deleted")
+)
 
-func (e errAdminRule) Error() string { return e.msg }
+// adminChange is what an admin is about to do to an account that the
+// last-admin and self rules (policy.CanDemoteOrDelete) can refuse.
+type adminChange int
+
+const (
+	adminDemote adminChange = iota
+	adminDisable
+	adminDelete
+)
+
+// adminRuleRefusal is the answer when policy.CanDemoteOrDelete refuses change:
+// the self rule when the admin acts on their own account, else the last-admin
+// rule. The pre-gate checks and the locked recheck give the same answer.
+func adminRuleRefusal(change adminChange, self bool) *apiError {
+	if self {
+		return adminRuleRefusals[change][1]
+	}
+	return adminRuleRefusals[change][0]
+}
+
+// adminRuleRefusals are the last-admin and self answers, by change.
+var adminRuleRefusals = [...][2]*apiError{
+	adminDemote:  {errCannotDemoteLastAdmin, errCannotDemoteSelf},
+	adminDisable: {errCannotDisableLastAdmin, errCannotDisableSelf},
+	adminDelete:  {errCannotDeleteLastAdmin, errCannotDeleteSelf},
+}
+
+// isAdminRuleRefusal reports whether err is one of adminRuleRefusals.
+func isAdminRuleRefusal(err error) bool {
+	for _, pair := range adminRuleRefusals {
+		if errors.Is(err, pair[0]) || errors.Is(err, pair[1]) {
+			return true
+		}
+	}
+	return false
+}
 
 // keepsAnAdminIn decides the last-admin rule on the locked target, the actor
 // the callback re-read and an in-gate count. It returns nil when the locked
 // target is not an active admin, so acting on a non-active admin is allowed
-// at any count (policy.CanDemoteOrDelete), and errAdminRule{msg} when the rule
-// refuses.
+// at any count (policy.CanDemoteOrDelete), and the rule's refusal
+// (adminRuleRefusal) when it refuses.
 //
 // Under the gate, with the target locked and the actor re-read as an active
 // admin distinct from the target, the count is at least 2, so this refuses
 // nothing today's API can build (R4-H's actor re-read already closes two
 // admins deleting each other). It is defense in depth against a future writer
 // outside the gate, and it lets PUT judge its effective change.
-func keepsAnAdminIn(tx *gorm.DB, actor, target *models.User, msg string) error {
+func keepsAnAdminIn(tx *gorm.DB, actor, target *models.User, change adminChange) error {
 	if !asPerson(target).Admin {
 		return nil
 	}
@@ -630,14 +659,18 @@ func keepsAnAdminIn(tx *gorm.DB, actor, target *models.User, msg string) error {
 		return err
 	}
 	if !policy.CanDemoteOrDelete(asPerson(actor), asPerson(target), n) {
-		return errAdminRule{msg: msg}
+		return adminRuleRefusal(change, actor.ID == target.ID)
 	}
 	return nil
 }
 
+// errTeenActivation: a teen account waiting for consent cannot be made active
+// by an edit; consent activates it.
+var errTeenActivation = apiErr(http.StatusBadRequest, "", "a teen account waiting for consent becomes active only when consent is granted")
+
 // errAdminTargetGone: the person an admin edit names was erased while the edit
 // waited for the contact gate.
-var errAdminTargetGone = errors.New("user not found")
+var errAdminTargetGone = apiErr(http.StatusNotFound, "", "user not found")
 
 func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	u, ok := a.adminTargetUser(c)
@@ -664,14 +697,14 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	bump := false
 	if body.Name != nil {
 		if len(*body.Name) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		updates["name"] = strings.TrimSpace(*body.Name)
 	}
 	if body.DisplayName != nil {
 		if len(*body.DisplayName) > 100 {
-			jsonError(c, http.StatusBadRequest, "display name must be at most 100 characters")
+			fail(c, errDisplayNameTooLong)
 			return
 		}
 		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
@@ -679,7 +712,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	if body.Email != nil {
 		email := mail.NormalizeAddress(*body.Email)
 		if !validEmail(email) {
-			jsonError(c, http.StatusBadRequest, "a valid email is required")
+			fail(c, errValidEmailRequired)
 			return
 		}
 		if email != mail.NormalizeAddress(u.Email) {
@@ -689,7 +722,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	}
 	if body.Phone != nil {
 		if len(*body.Phone) > 30 {
-			jsonError(c, http.StatusBadRequest, "phone must be at most 30 characters")
+			fail(c, errPhoneTooLong)
 			return
 		}
 		updates["phone"] = strings.TrimSpace(*body.Phone)
@@ -706,11 +739,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			return
 		}
 		if role != models.RoleAdmin && !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
-			msg := "cannot demote the last admin"
-			if u.ID == me.ID {
-				msg = "you cannot demote yourself"
-			}
-			jsonError(c, http.StatusBadRequest, msg)
+			fail(c, adminRuleRefusal(adminDemote, u.ID == me.ID))
 			return
 		}
 		if role != u.Role {
@@ -725,16 +754,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			return
 		}
 		if status == models.UserDisabled && !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
-			msg := "cannot disable the last admin"
-			if u.ID == me.ID {
-				msg = "you cannot disable your own account"
-			}
-			jsonError(c, http.StatusBadRequest, msg)
+			fail(c, adminRuleRefusal(adminDisable, u.ID == me.ID))
 			return
 		}
 	}
 	if len(updates) > 0 || body.Status != nil {
-		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
 		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
 			if err != nil {
@@ -783,18 +807,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			demotes := roleSet && newRole != models.RoleAdmin
 			deactivates := statusSet && newStatus != models.UserActive
 			if demotes || deactivates {
-				var msg string
-				switch {
-				case demotes && u.ID == me.ID:
-					msg = "you cannot demote yourself"
-				case demotes:
-					msg = "cannot demote the last admin"
-				case u.ID == me.ID:
-					msg = "you cannot disable your own account"
-				default:
-					msg = "cannot disable the last admin"
+				change := adminDisable
+				if demotes {
+					change = adminDemote
 				}
-				if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+				if err := keepsAnAdminIn(tx, actor, u, change); err != nil {
 					return err
 				}
 			}
@@ -875,36 +892,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			}
 			return a.completeTeenConversionIfReady(tx, u, today, c.ClientIP())
 		})
-		if needSuccessors(c, err) {
-			return
-		}
 		if err != nil {
-			if errors.Is(err, errTeenActivation) {
-				jsonError(c, http.StatusBadRequest, err.Error())
-				return
-			}
-			if errors.Is(err, errConversionRetry) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionDetails) {
-				conversionError(c, err)
-				return
-			}
-			if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) {
-				consentError(c, err)
-				return
-			}
-			if errors.Is(err, errAdminTargetGone) {
-				jsonError(c, http.StatusNotFound, "user not found")
-				return
-			}
-			var rule errAdminRule
-			if errors.As(err, &rule) {
-				jsonError(c, http.StatusBadRequest, rule.msg)
-				return
-			}
 			if emailTaken(err) {
-				jsonError(c, http.StatusConflict, "an account with that email already exists")
+				fail(c, errEmailTaken)
 				return
 			}
-			jsonError(c, http.StatusInternalServerError, "could not update user")
+			fail(c, err)
 			return
 		}
 	}
@@ -982,11 +975,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	}
 	if !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
 		claim.end(attemptRolledBack)
-		msg := "cannot delete the last admin"
-		if u.ID == me.ID {
-			msg = "you cannot delete your own account"
-		}
-		jsonError(c, http.StatusBadRequest, msg)
+		fail(c, adminRuleRefusal(adminDelete, u.ID == me.ID))
 		return
 	}
 	hostPicks, ok := parseHostSuccessors(body.HostSuccessors)
@@ -1065,11 +1054,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// The last-admin rule again, on the locked target, the re-read actor
 			// and an in-gate count (defense in depth; the pre-gate check above
 			// decides the usual answers).
-			msg := "cannot delete the last admin"
-			if u.ID == me.ID {
-				msg = "you cannot delete your own account"
-			}
-			if err := keepsAnAdminIn(tx, actor, u, msg); err != nil {
+			if err := keepsAnAdminIn(tx, actor, u, adminDelete); err != nil {
 				return err
 			}
 			// The contact-request reasons: locked and hashed here, decided at
@@ -1195,11 +1180,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// only from an acknowledged COMMIT, unknown from a commit that may have
 	// happened, rolled back otherwise (every refusal after the claim).
 	claim.end(outcomeAttemptState(err))
-	if needSuccessors(c, err) || needHostSuccessors(c, err) {
+	if errors.Is(err, errNeedsSuccessor) || errors.Is(err, errNeedsHostSuccessor) {
+		fail(c, err)
 		return
 	}
 	if errors.Is(err, errAdminTargetGone) {
-		jsonError(c, http.StatusNotFound, "user not found")
+		fail(c, err)
 		return
 	}
 	if answerStaleSession(c, err) {
@@ -1208,28 +1194,27 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// The reason review (T07B-2b). Each is a refusal before COMMIT: the id above
 	// already ended rolled back and nothing was deleted.
 	if errors.Is(err, errNeedsReasonReview) {
-		jsonErrorCode(c, http.StatusConflict, "needs_reason_review", "the account has contact-request reasons to review")
+		fail(c, errNeedsReasonReview)
 		return
 	}
 	if errors.Is(err, errReasonReviewChanged) {
-		jsonErrorCode(c, http.StatusConflict, "reason_review_changed", "the contact-request reasons changed since they were reviewed")
+		fail(c, errReasonReviewChanged)
 		return
 	}
 	if errors.Is(err, errReasonReviewOutdated) {
-		jsonErrorCode(c, http.StatusConflict, "reason_review_outdated", "the page that made this review is out of date")
+		fail(c, errReasonReviewOutdated)
 		return
 	}
 	if errors.Is(err, errReasonReviewForbidden) || (errors.Is(err, errActorForbidden) && sealPred != nil) {
-		jsonErrorCode(c, http.StatusForbidden, "reason_review_not_allowed", "only an adult admin can review these reasons")
+		fail(c, errReasonReviewForbidden)
 		return
 	}
 	if errors.Is(err, errActorForbidden) {
 		jsonError(c, http.StatusForbidden, "forbidden")
 		return
 	}
-	var rule errAdminRule
-	if errors.As(err, &rule) {
-		jsonError(c, http.StatusBadRequest, rule.msg)
+	if isAdminRuleRefusal(err) {
+		fail(c, err)
 		return
 	}
 	if err != nil {
@@ -1239,10 +1224,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		case outcomeUnknown:
 			// COMMIT may have reached the server: never say nothing changed.
 			log.Printf("could not confirm user deletion: %s", jobs.CleanError(err))
-			jsonErrorCode(c, http.StatusInternalServerError, "delete_outcome_unknown", "could not confirm whether the account was deleted")
+			fail(c, errDeleteOutcomeUnknown)
 		case outcomeTimedOut:
 			log.Printf("user deletion timed out (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
-			jsonErrorCode(c, http.StatusServiceUnavailable, "delete_timed_out", "deleting took too long, so nothing was deleted")
+			fail(c, errDeleteTimedOut)
 		default:
 			if errors.Is(err, errRestoreDetected) {
 				log.Printf("user deletion refused: the database was restored while Fold was running")
@@ -1253,7 +1238,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 				// The admin's own row was held at the seal on every attempt:
 				// nothing was deleted, COMMIT was never sent.
 				log.Printf("user deletion found the admin's own account busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
-				jsonErrorCode(c, http.StatusConflict, "admin_account_busy", "your own account was being updated, so nothing was changed")
+				fail(c, errActorBusy)
 				return
 			}
 			if errors.Is(err, errReasonCounterpartBusy) {
@@ -1262,7 +1247,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 				// acknowledged): nothing was deleted, COMMIT was never sent.
 				// Named apart from a busy household, which it is not.
 				log.Printf("user deletion found a reviewed request's deleted party busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
-				jsonErrorCode(c, http.StatusConflict, "delete_reason_busy", "someone was changing a request that involves this person, so nothing was deleted")
+				fail(c, errReasonCounterpartBusy)
 				return
 			}
 			if isHouseholdBusy(err) {
@@ -1270,7 +1255,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 				// the rollback after one was not acknowledged, so no further
 				// attempt began): nothing was deleted, COMMIT was never sent.
 				log.Printf("user deletion found a household busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
-				jsonErrorCode(c, http.StatusConflict, "delete_household_busy", "someone was changing this person's household, so nothing was deleted")
+				fail(c, errDeleteHouseholdBusy)
 				return
 			}
 			log.Printf("could not delete user (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
@@ -1292,7 +1277,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Password == "" {
-		jsonError(c, http.StatusBadRequest, "password is required")
+		fail(c, errPasswordRequired)
 		return
 	}
 	if !checkNewPassword(c, body.Password) {
@@ -1368,7 +1353,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		return
 	}
 	if policy.TeenAddNeedsApproval(asPerson(&u)) {
-		jsonError(c, 409, errTeenAddApproval.Error())
+		fail(c, errTeenAddApproval)
 		return
 	}
 	role := body.Role
@@ -1385,22 +1370,12 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
 	})
 	switch err {
-	case errTeenAddApproval:
-		jsonError(c, 409, errTeenAddApproval.Error())
-		return
 	case nil:
-	case errGroupFull:
-		groupFull(c)
-		return
-	case errPeopleAddForbidden:
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	case errRoleRefused:
-		jsonError(c, http.StatusBadRequest,
-			"only adults can be leaders, and a group must keep at least one leader")
+	case errRoleRefused: // here the refusal is the leader rule
+		fail(c, errLeaderRuleAdults)
 		return
 	default:
-		jsonError(c, http.StatusInternalServerError, "could not add member")
+		fail(c, err)
 		return
 	}
 	a.membershipAdded(c, &g, u.ID)

@@ -84,7 +84,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || !validEmail(mail.NormalizeAddress(body.Email)) {
-		jsonError(c, http.StatusBadRequest, "enter a valid email address")
+		fail(c, errEnterValidEmail)
 		return
 	}
 	email := mail.NormalizeAddress(body.Email)

@@ -41,14 +41,14 @@ const (
 	pushTestFailMessage  = "The notification service didn't take the test. Try again in a few minutes."
 )
 
-// Errors a person can act on (DEC-61; codes in api_errors.go).
-const (
-	errPushServiceUnknown = "that browser's notification service isn't one we can send to"
-	errPushGuest          = "notifications on a device need a Fold account"
-	errPushConsent        = "notifications wait until your account's consent is complete"
-	errPushChurchOff      = "your church has turned off notifications on devices"
-	errPushDeviceUnknown  = "this device doesn't have notifications on"
-	errPushKindLocked     = "that kind of notification can't be turned off"
+// Errors a person can act on (DEC-61; api_errors.go).
+var (
+	errPushServiceUnknown = apiErr(http.StatusBadRequest, "push_service_unknown", "that browser's notification service isn't one we can send to")
+	errPushGuest          = apiErr(http.StatusForbidden, "push_guest", "notifications on a device need a Fold account")
+	errPushConsent        = apiErr(http.StatusForbidden, "push_consent_required", "notifications wait until your account's consent is complete")
+	errPushChurchOff      = apiErr(http.StatusForbidden, "push_church_off", "your church has turned off notifications on devices")
+	errPushDeviceUnknown  = apiErr(http.StatusNotFound, "push_device_unknown", "this device doesn't have notifications on")
+	errPushKindLocked     = apiErr(http.StatusBadRequest, "push_kind_locked", "that kind of notification can't be turned off")
 )
 
 // pushConfigJSON is what the card needs before it asks the browser.
@@ -143,11 +143,11 @@ func (a *App) refusePush(c *gin.Context, me *models.User) bool {
 	case policy.PushOK:
 		return false
 	case policy.PushGuest:
-		jsonError(c, http.StatusForbidden, errPushGuest)
+		fail(c, errPushGuest)
 	case policy.PushPendingConsent:
-		jsonError(c, http.StatusForbidden, errPushConsent)
+		fail(c, errPushConsent)
 	case policy.PushChurchOff:
-		jsonError(c, http.StatusForbidden, errPushChurchOff)
+		fail(c, errPushChurchOff)
 	default:
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
 	}
@@ -194,7 +194,7 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		return
 	}
 	if a.pushHosts().Allowed(body.Endpoint) != nil {
-		jsonError(c, http.StatusBadRequest, errPushServiceUnknown)
+		fail(c, errPushServiceUnknown)
 		return
 	}
 	if push.ValidKeys(body.Keys.P256dh, body.Keys.Auth) != nil || len(body.Keys.P256dh) > 200 || len(body.Keys.Auth) > 100 {
@@ -286,7 +286,7 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		return
 	}
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return
 	}
 	if err != nil {
@@ -340,7 +340,7 @@ func (a *App) apiPushTurnOff(c *gin.Context) {
 		return tx.Where("user_id = ?", me.ID).Delete(&models.PushSubscription{}).Error
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return
 	}
 	if err != nil {
@@ -371,7 +371,7 @@ func (a *App) apiPushTest(c *gin.Context) {
 	}
 	var dev models.PushSubscription
 	if err := a.DB.Where("endpoint = ? AND user_id = ?", body.Endpoint, me.ID).First(&dev).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		jsonError(c, http.StatusNotFound, errPushDeviceUnknown)
+		fail(c, errPushDeviceUnknown)
 		return
 	} else if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not send the test")
@@ -475,7 +475,7 @@ func (a *App) applyPushSettings(c *gin.Context, u *models.User, category string,
 		found = found || k == category
 	}
 	if !found {
-		jsonError(c, http.StatusBadRequest, errPushKindLocked)
+		fail(c, errPushKindLocked)
 		return false
 	}
 	status := models.ConsentOptedIn
@@ -490,7 +490,7 @@ func (a *App) applyPushSettings(c *gin.Context, u *models.User, category string,
 		return err
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return false
 	}
 	if err != nil {

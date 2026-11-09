@@ -52,19 +52,19 @@ func (a *App) csrfMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session, err := a.Store.Get(c.Request, sessionName)
 		if err != nil {
-			a.csrfFail(c, http.StatusInternalServerError, "Session error")
+			a.csrfFail(c, errCSRFSession)
 			return
 		}
 
 		token, created := csrfToken(session)
 		if token == "" {
-			a.csrfFail(c, http.StatusInternalServerError, "Failed to generate CSRF token")
+			a.csrfFail(c, errCSRFGenerate)
 			return
 		}
 		if created {
 			// Persist the new token so the cookie is set before any POST.
 			if err := session.Save(c.Request, c.Writer); err != nil {
-				a.csrfFail(c, http.StatusInternalServerError, "Session error")
+				a.csrfFail(c, errCSRFSession)
 				return
 			}
 		}
@@ -76,7 +76,7 @@ func (a *App) csrfMiddleware() gin.HandlerFunc {
 				submitted = c.GetHeader(csrfHeader)
 			}
 			if subtle.ConstantTimeCompare([]byte(submitted), []byte(token)) != 1 {
-				a.csrfFail(c, http.StatusForbidden, "CSRF token invalid")
+				a.csrfFail(c, errSessionExpired)
 				return
 			}
 		}
@@ -84,16 +84,26 @@ func (a *App) csrfMiddleware() gin.HandlerFunc {
 	}
 }
 
+// The 500s the middleware can answer. The setup form shows their words as
+// plain text; the API sends none of them (a 5xx message is replaced).
+var (
+	errCSRFSession  = apiErr(http.StatusInternalServerError, "", "Session error")
+	errCSRFGenerate = apiErr(http.StatusInternalServerError, "", "Failed to generate CSRF token")
+	errCSRFContact  = apiErr(http.StatusInternalServerError, "", "could not complete contact operation")
+)
+
 // csrfFail writes JSON for the API and plain text for the setup form.
-func (a *App) csrfFail(c *gin.Context, code int, msg string) {
+func (a *App) csrfFail(c *gin.Context, refusal *apiError) {
 	if err := a.auditContactRejection(c, "csrf"); err != nil {
-		code = http.StatusInternalServerError
-		msg = "could not complete contact operation"
+		refusal = errCSRFContact
 	}
-	if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-		jsonError(c, code, msg)
-	} else {
-		c.String(code, msg)
+	switch {
+	case !strings.HasPrefix(c.Request.URL.Path, "/api/"):
+		c.String(refusal.Status, refusal.Message)
+	case refusal.Status >= http.StatusInternalServerError:
+		jsonError(c, refusal.Status, refusal.Message)
+	default:
+		fail(c, refusal)
 	}
 	c.Abort()
 }

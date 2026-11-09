@@ -15,23 +15,18 @@ import (
 )
 
 var (
-	errHouseholdHolder   = errors.New("choose another active adult account to hold this household")
-	errHouseholdExists   = errors.New("this account already has a household; use its existing household")
-	errHouseholdRequired = errors.New("create this account's household before adding people")
-	errHouseholdGuardian = errors.New("choose an active adult account in this household as guardian, not the acting admin")
+	errHouseholdHolder   = apiErr(http.StatusConflict, "household_holder", "choose another active adult account to hold this household")
+	errHouseholdExists   = apiErr(http.StatusConflict, "household_exists", "this account already has a household; use its existing household")
+	errHouseholdRequired = apiErr(http.StatusConflict, "household_required", "create this account's household before adding people")
+	errHouseholdGuardian = apiErr(http.StatusConflict, "household_guardian", "choose an active adult account in this household as guardian, not the acting admin")
 )
 
 func (a *App) adminHouseholdError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
-	case errors.Is(err, gorm.ErrRecordNotFound):
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		jsonError(c, http.StatusNotFound, "user not found")
-	case errors.Is(err, errHouseholdHolder), errors.Is(err, errHouseholdExists), errors.Is(err, errHouseholdRequired), errors.Is(err, errHouseholdGuardian):
-		jsonError(c, http.StatusConflict, err.Error())
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not save household")
+		return
 	}
+	fail(c, err)
 }
 
 func adminHouseholdHolderID(c *gin.Context) (uint, bool) {
@@ -123,18 +118,18 @@ func (a *App) apiAdminCreateHousehold(c *gin.Context) {
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if name == "" {
-			jsonError(c, http.StatusBadRequest, "name is required")
+			fail(c, errNameRequired)
 			return
 		}
 		if len(name) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		body.Name = &name
 	}
 	address := strings.TrimSpace(body.Address)
 	if utf8.RuneCountInString(address) > 500 {
-		jsonError(c, http.StatusBadRequest, "address is too long")
+		fail(c, errAddressTooLong)
 		return
 	}
 	var household models.Household

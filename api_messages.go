@@ -99,9 +99,9 @@ func reminderKind(m *models.Message) string {
 	return reminderGoing
 }
 
-const (
-	errMessageReminder      = "automatic reminders can't be changed here; change the event's reminder time instead"
-	errReminderRetryRefused = "this date has started or was cancelled, or its event's reminders are off, so its reminder can't be sent again"
+var (
+	errMessageReminder      = apiErr(http.StatusConflict, "message_reminder", "automatic reminders can't be changed here; change the event's reminder time instead")
+	errReminderRetryRefused = apiErr(http.StatusForbidden, "reminder_retry_refused", "this date has started or was cancelled, or its event's reminders are off, so its reminder can't be sent again")
 )
 
 // Composer limits, matching the CHECKs in migration 00054.
@@ -113,17 +113,17 @@ const (
 	maxScheduleAhead = 366 * 24 * time.Hour
 )
 
-const (
-	errMessageSubject  = "add a subject on one line, up to 200 characters"
-	errMessageBody     = "write a message of under about 50,000 characters"
-	errMessageNobody   = "no one would get this message; choose people who can get email"
-	errMessageLocked   = "this message is already sending or sent, so it can't change"
-	errMessageWhen     = "pick a time from now to a year ahead"
-	errMessageChannel  = "texting isn't set up yet; send this as an email"
-	errMessageNotYours = "you can't send to those people"
+var (
+	errMessageSubject  = apiErr(http.StatusBadRequest, "message_subject", "add a subject on one line, up to 200 characters")
+	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about 50,000 characters")
+	errMessageNobody   = apiErr(http.StatusBadRequest, "message_nobody", "no one would get this message; choose people who can get email")
+	errMessageLocked   = apiErr(http.StatusConflict, "message_locked", "this message is already sending or sent, so it can't change")
+	errMessageWhen     = apiErr(http.StatusBadRequest, "message_when", "pick a time from now to a year ahead")
+	errMessageChannel  = apiErr(http.StatusBadRequest, "message_channel", "texting isn't set up yet; send this as an email")
+	errMessageNotYours = apiErr(http.StatusForbidden, "message_not_yours", "you can't send to those people")
 	// errMessagePushOnly refuses an announcement asked to go by push
 	// alone (DEC-123): push is a companion to the email, never instead of it.
-	errMessagePushOnly = "an announcement always goes by email"
+	errMessagePushOnly = apiErr(http.StatusBadRequest, "message_push_only", "an announcement always goes by email")
 )
 
 // messageFacts is what a list of messages shows beyond their own rows:
@@ -281,13 +281,13 @@ func (a *App) checkAudience(c *gin.Context, me *models.User, au *audienceJSON) (
 	ids, err := a.resolveAudience(me, au, time.Now())
 	switch {
 	case errors.Is(err, errAudienceInvalid):
-		jsonError(c, http.StatusBadRequest, errAudienceInvalid.Error())
+		fail(c, errAudienceInvalid)
 	case errors.Is(err, errAudienceGone) && policy.IsAdmin(asPerson(me)):
-		jsonError(c, http.StatusNotFound, errAudienceGone.Error())
+		fail(c, errAudienceGone)
 	case errors.Is(err, errAudienceGone), errors.Is(err, errAudienceRefused):
 		// Only an admin learns a target is gone; anyone else hears what a
 		// target that isn't theirs answers, so ids can't be probed.
-		jsonError(c, http.StatusForbidden, errMessageNotYours)
+		fail(c, errMessageNotYours)
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not check who gets this message")
 	default:
@@ -462,7 +462,7 @@ func (a *App) apiAudiencePreview(c *gin.Context) {
 		Audience audienceJSON `json:"audience"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, errAudienceInvalid.Error())
+		fail(c, errAudienceInvalid)
 		return
 	}
 	ids, ok := a.checkAudience(c, apiUser(c), &body.Audience)
@@ -501,35 +501,35 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 	// channel of its own, so asking for channel "push" is refused in
 	// words. Any other channel isn't set up yet.
 	if strings.EqualFold(strings.TrimSpace(body.Channel), models.DeliveryPush) {
-		jsonError(c, http.StatusBadRequest, errMessagePushOnly)
+		fail(c, errMessagePushOnly)
 		return false
 	}
 	if body.Channel != "email" {
-		jsonError(c, http.StatusBadRequest, errMessageChannel)
+		fail(c, errMessageChannel)
 		return false
 	}
 	subject := strings.TrimSpace(body.Subject)
 	if utf8.RuneCountInString(subject) > maxMessageSubject || strings.ContainsAny(subject, "\r\n") {
-		jsonError(c, http.StatusBadRequest, errMessageSubject)
+		fail(c, errMessageSubject)
 		return false
 	}
 	// Bound the input before sanitizing it, then what is stored: escaping
 	// and link addresses can make either longer (the CHECKs count characters).
 	if len(body.BodyHTML) > 4*maxMessageHTML {
-		jsonError(c, http.StatusBadRequest, errMessageBody)
+		fail(c, errMessageBody)
 		return false
 	}
 	clean := content.SanitizeHTML(body.BodyHTML)
 	text := content.PlainText(clean)
 	if utf8.RuneCountInString(clean) > maxMessageHTML || utf8.RuneCountInString(text) > maxMessageText {
-		jsonError(c, http.StatusBadRequest, errMessageBody)
+		fail(c, errMessageBody)
 		return false
 	}
 	if _, ok := a.checkAudience(c, me, &body.Audience); !ok {
 		return false
 	}
-	if msg := mergeFieldError(subject+"\n"+clean, body.Audience); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if err := mergeFieldError(subject+"\n"+clean, body.Audience); err != nil {
+		fail(c, err)
 		return false
 	}
 	aud, _ := json.Marshal(body.Audience)
@@ -550,11 +550,11 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 func (a *App) sendable(c *gin.Context, me *models.User, m *models.Message) (audienceJSON, audienceSummaryJSON, bool) {
 	var au audienceJSON
 	if m.Subject == "" {
-		jsonError(c, http.StatusBadRequest, errMessageSubject)
+		fail(c, errMessageSubject)
 		return au, audienceSummaryJSON{}, false
 	}
 	if strings.TrimSpace(m.BodyText) == "" {
-		jsonError(c, http.StatusBadRequest, errMessageBody)
+		fail(c, errMessageBody)
 		return au, audienceSummaryJSON{}, false
 	}
 	_ = json.Unmarshal([]byte(m.Audience), &au)
@@ -568,7 +568,7 @@ func (a *App) sendable(c *gin.Context, me *models.User, m *models.Message) (audi
 		return au, s, false
 	}
 	if s.Eligible == 0 {
-		jsonError(c, http.StatusBadRequest, errMessageNobody)
+		fail(c, errMessageNobody)
 		return au, s, false
 	}
 	return au, s, true
@@ -577,7 +577,7 @@ func (a *App) sendable(c *gin.Context, me *models.User, m *models.Message) (audi
 func (a *App) apiCreateMessage(c *gin.Context) {
 	me := apiUser(c)
 	if ok, err := a.canCompose(me); err != nil || !ok {
-		jsonError(c, http.StatusForbidden, errMessageNotYours)
+		fail(c, errMessageNotYours)
 		return
 	}
 	m := models.Message{AuthorID: &me.ID, Status: models.MessageDraft, Category: models.MessageCategoryAnnouncement}
@@ -666,7 +666,7 @@ func (a *App) loadOwnMessage(c *gin.Context) (*models.Message, bool) {
 	reminder := m.Category == models.MessageCategoryReminder
 	if !policy.CanEditMessage(asPerson(me), m.AuthorID != nil && *m.AuthorID == me.ID, reminder) {
 		if reminder {
-			jsonError(c, http.StatusConflict, errMessageReminder)
+			fail(c, errMessageReminder)
 		} else {
 			jsonError(c, http.StatusNotFound, "message not found")
 		}
@@ -764,7 +764,7 @@ func (a *App) apiListMessages(c *gin.Context) {
 // editable reports whether m can still change; false means 409 was sent.
 func editable(c *gin.Context, m *models.Message) bool {
 	if m.Status != models.MessageDraft && m.Status != models.MessageScheduled {
-		jsonError(c, http.StatusConflict, errMessageLocked)
+		fail(c, errMessageLocked)
 		return false
 	}
 	return true
@@ -796,7 +796,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not save the message")
 			return
 		} else if full {
-			jsonError(c, http.StatusBadRequest, errMessageDailyLimit)
+			fail(c, errMessageDailyLimit)
 			return
 		}
 		fields["recipient_count"] = s.Eligible
@@ -819,7 +819,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 			Meta: map[string]any{"status": m.Status, "byOther": !isAuthor}, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errLocked) {
-		jsonError(c, http.StatusConflict, errMessageLocked)
+		fail(c, errMessageLocked)
 		return
 	}
 	if err != nil {
@@ -849,7 +849,7 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 	if body.ScheduledAt != nil {
 		when = body.ScheduledAt.UTC()
 		if when.Before(now.Add(-time.Minute)) || when.After(now.Add(maxScheduleAhead)) {
-			jsonError(c, http.StatusBadRequest, errMessageWhen)
+			fail(c, errMessageWhen)
 			return
 		}
 		if when.Before(now) {
@@ -865,7 +865,7 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not schedule the message")
 		return
 	} else if full {
-		jsonError(c, http.StatusBadRequest, errMessageDailyLimit)
+		fail(c, errMessageDailyLimit)
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -884,7 +884,7 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 			Meta: map[string]any{"audience": au.Type, "recipients": s.Eligible, "at": when}, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errLocked) {
-		jsonError(c, http.StatusConflict, errMessageLocked)
+		fail(c, errMessageLocked)
 		return
 	}
 	if err != nil {
@@ -915,7 +915,7 @@ func (a *App) apiCancelMessage(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageCancelled, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errLocked) {
-		jsonError(c, http.StatusConflict, errMessageLocked)
+		fail(c, errMessageLocked)
 		return
 	}
 	if err != nil {

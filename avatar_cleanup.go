@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -75,7 +76,7 @@ var (
 	errSweepFull = errors.New("avatar sweep is full")
 
 	// Upload and removal outcomes the handlers map to HTTP answers.
-	errTeenAvatar       = errors.New("teen accounts cannot have a public profile picture")
+	errTeenAvatar       = apiErr(http.StatusForbidden, "teen_avatar", "teen accounts cannot have a public profile picture")
 	errAvatarStore      = errors.New("could not store avatar")
 	errAvatarOutOfDate  = errors.New("avatar request ran out of time")
 	errAvatarUnexpected = errors.New("avatar update changed no account")

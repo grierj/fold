@@ -97,12 +97,12 @@ type roomBody struct {
 }
 
 // apply copies the body onto r and returns the names of the fields that
-// changed, or an error message for a field that is out of bounds.
-func (b roomBody) apply(r *models.Room) ([]string, string) {
+// changed, or the refusal for a field that is out of bounds.
+func (b roomBody) apply(r *models.Room) ([]string, error) {
 	var changed []string
-	text := func(field string, v *string, max int, dst *string, tooLong string) string {
+	text := func(field string, v *string, max int, dst *string, tooLong error) error {
 		if v == nil {
-			return ""
+			return nil
 		}
 		s := strings.TrimSpace(*v)
 		if utf8.RuneCountInString(s) > max {
@@ -112,53 +112,53 @@ func (b roomBody) apply(r *models.Room) ([]string, string) {
 			*dst = s
 			changed = append(changed, field)
 		}
-		return ""
+		return nil
 	}
-	for _, check := range []func() string{
-		func() string { return text("name", b.Name, maxRoomName, &r.Name, "name is too long") },
-		func() string {
-			return text("building", b.Building, maxRoomBuilding, &r.Building, "building is too long")
+	for _, check := range []func() error{
+		func() error { return text("name", b.Name, maxRoomName, &r.Name, errNameTooLong) },
+		func() error {
+			return text("building", b.Building, maxRoomBuilding, &r.Building, errBuildingTooLong)
 		},
-		func() string {
-			return text("features", b.Features, maxRoomFeatures, &r.Features, "features is too long")
+		func() error {
+			return text("features", b.Features, maxRoomFeatures, &r.Features, errFeaturesTooLong)
 		},
-		func() string { return text("notes", b.Notes, maxRoomNotes, &r.Notes, "notes is too long") },
+		func() error { return text("notes", b.Notes, maxRoomNotes, &r.Notes, errNotesTooLong) },
 	} {
-		if msg := check(); msg != "" {
-			return nil, msg
+		if err := check(); err != nil {
+			return nil, err
 		}
 	}
 	if strings.TrimSpace(r.Name) == "" {
-		return nil, "room name is required"
+		return nil, errRoomNameRequired
 	}
 	if len(b.Capacity) > 0 {
 		capacity, ok := parseOptionalPositive(b.Capacity, maxRoomCapacity)
 		if !ok {
-			return nil, "room capacity must be a whole number from 1 to 100000"
+			return nil, errInvalidRoomCapacity
 		}
 		if !equalIntPtr(capacity, r.Capacity) {
 			r.Capacity = capacity
 			changed = append(changed, "capacity")
 		}
 	}
-	minutes := func(field string, v *int, dst *int) string {
+	minutes := func(field string, v *int, dst *int) error {
 		if v == nil {
-			return ""
+			return nil
 		}
 		if *v < 0 || *v > maxRoomPadding {
-			return "setup and cleanup minutes must be from 0 to 240"
+			return errInvalidSetupMinutes
 		}
 		if *v != *dst {
 			*dst = *v
 			changed = append(changed, field)
 		}
-		return ""
+		return nil
 	}
-	if msg := minutes("defaultSetupMinutes", b.DefaultSetupMinutes, &r.DefaultSetupMinutes); msg != "" {
-		return nil, msg
+	if err := minutes("defaultSetupMinutes", b.DefaultSetupMinutes, &r.DefaultSetupMinutes); err != nil {
+		return nil, err
 	}
-	if msg := minutes("defaultTeardownMinutes", b.DefaultTeardownMinutes, &r.DefaultTeardownMinutes); msg != "" {
-		return nil, msg
+	if err := minutes("defaultTeardownMinutes", b.DefaultTeardownMinutes, &r.DefaultTeardownMinutes); err != nil {
+		return nil, err
 	}
 	flag := func(field string, v *bool, dst *bool) {
 		if v != nil && *v != *dst {
@@ -168,7 +168,7 @@ func (b roomBody) apply(r *models.Room) ([]string, string) {
 	}
 	flag("active", b.Active, &r.Active)
 	flag("restricted", b.Restricted, &r.Restricted)
-	return changed, ""
+	return changed, nil
 }
 
 // parseOptionalPositive reads null as "no limit" and a whole number from 1
@@ -218,8 +218,8 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 	// A new room is always active; deactivating is an edit.
 	body.Active = nil
 	room := models.Room{Active: true}
-	if _, msg := body.apply(&room); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if _, err := body.apply(&room); err != nil {
+		fail(c, err)
 		return
 	}
 	me := apiUser(c)
@@ -231,7 +231,7 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 			Meta: map[string]any{"name": room.Name, "building": room.Building}, IP: c.ClientIP()})
 	})
 	if roomNameTaken(err) {
-		jsonError(c, http.StatusConflict, "a room with that name already exists in that building")
+		fail(c, errRoomNameTaken)
 		return
 	}
 	if err != nil {
@@ -255,8 +255,7 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 	me := apiUser(c)
 	var room models.Room
 	var changed []string
-	errNotFound, errInvalid := errors.New("not found"), errors.New("invalid")
-	var invalid string
+	errNotFound := errors.New("not found")
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&room, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -264,11 +263,10 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 			}
 			return err
 		}
-		var msg string
-		changed, msg = body.apply(&room)
-		if msg != "" {
-			invalid = msg
-			return errInvalid
+		var applyErr error
+		changed, applyErr = body.apply(&room)
+		if applyErr != nil {
+			return applyErr
 		}
 		if len(changed) == 0 {
 			return nil
@@ -282,10 +280,10 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 	switch {
 	case errors.Is(err, errNotFound):
 		jsonError(c, http.StatusNotFound, "room not found")
-	case errors.Is(err, errInvalid):
-		jsonError(c, http.StatusBadRequest, invalid)
+	case isAPIError(err):
+		fail(c, err)
 	case roomNameTaken(err):
-		jsonError(c, http.StatusConflict, "a room with that name already exists in that building")
+		fail(c, errRoomNameTaken)
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:

@@ -337,7 +337,7 @@ func (a *App) contactHistoryFilter(c *gin.Context, export bool) (contactHistoryF
 	}
 	f, ok := parseContactHistoryFilter(c, export)
 	if !ok {
-		jsonError(c, http.StatusBadRequest, "invalid contact history filters")
+		fail(c, errContactHistoryFilters)
 	}
 	return f, ok
 }

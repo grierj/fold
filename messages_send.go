@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"log"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -822,7 +823,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 // in the church's day. Admins have no limit; their sends are audited.
 const dailyMessagesPerGroup = 5
 
-const errMessageDailyLimit = "you've sent 5 messages to these people today"
+var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", "you've sent 5 messages to these people today")
 
 // dailyLimitReached reports whether scheduling message id for when would
 // pass the limit for any group or church-wide event its audience reaches.

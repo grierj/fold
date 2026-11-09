@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -15,41 +14,41 @@ import (
 )
 
 var (
-	errChildcareUnavailable = errors.New("this event doesn't offer childcare")
-	errChildcareFull        = errors.New("childcare is full for this date")
+	errChildcareUnavailable = apiErr(http.StatusBadRequest, "childcare_not_available", "this event doesn't offer childcare")
+	errChildcareFull        = apiErr(http.StatusConflict, "childcare_full", "childcare is full for this date")
 )
 
 // A value RawMessage distinguishes an omitted capacity from explicit null.
-func parseChildcareCapacity(raw json.RawMessage) (*int, bool, string) {
+func parseChildcareCapacity(raw json.RawMessage) (*int, bool, error) {
 	if len(raw) == 0 {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, true, ""
+		return nil, true, nil
 	}
 	var n int
 	if json.Unmarshal(raw, &n) != nil || n < 0 || n > 100000 {
-		return nil, false, "childcare limit must be a whole number from 1 to 100000, or empty for no limit"
+		return nil, false, errInvalidChildcareCapacity
 	}
 	if n == 0 {
-		return nil, false, "uncheck childcare instead of a 0 childcare limit"
+		return nil, false, errChildcareCapacityZero
 	}
-	return &n, true, ""
+	return &n, true, nil
 }
 
 func parseChildcareEdits(c *gin.Context, body eventBody, ed *capacityEdits) bool {
-	var msg string
-	ed.childcareCap, ed.childcareCapSet, msg = parseChildcareCapacity(body.ChildcareCapacity)
-	if msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	var err error
+	ed.childcareCap, ed.childcareCapSet, err = parseChildcareCapacity(body.ChildcareCapacity)
+	if err != nil {
+		fail(c, err)
 		return false
 	}
 	if body.ChildcareNotes != nil && utf8.RuneCountInString(strings.TrimSpace(*body.ChildcareNotes)) > 500 {
-		jsonError(c, http.StatusBadRequest, "childcare notes must be 500 characters or fewer")
+		fail(c, errChildcareNotesTooLong)
 		return false
 	}
 	if body.ChildcareAges != nil && utf8.RuneCountInString(strings.TrimSpace(*body.ChildcareAges)) > 100 {
-		jsonError(c, http.StatusBadRequest, "childcare ages must be 100 characters or fewer")
+		fail(c, errChildcareAgesTooLong)
 		return false
 	}
 	return true
@@ -62,26 +61,26 @@ type childcareRequest struct {
 	ChildcareAgesNote *string `json:"childcareAgesNote"`
 }
 
-// problem is the first thing wrong with the request, in words, or "". A nil
-// event skips the checks that depend on the event's childcare setting.
-func (r childcareRequest) problem(ev *models.Event) string {
+// problem is the first thing wrong with the request, or nil. A nil event
+// skips the checks that depend on the event's childcare setting.
+func (r childcareRequest) problem(ev *models.Event) error {
 	if r.ChildcareCount != nil {
 		if *r.ChildcareCount < 0 || *r.ChildcareCount > 20 {
-			return "childcareCount must be a whole number from 0 to 20"
+			return errInvalidChildcareCount
 		}
 		if ev != nil && *r.ChildcareCount > 0 && !ev.ChildcareAvailable {
-			return errChildcareUnavailable.Error()
+			return errChildcareUnavailable
 		}
 	}
 	if r.ChildcareAgesNote != nil && utf8.RuneCountInString(strings.TrimSpace(*r.ChildcareAgesNote)) > 200 {
-		return "childcare age note must be 200 characters or fewer"
+		return errChildcareAgeNoteTooLong
 	}
-	return ""
+	return nil
 }
 
 func (r childcareRequest) validate(c *gin.Context, ev *models.Event) bool {
-	if msg := r.problem(ev); msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	if err := r.problem(ev); err != nil {
+		fail(c, err)
 		return false
 	}
 	return true

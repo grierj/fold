@@ -81,10 +81,15 @@ var (
 	// errActorBusy: the signed-in admin's own row is held by another
 	// transaction (SQLSTATE 55P03 under the seal's NOWAIT). It wraps the
 	// *pgconn.PgError, so errors.As still finds the code.
-	errActorBusy = errors.New("the signed-in admin's account was being updated")
+	errActorBusy = apiErr(http.StatusConflict, "admin_account_busy", "your own account was being updated, so nothing was changed")
 	// errActorForbidden: the locked actor row is not an admin (or not allowed
 	// by the caller's predicate): 403.
-	errActorForbidden = errors.New("the signed-in account may not do this")
+	errActorForbidden = apiErr(http.StatusForbidden, "", "forbidden")
+	// The refusals a submission with an attempt id can get (answerSubmit).
+	// attempt_expired means only that this submission ran nothing.
+	errAttemptClosed  = apiErr(http.StatusConflict, "attempt_closed", "this attempt was already used or settled")
+	errAttemptBusy    = apiErr(http.StatusServiceUnavailable, "attempt_busy", "too many attempts are being tracked")
+	errAttemptExpired = apiErr(http.StatusConflict, "attempt_expired", "this attempt is too old to run")
 	// errSettleRunning: the attempt being settled is still running; settle
 	// rolls back and waits outside every lock.
 	errSettleRunning = errors.New("the attempt is still running")
@@ -367,11 +372,11 @@ func (a *App) submitAttempt(id, kind string, actor, subject uint) (*attemptClaim
 func answerSubmit(c *gin.Context, r submitResult) {
 	switch r {
 	case submitClosed:
-		jsonErrorCode(c, http.StatusConflict, "attempt_closed", "this attempt was already used or settled")
+		fail(c, errAttemptClosed)
 	case submitBusy:
-		jsonErrorCode(c, http.StatusServiceUnavailable, "attempt_busy", "too many attempts are being tracked")
+		fail(c, errAttemptBusy)
 	default:
-		jsonErrorCode(c, http.StatusConflict, "attempt_expired", "this attempt is too old to run")
+		fail(c, errAttemptExpired)
 	}
 }
 
@@ -531,7 +536,7 @@ func (a *App) apiAdminMintOperationAttempt(c *gin.Context) {
 // answerRestoreDetected is the 503 every fenced route and the mint send once
 // the process has seen a restore.
 func answerRestoreDetected(c *gin.Context) {
-	jsonErrorCode(c, http.StatusServiceUnavailable, "restore_detected", "the database was restored while Fold was running")
+	fail(c, errRestoreDetected)
 }
 
 // settleFacts is what settle's seal read inside the committed transaction.
@@ -634,7 +639,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			answerRestoreDetected(c)
 			return
 		case errors.Is(err, errSecuritySession):
-			jsonStaleSession(c)
+			fail(c, errSecuritySession)
 			return
 		case errors.Is(err, errActorForbidden):
 			jsonError(c, http.StatusForbidden, "forbidden")

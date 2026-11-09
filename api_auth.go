@@ -50,7 +50,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		return
 	}
 	if !allowed {
-		jsonError(c, http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes")
+		fail(c, errLockedOut)
 		return
 	}
 	// Every failure gets the same answer, and costs one bcrypt comparison,
@@ -70,7 +70,7 @@ func (a *App) apiLogin(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not sign in")
 			return
 		}
-		jsonError(c, http.StatusUnauthorized, "invalid email or password")
+		fail(c, errBadCredentials)
 		return
 	}
 	// A success isn't a failure: give the IP back its attempt.
@@ -85,7 +85,7 @@ func (a *App) apiLogin(c *gin.Context) {
 	if waiting {
 		// Only a verified password earns this explanation; no account status
 		// is disclosed for an unknown address or a wrong password.
-		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
+		fail(c, errConsentRequired)
 		return
 	}
 	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(user), CanCompose: a.canComposeOrLog(user)})
@@ -204,7 +204,7 @@ func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bo
 		return false
 	}
 	if !allowed {
-		jsonError(c, http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes")
+		fail(c, errLockedOut)
 		return false
 	}
 	if !u.CheckPassword(password) {
@@ -212,7 +212,7 @@ func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bo
 			jsonError(c, http.StatusInternalServerError, "could not verify password")
 			return false
 		}
-		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+		fail(c, errWrongPassword)
 		return false
 	}
 	if err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
@@ -417,7 +417,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Email) == "" {
-		jsonError(c, http.StatusBadRequest, "email is required")
+		fail(c, errEmailRequired)
 		return
 	}
 	email := mail.NormalizeAddress(body.Email)
@@ -510,7 +510,7 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 		})
 	}
 	if errors.Is(err, errTokenInvalid) {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	if err != nil {

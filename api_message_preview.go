@@ -26,13 +26,13 @@ import (
 // link), the mobile-safe layout, and the footer an announcement carries.
 // M3.5's sender renders the same way with each reader's values.
 
-const (
-	errMergeUnknown        = "use only the merge fields the composer offers"
-	errMergeEvent          = "event merge fields only work in a message to one event's people"
-	errMessageTestLimit    = "you've sent 10 tests in the last hour"
-	errMessageTestEmail    = "your own email address can't get mail right now"
-	errMessageTestOptedOut = "this kind of email is turned off in your notification settings"
-	errMessageTestFail     = "we couldn't send the test"
+var (
+	errMergeUnknown        = apiErr(http.StatusBadRequest, "message_merge_unknown", "use only the merge fields the composer offers")
+	errMergeEvent          = apiErr(http.StatusBadRequest, "message_merge_event", "event merge fields only work in a message to one event's people")
+	errMessageTestLimit    = apiErr(http.StatusBadRequest, "message_test_limit", "you've sent 10 tests in the last hour")
+	errMessageTestEmail    = apiErr(http.StatusBadRequest, "message_test_email", "your own email address can't get mail right now")
+	errMessageTestOptedOut = apiErr(http.StatusBadRequest, "message_test_opted_out", "this kind of email is turned off in your notification settings")
+	errMessageTestFail     = apiErr(http.StatusBadGateway, "message_test_failed", "we couldn't send the test")
 )
 
 // testSendsPerHour bounds "Send a test to me" for one person.
@@ -40,8 +40,8 @@ const testSendsPerHour = 10
 
 // mergeFieldError checks the fields s uses: each must be known, and event
 // fields need a message to one event's people (one date, or one event's
-// dates). "" means they are fine.
-func mergeFieldError(s string, au audienceJSON) string {
+// dates). nil means they are fine.
+func mergeFieldError(s string, au audienceJSON) error {
 	oneEvent := au.Type == policy.AudienceOccurrence || au.Type == policy.AudienceEventSeries
 	for _, f := range content.FieldsIn(s) {
 		if !content.IsMergeField(f) {
@@ -51,7 +51,7 @@ func mergeFieldError(s string, au audienceJSON) string {
 			return errMergeEvent
 		}
 	}
-	return ""
+	return nil
 }
 
 // renderedMessage is a message as one reader gets it.
@@ -200,19 +200,17 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	}
 	me := apiUser(c)
 	if m.Subject == "" {
-		jsonError(c, http.StatusBadRequest, errMessageSubject)
+		fail(c, errMessageSubject)
 		return
 	}
 	if strings.TrimSpace(m.BodyText) == "" {
-		jsonError(c, http.StatusBadRequest, errMessageBody)
+		fail(c, errMessageBody)
 		return
 	}
 	if strings.TrimSpace(me.Email) == "" {
-		jsonError(c, http.StatusBadRequest, errMessageTestEmail)
+		fail(c, errMessageTestEmail)
 		return
 	}
-	errLimit := errors.New("limit")
-	errOptedOut := errors.New(errMessageTestOptedOut)
 	// D12: the locked session check rejects earlier security changes. The
 	// effective choice is read at its statement's start under the lock.
 	// D11: a choice committed before that statement starts is honored; a later
@@ -233,7 +231,7 @@ func (a *App) apiTestMessage(c *gin.Context) {
 			return err
 		}
 		if off.Off(me.ID, fresh.Email, categoryScope(messageCategory(m))) {
-			return errOptedOut
+			return errMessageTestOptedOut
 		}
 		var tries int64
 		if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ? AND at > ?", me.ID, audit.MessageTestSent, time.Now().Add(-time.Hour)).
@@ -241,23 +239,15 @@ func (a *App) apiTestMessage(c *gin.Context) {
 			return err
 		}
 		if tries >= testSendsPerHour {
-			return errLimit
+			return errMessageTestLimit
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageTestSent, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()})
 	})
 	if answerStaleSession(c, err) {
 		return
 	}
-	if errors.Is(err, errOptedOut) {
-		jsonError(c, http.StatusBadRequest, errMessageTestOptedOut)
-		return
-	}
-	if errors.Is(err, errLimit) {
-		jsonError(c, http.StatusBadRequest, errMessageTestLimit)
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, errMessageTestFail)
+		fail(c, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -268,11 +258,11 @@ func (a *App) apiTestMessage(c *gin.Context) {
 		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()})
 	var suppressed *mail.ErrSuppressed
 	if errors.As(err, &suppressed) {
-		jsonError(c, http.StatusBadRequest, errMessageTestEmail)
+		fail(c, errMessageTestEmail)
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusBadGateway, errMessageTestFail)
+		fail(c, errMessageTestFail)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

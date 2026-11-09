@@ -144,22 +144,22 @@ type validatedRequest struct {
 func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (validatedRequest, bool) {
 	name := strings.TrimSpace(body.Name)
 	if name == "" || len(name) > 100 {
-		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
+		fail(c, errNameRequired100)
 		return validatedRequest{}, false
 	}
 	email := foldmail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
-		jsonError(c, http.StatusBadRequest, "enter a valid email address")
+		fail(c, errEnterValidEmail)
 		return validatedRequest{}, false
 	}
 	phone := strings.TrimSpace(body.Phone)
 	if len(phone) > 30 {
-		jsonError(c, http.StatusBadRequest, "phone must be at most 30 characters")
+		fail(c, errPhoneTooLong)
 		return validatedRequest{}, false
 	}
 	message := strings.TrimSpace(body.Message)
 	if len(message) > maxRequestMessageLen {
-		jsonError(c, http.StatusBadRequest, "message must be at most 1000 characters")
+		fail(c, errMessageTooLong1000)
 		return validatedRequest{}, false
 	}
 	accountType, birth, ok := a.classifyAccountInput(c, body.AgeBand, body.BirthDate)
@@ -170,7 +170,7 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 	if accountType == models.AccountTeen {
 		guardianEmail = foldmail.NormalizeAddress(body.GuardianEmail)
 		if guardianEmail != "" && (!validEmail(guardianEmail) || guardianEmail == email) {
-			jsonError(c, http.StatusBadRequest, "enter a different valid email for the guardian")
+			fail(c, errInvalidGuardianEmail)
 			return validatedRequest{}, false
 		}
 	}
@@ -305,7 +305,7 @@ func (a *App) answerAccountRequest(c *gin.Context, source string) {
 // stores a pending request and always answers the same way.
 func (a *App) apiCreateAccountRequest(c *gin.Context) {
 	if a.selfSignupMode() == selfSignupOff {
-		jsonError(c, http.StatusForbidden, "self-signup is turned off; ask your church office for an account")
+		fail(c, errSignupOff)
 		return
 	}
 	var body accountRequestInput
@@ -403,7 +403,7 @@ func (a *App) apiApproveAccountRequest(c *gin.Context) {
 	}
 	if body.FromNotification != nil &&
 		!policy.InlineApproveAccountOK(req.AccountType, parseRequestFlags(req.Flags).HasWarnings()) {
-		jsonError(c, http.StatusForbidden, "that request needs review in the admin queue")
+		fail(c, errNeedsAdminQueue)
 		return
 	}
 	a.decideAccountRequest(c, req, true, strings.TrimSpace(body.Note), body.AccountConsentEvidenceText)
@@ -428,11 +428,11 @@ func (a *App) apiRejectAccountRequest(c *gin.Context) {
 }
 
 var errRequestHandled = errors.New("account request already decided")
-var errConsentExistingAccount = errors.New("that email already has an account; approve without consent and review the account separately")
+var errConsentExistingAccount = apiErr(http.StatusConflict, "consent_existing_account", "that email already has an account; approve without consent and review the account separately")
 
 func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, approve bool, note string, consentEvidence *string) {
 	if len(note) > 500 {
-		jsonError(c, http.StatusBadRequest, "note must be at most 500 characters")
+		fail(c, errNoteTooLong500)
 		return
 	}
 	me := apiUser(c)
@@ -440,7 +440,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		if _, err := a.expirePendingRequests(); err != nil {
 			log.Printf("account requests: expire: %v", err)
 		}
-		jsonError(c, http.StatusConflict, "that request has expired")
+		fail(c, errRequestExpired)
 		return
 	}
 	outcome, auditAction := "rejected", audit.AccountRejected
@@ -622,20 +622,12 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		conversionError(c, err)
 		return
 	}
-	if errors.Is(err, errConsentExistingAccount) {
-		jsonError(c, http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) || errors.Is(err, errConsentEvidence) || errors.Is(err, errConsentEvidenceLong) {
-		consentError(c, err)
-		return
-	}
 	if emailTaken(err) {
-		jsonError(c, http.StatusConflict, "that email is unavailable; use a different email")
+		fail(c, errConversionEmail)
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not decide that request")
+		fail(c, err)
 		return
 	}
 	var fresh models.AccountRequest
@@ -683,7 +675,7 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		})
 	}
 	if errors.Is(err, errTokenInvalid) {
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	}
 	if err != nil {

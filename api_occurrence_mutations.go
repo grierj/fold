@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gin-gonic/gin"
+	"net/http"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -396,7 +397,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			jsonError(c, 500, "could not save registration")
 			return
 		}
-		registrationError(c, err)
+		fail(c, err)
 		return
 	}
 	if refused {
@@ -442,8 +443,8 @@ func (a *App) verifiedOccurrenceAddIn(tx *gorm.DB, proof *verifiedOccurrenceAdd,
 
 const managerDateAddLimit = 30
 
-var errDateAddApproval = errors.New("adding this person needs approval; send an ask to add for this date")
-var errDateAddThrottled = errors.New("too many date additions; wait a minute before trying again")
+var errDateAddApproval = apiErr(http.StatusConflict, "date_add_approval_required", "adding this person needs approval; send an ask to add for this date")
+var errDateAddThrottled = apiErr(http.StatusConflict, "date_add_throttled", "too many date additions; wait a minute before trying again")
 
 func managerDateAddAllowedIn(tx *gorm.DB, actor uint) (bool, error) {
 	var count int
@@ -456,7 +457,7 @@ RETURNING failures`, string(managerDateAddKey(actor))).Scan(&count).Error
 }
 
 func refuseManagerDateLimit(tx *gorm.DB, op *contactOperation, r models.ContactRequest, ip string) error {
-	op.refused, op.refusalStatus, op.refusalMessage = true, 409, errDateAddThrottled.Error()
+	op.refused, op.refusal = true, errDateAddThrottled
 	return contactAudit(tx, &op.actor.ID, audit.ContactRefused, r, "rate_limit", ip)
 }
 
@@ -633,6 +634,17 @@ func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 	}
 	jsonError(c, status, message)
 }
+
+// managerDateAddRefusal is managerDateAddError for a refusal that carries its
+// own answer.
+func (a *App) managerDateAddRefusal(c *gin.Context, err error) {
+	if auditErr := a.auditManagerDateRefusal(c); auditErr != nil {
+		jsonError(c, 500, "could not add registration")
+		return
+	}
+	fail(c, err)
+}
+
 func (a *App) auditManagerDateRefusal(c *gin.Context) error {
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {

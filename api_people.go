@@ -23,7 +23,7 @@ import (
 const peopleSearchLimit = 30 // per actor per minute; persisted with the existing throttle seam
 const peopleSelectionLifetime = 10 * time.Minute
 
-var errTeenAddApproval = errors.New("adding a teen needs their approval and an admin's approval; ask your church office for help")
+var errTeenAddApproval = apiErr(http.StatusConflict, "teen_add_approval_required", "adding a teen needs their approval and an admin's approval; ask your church office for help")
 
 // Selections identify a search result, not permission to add it or see an event.
 // Authenticated encryption hides sequential IDs and binds the result to its searcher.
@@ -100,7 +100,7 @@ func (a *App) canSearchPeople(db *gorm.DB, actor *models.User) (bool, error) {
 	return policy.CanSearchPeople(contactAccount(actor, time.Now(), zone), facts.Leader, facts.Host), err
 }
 
-var errPeopleAddForbidden = errors.New("people add forbidden")
+var errPeopleAddForbidden = apiErr(http.StatusForbidden, "", "forbidden")
 
 // peopleAddActor runs after the contact gate, shared with account and role
 // revocation. Request authentication alone cannot authorize a queued add.
@@ -135,7 +135,7 @@ func (a *App) resolvePeopleSelection(c *gin.Context, token string) (*models.User
 	id, err := a.parsePeopleSelection(token, actor.ID, time.Now())
 	var target models.User
 	if !allowed || err != nil || a.DB.Where("id = ? AND status = ? AND account_type IN ?", id, models.UserActive, []string{models.AccountAdult, models.AccountTeen}).First(&target).Error != nil {
-		jsonError(c, 400, "that selection is unavailable; search for the person again")
+		fail(c, errPeopleSelectionUnavailable)
 		return nil, false
 	}
 	return &target, true
