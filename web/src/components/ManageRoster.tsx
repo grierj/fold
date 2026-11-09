@@ -14,6 +14,7 @@ import { AttendeeDetails } from "./AttendeeDetails";
 import { Button } from "./ui/Button";
 import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
+import { registrationStatusLabel } from "../lib/status";
 
 export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void; headingLevel?: 3 | 4 }) {
   const Heading = headingLevel === 3 ? "h3" : "h4";
@@ -98,8 +99,8 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
     </div>
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email above." />}
     {roster.length > 0 && <PeopleList rows={roster} noun="sign-ups" sort={false} filters={[
-      { value: "going", label: "Going", matches: (a) => a.status === "going" },
-      { value: "maybe", label: "Maybe", matches: (a) => a.status === "maybe" },
+      { value: "going", label: registrationStatusLabel("going"), matches: (a) => a.status === "going" },
+      { value: "maybe", label: registrationStatusLabel("maybe"), matches: (a) => a.status === "maybe" },
       { value: "waitlisted", label: "Waitlist", matches: (a) => a.status === "waitlisted" },
     ]}>{(a) => <li key={a.registrationId} className="flex items-start justify-between gap-3 py-3 border-b border-border">
       <div className="min-w-0 flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
@@ -125,12 +126,12 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
 function statusLabel(a: Attendee, roster: Attendee[]): string {
   switch (a.status) {
     case "going": return a.attendanceMode === "remote" ? "Going remotely" : "Going";
-    case "maybe": return "Maybe";
+    case "maybe": return registrationStatusLabel("maybe");
     case "waitlisted": {
       const line = roster.filter((r) => r.status === "waitlisted" && r.attendanceMode === a.attendanceMode);
       return `Waitlist position ${line.indexOf(a) + 1}`;
     }
-    case "declined": return "Can't go";
+    case "declined": return registrationStatusLabel("declined");
     default: return "Removed";
   }
 }

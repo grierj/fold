@@ -4,16 +4,13 @@ import { Groups } from "../api/groups";
 import type { DepartureConfirmation, DepartureKeepableDate, DeparturePreview } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { formatWhen } from "../lib/when";
+import { registrationStatusLabel } from "../lib/status";
 import { Button } from "./ui/Button";
 import { Checkbox, Choices, Field, FormError, Textarea } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
 
 function countLabel(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function statusLabel(status: DepartureKeepableDate["status"]) {
-  return status === "waitlisted" ? "Waitlisted" : status === "maybe" ? "Maybe" : "Going";
 }
 
 function reasonLabel(reason: DepartureKeepableDate["keepReason"], remove: boolean) {
@@ -242,7 +239,7 @@ export function GroupDepartureDialog({
                       });
                     }}
                     label={`Keep ${date.title} — ${formatWhen(date.startsAt)}`}
-                    description={`${statusLabel(date.status)}. ${reasonLabel(date.keepReason, remove)}`}
+                    description={`${registrationStatusLabel(date.status)}. ${reasonLabel(date.keepReason, remove)}`}
                   />
                 ))}
               </Choices>

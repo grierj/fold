@@ -1,6 +1,7 @@
 import { memo, useId } from "react";
 import type { ErasureReasonItem } from "../types";
 import { formatShortDay } from "../lib/when";
+import { contactRequestStatusLabel } from "../lib/status";
 import { Badge } from "./ui/Badge";
 import { Choices, Radio } from "./ui/Field";
 
@@ -21,14 +22,6 @@ const PURPOSES: Record<string, string> = {
   contact: "Request for contact details",
   group_add: "Request to add to a group",
   occurrence_add: "Request to sign up for a date",
-};
-const STATUSES: Record<string, string> = {
-  pending: "Waiting for a decision",
-  granted: "Approved",
-  denied: "Denied",
-  withdrawn: "Withdrawn",
-  expired: "Expired",
-  ended: "Ended",
 };
 
 // A deleted counterpart is never named, only told apart by the reference of
@@ -73,7 +66,7 @@ type RowProps = {
 // once its page is final) and a stable onChoose, so a click re-renders its own
 // row and not the other forty-nine.
 const ReasonReviewRow = memo(function ReasonReviewRow({ item, chosen, isChanged, ordinal, total, group, disabled, onChoose }: RowProps) {
-  const status = STATUSES[item.status];
+  const status = contactRequestStatusLabel(item.status);
   return (
     <li
       data-reason-id={item.requestId}
@@ -90,7 +83,7 @@ const ReasonReviewRow = memo(function ReasonReviewRow({ item, chosen, isChanged,
       </div>
       <p className="wrap-anywhere text-text-muted">
         {whoDid(item)}
-        {status ? ` ${status}.` : ""} Sent {formatShortDay(item.createdAt)}.
+        {` ${status}.`} Sent {formatShortDay(item.createdAt)}.
         {item.contextLabel ? ` ${item.contextLabel}.` : ""}
       </p>
       <div>

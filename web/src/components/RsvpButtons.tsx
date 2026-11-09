@@ -11,16 +11,13 @@ import { Checkbox, Choices, Field, focusFirstInvalid, FormError, Input, Radio, S
 import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
 import { SegmentButton } from "./ui/SegmentButton";
 import { formatCalendarDay } from "../lib/when";
+import { registrationStatusLabel } from "../lib/status";
 import { actorResultFromRegistration, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
 import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 export type { SeriesFeedbackSignal } from "../lib/rsvpFeedback";
 
-const OPTIONS: { value: RegistrationStatus; label: string }[] = [
-  { value: "going", label: "Going" },
-  { value: "maybe", label: "Maybe" },
-  { value: "declined", label: "Can't go" },
-];
+const OPTIONS: RegistrationStatus[] = ["going", "maybe", "declined"];
 
 const MODES: { value: AttendanceMode; label: string }[] = [
   { value: "in_person", label: "In person" },
@@ -35,7 +32,6 @@ type SeriesAnswer = {
 };
 type SeriesFeedbackReporter = (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
 
-const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
 const humanDays = (days: string[]) => days.map(formatCalendarDay).join(" and ");
 
 function resultSummary(result: SeriesRegistrationResponse, prefix = "") {
@@ -197,7 +193,7 @@ function SeriesScopeDialog({ series, onJustThisDate, onApplied }: {
   onApplied?: () => void;
 }) {
   if (!series.pending) return null;
-  return <SeriesRsvpDialog answer={answerLabel(series.pending.status)} disabled={series.mutationBusy} onCancel={() => series.setPending(null)} onChoose={(scope) => {
+  return <SeriesRsvpDialog answer={registrationStatusLabel(series.pending.status)} disabled={series.mutationBusy} onCancel={() => series.setPending(null)} onChoose={(scope) => {
     const answer = series.pending;
     series.setPending(null);
     if (!answer) return;
@@ -423,10 +419,10 @@ function SingleRsvpButtons({
     </div>}
     <div className="flex gap-2 flex-wrap items-center">
       <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
-        {OPTIONS.map((o) => {
-          const active = mine === o.value || (o.value === "going" && mine === "waitlisted");
-          return <SegmentButton key={o.value} pressed={active} disabled={disabled || (o.value === "going" && fullNoWaitlist)}
-            onClick={() => void choose(answerFor(o.value))}>{busy === o.value ? "…" : o.label}</SegmentButton>;
+        {OPTIONS.map((value) => {
+          const active = mine === value || (value === "going" && mine === "waitlisted");
+          return <SegmentButton key={value} pressed={active} disabled={disabled || (value === "going" && fullNoWaitlist)}
+            onClick={() => void choose(answerFor(value))}>{busy === value ? "…" : registrationStatusLabel(value)}</SegmentButton>;
         })}
       </div>
       {instance.guestsAllowed > 0 && <Field label="Extra guests" hint={`Up to ${instance.guestsAllowed}.`}>
@@ -612,7 +608,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
 
   const controls = (name: string, d: Answer, change: (patch: Partial<Answer>) => void, child = false) => <div className="space-y-3 mt-2">
     <Field label={"Answer for " + name}><Select value={d.status} disabled={disabled} onChange={(e) => change({ status: e.target.value as Answer["status"] })}>
-      <option value="going">Going</option><option value="maybe">Maybe</option><option value="declined">Can't go</option>
+      {OPTIONS.map((value) => <option key={value} value={value}>{registrationStatusLabel(value)}</option>)}
     </Select></Field>
     {offersRemote && <Choices legend={"How " + name + " will attend"}>{MODES.map((m) => <Radio key={m.value} name={group + name} label={m.label} checked={d.mode === m.value} disabled={disabled} onChange={() => change({ mode: m.value, ...(m.value === "remote" ? { care: false } : {}) })} />)}</Choices>}
     {child && d.mode === "in_person" && (instance.childcareAvailable || d.care) && <Checkbox label={"Childcare for " + name} checked={d.care} disabled={disabled || (!instance.childcareAvailable && !d.care)} onChange={(e) => change({ care: e.target.checked })} />}
@@ -641,7 +637,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
         <Checkbox label={p.name} checked={d.selected} disabled={disabled || !!reason} onChange={(e) => patch(p.id, { selected: e.target.checked })} />
         <p className="text-sm text-text-muted">{p.kind === "child" ? "Child" : p.kind === "teen" ? "Teen" : "Adult"}{p.age !== undefined ? " · Age " + p.age : ""}</p>
         {saved && <p className="text-sm text-text-muted">Signed up by {saved.holderName}</p>}
-        {saved && !saved.unavailable && <p className="text-sm text-text-muted">{saved.status === "waitlisted" ? `Waitlist position ${saved.waitlistPosition}` : saved.status === "going" ? `Going ${saved.attendanceMode === "remote" ? "remotely" : "in person"}` : saved.status === "maybe" ? "Maybe" : saved.status === "declined" ? "Can’t go" : "Removed"}</p>}
+        {saved && !saved.unavailable && <p className="text-sm text-text-muted">{saved.status === "waitlisted" ? `Waitlist position ${saved.waitlistPosition}` : saved.status === "going" ? `Going ${saved.attendanceMode === "remote" ? "remotely" : "in person"}` : saved.status === "maybe" || saved.status === "declined" ? registrationStatusLabel(saved.status) : "Removed"}</p>}
         {reason && <p className="text-sm text-text-muted">{reason} <Link className="inline-flex min-h-11 items-center text-primary underline" to="/profile">Edit household in Profile</Link></p>}
         {!reason && d.selected && controls(p.name, d, (values) => patch(p.id, values), p.kind === "child")}
       </div>;

@@ -1,5 +1,6 @@
 import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
+import { registrationStatusLabel } from "./status";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
 
@@ -14,9 +15,9 @@ export interface AudienceChoice {
 }
 
 export const STATUS_CHOICES: { id: AudienceStatus; label: string }[] = [
-  { id: "going", label: "Going" },
-  { id: "waitlisted", label: "Waitlisted" },
-  { id: "maybe", label: "Maybe" },
+  { id: "going", label: registrationStatusLabel("going") },
+  { id: "waitlisted", label: registrationStatusLabel("waitlisted") },
+  { id: "maybe", label: registrationStatusLabel("maybe") },
 ];
 export const ROLE_CHOICES: { id: AudienceRole; label: string }[] = [
   { id: "member", label: "Members" },

@@ -1,19 +1,12 @@
 import { Link } from "react-router-dom";
 import type { CalendarOccurrence } from "../../types";
 import { formatTime } from "../../lib/when";
+import { registrationStatusLabel } from "../../lib/status";
 import { CheckIcon, ClockIcon } from "../icons";
 import { RemoteBadge } from "../RemoteBadge";
 import { ChildcareBadge } from "../ChildcareBadge";
 
 export type CalendarState = "going" | "maybe" | "waitlisted" | "declined" | "not_answered" | null;
-
-const STATUS: Record<Exclude<CalendarState, null>, string> = {
-  going: "Going",
-  maybe: "Maybe",
-  waitlisted: "Waitlisted",
-  declined: "Can't go",
-  not_answered: "Not answered",
-};
 
 // Where a calendar row leads: its exact-date page when the server scopes it to
 // one date (invitation or kept date), else the event page.
@@ -28,7 +21,7 @@ export function calendarState(occ: CalendarOccurrence): CalendarState {
 
 export function calendarStateLabel(occ: CalendarOccurrence): string | null {
   const state = calendarState(occ);
-  return state ? STATUS[state] : null;
+  return state ? registrationStatusLabel(state) : null;
 }
 
 function ghosted(state: CalendarState) {
@@ -41,7 +34,7 @@ function ghosted(state: CalendarState) {
 // success tone. Going cards use a quiet tint, never a solid primary fill.
 export function StatusBadge({ state }: { state: CalendarState }) {
   if (!state) return null;
-  const label = STATUS[state];
+  const label = registrationStatusLabel(state);
   const tone = state === "going" ? "text-success-on-subtle" : "text-text-muted";
   return (
     <span className={`inline-flex items-center gap-1 text-xs font-semibold ${tone}`} aria-label={label}>
