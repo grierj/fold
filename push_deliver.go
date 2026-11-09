@@ -122,7 +122,7 @@ func (a *App) lockScreen(n *models.Notification) (push.Notification, bool) {
 		render = a.hooks.pushRender
 	}
 	note, ok := render(n)
-	if ok && notify.IsSafePush(note.Title, note.Body) {
+	if k, known := notify.Lookup(n.Kind); ok && known && k.IsSafePush(note.Title, note.Body) {
 		note.Title = a.siteName()
 	}
 	return note, ok

@@ -401,14 +401,20 @@ type Entry struct {
 	IP         string
 }
 
+// marshalMeta is the one place an entry's metadata becomes the jsonb text
+// stored with it, for Write and WriteAll alike: no metadata is "{}".
+func marshalMeta(m map[string]any) ([]byte, error) {
+	if len(m) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m)
+}
+
 // Write stores e using db, which should be the caller's transaction.
 func Write(db *gorm.DB, e Entry) error {
-	meta := []byte("{}")
-	if len(e.Meta) > 0 {
-		var err error
-		if meta, err = json.Marshal(e.Meta); err != nil {
-			return err
-		}
+	meta, err := marshalMeta(e.Meta)
+	if err != nil {
+		return err
 	}
 	return db.Create(&models.AuditLog{
 		ActorID:    e.Actor,
@@ -458,12 +464,9 @@ func WriteAll(db *gorm.DB, entries []SignedEntry) error {
 		end := min(start+WriteBatchSize, len(entries))
 		rows := make([]signedRow, 0, end-start)
 		for _, e := range entries[start:end] {
-			meta := []byte("{}")
-			if len(e.Meta) > 0 {
-				var err error
-				if meta, err = json.Marshal(e.Meta); err != nil {
-					return err
-				}
+			meta, err := marshalMeta(e.Meta)
+			if err != nil {
+				return err
 			}
 			rows = append(rows, signedRow{Ord: len(rows), ActorID: e.Actor, Action: e.Action, TargetType: e.TargetType, TargetID: e.TargetID, Meta: meta, IP: e.IP})
 		}

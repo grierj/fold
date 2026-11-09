@@ -546,6 +546,12 @@ func TestSafePushesAreTitledWithTheChurch(t *testing.T) {
 	if note, _ := app.lockScreen(household); note.Title != "First Church" {
 		t.Fatalf("household push %+v", note)
 	}
+	// A kind that never pushes the safe text keeps its own title even if its
+	// stored text happens to equal it.
+	lookalike := &models.Notification{Kind: notify.GroupApproved, PushTitle: notify.SafePushTitle, PushBody: notify.SafePushBody}
+	if note, _ := app.lockScreen(lookalike); note.Title != notify.SafePushTitle {
+		t.Fatalf("lookalike push %+v", note)
+	}
 	own := &models.Notification{Kind: notify.GroupApproved, PushTitle: "Youth was approved", PushBody: "It's live now."}
 	if note, _ := app.lockScreen(own); note.Title != "Youth was approved" {
 		t.Fatalf("specific push %+v", note)
