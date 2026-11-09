@@ -17,6 +17,7 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/providers"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -30,12 +31,16 @@ type blockingDepartureMailSender struct {
 	once     sync.Once
 }
 
-func (s *blockingDepartureMailSender) Send(ctx context.Context, message mail.Message) error {
+func (s *blockingDepartureMailSender) SendEmail(ctx context.Context, message mail.Message) (string, error) {
 	if message.To == s.target {
 		s.once.Do(func() { close(s.reached) })
 		<-s.release
 	}
-	return s.delegate.Send(ctx, message)
+	return s.delegate.SendEmail(ctx, message)
+}
+
+func (s *blockingDepartureMailSender) Capabilities() providers.EmailCaps {
+	return s.delegate.Capabilities()
 }
 
 type departureTestFixture struct {

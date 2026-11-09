@@ -27,7 +27,23 @@ const (
 	kindEmailVerifyMail     = "account.email_verify_mail"
 	kindGuardianConsentMail = "guardian.consent_mail"
 	kindGuestVerifyMail     = "guest.verify_mail"
-	directMailAttempts      = 8
+)
+
+// directMailAttempts is the attempts of every direct-mail job: eight on
+// jobs.Backoff span about an hour.
+const directMailAttempts = 8
+
+func directMail(kind string) jobs.Type { return jobs.Type{Name: kind, MaxAttempts: directMailAttempts} }
+
+// The direct-mail job types, queued with <type>.Enqueue(tx, <payload>, now, "").
+var (
+	passwordResetMailType   = directMail(kindPasswordResetMail)
+	accountRequestMailType  = directMail(kindAccountRequestMail)
+	accountExistsMailType   = directMail(kindAccountExistsMail)
+	invitationMailType      = directMail(kindInvitationMail)
+	emailVerifyMailType     = directMail(kindEmailVerifyMail)
+	guardianConsentMailType = directMail(kindGuardianConsentMail)
+	guestVerifyMailType     = directMail(kindGuestVerifyMail)
 )
 
 // Account-request mail cases. The case is the only non-ID payload value: it
@@ -71,85 +87,58 @@ type guestVerifyMailJob struct {
 	GuestSignupID uint `json:"guestSignupId"`
 }
 
+// idMailKind registers one direct-mail kind whose payload P names a stored
+// row by id. prep renders from the row as it is now, or reports false when
+// nothing should be sent.
+func idMailKind[P any](a *App, t jobs.Type, label string, id func(P) uint, prep func(tx *gorm.DB, p P) (mail.Message, bool, error)) jobs.Kind {
+	return jobs.Kind{Type: t, Label: label,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p P
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, t.Name, id(p), func(tx *gorm.DB) (mail.Message, bool, error) { return prep(tx, p) })
+		}}
+}
+
 func (a *App) mailKinds() []jobs.Kind {
-	return []jobs.Kind{{
-		Name: kindPasswordResetMail, Label: "Sending a password reset link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p userMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindPasswordResetMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
+	return []jobs.Kind{
+		idMailKind(a, passwordResetMailType, "Sending a password reset link",
+			func(p userMailJob) uint { return p.UserID },
+			func(tx *gorm.DB, p userMailJob) (mail.Message, bool, error) {
 				return a.preparePasswordReset(tx, p.UserID)
-			})
-		},
-	}, {
-		Name: kindAccountRequestMail, Label: "Sending an account request email", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p requestMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindAccountRequestMail, p.RequestID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, accountRequestMailType, "Sending an account request email",
+			func(p requestMailJob) uint { return p.RequestID },
+			func(tx *gorm.DB, p requestMailJob) (mail.Message, bool, error) {
 				return a.prepareAccountRequestMail(tx, p.RequestID, p.Case)
-			})
-		},
-	}, {
-		Name: kindAccountExistsMail, Label: "Sending an already-have-an-account email", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p userMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindAccountExistsMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, accountExistsMailType, "Sending an already-have-an-account email",
+			func(p userMailJob) uint { return p.UserID },
+			func(tx *gorm.DB, p userMailJob) (mail.Message, bool, error) {
 				return a.prepareExistingAccountHint(tx, p.UserID)
-			})
-		},
-	}, {
-		Name: kindInvitationMail, Label: "Sending an account invitation", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p invitationMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindInvitationMail, p.InvitationID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, invitationMailType, "Sending an account invitation",
+			func(p invitationMailJob) uint { return p.InvitationID },
+			func(tx *gorm.DB, p invitationMailJob) (mail.Message, bool, error) {
 				return a.prepareInvitationMail(tx, p.InvitationID)
-			})
-		},
-	}, {
-		Name: kindEmailVerifyMail, Label: "Sending an email change verification link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p accountTokenMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindEmailVerifyMail, p.AccountTokenID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, emailVerifyMailType, "Sending an email change verification link",
+			func(p accountTokenMailJob) uint { return p.AccountTokenID },
+			func(tx *gorm.DB, p accountTokenMailJob) (mail.Message, bool, error) {
 				return a.prepareEmailVerification(tx, p.AccountTokenID)
-			})
-		},
-	}, {
-		Name: kindGuardianConsentMail, Label: "Sending a guardian consent link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p guardianConsentMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindGuardianConsentMail, p.GuardianLinkID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, guardianConsentMailType, "Sending a guardian consent link",
+			func(p guardianConsentMailJob) uint { return p.GuardianLinkID },
+			func(tx *gorm.DB, p guardianConsentMailJob) (mail.Message, bool, error) {
 				return a.prepareGuardianConsentMail(tx, p.GuardianLinkID)
-			})
-		},
-	}, {
-		Name: kindGuestVerifyMail, Label: "Sending a guest registration confirmation link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p guestVerifyMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindGuestVerifyMail, p.GuestSignupID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, guestVerifyMailType, "Sending a guest registration confirmation link",
+			func(p guestVerifyMailJob) uint { return p.GuestSignupID },
+			func(tx *gorm.DB, p guestVerifyMailJob) (mail.Message, bool, error) {
 				return a.prepareGuestVerification(tx, p.GuestSignupID)
-			})
-		},
-	}}
+			}),
+	}
 }
 
 // prepareGuestVerification rotates the hash of one pending guest signup and
@@ -239,11 +228,11 @@ func (a *App) guestVerificationMessage(signup *models.GuestSignup, raw, site str
 
 Someone used this email address to register as a guest for %s%s at %s, on %s.
 
-Confirm your registration here (the link works once and expires within 24 hours):
+Confirm your registration here (the link works once and expires within %s):
 %s
 
 If that wasn't you, ignore this email and nothing will be registered.`,
-			signup.Name, d.Title, guestWithLine(d), site, formatWhen(d.StartsAt, loc), link),
+			signup.Name, d.Title, guestWithLine(d), site, formatWhen(d.StartsAt, loc), tokenLifetime, link),
 	}
 }
 
@@ -280,7 +269,7 @@ func (a *App) prepareGuardianConsentMail(tx *gorm.DB, linkID uint) (mail.Message
 	// Safeguarding mail names nobody. GET only previews the signed action;
 	// the existing explicit POST is still the only way to give consent.
 	return mail.Message{To: guardian.Email, Subject: "Review teen account consent in Fold",
-		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in 24 hours and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."}, true, nil
+		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in " + tokenLifetime + " and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."}, true, nil
 }
 
 // prepareEmailVerification rotates the hash of one stored verification token
@@ -338,11 +327,11 @@ func (a *App) emailVerificationMessage(to, raw, site string) mail.Message {
 		Subject: "Verify your new Fold email",
 		Text: fmt.Sprintf(`Someone asked to change the sign-in email for an account at %s to this address.
 
-Verify it here (the link works once and expires within 24 hours):
+Verify it here (the link works once and expires within %s):
 %s
 
 The change takes effect only after you use the link. If that wasn't you, you can ignore this email.`,
-			site, link),
+			site, tokenLifetime, link),
 	}
 }
 
@@ -443,7 +432,7 @@ func (a *App) invitationMessage(inv *models.Invitation, inviter *models.User, ra
 			timing = "Your account needs admin approval, consent, and a fresh check of your guardian link. Your household keeps managing your event sign-ups until all three are complete."
 		}
 		return mail.Message{To: inv.Email, Subject: "Create your own account at " + site,
-			Text: fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s\n\nThis link expires within 24 hours. If this invitation is not for you, ignore it.", inviter.PublicName(), inv.Name, timing, link)}
+			Text: fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s\n\nThis link expires within %s. If this invitation is not for you, ignore it.", inviter.PublicName(), inv.Name, timing, link, tokenLifetime)}
 	}
 	groupPart := ""
 	if inv.Group.ID != 0 {
@@ -452,10 +441,10 @@ func (a *App) invitationMessage(inv *models.Invitation, inviter *models.User, ra
 	return mail.Message{To: inv.Email, Subject: fmt.Sprintf("You've been invited to %s", site),
 		Text: fmt.Sprintf(`%s invited you to join %s%s.
 
-Set your password here (the link works once and expires within 24 hours):
+Set your password here (the link works once and expires within %s):
 %s
 
-If you weren't expecting this, you can ignore it.`, inviter.PublicName(), site, groupPart, link)}
+If you weren't expecting this, you can ignore it.`, inviter.PublicName(), site, groupPart, tokenLifetime, link)}
 }
 
 // prepareAndSend commits the capability before contacting the provider. No
@@ -482,27 +471,27 @@ func (a *App) prepareAndSend(ctx context.Context, kind string, subjectID uint, p
 }
 
 // sendDirect uses the configured suppression-aware sender for required account
-// mail. Permanent outcomes finish quietly; the runner retries transient errors
-// and cancellation, and alerts admins if all attempts fail.
+// mail. A suppressed address, a permanent refusal or no email service set up
+// (mail.NoSender, with a startup warning) finishes quietly, logged; only a
+// transient error or cancellation retries, and the runner alerts admins if
+// all attempts fail.
 func (a *App) sendDirect(ctx context.Context, kind string, subjectID uint, msg mail.Message) error {
-	if a.Mailer == nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	msg.Optional = false
-	err := a.Mailer.Send(ctx, msg)
-	if err == nil {
+	res := sendTracked(ctx, a.mailSender(), msg, nil)
+	if res.outcome == sendSent {
 		return nil
 	}
-	log.Printf("mail: %s #%d: %s", kind, subjectID, jobs.CleanError(err))
-	if mail.NotConfigured(err) || mail.IsSuppressed(err) || mail.IsPermanent(err) {
+	log.Printf("mail: %s #%d: %s", kind, subjectID, jobs.CleanError(res.err))
+	switch res.outcome {
+	case sendSuppressed, sendPermanent, sendNotConfigured:
 		return nil
 	}
-	return err
+	return res.err
 }
 
 func (a *App) preparePasswordReset(tx *gorm.DB, userID uint) (mail.Message, bool, error) {
@@ -537,11 +526,11 @@ func (a *App) passwordResetMessage(to, raw, site string) mail.Message {
 		Subject: "Reset your Fold password",
 		Text: fmt.Sprintf(`Someone asked to reset the password for this email address at %s.
 
-Reset it here (the link works once and expires in 24 hours):
+Reset it here (the link works once and expires in %s):
 %s
 
 If that wasn't you, you can ignore this email — your password won't change.`,
-			site, link),
+			site, tokenLifetime, link),
 	}
 }
 

@@ -1103,7 +1103,7 @@ func TestSweepFailuresAreFixedText(t *testing.T) {
 		tombstone(t, app, u.ID)
 		installRejectAvatarJobs(t, app)
 		buf := captureLog(t)
-		if _, err := jobs.Enqueue(app.DB, kindAvatarSweep, nil, time.Now(), kindAvatarSweep+":2026-11-04", 1); err != nil {
+		if _, err := enqueueJob(app.DB, kindAvatarSweep, nil, time.Now(), kindAvatarSweep+":2026-11-04", 1); err != nil {
 			t.Fatal(err)
 		}
 		runAvatarJobs(t, jobs.NewRunner(app.DB, app.dailyKinds()...))

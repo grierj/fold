@@ -35,6 +35,10 @@ const maxWebhookBody = 1 << 20
 
 const kindEmailEvent = "webhook.process"
 
+// emailEventType: eight attempts on jobs.Backoff span about an hour, the
+// same as a message batch.
+var emailEventType = jobs.Type{Name: kindEmailEvent, MaxAttempts: 8}
+
 // postmarkEmailHook receives one Postmark webhook. Postmark doesn't sign
 // webhooks; it sends the HTTP Basic credentials from the webhook URL, so a
 // wrong or missing one is a 401 that changes nothing. With no secret set the
@@ -66,7 +70,7 @@ func (a *App) postmarkEmailHook(c *gin.Context) {
 		return
 	}
 	for _, e := range evs {
-		if _, err := jobs.Enqueue(a.DB, kindEmailEvent, e, time.Now(), e.Key, 8); err != nil {
+		if _, err := emailEventType.Enqueue(a.DB, e, time.Now(), e.Key); err != nil {
 			// Postmark retries a failed delivery, so nothing is lost.
 			log.Printf("email webhook: queue: %v", err)
 			c.Status(http.StatusInternalServerError)
@@ -78,7 +82,7 @@ func (a *App) postmarkEmailHook(c *gin.Context) {
 
 // eventKinds are the jobs queued by outside events rather than the clock.
 func (a *App) eventKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindEmailEvent, Label: "Recording an email delivery report", MaxAttempts: 8,
+	return []jobs.Kind{{Type: emailEventType, Label: "Recording an email delivery report",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
 			var e providers.Event
 			if err := json.Unmarshal(payload, &e); err != nil {
@@ -110,13 +114,13 @@ func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 			res = deliveries.Where("status = ?", models.DeliverySent).Update("status", models.DeliveryDelivered)
 			mres = recipients.Where("status = ?", models.RecipientSent).Updates(map[string]any{"status": models.RecipientDelivered, "updated_at": time.Now()})
 		case providers.EventBounced, providers.EventComplained:
-			reason := "soft bounce"
+			reason := models.BounceSoft
 			status := models.RecipientBounced
 			switch {
 			case e.Kind == providers.EventComplained:
-				reason, status = "marked as spam", models.RecipientComplained
+				reason, status = models.BounceComplaint, models.RecipientComplained
 			case e.Permanent:
-				reason = "hard bounce"
+				reason = models.BounceHard
 			}
 			res = deliveries.Where("status IN ?", []string{models.DeliverySent, models.DeliveryDelivered}).
 				Updates(map[string]any{"status": models.DeliveryBounced, "reason": reason})

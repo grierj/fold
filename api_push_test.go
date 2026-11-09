@@ -372,7 +372,7 @@ func TestPushTestNotification(t *testing.T) {
 	app.DB.Create(&models.Setting{Key: "site_name", Value: "First Church"})
 	u := pushMember(t, app, "pat")
 	phone := newPushDevice(t, app, u, "phone")
-	app.DB.Model(&models.PushSubscription{}).Where("id = ?", phone.ID).Update("last_used_at", time.Now().Add(-72*time.Hour))
+	app.DB.Model(&models.PushSubscription{}).Where("id = ?", phone.ID).Update("last_used_at", time.Now().Add(-23*time.Hour))
 	pat := loginAPI(t, app, "pat", "password123456")
 	var got pushTestJSON
 	w := pat.do("POST", "/api/v1/push/test", map[string]string{"endpoint": phone.Endpoint}, true)
@@ -715,8 +715,8 @@ func TestPushEnabledSetting(t *testing.T) {
 	if w := root.do("PUT", "/api/v1/admin/settings/push-enabled", map[string]any{"on": false}, true); w.Code != http.StatusOK {
 		t.Fatalf("off: %d %s", w.Code, w.Body.String())
 	}
-	if app.settingValue(settingPushEnabled) != "false" || !strings.Contains(site(), `"pushEnabled":false`) {
-		t.Fatalf("stored %q, site %s", app.settingValue(settingPushEnabled), site())
+	if settingText(t, app, settingPushEnabled) != "false" || !strings.Contains(site(), `"pushEnabled":false`) {
+		t.Fatalf("stored %q, site %s", settingText(t, app, settingPushEnabled), site())
 	}
 	if w := sam.do("GET", "/api/v1/push/config", nil, false); !strings.Contains(w.Body.String(), `"enabled":false`) {
 		t.Fatalf("config: %s", w.Body.String())

@@ -232,7 +232,7 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string, lock bool) ([]m
 	return out, evs, nil
 }
 
-func dateDecisionKey(id uint) string { return "date:" + strconv.FormatUint(uint64(id), 10) }
+func dateDecisionKey(id uint) string { return "date:" + idString(id) }
 
 func (vs visibleSet) canSeeSeries(viewer *models.User, ev *models.Event) bool {
 	return vs.canSeeDate(viewer, ev, &models.EventOccurrence{})

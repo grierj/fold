@@ -32,11 +32,6 @@ type notifyFailSender struct {
 	onSend func()
 }
 
-func (s *notifyFailSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s *notifyFailSender) SendEmail(context.Context, mail.Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,7 +55,11 @@ func (s *notifyFailSender) n() int {
 // notifyPlainSender sends mail and reports no provider id.
 type notifyPlainSender struct{}
 
-func (notifyPlainSender) Send(context.Context, mail.Message) error { return nil }
+func (notifyPlainSender) SendEmail(context.Context, mail.Message) (string, error) { return "", nil }
+
+func (notifyPlainSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "notify-plain"}
+}
 
 // seedNotifyDeliver writes a notice, a queued email row, and a job whose
 // key is the literal notify.deliver:<id>.
@@ -172,7 +171,7 @@ func TestNotifyDeliverSendsOnce(t *testing.T) {
 		u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
 		phone := newPushDevice(t, app, u, "phone")
 		laptop := newPushDevice(t, app, u, "laptop")
-		id, _ := seedNotifyDeliver(t, app, u, notifyDeliverAttempts)
+		id, _ := seedNotifyDeliver(t, app, u, notify.DeliverJob.MaxAttempts)
 		for range 2 {
 			if err := app.deliverOneNotification(context.Background(), id); err != nil {
 				t.Fatal(err)
@@ -185,7 +184,7 @@ func TestNotifyDeliverSendsOnce(t *testing.T) {
 		u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
 		phone := newPushDevice(t, app, u, "phone")
 		laptop := newPushDevice(t, app, u, "laptop")
-		id, _ := seedNotifyDeliver(t, app, u, notifyDeliverAttempts)
+		id, _ := seedNotifyDeliver(t, app, u, notify.DeliverJob.MaxAttempts)
 		errCh := make(chan error, 2)
 		var wg sync.WaitGroup
 		for range 2 {
@@ -299,11 +298,11 @@ func TestNotifyDeliverFailureModes(t *testing.T) {
 		calls    int
 		clean    bool
 	}{
-		{name: "transient", attempts: notifyDeliverAttempts, sendErr: dirty, status: models.DeliveryQueued, job: models.JobFailed, later: true, calls: 1, clean: true},
-		{name: "permanent", attempts: notifyDeliverAttempts, sendErr: permanent, status: models.DeliveryFailed, reason: jobs.CleanError(permanent), job: models.JobDone, calls: 1},
-		{name: "not configured", attempts: notifyDeliverAttempts, sendErr: noSenderErr, status: models.DeliveryFailed, reason: jobs.CleanError(noSenderErr), job: models.JobDone, calls: 1},
-		{name: "suppressed address", attempts: notifyDeliverAttempts, sendErr: dirty, prepare: suppressDeliverAddress, status: models.DeliverySuppressed, reason: "email to this address bounces", job: models.JobDone, calls: 0},
-		{name: "opt-out", attempts: notifyDeliverAttempts, sendErr: dirty, prepare: optOutDeliverEmail, status: models.DeliverySuppressed, reason: "optional email turned off", job: models.JobDone, calls: 0},
+		{name: "transient", attempts: notify.DeliverJob.MaxAttempts, sendErr: dirty, status: models.DeliveryQueued, job: models.JobFailed, later: true, calls: 1, clean: true},
+		{name: "permanent", attempts: notify.DeliverJob.MaxAttempts, sendErr: permanent, status: models.DeliveryFailed, reason: jobs.CleanError(permanent), job: models.JobDone, calls: 1},
+		{name: "not configured", attempts: notify.DeliverJob.MaxAttempts, sendErr: noSenderErr, status: models.DeliveryFailed, reason: jobs.CleanError(noSenderErr), job: models.JobDone, calls: 1},
+		{name: "suppressed address", attempts: notify.DeliverJob.MaxAttempts, sendErr: dirty, prepare: suppressDeliverAddress, status: models.DeliverySuppressed, reason: "email to this address bounces", job: models.JobDone, calls: 0},
+		{name: "opt-out", attempts: notify.DeliverJob.MaxAttempts, sendErr: dirty, prepare: optOutDeliverEmail, status: models.DeliverySuppressed, reason: "optional email turned off", job: models.JobDone, calls: 0},
 		{name: "last attempt", attempts: 1, sendErr: dirty, status: models.DeliveryDeferred, job: models.JobDead, calls: 1, clean: true},
 	}
 	for _, tc := range cases {
@@ -489,7 +488,7 @@ func TestNotifyDeliverPushFanOutSurvivesEmailFailure(t *testing.T) {
 	laptop := newPushDevice(t, app, u, "laptop")
 	sender := &notifyFailSender{err: &providers.SendError{Provider: "fake", Code: 550, Message: "no such user", Permanent: true}}
 	app.Mailer = sender
-	id, _ := seedNotifyDeliver(t, app, u, notifyDeliverAttempts)
+	id, _ := seedNotifyDeliver(t, app, u, notify.DeliverJob.MaxAttempts)
 	runNotifyOnce(t, app)
 	assertOnePushEach(t, app, id, phone.ID, laptop.ID)
 	d := emailDeliveryOf(t, app, id)
@@ -543,39 +542,39 @@ func TestNotifyDeliverLedgerCases(t *testing.T) {
 		wantNoMail   bool
 	}{
 		{
-			name: "deferred row sends on rerun", attempts: notifyDeliverAttempts,
+			name: "deferred row sends on rerun", attempts: notify.DeliverJob.MaxAttempts,
 			seedStatus: models.DeliveryDeferred, mailer: "default",
 			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantID: true,
 		},
 		{
-			name: "transient failure returns deferred to queued", attempts: notifyDeliverAttempts,
+			name: "transient failure returns deferred to queued", attempts: notify.DeliverJob.MaxAttempts,
 			seedStatus: models.DeliveryDeferred, mailer: "fail", sendErr: busy,
 			wantStatus: models.DeliveryQueued, wantReason: jobs.CleanError(busy),
 			wantJob: models.JobFailed, wantNoMail: true,
 		},
 		{
-			name: "nil mailer", attempts: notifyDeliverAttempts, mailer: "nil",
+			name: "nil mailer", attempts: notify.DeliverJob.MaxAttempts, mailer: "nil",
 			wantStatus: models.DeliveryFailed, wantReason: jobs.CleanError(noSenderErr),
 			wantJob: models.JobDone, wantNoMail: true,
 		},
 		{
-			name: "updated_at moves past created_at", attempts: notifyDeliverAttempts,
+			name: "updated_at moves past created_at", attempts: notify.DeliverJob.MaxAttempts,
 			mailer: "default", backdate: true,
 			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantUpdated: true, wantID: true,
 		},
 		{
-			name: "non-tracking sender stores a null provider id", attempts: notifyDeliverAttempts,
+			name: "non-tracking sender stores a null provider id", attempts: notify.DeliverJob.MaxAttempts,
 			mailer: "plain", presetID: "old-id",
 			wantStatus: models.DeliverySent, wantJob: models.JobDone, wantNullID: true, wantNoMail: true,
 		},
 		{
-			name: "unknown kind waits", attempts: notifyDeliverAttempts,
+			name: "unknown kind waits", attempts: notify.DeliverJob.MaxAttempts,
 			kind:       "kind.not.in.this.build",
 			wantStatus: models.DeliveryQueued, wantJob: models.JobQueued,
 			wantAttempts: 0, checkAttempt: true, wantHour: true, unchanged: true, wantNoMail: true,
 		},
 		{
-			name: "unknown kind past a week is suppressed", attempts: notifyDeliverAttempts,
+			name: "unknown kind past a week is suppressed", attempts: notify.DeliverJob.MaxAttempts,
 			kind: "kind.not.in.this.build", createdAgo: notifyUnknownGrace + time.Hour,
 			wantStatus: models.DeliverySuppressed, wantReason: emailKindUnknown,
 			wantJob: models.JobDone, wantNoMail: true,
@@ -738,7 +737,7 @@ func TestDrainNoticesLeavesOtherKindsAndHonorsLater(t *testing.T) {
 	u := newTestUser(t, app, "recipient", "password1234", models.RoleMember)
 	id, job := seedNotifyDeliver(t, app, u, 8)
 	for _, kind := range []string{kindPushDeliver, kindMessageSend} {
-		if _, err := jobs.Enqueue(app.DB, kind, nil, time.Now(), kind+":unrelated", 8); err != nil {
+		if _, err := enqueueJob(app.DB, kind, nil, time.Now(), kind+":unrelated", 8); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -893,7 +892,7 @@ func TestNotifyReconcileRequeuesOrphans(t *testing.T) {
 		if err := app.DB.Where("unique_key = ?", notify.DeliverKey(id)).First(&job).Error; err != nil {
 			t.Fatal(err)
 		}
-		if job.Status != models.JobQueued || job.MaxAttempts != notifyDeliverAttempts {
+		if job.Status != models.JobQueued || job.MaxAttempts != notify.DeliverJob.MaxAttempts {
 			t.Fatalf("reconciled job: %+v", job)
 		}
 	}
@@ -1188,7 +1187,7 @@ func TestNotifyReconcileHourlyRetriesErrors(t *testing.T) {
 			kind = k
 		}
 	}
-	if kind.Run == nil || kind.Label != "Checking for notices that still need sending" || kind.MaxAttempts != jobs.DefaultMaxAttempts {
+	if kind.Run == nil || kind.Label != "Checking for notices that still need sending" || kind.Attempts() != jobs.DefaultMaxAttempts {
 		t.Fatalf("hourly kind: %+v", kind)
 	}
 	// This local hour belongs to the following UTC day.

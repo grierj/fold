@@ -189,7 +189,12 @@ const (
 )
 
 func (a *App) apiAdminGetChurchAddress(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"address": a.churchAddress()})
+	address, err := settingValueIn(a.DB, settingChurchAddress)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the address")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"address": address})
 }
 
 // apiAdminSetChurchAddress saves the church's postal address for email
@@ -239,8 +244,3 @@ func churchAddressLines(address string) []string {
 var errChurchAddressLong = apiErr(http.StatusBadRequest, "church_address_long", fmt.Sprintf("the address must be at most %d characters on %d lines", maxChurchAddress, maxChurchAddressLines))
 
 var errChurchAddressCharacters = apiErr(http.StatusBadRequest, "church_address_characters", "the address has a character that can't go in an email")
-
-// churchAddress is the church's postal address for footers, or "".
-func (a *App) churchAddress() string {
-	return a.settingValue(settingChurchAddress)
-}

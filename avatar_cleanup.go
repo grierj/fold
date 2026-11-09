@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math"
@@ -19,7 +18,6 @@ import (
 	"fold/models"
 	"fold/storage"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -83,13 +81,16 @@ var (
 	errAvatarUnexpected = errors.New("avatar update changed no account")
 )
 
+// avatarCleanupType takes the default attempts.
+var avatarCleanupType = jobs.Type{Name: kindAvatarCleanup}
+
 // avatarCleanupJob is the whole payload: no key, no path, no name.
 type avatarCleanupJob struct {
 	UserID uint `json:"userId"`
 }
 
 func (a *App) avatarKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindAvatarCleanup, Label: "Removing old profile photos", MaxAttempts: jobs.DefaultMaxAttempts,
+	return []jobs.Kind{{Type: avatarCleanupType, Label: "Removing old profile photos",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
 			dec := json.NewDecoder(bytes.NewReader(payload))
 			dec.DisallowUnknownFields()
@@ -114,15 +115,19 @@ func queueAvatarCleanup(tx *gorm.DB, userID uint) error {
 	if userID == 0 {
 		return errAvatarCleanupPayload
 	}
+	body, err := json.Marshal(avatarCleanupJob{UserID: userID})
+	if err != nil {
+		return err
+	}
 	var pending bool
 	if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM jobs WHERE kind = ? AND status = ? AND payload = ?::jsonb)`,
-		kindAvatarCleanup, models.JobQueued, fmt.Sprintf(`{"userId":%d}`, userID)).Scan(&pending).Error; err != nil {
+		kindAvatarCleanup, models.JobQueued, string(body)).Scan(&pending).Error; err != nil {
 		return err
 	}
 	if pending {
 		return nil
 	}
-	_, err := jobs.Enqueue(tx, kindAvatarCleanup, avatarCleanupJob{UserID: userID}, time.Now(), "", jobs.DefaultMaxAttempts)
+	_, err = avatarCleanupType.Enqueue(tx, avatarCleanupJob{UserID: userID}, time.Now(), "")
 	return err
 }
 
@@ -221,30 +226,6 @@ func mapAvatarCleanupError(cctx context.Context, err error) error {
 		return errAvatarOutOfTime
 	}
 	return errAvatarCleanupFailed
-}
-
-// requestStartKey holds the time stampRequestStart saw the request.
-const requestStartKey = "requestStart"
-
-// stampRequestStart records when the request reached the router, before any
-// middleware reads its body.
-func stampRequestStart() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Set(requestStartKey, time.Now())
-		c.Next()
-	}
-}
-
-// requestStart is when the request reached the router. The CSRF middleware
-// parses a multipart form, which reads a whole upload body before the handler
-// runs, so a handler's own clock would start after a slow body.
-func requestStart(c *gin.Context) time.Time {
-	if v, ok := c.Get(requestStartKey); ok {
-		if t, ok := v.(time.Time); ok {
-			return t
-		}
-	}
-	return time.Now()
 }
 
 // avatarTxDeadline is when an upload's or removal's transaction must end:
@@ -507,9 +488,9 @@ func (s *avatarSweepRun) processBatch() error {
 			accounts[uint64(r.ID)] = r
 		}
 		var pending []struct{ UserID string }
-		if err := s.db.Raw(`SELECT DISTINCT payload->>'userId' AS user_id FROM jobs
-			WHERE kind = ? AND status IN ('queued','running','failed','dead') AND payload->>'userId' IN ?`,
-			kindAvatarCleanup, names).Scan(&pending).Error; err != nil {
+		if err := s.db.Raw(`SELECT DISTINCT payload->>? AS user_id FROM jobs
+			WHERE kind = ? AND status IN ('queued','running','failed','dead') AND payload->>? IN ?`,
+			avatarCleanupUserField, kindAvatarCleanup, avatarCleanupUserField, names).Scan(&pending).Error; err != nil {
 			return lookup()
 		}
 		for _, p := range pending {
@@ -533,9 +514,8 @@ func (s *avatarSweepRun) processBatch() error {
 		if !avatarOwnerNeedsWork(oe, row) {
 			continue
 		}
-		s.specs = append(s.specs, jobs.Spec{Kind: kindAvatarCleanup, Payload: avatarCleanupJob{UserID: row.ID},
-			RunAt: time.Now(), UniqueKey: kindAvatarCleanup + ":" + strconv.FormatUint(oe.Owner, 10) + ":" + s.day,
-			MaxAttempts: jobs.DefaultMaxAttempts})
+		s.specs = append(s.specs, avatarCleanupType.Spec(avatarCleanupJob{UserID: row.ID}, time.Now(),
+			kindAvatarCleanup+":"+strconv.FormatUint(oe.Owner, 10)+":"+s.day))
 	}
 	if len(s.specs) >= s.limit {
 		s.specs = s.specs[:s.limit]

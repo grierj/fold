@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/models"
 )
@@ -87,14 +86,14 @@ func TestAnnouncementSendsOneEmailAndOnePush(t *testing.T) {
 	}
 	// A restart: message.send again, and the push jobs queued again.
 	before := outboxCount(f.app)
-	if _, err := jobs.Enqueue(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
+	if _, err := enqueueJob(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := enqueueMessagePushes(f.app.DB, id); err != nil {
 		t.Fatal(err)
 	}
 	for _, d := range []testDevice{phone, laptop} {
-		if added, err := jobs.Enqueue(f.app.DB, kindPushDeliver, pushJob{MessageRecipientID: pushes[f.teen.Email].ID, DeviceID: d.ID}, time.Now(),
+		if added, err := enqueueJob(f.app.DB, kindPushDeliver, pushJob{MessageRecipientID: pushes[f.teen.Email].ID, DeviceID: d.ID}, time.Now(),
 			fmt.Sprintf("push:mr:%d:d:%d", pushes[f.teen.Email].ID, d.ID), 0); err != nil || added {
 			t.Fatalf("queued twice: %v %v", added, err)
 		}
@@ -417,7 +416,7 @@ func TestReaperStopsAPushWithNoJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	// This one's job is still waiting for the morning.
-	if _, err := jobs.Enqueue(f.app.DB, kindPushDeliver, pushJob{MessageRecipientID: waiting.ID, DeviceID: 1}, time.Now().Add(8*time.Hour), "", 0); err != nil {
+	if _, err := enqueueJob(f.app.DB, kindPushDeliver, pushJob{MessageRecipientID: waiting.ID, DeviceID: 1}, time.Now().Add(8*time.Hour), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.app.reapMessages(t.Context(), time.Now()); err != nil {

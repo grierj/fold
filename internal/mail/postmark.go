@@ -64,12 +64,6 @@ func (p *Postmark) Capabilities() providers.EmailCaps {
 	return providers.EmailCaps{Name: "postmark"}
 }
 
-// Send delivers m.
-func (p *Postmark) Send(ctx context.Context, m Message) error {
-	_, err := p.SendEmail(ctx, m)
-	return err
-}
-
 // postmarkEmail is the body of POST /email.
 type postmarkEmail struct {
 	From          string           `json:"From"`
