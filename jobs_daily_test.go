@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +185,57 @@ func TestAvatarJobKindsAreRegistered(t *testing.T) {
 		if _, ok := app.jobKinds()[name]; !ok {
 			t.Errorf("%s is missing from jobKinds", name)
 		}
+	}
+}
+
+// FOLD_WORKERS=0 stops the workers, not the scheduler: the process still
+// queues its date extension, the hourly tasks and the daily tasks, and says
+// that nothing in it will run them. The QC-1 harness leans on this (it keeps
+// the scheduler's start-up and hourly edges out of its measuring windows).
+func TestSchedulerRunsWithoutWorkers(t *testing.T) {
+	app := testApp(t)
+	app.Config.Workers = 0
+	app.Config.JobPoll = 50 * time.Millisecond
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wait := app.startJobs(ctx)
+	defer func() { cancel(); wait() }()
+
+	want := []string{"occurrences.extend"}
+	for _, k := range app.hourlyKinds() {
+		want = append(want, k.Name)
+	}
+	for _, k := range app.dailyKinds() {
+		want = append(want, k.Name)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var have []string
+		app.DB.Model(&models.Job{}).Distinct().Pluck("kind", &have)
+		missing := map[string]bool{}
+		for _, w := range want {
+			missing[w] = true
+		}
+		for _, h := range have {
+			delete(missing, h)
+		}
+		if len(missing) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("with no workers the scheduler did not queue %v", missing)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	var ran int64
+	app.DB.Model(&models.Job{}).Where("status <> ?", models.JobQueued).Count(&ran)
+	if ran != 0 {
+		t.Fatalf("%d jobs ran with no workers", ran)
+	}
+	if !strings.Contains(logged.String(), "WARNING: FOLD_WORKERS=0") {
+		t.Fatalf("no warning that this process runs no jobs: %q", logged.String())
 	}
 }

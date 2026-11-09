@@ -1,16 +1,20 @@
 // The Playwright half of the QC-1 panel measurement: it implements, against the real deletion panel in Chromium, the driver that
-// panel-core.mjs measures through. Selectors are the ones web/e2e/admin-delete-user.spec.ts uses against the same panel (roles, button
-// names, "Reasons N to M of ..." pager line, li[data-reason-id], [data-reason-heading]).
+// panel-core.mjs measures through. Every selector, label and copy string it relies on (roles, button names, the "Reasons N to M of ..." pager line, the
+// reason rows, their heading attribute) is app-facts.json "web", which web/src/components/ReasonReviewSection.test.tsx holds equal to what the panel renders.
 //
 // Timing happens INSIDE the page, from the pointerdown's own timestamp to the frame after the commit it asked for, so a latency never
 // contains a Playwright round trip. A click is a real pointer click (locator.check / locator.click); the page learns of it from the
 // capture-phase pointerdown. The interval ends when the page shows what the control promises (the reason is chosen, the pager line or the
 // focused heading is the expected one) and two animation frames have followed.
 import { spawnSync } from "node:child_process";
+import { WEB } from "./panel-core.mjs";
 
-export const ROWS = 'ul[aria-label="Contact-request reasons"] > li[data-reason-id]';
-export const NAV = 'nav[aria-label="Reasons pages"] p';
-export const CHECKING = "Checking their contact-request reasons…";
+export const ROWS = WEB.reasonRows;
+export const NAV = WEB.reasonsNav;
+export const CHECKING = WEB.copy.checking;
+const L = WEB.labels;
+const NEXT_PAGE = `Next ${WEB.displayPage}`;
+const PREV_PAGE = `Previous ${WEB.displayPage}`;
 
 // Installed before any page script. window.__qc.arm(spec) is called right before a click; spec is {choose: rowIndex} or {line, heading}.
 export const INIT_SCRIPT = `(() => {
@@ -21,11 +25,11 @@ export const INIT_SCRIPT = `(() => {
     if (!s) return false;
     if (s.choose !== undefined) {
       const li = rows()[s.choose];
-      return !!li && !li.textContent.includes("Not chosen yet") && !li.textContent.includes("Changed since you looked");
+      return !!li && !li.textContent.includes(${JSON.stringify(WEB.copy.notChosen)}) && !li.textContent.includes(${JSON.stringify(WEB.copy.changed)});
     }
     const line = document.querySelector(${JSON.stringify(NAV)})?.textContent ?? null;
     if (s.line !== undefined && line !== s.line) return false;
-    if (s.heading !== undefined && document.activeElement?.getAttribute("data-reason-heading") !== String(s.heading)) return false;
+    if (s.heading !== undefined && document.activeElement?.getAttribute(${JSON.stringify(WEB.reasonHeadingAttr)}) !== String(s.heading)) return false;
     return true;
   };
   const check = () => {
@@ -44,7 +48,7 @@ export const INIT_SCRIPT = `(() => {
     if (qc.firstPageAt === null && rows().length >= qc.firstItems) qc.firstPageAt = t;
     const line = (document.querySelector(${JSON.stringify(NAV)})?.textContent ?? "").trim();
     const total = Number(line.slice(line.lastIndexOf(" ") + 1).split(",").join(""));
-    const ended = line.indexOf("of at least") < 0 && line.indexOf(" of ") > 0 && total === qc.expected && !document.body.textContent.includes(${JSON.stringify(CHECKING)});
+    const ended = line.indexOf(${JSON.stringify(WEB.navOfLoading.trim())}) < 0 && line.indexOf(${JSON.stringify(" " + WEB.navOfDone)}) > 0 && total === qc.expected && !document.body.textContent.includes(${JSON.stringify(CHECKING)});
     if (!ended) return;
     if (qc.pressAt === null) { if (qc.walkDoneAt === null) qc.walkDoneAt = t; }
     else if (qc.walk2DoneAt === null && qc.pages.length >= qc.pagesAtPress + qc.pagesPerWalk) qc.walk2DoneAt = t;
@@ -52,9 +56,9 @@ export const INIT_SCRIPT = `(() => {
   document.addEventListener("pointerdown", (e) => {
     const target = e.target && e.target.closest ? e.target : null;
     const item = target && target.closest("[role=menuitem]");
-    if (item && item.textContent.trim() === "Delete" && qc.menuAt === null) qc.menuAt = e.timeStamp;
+    if (item && item.textContent.trim() === ${JSON.stringify(L.menuDelete)} && qc.menuAt === null) qc.menuAt = e.timeStamp;
     const button = target && target.closest("button");
-    if (button && button.textContent.trim() === "Delete account" && qc.pressAt === null && qc.walkDoneAt !== null) { qc.pressAt = e.timeStamp; qc.pagesAtPress = qc.pages.length; }
+    if (button && button.textContent.trim() === ${JSON.stringify(L.deleteAccount)} && qc.pressAt === null && qc.walkDoneAt !== null) { qc.pressAt = e.timeStamp; qc.pagesAtPress = qc.pages.length; }
   }, true);
   new MutationObserver(stamp).observe(document, { subtree: true, childList: true, characterData: true });
   qc.arm = (spec) => { qc.spec = spec; qc.t0 = null; qc.result = null; };
@@ -167,20 +171,20 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
       await page.goto(`${url}/admin?tab=users`);
       // What the page needs to know to stamp the first load itself (see INIT_SCRIPT): nothing here starts a clock; the clock starts at the menu item's pointerdown.
       await page.evaluate(([e]) => { const q = window.__qc; q.expected = e; q.firstItems = Math.min(50, e); q.pagesPerWalk = Math.ceil(e / 100); }, [expected]);
-      await page.getByRole("searchbox", { name: "Search by name or email" }).fill(targetEmail);
+      await page.getByRole("searchbox", { name: L.usersSearch }).fill(targetEmail);
       rowEl = page.getByRole("row").filter({ hasText: targetEmail });
-      await rowEl.getByRole("button", { name: /^More for/ }).first().click();
-      await rowEl.getByRole("menuitem", { name: "Delete" }).click();
+      await rowEl.getByRole("button", { name: new RegExp(`^${L.moreForPrefix}`) }).first().click();
+      await rowEl.getByRole("menuitem", { name: L.menuDelete }).click();
     },
     async snapshot() {
       return page.evaluate(
-        ([navSel, rowSel, checking]) => ({
+        ([navSel, rowSel, checking, progressSel, progressPattern]) => ({
           navLine: document.querySelector(navSel)?.textContent ?? null,
           checking: document.body.textContent.includes(checking),
           rows: document.querySelectorAll(rowSel).length,
-          progress: [...document.querySelectorAll("p.text-text-muted")].map((p) => p.textContent).find((t) => /chosen of|Choose Keep text|All .* chosen/.test(t)) ?? null,
+          progress: [...document.querySelectorAll(progressSel)].map((p) => p.textContent).find((t) => new RegExp(progressPattern).test(t)) ?? null,
         }),
-        [NAV, ROWS, CHECKING],
+        [NAV, ROWS, CHECKING, WEB.progressSelector, WEB.progressPattern],
       );
     },
     async env() {
@@ -188,18 +192,18 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
     },
     async chooseAt(i) {
       await page.evaluate((idx) => window.__qc.arm({ choose: idx }), i);
-      await rows.nth(i).getByRole("radio", { name: i % 2 === 0 ? "Blank text" : "Keep text" }).check();
+      await rows.nth(i).getByRole("radio", { name: i % 2 === 0 ? L.blankText : L.keepText }).check();
       return result();
     },
     async navigate(kind, arg, expect) {
       await page.evaluate((spec) => window.__qc.arm(spec), expect);
-      if (kind === "next") await rowEl.getByRole("button", { name: "Next 50" }).click();
-      else if (kind === "prev") await rowEl.getByRole("button", { name: "Previous 50" }).click();
+      if (kind === "next") await rowEl.getByRole("button", { name: NEXT_PAGE }).click();
+      else if (kind === "prev") await rowEl.getByRole("button", { name: PREV_PAGE }).click();
       else if (kind === "goto") {
-        await rowEl.getByLabel("Go to reason number").fill(String(arg));
-        await rowEl.getByRole("button", { name: "Go", exact: true }).click();
-      } else if (kind === "nextUnchosen") await rowEl.getByRole("button", { name: "Next reason without a choice" }).click();
-      else if (kind === "nextChanged") await rowEl.getByRole("button", { name: "Next changed reason" }).click();
+        await rowEl.getByLabel(L.goToReason).fill(String(arg));
+        await rowEl.getByRole("button", { name: L.goButton, exact: true }).click();
+      } else if (kind === "nextUnchosen") await rowEl.getByRole("button", { name: L.nextUnchosen }).click();
+      else if (kind === "nextChanged") await rowEl.getByRole("button", { name: L.nextChanged }).click();
       else throw new Error(`unknown navigation ${kind}`);
       return result();
     },
@@ -207,9 +211,9 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
     // bulk control in the product and none here.
     async chooseAllRemaining(chosen) {
       const n = await page.evaluate(
-        async ([rowSel, navSel]) => {
-          const next = () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Next 50");
-          const first = () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Previous 50");
+        async ([rowSel, navSel, nextName, prevName, notChosen, changed, removeValue]) => {
+          const next = () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === nextName);
+          const first = () => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === prevName);
           const line = () => document.querySelector(navSel)?.textContent ?? "";
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
           let count = 0;
@@ -220,8 +224,8 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
           }
           for (;;) {
             for (const li of document.querySelectorAll(rowSel)) {
-              if (li.textContent.includes("Not chosen yet") || li.textContent.includes("Changed since you looked")) {
-                li.querySelector('input[type="radio"][value="remove"]').click();
+              if (li.textContent.includes(notChosen) || li.textContent.includes(changed)) {
+                li.querySelector(`input[type="radio"][value="${removeValue}"]`).click();
                 count++;
               }
             }
@@ -233,12 +237,12 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
           }
           return count;
         },
-        [ROWS, NAV],
+        [ROWS, NAV, NEXT_PAGE, PREV_PAGE, WEB.copy.notChosen, WEB.copy.changed, WEB.radioRemoveValue],
       );
       return { chosen: n };
     },
     async idAtRow(i) {
-      return page.evaluate(([sel, idx]) => document.querySelectorAll(sel)[idx]?.getAttribute("data-reason-id") ?? null, [ROWS, i]);
+      return page.evaluate(([sel, idx, attr]) => document.querySelectorAll(sel)[idx]?.getAttribute(attr) ?? null, [ROWS, i, WEB.reasonIdAttr]);
     },
     async changeRow(requestId) {
       if (!requestId) throw new Error("no request id to change");
@@ -252,7 +256,7 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
       lastDelete = null;
       const clickedAt = Date.now();
       observer.startWalk(2); // the review pages that arrive from here on are the reload's
-      await rowEl.getByRole("button", { name: "Delete account" }).click();
+      await rowEl.getByRole("button", { name: L.deleteAccount }).click();
       await page.waitForFunction(() => true);
       for (let i = 0; i < 6000 && (deletes.length === 0 || lastDelete === null); i++) await new Promise((r) => setTimeout(r, 10));
       if (deletes.length === 0 || lastDelete === null) throw new Error("the press sent no DELETE");

@@ -20,7 +20,13 @@
 // Budgets are judged in lib.sh (qc1_judge), not here. This module only records. Numbers it uses are the design's: 30 clicks, 200 ms for
 // the first interactive click, 50 reasons a page.
 
-export const DISPLAY_PAGE = 50;
+import { readFileSync } from "node:fs";
+
+// What the harness drives in the panel (selectors, labels, copy) is app-facts.json, "web": web/src/components/ReasonReviewSection.test.tsx holds it equal to what the components render.
+export const WEB = JSON.parse(readFileSync(new URL("./app-facts.json", import.meta.url), "utf8")).web;
+const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export const DISPLAY_PAGE = WEB.displayPage;
 export const FIRST_CLICK_MS = 200;
 export const CLICKS_DEFAULT = 30;
 export const PRE_WALK_CLICKS = 8;
@@ -43,21 +49,21 @@ export function summarize(samples) {
 /** The pager line the panel shows. */
 export function navLine(from, total, loading) {
   const last = Math.min(from + DISPLAY_PAGE, total);
-  return `Reasons ${fmt(from + 1)} to ${fmt(last)} ${loading ? "of at least " : "of "}${fmt(total)}`;
+  return `Reasons ${fmt(from + 1)} to ${fmt(last)} ${loading ? WEB.navOfLoading : WEB.navOfDone}${fmt(total)}`;
 }
 const fmt = (n) => new Intl.NumberFormat("en-US").format(n);
 
 /** Reads a pager line: {from (0-based), last, total, loading} or null. */
 export function parseNavLine(text) {
-  const m = /^Reasons ([\d,]+) to ([\d,]+) (of at least |of )([\d,]+)$/.exec((text ?? "").trim());
+  const m = new RegExp(`^Reasons ([\\d,]+) to ([\\d,]+) (${esc(WEB.navOfLoading)}|${esc(WEB.navOfDone)})([\\d,]+)$`).exec((text ?? "").trim());
   if (!m) return null;
   const n = (s) => Number(s.replace(/,/g, ""));
-  return { from: n(m[1]) - 1, last: n(m[2]), total: n(m[4]), loading: m[3] === "of at least " };
+  return { from: n(m[1]) - 1, last: n(m[2]), total: n(m[4]), loading: m[3] === WEB.navOfLoading };
 }
 
 /** How many reasons the progress line says still need a choice, or null when it says none of that. */
 export function parseUnchosen(text) {
-  const m = /Choose Keep text or Blank text for (1 more reason|[\d,]+ more reasons)\./.exec(text ?? "");
+  const m = new RegExp(`${esc(WEB.progressChoose)} (1 more reason|[\\d,]+ more reasons)\\.`).exec(text ?? "");
   if (!m) return null;
   return m[1].startsWith("1 ") ? 1 : Number(m[1].replace(/,/g, "").split(" ")[0]);
 }

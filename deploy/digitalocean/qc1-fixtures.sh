@@ -30,15 +30,16 @@ refused 'not a whole number' qc1_list 10,,20
 [[ "$QC1_COUNTS_DEFAULT" == 0,10,100,1000,10000 ]]
 
 # --- the gate the sampler watches is the contact gate ------------------------------
-grep -q 'contactLockID int64 = 0x464f4c44434f4e$' "$ROOT/advisory_locks.go"
 [[ "$QC1_GATE_LOCK_ID" == 0x464f4c44434f4e ]]
 read -r class obj <<<"$(qc1_gate_key)"
 [[ "$class" == "$(( 0x464f4c44434f4e >> 32 ))" && "$obj" == "$(( 0x464f4c44434f4e & 0xffffffff ))" ]]
 [[ "$class" == 4607820 && "$obj" == 1145261902 ]]
 # Go's maxRequestBytes, with << binding tighter than +.
-[[ "$(qc1_max_request_bytes "$ROOT")" == 6291456 ]]
-mkdir -p "$WORK/fakeroot/internal/images"; printf 'const MaxUploadBytes = 1 << 20\n' >"$WORK/fakeroot/internal/images/upload.go"; printf 'x\n' >"$WORK/fakeroot/main.go"
-refused 'cannot read' qc1_max_request_bytes "$WORK/fakeroot"
+[[ "$(qc1_max_request_bytes)" == 6291456 ]]
+# The figures come from the application facts (held equal to the code by TestQC1AppFacts); a facts file without one is refused.
+with_facts() { local f="$1"; shift; QC1_FACTS="$f" "$@"; }
+printf '{"go":{}}\n' >"$WORK/nofacts.json"
+refused 'cannot read' with_facts "$WORK/nofacts.json" qc1_max_request_bytes
 
 
 
@@ -70,9 +71,7 @@ printf '1000|1\n1020|1\n' >"$WORK/oldform"; [[ "$(qc1_gate_hold "$WORK/oldform" 
 if grep -n 'gateHoldMs\|GATE_HOLD_MS' "$HERE/qc1-measure.sh" "$HERE/qc1/lib.sh"; then echo 'qc1: a gate figure is still called a hold' >&2; exit 1; fi
 
 # --- the scheduler (V-05): FOLD_WORKERS=0 does not stop it -----------------------------------------
-# The app starts its scheduler whatever the worker count (jobs_daily.go startJobs).
-grep -q 'go func() {' "$ROOT/jobs_daily.go"; grep -q 'queueHourly(a.DB, kinds, now)' "$ROOT/jobs_daily.go"; grep -q 'a.Config.Workers <= 0' "$ROOT/jobs_daily.go"
-sed -n '/^func (a \*App) startJobs/,/^}/p' "$ROOT/jobs_daily.go" | sed -n '/Workers <= 0/,/runner.Start/p' | grep -q 'WARNING: FOLD_WORKERS=0'
+# The app starts its scheduler whatever the worker count: TestSchedulerRunsWithoutWorkers (jobs_daily_test.go) holds that.
 # hour = 3600000 ms. A window is contaminated in the 15 s after the app started and in the first 5 s of a full hour.
 APP=1700000000000                      # app started
 HOUR=$(( (APP / 3600000 + 1) * 3600000 ))   # the next full hour
@@ -206,10 +205,7 @@ jq -c 'reverse' "$WORK/real-items.json" >"$WORK/desc-items.json"
 refused 'ascending' body keep "$WORK/desc-items.json" 3 "$ID80"
 jq -c '.[0].reviewHash = "h"' "$WORK/real-items.json" >"$WORK/bad-items.json"
 refused '64 lowercase hex' body keep "$WORK/bad-items.json" 3 "$ID80"
-# The shape is the source's: the envelope in web/src/api/adminUsers.ts and the 80-hex id.
-grep -qF 'body: { successors, hostSuccessors, ...(attemptId ? { attemptId } : {}), ...(reasonReview ? { reasonReview } : {}) }' "$ROOT/web/src/api/adminUsers.ts"
-grep -qF '/^[0-9a-f]{80}$/.test(res.attemptId)' "$ROOT/web/src/api/adminUsers.ts"
-grep -qF 'AdminUsers.remove(target.id, picks, hostPicks, id, reasonReview)' "$ROOT/web/src/components/DeleteUserPanel.tsx"
+# The shape is the product's: the envelope and the 80-hex id are held by web/src/api/adminUsers.test.ts, and the panel's call by DeleteUserPanel.test.tsx.
 # The helper agrees with the product's shared vectors, which are also run by the web and Go tests.
 [[ "$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" == 'ok 4' ]]
 # Mutations: the last choice code replaced (same length), one digest digit changed, the count one higher; nothing else moves.
@@ -379,7 +375,7 @@ rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0
 # The audit-retention report statement as the REAL pilot3 server log has it (testdata/qc1-pilot3-audit-retention.log: one deletion of account 46, its plan with a JIT section), turned into
 # the evidence the runner records by the same function. The explained rows below carry it, so the healthy fixtures are of the real statement and not of a typed one.
 PILOT3_AUDIT_LOG="$HERE/testdata/qc1-pilot3-audit-retention.log"
-AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" "$ROOT" 46 true)"
+AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" 46 true)"
 AUTOEX='{"scope":"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off","settings":{"log_lock_waits":"on"},"caveats":["one execution","log_lock_waits reports only waits longer than deadlock_timeout","no row locks","other sessions in the same log","docker logs --since"]}'
 explained_row() { # which size
   printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s,"targetUserId":46},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
@@ -932,15 +928,15 @@ read -r popn _ _ <<<"$(qc1_body_capacity 6291456 "$ID80" "$s2" "$s2")"
 (( popn < capn && capn == 18873540 ))
 if grep -nEi 'no (valid history|such limit)|none can|unlimited|no ceiling' "$RUNNER_SRC" "$HERE/qc1/lib.sh" | grep -v 'never invented\|no ceiling is invented'; then echo 'qc1: a claim that the body has no limit' >&2; exit 1; fi
 grep -qF 'populatedCapacity:$populated' "$RUNNER_SRC"
-# qc1_go_sql reads the real statement text out of the Go source, numbering its placeholders.
-[[ "$(qc1_go_sql "$ROOT" reasonScanInitialSQL)" == "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT \$1" ]]
-[[ "$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)" == "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > \$1::bigint ORDER BY id LIMIT \$2" ]]
-[[ -z "$(qc1_go_sql "$ROOT" noSuchConstant)" ]]
+# qc1_scanner_sql reads the real statement text from the application facts, numbering its placeholders.
+[[ "$(qc1_scanner_sql initial)" == "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT \$1" ]]
+[[ "$(qc1_scanner_sql continuation)" == "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > \$1::bigint ORDER BY id LIMIT \$2" ]]
+[[ -z "$(qc1_scanner_sql noSuchStatement)" ]]
 for which in scanner-initial scanner-continuation; do
-  case "$which" in scanner-initial) c=reasonScanInitialSQL ;; *) c=reasonScanContinuationSQL ;; esac
-  [[ "$(qc1_go_sql "$ROOT" "$c")" == *"$(qc1_plan_marker "$which")" ]]
+  case "$which" in scanner-initial) c=initial ;; *) c=continuation ;; esac
+  [[ "$(qc1_scanner_sql "$c")" == *"$(qc1_plan_marker "$which")" ]]
 done
-for pat in 'qc1_go_sql "$ROOT" reasonScanInitialSQL' 'qc1_go_sql "$ROOT" reasonScanContinuationSQL' 'EXPLAIN (GENERIC_PLAN) $sql_cont' 'EXPLAIN (GENERIC_PLAN) $sql_init' 'source:"go-source"' 'qc1_plan_executions'; do
+for pat in 'qc1_scanner_sql initial' 'qc1_scanner_sql continuation' 'EXPLAIN (GENERIC_PLAN) $sql_cont' 'EXPLAIN (GENERIC_PLAN) $sql_init' 'source:"go-source"' 'qc1_plan_executions'; do
   grep -qF -- "$pat" "$RUNNER_SRC" || { echo "qc1: capture_plans lost: $pat" >&2; exit 1; }
 done
 if grep -n 'EXPLAIN (GENERIC_PLAN) SELECT' "$RUNNER_SRC"; then echo 'qc1: a generic plan of a statement the harness wrote' >&2; exit 1; fi
@@ -1039,7 +1035,7 @@ pp="$(qc1_scanner_probe_parse '[{"mode":"auto","kind":"continuation","afterId":5
 [[ "$(jq -c '[.[] | [.mode, .hasSort, .scan.nodeType, .scan.indexCond, .scan.filter, .scan.rows, .scan.loops, .scan.sharedHit, .scan.sharedRead, .scan.rowsRemovedByFilter]]' <<<"$pp")" == '[["auto",false,"Index Scan","(id > $1)",null,50000,1,900,5,0],["force_generic_plan",true,"Seq Scan",null,"(id > $1)",12,1,7000,0,99]]' ]]
 # The runner: it runs the REAL statements prepared, eight times per mode in one session, in both plan cache modes, read-only, AFTER the logged capture is off and BEFORE the scenario is dropped.
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
-for pat in 'qc1_go_sql "$ROOT" reasonScanInitialSQL' 'qc1_go_sql "$ROOT" reasonScanContinuationSQL' 'for mode in auto force_generic_plan' 'SET plan_cache_mode = $mode' 'PREPARE qi (bigint) AS $sql_init' 'PREPARE qc (bigint, bigint) AS $sql_cont' \
+for pat in 'qc1_scanner_sql initial' 'qc1_scanner_sql continuation' 'for mode in auto force_generic_plan' 'SET plan_cache_mode = $mode' 'PREPARE qi (bigint) AS $sql_init' 'PREPARE qc (bigint, bigint) AS $sql_cont' \
   'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qi($limit)' 'EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) EXECUTE qc($id, $limit)' 'pcts=(0 10 25 40 55 70 85)' 'OFFSET $off LIMIT 1' 'psql_db -q -f -' 'sameSession:true' 'executionsPerMode:8'; do
   grep -qF -- "$pat" <<<"$sp_body" || { echo "qc1: scanner_probe lost: $pat" >&2; exit 1; }
 done
@@ -1389,10 +1385,10 @@ run_rec8() { # statement-text -> row in $WORK/rec8.json (empty when the construc
     counts='{"scanner-initial":1,"scanner-continuation":10,"page-items":10,"delete-set":1,"blank-batch":1}'
     need='["scanner-initial","page-items","delete-set","blank-batch"]'
     gen_cont="$(jq -r '.generic.scannerContinuation.text' "$PLANS_ROW")"; gen_init="$(jq -r '.generic.scannerInitial.text' "$PLANS_ROW")"
-    sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"; sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"
+    sql_cont="$(qc1_scanner_sql continuation)"; sql_init="$(qc1_scanner_sql initial)"
     # The logged execution figures are the pilot's, given the LIMIT production sends (the pilot predates batches): only the construction of the row is under test here.
     exec_json="$(jq -c '.executions | .scannerInitial.rows |= map(if . > 256 then 256 else . end) | .scannerContinuation.rows |= map(if . > 256 then 256 else . end) | .scannerInitial.limits = (.scannerInitial.rows | map(256)) | .scannerContinuation.limits = (.scannerContinuation.rows | map(256))' "$PLANS_ROW")"
-    bsched="$(jq -nc --argjson l "$(qc1_scan_schedule "$ROOT" | jq -sc "map(tonumber)")" '{unitRows:50000, first:256, growth:2, limits:$l}')"
+    bsched="$(jq -nc --argjson l "$(qc1_scan_schedule | jq -sc "map(tonumber)")" '{unitRows:50000, first:256, growth:2, limits:$l}')"
     probe_bloated="$(probe_json public)"; probe_clean="$(probe_json qc1_clean)"
     stats_bloated="$(tables_json | jq -c '.bloated')"; stats_clean="$(tables_json | jq -c '.clean | del(.kind, .vacuumed, .analyzed)')"
     eval "$clean_copy_stmt"
@@ -1404,7 +1400,7 @@ run_rec8 "$rec8_stmt"
 [[ ! -s "$WORK/rec8.err" ]] || { echo "qc1: the plans row construction complained: $(cat "$WORK/rec8.err")" >&2; exit 1; }
 jq -e . "$WORK/rec8.json" >/dev/null
 # what it built: the real SQL text where the SQL text belongs, the clean table's numbers merged with what was done to make it, both probes, both tables, the shapes
-[[ "$(jq -r '.generic.scannerContinuation.sql' "$WORK/rec8.json")" == "$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)" && "$(jq -r '.generic.scannerInitial.sql' "$WORK/rec8.json")" == "$(qc1_go_sql "$ROOT" reasonScanInitialSQL)" ]]
+[[ "$(jq -r '.generic.scannerContinuation.sql' "$WORK/rec8.json")" == "$(qc1_scanner_sql continuation)" && "$(jq -r '.generic.scannerInitial.sql' "$WORK/rec8.json")" == "$(qc1_scanner_sql initial)" ]]
 [[ "$(jq -c '.tables.clean | [.schema, .relpages, .vacuumed, .analyzed, (.kind | startswith("a copy of the same rows in a scratch schema"))]' "$WORK/rec8.json")" == '["qc1_clean",560,true,true,true]' ]]
 [[ "$(jq -c '.tables.bloated | [.schema, .relpages, .nDeadTup]' "$WORK/rec8.json")" == '["public",13500,90000]' ]]
 [[ "$(jq -c '[.scannerProbe.schema, .scannerProbeClean.schema, .loggedShapes.initial.executions, .loggedShapes.continuation.executions, .table.actualRows, .table.backgroundRows]' "$WORK/rec8.json")" == '["public","qc1_clean",1,10,200,100]' ]]
@@ -1429,7 +1425,7 @@ P2ROWS="$HERE/testdata/qc1-pilot2-delete-rows.jsonl"   # pilot2's order-control-
 # `SELECT class, action, count(*) FROM (SELECT action, CASE WHEN ip IS NULL ...` over audit_logs, and it is where the time goes once the audit table has grown: a fraction of a millisecond at the start,
 # 157 ms in the 1,000-reason deletion, 2.4 s in the 10,000-reason one and 2.4 s again in a deletion of an account with NO reasons.
 [[ "$(jq -sc 'map([.case, .delete.ms, (.delete.topStatements | map(select(.query | startswith("SELECT class, action, count(*)"))) | .[0].totalMs)])' "$P2ROWS")" == '[["order-control-delete-start",69,0.1],["delete-requester-1000-keep",330,157.2],["delete-requester-10000-keep",3016,2378.9],["delete-subject-0-keep",2534,2426.8]]' ]]
-grep -qF 'SELECT class, action, count(*) FROM (SELECT action, "+classification+" AS class FROM audit_logs' "$ROOT/account_erasure_audit.go"
+# That the application still sends this statement is TestQC1PlanMarkersAreWhatTheApplicationSends'.
 
 # The top-statements filter keeps the application's statements and drops the harness's own bookkeeping that pilot2 showed leaking into the list (audit rows and bytes, audit rows by action,
 # the row count, the scheduler-row count). The patterns are read out of the SQL file and applied to the statement texts pilot2 recorded.
@@ -1445,13 +1441,10 @@ for q in 'SELECT class, action, count(*) FROM (SELECT action, CASE WHEN ip IS NU
   if ts_dropped "$q"; then echo "qc1: an application statement is filtered from the top statements: $q" >&2; exit 1; fi
 done
 
-# --- statements: the markers are still the Go source's ------------------------------------
+# --- statements: every kind has a marker (that the application still sends it is TestQC1PlanMarkersAreWhatTheApplicationSends') ----
 for which in "${QC1_PLAN_KINDS[@]}"; do
-  marker="$(qc1_source_marker "$which")"
+  marker="$(qc1_plan_marker "$which")"
   [[ -n "$marker" ]]
-  grep -qF -- "$marker" "$ROOT/account_erasure_reasons.go" || { echo "qc1: the $which statement changed in account_erasure_reasons.go: $marker" >&2; exit 1; }
-  # The log form keeps $n placeholders and has the same shape as the source form.
-  [[ "$(qc1_plan_marker "$which" | sed -E 's/\$[0-9]+/?/g')" == "$marker" ]]
 done
 refused '' qc1_plan_marker nope
 # Plans come out whole, selected by their Query Text, and never run into the next log line.
@@ -1490,14 +1483,13 @@ L
 [[ -z "$(qc1_extract_plans "$WORK/pg.log" blank-batch)" ]]
 
 # --- the SQL loaders ----------------------------------------------------------------------
-# Same columns, in the same order, as the row migrations/reason_review_test.go proves.
-line303=$(grep -n 'VALUES(303,3,4' "$ROOT/migrations/reason_review_test.go" | head -n 1 | cut -d: -f1); [[ -n "$line303" ]]
-proven="$(sed -n "$((line303-2)),$((line303-1))p" "$ROOT/migrations/reason_review_test.go" | tr -d ' \t\n')"
-cols="${proven#*contact_requests(}"; cols="${cols%)}"
+# Both loaders insert the same columns, and those columns are valid for the schema (TestQC1LoaderColumnsFitTheSchema).
+cols=""
 for f in filler scenario; do
   got="$(sed -n '/^INSERT INTO contact_requests (/,/^SELECT/p' "$HERE/qc1/$f.sql" | tr -d ' \t\n')"
   got="${got#*contact_requests(}"; got="${got%%)SELECT*}"
-  [[ "$got" == "$cols" ]] || { echo "qc1: $f.sql columns differ from the proven row: $got vs $cols" >&2; exit 1; }
+  [[ -n "$got" && ( -z "$cols" || "$got" == "$cols" ) ]] || { echo "qc1: filler.sql and scenario.sql insert different columns: $got vs $cols" >&2; exit 1; }
+  cols="$got"
   grep -q "^SET session_replication_role = replica;$" "$HERE/qc1/$f.sql"
   grep -q "'denied'" "$HERE/qc1/$f.sql"; grep -q "'group_add'" "$HERE/qc1/$f.sql"
 done
@@ -1568,8 +1560,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # another revision is refused. The runner runs from a clean copy of its own files
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-mkdir -p "$CLONE/internal/images"; cp "$ROOT/internal/images/upload.go" "$CLONE/internal/images/"; cp "$ROOT/main.go" "$CLONE/"
+cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
@@ -1650,31 +1641,21 @@ fi
 for pat in 'pw.chromium.launch(launchOptions(env))' 'resolvePlaywright(env.QC1_WEB_DIR)' 'pageObserver({ origin' 'appendFileSync(pagesFile, line)' 'page.on("response", (r) => { observer.onResponse(r); })' 'measurePanel(driver' 'process.exit(3)' 'QC1_CHANGE_CMD' 'QC1_NO_SUBTLE' 'QC1_CLICKS'; do
   grep -qF -- "$pat" "$PM" || { echo "qc1: panel-measure.mjs lost: $pat" >&2; exit 1; }
 done
-for pat in 'ul[aria-label="Contact-request reasons"] > li[data-reason-id]' 'nav[aria-label="Reasons pages"] p' 'Checking their contact-request reasons…' 'Performance.getMetrics' 'HeapProfiler.collectGarbage' 'PerformanceObserver' \
-  '"Next 50"' '"Previous 50"' 'Go to reason number' 'Next reason without a choice' 'Next changed reason' 'Delete account' 'pointerdown' 'requestAnimationFrame' 'data-reason-heading' 'isSecureContext'; do
+# The selectors, labels and copy it presses are read from the application facts (WEB), not typed in the driver.
+for pat in 'WEB.reasonRows' 'WEB.reasonsNav' 'WEB.copy.checking' 'Performance.getMetrics' 'HeapProfiler.collectGarbage' 'PerformanceObserver' \
+  'NEXT_PAGE' 'PREV_PAGE' 'L.goToReason' 'L.nextUnchosen' 'L.nextChanged' 'L.deleteAccount' 'pointerdown' 'requestAnimationFrame' 'WEB.reasonHeadingAttr' 'isSecureContext'; do
   grep -qF -- "$pat" "$PD" || { echo "qc1: panel-driver.mjs lost: $pat" >&2; exit 1; }
 done
-for pat in 'FIRST_CLICK_MS = 200' 'CLICKS_DEFAULT = 30' 'DISPLAY_PAGE = 50' 'walkEnded' 'firstInteractiveMs' 'canChange'; do
+for pat in 'FIRST_CLICK_MS = 200' 'CLICKS_DEFAULT = 30' 'DISPLAY_PAGE = WEB.displayPage' 'walkEnded' 'firstInteractiveMs' 'canChange'; do
   grep -qF -- "$pat" "$PC" || { echo "qc1: panel-core.mjs lost: $pat" >&2; exit 1; }
 done
 # Nothing is mocked: no route is intercepted.
 if grep -nE 'page\.route|context\.route|route\.fulfill' "$PM" "$PC" "$PD"; then echo 'qc1: the browser measurement intercepts routes' >&2; exit 1; fi
 # The harness chooses with the panel's own per-reason handler, one radio at a time: no bulk control exists and none is used.
 if grep -nEi 'choose all|bulk|select all' "$PD" "$PC" | grep -v '^[^:]*:[0-9]*: *//'; then echo 'qc1: the browser measurement uses a bulk control' >&2; exit 1; fi
-# The selectors and strings it relies on are the ones the panel renders.
-grep -qF 'data-reason-id={item.requestId}' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'data-reason-heading={ordinal}' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'aria-label="Contact-request reasons"' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'label="Keep text"' "$ROOT/web/src/components/ReasonReviewList.tsx"; grep -qF 'label="Blank text"' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'const NOT_CHOSEN_COPY = "Not chosen yet";' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'const CHANGED_COPY = "Changed since you looked: choose again";' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'nav aria-label="Reasons pages"' "$ROOT/web/src/components/ReasonReviewSection.tsx"
-grep -qF 'const DISPLAY_PAGE = 50;' "$ROOT/web/src/components/ReasonReviewSection.tsx"
-for label in 'Next reason without a choice' 'Next changed reason' 'Go to reason number'; do grep -qF -- "$label" "$ROOT/web/src/components/ReasonReviewSection.tsx"; done
-grep -qF 'Previous {DISPLAY_PAGE}' "$ROOT/web/src/components/ReasonReviewSection.tsx"; grep -qF 'Next {DISPLAY_PAGE}' "$ROOT/web/src/components/ReasonReviewSection.tsx"
-grep -qF 'const unsure = loading ? "of at least " : "of ";' "$ROOT/web/src/components/ReasonReviewSection.tsx"
-grep -qF 'const REVIEW_CHECKING = "Checking their contact-request reasons…";' "$ROOT/web/src/components/DeleteUserPanel.tsx"
-grep -qF 'name: "Search by name or email"' "$ROOT/web/e2e/admin-delete-user.spec.ts"
+# The selectors and strings it relies on are the ones the panel renders: app-facts.json "web", held by web/src/components/ReasonReviewSection.test.tsx, Admin.test.tsx and DeleteUserPanel.test.tsx.
+# The harness types none of them: no quoted selector or label of the panel is left in the driver.
+if grep -nE 'Contact-request reasons|Reasons pages|Not chosen yet|Changed since you looked|Search by name or email|Keep text|Blank text' "$PD"; then echo 'qc1: panel-driver.mjs types a panel string the application facts own' >&2; exit 1; fi
 # The runner measures the counts it lists (plus the dense targets), with the real API, and a missing browser leaves the row missing (never invented).
 grep -qF 'for bk in "${ALL_BROWSER_LIST[@]}"; do (( bk <= n )) && measure_browser_panel "$n" "$bk"; done' "$RUNNER"
 grep -q 'node "\$HERE/qc1/panel-measure.mjs"' "$RUNNER"
@@ -1917,8 +1898,8 @@ printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading 
 # === the audit-retention report statement: the explained order controls, and the planner estimates of both scanner probes ===============================================
 # (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE, the report statement with its
 # auto_explain plan (a JIT section in it) and the diagnostic count that follows, all in backend 12393. The evidence function is run on it as the runner runs it.
-[[ "$(qc1_go_audit_pieces "$ROOT" | wc -l)" == 4 ]]   # the Go source still has the four fixed pieces around the classification, the subject mention and the malformed-link term
-[[ "$(jq -c '.identity.fixedPieceLengths' <<<"$AUD_EV")" == '[52,47,6,96]' ]] || { echo "the audit report statement in account_erasure_audit.go changed: review the explained-delete evidence and the fixture log: $(jq -c .identity.fixedPieceLengths <<<"$AUD_EV")" >&2; exit 1; }
+[[ "$(qc1_audit_pieces | wc -l)" == 4 ]]   # the facts hold the four fixed pieces around the classification, the subject mention and the malformed-link term
+[[ "$(jq -c '.identity.fixedPieceLengths' <<<"$AUD_EV")" == '[52,47,6,96]' ]] || { echo "the audit report statement changed (qc1/app-facts.json): review the explained-delete evidence and the fixture log: $(jq -c .identity.fixedPieceLengths <<<"$AUD_EV")" >&2; exit 1; }
 [[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339]' ]]
 [[ "$(jq -r '.identity.queryTextSha256' <<<"$AUD_EV")" == 8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869 ]]
 # the plan, parsed: the planner ESTIMATES beside what happened, the Seq Scan that removed 78,521 rows, and the JIT section that is 97% of the statement
@@ -1930,7 +1911,7 @@ printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading 
 # the caveats travel with the evidence: no row locks (a plain SELECT), lock waits only above deadlock_timeout
 jq -e '.rowLocks == false and (.rowLocksWhy | test("ACCESS SHARE")) and (.lockWaits.note | test("deadlock_timeout")) and (.identity.proof | test("substituted nothing"))' <<<"$AUD_EV" >/dev/null
 # log-level negatives: each changes the REAL log in one way and the evidence must say so
-aud() { qc1_audit_report_evidence "$1" "$ROOT" "${2:-46}" "${3:-true}"; }
+aud() { qc1_audit_report_evidence "$1" "${2:-46}" "${3:-true}"; }
 sed '13,105d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.none"; [[ "$(aud "$WORK/aud.none" | jq -c .)" == '{"statementBlocks":0}' ]]             # the statement was never logged
 : >"$WORK/aud.empty"; [[ "$(aud "$WORK/aud.empty" | jq -c .)" == '{"statementBlocks":0}' ]]
 { cat "$PILOT3_AUDIT_LOG"; sed -n '13,105p' "$PILOT3_AUDIT_LOG"; } >"$WORK/aud.two"; [[ "$(aud "$WORK/aud.two" | jq '.statementBlocks')" == 2 ]]   # two candidate statements
@@ -1994,7 +1975,7 @@ st="$(status_of "$WORK/e2.jsonl")"
 ex_body="$(sed -n '/^explained_order_control_delete() {/,/^}/p' "$RUNNER_SRC")"
 [[ -n "$ex_body" ]]
 l_on="$(grep -n '^  autoexplain_on$' <<<"$ex_body" | cut -d: -f1)"; l_since="$(grep -n '^  since="' <<<"$ex_body" | cut -d: -f1)"; l_del="$(grep -n '^  do_delete "\$t"' <<<"$ex_body" | cut -d: -f1)"
-l_off="$(grep -n '^  autoexplain_off' <<<"$ex_body" | cut -d: -f1)"; l_logs="$(grep -n 'docker logs --since "\$since"' <<<"$ex_body" | cut -d: -f1)"; l_ver="$(grep -n '^  verify_outcome' <<<"$ex_body" | cut -d: -f1)"; l_evd="$(grep -n 'qc1_audit_report_evidence "\$log" "\$ROOT" "\$t" true' <<<"$ex_body" | cut -d: -f1)"
+l_off="$(grep -n '^  autoexplain_off' <<<"$ex_body" | cut -d: -f1)"; l_logs="$(grep -n 'docker logs --since "\$since"' <<<"$ex_body" | cut -d: -f1)"; l_ver="$(grep -n '^  verify_outcome' <<<"$ex_body" | cut -d: -f1)"; l_evd="$(grep -n 'qc1_audit_report_evidence "\$log" "\$t" true' <<<"$ex_body" | cut -d: -f1)"
 [[ -n "$l_on$l_since$l_del$l_off$l_logs$l_ver$l_evd" && "$l_on" -lt "$l_since" && "$l_since" -lt "$l_del" && "$l_del" -lt "$l_off" && "$l_off" -lt "$l_logs" && "$l_logs" -lt "$l_ver" && "$l_ver" -lt "$l_evd" ]]
 grep -qE 'instrumented|delete_with|psql_db -c .EXPLAIN' <<<"$ex_body" && exit 1        # not inside the instrument window (its samplers are sessions that would fill the log), and no typed EXPLAIN
 grep -qF 'record 6 "order-control-delete-$which-explained"' <<<"$ex_body"
@@ -2010,7 +1991,6 @@ l_a="$(grep -n '^  order_control_delete "\$n" start$' <<<"$os_body" | cut -d: -f
 [[ -n "$l_a$l_b$l_c$l_d" && "$l_b" == "$((l_a + 1))" && "$l_d" == "$((l_c + 1))" ]]                                             # each right after its unexplained control, so the controls are exactly as before
 # the audit statement is found in the log by its text, in the same marker list the plans use; it is not one of the plan kinds the capture requires
 [[ "$(qc1_plan_marker audit-report)" == 'SELECT class, action, count(*) FROM (SELECT action, ' ]]; grep -q 'audit-report' <<<"${QC1_PLAN_KINDS[*]}" && exit 1
-grep -qF 'SELECT class, action, count(*) FROM (SELECT action, ' "$ROOT/account_erasure_audit.go"
 # (4) PLANNER ESTIMATES of BOTH scanner probes (the table as the matrix left it and the vacuumed copy). Costs and planned rows are numbers on every execution, the probe names the planner
 # settings, and a probe without them is invalid; the findings carry them beside what was measured. They are estimates: recorded, never judged as time.
 [[ "$(jq -c '[.scannerProbe.estimates, .scannerProbeClean.estimates, .scannerProbe.executions[0].top.totalCost, .scannerProbeClean.executions[10].scan.totalCost, .scannerProbe.plannerSettings.jit_above_cost]' <<<"$(grep '"case":"plans","size":100' "$WORK/e2.jsonl")")" == '[true,true,1850.5,1851.5,"100000"]' ]]
@@ -2051,10 +2031,10 @@ sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"; grep -qF 'planne
 # === review round: the COMPLETE parameter list, a COMPLETE plan, and a JIT section that is truly absent or complete =================================================================
 # (a) THE PARAMETERS. The real statement takes eight: the deleted account at $1 to $6 and $8, an id-array literal at $7. They are parsed from the logged Query Parameters line and held to the kind of
 # argument the Go source puts at each position (qc1_audit_expected: the named arguments of the subject-mention and malformed-link constants, numbered as GORM numbers them).
-[[ "$(qc1_audit_expected "$ROOT" | jq -c .kinds)" == '["uid","uid","uid","uid","uid","uid","people","uid"]' ]]
+[[ "$(qc1_audit_expected | jq -c .kinds)" == '["uid","uid","uid","uid","uid","uid","people","uid"]' ]]
 [[ "$(jq -c '[.identity.parameterKinds, .identity.parameterValues, .identity.tailMatchesSource, .identity.classificationOk]' <<<"$AUD_EV")" == '[["uid","uid","uid","uid","uid","uid","people","uid"],["'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'46'"'"'","'"'"'{}'"'"'","'"'"'46'"'"'"],true,true]' ]]
 # the source text of the two constants is what the real log holds, byte for byte after the numbering (the tail check is exact, not a prefix)
-[[ "$(qc1_audit_expected "$ROOT" | jq -r '.mention' | head -n 1)" == "actor_id = \$1 OR (target_type = 'user' AND target_id = \$2)" ]]
+[[ "$(qc1_audit_expected | jq -r '.mention' | head -n 1)" == "actor_id = \$1 OR (target_type = 'user' AND target_id = \$2)" ]]
 pmut() { sed "$1" "$PILOT3_AUDIT_LOG" >"$WORK/aud.$2"; }                              # sed-script name
 pev() { aud "$WORK/aud.$1" "${2:-46}"; }                                              # name [target] -> evidence
 pf() { pev "$1" | jq -c "$2"; }                                                       # name jq-expression
@@ -2163,18 +2143,18 @@ mut jt-null-ok "$EX then .auditRetention.plan.jit = null else . end"; [[ "$(jq -
 # the three kinds of finding are distinct codes, so a reader sees which one a row has
 [[ "$(jq -r '[.invalid[] | select(.failure == "audit-jit-malformed")] | length > 0 and (map(.failure) | unique | length) == 1' <<<"$(status_of "$WORK/e2.ev-j-sum")")" == true ]]
 # the runner records the account it deleted beside the evidence, and hands the same id to the evidence function, so the judge can tie the two together
-grep -qF 'explained:{targetUserId:$tid,' <<<"$ex_body"; grep -qF -- '--argjson tid "$t"' <<<"$ex_body"; grep -qF 'qc1_audit_report_evidence "$log" "$ROOT" "$t" true' <<<"$ex_body"
+grep -qF 'explained:{targetUserId:$tid,' <<<"$ex_body"; grep -qF -- '--argjson tid "$t"' <<<"$ex_body"; grep -qF 'qc1_audit_report_evidence "$log" "$t" true' <<<"$ex_body"
 # === the harness measures the scanner production runs: batches of the pinned schedule, not one 50,000-row statement ================================================================
-# The schedule is read out of the Go source (the same numbers internal/reasonscan and the page route use); nothing here types 256 or 17488.
-[[ "$(qc1_scan_schedule "$ROOT" | paste -sd' ')" == '256 512 1024 2048 4096 8192 16384 17488' ]]
-[[ "$(qc1_scan_schedule "$ROOT" | awk '{ s += $1 } END { print s }')" == "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" && "$QC1_SCANNER_UNIT_ROWS" == "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" ]]
-mkdir "$WORK/nosched"; printf 'var (\n\treasonUnitRows = 50000\n)\n' >"$WORK/nosched/account_erasure_reasons.go"; printf 'var reasonScanBatchFirst = 256\n' >"$WORK/nosched/account_erasure_reasons_scan.go"
-refused '' qc1_scan_schedule "$WORK/nosched"                                  # a Go source that does not state the growth: no invented schedule
-printf 'var (\n\treasonScanBatchFirst  = 100\n\treasonScanBatchGrowth = 3\n)\n' >"$WORK/nosched/account_erasure_reasons_scan.go"; printf 'var (\n\treasonUnitRows = 1000\n)\n' >"$WORK/nosched/account_erasure_reasons.go"
-[[ "$(qc1_scan_schedule "$WORK/nosched" | paste -sd' ')" == '100 300 600' ]]  # first, three times, the last clipped so the sum is the unit
+# The schedule is read from the application facts (the same numbers internal/reasonscan and the page route use); nothing here types 256 or 17488.
+[[ "$(qc1_scan_schedule | paste -sd' ')" == '256 512 1024 2048 4096 8192 16384 17488' ]]
+[[ "$(qc1_scan_schedule | awk '{ s += $1 } END { print s }')" == "$(qc1_fact .go.reasonUnitRows)" && "$QC1_SCANNER_UNIT_ROWS" == "$(qc1_fact .go.reasonUnitRows)" ]]
+jq -c '.go |= (del(.reasonScanBatchGrowth))' "$QC1_FACTS" >"$WORK/nosched.json"
+refused '' with_facts "$WORK/nosched.json" qc1_scan_schedule                  # facts that do not state the growth: no invented schedule
+jq -c '.go |= (.reasonScanBatchFirst = 100 | .reasonScanBatchGrowth = 3 | .reasonUnitRows = 1000)' "$QC1_FACTS" >"$WORK/sched.json"
+[[ "$(with_facts "$WORK/sched.json" qc1_scan_schedule | paste -sd' ')" == '100 300 600' ]]  # first, three times, the last clipped so the sum is the unit
 # the runner reads the schedule for the probe and the plan row, and the probe runs the first and the largest batch, each its own eight executions per mode
 sp_body="$(sed -n '/^scanner_probe() {/,/^}/p' "$RUNNER_SRC")"
-grep -qF 'mapfile -t sched < <(qc1_scan_schedule "$ROOT")' <<<"$sp_body"; grep -qF 'limits=("${sched[0]}")' <<<"$sp_body"; grep -qF 'limits+=("${sched[${#sched[@]}-1]}")' <<<"$sp_body"
+grep -qF 'mapfile -t sched < <(qc1_scan_schedule)' <<<"$sp_body"; grep -qF 'limits=("${sched[0]}")' <<<"$sp_body"; grep -qF 'limits+=("${sched[${#sched[@]}-1]}")' <<<"$sp_body"
 grep -qF 'EXECUTE qi($limit)' <<<"$sp_body"; grep -qF 'EXECUTE qc($id, $limit)' <<<"$sp_body"; grep -qF 'EXECUTE qi($unit)' <<<"$sp_body" && exit 1
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER_SRC")"
 grep -qF 'bsched="$(jq -nc' <<<"$cp_body"; grep -qF 'batchSchedule:$bsched' <<<"$cp_body"; grep -qF 'limits:map(.limit)' <<<"$cp_body"

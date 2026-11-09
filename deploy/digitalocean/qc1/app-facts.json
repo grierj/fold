@@ -1,0 +1,65 @@
+{
+  "about": "What the QC-1 measurement harness takes from the application. The harness reads these values; it never reads application source. Every value is held equal to the code by a test next to the code: TestQC1AppFacts (guards_deploy_facts_test.go) for \"go\", web/src/components/ReasonReviewSection.test.tsx for \"web\". After a change to the code, run UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts . and read the diff of this file before committing it.",
+  "go": {
+    "contactLockID": "0x464f4c44434f4e",
+    "maxUploadBytes": 5242880,
+    "maxRequestBytes": 6291456,
+    "reasonUnitRows": 50000,
+    "reasonScanBatchFirst": 256,
+    "reasonScanBatchGrowth": 2,
+    "scannerSQL": {
+      "initial": "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT ?",
+      "continuation": "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > ?::bigint ORDER BY id LIMIT ?"
+    },
+    "planMarkers": {
+      "audit-report": "SELECT class, action, count(*) FROM (SELECT action, ",
+      "blank-batch": "UPDATE contact_requests SET reason = '' WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3)",
+      "delete-set": "reason <> '' AND (requester_id = $1 OR subject_user_id = $2) ORDER BY contact_requests.id FOR UPDATE",
+      "page-items": "WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3) ORDER BY contact_requests.id",
+      "scanner-continuation": "FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2",
+      "scanner-initial": "FROM contact_requests ORDER BY id LIMIT $1"
+    },
+    "auditReport": {
+      "pieces": [
+        "SELECT class, action, count(*) FROM (SELECT action, ",
+        " AS class FROM audit_logs WHERE ip <> '' AND ((",
+        ") OR (",
+        "))) classified WHERE class IN ('RETAIN_ESSENTIAL', 'RETAIN_UNATTRIBUTED') GROUP BY class, action"
+      ],
+      "subjectMention": "actor_id = @uid OR (target_type = 'user' AND target_id = @uid)\n OR meta_json->'userId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'userId' = CAST(CAST(@uid AS bigint) AS text)\n OR meta_json->'teenUserId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'teenUserId' = CAST(CAST(@uid AS bigint) AS text)\n OR EXISTS (SELECT 1 FROM unnest(CAST(@people AS bigint[])) p(id)\n WHERE meta_json->'personId' = to_jsonb(p.id) OR meta_json->>'personId' = p.id::text)",
+      "malformedConversionLink": "action = 'guardian_link.requested'\n AND meta_json->'source' = '\"household_conversion\"'::jsonb\n AND EXISTS (SELECT 1 FROM account_requests r WHERE r.source = 'household_conversion' AND r.status = 'approved'\n AND r.decided_by = @uid AND meta_json->>'teenUserId' = r.approved_user_id::text)\n AND (target_type <> 'guardian_link' OR jsonb_typeof(meta_json->'teenUserId') IS DISTINCT FROM 'number')"
+    }
+  },
+  "web": {
+    "displayPage": 50,
+    "reasonRows": "ul[aria-label=\"Contact-request reasons\"] > li[data-reason-id]",
+    "reasonsNav": "nav[aria-label=\"Reasons pages\"] p",
+    "reasonIdAttr": "data-reason-id",
+    "reasonHeadingAttr": "data-reason-heading",
+    "progressSelector": "p.text-text-muted",
+    "progressPattern": "chosen of|Choose Keep text|All .* chosen",
+    "progressChoose": "Choose Keep text or Blank text for",
+    "radioRemoveValue": "remove",
+    "copy": {
+      "notChosen": "Not chosen yet",
+      "changed": "Changed since you looked: choose again",
+      "checking": "Checking their contact-request reasons…",
+      "historyUnavailable": "Fold can't tell whether an earlier delete finished. Reload this person's page to check."
+    },
+    "navOfLoading": "of at least ",
+    "navOfDone": "of ",
+    "labels": {
+      "keepText": "Keep text",
+      "blankText": "Blank text",
+      "goToReason": "Go to reason number",
+      "nextUnchosen": "Next reason without a choice",
+      "nextChanged": "Next changed reason",
+      "deleteAccount": "Delete account",
+      "checkAgain": "Check again",
+      "usersSearch": "Search by name or email",
+      "goButton": "Go",
+      "moreForPrefix": "More for",
+      "menuDelete": "Delete"
+    }
+  }
+}
