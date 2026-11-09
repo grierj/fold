@@ -60,10 +60,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - `contact_requests` text is immutable except for one blank (R4-T07A): erasing an `occurrence_add`
   subject clears their `add_childcare_ages_note` through `eraseContactRequestTextIn`
   (`account_erasure.go`), which the two request triggers allow only for a soft-deleted subject
-  (`00004_ages_note_erasure_scrub.sql`). `reason` is untouched pending R4-T07B; the baseline still lets
-  `reason` change on `contact` rows and pending add rows, and the source guard stops new writers.
-  Staged `00007` (T07B-2a, local, no caller) adds a licence for a reason-only blank on non-contact,
-  non-pending rows with a soft-deleted party; contact and pending rows keep the baseline.
+  (`00004_ages_note_erasure_scrub.sql`). `reason` is blanked only by `eraseContactRequestReasonsIn` (`account_erasure_reasons.go`), which
+  `eraseAccountIn` calls right after it and which has work only on the admin path: the admin's keep or remove
+  decisions (`planReasonReviewIn`, the `set-v1` envelope) write one signed audit row each, then the removed reasons
+  are blanked in batches inside the deletion's transaction. Staged `00007` (T07B-2a) licenses that blank in the two
+  request triggers for non-contact, non-pending rows with a soft-deleted party; contact and pending rows keep the
+  baseline, which still lets `reason` change on `contact` rows and pending add rows, and the source guard stops
+  new writers. A legacy `{"items": [...]}` body is answered `reason_review_outdated` without reading its entries.
 - Optional email uses one effective-choice reader, `readEmailOff` in `email_optouts.go`: the account's
   latest email choice or the actual destination address's retained opt-out can turn a category off.
   `email_address_optouts` is written only by `exportEmailOptOutsIn` during erasure with a held address,
@@ -507,9 +510,9 @@ The migration chain is the generated baseline (M7.7, DEC-138) plus additive numb
 owner decision 8; R4-2d2-2a through -3 activate its local behavior, inventory 7.6 and 15.8)
 (`00006_admin_operation_attempts.sql` originally staged receipt storage in T07B-1a: a 16-byte nonce and
 timestamp only. T07B-1b now uses it locally and runs the 24-hour cleanup; inventory T39 and 15.9 record the staged behavior)
-(`00007_reason_review_erasure_scrub.sql` adds a dormant reason-blank branch to both `contact_requests` trigger
-functions, T07B-2a: non-contact, non-pending rows with a soft-deleted party only, ages-note branches intact,
-no caller; local, verification and landing pending, inventory 15.4).
+(`00007_reason_review_erasure_scrub.sql` adds a reason-blank branch to both `contact_requests` trigger
+functions, T07B-2a: non-contact, non-pending rows with a soft-deleted party only, ages-note branches intact;
+`eraseContactRequestReasonsIn` is its one caller; local, verification and landing pending, inventory 15.4).
 `TestBaselineFileShape` checks the chain
 through `migrationFileShapeProblems` (baseline first, then consecutive `NNNNN_name.sql`, each with Up
 and Down). `scripts/baseline-proof.sh generate`
