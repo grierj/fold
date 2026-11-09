@@ -93,7 +93,6 @@ func Production(t testing.TB) Sources {
 	return sources
 }
 
-// Names returns the paths in sorted order.
 func (s Sources) Names() []string {
 	names := make([]string, 0, len(s))
 	for name := range s {
@@ -103,7 +102,6 @@ func (s Sources) Names() []string {
 	return names
 }
 
-// File is one parsed source file.
 type File struct {
 	Path string // slash path relative to the scanned root
 	Src  string
@@ -138,7 +136,6 @@ func (s Sources) Parse(mode parser.Mode) *Parsed {
 	return p
 }
 
-// File returns the parsed file at path, or nil.
 func (p *Parsed) File(path string) *File {
 	for _, f := range p.Files {
 		if f.Path == path {
@@ -191,7 +188,6 @@ func (p *Parsed) Packages() []*Package {
 	return out
 }
 
-// Unparen strips any parentheses around e.
 func Unparen(e ast.Expr) ast.Expr {
 	for {
 		p, ok := e.(*ast.ParenExpr)
@@ -260,7 +256,6 @@ func ImportNames(file *ast.File, importPath string) map[string]bool {
 // so a SQL literal compares equal however it is wrapped.
 func Squash(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// FindFunc returns the first top-level function or method named name, or nil.
 func FindFunc(file *ast.File, name string) *ast.FuncDecl {
 	for _, d := range file.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {

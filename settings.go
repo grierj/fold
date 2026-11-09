@@ -27,7 +27,6 @@ const (
 	settingReplyTo        = "reply_to_address" // where replies to an announcement go (DEC-130); empty: none
 )
 
-// defaultSiteName is the name shown while no church name is set.
 const defaultSiteName = "Fold"
 
 // settingIn reads one setting on the caller's connection. found is false when

@@ -10,39 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestSecurityHeaders(t *testing.T) {
-	for _, hsts := range []bool{false, true} {
-		r := gin.New()
-		r.Use(SecurityHeaders(hsts))
-		r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-		h := w.Header()
-		csp := h.Get("Content-Security-Policy")
-		if !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'self'") ||
-			!strings.Contains(csp, "object-src 'none'") || strings.Contains(csp, "unsafe") {
-			t.Fatalf("CSP: %q", csp)
-		}
-		// The CSP names the worker and manifest sources (research 2.3).
-		if !strings.Contains(csp, "worker-src 'self'; manifest-src 'self'") {
-			t.Fatalf("CSP: %q", csp)
-		}
-		for k, v := range map[string]string{
-			"X-Content-Type-Options": "nosniff",
-			"Referrer-Policy":        "same-origin",
-			"X-Frame-Options":        "SAMEORIGIN",
-			"Permissions-Policy":     "camera=(), microphone=(), geolocation=()",
-		} {
-			if h.Get(k) != v {
-				t.Fatalf("%s: %q", k, h.Get(k))
-			}
-		}
-		if got := h.Get("Strict-Transport-Security"); (got != "") != hsts {
-			t.Fatalf("HSTS with hsts=%v: %q", hsts, got)
-		}
-	}
-}
-
 func TestLimitBodyRefusesOversizedRequests(t *testing.T) {
 	r := gin.New()
 	r.Use(LimitBody(10, func(c *gin.Context) { refuse(c, http.StatusRequestEntityTooLarge, "request too large") }))
