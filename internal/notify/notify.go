@@ -113,6 +113,11 @@ const recipientLockBatch = userlock.Batch
 // carries; it bounds a statement's size, not a parameter limit (5 per row).
 const deliveryInsertBatch = 500
 
+// notificationInsertBatch bounds one multi-row INSERT of notices in Send. A
+// notice binds about 24 columns, so 500 rows stay far below Postgres's
+// 65535-parameter limit.
+const notificationInsertBatch = 500
+
 // ErrBadScope: a Msg.Scope that is not valid for this Send (see Msg.Scope).
 var ErrBadScope = errors.New("notify: recipient scope is not valid here")
 
@@ -242,6 +247,9 @@ func lockRecipients(tx *gorm.DB, ids []uint) (map[uint]bool, error) {
 // Send writes (or merges) one row per recipient, skipping the actor. It
 // returns the IDs of the rows written or merged for callers that need them.
 // Delivery intent is written in tx too; delivery no longer needs those IDs.
+// New rows without a dedupe key go in multi-row inserts of up to
+// notificationInsertBatch; a merge and a dedupe insert stay per recipient. The
+// returned IDs follow the recipient order either way.
 // A dedupe hit writes nothing and returns no ID: the first send owns delivery.
 //
 // Before it merges or inserts anything, Send de-duplicates the recipients,
@@ -294,9 +302,22 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	// Recipient locks can wait for an erasure or an email change. Sample the
 	// batch window and write timestamp only after that wait has completed.
 	now := time.Now().UTC()
-	var ids []uint
-	var created []models.Notification
-	for _, uid := range order {
+	// Every row of one Send is identical except its owner, so render once.
+	first := withCount(m.Vars, max(m.Vars.Count, 1))
+	title, body := k.Render(first)
+	emailTitle, emailBody := k.RenderForEmail(first)
+	pushTitle, pushBody, _ := k.RenderForPush(first)
+	// results is indexed by position in order, so merged, deduped and batch
+	// inserted recipients all come back in recipient order. A slot with a nil
+	// row was merged (id only) or hit a dedupe key (nothing).
+	type result struct {
+		id  uint
+		row *models.Notification // set only for a row inserted by this Send
+	}
+	results := make([]result, len(order))
+	var pending []models.Notification // new rows with no dedupe key, inserted in batches below
+	var pendingSlot []int
+	for i, uid := range order {
 		if !live[uid] {
 			continue
 		}
@@ -306,14 +327,10 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 				return nil, err
 			}
 			if merged {
-				ids = append(ids, id)
+				results[i] = result{id: id}
 				continue
 			}
 		}
-		first := withCount(m.Vars, max(m.Vars.Count, 1))
-		title, body := k.Render(first)
-		emailTitle, emailBody := k.RenderForEmail(first)
-		pushTitle, pushBody, _ := k.RenderForPush(first)
 		row := models.Notification{
 			UserID: uid, Kind: k.Key, Category: k.Category, Waiting: k.Waiting,
 			ActorID: m.Actor, SubjectType: m.SubjectType, Title: title, Body: body,
@@ -325,29 +342,61 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 			id := m.SubjectID
 			row.SubjectID = &id
 		}
-		if m.DedupeKey != "" {
-			key := m.DedupeKey
-			row.DedupeKey = &key
-		}
 		if m.GroupKey != "" {
 			key := m.GroupKey
 			row.GroupKey = &key
 		}
-		q := tx
-		if row.DedupeKey != nil {
-			q = tx.Clauses(clause.OnConflict{
-				Columns:     []clause.Column{{Name: "user_id"}, {Name: "dedupe_key"}},
-				TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "dedupe_key IS NOT NULL"}}},
-				DoNothing:   true,
-			})
+		if m.DedupeKey == "" {
+			pending = append(pending, row)
+			pendingSlot = append(pendingSlot, i)
+			continue
 		}
-		res := q.Create(&row)
+		// A dedupe row stays a single-row insert: GORM fills the ids of a
+		// multi-row ON CONFLICT DO NOTHING by position, so a skipped row would
+		// hand its id to the wrong recipient.
+		key := m.DedupeKey
+		row.DedupeKey = &key
+		res := tx.Clauses(clause.OnConflict{
+			Columns:     []clause.Column{{Name: "user_id"}, {Name: "dedupe_key"}},
+			TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "dedupe_key IS NOT NULL"}}},
+			DoNothing:   true,
+		}).Create(&row)
 		if res.Error != nil {
 			return nil, res.Error
 		}
 		if res.RowsAffected > 0 {
-			ids = append(ids, row.ID)
-			created = append(created, row)
+			results[i] = result{id: row.ID, row: &row}
+		}
+	}
+	// One INSERT per notificationInsertBatch rows, on the caller's tx itself:
+	// CreateInBatches would wrap several batches in a savepoint, which adds
+	// statements and would break a recipient scope's rollback watch.
+	for start := 0; start < len(pending); start += notificationInsertBatch {
+		end := min(start+notificationInsertBatch, len(pending))
+		chunk := pending[start:end]
+		res := tx.Create(&chunk)
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected != int64(len(chunk)) {
+			return nil, fmt.Errorf("notify: inserted %d of %d notices", res.RowsAffected, len(chunk))
+		}
+		for j := range chunk {
+			if chunk[j].ID == 0 {
+				return nil, errors.New("notify: a batch insert returned no id for a notice")
+			}
+			results[pendingSlot[start+j]] = result{id: chunk[j].ID, row: &chunk[j]}
+		}
+	}
+	var ids []uint
+	var created []models.Notification
+	for _, r := range results {
+		if r.id == 0 {
+			continue
+		}
+		ids = append(ids, r.id)
+		if r.row != nil {
+			created = append(created, *r.row)
 		}
 	}
 	// These rows were written a moment ago under the locks above, so their

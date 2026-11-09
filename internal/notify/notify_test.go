@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2128,5 +2129,331 @@ func TestNoticeHelpersTakeNoAdvisoryLock(t *testing.T) {
 	}
 	if advisory != 0 {
 		t.Fatalf("the helpers hold %d advisory locks", advisory)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Batched notice inserts (issue #257). A fan-out without a dedupe key writes
+// its rows in multi-row INSERTs; merges and dedupe rows stay per recipient.
+// ---------------------------------------------------------------------------
+
+// fanOutStatements counts the statements a fan-out sends, by kind.
+type fanOutStatements struct {
+	notices, deliveries, jobs, locks atomic.Int64
+}
+
+// countFanOutStatements registers counters on db for the rest of the test.
+func countFanOutStatements(t *testing.T, db *gorm.DB) *fanOutStatements {
+	t.Helper()
+	c := &fanOutStatements{}
+	const create, raw, row = "test:count_notice_creates", "test:count_notice_raw", "test:count_notice_locks"
+	if err := db.Callback().Create().Before("gorm:create").Register(create, func(tx *gorm.DB) {
+		if tx.Statement.Table == "notifications" {
+			c.notices.Add(1)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Raw().Before("gorm:raw").Register(raw, func(tx *gorm.DB) {
+		sql := tx.Statement.SQL.String()
+		switch {
+		case strings.HasPrefix(sql, "INSERT INTO notification_deliveries "):
+			c.deliveries.Add(1)
+		case strings.HasPrefix(sql, "INSERT INTO jobs "):
+			c.jobs.Add(1)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Row().Before("gorm:row").Register(row, func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "FOR KEY SHARE") {
+			c.locks.Add(1)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Callback().Create().Remove(create)
+		db.Callback().Raw().Remove(raw)
+		db.Callback().Row().Remove(row)
+	})
+	return c
+}
+
+// bulkRecipients makes n active users and returns their ids in creation order.
+func bulkRecipients(t *testing.T, db *gorm.DB, prefix string, n int) []uint {
+	t.Helper()
+	users := make([]models.User, n)
+	for i := range users {
+		users[i] = models.User{Email: fmt.Sprintf("%s%d@example.com", prefix, i), Name: fmt.Sprintf("%s %d", prefix, i), Role: models.RoleMember, Status: models.UserActive}
+	}
+	if err := db.CreateInBatches(&users, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uint, n)
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	return ids
+}
+
+// checkFanOut asserts that ids are the notices of recipients, in order, and
+// that each has exactly one delivery row and one delivery job naming it.
+func checkFanOut(t *testing.T, db *gorm.DB, recipients, ids []uint) {
+	t.Helper()
+	if len(ids) != len(recipients) {
+		t.Fatalf("%d ids for %d recipients", len(ids), len(recipients))
+	}
+	var stored []models.Notification
+	if err := db.Order("id").Find(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := make(map[uint]uint, len(stored))
+	for _, n := range stored {
+		owner[n.ID] = n.UserID
+	}
+	if len(stored) != len(recipients) {
+		t.Fatalf("%d notices stored for %d recipients", len(stored), len(recipients))
+	}
+	seen := make(map[uint]bool, len(ids))
+	for i, id := range ids {
+		if seen[id] {
+			t.Fatalf("id %d returned twice", id)
+		}
+		seen[id] = true
+		if owner[id] != recipients[i] {
+			t.Fatalf("ids[%d]=%d belongs to user %d, want recipient %d", i, id, owner[id], recipients[i])
+		}
+	}
+	var deliveries []models.NotificationDelivery
+	if err := db.Find(&deliveries).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != len(recipients) {
+		t.Fatalf("%d delivery rows for %d recipients", len(deliveries), len(recipients))
+	}
+	delivered := map[uint]bool{}
+	for _, d := range deliveries {
+		if owner[d.NotificationID] != d.UserID || delivered[d.NotificationID] {
+			t.Fatalf("delivery %+v does not match its notice's owner %d (or is a repeat)", d, owner[d.NotificationID])
+		}
+		delivered[d.NotificationID] = true
+	}
+	var queued []models.Job
+	if err := db.Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != len(recipients) {
+		t.Fatalf("%d jobs for %d recipients", len(queued), len(recipients))
+	}
+	jobFor := map[uint]bool{}
+	for _, j := range queued {
+		var payload DeliverPayload
+		if err := json.Unmarshal([]byte(j.Payload), &payload); err != nil || !seen[payload.NotificationID] || jobFor[payload.NotificationID] {
+			t.Fatalf("job payload %s names no returned notice (or repeats one): %v", j.Payload, err)
+		}
+		jobFor[payload.NotificationID] = true
+	}
+}
+
+func TestSendBatchesNotificationInserts(t *testing.T) {
+	db := testdb.Shared(t)
+	recipients := bulkRecipients(t, db, "batch", 300)
+	c := countFanOutStatements(t, db)
+	var ids []uint
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = Send(tx, Msg{Kind: GroupPending, To: recipients, Link: "/admin"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.notices.Load(); got != 1 {
+		t.Fatalf("300-recipient fan-out used %d notification INSERTs, want 1", got)
+	}
+	if c.deliveries.Load() != 1 || c.jobs.Load() != 1 || c.locks.Load() != 1 {
+		t.Fatalf("delivery INSERTs %d, job INSERTs %d, recipient locks %d; want 1 each (4 statements in all, was 302)",
+			c.deliveries.Load(), c.jobs.Load(), c.locks.Load())
+	}
+	checkFanOut(t, db, recipients, ids)
+}
+
+func TestSendBatchesNotificationInsertsInChunks(t *testing.T) {
+	db := testdb.Shared(t)
+	recipients := bulkRecipients(t, db, "chunk", notificationInsertBatch+1)
+	c := countFanOutStatements(t, db)
+	var ids []uint
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = Send(tx, Msg{Kind: GroupPending, To: recipients, Link: "/admin"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c.notices.Load() != 2 || c.deliveries.Load() != 2 {
+		t.Fatalf("%d recipients: %d notification INSERTs and %d delivery INSERTs, want 2 each",
+			len(recipients), c.notices.Load(), c.deliveries.Load())
+	}
+	checkFanOut(t, db, recipients, ids)
+}
+
+// A merged recipient keeps its place in the result, takes no new insert and
+// gets no new delivery intent; the recipients around it share one INSERT.
+func TestSendBatchedInsertsKeepMergedPlace(t *testing.T) {
+	register(Kind{Key: "test.batch.mixed", Category: CatGroups, AllowEmail: true, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return "joined " + itoa(v.Count), "" }})
+	defer delete(registry, "test.batch.mixed")
+	db := testdb.Shared(t)
+	people := bulkRecipients(t, db, "mixed", 3)
+	a, b, c3 := people[0], people[1], people[2]
+	msg := func(to ...uint) Msg {
+		return Msg{Kind: "test.batch.mixed", To: to, Link: "/groups/1", GroupKey: "joined:1", Vars: Vars{Group: "Youth"}}
+	}
+	first, err := Send(db, msg(b))
+	if err != nil || len(first) != 1 {
+		t.Fatalf("setup send: %v %v", first, err)
+	}
+	counts := countFanOutStatements(t, db)
+	var ids []uint
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = Send(tx, msg(a, b, c3))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if counts.notices.Load() != 1 {
+		t.Fatalf("%d notification INSERTs, want 1 for the two new rows", counts.notices.Load())
+	}
+	if len(ids) != 3 || ids[1] != first[0] || ids[0] == ids[2] || ids[0] == first[0] || ids[2] == first[0] {
+		t.Fatalf("ids %v, want [new, %d, new]", ids, first[0])
+	}
+	for i, want := range []uint{a, b, c3} {
+		var n models.Notification
+		if err := db.First(&n, ids[i]).Error; err != nil || n.UserID != want {
+			t.Fatalf("ids[%d]=%d: %+v %v, want user %d", i, ids[i], n, err, want)
+		}
+	}
+	var merged models.Notification
+	if err := db.First(&merged, first[0]).Error; err != nil || merged.BatchCount != 2 {
+		t.Fatalf("merged row: %+v %v", merged, err)
+	}
+	var deliveries []models.NotificationDelivery
+	if err := db.Find(&deliveries).Error; err != nil {
+		t.Fatal(err)
+	}
+	perNotice := map[uint]int{}
+	for _, d := range deliveries {
+		perNotice[d.NotificationID]++
+	}
+	if len(deliveries) != 3 || perNotice[first[0]] != 1 || perNotice[ids[0]] != 1 || perNotice[ids[2]] != 1 {
+		t.Fatalf("delivery rows %+v: want one each for the original and the two new notices", deliveries)
+	}
+	var queued int64
+	if err := db.Model(&models.Job{}).Count(&queued).Error; err != nil || queued != 3 {
+		t.Fatalf("jobs: %d %v, want 3", queued, err)
+	}
+}
+
+// A dedupe row is still its own INSERT, and a skipped recipient never lends its
+// place (or a returned id) to another.
+func TestSendDedupeInsertsStayPerRow(t *testing.T) {
+	db := testdb.Shared(t)
+	people := bulkRecipients(t, db, "dedupe", 2)
+	a, b := people[0], people[1]
+	msg := func(to ...uint) Msg {
+		return Msg{Kind: GroupPending, To: to, Link: "/admin", DedupeKey: "group.pending:7"}
+	}
+	if ids, err := Send(db, msg(a)); err != nil || len(ids) != 1 {
+		t.Fatalf("setup send: %v %v", ids, err)
+	}
+	counts := countFanOutStatements(t, db)
+	var ids []uint
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = Send(tx, msg(a, b))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if counts.notices.Load() != 2 {
+		t.Fatalf("%d notification INSERTs for two deduped recipients, want 2 (one each)", counts.notices.Load())
+	}
+	if counts.deliveries.Load() != 1 || counts.jobs.Load() != 1 {
+		t.Fatalf("delivery INSERTs %d, job INSERTs %d; only b's new row needs intent", counts.deliveries.Load(), counts.jobs.Load())
+	}
+	if got := rows(t, db, a); len(got) != 1 {
+		t.Fatalf("a has %d rows, want the original only", len(got))
+	}
+	gotB := rows(t, db, b)
+	if len(gotB) != 1 || len(ids) != 1 || ids[0] != gotB[0].ID {
+		t.Fatalf("ids %v, b's rows %+v: want b's new id alone", ids, gotB)
+	}
+	var deliveries int64
+	if err := db.Model(&models.NotificationDelivery{}).Count(&deliveries).Error; err != nil || deliveries != 2 {
+		t.Fatalf("delivery rows: %d %v, want 2 (a's original and b's)", deliveries, err)
+	}
+}
+
+func TestSendBatchedInsertsRollBack(t *testing.T) {
+	db := testdb.Shared(t)
+	recipients := bulkRecipients(t, db, "rollback", 300)
+	boom := errors.New("caller fails after Send")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if _, err := Send(tx, Msg{Kind: GroupPending, To: recipients, Link: "/admin"}); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("transaction: %v", err)
+	}
+	for _, table := range []any{&models.Notification{}, &models.NotificationDelivery{}, &models.Job{}} {
+		var n int64
+		if err := db.Model(table).Count(&n).Error; err != nil || n != 0 {
+			t.Fatalf("%T rows after rollback: %d %v", table, n, err)
+		}
+	}
+}
+
+// The batch insert stores what the per-row insert stores, so a GORM default or
+// zero-value difference between the two paths shows up here.
+func TestSendBatchedRowsMatchPerRowRows(t *testing.T) {
+	db := testdb.Shared(t)
+	people := bulkRecipients(t, db, "same", 4)
+	actor, batchA, batchB, single := people[0], people[1], people[2], people[3]
+	expires := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Microsecond)
+	msg := func(to ...uint) Msg {
+		return Msg{Kind: GroupPending, To: to, Actor: &actor, SubjectType: "group", SubjectID: 9, Link: "/admin/groups/9",
+			Data: map[string]any{"k": "v"}, ExpiresAt: &expires, Vars: Vars{Actor: "Pat", Group: "Youth"}}
+	}
+	if _, err := Send(db, msg(batchA, batchB)); err != nil {
+		t.Fatal(err)
+	}
+	perRow := msg(single)
+	perRow.DedupeKey = "same:9"
+	if _, err := Send(db, perRow); err != nil {
+		t.Fatal(err)
+	}
+	normalize := func(n models.Notification) models.Notification {
+		if !n.CreatedAt.Equal(n.UpdatedAt) {
+			t.Fatalf("created_at %v != updated_at %v", n.CreatedAt, n.UpdatedAt)
+		}
+		n.ID, n.UserID, n.DedupeKey = 0, 0, nil
+		n.CreatedAt, n.UpdatedAt = time.Time{}, time.Time{}
+		return n
+	}
+	want := normalize(rows(t, db, single)[0])
+	if want.BatchCount != 1 || want.GroupKey != nil || want.Title == "" {
+		t.Fatalf("per-row baseline looks wrong: %+v", want)
+	}
+	for _, uid := range []uint{batchA, batchB} {
+		got := rows(t, db, uid)
+		if len(got) != 1 || got[0].DedupeKey != nil {
+			t.Fatalf("user %d rows: %+v", uid, got)
+		}
+		if n := normalize(got[0]); !reflect.DeepEqual(n, want) {
+			t.Fatalf("user %d row differs from the per-row insert:\n got %+v\nwant %+v", uid, n, want)
+		}
 	}
 }
