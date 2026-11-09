@@ -285,7 +285,9 @@ func TestChooseMailer(t *testing.T) {
 	}{
 		{func(*Config) {}, "none"},
 		{func(c *Config) { c.PostmarkServerToken = "tok" }, "postmark"},
-		{func(c *Config) { c.EmailProvider, c.PostmarkServerToken, c.SMTPURL = "smtp", "tok", "smtp://localhost:25" }, "smtp"},
+		{func(c *Config) {
+			c.EmailProvider, c.PostmarkServerToken, c.SMTPURL = "smtp", "tok", "smtp://localhost:25"
+		}, "smtp"},
 		{func(c *Config) { c.SMTPURL = "smtp://localhost:25" }, "smtp"},
 	} {
 		cfg := prod

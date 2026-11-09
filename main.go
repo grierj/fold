@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"fold/internal/images"
 	"fold/internal/mail"
 	"fold/internal/providers"
 	"fold/internal/push"
@@ -714,7 +715,7 @@ func (a *App) handleSetup(c *gin.Context) {
 
 // maxRequestBytes is the largest request body accepted: one image upload
 // plus room for the multipart envelope.
-const maxRequestBytes = maxUploadBytes + 1<<20
+const maxRequestBytes = images.MaxUploadBytes + 1<<20
 
 // limitBody makes reads past n fail, so oversized bodies are refused
 // instead of buffered.

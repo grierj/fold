@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/images"
 	"fold/internal/jobs"
 	"fold/models"
 	"fold/storage"
@@ -264,7 +265,7 @@ func avatarTxDeadline(start, bodyRead time.Time) time.Time {
 // deletes a file itself: the old one, and a new one a failed or ambiguous
 // commit may have kept, are the cleanup job's to judge.
 func (a *App) storeAvatar(ctx context.Context, u *models.User, r io.Reader, size int64, mime string, deadline time.Time) (string, error) {
-	ext, ok := allowedImageTypes[mime]
+	ext, ok := images.Ext(mime)
 	if !ok {
 		return "", errAvatarStore
 	}

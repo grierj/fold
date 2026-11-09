@@ -232,7 +232,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   the test, it never skips; with no client and no Docker the test skips locally and fails under `CI`.
   Source guards (the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`, `restore_fence_test.go` and
   the erasure censuses) read Go through `internal/guardkit`, a test-only package that `.deadcode-allow` lists like
-  `internal/testdb`. `guardkit.Production(t)` walks the whole tree once with one skip rule set (no tests, `testdata`, `web/`,
+  `internal/testdb`; `internal/images/imagetest` (shared upload-test pictures) is test-only too. `guardkit.Production(t)` walks the whole tree once with one skip rule set (no tests, `testdata`, `web/`,
   `node_modules`, `vendor`, hidden directories), so code moved into a subpackage is still checked; `Sources.Parse` parses it
   (fixtures too), `InspectStack` is the one parent-stack walker, and `Unparen`, `Callee`, `ImportNames` and `Squash` replace
   the per-guard copies. A guard whose subject is one package filters with `Parsed.Package("main")`, never a directory glob.

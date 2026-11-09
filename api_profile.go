@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"fold/internal/accounts"
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/images"
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
@@ -35,17 +35,6 @@ import (
 // ---------------------------------------------------------------------------
 // Profile endpoints (Phase 2)
 // ---------------------------------------------------------------------------
-
-// maxUploadBytes caps a single image upload (avatars, group covers).
-const maxUploadBytes = 5 << 20 // 5MB
-
-// allowedImageTypes maps sniffed MIME types to canonical extensions. The
-// client-supplied Content-Type is never trusted; uploads are sniffed.
-var allowedImageTypes = map[string]string{
-	"image/jpeg": ".jpg",
-	"image/png":  ".png",
-	"image/gif":  ".gif",
-}
 
 // apiUpdateMe updates the current user's profile. Fields are pointers so
 // "not provided" is distinct from "set to empty".
@@ -372,69 +361,13 @@ func clampFocal(v float64) float64 {
 	return v
 }
 
-// readImageUpload validates a multipart image upload: real byte-count size
-// limit and content sniffing. Returns a temp file (caller closes/removes
-// it), the canonical extension, and the MIME type.
+// readImageUpload reads the multipart image in field through images.ReadUpload.
 func readImageUpload(c *gin.Context, field string) (*os.File, string, string, error) {
-	fail := func(format string, args ...interface{}) (*os.File, string, string, error) {
-		return nil, "", "", fmt.Errorf(format, args...)
-	}
 	fh, err := c.FormFile(field)
 	if err != nil {
-		return fail("missing file")
+		return nil, "", "", images.ErrMissing
 	}
-	src, err := fh.Open()
-	if err != nil {
-		return fail("cannot read file")
-	}
-	defer src.Close()
-
-	tmp, err := os.CreateTemp("", "upload-*")
-	if err != nil {
-		return fail("server error")
-	}
-	cleanup := func() { tmp.Close(); os.Remove(tmp.Name()) }
-	// Enforce the real byte count, not the client-declared size.
-	n, err := io.Copy(tmp, io.LimitReader(src, maxUploadBytes+1))
-	if err != nil {
-		cleanup()
-		return fail("server error")
-	}
-	if n > maxUploadBytes {
-		cleanup()
-		return fail("file too large (max 5MB)")
-	}
-	if n == 0 {
-		cleanup()
-		return fail("empty file")
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return fail("server error")
-	}
-	head := make([]byte, 512)
-	rn, _ := io.ReadFull(tmp, head)
-	mime := http.DetectContentType(head[:rn])
-	if mime == "image/webp" {
-		// The standard library can neither read nor write WebP, so its metadata
-		// could not be stripped. Refuse it rather than store it as it came.
-		cleanup()
-		return nil, "", "", errImageWebP
-	}
-	if _, ok := allowedImageTypes[mime]; !ok {
-		cleanup()
-		return fail("only JPEG, PNG, and GIF images are allowed")
-	}
-	// Re-encode so no metadata (EXIF, text chunks, comments) is stored.
-	ext, mime, err := normalizeImage(tmp, mime)
-	if err != nil {
-		cleanup()
-		if errors.Is(err, errImageTooLarge) || errors.Is(err, errImageUnreadable) {
-			return nil, "", "", err
-		}
-		return fail("server error")
-	}
-	return tmp, ext, mime, nil
+	return images.ReadUpload(fh)
 }
 
 func randomHex(n int) (string, error) {

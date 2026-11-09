@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/images"
+	"fold/internal/images/imagetest"
 	"fold/internal/notify"
 	"fold/models"
 	"fold/storage"
@@ -1281,7 +1283,7 @@ func TestAvatarUploadStripsEXIF(t *testing.T) {
 	c := loginAPI(t, app, "grier", "password1234")
 
 	// Orientation 6 on a 64 x 96 JPEG with GPS tags in the EXIF block.
-	in := withEXIF(jpegBytes(t, blockImage(2, 3, gridColors)), exifBlock(6))
+	in := imagetest.WithEXIF(imagetest.JPEGBytes(t, imagetest.BlockImage(2, 3, imagetest.GridColors)), imagetest.ExifBlock(6))
 	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.jpg", in)
 	if w.Code != http.StatusOK {
 		t.Fatalf("avatar upload: %d %s", w.Code, w.Body.String())
@@ -1291,7 +1293,7 @@ func TestAvatarUploadStripsEXIF(t *testing.T) {
 	}
 	decodeJSON(t, w, &resp)
 	stored := uploadedBytes(t, app, resp.AvatarURL)
-	for name, pat := range map[string][]byte{"Exif marker": []byte("Exif"), "maker string": gpsMarker, "GPS latitude": gpsLatitude} {
+	for name, pat := range map[string][]byte{"Exif marker": []byte("Exif"), "maker string": imagetest.GPSMarker, "GPS latitude": imagetest.GPSLatitude} {
 		if bytes.Contains(stored, pat) {
 			t.Errorf("stored avatar still contains the %s", name)
 		}
@@ -1301,7 +1303,7 @@ func TestAvatarUploadStripsEXIF(t *testing.T) {
 		t.Fatalf("stored avatar is not a JPEG: %v", err)
 	}
 	// Turned upright: 3 blocks wide, 2 tall.
-	assertGrid(t, img, 3, 2, []color.RGBA{cMagenta, cBlue, cRed, cCyan, cYellow, cGreen})
+	imagetest.AssertGrid(t, img, 3, 2, []color.RGBA{imagetest.CMagenta, imagetest.CBlue, imagetest.CRed, imagetest.CCyan, imagetest.CYellow, imagetest.CGreen})
 }
 
 func TestGroupCoverUploadStripsPNGText(t *testing.T) {
@@ -1311,7 +1313,7 @@ func TestGroupCoverUploadStripsPNGText(t *testing.T) {
 	c := loginAPI(t, app, "grier", "password1234")
 
 	coverPath := "/api/v1/groups/" + strconv.Itoa(int(g.ID)) + "/cover"
-	w := c.doMultipart("POST", coverPath, "cover", "cover.png", pngWithText(t, blockImage(2, 3, gridColors)))
+	w := c.doMultipart("POST", coverPath, "cover", "cover.png", imagetest.PNGWithText(t, imagetest.BlockImage(2, 3, imagetest.GridColors)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("cover upload: %d %s", w.Code, w.Body.String())
 	}
@@ -1320,7 +1322,7 @@ func TestGroupCoverUploadStripsPNGText(t *testing.T) {
 	}
 	decodeJSON(t, w, &resp)
 	stored := uploadedBytes(t, app, resp.ImageURL)
-	if bytes.Contains(stored, []byte("tEXt")) || bytes.Contains(stored, gpsMarker) {
+	if bytes.Contains(stored, []byte("tEXt")) || bytes.Contains(stored, imagetest.GPSMarker) {
 		t.Fatal("stored cover still has its text chunk")
 	}
 	if _, err := png.Decode(bytes.NewReader(stored)); err != nil {
@@ -1333,7 +1335,7 @@ func TestAnimatedGIFAvatarStaysAnimated(t *testing.T) {
 	newTestUser(t, app, "grier", "password1234", "member")
 	c := loginAPI(t, app, "grier", "password1234")
 
-	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.gif", animatedGIF(t, 3))
+	w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.gif", imagetest.AnimatedGIF(t, 3))
 	if w.Code != http.StatusOK {
 		t.Fatalf("avatar upload: %d %s", w.Code, w.Body.String())
 	}
@@ -1361,8 +1363,8 @@ func TestImageUploadRefusalsAreActionable(t *testing.T) {
 		code string
 	}{
 		"webp":         {webp, "image_unsupported"},
-		"huge header":  {pngHeaderOnly(100000, 100000), "image_too_large"},
-		"many frames":  {animatedGIF(t, maxGIFFrames+1), "image_too_large"},
+		"huge header":  {imagetest.PNGHeaderOnly(100000, 100000), "image_too_large"},
+		"many frames":  {imagetest.AnimatedGIF(t, images.MaxGIFFrames+1), "image_too_large"},
 		"corrupt jpeg": {[]byte("\xFF\xD8\xFF\xE0 not really a jpeg at all"), "file_unreadable"},
 	} {
 		w := c.doMultipart("POST", "/api/v1/me/avatar", "avatar", "me.img", tc.data)
