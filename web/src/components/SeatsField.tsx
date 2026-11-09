@@ -31,10 +31,6 @@ export function seatsProblem(v: SeatsValue): string | null {
 
 export const isSeatsError = (err: unknown) => errorCode(err) === "invalid_capacity";
 
-export function focusSeatLimit(idPrefix: string) {
-  setTimeout(() => document.getElementById(`seats-capacity-${idPrefix}`)?.focus(), 0);
-}
-
 // seatsBody is the wire form on create: the limit as a number (null is no
 // limit), the waitlist switch and the guest allowance.
 export function seatsBody(v: SeatsValue) {

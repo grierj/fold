@@ -1,13 +1,12 @@
 import { Form } from "./ui/Form";
-import { childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
-import { useState } from "react";
+import { childcareBody, childcareFrom } from "./ChildcareField";
+import { useRef, useState } from "react";
 import { Events } from "../api/events";
 import { bydays, isSimpleWeekly, isWeekly, weekdayCode, weeklyRule } from "../lib/rrule";
-import { errorText } from "../lib/errors";
 import { useDirty } from "../lib/useDirty";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { useWhenState } from "../lib/useWhenState";
-import { Field, FormError, Input, Textarea } from "./ui/Field";
+import { Field, FormError, Input, Textarea, showFieldErrors } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { EventOptions } from "./EventOptions";
@@ -15,9 +14,11 @@ import { DEFAULT_REMINDER_MINUTES } from "./ReminderField";
 import { WhenFields } from "./WhenFields";
 import { RoomField } from "./RoomField";
 import { SeriesRoomField } from "./SeriesRoomField";
-import { focusSeatLimit, isSeatsError, seatsFrom, seatsProblem, type SeatsValue } from "./SeatsField";
-import { focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
-import { focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
+import { seatsFrom } from "./SeatsField";
+import { videoBody } from "./VideoField";
+import { remoteBody, remoteFrom } from "./RemoteField";
+import { errorText } from "../lib/errors";
+import { optionFieldOfError, validateEventOptions, type EventOptionValues, type OptionErrors } from "./eventOptionValues";
 import type { EventInput, VideoProvider, VideoReveal } from "../types";
 
 
@@ -91,32 +92,27 @@ export function SeriesEditor({
   const [location, setLocation] = useState(instance.location);
   const [rule, setRule] = useState(instance.recurrenceRule);
   const [until, setUntil] = useState(instance.rruleUntil ?? "");
-  const initialSeats = seatsFrom(instance.capacity, instance.waitlistEnabled, instance.guestsAllowed);
-  const [seats, setSeats] = useState<SeatsValue>(initialSeats);
-  const initialReminder = instance.reminderEmailMinutes ?? DEFAULT_REMINDER_MINUTES;
-  const [reminder, setReminder] = useState(initialReminder);
-  const initialReminderPush = instance.reminderPush ?? true;
-  const [reminderPush, setReminderPush] = useState(initialReminderPush);
-  const initialVideo: VideoValue = {
-    provider: instance.videoProvider ?? "none",
-    url: instance.videoUrl ?? "",
-    reveal: instance.videoReveal ?? "registered_only",
+  const initial: EventOptionValues = {
+    seats: seatsFrom(instance.capacity, instance.waitlistEnabled, instance.guestsAllowed),
+    video: {
+      provider: instance.videoProvider ?? "none",
+      url: instance.videoUrl ?? "",
+      reveal: instance.videoReveal ?? "registered_only",
+    },
+    childcare: childcareFrom(instance.childcareAvailable, instance.childcareCapacity, instance.childcareAges, instance.childcareNotes),
+    remote: remoteFrom(instance.remoteAvailable, instance.remoteCapacity),
+    reminder: instance.reminderEmailMinutes ?? DEFAULT_REMINDER_MINUTES,
+    reminderPush: instance.reminderPush ?? true,
   };
-  const [video, setVideo] = useState<VideoValue>(initialVideo);
-  const initialChildcare = childcareFrom(instance.childcareAvailable, instance.childcareCapacity, instance.childcareAges, instance.childcareNotes);
-  const [childcare, setChildcare] = useState<ChildcareValue>(initialChildcare);
-  const initialRemote = remoteFrom(instance.remoteAvailable, instance.remoteCapacity);
-  const [remote, setRemote] = useState<RemoteValue>(initialRemote);
+  const [options, setOptions] = useState(initial);
   // Open on edit, so what is already set is in view (DEC-95).
   const [moreOpen, setMoreOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [seatsError, setSeatsError] = useState<string | null>(null);
-  const [videoError, setVideoError] = useState<string | null>(null);
-  const [childcareError, setChildcareError] = useState<string | null>(null);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [optionErrors, setOptionErrors] = useState<OptionErrors>({});
+  const root = useRef<HTMLFormElement>(null);
 
-  const dirty = useDirty({ date, time, duration, recurring, days, tzid, title, description, location, rule, until, seats, video, childcare, remote, reminder, reminderPush });
+  const dirty = useDirty({ date, time, duration, recurring, days, tzid, title, description, location, rule, until, options });
   const { guard, markSaved } = useUnsavedChanges(dirty);
 
   async function save(e: React.FormEvent) {
@@ -125,43 +121,22 @@ export function SeriesEditor({
       setError("Pick at least one day to repeat weekly.");
       return;
     }
-    const seatsMsg = seatsProblem(seats);
-    setSeatsError(seatsMsg);
-    if (seatsMsg) {
-      setError(seatsMsg);
-      setMoreOpen(true);
-      focusSeatLimit(idPrefix);
+    const problem = validateEventOptions(options);
+    if (problem) {
+      showFieldErrors(root.current, () => {
+        setError(problem.message);
+        setOptionErrors({ [problem.field]: problem.message });
+        setMoreOpen(true);
+      });
       return;
     }
-    const videoMsg = videoProblem(video);
-    setVideoError(videoMsg);
-    if (videoMsg) {
-      setError(videoMsg);
-      setMoreOpen(true);
-      focusVideoUrl(idPrefix);
-      return;
-    }
-    const childcareMsg = childcareProblem(childcare);
-    setChildcareError(childcareMsg);
-    if (childcareMsg) {
-      setError(childcareMsg);
-      setMoreOpen(true);
-      focusChildcareCapacity(idPrefix);
-      return;
-    }
-    const remoteMsg = remoteProblem(remote);
-    setRemoteError(remoteMsg);
-    if (remoteMsg) {
-      setError(remoteMsg);
-      setMoreOpen(true);
-      focusRemoteCapacity(idPrefix);
-      return;
-    }
+    setOptionErrors({});
     setBusy(true);
     setError(null);
     const recurrenceRule = simple ? (recurring ? weeklyRule(days) : "") : rule.trim();
+    const { seats, video, childcare, remote, reminder, reminderPush } = options;
     const capTrimmed = seats.capacity.trim();
-    const capInitial = initialSeats.capacity;
+    const capInitial = initial.seats.capacity;
     // Only send capacity fields that changed: on the group page the
     // initial capacity is the date's effective value, and an untouched
     // field must not clobber a per-date override.
@@ -175,25 +150,23 @@ export function SeriesEditor({
       recurrenceRule,
       rruleUntil: until,
     };
-    if (JSON.stringify(childcare) !== JSON.stringify(initialChildcare)) Object.assign(body, childcareBody(childcare));
+    if (JSON.stringify(childcare) !== JSON.stringify(initial.childcare)) Object.assign(body, childcareBody(childcare));
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
     if (seats.waitlist !== instance.waitlistEnabled) body.waitlistEnabled = seats.waitlist;
     if (seats.guests !== instance.guestsAllowed) body.guestsAllowed = seats.guests;
-    if (reminder !== initialReminder) body.reminderEmailMinutes = reminder;
-    if (reminderPush !== initialReminderPush) body.reminderPush = reminderPush;
+    if (reminder !== initial.reminder) body.reminderEmailMinutes = reminder;
+    if (reminderPush !== initial.reminderPush) body.reminderPush = reminderPush;
     // Same only-when-changed rule as capacity: an untouched remote cap
     // on the group page must not clobber a per-date override.
-    if (remote.available !== initialRemote.available || remote.capacity.trim() !== initialRemote.capacity) {
+    if (remote.available !== initial.remote.available || remote.capacity.trim() !== initial.remote.capacity) {
       Object.assign(body, remoteBody(remote));
     }
     if (
-      video.provider !== initialVideo.provider ||
-      video.url.trim() !== initialVideo.url ||
-      video.reveal !== initialVideo.reveal
+      video.provider !== initial.video.provider ||
+      video.url.trim() !== initial.video.url ||
+      video.reveal !== initial.video.reveal
     ) {
-      body.videoProvider = video.provider;
-      body.videoUrl = video.provider === "none" ? "" : video.url.trim();
-      body.videoReveal = video.reveal;
+      Object.assign(body, videoBody(video));
     }
     try {
       await Events.update(instance.eventId, body);
@@ -201,24 +174,22 @@ export function SeriesEditor({
       onSaved();
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
-      setError(msg);
-      if (isSeatsError(err) || isChildcareCapacityError(err) || isRemoteError(err) || isVideoError(err)) setMoreOpen(true);
-      if (isSeatsError(err)) { setSeatsError(msg); focusSeatLimit(idPrefix); }
-      if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity(idPrefix); }
-      if (isRemoteError(err)) {
-        setRemoteError(msg);
-        focusRemoteCapacity(idPrefix);
-      }
-      if (isVideoError(err)) {
-        setVideoError(msg);
-        focusVideoUrl(idPrefix);
+      const field = optionFieldOfError(err);
+      if (field) {
+        showFieldErrors(root.current, () => {
+          setError(msg);
+          setOptionErrors({ [field]: msg });
+          setMoreOpen(true);
+        });
+      } else {
+        setError(msg);
       }
       setBusy(false);
     }
   }
 
   return (
-    <Form noValidate onSubmit={save} className="mt-3 space-y-4 border-t border-border pt-3">
+    <Form ref={root} noValidate onSubmit={save} className="mt-3 space-y-4 border-t border-border pt-3">
       <p className="text-sm text-text-muted">
         This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
         the new schedule drops are cancelled, and people who were going or maybe are told.
@@ -257,22 +228,9 @@ export function SeriesEditor({
         idPrefix={idPrefix}
         open={moreOpen}
         onOpenChange={setMoreOpen}
-        seats={seats}
-        onSeats={setSeats}
-        seatsError={seatsError}
-        video={video}
-        onVideo={setVideo}
-        videoError={videoError}
-        remote={remote}
-        onRemote={setRemote}
-        remoteError={remoteError}
-        childcare={childcare}
-        onChildcare={setChildcare}
-        childcareError={childcareError}
-        reminder={reminder}
-        onReminder={setReminder}
-        reminderPush={reminderPush}
-        onReminderPush={setReminderPush}
+        values={options}
+        onChange={setOptions}
+        errors={optionErrors}
       />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
