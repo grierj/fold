@@ -11,8 +11,6 @@ import (
 	"testing"
 )
 
-// --- a table the tests control -------------------------------------------------
-
 const target = int64(7)
 
 func qualifies(r Row) bool { return r.HasReason && r.RequesterID == target }
@@ -227,8 +225,6 @@ func run(s *source, after *int64, p Params, h Hooks) (Unit, error) {
 	return Scan(s.query, qualifies, after, p, h)
 }
 
-// --- the schedule and its bounds ----------------------------------------------
-
 func TestBatchSchedule(t *testing.T) {
 	cases := []struct {
 		first, statements, last int
@@ -266,8 +262,6 @@ func TestBatchSchedule(t *testing.T) {
 		t.Error("invalid bounds were accepted")
 	}
 }
-
-// --- static equivalence with the single-statement rules -------------------------
 
 // Signed ids at both ends of int64, units, first batches and caps small enough
 // to cross every boundary, from no cursor and from every row id: the batched
@@ -376,8 +370,6 @@ func TestHundredthRequestBoundary(t *testing.T) {
 	}
 }
 
-// --- empty, the cap and the unit ----------------------------------------------
-
 func TestEmptyCapAndUnit(t *testing.T) {
 	// An empty table is one statement and no cursor.
 	s := newSource(nil)
@@ -425,8 +417,6 @@ func TestEmptyCapAndUnit(t *testing.T) {
 		t.Errorf("cap 1: %s %v", fmtUnit(u), err)
 	}
 }
-
-// --- one dense page: what the server sends, what Go takes, what is drained ---
 
 func TestDensePageDrainsLessThanOneBatch(t *testing.T) {
 	s := newSource(mkRows(seq(1000, 1, 1), func(int) bool { return true }))
@@ -507,8 +497,6 @@ func TestThreeAttemptsBound(t *testing.T) {
 		}
 	}
 }
-
-// --- change between batches (deterministic) ------------------------------------
 
 // The documented differences from one snapshot, as they happen: a request
 // blanked before its batch is read stops being the 100th (the page ends one
@@ -622,8 +610,6 @@ func TestChangesBetweenBatches(t *testing.T) {
 	}
 }
 
-// --- failures and safe retry ------------------------------------------------------
-
 func TestFailuresNeverMakeAPageAndRetryAtTheSameCursor(t *testing.T) {
 	rows := mkRows(seq(300, 1, 1), func(int) bool { return true })
 	p := params(50000, 2, 100)
@@ -692,8 +678,6 @@ func TestFailuresNeverMakeAPageAndRetryAtTheSameCursor(t *testing.T) {
 		t.Errorf("post-close cancellation made a page: %s %v", fmtUnit(u), err)
 	}
 }
-
-// --- static walk models quoted in the design (derived, not measured) ------------
 
 // walk reads a whole table page by page the way the live route does and returns
 // the pages, the statements and the rows the server sent.

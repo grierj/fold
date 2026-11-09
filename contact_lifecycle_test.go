@@ -784,7 +784,6 @@ func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-CTX: the context-bound contact transaction (contactMutationCtx).
 //
 // An App whose handle goes through the fault proxy (internal/testdb/pgproxy.go)
@@ -793,7 +792,6 @@ func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
 // pg_locks and pg_stat_activity for the backend the proxy log names. Tests that
 // set the package bounds restore them and stay serial (no root-package test
 // uses t.Parallel).
-// ---------------------------------------------------------------------------
 
 func setContactBounds(t *testing.T, reserve, serverCap time.Duration) {
 	t.Helper()
@@ -1810,7 +1808,6 @@ func (c *contactCleanupConn) Rollback() error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // T07B-1b: the actor seal against household conversion (R5-C01, R6-C02,
 // R7-C01, R7-C02). TestActorSealVsConversion runs the real DELETE and
 // invitation-acceptance routes with the seams of the design (deleteBeforeSeal,
@@ -1821,7 +1818,6 @@ func (c *contactCleanupConn) Rollback() error {
 // (E2) a parked holder is idle in transaction and waits on nothing; (E3) held
 // modes come from NOWAIT probes on a third connection, each rolled back at once;
 // (E4) later entries of deleteBeforeSeal re-run (E2) and the probe on A only.
-// ---------------------------------------------------------------------------
 
 // probeNoWait reports whether a third connection can take the row lock now.
 // FOR KEY SHARE fails only while someone holds FOR UPDATE; FOR SHARE fails

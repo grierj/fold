@@ -1307,11 +1307,9 @@ func TestErasureStatementTimeoutContract(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-2a-2 test helpers: erasureTestPause (a barrier matched on facts GORM has
 // set before the step, rule F6) and erasureTestSQLStates (SQLSTATE evidence,
 // rule F4).
-// ---------------------------------------------------------------------------
 
 // erasureTestWhere is a WHERE condition to match: a SQL fragment and the
 // values that must sit at the given positions of its variables.
@@ -2347,10 +2345,6 @@ func TestErasureTestSQLStatesRecordsFailures(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// R4-2a-3: invitations, guest signups and the dev outbox.
-// ---------------------------------------------------------------------------
-
 // erasureEventFixture is a public group's event with one future occurrence,
 // made by the scene's admin.
 func erasureEventFixture(t *testing.T, s coreErasureScene) (eventID uint, occ models.EventOccurrence, groupID uint) {
@@ -2718,10 +2712,6 @@ func TestInvitationAcceptanceRacingErasure(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// R4-2a-4: messages and the bounded recipient scrub.
-// ---------------------------------------------------------------------------
 
 // erasureTestRegister and erasureTestUnregister attach a callback to the
 // processor and position a point names.
@@ -3733,11 +3723,6 @@ func TestErasureTestMessageProjectionDetectsDifferences(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// R4-2a-5: remaining activity rows, contact grants and the frozen
-// contact_requests text.
-// ---------------------------------------------------------------------------
-
 // erasureActivity names the rows erasureSeedActivity made.
 type erasureActivity struct {
 	group                        *models.Group
@@ -4010,10 +3995,6 @@ func TestAccountErasureEndsContactGrantsOnce(t *testing.T) {
 		check(t, f, grants)
 	})
 }
-
-// ---------------------------------------------------------------------------
-// R4-T07A: the childcare ages note of the subject's occurrence_add rows.
-// ---------------------------------------------------------------------------
 
 // erasureAgesNoteRow is one contact_requests row as the ages-note tests compare
 // it: the few columns they branch on, the note, the whole row as JSON with and
@@ -5873,10 +5854,6 @@ func TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// R4-2a-6: races that need the full statement list.
-// ---------------------------------------------------------------------------
-
 // removalRaceFixture is a group event led by L with capacity 1 and a
 // waitlist. The erased member U holds the one seat (with a manage token hash
 // and a registration of its own), and a seeded waiter waits behind them.
@@ -6337,10 +6314,6 @@ func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// Representative-scale measurement (M7.4 R4-2a-7)
-// ---------------------------------------------------------------------------
 
 // The scale fixture is one church at the size the database review asked for:
 // 5,000 people and, around the erased person U (user 3, address
@@ -7422,10 +7395,6 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 	t.Logf("wrote %s", path)
 }
 
-// ---------------------------------------------------------------------------
-// R4-T07A-4: statement plans and whole-erasure controls for the ages-note scrub
-// ---------------------------------------------------------------------------
-
 // What the scale run can and cannot show about eraseContactRequestTextIn.
 //
 // explainScaleErasure measures the helper's two statements with EXPLAIN
@@ -7541,8 +7510,6 @@ func scaleHelperOnlyCompare(before, after scaleHelperScope) scaleHelperOnlyResul
 		ReasonsUnchanged:      before.Reasons != "" && before.Reasons == after.Reasons,
 	}
 }
-
-// ---- real-erasure controls (the three timed DELETE runs) -------------------
 
 // scaleLifecycle is the lifecycle of one request after the erasure.
 type scaleLifecycle struct {
@@ -7674,8 +7641,6 @@ func checkScaleContactErasure(t *testing.T, before, after scaleContactState) {
 		}
 	}
 }
-
-// ---- plan parsing and the boundedness classifier --------------------------
 
 // scalePlanNode is one node of EXPLAIN (ANALYZE, BUFFERS) text.
 type scalePlanNode struct {
@@ -8684,8 +8649,6 @@ func scaleAgesNoteScanVerdict(in scaleScanInput) scaleScanVerdict {
 	return v
 }
 
-// ---- the evidence of one scale run ----------------------------------------
-
 type scaleStatementEvidence struct {
 	Label        string           `json:"label"`
 	SQL          string           `json:"sql"`
@@ -8794,8 +8757,6 @@ func checkScaleAgesNoteScrub(t *testing.T, run scaleExplain) scaleAgesNoteEviden
 		ev.Update.RowsAffected, ev.Update.Binds, ev.Update.TriggerCalls, ev.Update.TriggerFound, ev.HelperOnly)
 	return ev
 }
-
-// ---- the classifier's unit test (ordinary CI, no database) ----------------
 
 func agesPad(n int) string { return strings.Repeat(" ", n) }
 
@@ -9321,7 +9282,6 @@ func TestAgesNoteErasureScanVerdict(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // R4-T07A-3: concurrency acceptance CA-1 to CA-5 and CA-9 against the real
 // erasure (DELETE /admin/users/:id) and the real competing operations.
 //
@@ -9374,7 +9334,6 @@ func TestAgesNoteErasureScanVerdict(t *testing.T) {
 // agesRaceLedger: exact ids, actors, metas and times, and no row it did not
 // expect. A step marked Partial (the approval, whose own effects the contact
 // suites cover) requires its rows but allows others.
-// ---------------------------------------------------------------------------
 
 const agesRaceNote = "ages 2 and 5"
 

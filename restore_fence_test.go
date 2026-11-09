@@ -35,10 +35,6 @@ func (a *App) restoreFenceFloor() int64 { return a.fence.floor.Load() }
 // fenceTurnWaiters is how many callers wait for the fence turn: a test seam.
 func (a *App) fenceTurnWaiters() int { return int(a.fence.waiters.Load()) }
 
-// ---------------------------------------------------------------------------
-// recoveryPolicy (R4-RP): the constant, the file and fold version --json.
-// ---------------------------------------------------------------------------
-
 func recoveryPolicyMismatch(file string, level int) error {
 	got, err := strconv.Atoi(strings.TrimSpace(file))
 	if err != nil {
@@ -81,10 +77,6 @@ func TestRecoveryPolicyFileMatchesConstant(t *testing.T) {
 		t.Errorf("deploy/recovery-policy holds %q, want the single integer 2 (T07B-2b)", string(b))
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Writers of restore_fence: only the boot step and takeRestoreTicket.
-// ---------------------------------------------------------------------------
 
 var fenceWriterFuncs = map[string]bool{"bootRestoreFence": true, "takeRestoreTicket": true}
 
@@ -358,10 +350,6 @@ func TestSettingsWritersRefuseTheFenceKey(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The barrier at run time
-// ---------------------------------------------------------------------------
-
 func TestRestoreFenceBoot(t *testing.T) {
 	app := testApp(t)
 	var n int64
@@ -457,10 +445,6 @@ func TestRestoreTicketMethods(t *testing.T) {
 	}
 	app.abandonRestoreTicket(&holder)
 }
-
-// ---------------------------------------------------------------------------
-// No false detection, on the real router with one App and a restart recorder.
-// ---------------------------------------------------------------------------
 
 // nextDeleteSucceeds deletes a fresh account and checks its ticket is one or
 // two above the floor, that the recorder is silent and that the floor lands on
@@ -629,10 +613,6 @@ func waitFor(t *testing.T, within time.Duration, what string, ok func() bool) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
-
-// ---------------------------------------------------------------------------
-// Restores while the process keeps running (pg_dump -Fc, pg_restore).
-// ---------------------------------------------------------------------------
 
 // pgClients maps a client tool to the command that runs it: the tool itself, or
 // scripts/pg-client.sh running it from the server's own image.

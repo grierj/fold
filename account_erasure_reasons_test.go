@@ -42,10 +42,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
-// Pure tests: no database.
-// ---------------------------------------------------------------------------
-
 func TestParseRequestID(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -229,10 +225,6 @@ func TestLiveReasonFilter(t *testing.T) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Database tests.
-// ---------------------------------------------------------------------------
 
 // TestReviewHashCoversEveryColumn reads information_schema.columns and fails on
 // any column that is neither hashed nor excluded, a hashed column that no
@@ -964,10 +956,6 @@ func TestReasonTypesUseStringIDs(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Restore with a panel open (R3-C01, design TestReasonReviewRestoreWithOpenPanel).
-// ---------------------------------------------------------------------------
-
 // The review is stateless, so a restore cannot map a confirmation onto other
 // choices. An admin has read the pages and minted an id; then the database is
 // restored (a restart, pg_restore --clean while the process runs, or the
@@ -1113,10 +1101,6 @@ func TestReasonReviewRestoreWithOpenPanel(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Readiness (R4-C06): the traversal is the scanner itself.
-// ---------------------------------------------------------------------------
 
 type reasonStatement struct {
 	SQL  string
@@ -1398,10 +1382,6 @@ func TestReasonReviewRefusalLeaksNothing(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Concurrency with pg_locks barriers (run with -count=8).
-// ---------------------------------------------------------------------------
 
 // Two admins' full deletes of one target: both wait at the exclusive gate
 // behind a held lock (pg_locks shows two ungranted advisory locks), then exactly
@@ -1725,10 +1705,6 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// P-5 census: who locks, writes and reads what the reason review touches.
-// ---------------------------------------------------------------------------
-
 // reasonCensus lists, from the production source, by "file:function":
 //   - rowLockers: statements that lock contact_requests rows (a locking clause
 //     in a literal over the table);
@@ -1962,10 +1938,6 @@ var reasonCensusPinned = map[string][]string{
 		"restore_fence.go:fencedContactMutation",
 	},
 }
-
-// ---------------------------------------------------------------------------
-// Independent review round (R1-R4).
-// ---------------------------------------------------------------------------
 
 // R1: the page equivalent of TestSettleBusyWindowClosesAfterBackoff. A busy
 // actor row lets a page start a new transaction only while the busy window
@@ -2499,11 +2471,6 @@ func TestReasonReviewRepeatSetExists(t *testing.T) {
 	t.Logf("-run '^(%s)$'", strings.Join(reasonReviewRepeatSet, "|"))
 }
 
-// ---------------------------------------------------------------------------
-// T07B-2 scaling: signed order, the set-v1 envelope, the streamed consume and
-// the batched writes. Database tests.
-// ---------------------------------------------------------------------------
-
 // Every statement that lists reasons orders by the bigint id: pages, the cursor
 // chain, the DELETE stream and the digest agree on ascending signed order.
 func TestReasonOrderIsSigned(t *testing.T) {
@@ -2929,11 +2896,9 @@ func TestReasonScanUnderAGenericPlan(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // T07B-2 scaling, second pass: the bounds the first pass only stated. Database
 // tests; fixtures here are bulk-made with bulkRequests so a table can hold
 // thousands of rows.
-// ---------------------------------------------------------------------------
 
 // bulkRequests copies the request template into n new rows (new ids, every
 // other column equal) in one statement.
@@ -3017,8 +2982,6 @@ func planInt(t *testing.T, re *regexp.Regexp, plan string, group int) int {
 	}
 	return n
 }
-
-// ---- the investigation of the old envelope's answers -------------------------
 
 // The old {items} envelope against the new server, in every combination of
 // envelope, set and admin the route can meet. Order of refusals, which this
@@ -3127,8 +3090,6 @@ func TestReasonOrderingMatrix(t *testing.T) {
 		}
 	}
 }
-
-// ---- the probe ---------------------------------------------------------------
 
 // The probe takes no row lock, and the streamed consume locks exactly the
 // account's reasoned rows, whole, and nothing else. Locks are read with NOWAIT
@@ -3408,8 +3369,6 @@ func TestReasonProbeScanCost(t *testing.T) {
 	})
 }
 
-// ---- the consume is bounded by what the database holds, not by the claim ------
-
 // A claim for millions of reasons against a set of three, in three parts so
 // each cost is seen alone.
 //
@@ -3638,8 +3597,6 @@ func TestReasonConsumePeakMemoryOnLargeSets(t *testing.T) {
 	}
 }
 
-// ---- batches -----------------------------------------------------------------
-
 // newProxiedReasonScene is a reason scene whose routes reach the database
 // through pgproxy, which logs every statement the server runs.
 func newProxiedReasonScene(t *testing.T) (reasonScene, *ctxRig) {
@@ -3836,8 +3793,6 @@ func settleOf(t *testing.T, c *apiClient, id string, subject uint) attemptSettle
 	return out
 }
 
-// ---- a spent budget ---------------------------------------------------------
-
 // The deletion's budget running out answers 503 delete_timed_out, never busy and
 // never "nothing was deleted", rolls everything back, and the same review
 // applies afterwards. The three places it can run out here: between streamed
@@ -3956,8 +3911,6 @@ func TestReasonSpentBudget(t *testing.T) {
 		}
 	})
 }
-
-// ---- the envelope and the attempt ----------------------------------------------
 
 // The envelope's refusals never come before the submission check and never
 // leave an attempt id open: a body that does not parse, or names attemptId
@@ -4173,8 +4126,6 @@ func TestReasonEnvelopeAttemptOrdering(t *testing.T) {
 		}
 	})
 }
-
-// ---- the scanner over wide, signed and sparse tables -----------------------------
 
 // walkPages walks the live pages from a null cursor and returns, per page, the
 // number of items, the ids in order, and the cursor each page gave.
