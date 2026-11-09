@@ -139,6 +139,20 @@ func (a *App) reconcileOccurrenceAsk(tx *gorm.DB, r *models.ContactRequest, now 
 	return nil
 }
 
+// reconcileAccessesBefore is the "before" run of a scoped mutation's two
+// reconciliations of occurrence access; reconcileContacts ends with the
+// "after" run. Event edits can move a retained departure date after its old
+// end, so a mutation that names an event persists the expiry that already
+// elapsed under the shared gate before fn changes the event or its dates, and
+// a move cannot resurrect authority. The "after" run then ends whatever fn's
+// own changes invalidated. Other scopes only need the "after" run.
+func (a *App) reconcileAccessesBefore(tx *gorm.DB, now time.Time, change contactChange) error {
+	if change.EventID == 0 {
+		return nil
+	}
+	return a.reconcileOccurrenceAccesses(tx, now, change)
+}
+
 // Accepted attendance deliberately does not reload issuer authority or blocks.
 // Only the recipient and the exact live domain/provenance rows can end it.
 func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change contactChange) error {
