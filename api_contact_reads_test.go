@@ -131,20 +131,26 @@ func assertContactPageIDs[T interface {
 	}
 }
 
+// compareRequests presents the whole page once and each request on its own (a
+// page of one), and requires the same rows: the facts of one request never
+// depend on the others on its page.
 func (f *contactReadFixture) compareRequests(t *testing.T, viewers ...*models.User) {
 	t.Helper()
 	for _, viewer := range viewers {
 		op := &contactOperation{actor: viewer, now: f.now.Add(time.Second), zone: time.UTC}
-		batch, err := f.app.presentContactRequests(f.app.DB, op, f.requests)
+		actor := contactAccount(viewer, op.now, op.zone)
+		visible := []models.ContactRequest{}
+		for _, r := range f.requests {
+			if contactKind.canView(actor, r) {
+				visible = append(visible, r)
+			}
+		}
+		batch, err := f.app.presentContactRequests(f.app.DB, op, visible)
 		if err != nil {
 			t.Fatal(err)
 		}
 		scalar := []contactRequestJSON{}
-		actor := contactAccount(viewer, op.now, op.zone)
-		for _, r := range f.requests {
-			if !policy.CanViewContactRequest(actor, contactRequestPolicy(r)) {
-				continue
-			}
+		for _, r := range visible {
 			row, err := f.app.presentContactRequest(f.app.DB, op, r)
 			if err != nil {
 				t.Fatal(err)
@@ -155,6 +161,46 @@ func (f *contactReadFixture) compareRequests(t *testing.T, viewers ...*models.Us
 			t.Fatalf("request parity viewer %d\nbatch=%+v\nscalar=%+v", viewer.ID, batch, scalar)
 		}
 	}
+}
+
+// scalarContextVisible is the test-only scalar form of requestContexts.shown,
+// kept as its parity oracle: one query per fact, through eventFactsIn and
+// relIn, the way the list code used to ask.
+func (a *App) scalarContextVisible(tx *gorm.DB, u *models.User, r models.ContactRequest) (*uint, error) {
+	id := r.ContextID
+	if r.ContextType == policy.ContactEvent {
+		var ev models.Event
+		err := tx.First(&ev, r.ContextID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		f, err := eventFactsIn(tx, u, &ev)
+		if err != nil {
+			return nil, err
+		}
+		if f.group == nil && ev.GroupID != nil {
+			return nil, nil
+		}
+		if !f.canSee(u) {
+			return nil, nil
+		}
+		return &id, nil
+	}
+	var g models.Group
+	err := tx.First(&g, r.ContextID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if a.groupShownTo(u, &g, relIn(tx, u.ID, g.ID)) == nil {
+		return nil, nil
+	}
+	return &id, nil
 }
 
 // presentContactGrant is the test-only scalar presenter preserved as the batch parity oracle.
@@ -172,7 +218,7 @@ func (a *App) presentContactGrant(tx *gorm.DB, op *contactOperation, g models.Co
 	}
 	actor := contactAccount(op.actor, op.now, op.zone)
 	p := contactGrantPolicy(g, r)
-	contextID, err := a.contactContextVisible(tx, op.actor, r)
+	contextID, err := a.scalarContextVisible(tx, op.actor, r)
 	if err != nil {
 		return contactGrantJSON{}, err
 	}
@@ -203,7 +249,7 @@ func (f *contactReadFixture) compareGrants(t *testing.T, viewers ...*models.User
 			if err != nil {
 				t.Fatal(err)
 			}
-			teen := facts.Subject.Person != nil && facts.Subject.Person.Teen && facts.Subject.AgeYears != nil && *facts.Subject.AgeYears >= 13 && *facts.Subject.AgeYears < 18
+			teen := facts.Subject.IsTeen()
 			if !policy.CanViewContactGrant(actor, guardian, teen, contactGrantPolicy(g, r)) {
 				continue
 			}

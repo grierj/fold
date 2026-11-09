@@ -67,7 +67,9 @@ func (a ContactAccount) adult() bool {
 	return a.Person != nil && !a.Person.Teen && (a.AgeYears == nil || *a.AgeYears >= 18)
 }
 
-func (a ContactAccount) teen() bool {
+// IsTeen is a teen account whose known age is 13 to 17; a teen with no known age
+// fails closed.
+func (a ContactAccount) IsTeen() bool {
 	return a.Person != nil && a.Person.Teen && a.AgeYears != nil && *a.AgeYears >= 13 && *a.AgeYears < 18
 }
 
@@ -131,7 +133,7 @@ func ContactIneligibility(f ContactAccessFacts, needsAdmin bool) string {
 	if needsAdmin && f.Subject.AgeYears != nil && *f.Subject.AgeYears >= 18 {
 		return ContactTurned18
 	}
-	if !f.Requester.adult() || (needsAdmin && !f.Subject.teen()) || (!needsAdmin && !f.Subject.adult()) {
+	if !f.Requester.adult() || (needsAdmin && !f.Subject.IsTeen()) || (!needsAdmin && !f.Subject.adult()) {
 		return ContactAccountDisabled
 	}
 	c := f.Context

@@ -229,6 +229,11 @@ func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 	return ids, err
 }
 
+// unknownPersonName stands for a person with no row at all. A nameless person
+// shows as "Member" (User.PublicName); an erased one is shown by the surface
+// that says so.
+const unknownPersonName = "Someone"
+
 // publicNames keeps historical display names for one response. Like nameIn,
 // it includes soft-deleted users and never falls back to an email address.
 type publicNames map[uint]string
@@ -242,7 +247,7 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 	unique := make([]uint, 0, len(ids))
 	for _, id := range ids {
 		if _, ok := names[id]; !ok {
-			names[id] = "Someone"
+			names[id] = unknownPersonName
 			unique = append(unique, id)
 		}
 	}
@@ -260,7 +265,7 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 		// Preserve the historical all-fallback behavior on read failure;
 		// never publish names determined by which batch failed.
 		for id := range names {
-			names[id] = "Someone"
+			names[id] = unknownPersonName
 		}
 	}
 	return names
@@ -270,7 +275,7 @@ func (names publicNames) name(id uint) string {
 	if name, ok := names[id]; ok {
 		return name
 	}
-	return "Someone"
+	return unknownPersonName
 }
 
 func (names publicNames) actorName(id *uint) string {
@@ -283,7 +288,7 @@ func (names publicNames) actorName(id *uint) string {
 func nameIn(tx *gorm.DB, id uint) string {
 	var u models.User
 	if err := tx.Unscoped().First(&u, id).Error; err != nil {
-		return "Someone"
+		return unknownPersonName
 	}
 	return u.PublicName()
 }
@@ -835,7 +840,15 @@ type emailRecipient struct {
 	ChurchAddress string
 }
 
-func categoryScope(category string) string { return "category:" + category }
+// categoryScope is the consent and unsubscribe scope of one optional
+// notification category; categoryOfScope reads it back.
+const categoryScopePrefix = "category:"
+
+func categoryScope(category string) string { return categoryScopePrefix + category }
+
+func categoryOfScope(scope string) (string, bool) {
+	return strings.CutPrefix(scope, categoryScopePrefix)
+}
 
 // notificationEmailMessage is the mail notify.deliver sends: the
 // stored email text, the absolute link, and, for an optional kind, the
