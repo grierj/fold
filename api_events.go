@@ -52,10 +52,6 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"timezone": tz})
 }
 
-// ---------------------------------------------------------------------------
-// Occurrence JSON
-// ---------------------------------------------------------------------------
-
 // occurrencesForEventsErr lists scheduled dates of these events and attaches
 // attendee names only where policy allows. A caller who cannot see an
 // event's group gets "Hosted by <church>" and no group id or name. A failed
@@ -74,7 +70,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		return out, false, nil
 	}
 	// The one place event dates are listed: drop every event this viewer
-	// can't see, so no caller has to remember to (hardening review).
+	// can't see, so no caller has to remember to.
 	vs, err := a.dateCandidates(me, a.DB.Where("id IN ?", eventIDs))
 	if err != nil {
 		return out, false, err
@@ -296,8 +292,6 @@ func changeVariant(timeChanged, placeChanged bool) string {
 	return "time"
 }
 
-// setMine fills the viewer's own answer on this date: their row, and their
-// place in line when they are waitlisted.
 func (o *occurrenceJSON) setMine(db *gorm.DB, r *models.Registration) error {
 	status, guests, childcare, note := r.Status, r.GuestCount, r.ChildcareCount, r.ChildcareAgesNote
 	mode := attendanceModeOf(r.AttendanceMode)
@@ -329,7 +323,6 @@ func registrationCounts(counted map[string]int64, withDeclined bool) map[string]
 	return out
 }
 
-// effectiveOccurrenceTitle is the date's own title, else its event's.
 func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
 	if o.TitleOverride != nil {
 		return *o.TitleOverride
@@ -337,7 +330,6 @@ func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) strin
 	return ev.Title
 }
 
-// effectiveOccurrenceDuration is the date's own length, else its event's.
 func effectiveOccurrenceDuration(ev *models.Event, o *models.EventOccurrence) int {
 	if o.DurationOverride != nil {
 		return *o.DurationOverride
@@ -351,7 +343,6 @@ func effectiveOccurrencePlace(ev *models.Event, o *models.EventOccurrence, group
 	return events.EffectivePlace(ev.Location, o.LocationOverride, groupPlace)
 }
 
-// occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
 	loc := eventZone(ev.TZID)
 	dur := effectiveOccurrenceDuration(ev, o)
@@ -492,10 +483,6 @@ func (a *App) groupSummaries(groups []models.Group) ([]groupSummaryJSON, error) 
 	return out, nil
 }
 
-// ---------------------------------------------------------------------------
-// Event endpoints
-// ---------------------------------------------------------------------------
-
 type eventBody struct {
 	Title           *string `json:"title"`
 	Description     *string `json:"description"`
@@ -523,10 +510,9 @@ type eventBody struct {
 	ChildcareNotes     *string         `json:"childcareNotes"`
 	ChildcareCapacity  json.RawMessage `json:"childcareCapacity"`
 	ChildcareAges      *string         `json:"childcareAges"`
-	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
-	VideoProvider *string `json:"videoProvider"`
-	VideoURL      *string `json:"videoUrl"`
-	VideoReveal   *string `json:"videoReveal"`
+	VideoProvider      *string         `json:"videoProvider"`
+	VideoURL           *string         `json:"videoUrl"`
+	VideoReveal        *string         `json:"videoReveal"`
 	// ReminderEmailMinutes: when each date's email reminder goes (M3.6):
 	// 0 off, 120, 1440, 2880 or 10080 minutes before.
 	ReminderEmailMinutes *int `json:"reminderEmailMinutes"`
@@ -667,7 +653,6 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	if body.ReminderPush != nil {
 		ev.ReminderPush = *body.ReminderPush
 	}
-	// Remote attendance (M1.8 slice 2).
 	if body.RemoteAvailable != nil {
 		ev.RemoteAvailable = *body.RemoteAvailable
 	}
@@ -686,7 +671,6 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	if ed.childcareCapSet {
 		ev.ChildcareCapacity = ed.childcareCap
 	}
-	// Video (M1.8): vid holds the effective, validated values.
 	ev.VideoProvider = vid.provider
 	ev.VideoURL = vid.url
 	ev.VideoReveal = vid.reveal
@@ -1696,11 +1680,9 @@ type eventJSON struct {
 	LeaderOpened    bool       `json:"leaderOpened"`
 	ChurchWide      bool       `json:"churchWide"`
 	Hosts           []hostJSON `json:"hosts,omitempty"`
-	// Capacity, waitlist, and guests (M1.5). Capacity null means
-	// unlimited.
-	Capacity        *int `json:"capacity"`
-	WaitlistEnabled bool `json:"waitlistEnabled"`
-	GuestsAllowed   int  `json:"guestsAllowed"`
+	Capacity        *int       `json:"capacity"`
+	WaitlistEnabled bool       `json:"waitlistEnabled"`
+	GuestsAllowed   int        `json:"guestsAllowed"`
 	// ReminderEmailMinutes: when each date's email reminder goes (M3.6,
 	// DEC-133); 0 is off. ReminderPush: each date's 2-hour push reminder
 	// (M3.13d3).
@@ -1723,5 +1705,4 @@ type eventJSON struct {
 	VideoHidden   bool   `json:"videoHidden,omitempty"`
 }
 
-// maxRecurrenceLen caps an RRULE a request may store.
 const maxRecurrenceLen = 300

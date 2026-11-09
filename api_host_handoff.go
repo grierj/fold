@@ -144,7 +144,6 @@ func removeDeletedHostRows(tx *gorm.DB, actorID uint, eventIDs []uint, ip string
 		RETURNING event_id, user_id`, eventIDs)
 }
 
-// The reasons a host row is removed without a person choosing it.
 const (
 	// hostRemovedDeleted: the host's account was already deleted.
 	hostRemovedDeleted = "deleted_host_cleanup"
@@ -179,11 +178,8 @@ func deleteHostRowsAudited(tx *gorm.DB, actor *uint, ip, reason, query string, a
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Replacement host before account deletion (M7.4, R4-H, owner decision 3)
-// ---------------------------------------------------------------------------
+// Replacement host before account deletion (M7.4, R4-H, owner decision 3).
 
-// maxHostSuccessors bounds the hostSuccessors map of one deletion request.
 const maxHostSuccessors = 1000
 
 // soleHostEventJSON is a church-wide event whose only non-deleted host is the
@@ -209,19 +205,15 @@ type errNeedHostSuccessors struct{ data soleHostEventsJSON }
 
 func (errNeedHostSuccessors) Error() string { return errNeedsHostSuccessor.Message }
 
-// Is matches the declared refusal this error answers with.
 func (errNeedHostSuccessors) Is(target error) bool { return target == errNeedsHostSuccessor }
 
-// apiAnswer is the 400 with the events still missing a host and who may host
-// them.
 func (e errNeedHostSuccessors) apiAnswer() *apiError {
 	return errNeedsHostSuccessor.with(gin.H{"events": e.data.Events, "candidates": e.data.Candidates})
 }
 
 // soleHostEventsFor builds the events a person hosts alone, from the seats it
 // is given, with who may host them next. Nothing else is read when there are
-// none; otherwise exactly three reads, however many events there are. The
-// second result is the sole-hosted event ids, ascending.
+// none; otherwise exactly three reads, however many events there are.
 func soleHostEventsFor(db *gorm.DB, actor *models.User, targetID uint, seats map[uint][]policy.HostSeat, now time.Time) (soleHostEventsJSON, error) {
 	out := soleHostEventsJSON{Events: []soleHostEventJSON{}, Candidates: []successorJSON{}}
 	sole := soleHosted(seats, targetID)
@@ -381,7 +373,6 @@ func handOffHosting(tx *gorm.DB, actorID, targetID uint, picks map[uint]uint, lo
 	return deleteHostRowsAudited(tx, &actorID, ip, hostRemovedAccountDeleted, hostRowsOfUserSQL, targetID)
 }
 
-// hostRowsOfUserSQL deletes every host row of one account.
 const hostRowsOfUserSQL = `DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id, user_id`
 
 // lockHostedEvents locks the live church-wide events among ids FOR KEY SHARE,

@@ -31,8 +31,7 @@ type roomSuggestionsJSON struct {
 	// OtherKinds: nothing matched the group's kind, so these are labelled
 	// "Used by other kinds of events" (Rule 3).
 	OtherKinds bool `json:"otherKinds"`
-	// Dates is how many dates the busy counts cover (at most 8).
-	Dates int `json:"dates"`
+	Dates      int  `json:"dates"`
 }
 
 // suggestFor is who is choosing and for what. EventID is 0 on a create
@@ -45,8 +44,7 @@ type suggestFor struct {
 	visibility string
 	capacity   *int
 	windows    []rooms.Window
-	// tags are the group's, when the caller already loaded it; else read.
-	tags *string
+	tags       *string
 }
 
 // roomSuggestions runs the engine for a picker. A failed read leaves the
@@ -80,7 +78,6 @@ func (a *App) roomSuggestions(s suggestFor, offered map[uint]bool) roomSuggestio
 	return out
 }
 
-// windowsOf turns a picker's dates into the engine's, first 8 only.
 func windowsOf(occs []models.EventOccurrence) []rooms.Window {
 	out := []rooms.Window{}
 	for i := range occs {
@@ -92,7 +89,6 @@ func windowsOf(occs []models.EventOccurrence) []rooms.Window {
 	return out
 }
 
-// offeredRooms is the set of rooms a series or create-form picker lists.
 func offeredRooms(list []seriesRoomJSON) map[uint]bool {
 	out := make(map[uint]bool, len(list))
 	for _, r := range list {
@@ -115,7 +111,6 @@ func createVisibility(picked *string, g *models.Group) string {
 	return models.VisibilityPublic
 }
 
-// groupTags is a loaded group's tags, or nil to read them by id.
 func groupTags(g *models.Group) *string {
 	if g == nil {
 		return nil

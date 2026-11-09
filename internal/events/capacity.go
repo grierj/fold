@@ -47,8 +47,6 @@ type WaitEntry struct {
 	Childcare int
 }
 
-// Pool is an attendance or childcare pool for promotion: a capacity
-// (nil is unlimited) and the spots already used in it.
 type Pool struct {
 	Capacity *int
 	Used     int
@@ -92,8 +90,6 @@ func PickPromotionsByPool(waitlist []WaitEntry, pools map[string]Pool, childcare
 	return out
 }
 
-// InCutoff reports whether auto-promotion is stopped: now is at or
-// after startsAt minus the fixed cutoff window.
 func InCutoff(now, startsAt time.Time) bool {
 	return !now.Before(startsAt.Add(-CutoffWindow))
 }

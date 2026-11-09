@@ -44,7 +44,6 @@ func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) (eve
 	return j, nil
 }
 
-// respondEvent answers with the event as its viewer may see it.
 func (a *App) respondEvent(c *gin.Context, status int, ev *models.Event, me *models.User, f eventFacts) {
 	j, err := a.presentEvent(ev, me, f)
 	if err != nil {
@@ -69,7 +68,6 @@ func (a *App) eventHosts(eventID uint) ([]hostJSON, error) {
 	return out, nil
 }
 
-// respondHosts answers with a church-wide event's hosts.
 func (a *App) respondHosts(c *gin.Context, eventID uint) {
 	hosts, err := a.eventHosts(eventID)
 	if err != nil {
@@ -144,7 +142,6 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 func (a *App) openEventIDs(u *models.User) ([]uint, error) {
 	now := time.Now().UTC()
 	from, to := upcomingWindow(now)
-	// Only events with a date in the listed window can add anything (#75).
 	vs, err := a.dateCandidates(u, a.DB.Where(
 		"id IN (SELECT event_id FROM event_occurrences WHERE original_date >= ? AND original_date <= ?)", from, to))
 	if err != nil {
@@ -305,7 +302,6 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	// A new church-wide event has no group, and its creator is a host.
 	a.respondEvent(c, http.StatusCreated, &ev, creator, eventFacts{view: viewOf(&ev, true)})
 }
 
@@ -520,8 +516,6 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 	a.respondHosts(c, ev.ID)
 }
 
-// errEventNotFound: the event is not there for this caller, or was deleted
-// while the request waited.
 var errEventNotFound = apiErr(http.StatusNotFound, "", "event not found")
 
 func (a *App) apiRemoveEventHost(c *gin.Context) {
@@ -576,7 +570,6 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 	a.respondHosts(c, ev.ID)
 }
 
-// errNotAHost: the person is not among the event's hosts.
 var errNotAHost = apiErr(http.StatusNotFound, "", "that person isn't a host")
 
 // visibleSet is the events one viewer may see out of a query, with the

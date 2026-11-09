@@ -22,7 +22,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Guest registration (M1.4, C5, 5.10, 10.1): a signed-out adult registers
 // for one date of a public event with a name and an email. The email is
 // verified by a link before any User or Registration exists, so an
@@ -30,7 +29,6 @@ import (
 // (or reuses) the guest User row and an ordinary registration against it,
 // plus a manage link that cancels without an account. Public answers
 // never reveal whether an email already has an account.
-// ---------------------------------------------------------------------------
 
 const (
 	// Verification emails to one address stop after 3 in an hour or 10
@@ -716,13 +714,11 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"registration": display})
 }
 
-// ---------------------------------------------------------------------------
 // Guest emails (C6: plain text through the minimal sender). Verification is a
 // stored job (mail_jobs.go); the confirmation below stays synchronous because
 // its manage link is also returned to the browser. Both name
 // the event as a signed-out visitor may see it; a hidden group is
 // never named.
-// ---------------------------------------------------------------------------
 
 func guestWithLine(d guestRegistrationJSON) string {
 	if d.GroupName != "" {
