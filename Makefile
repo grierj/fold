@@ -60,8 +60,10 @@ deadcode:
 	else status=$$?; [ "$$status" -eq 1 ]; fi
 
 # Unused files, exports and dependencies in web/ (knip, pinned in package.json).
+# The second pass counts only production code, so an export that only a test
+# uses is caught; one kept for a test says so with a @public tag and a reason.
 lint-web:
-	cd web && npx knip
+	cd web && npx knip && npx knip --production
 
 # Shell scripts under deploy/digitalocean, scripts (go-test.sh, compose-smoke.sh) and web/e2e.
 # -x follows source= directives.

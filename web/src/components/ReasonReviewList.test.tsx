@@ -2,7 +2,9 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErasureReasonItem } from "../types";
-import { CHANGED_COPY, ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
+import { ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
+
+const CHANGED_COPY = "Changed since you looked: choose again";
 
 const item = (over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
   requestId: "1", reviewHash: "a".repeat(64), role: "subject", purpose: "contact", status: "pending",

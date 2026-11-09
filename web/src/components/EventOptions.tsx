@@ -1,10 +1,11 @@
 import { useId, type ReactNode } from "react";
 import type { Visibility } from "../types";
 import { ChevronDownIcon } from "./icons";
-import { ChildcareField, type ChildcareValue } from "./ChildcareField";
-import { RemoteField, type RemoteValue } from "./RemoteField";
-import { SeatsField, type SeatsValue } from "./SeatsField";
-import { VideoField, type VideoValue } from "./VideoField";
+import { ChildcareField } from "./ChildcareField";
+import { RemoteField } from "./RemoteField";
+import { SeatsField } from "./SeatsField";
+import { VideoField } from "./VideoField";
+import type { EventOptionValues, OptionErrors } from "./eventOptionValues";
 import { ReminderField, reminderSummary } from "./ReminderField";
 import { Button } from "./ui/Button";
 import { usePushEnabled } from "../lib/useSite";
@@ -13,24 +14,8 @@ const VISIBILITY_NAMES: Record<Visibility, string> = { public: "Public", private
 
 // The one line a closed "More options" shows, so nothing inside is hidden by
 // surprise: "Visible to: Public · No seat limit · No video · No childcare".
-export function optionsSummary({
-  visibility,
-  seats,
-  video,
-  remote,
-  childcare,
-  reminder,
-  reminderPush,
-}: {
-  visibility?: Visibility;
-  seats: SeatsValue;
-  video: VideoValue;
-  remote: RemoteValue;
-  childcare: ChildcareValue;
-  reminder?: number;
-  // The push reminder switch, when the form offers it (M3.13d3).
-  reminderPush?: boolean;
-}): string {
+function optionsSummary(v: EventOptionValues, visibility?: Visibility, pushOn = true): string {
+  const { seats, video, remote, childcare, reminder } = v;
   const cap = seats.capacity.trim();
   const seatText = cap === "" ? "No seat limit" : `${cap} ${cap === "1" ? "seat" : "seats"}${seats.waitlist ? " with waitlist" : ""}`;
   const parts = [
@@ -39,7 +24,7 @@ export function optionsSummary({
     video.provider === "none" ? "No video" : "Video link",
     ...(remote.available ? ["Remote seats"] : []),
     childcare.available ? "Childcare" : "No childcare",
-    ...(reminder !== undefined ? [reminderSummary(reminder, reminderPush)] : []),
+    reminderSummary(reminder, pushOn ? v.reminderPush : undefined),
   ];
   return parts.join(" · ");
 }
@@ -107,67 +92,37 @@ export function EventOptions({
   open,
   onOpenChange,
   visibility,
-  seats,
-  onSeats,
-  seatsError,
-  video,
-  onVideo,
-  videoError,
-  remote,
-  onRemote,
-  remoteError,
-  childcare,
-  onChildcare,
-  childcareError,
-  reminder,
-  onReminder,
-  reminderPush,
-  onReminderPush,
+  values,
+  onChange,
+  errors = {},
 }: {
   idPrefix: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   visibility?: { value: Visibility; field: ReactNode };
-  seats: SeatsValue;
-  onSeats: (next: SeatsValue) => void;
-  seatsError?: string | null;
-  video: VideoValue;
-  onVideo: (next: VideoValue) => void;
-  videoError?: string | null;
-  remote: RemoteValue;
-  onRemote: (next: RemoteValue) => void;
-  remoteError?: string | null;
-  childcare: ChildcareValue;
-  onChildcare: (next: ChildcareValue) => void;
-  childcareError?: string | null;
-  reminder: number;
-  onReminder: (minutes: number) => void;
-  // The 2-hour push reminder switch (M3.13d3); hidden while the church has
-  // notifications on devices turned off.
-  reminderPush?: boolean;
-  onReminderPush?: (on: boolean) => void;
+  values: EventOptionValues;
+  onChange: (next: EventOptionValues) => void;
+  errors?: OptionErrors;
 }) {
+  // The 2-hour push reminder switch (M3.13d3) is hidden while the church has
+  // notifications on devices turned off.
   const pushOn = usePushEnabled();
-  const push = pushOn && reminderPush !== undefined && onReminderPush ? { value: reminderPush, onChange: onReminderPush } : undefined;
+  const set = <K extends keyof EventOptionValues>(key: K) => (next: EventOptionValues[K]) => onChange({ ...values, [key]: next });
   return (
-    <MoreOptions
-      open={open}
-      onOpenChange={onOpenChange}
-      summary={optionsSummary({ visibility: visibility?.value, seats, video, remote, childcare, reminder, reminderPush: push?.value })}
-    >
+    <MoreOptions open={open} onOpenChange={onOpenChange} summary={optionsSummary(values, visibility?.value, pushOn)}>
       {visibility?.field}
       <Section title="Seats">
-        <SeatsField idPrefix={idPrefix} value={seats} onChange={onSeats} error={seatsError} />
+        <SeatsField idPrefix={idPrefix} value={values.seats} onChange={set("seats")} error={errors.seats} />
       </Section>
       <Section title="Online">
-        <VideoField idPrefix={idPrefix} value={video} onChange={onVideo} error={videoError} />
-        <RemoteField idPrefix={idPrefix} value={remote} onChange={onRemote} error={remoteError} />
+        <VideoField idPrefix={idPrefix} value={values.video} onChange={set("video")} error={errors.video} />
+        <RemoteField idPrefix={idPrefix} value={values.remote} onChange={set("remote")} error={errors.remote} />
       </Section>
       <Section title="Childcare">
-        <ChildcareField idPrefix={idPrefix} value={childcare} onChange={onChildcare} error={childcareError} />
+        <ChildcareField idPrefix={idPrefix} value={values.childcare} onChange={set("childcare")} error={errors.childcare} />
       </Section>
       <Section title="Reminders">
-        <ReminderField idPrefix={idPrefix} value={reminder} onChange={onReminder} push={push} />
+        <ReminderField idPrefix={idPrefix} value={values.reminder} onChange={set("reminder")} push={pushOn ? { value: values.reminderPush, onChange: set("reminderPush") } : undefined} />
       </Section>
     </MoreOptions>
   );

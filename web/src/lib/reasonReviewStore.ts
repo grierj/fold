@@ -42,6 +42,7 @@ function canonicalId(id: unknown): bigint | null {
 const validHash = (h: unknown): h is string => typeof h === "string" && h.length === HASH_LENGTH && LOWER_HEX.test(h);
 
 /** Thrown for a page the walk cannot trust (order, duplicates, ids, hashes). */
+/** @public tested directly: the store's refusals. */
 export class ReasonStoreError extends Error {
   constructor(message: string) {
     super(message);

@@ -1,5 +1,5 @@
 import type { RoomCalendarRoom, RoomSlot } from "../types";
-import { addDays } from "./calendar";
+import { addDays } from "./days";
 import { dayOf, formatTimeRange, minuteOfDay } from "./when";
 
 // The by-room view (M2.2a, 8.1, DEC-108). Pure helpers so the page stays
@@ -105,9 +105,4 @@ export function hourRange(rooms: RoomCalendarRoom[], day: string, zone: string):
     }
   }
   return { start, end };
-}
-
-// A room's name with its building, as the room pickers write it.
-export function roomName(r: { name: string; building: string }): string {
-  return r.building ? `${r.name} · ${r.building}` : r.name;
 }

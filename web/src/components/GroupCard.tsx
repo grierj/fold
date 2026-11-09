@@ -3,6 +3,7 @@ import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
 import { formatNextMeeting } from "../lib/when";
 import { coverSrc } from "../lib/covers";
+import { groupStatusLabel } from "../lib/status";
 import { CalendarIcon } from "./icons";
 
 // One link target per directory row, with the same image/name/date rhythm
@@ -54,11 +55,11 @@ export function GroupCard({
           <div className="flex flex-wrap gap-x-2 gap-y-1">
             {group.status === "pending" && (
               <span className="text-sm font-semibold text-warning-on-subtle">
-                Pending approval
+                {groupStatusLabel("pending")}
               </span>
             )}
             {group.status === "archived" && (
-              <span className="text-sm font-semibold text-text-muted">Archived</span>
+              <span className="text-sm font-semibold text-text-muted">{groupStatusLabel("archived")}</span>
             )}
             {group.visibility === "private" && (
               <span className="text-sm font-semibold text-text-muted">Private</span>

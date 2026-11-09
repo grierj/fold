@@ -7,7 +7,8 @@ import type { AddRequest } from "../types";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { FormError } from "../components/ui/Field";
-import { Decision, decisionLabels } from "../components/Decision";
+import { Decision } from "../components/Decision";
+import { decisionLabel } from "../lib/status";
 import { errorText } from "../lib/errors";
 import { useCursorList } from "../lib/useCursorList";
 import { formatWhen } from "../lib/when";
@@ -46,7 +47,7 @@ function AddRequestList() {
     {loaded && !requests.length && <EmptyState title="No add requests yet" body="Asks you send or can review will appear here. To send an ask, select a person by name in a group or event date you manage." />}
     <ul className="fold-list">{requests.map((r) => <li key={r.id} className="fold-list-row space-y-2 wrap-anywhere">
       <Preview request={r} /><p>{statuses[r.status]}</p>
-      {r.needsAdmin && <p className="text-sm">Teen: {decisionLabels[r.subjectDecision]} · Admin: {decisionLabels[r.adminDecision]}</p>}
+      {r.needsAdmin && <p className="text-sm">Teen: {decisionLabel(r.subjectDecision)} · Admin: {decisionLabel(r.adminDecision)}</p>}
       <ButtonLink variant="link" to={`/add-requests/${r.id}`}>Review ask #{r.id}</ButtonLink>
     </li>)}</ul>
     {loaded && more && requests.length > 0 && <Button variant="secondary" disabled={busy} onClick={() => void older()}>Load older asks</Button>}

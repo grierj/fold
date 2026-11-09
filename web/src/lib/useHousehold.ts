@@ -1,3 +1,4 @@
+import { isNotTeen } from "./can";
 import { Households } from "../api/households";
 import type { User } from "../types";
 import { errorText } from "./errors";
@@ -8,7 +9,7 @@ export function useHousehold(user: User | null) {
   const load = useLoad(
     async () => (await Households.mine()).household?.people ?? [],
     [user?.id, user?.accountType],
-    { enabled: !!user && user.accountType !== "teen" },
+    { enabled: isNotTeen(user) },
   );
   return { people: load.data ?? [], error: load.error ? errorText(load.error, "We couldn't load your household.") : null, retry: load.retry };
 }

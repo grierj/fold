@@ -15,7 +15,7 @@ Shared rules for all three items:
 - Sensitive actions write `audit.Write` rows in the same transaction as the
   change. Bell notices are `notify.Send` rows in that transaction too.
 - JSON is camelCase under `/api/v1`. A new error a person can act on gets an
-  entry in the `errorCodes` map in `api_errors.go:20` plus a line in
+  declared `apiErr` value (`api_error_values.go`; it replaced the `errorCodes` map) plus a line in
   `ERROR_COPY` in `web/src/lib/errors.ts`. New response types get a pair in
   `tsContracts` so `web/src/types.ts` stays matched to the Go structs.
 - UI uses `web/src/components/ui` controls and role tokens. Prove UI changes

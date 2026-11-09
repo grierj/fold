@@ -1525,7 +1525,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			return err
 		}
 		if holder.Status != models.UserActive && holder.Status != models.UserGuest {
-			return errRegNotFound
+			return errAddTargetGone
 		}
 		if policy.TeenAddNeedsApproval(asPerson(&holder)) {
 			return refuse(errDateAddApproval)
