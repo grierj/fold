@@ -413,11 +413,11 @@ func insertAttemptReceipt(tx *gorm.DB, nonce [16]byte) error {
 // any wait-for cycle. It reads nothing from the early-read row.
 //
 // 401 (errSecuritySession) when no row comes back, the row is soft deleted, the
-// account cannot sign in (CanSignIn, the middleware's own predicate) or either
-// version differs from the session's; 403 (errActorForbidden) unless the row is
-// an admin and pred (when given) holds; errActorBusy on SQLSTATE 55P03. The
-// hash is read only so CanSignIn can test that it exists; it is never compared,
-// logged, returned or copied.
+// session is not current (sessionCurrent, the predicate the middleware and every
+// other recheck use: sign-in ability and both versions); 403 (errActorForbidden)
+// unless the row is an admin and pred (when given) holds; errActorBusy on
+// SQLSTATE 55P03. The hash is read only so sessionCurrent can test that it
+// exists; it is never compared, logged, returned or copied.
 func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) error {
 	var actor models.User
 	err := tx.Raw("SELECT id, status, deleted_at, role, account_type, birth_date, password_hash, session_version, logout_version FROM users WHERE id = ? FOR SHARE NOWAIT", me.ID).Scan(&actor).Error
@@ -427,8 +427,7 @@ func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) 
 		}
 		return err
 	}
-	if actor.ID == 0 || actor.DeletedAt.Valid || !actor.CanSignIn() ||
-		actor.SessionVersion != me.SessionVersion || actor.LogoutVersion != me.LogoutVersion {
+	if !sessionCurrent(&actor, me) {
 		return errSecuritySession
 	}
 	if !policy.IsAdmin(asPerson(&actor)) || (pred != nil && !pred(&actor)) {
@@ -635,7 +634,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			answerRestoreDetected(c)
 			return
 		case errors.Is(err, errSecuritySession):
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
+			jsonStaleSession(c)
 			return
 		case errors.Is(err, errActorForbidden):
 			jsonError(c, http.StatusForbidden, "forbidden")

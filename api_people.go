@@ -109,7 +109,7 @@ func peopleAddActor(tx *gorm.DB, authenticated *models.User) (*models.User, erro
 	if err != nil {
 		return nil, err
 	}
-	if actor == nil || actor.SessionVersion != authenticated.SessionVersion {
+	if !sessionCurrent(actor, authenticated) {
 		return nil, errPeopleAddForbidden
 	}
 	zone, err := churchZoneIn(tx)

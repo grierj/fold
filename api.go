@@ -325,11 +325,11 @@ type eventJSON struct {
 
 // sessionVersion reads the password generation stored at login.
 // A cookie issued before this field existed has no value and counts as 0.
-func sessionVersion(s *sessions.Session) int { return sessionInt(s, "sessionVersion") }
+func sessionVersion(s *sessions.Session) int { return sessionInt(s, sessionVersionKey) }
 
 // logoutVersion reads the logout generation stored at login (M7.2); an
 // older cookie has none and counts as 0, the column's default.
-func logoutVersion(s *sessions.Session) int { return sessionInt(s, "logoutVersion") }
+func logoutVersion(s *sessions.Session) int { return sessionInt(s, sessionLogoutKey) }
 
 func sessionInt(s *sessions.Session, key string) int {
 	switch v := s.Values[key].(type) {
@@ -355,7 +355,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if err != nil {
 		return nil, false
 	}
-	uid, ok := session.Values["userID"].(uint)
+	uid, ok := session.Values[sessionUserKey].(uint)
 	if !ok {
 		return nil, false
 	}
@@ -363,7 +363,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion || logoutVersion(session) != user.LogoutVersion || !user.CanSignIn() {
+	if !sessionCurrent(&user, &models.User{ID: uid, SessionVersion: sessionVersion(session), LogoutVersion: logoutVersion(session)}) {
 		return nil, false
 	}
 	c.Set("sessionUser", &user)

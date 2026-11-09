@@ -107,10 +107,9 @@ func lockHostUsers(tx *gorm.DB, ids []uint) (map[uint]*models.User, error) {
 
 // lockedHostActor rechecks the signed-in admin under lockHostUsers: gone, no
 // longer able to sign in, no longer an admin, or a bumped session epoch is
-// errSecuritySession, which the handler answers 401.
+// errSecuritySession, which the handler answers 401 (adminCurrent).
 func lockedHostActor(locked map[uint]*models.User, actor *models.User) error {
-	u := locked[actor.ID]
-	if u == nil || !u.CanSignIn() || !policy.IsAdmin(asPerson(u)) || u.SessionVersion != actor.SessionVersion {
+	if !adminCurrent(locked[actor.ID], actor) {
 		return errSecuritySession
 	}
 	return nil
@@ -441,22 +440,16 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 	}
 	// A plain read: a share lock here could cycle with the admin's own ungated
 	// change (the gate serializes the rest).
-	var actor models.User
-	if err := tx.First(&actor, me.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, nil, errSecuritySession
-		}
+	actor, err := lockAdminIn(tx, me, actorRead)
+	if err != nil {
 		return nil, nil, nil, err
-	}
-	if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion || actor.LogoutVersion != me.LogoutVersion {
-		return nil, nil, nil, errSecuritySession
 	}
 	seats, err := hostSeatsByEvent(tx, u.ID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	need := func() error {
-		data, err := soleHostEventsFor(tx, &actor, u.ID, seats, time.Now().UTC())
+		data, err := soleHostEventsFor(tx, actor, u.ID, seats, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -470,7 +463,7 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 			return nil, nil, nil, need()
 		}
 	}
-	valid, err := hostSuccessorsValid(tx, &actor, u.ID, seats, soleHosted(seats, u.ID), requested)
+	valid, err := hostSuccessorsValid(tx, actor, u.ID, seats, soleHosted(seats, u.ID), requested)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -482,5 +475,5 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 		locked = append(locked, id)
 	}
 	sort.Slice(locked, func(i, j int) bool { return locked[i] < locked[j] })
-	return requested, locked, &actor, nil
+	return requested, locked, actor, nil
 }

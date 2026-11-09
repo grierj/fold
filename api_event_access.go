@@ -619,7 +619,7 @@ func hostWriteFailed(c *gin.Context, err error) bool {
 	var refusal *hostRefusal
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 	case errors.As(err, &refusal):
 		jsonError(c, refusal.status, refusal.msg)
 	case errors.Is(err, errEventGone):
@@ -648,15 +648,8 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		// A plain read under the gate: the actor's own ungated registration
 		// change could hold their row while waiting on a row this transaction
 		// already locked, so a share lock here could cycle with it.
-		var actor models.User
-		if err := tx.First(&actor, me.ID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errSecuritySession
-			}
+		if _, err := lockAdminIn(tx, me, actorRead); err != nil {
 			return err
-		}
-		if !actor.CanSignIn() || !policy.IsAdmin(asPerson(&actor)) || actor.SessionVersion != me.SessionVersion {
-			return errSecuritySession
 		}
 		var seats []policy.HostSeat
 		if err := tx.Raw(`SELECT eh.user_id, (u.deleted_at IS NOT NULL) AS deleted
