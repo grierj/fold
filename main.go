@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"fmt"
@@ -10,10 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
-	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"fold/internal/httpx"
+	"fold/internal/images"
 	"fold/internal/mail"
 	"fold/internal/providers"
 	"fold/internal/push"
@@ -32,7 +30,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// App wires together config, database, and session store.
+// App is what the handlers share: the database, session store, configuration,
+// blob store and mailer, plus the state of the few features that keep some
+// (push, the restore fence, the admin attempt ledger).
 type App struct {
 	DB      *gorm.DB
 	Store   *sessions.CookieStore
@@ -40,18 +40,14 @@ type App struct {
 	Uploads storage.Store // blob store for avatars and group covers
 	Mailer  mail.Sender   // transactional email (C6, M1.2)
 
-	// seriesClock is a per-App clock seam for lock-boundary tests. Production
-	// leaves it nil and reads the current UTC time.
-	seriesClock func() time.Time
-
-	// calendarClock fixes DEC-77 window boundaries in handler tests. Production
-	// leaves it nil and reads the current UTC time.
-	calendarClock func() time.Time
-
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
 	setupMu   sync.RWMutex
 	setupDone bool
+
+	// refusalRoutes maps "METHOD /route/template" to the refusalKind its CSRF and
+	// session refusals are audited as (auditRefusals, api_contact.go).
+	refusalRoutes sync.Map
 
 	// Push sends web push (M3.13). nil builds the default from Config on
 	// first use (pushClient); tests point its HTTP transport at a fake.
@@ -59,14 +55,10 @@ type App struct {
 	pushOnce sync.Once
 	// vapid caches the decrypted VAPID key (push_keys.go).
 	vapid vapidCache
-	// pushRender overrides renderPush in tests (a rendering past the
-	// payload cap); nil uses the stored push text.
-	pushRender func(*models.Notification) (push.Notification, bool)
-	// pushClock and pushWindow fix the time and the quiet hours in push
-	// tests (DEC-126). Production leaves them unset: the current time and
-	// push.DefaultWindow.
-	pushClock  func() time.Time
-	pushWindow *push.Window
+	// clock replaces the wall clock in tests (a.now). Production leaves it nil.
+	clock func() time.Time
+	// hooks are the test seams, all nil in production (test_hooks.go).
+	hooks testHooks
 
 	// fence is the restore barrier (restore_fence.go) and attempts the admin
 	// operation ledger (admin_operation_attempts.go). Both are ready at their
@@ -77,32 +69,6 @@ type App struct {
 	// requestRestart asks serve to shut down and exit non-zero once a restore
 	// is detected. serve sets it; tests set a recorder; nil does nothing.
 	requestRestart func()
-
-	// Test seams, all nil in production (T07B-1b). A nil seam sends no
-	// statement and takes no time.
-	//
-	// restoreAckPause runs inside acknowledgeRestoreTicket before it raises the
-	// floor. attemptClock replaces the monotonic time since the process
-	// started. settleBeforeTx runs before settle's first transaction;
-	// settleBeforeFence and settleAfterFence run inside its seal, around the
-	// ledger transition, given the open transaction. deleteBeforeSeal runs in
-	// the deletion's seal just before currentAdminIn, given the open
-	// transaction; deleteBeforeRetry runs between a busy attempt's rollback and
-	// the next attempt, with no transaction open. conversionAfterUserLocks runs
-	// in acceptHouseholdConversion right after its users statement.
-	// readBeforeSeal runs in a reason-review page transaction between its view
-	// audit and the actor seal, given the open transaction (T07B-2b).
-	// sealAttempts counts seal entries of the deletion and settle.
-	restoreAckPause          func()
-	attemptClock             func() time.Duration
-	settleBeforeTx           func()
-	settleBeforeFence        func(*gorm.DB)
-	settleAfterFence         func(*gorm.DB)
-	deleteBeforeSeal         func(*gorm.DB)
-	deleteBeforeRetry        func()
-	readBeforeSeal           func(*gorm.DB)
-	conversionAfterUserLocks func(*gorm.DB)
-	sealAttempts             *atomic.Int64
 }
 
 const sessionName = "fold-session"
@@ -126,13 +92,6 @@ func serve(stderr io.Writer) int {
 		return 1
 	}
 
-	// Distroless images have no shell, so log the working directory at
-	// startup: template/static paths are relative and this is the only
-	// way to see what they resolve against.
-	if wd, err := os.Getwd(); err == nil {
-		log.Printf("Working directory: %s", wd)
-	}
-
 	if cfg.IsDev() {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -145,16 +104,22 @@ func serve(stderr io.Writer) int {
 		return 1
 	}
 
-	uploads, err := storage.NewLocalStore(cfg.UploadDir, "/uploads")
+	uploads, err := storage.NewLocalStore(cfg.UploadDir, uploadsURLPrefix)
 	if err != nil {
-		log.Fatalf("Upload storage failed: %v", err)
+		fmt.Fprintln(stderr, "fold: upload storage:", err)
+		return 1
+	}
+	mailer, err := chooseMailer(cfg, db)
+	if err != nil {
+		fmt.Fprintln(stderr, "fold: email:", err)
+		return 1
 	}
 
 	store := newSessionStore(cfg.SessionSecret, cfg.CookieSecure)
 
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
-		Mailer: newMailer(cfg, db),
+		Mailer: mailer,
 	}
 	// The signal context exists this early so a detected database restore can
 	// end the process (T07B-1b): requestRestart cancels it, and serve returns
@@ -260,27 +225,27 @@ func newHTTPServer(cfg Config, handler http.Handler) *http.Server {
 	}
 }
 
-// newMailer picks the email adapter (5.6, M3.2) from the environment: see
-// mail.Choose. Without one, sends fail loudly instead of silently dropping
-// password resets. A provider that can't be built stops the server.
-func newMailer(cfg Config, db *gorm.DB) mail.Sender {
-	s, err := chooseMailer(cfg, db, os.Getenv)
-	if err != nil {
-		log.Fatalf("email: %v", err)
-	}
-	return s
-}
-
-func chooseMailer(cfg Config, db *gorm.DB, get func(string) string) (mail.Sender, error) {
-	// SMTP settings come from Config, which has already checked them.
+// chooseMailer picks the email adapter (5.6, M3.2): see mail.Choose. Without
+// one, sends fail loudly instead of silently dropping password resets. A
+// provider that can't be built is an error, and serve stops. Every setting
+// comes from Config, which has already checked it.
+func chooseMailer(cfg Config, db *gorm.DB) (mail.Sender, error) {
 	settings := func(k string) string {
 		switch k {
+		case "FOLD_EMAIL_PROVIDER":
+			return cfg.EmailProvider
 		case "FOLD_SMTP_URL":
 			return cfg.SMTPURL
 		case "FOLD_SMTP_ALLOW_INSECURE":
 			return strconv.FormatBool(cfg.SMTPAllowInsecure)
+		case "FOLD_POSTMARK_SERVER_TOKEN":
+			return cfg.PostmarkServerToken
+		case "FOLD_POSTMARK_TRANSACTIONAL_STREAM":
+			return cfg.PostmarkTransactionalStream
+		case "FOLD_POSTMARK_BROADCAST_STREAM":
+			return cfg.PostmarkBroadcastStream
 		}
-		return get(k)
+		return ""
 	}
 	name := mail.Choose(settings, cfg.IsDev())
 	if name == "" {
@@ -326,10 +291,12 @@ func (a *App) setupRouter() *gin.Engine {
 	r.RedirectTrailingSlash = false
 	// Stamp the request before anything reads its body: the CSRF check parses a
 	// multipart form, so a slow upload is already read when a handler starts.
-	r.Use(stampRequestStart(), accessLog(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
+	r.Use(stampRequestStart(), httpx.AccessLog(), gin.Recovery(), httpx.SecurityHeaders(a.Config.CookieSecure))
 	// Cap every request body before anything parses it (the CSRF check
 	// reads form fields, and Gin spools big multipart bodies to disk).
-	r.Use(limitBody(maxRequestBytes))
+	r.Use(httpx.LimitBody(maxRequestBytes, func(c *gin.Context) {
+		c.JSON(errRequestTooLarge.Status, errRequestTooLarge.body())
+	}))
 	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
 	// validated the list; an empty one trusts nobody.
 	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {
@@ -337,21 +304,28 @@ func (a *App) setupRouter() *gin.Engine {
 		_ = r.SetTrustedProxies(nil)
 	}
 
-	css := builtStylesheet(distFS)
-	r.SetFuncMap(template.FuncMap{
-		"split":      strings.Split,
-		"stylesheet": func() string { return css },
-	})
-	r.LoadHTMLGlob("templates/*.html")
+	tmpl, err := pageTemplates()
+	if err != nil {
+		// The files are embedded and parsed by TestPageTemplatesParse, so this
+		// is a build defect, not a runtime condition.
+		panic(fmt.Errorf("parse embedded templates: %w", err))
+	}
+	r.SetHTMLTemplate(tmpl)
 
 	// User-uploaded assets (avatars, group covers). Served with
 	// X-Content-Type-Options: nosniff; uploads are validated as images
 	// on the way in.
-	r.GET("/uploads/*filepath", a.serveUpload)
+	r.GET(uploadsURLPrefix+"/*filepath", a.serveUpload)
 
 	// Registered before the setup redirect so a database ping still
 	// answers while the wizard is waiting for the first admin.
-	r.GET("/healthz", a.healthz)
+	r.GET(pathHealthz, httpx.Healthz(func(ctx context.Context) error {
+		sqlDB, err := a.DB.DB()
+		if err != nil {
+			return err
+		}
+		return sqlDB.PingContext(ctx)
+	}))
 	r.GET("/help/members", serveMemberHelp)
 
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
@@ -370,9 +344,9 @@ func (a *App) setupRouter() *gin.Engine {
 	r.Use(a.csrfMiddleware())
 
 	// Setup wizard (only reachable when no users exist; server-rendered).
-	r.GET("/setup", a.showSetup)
-	r.POST("/setup", a.handleSetup)
-	r.POST("/setup/unlock", a.unlockSetup)
+	r.GET(pathSetup, a.showSetup)
+	r.POST(pathSetup, a.handleSetup)
+	r.POST(pathSetupUnlock, a.unlockSetup)
 
 	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
@@ -386,16 +360,29 @@ func (a *App) setupRouter() *gin.Engine {
 	a.registerCalendarFeeds(r)
 
 	// The Home Screen app's manifest carries the church's name (M3.13c1).
-	r.GET("/manifest.webmanifest", a.serveManifest)
+	r.GET("/manifest.webmanifest", httpx.Manifest(a.siteName, defaultSiteName))
 
 	// Embedded SPA for everything else, including the service worker.
-	r.NoRoute(a.serveSPA())
+	r.NoRoute(httpx.ServeSPA(distSub(), a.emailBaseURL(), jsonError))
 
 	return r
 }
 
 //go:embed web/dist
 var distFS embed.FS
+
+//go:embed templates/*.html
+var templatesFS embed.FS
+
+// pageTemplates parses the server-rendered pages (setup wizard, dev outbox)
+// from the binary once; every router shares the result.
+var pageTemplates = sync.OnceValues(func() (*template.Template, error) {
+	css := httpx.Stylesheet(distSub())
+	return template.New("").Funcs(template.FuncMap{
+		"split":      strings.Split,
+		"stylesheet": func() string { return css },
+	}).ParseFS(templatesFS, "templates/*.html")
+})
 
 //go:embed docs/MEMBERS.md
 var memberHelp []byte
@@ -405,176 +392,14 @@ func serveMemberHelp(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", memberHelp)
 }
 
-// stylesheetRe finds the CSS bundle Vite links from index.html.
-var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)
-
-var (
-	eventPageRe   = regexp.MustCompile(`^/events/[0-9]+$`)
-	closingHeadRe = regexp.MustCompile(`(?i)</head>`)
-)
-
-const defaultOGImagePath = "/assets/brand/og-default-1200x630.png"
-
-// builtStylesheet returns the path of the SPA's CSS bundle, which the
-// server-rendered pages (setup, dev outbox) share so they use the same
-// tokens and font. It is empty when web/dist is not built; those pages
-// then render unstyled.
-func builtStylesheet(fsys fs.FS) string {
-	b, err := fs.ReadFile(fsys, "web/dist/index.html")
-	if err != nil {
-		return ""
-	}
-	m := stylesheetRe.FindSubmatch(b)
-	if m == nil {
-		return ""
-	}
-	return string(m[1])
-}
-
-// serveSPA serves the embedded frontend bundle, falling back to index.html
-// for client-side routes. API paths get a JSON 404 instead.
-func (a *App) serveSPA() gin.HandlerFunc {
+// distSub is the built SPA bundle, rooted at index.html; nil when the embedded
+// directory has no bundle.
+func distSub() fs.FS {
 	sub, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
-		sub = nil
+		return nil
 	}
-	return serveSPAFrom(sub, a.emailBaseURL())
-}
-
-// serveSPAFrom serves a built bundle: web/dist, or a test's files.
-func serveSPAFrom(sub fs.FS, origin string) gin.HandlerFunc {
-	built := sub != nil
-	if built {
-		if _, err := fs.Stat(sub, "index.html"); err != nil {
-			built = false
-		}
-	}
-	if !built {
-		log.Println("WARNING: web/dist is empty — run `npm run build` in web/ to build the frontend")
-	}
-	return func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.Header("Cache-Control", "no-store")
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		if !built {
-			c.String(http.StatusServiceUnavailable,
-				"Frontend not built. Run `npm run build` in web/ and restart.")
-			return
-		}
-		servedPath := strings.TrimPrefix(c.Request.URL.Path, "/")
-		if servedPath == "" {
-			servedPath = "index.html"
-		}
-		if _, err := fs.Stat(sub, servedPath); err != nil {
-			if servedPath == serviceWorkerPath {
-				// Never the shell in the worker's place: registering
-				// HTML as a script fails in a confusing way.
-				jsonError(c, http.StatusNotFound, "not found")
-				return
-			}
-			if path.Ext(path.Base(servedPath)) != "" {
-				// A missing static asset must not receive the SPA shell.
-				jsonError(c, http.StatusNotFound, "not found")
-				return
-			}
-			// Client-side route — let the SPA router handle it.
-			servedPath = "index.html"
-		}
-		// ServeContent, not http.FileServer: FileServer 301-redirects
-		// index.html serves to "./", which breaks the SPA fallback.
-		data, err := fs.ReadFile(sub, servedPath)
-		if err != nil {
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		info, err := fs.Stat(sub, servedPath)
-		if err != nil || info.IsDir() {
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		if servedPath == "index.html" {
-			// no-store: always fetch the shell fresh (a rebuilt image is what
-			// runs), and keep the page out of the back/forward cache, so going
-			// back after logout never shows the previous session's screen.
-			c.Header("Cache-Control", "no-store")
-			if eventPageRe.MatchString(c.Request.URL.Path) {
-				data = eventImageMeta(data, origin+defaultOGImagePath)
-			}
-		} else if servedPath == serviceWorkerPath {
-			// no-cache: the browser checks for a new worker on every
-			// registration and update instead of guessing a lifetime for
-			// a root file with no header (research 2.3).
-			c.Header("Cache-Control", "no-cache")
-		} else if strings.HasPrefix(servedPath, "assets/") {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-		}
-		http.ServeContent(c.Writer, c.Request, servedPath, info.ModTime(), bytes.NewReader(data))
-	}
-}
-
-// eventImageMeta adds the default social image to a public event shell.
-func eventImageMeta(index []byte, imageURL string) []byte {
-	head := closingHeadRe.FindIndex(index)
-	if head == nil {
-		return index
-	}
-	escapedURL := template.HTMLEscapeString(imageURL)
-	meta := []byte(fmt.Sprintf(`<meta property="og:image" content="%s">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="%s">
-`, escapedURL, escapedURL))
-	withMeta := make([]byte, 0, len(index)+len(meta))
-	withMeta = append(withMeta, index[:head[0]]...)
-	withMeta = append(withMeta, meta...)
-	withMeta = append(withMeta, index[head[0]:]...)
-	return withMeta
-}
-
-// contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
-// and styles come only from this origin; React sets focal points through
-// the CSSOM, which CSP allows without 'unsafe-inline'. Images may be data:
-// and blob: (upload previews) or any https URL (group covers given by URL);
-// tighten img-src when uploads are the only source (M4.7). The service
-// worker and the manifest come only from this origin too (M3.13c1); both
-// already fell back to 'self', and naming them keeps it that way.
-const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
-	"img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
-	"worker-src 'self'; manifest-src 'self'; " +
-	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
-
-// securityHeaders sets the headers on every response, so they hold behind
-// any proxy. HSTS goes out only when cookies are Secure, which means the
-// site is served over HTTPS (never in dev).
-func securityHeaders(hsts bool) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		h := c.Writer.Header()
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "same-origin")
-		h.Set("X-Frame-Options", "SAMEORIGIN")
-		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if hsts {
-			h.Set("Strict-Transport-Security", "max-age=31536000")
-		}
-		c.Next()
-	}
-}
-
-func (a *App) healthz(c *gin.Context) {
-	sqlDB, err := a.DB.DB()
-	if err != nil {
-		c.Status(http.StatusServiceUnavailable)
-		return
-	}
-	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
-		c.Status(http.StatusServiceUnavailable)
-		return
-	}
-	c.Status(http.StatusOK)
+	return sub
 }
 
 // setupComplete reports whether the wizard has already created an account.
@@ -592,12 +417,17 @@ func (a *App) setupComplete() (bool, error) {
 		return false, err
 	}
 	if n > 0 {
-		a.setupMu.Lock()
-		a.setupDone = true
-		a.setupMu.Unlock()
+		a.markSetupDone()
 		return true, nil
 	}
 	return false, nil
+}
+
+// markSetupDone records that an account exists, for the life of the process.
+func (a *App) markSetupDone() {
+	a.setupMu.Lock()
+	a.setupDone = true
+	a.setupMu.Unlock()
 }
 
 // html renders a template, injecting the CSRF field and site name.
@@ -610,12 +440,20 @@ func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 	c.HTML(code, name, data)
 }
 
+// The paths the first-run gate lets through: the wizard itself, the database
+// probe, and (below) the built assets the wizard page links.
+const (
+	pathSetup       = "/setup"
+	pathSetupUnlock = "/setup/unlock"
+	pathHealthz     = "/healthz"
+)
+
 // setupRequired redirects everything to the setup wizard until an admin
 // account exists. This replaces the old hardcoded seed users.
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || p == "/setup/unlock" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
+		if p == pathSetup || p == pathSetupUnlock || p == pathHealthz || strings.HasPrefix(p, "/assets/") {
 			c.Next()
 			return
 		}
@@ -626,7 +464,7 @@ func (a *App) setupRequired() gin.HandlerFunc {
 			return
 		}
 		if !ready {
-			c.Redirect(http.StatusSeeOther, "/setup")
+			c.Redirect(http.StatusSeeOther, pathSetup)
 			c.Abort()
 			return
 		}
@@ -693,26 +531,11 @@ func (a *App) handleSetup(c *gin.Context) {
 		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(nil, "We couldn't create your account. Try again."))
 		return
 	}
-	a.setupMu.Lock()
-	a.setupDone = true
-	a.setupMu.Unlock()
+	a.markSetupDone()
 	log.Printf("Setup complete: site=%q timezone=%q", in.SiteName, in.Timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }
 
 // maxRequestBytes is the largest request body accepted: one image upload
 // plus room for the multipart envelope.
-const maxRequestBytes = maxUploadBytes + 1<<20
-
-// limitBody makes reads past n fail, so oversized bodies are refused
-// instead of buffered.
-func limitBody(n int64) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.ContentLength > n {
-			c.AbortWithStatusJSON(errRequestTooLarge.Status, errRequestTooLarge.body())
-			return
-		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)
-		c.Next()
-	}
-}
+const maxRequestBytes = images.MaxUploadBytes + 1<<20

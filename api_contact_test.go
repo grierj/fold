@@ -1122,3 +1122,105 @@ func TestContactRequestNoticeSerializesWithRealAdminDelete(t *testing.T) {
 		})
 	}
 }
+
+// Every route whose CSRF and authentication refusals are audited, with the
+// audit row each writes. The list is the route table's own (auditRefusals);
+// this test drives each route without a session and without a CSRF token.
+func TestRefusalAuditCoversEveryAuditedRoute(t *testing.T) {
+	type route struct {
+		method, path, template string
+		action, target         string
+	}
+	contact := func(method, path, template string) route {
+		return route{method, path, template, audit.ContactRefused, "contact_endpoint"}
+	}
+	add := func(method, path, template string) route {
+		return route{method, path, template, audit.AddRefused, "add_endpoint"}
+	}
+	occ := func(method, path, template string) route {
+		return route{method, path, template, audit.OccurrenceRefused, "occurrence_endpoint"}
+	}
+	routes := []route{
+		occ("POST", "/api/v1/events/5/registrations/add", "/api/v1/events/:id/registrations/add"),
+		occ("POST", "/api/v1/events/5/dates/2030-01-01/decline", "/api/v1/events/:id/dates/:date/decline"),
+		occ("POST", "/api/v1/events/5/dates/2030-01-01/block", "/api/v1/events/:id/dates/:date/block"),
+		occ("PUT", "/api/v1/events/5/dates/2030-01-01/registration", "/api/v1/events/:id/dates/:date/registration"),
+		add("POST", "/api/v1/add-requests", "/api/v1/add-requests"),
+		add("POST", "/api/v1/add-requests/5/decision", "/api/v1/add-requests/:id/decision"),
+		add("POST", "/api/v1/add-requests/5/withdraw", "/api/v1/add-requests/:id/withdraw"),
+		add("POST", "/api/v1/add-requests/5/complete", "/api/v1/add-requests/:id/complete"),
+		contact("POST", "/api/v1/contact-requests", "/api/v1/contact-requests"),
+		contact("POST", "/api/v1/contact-requests/5/decision", "/api/v1/contact-requests/:id/decision"),
+		contact("POST", "/api/v1/contact-requests/5/withdraw", "/api/v1/contact-requests/:id/withdraw"),
+		contact("POST", "/api/v1/contact-grants/5/revoke", "/api/v1/contact-grants/:id/revoke"),
+		contact("POST", "/api/v1/contact-grants/5/reveal", "/api/v1/contact-grants/:id/reveal"),
+	}
+	app := testApp(t)
+	member := newTestUser(t, app, "refused", "password1234", models.RoleMember)
+
+	read := func(r route, reason string, actor *uint) {
+		t.Helper()
+		var rows []models.AuditLog
+		if err := app.DB.Order("id").Find(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		var got []models.AuditLog
+		for _, row := range rows {
+			if row.Action == r.action {
+				got = append(got, row)
+			}
+		}
+		if len(got) != 1 {
+			t.Fatalf("%s %s (%s): %d %s rows, want 1", r.method, r.template, reason, len(got), r.action)
+		}
+		row := got[0]
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(row.MetaJSON), &meta); err != nil {
+			t.Fatal(err)
+		}
+		if row.TargetType != r.target || meta["reason"] != reason || meta["method"] != r.method || meta["route"] != r.template {
+			t.Errorf("%s %s (%s): target %q meta %v", r.method, r.template, reason, row.TargetType, meta)
+		}
+		if len(meta) != 3 {
+			t.Errorf("%s %s: meta carries more than reason, method and route: %v", r.method, r.template, meta)
+		}
+		if (row.ActorID == nil) != (actor == nil) || (actor != nil && *row.ActorID != *actor) {
+			t.Errorf("%s %s (%s): actor %v, want %v", r.method, r.template, reason, row.ActorID, actor)
+		}
+		if err := app.DB.Where("1 = 1").Delete(&models.AuditLog{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range routes {
+		// Signed out with a valid CSRF token: the session refusal.
+		anon := newAPIClient(t, app)
+		anon.fetchCSRF()
+		if w := anon.do(r.method, r.path, map[string]any{}, true); w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s signed out: %d", r.method, r.template, w.Code)
+		}
+		read(r, "authentication", nil)
+
+		// Signed in with no CSRF token: the CSRF refusal, attributed to the session.
+		in := loginAPI(t, app, "refused", "password1234")
+		if w := in.do(r.method, r.path, map[string]any{}, false); w.Code != http.StatusForbidden {
+			t.Fatalf("%s %s without a token: %d", r.method, r.template, w.Code)
+		}
+		read(r, "csrf", &member.ID)
+		app.DB.Where("1 = 1").Delete(&models.AuditLog{})
+	}
+
+	// A route that is not listed writes nothing, signed out or without a token.
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	anon.do("POST", "/api/v1/events/5/hosts", map[string]any{}, true)
+	anon.do("POST", "/api/v1/events/5/cancel", map[string]any{}, false)
+	if n := auditCount(t, app, audit.ContactRefused) + auditCount(t, app, audit.AddRefused) + auditCount(t, app, audit.OccurrenceRefused); n != 0 {
+		t.Fatalf("%d refusal rows for routes that are not audited", n)
+	}
+	// A listed path read with GET is not a write: no row either.
+	in := loginAPI(t, app, "refused", "password1234")
+	in.do("GET", "/api/v1/contact-requests", nil, false)
+	if n := auditCount(t, app, audit.ContactRefused); n != 0 {
+		t.Fatalf("GET wrote %d refusal rows", n)
+	}
+}

@@ -94,7 +94,7 @@ var (
 
 // csrfFail writes JSON for the API and plain text for the setup form.
 func (a *App) csrfFail(c *gin.Context, refusal *apiError) {
-	if err := a.auditContactRejection(c, "csrf"); err != nil {
+	if err := a.auditRefusal(c, "csrf"); err != nil {
 		refusal = errCSRFContact
 	}
 	switch {

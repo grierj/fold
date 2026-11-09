@@ -32,9 +32,9 @@ var sealForbiddenCalls = map[string]bool{
 
 // sealAfterTransition are the only names that may follow the ledger
 // transition inside settle's seal: plain reads of the receipt and the subject,
-// the seam and the facts being filled in.
+// the seam (a.hooks.settleAfterFence: both names) and the facts being filled in.
 var sealAfterTransition = map[string]bool{
-	"Raw": true, "Scan": true, "Error": true, "settleAfterFence": true,
+	"Raw": true, "Scan": true, "Error": true, "hooks": true, "settleAfterFence": true,
 	"receipt": true, "subjectDeleted": true, "state": true,
 }
 

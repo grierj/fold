@@ -1050,3 +1050,128 @@ func memberCount(db *gorm.DB, groupID uint) int64 {
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).Count(&n)
 	return n
 }
+
+type groupSummaryJSON struct {
+	ID                uint       `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	Tags              []string   `json:"tags"`
+	ImageURL          string     `json:"imageUrl"`
+	CoverFocalX       float64    `json:"coverFocalX"`
+	CoverFocalY       float64    `json:"coverFocalY"`
+	Location          string     `json:"location"`
+	LeaderName        string     `json:"leaderName"`
+	MemberCount       int64      `json:"memberCount"`
+	NextEventAt       *time.Time `json:"nextEventAt"`
+	Status            string     `json:"status"`
+	LeaderID          uint       `json:"leaderId"`
+	Visibility        string     `json:"visibility"` // public | private | invite_only
+	DeletionRequested bool       `json:"deletionRequested"`
+	// MemberLimit caps active members (DEC-39); null means unlimited.
+	MemberLimit *int `json:"memberLimit"`
+	// MyRole is the viewer's own active role, "leader" or "member", on the
+	// directory and My groups lists only (DEC-94); absent otherwise.
+	MyRole string `json:"myRole,omitempty"`
+}
+
+type memberJSON struct {
+	Email        *string `json:"email,omitempty"`
+	Phone        *string `json:"phone,omitempty"`
+	AccountType  string  `json:"accountType,omitempty"`
+	ID           uint    `json:"id"`
+	Name         string  `json:"name"`
+	AvatarURL    string  `json:"avatarUrl"`
+	AvatarFocalX float64 `json:"avatarFocalX"`
+	AvatarFocalY float64 `json:"avatarFocalY"`
+	Role         string  `json:"role"`
+	JoinedAt     string  `json:"joinedAt"`
+	// Admin marks church admins so leaders see the label and no Remove button
+	// (DEC-38); the server refuses such removals anyway (DEC-35).
+	Admin bool `json:"admin"`
+}
+
+// toMemberJSON renders a membership's user for the roster.
+func (a *App) toMemberJSON(m *models.Membership) memberJSON {
+	avatarURL := ""
+	if m.User.AvatarKey != "" && m.User.AccountType != models.AccountTeen {
+		avatarURL = a.Uploads.URL(m.User.AvatarKey)
+	}
+	return memberJSON{
+		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
+		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
+		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
+		Admin: asPerson(&m.User).Admin, AccountType: m.User.AccountType,
+	}
+}
+
+// relOf loads u's active membership in a group.
+func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
+	if u == nil {
+		return policy.Rel{}
+	}
+	return relIn(a.DB, u.ID, groupID)
+}
+
+func splitTags(s string) []string {
+	out := []string{}
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func joinTags(tags []string) string {
+	var clean []string
+	for _, t := range tags {
+		if t = strings.TrimSpace(t); t != "" {
+			clean = append(clean, t)
+		}
+	}
+	return strings.Join(clean, ",")
+}
+
+// Text caps keep a single request from storing an unbounded row.
+// Profile name/display name stay at 100 (see api_profile.go).
+const (
+	maxGroupNameLen   = 200
+	maxLocationLen    = 300
+	maxDescriptionLen = 5000
+	maxTagsLen        = 500
+)
+
+func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
+	return policy.CanSeeGroup(asPerson(u), asGroup(g), a.relOf(u, g.ID))
+}
+
+// loadGroupFor loads group id for u: 404 when it doesn't exist or u can't
+// see it (invite-only groups never answer 403 to outsiders).
+func (a *App) loadGroupFor(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
+	u := apiUser(c)
+	var g models.Group
+	if err := a.DB.First(&g, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return nil, policy.Rel{}, false
+	}
+	rel := a.relOf(u, g.ID)
+	if !policy.CanSeeGroup(asPerson(u), asGroup(&g), rel) {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return nil, policy.Rel{}, false
+	}
+	return &g, rel, true
+}
+
+// loadManagedGroupID is loadGroupFor plus CanManageGroup (403 when the
+// group is visible but u doesn't lead it).
+func (a *App) loadManagedGroupID(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
+	g, rel, ok := a.loadGroupFor(c, id)
+	if !ok {
+		return nil, rel, false
+	}
+	if !policy.CanManageGroup(asPerson(apiUser(c)), rel) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return nil, rel, false
+	}
+	return g, rel, true
+}

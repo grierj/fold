@@ -108,7 +108,7 @@ func useFakePush(t *testing.T, app *App) *fakePush {
 	f := &fakePush{status: map[string]int{}, err: map[string]bool{}, sent: map[string]int{}}
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
 	open := push.Window{StartHour: 0, EndHour: 24} // never waits
-	app.pushWindow = &open
+	app.hooks.pushWindow = &open
 	return f
 }
 
@@ -438,7 +438,7 @@ func TestPushDeliverFailures(t *testing.T) {
 	}
 	// A rendering past the cap is refused before any send.
 	app, f := pushTestApp(t)
-	app.pushRender = func(*models.Notification) (push.Notification, bool) {
+	app.hooks.pushRender = func(*models.Notification) (push.Notification, bool) {
 		return push.Notification{Title: strings.Repeat("a", push.MaxPlaintext)}, true
 	}
 	u := pushMember(t, app, "pat")
@@ -824,8 +824,8 @@ var denverZone = func() *time.Location {
 func quietHours(app *App) *quietClock {
 	c := &quietClock{at: time.Date(2030, 1, 15, 23, 0, 0, 0, denverZone)}
 	w := push.DefaultWindow
-	app.pushWindow = &w
-	app.pushClock = func() time.Time { return c.at }
+	app.hooks.pushWindow = &w
+	app.clock = func() time.Time { return c.at }
 	return c
 }
 

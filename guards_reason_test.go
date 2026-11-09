@@ -96,7 +96,7 @@ func TestReasonPageSealIsLast(t *testing.T) {
 		{"a statement after the seal", with(seal, "\t\tif err := currentAdminIn(tx, me, pred); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn tx.Exec(\"SELECT 1\").Error")},
 		{"a locking statement after the seam", with(seal, "\t\ttx.Exec(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
 		{"a second seal call", with("// --- the scanner -", "func (a *App) otherPage(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- the scanner -")},
-		{"the seam moved", with("\t\tif a.readBeforeSeal != nil {\n\t\t\ta.readBeforeSeal(tx)\n\t\t}\n", "")},
+		{"the seam moved", with("\t\tif a.hooks.readBeforeSeal != nil {\n\t\t\ta.hooks.readBeforeSeal(tx)\n\t\t}\n", "")},
 	} {
 		if bad := reasonPageSealProblems(tc.src); len(bad) == 0 {
 			t.Errorf("%s: the guard accepted it", tc.name)

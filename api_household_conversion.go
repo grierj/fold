@@ -478,7 +478,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := tx.First(&person, *initial.HouseholdPersonID).Error; err != nil {
 				return errTokenInvalid
 			}
-			locked, _, err := lockConversionParticipants(tx, initial, &person, a.conversionAfterUserLocks)
+			locked, _, err := lockConversionParticipants(tx, initial, &person, a.hooks.conversionAfterUserLocks)
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errTokenInvalid
 			}

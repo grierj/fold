@@ -4,31 +4,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"fold/internal/images"
 	"fold/internal/policy"
 	"fold/storage"
 
 	"github.com/gin-gonic/gin"
 )
-
-// maxUploadBytes caps a single image upload (avatars, group covers).
-const maxUploadBytes = 5 << 20 // 5MB
-
-// allowedImageTypes maps sniffed MIME types to canonical extensions. The
-// client-supplied Content-Type is never trusted; uploads are sniffed.
-var allowedImageTypes = map[string]string{
-	"image/jpeg": ".jpg",
-	"image/png":  ".png",
-	"image/gif":  ".gif",
-}
-
-// apiUpdateMe updates the current user's profile. Fields are pointers so
 
 // clampFocal keeps a focal-point percentage in the 0-100 range.
 func clampFocal(v float64) float64 {
@@ -41,67 +28,43 @@ func clampFocal(v float64) float64 {
 	return v
 }
 
-// readImageUpload validates a multipart image upload: real byte-count size
-// limit and content sniffing. Returns a temp file (caller closes/removes
-// it), the canonical extension, and the MIME type.
-func readImageUpload(c *gin.Context, field string) (*os.File, string, string, error) {
-	refuse := func(err error) (*os.File, string, string, error) {
-		return nil, "", "", err
+// The API's answers for an image it will not take. imageRefusal is the one place
+// images' plain refusals become these (internal/images knows nothing of the API).
+var (
+	errImageTooLarge   = apiErr(http.StatusBadRequest, "image_too_large", "that image is too large to process")
+	errImageUnreadable = apiErr(http.StatusBadRequest, "file_unreadable", "cannot read file")
+	errImageWebP       = apiErr(http.StatusBadRequest, "image_unsupported", "WebP images are not supported; use a JPEG or PNG")
+)
+
+// imageRefusal maps an images.ReadUpload error to its declared answer; anything
+// it does not name is a server fault (errUploadFailed).
+func imageRefusal(err error) error {
+	switch {
+	case errors.Is(err, images.ErrFileSize):
+		return errFileTooLarge
+	case errors.Is(err, images.ErrEmpty):
+		return errEmptyFile
+	case errors.Is(err, images.ErrNotAllowed):
+		return errFileType
+	case errors.Is(err, images.ErrWebP):
+		return errImageWebP
+	case errors.Is(err, images.ErrTooLarge):
+		return errImageTooLarge
+	case errors.Is(err, images.ErrUnreadable):
+		return errImageUnreadable
 	}
+	return errUploadFailed
+}
+
+// readImageUpload reads the multipart image in field through images.ReadUpload.
+func readImageUpload(c *gin.Context, field string) (*os.File, string, string, error) {
 	fh, err := c.FormFile(field)
 	if err != nil {
-		return refuse(errMissingFile)
+		return nil, "", "", errMissingFile
 	}
-	src, err := fh.Open()
+	tmp, ext, mime, err := images.ReadUpload(fh)
 	if err != nil {
-		return refuse(errImageUnreadable)
-	}
-	defer src.Close()
-
-	tmp, err := os.CreateTemp("", "upload-*")
-	if err != nil {
-		return refuse(errUploadFailed)
-	}
-	cleanup := func() { tmp.Close(); os.Remove(tmp.Name()) }
-	// Enforce the real byte count, not the client-declared size.
-	n, err := io.Copy(tmp, io.LimitReader(src, maxUploadBytes+1))
-	if err != nil {
-		cleanup()
-		return refuse(errUploadFailed)
-	}
-	if n > maxUploadBytes {
-		cleanup()
-		return refuse(errFileTooLarge)
-	}
-	if n == 0 {
-		cleanup()
-		return refuse(errEmptyFile)
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return refuse(errUploadFailed)
-	}
-	head := make([]byte, 512)
-	rn, _ := io.ReadFull(tmp, head)
-	mime := http.DetectContentType(head[:rn])
-	if mime == "image/webp" {
-		// The standard library can neither read nor write WebP, so its metadata
-		// could not be stripped. Refuse it rather than store it as it came.
-		cleanup()
-		return nil, "", "", errImageWebP
-	}
-	if _, ok := allowedImageTypes[mime]; !ok {
-		cleanup()
-		return refuse(errFileType)
-	}
-	// Re-encode so no metadata (EXIF, text chunks, comments) is stored.
-	ext, mime, err := normalizeImage(tmp, mime)
-	if err != nil {
-		cleanup()
-		if errors.Is(err, errImageTooLarge) || errors.Is(err, errImageUnreadable) {
-			return nil, "", "", err
-		}
-		return refuse(errUploadFailed)
+		return nil, "", "", imageRefusal(err)
 	}
 	return tmp, ext, mime, nil
 }
@@ -168,15 +131,18 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// uploadsURLPrefix is where the local blob store is served (serveUpload); the
+// store builds URLs under it and uploadKeyFromURL reads them back.
+const uploadsURLPrefix = "/uploads"
+
 // uploadKeyFromURL returns the storage key for an /uploads/... URL, or
 // false when the value isn't a locally stored upload (a group without
 // a cover has an empty URL; covers are only ever set by upload).
 func uploadKeyFromURL(raw string) (string, bool) {
-	const prefix = "/uploads/"
-	if !strings.HasPrefix(raw, prefix) {
+	key, found := strings.CutPrefix(raw, uploadsURLPrefix+"/")
+	if !found {
 		return "", false
 	}
-	key := strings.TrimPrefix(raw, prefix)
 	if err := storage.ValidateKey(key); err != nil {
 		return "", false
 	}

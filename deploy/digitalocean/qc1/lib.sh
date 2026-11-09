@@ -35,7 +35,7 @@ QC1_NAV_BUDGET_MS=300
 QC1_CLICKS_PER_CASE=30
 # Dense targets of the scaling design (R5): 100,000 reasons at the tables that can hold them (judged against the SAME budgets; a miss is a failure, not a cap).
 QC1_DENSE_COUNTS_DEFAULT=100000
-# contactLockID (contact_lifecycle.go): the gate pg_advisory_xact_lock takes.
+# contactLockID (advisory_locks.go): the gate pg_advisory_xact_lock takes.
 QC1_GATE_LOCK_ID=0x464f4c44434f4e
 # Items the harness cannot measure at this tree, with the reason it records.
 QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are not in this tree'
@@ -66,13 +66,13 @@ qc1_gate_key() {
   printf '%d %d' "$((id >> 32))" "$((id & 0xffffffff))"
 }
 
-# Go's maxRequestBytes from the source: maxUploadBytes (a << b) plus (c << d).
+# Go's maxRequestBytes from the source: MaxUploadBytes (a << b) plus (c << d).
 # Go binds << tighter than +, which bash arithmetic does not.
 qc1_max_request_bytes() { # repo-root
   local root="$1" up req a b c d
-  up="$(sed -n 's/^const maxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/api_uploads.go")"
-  req="$(sed -n 's/^const maxRequestBytes = maxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
-  [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read maxUploadBytes or maxRequestBytes' >&2; return 1; }
+  up="$(sed -n 's/^const MaxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/internal/images/upload.go")"
+  req="$(sed -n 's/^const maxRequestBytes = images.MaxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
+  [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read MaxUploadBytes or maxRequestBytes' >&2; return 1; }
   read -r a b <<<"$up"; read -r c d <<<"$req"
   printf '%d' "$(( (a << b) + (c << d) ))"
 }

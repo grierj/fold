@@ -153,16 +153,13 @@ func (s *attemptsState) init() error {
 // initAttempts makes the per-process key. serve calls it before serving.
 func (a *App) initAttempts() error { return a.attempts.init() }
 
-// attemptElapsed is the monotonic time since the process started; tests
-// replace it with attemptClock.
+// attemptElapsed is the monotonic time since the process started, read from
+// the App clock so tests (and the e2e build) can move it.
 func (a *App) attemptElapsed() time.Duration {
-	if a.attemptClock != nil {
-		return a.attemptClock()
-	}
 	if err := a.attempts.init(); err != nil {
 		panic(err)
 	}
-	return time.Since(a.attempts.start)
+	return a.now().Sub(a.attempts.start)
 }
 
 // --- the id ----------------------------------------------------------------
@@ -448,11 +445,11 @@ func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) 
 // nil otherwise.
 func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *contactSeal {
 	return &contactSeal{run: func(tx *gorm.DB) error {
-		if a.sealAttempts != nil {
-			a.sealAttempts.Add(1)
+		if a.hooks.sealAttempts != nil {
+			a.hooks.sealAttempts.Add(1)
 		}
-		if a.deleteBeforeSeal != nil {
-			a.deleteBeforeSeal(tx)
+		if a.hooks.deleteBeforeSeal != nil {
+			a.hooks.deleteBeforeSeal(tx)
 		}
 		return currentAdminIn(tx, me, *pred)
 	}}
@@ -575,8 +572,8 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 		c.JSON(http.StatusOK, attemptSettleJSON{Result: settleHistoryUnavailable})
 		return
 	}
-	if a.settleBeforeTx != nil {
-		a.settleBeforeTx()
+	if a.hooks.settleBeforeTx != nil {
+		a.hooks.settleBeforeTx()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), attemptSettleBudget)
 	defer cancel()
@@ -599,22 +596,22 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 		var facts settleFacts
 		subject, nonceHex := body.SubjectUserID, hex.EncodeToString(nonce[:])
 		seal := &contactSeal{run: func(tx *gorm.DB) error {
-			if a.sealAttempts != nil {
-				a.sealAttempts.Add(1)
+			if a.hooks.sealAttempts != nil {
+				a.hooks.sealAttempts.Add(1)
 			}
 			if err := currentAdminIn(tx, me, nil); err != nil {
 				return err
 			}
-			if a.settleBeforeFence != nil {
-				a.settleBeforeFence(tx)
+			if a.hooks.settleBeforeFence != nil {
+				a.hooks.settleBeforeFence(tx)
 			}
 			st, err := a.attempts.ledger.settleTransition(nonce, mint, a.attemptElapsed())
 			if err != nil {
 				return err
 			}
 			facts.state = st
-			if a.settleAfterFence != nil {
-				a.settleAfterFence(tx)
+			if a.hooks.settleAfterFence != nil {
+				a.hooks.settleAfterFence(tx)
 			}
 			if err := tx.Raw("SELECT EXISTS (SELECT 1 FROM admin_operation_attempts WHERE attempt_id = decode(?, 'hex'))", nonceHex).Scan(&facts.receipt).Error; err != nil {
 				return err

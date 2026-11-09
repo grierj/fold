@@ -1,4 +1,4 @@
-package main
+package httpx
 
 import (
 	"fmt"
@@ -55,10 +55,10 @@ func redactLogPath(path string) string {
 	return path
 }
 
-// accessLog is gin's default log line with redactLogPath applied. gin's
+// AccessLog is gin's default log line with redactLogPath applied. gin's
 // formatter appends the raw query to Path; the request's own path is
 // used instead so no query string is logged.
-func accessLog() gin.HandlerFunc {
+func AccessLog() gin.HandlerFunc {
 	return gin.LoggerWithConfig(gin.LoggerConfig{Formatter: func(p gin.LogFormatterParams) string {
 		path := p.Path
 		if p.Request != nil {
