@@ -30,5 +30,4 @@ export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}
   FOLD_SETUP_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   UPLOAD_DIR="$work/uploads" FOLD_E2E_CLOCK=1
 export APP_ENV="${E2E_APP_ENV:-prod}"
-cd "$root" # templates/ is read from the working directory
 exec "$work/fold" serve

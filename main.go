@@ -126,13 +126,6 @@ func serve(stderr io.Writer) int {
 		return 1
 	}
 
-	// Distroless images have no shell, so log the working directory at
-	// startup: template/static paths are relative and this is the only
-	// way to see what they resolve against.
-	if wd, err := os.Getwd(); err == nil {
-		log.Printf("Working directory: %s", wd)
-	}
-
 	if cfg.IsDev() {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -337,12 +330,13 @@ func (a *App) setupRouter() *gin.Engine {
 		_ = r.SetTrustedProxies(nil)
 	}
 
-	css := builtStylesheet(distFS)
-	r.SetFuncMap(template.FuncMap{
-		"split":      strings.Split,
-		"stylesheet": func() string { return css },
-	})
-	r.LoadHTMLGlob("templates/*.html")
+	tmpl, err := pageTemplates()
+	if err != nil {
+		// The files are embedded and parsed by TestPageTemplatesParse, so this
+		// is a build defect, not a runtime condition.
+		panic(fmt.Errorf("parse embedded templates: %w", err))
+	}
+	r.SetHTMLTemplate(tmpl)
 
 	// User-uploaded assets (avatars, group covers). Served with
 	// X-Content-Type-Options: nosniff; uploads are validated as images
@@ -396,6 +390,19 @@ func (a *App) setupRouter() *gin.Engine {
 
 //go:embed web/dist
 var distFS embed.FS
+
+//go:embed templates/*.html
+var templatesFS embed.FS
+
+// pageTemplates parses the server-rendered pages (setup wizard, dev outbox)
+// from the binary once; every router shares the result.
+var pageTemplates = sync.OnceValues(func() (*template.Template, error) {
+	css := builtStylesheet(distFS)
+	return template.New("").Funcs(template.FuncMap{
+		"split":      strings.Split,
+		"stylesheet": func() string { return css },
+	}).ParseFS(templatesFS, "templates/*.html")
+})
 
 //go:embed docs/MEMBERS.md
 var memberHelp []byte
