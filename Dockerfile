@@ -23,6 +23,9 @@ RUN mkdir -p /data/uploads
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
+# Pin the working directory: distroless nonroot defaults to /home/nonroot,
+# so a relative UPLOAD_DIR would land off the /data volume.
+WORKDIR /
 COPY --from=build /out/fold /fold
 # Carry the data dir (with nonroot ownership) into the image so a fresh
 # named volume starts writable by the app user.
