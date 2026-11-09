@@ -877,7 +877,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	now := time.Now().UTC()
+	now := a.now().UTC()
 	var locked models.Event
 	// Everything that depends on the stored row is read from the locked row
 	// inside the transaction, so a concurrent edit is never overwritten with
