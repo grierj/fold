@@ -853,10 +853,10 @@ is `none`, `link`, or `jitsi` (default `none`, which clears the URL);
 `videoUrl` must be a full `https://` address of at most 2048 characters
 when a provider is set; `videoReveal` is `always` or `registered_only`
 (the default). `POST /events/video/jitsi` mints a new
-`https://meet.jit.si/<church-slug>-<12 random chars>` locally (no API
+`https://<jitsi_domain>/<church-slug>-<12 random chars>` locally (no API
 call). A Jitsi link is validated like a pasted one (https, a host, no
 userinfo such as `https://meet.jit.si@evil.example`); its host is not pinned
-to meet.jit.si, since a leader may edit it. The link reaches a response only when the viewer may see it
+to `jitsi_domain`, since a leader may edit it. The link reaches a response only when the viewer may see it
 (`policy.CanSeeVideoLink`): under `registered_only`, people going on that
 date plus the event's leaders or hosts and admins; otherwise `videoUrl`
 is omitted and `videoHidden` is true. The same rule governs the ICS

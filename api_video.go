@@ -19,8 +19,9 @@ import (
 // Jitsi link generator.
 
 const (
-	jitsiDomain    = "meet.jit.si"
-	maxVideoURLLen = 2048
+	settingJitsiDomain = "jitsi_domain"
+	defaultJitsiDomain = "meet.jit.si"
+	maxVideoURLLen     = 2048
 )
 
 // videoEdits is the effective video state from an event body: the body's
@@ -58,7 +59,7 @@ func videoLinkOf(ev *models.Event) string {
 // validVideoURL: an absolute https:// URL with a host, no spaces, and no
 // userinfo (https://meet.jit.si@evil.example goes to evil.example). A
 // Jitsi link is checked the same way as a pasted one: a leader may edit
-// it, so its host is not pinned to meet.jit.si.
+// it, so its host is not pinned to jitsi_domain.
 func validVideoURL(s string) bool {
 	if s == "" || strings.ContainsAny(s, " \t\r\n") {
 		return false
@@ -224,5 +225,33 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not generate a video link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"url": "https://" + jitsiDomain + "/" + churchSlug(a.siteName()) + "-" + room})
+	c.JSON(http.StatusOK, gin.H{"url": "https://" + a.jitsiDomain() + "/" + churchSlug(a.siteName()) + "-" + room})
+}
+
+// jitsiDomain reads the jitsi_domain setting (PLAN 5.8), defaulting to
+// meet.jit.si. A value that isn't a plain host name also falls back to the
+// default, so a typo in settings can't mint links onto a malformed host.
+func (a *App) jitsiDomain() string {
+	var s models.Setting
+	if err := a.DB.Where("key = ?", settingJitsiDomain).First(&s).Error; err != nil {
+		return defaultJitsiDomain
+	}
+	d := strings.TrimSpace(s.Value)
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimPrefix(d, "http://")
+	if i := strings.Index(d, "/"); i >= 0 {
+		d = d[:i]
+	}
+	d = strings.ToLower(d)
+	if d == "" {
+		return defaultJitsiDomain
+	}
+	for _, r := range d {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == ':':
+		default:
+			return defaultJitsiDomain
+		}
+	}
+	return d
 }
