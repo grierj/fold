@@ -372,7 +372,7 @@ func TestPushTestNotification(t *testing.T) {
 	app.DB.Create(&models.Setting{Key: "site_name", Value: "First Church"})
 	u := pushMember(t, app, "pat")
 	phone := newPushDevice(t, app, u, "phone")
-	app.DB.Model(&models.PushSubscription{}).Where("id = ?", phone.ID).Update("last_used_at", time.Now().Add(-72*time.Hour))
+	app.DB.Model(&models.PushSubscription{}).Where("id = ?", phone.ID).Update("last_used_at", time.Now().Add(-23*time.Hour))
 	pat := loginAPI(t, app, "pat", "password123456")
 	var got pushTestJSON
 	w := pat.do("POST", "/api/v1/push/test", map[string]string{"endpoint": phone.Endpoint}, true)
