@@ -46,12 +46,12 @@ func consentJSON(row models.TeenConsent) teenConsentJSON {
 // deciding status: the user row serializes appends even when no consent exists
 // yet.
 func latestConsentIn(db *gorm.DB, teenIDs []uint, scopes ...string) ([]models.TeenConsent, error) {
-	query, args := "SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ?", []any{teenIDs}
+	q := db.Model(&models.TeenConsent{}).Select("DISTINCT ON (teen_user_id, scope) *").Where("teen_user_id IN ?", teenIDs)
 	if len(scopes) > 0 {
-		query, args = query+" AND scope IN ?", append(args, scopes)
+		q = q.Where("scope IN ?", scopes)
 	}
 	var latest []models.TeenConsent
-	err := db.Raw(query+" ORDER BY teen_user_id, scope, at DESC, id DESC", args...).Scan(&latest).Error
+	err := q.Order("teen_user_id, scope, at DESC, id DESC").Find(&latest).Error
 	return latest, err
 }
 
