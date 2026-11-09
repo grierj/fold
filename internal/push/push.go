@@ -36,14 +36,12 @@ const maxResponse = 4 << 10
 // ErrTooLarge: the plaintext is over MaxPlaintext.
 var ErrTooLarge = errors.New("push: the message is over the 3,000-byte limit")
 
-// Subscription is where and how to reach one device.
 type Subscription struct {
 	Endpoint string
 	P256dh   string
 	Auth     string
 }
 
-// Urgency is RFC 8030's Urgency header.
 type Urgency string
 
 // Urgency values (RFC 8030 5.3).
@@ -83,10 +81,8 @@ type Notification struct {
 	AppBadge *int   `json:"app_badge,omitempty"`
 }
 
-// NewPayload wraps n in the declarative shape (web_push 8030).
 func NewPayload(n Notification) Payload { return Payload{WebPush: 8030, Notification: n} }
 
-// Status is what happened to a send.
 type Status int
 
 // Send results (research 2.2).
@@ -224,7 +220,6 @@ func (c *Client) Send(ctx context.Context, sub Subscription, payload []byte, opt
 	return classify(resp)
 }
 
-// classify maps a push service's answer to a Result.
 func classify(resp *http.Response) Result {
 	code := resp.StatusCode
 	r := Result{Code: code}
@@ -284,7 +279,6 @@ func causeOf(oe *net.OpError) string {
 	return oe.Err.Error()
 }
 
-// MarshalPayload is p as JSON, refused when over MaxPlaintext.
 func MarshalPayload(p Payload) ([]byte, error) {
 	b, err := json.Marshal(p)
 	if err != nil {

@@ -36,7 +36,6 @@ type EmailPage struct {
 	Address     []string
 }
 
-// RenderEmail makes the HTML part of an email.
 func RenderEmail(p EmailPage) (string, error) {
 	var b bytes.Buffer
 	err := emailTemplate.Execute(&b, struct {

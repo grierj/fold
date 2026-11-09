@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// Categories (5.3). Settings per category arrive in M3.12.
+// Categories (5.3).
 const (
-	CatAdmin  = "admin"
-	CatGroups = "groups"
-	CatEvents = "events"
-	// Planned (PLAN 4, notifications.category); no kind uses them yet.
+	CatAdmin    = "admin"
+	CatGroups   = "groups"
+	CatEvents   = "events"
 	CatMessages = "messages"
 	CatSafety   = "safety"
 )
@@ -71,7 +70,6 @@ type Action struct {
 	Label string `json:"label"`
 }
 
-// ActionApproveGroup approves a pending group from the bell.
 const ActionApproveGroup = "approve"
 
 // ActionApproveAccount approves an adult account request with no
@@ -106,7 +104,6 @@ type Vars struct {
 	VideoURL string
 }
 
-// Kind is one registry entry (5.12).
 type Kind struct {
 	Key      string
 	Category string
@@ -151,8 +148,6 @@ type Kind struct {
 	PushSoon bool
 }
 
-// RenderForPush is the row's lock-screen text; ok is false when the kind
-// doesn't push.
 func (k Kind) RenderForPush(v Vars) (title, body string, ok bool) {
 	if !k.AllowPush || k.PushRender == nil {
 		return "", "", false
@@ -237,13 +232,11 @@ func YoureGetting(category, church string) string {
 	return "You're getting " + CategoryEmailName(category) + prep + church
 }
 
-// Lookup finds a kind by key.
 func Lookup(key string) (Kind, bool) {
 	k, ok := registry[key]
 	return k, ok
 }
 
-// Kinds lists every registered kind (for tests).
 func Kinds() []Kind {
 	out := make([]Kind, 0, len(registry))
 	for _, k := range registry {

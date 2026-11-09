@@ -43,7 +43,6 @@ var ErrBlockedAddress = errors.New("push: the push service resolved to an addres
 // maxEndpoint matches the push_subscriptions CHECK.
 const maxEndpoint = 2048
 
-// AllowList is the set of push-service hosts Fold sends to.
 type AllowList struct{ hosts []string }
 
 // NewAllowList is DefaultHosts plus extra (FOLD_PUSH_HOSTS), which must
@@ -59,7 +58,6 @@ func NewAllowList(extra ...string) *AllowList {
 	return &AllowList{hosts: hosts}
 }
 
-// Hosts lists the allow-listed hosts.
 func (l *AllowList) Hosts() []string { return append([]string{}, l.hosts...) }
 
 // ParseHosts reads FOLD_PUSH_HOSTS: comma-separated host names, each a
@@ -132,7 +130,6 @@ func (l *AllowList) Allowed(endpoint string) error {
 	return ErrNotAllowed
 }
 
-// publicAddr reports whether ip is one Fold may connect to.
 func publicAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
@@ -183,7 +180,6 @@ func refuseInternal(_, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// Dialer is the TCP dialer push uses: it refuses internal addresses.
 func Dialer() *net.Dialer {
 	return &net.Dialer{Timeout: 5 * time.Second, Control: refuseInternal}
 }
@@ -218,7 +214,6 @@ var probeHosts = map[string]string{
 	"notify.windows.com": "wns2-bl2p.notify.windows.com",
 }
 
-// CheckResult is one host's reachability.
 type CheckResult struct {
 	Host string `json:"host"`
 	OK   bool   `json:"ok"`
@@ -226,7 +221,6 @@ type CheckResult struct {
 	Error string `json:"error,omitempty"`
 }
 
-// DialFunc dials a TCP address.
 type DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
 // Check resolves and TCP-connects to each host on 443 with dial (nil: the
