@@ -50,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		return serve(stderr)
 	case "healthcheck":
-		return runHealthcheck(getEnv("PORT", "8080"))
+		return runHealthcheck(envPort())
 	case "migrate":
 		return runMigrate(args, asJSON, stdout, stderr)
 	case "push":
@@ -175,7 +175,7 @@ func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
 	var secret string
 	if sub == "keys rotate" {
 		var err error
-		if secret, err = sessionSecret(getEnv("APP_ENV", "prod") == "dev"); err != nil {
+		if secret, err = sessionSecret(envName() == "dev"); err != nil {
 			fmt.Fprintln(stderr, "fold:", err)
 			return 1
 		}
@@ -225,7 +225,7 @@ func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
 // runPushCheck resolves and connects to each allow-listed push host on
 // 443 and says which it can't reach. It exits 1 if any fails.
 func runPushCheck(asJSON bool, stdout, stderr io.Writer) int {
-	extra, err := push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS"))
+	extra, err := envPushHosts()
 	if err != nil {
 		fmt.Fprintln(stderr, "fold:", err)
 		return 1

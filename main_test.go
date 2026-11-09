@@ -278,28 +278,19 @@ func TestMemberHelpIsEmbedded(t *testing.T) {
 // whichever adapter the environment names, and a broken one stops the
 // server instead of dropping mail.
 func TestChooseMailer(t *testing.T) {
-	env := func(kv ...string) func(string) string {
-		m := map[string]string{}
-		for i := 0; i+1 < len(kv); i += 2 {
-			m[kv[i]] = kv[i+1]
-		}
-		return func(k string) string { return m[k] }
-	}
 	prod := Config{Env: "prod", EmailFrom: "Fold <noreply@example.com>"}
 	for _, tc := range []struct {
-		get  func(string) string
+		mod  func(*Config)
 		want string
 	}{
-		{env(), "none"},
-		{env("FOLD_POSTMARK_SERVER_TOKEN", "tok"), "postmark"},
-		{env("FOLD_EMAIL_PROVIDER", "smtp", "FOLD_POSTMARK_SERVER_TOKEN", "tok"), "smtp"},
-		{env(), "smtp"}, // with cfg.SMTPURL below
+		{func(*Config) {}, "none"},
+		{func(c *Config) { c.PostmarkServerToken = "tok" }, "postmark"},
+		{func(c *Config) { c.EmailProvider, c.PostmarkServerToken, c.SMTPURL = "smtp", "tok", "smtp://localhost:25" }, "smtp"},
+		{func(c *Config) { c.SMTPURL = "smtp://localhost:25" }, "smtp"},
 	} {
 		cfg := prod
-		if tc.want == "smtp" {
-			cfg.SMTPURL = "smtp://localhost:25" // Config, not the environment, holds it
-		}
-		s, err := chooseMailer(cfg, nil, tc.get)
+		tc.mod(&cfg)
+		s, err := chooseMailer(cfg, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.want, err)
 		}
@@ -307,8 +298,10 @@ func TestChooseMailer(t *testing.T) {
 			t.Errorf("chose %s, want %s", got, tc.want)
 		}
 	}
-	for _, get := range []func(string) string{env("FOLD_EMAIL_PROVIDER", "postmark"), env("FOLD_EMAIL_PROVIDER", "pigeon"), env("FOLD_EMAIL_PROVIDER", "smtp")} {
-		if _, err := chooseMailer(prod, nil, get); err == nil {
+	for _, provider := range []string{"postmark", "pigeon", "smtp"} {
+		cfg := prod
+		cfg.EmailProvider = provider
+		if _, err := chooseMailer(cfg, nil); err == nil {
 			t.Error("a provider without its settings should be refused")
 		}
 	}

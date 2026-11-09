@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"path"
 	"regexp"
@@ -140,14 +139,20 @@ func serve(stderr io.Writer) int {
 
 	uploads, err := storage.NewLocalStore(cfg.UploadDir, "/uploads")
 	if err != nil {
-		log.Fatalf("Upload storage failed: %v", err)
+		fmt.Fprintln(stderr, "fold: upload storage:", err)
+		return 1
+	}
+	mailer, err := chooseMailer(cfg, db)
+	if err != nil {
+		fmt.Fprintln(stderr, "fold: email:", err)
+		return 1
 	}
 
 	store := newSessionStore(cfg.SessionSecret, cfg.CookieSecure)
 
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
-		Mailer: newMailer(cfg, db),
+		Mailer: mailer,
 	}
 	// The signal context exists this early so a detected database restore can
 	// end the process (T07B-1b): requestRestart cancels it, and serve returns
@@ -253,27 +258,27 @@ func newHTTPServer(cfg Config, handler http.Handler) *http.Server {
 	}
 }
 
-// newMailer picks the email adapter (5.6, M3.2) from the environment: see
-// mail.Choose. Without one, sends fail loudly instead of silently dropping
-// password resets. A provider that can't be built stops the server.
-func newMailer(cfg Config, db *gorm.DB) mail.Sender {
-	s, err := chooseMailer(cfg, db, os.Getenv)
-	if err != nil {
-		log.Fatalf("email: %v", err)
-	}
-	return s
-}
-
-func chooseMailer(cfg Config, db *gorm.DB, get func(string) string) (mail.Sender, error) {
-	// SMTP settings come from Config, which has already checked them.
+// chooseMailer picks the email adapter (5.6, M3.2): see mail.Choose. Without
+// one, sends fail loudly instead of silently dropping password resets. A
+// provider that can't be built is an error, and serve stops. Every setting
+// comes from Config, which has already checked it.
+func chooseMailer(cfg Config, db *gorm.DB) (mail.Sender, error) {
 	settings := func(k string) string {
 		switch k {
+		case "FOLD_EMAIL_PROVIDER":
+			return cfg.EmailProvider
 		case "FOLD_SMTP_URL":
 			return cfg.SMTPURL
 		case "FOLD_SMTP_ALLOW_INSECURE":
 			return strconv.FormatBool(cfg.SMTPAllowInsecure)
+		case "FOLD_POSTMARK_SERVER_TOKEN":
+			return cfg.PostmarkServerToken
+		case "FOLD_POSTMARK_TRANSACTIONAL_STREAM":
+			return cfg.PostmarkTransactionalStream
+		case "FOLD_POSTMARK_BROADCAST_STREAM":
+			return cfg.PostmarkBroadcastStream
 		}
-		return get(k)
+		return ""
 	}
 	name := mail.Choose(settings, cfg.IsDev())
 	if name == "" {
