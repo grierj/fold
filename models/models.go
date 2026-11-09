@@ -96,9 +96,9 @@ const (
 	CancelSourceManual = "manual" // a person cancelled this one date
 )
 
-// Account statuses (5.3). Active accounts with passwords get ordinary
-// access; pending-consent teens can authenticate only to the waiting page.
-// Account lifecycle states.
+// Account statuses (5.3). Only an active account with a password can sign in
+// (CanSignIn); a pending-consent teen is waiting on a guardian and has no
+// session.
 const (
 	UserActive         = policy.AccountActive
 	UserInvited        = "invited" // no password yet
@@ -238,7 +238,7 @@ func (u *User) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(*u.PasswordHash), []byte(password)) == nil
 }
 
-// CanSignIn: an active account with a password.
+// CanSignIn is the one test for a session or a login: active, with a password.
 func (u *User) CanSignIn() bool {
 	return u != nil && u.Status == UserActive && u.PasswordHash != nil
 }
@@ -432,11 +432,6 @@ type Membership struct {
 	Tenure uint `gorm:"not null;default:1"`
 }
 
-// Registration is a user's response to one occurrence (renamed from RSVP).
-// A guest's registration (M1.4) is an ordinary row against their guest
-// User (C5), with Source guest_form and a hashed manage token: the raw
-// token travels only in the confirmation email and lets the guest cancel
-// without an account.
 // SeriesUndoReceipt is a short-lived, actor-bound receipt for one bulk
 // series answer. Snapshot is server-captured JSON containing only the selected
 // occurrence IDs and their exact before/after registration states.
@@ -451,6 +446,11 @@ type SeriesUndoReceipt struct {
 	CreatedAt time.Time `gorm:"not null;default:now()"`
 }
 
+// Registration is a user's response to one occurrence.
+// A guest's registration (M1.4) is an ordinary row against their guest
+// User (C5), with Source guest_form and a hashed manage token: the raw
+// token travels only in the confirmation email and lets the guest cancel
+// without an account.
 type Registration struct {
 	ID                 uint            `gorm:"primaryKey"`
 	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`

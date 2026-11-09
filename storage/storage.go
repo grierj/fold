@@ -85,12 +85,11 @@ type ScanStats struct {
 
 // Store is a blob store for user-uploaded assets (avatars, group covers).
 //
-// The local-filesystem implementation ships now. An S3-compatible
-// implementation can replace it later without changing callers: implement
-// this interface (Put to the bucket, URL as a presigned or public object
-// URL, Delete against the bucket) and wire it in main() based on
-// config. Keys are opaque to callers — always generated server-side by
-// NewKey, never taken from user input.
+// LocalStore is the only implementation (DEC-140 cut S3). A bucket-backed one
+// would replace it without changing callers: Put to the bucket, URL as a
+// presigned or public object URL, Delete against the bucket. Keys are opaque
+// to callers, always generated server-side by NewKey, never taken from user
+// input.
 //
 // Contract for every implementation:
 //   - Errors are fixed text. No error contains a key, a prefix, a bucket
@@ -99,8 +98,7 @@ type ScanStats struct {
 //     implementation must list by the exact "<kind>/<id>/" prefix, trailing
 //     slash included, so owner 1 never matches owner 10, must page deletes
 //     with the keep key excluded at most CleanBatch per call, and must never
-//     put a key, prefix or bucket path in an error. DEC-140 cut S3, so none
-//     is built; LocalStore is the only implementer.
+//     put a key, prefix or bucket path in an error.
 //
 // A store may additionally implement Open(string) (*os.File, error) for
 // local serving. It must open only the exact regular-file entry named by the

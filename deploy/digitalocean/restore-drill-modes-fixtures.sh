@@ -40,8 +40,11 @@ else_l="$(awk -v s="$init_l" 'NR > s && /^else$/ {print NR; exit}' "$RUNNER")"
 [[ "${CROSSINGS_ONLY_PLAN[*]}" == 'bootstrap base-prerequisites real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore crossings-evidence' ]]
 [[ "${CROSSINGS_ONLY_FAMILIES[*]}" == "$(printf '%s' "$FULL" | grep -oE 'real_binary_refusals.*real_older_archive_restore')" ]]
 for f in "${CROSSINGS_ONLY_FAMILIES[@]}"; do declare -F "$f" >/dev/null; done
+# Every check that pipes a long producer into grep reads to the end (no grep -q):
+# under pipefail, a grep that quits at its first match SIGPIPEs the producer and
+# the script intermittently exits 141.
 # no case of the diagnostic is named like a full-run case it replaces, so a plan can never be read as the full plan
-if printf '%s\n' "${CROSSINGS_ONLY_PLAN[@]}" | grep -qx 'base-proof\|final-verification'; then echo 'the diagnostic plan names a full-run case' >&2; exit 1; fi
+if printf '%s\n' "${CROSSINGS_ONLY_PLAN[@]}" | grep -x 'base-proof\|final-verification' >/dev/null; then echo 'the diagnostic plan names a full-run case' >&2; exit 1; fi
 # the full run's family loop still lists the same five, last
 loop="$(sed -n '/^for drill_family in/,/; do$/p' "$RUNNER" | sed 's/^for drill_family in //; s/; do$//; s/\\$//' | tr -s ' \n' '\n\n' | grep -v '^$' | paste -sd' ')"
 [[ "$loop" == "count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases review_orphaned_restore_case review_moving_tag_case real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore" ]]
@@ -61,9 +64,9 @@ ffif_l="$(grep -n '^if \[\[ "\$MODE" == full \]\]; then$' "$RUNNER" | head -n 1 
 ffr_l="$(grep -n 'FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"' "$RUNNER" | cut -d: -f1)"
 # the Chromium preflight stays mandatory in both modes (before any MODE conditional); only the Firefox record is the full run's
 [[ "$guard_l" -lt "$pre_l" && "$pre_l" -lt "$ffr_l" && "$ffr_l" -lt "$ffif_l" ]]
-sed -n "${ffif_l},$((ffif_l + 8))p" "$RUNNER" | grep -q 'was not prepared'
+sed -n "${ffif_l},$((ffif_l + 8))p" "$RUNNER" | grep 'was not prepared' >/dev/null
 fi_l="$(awk -v s="$ffif_l" 'NR > s && /^fi$/ { n++; if (n == 2) { print NR; exit } }' "$RUNNER")"   # the outer fi after the inner one
-sed -n "$((fi_l - 4)),${fi_l}p" "$RUNNER" | grep -q 'is not the one the preparation proved'
+sed -n "$((fi_l - 4)),${fi_l}p" "$RUNNER" | grep 'is not the one the preparation proved' >/dev/null
 grep -qx '\[\[ "$MODE" != full \]\] || cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"' "$RUNNER"
 # markers are written by the diagnostic only, once WORK exists and the cleanup trap is installed
 grep -qx '\[\[ "$MODE" == full \]\] || drill_mode_begin' "$RUNNER"
@@ -83,9 +86,9 @@ grep -q '^JAR=' "$RUNNER"; grep -q '^URL=' "$RUNNER"
 # the full run's remainder of base-proof, and only it, is inside the wrap: it ends with the fi just before base-proof's drill_case_end
 fiA_l="$(awk -v s="$wrap_l" 'NR > s && /^fi$/ {print NR; exit}' "$RUNNER")"
 [[ "$(sed -n "$((fiA_l + 1))p" "$RUNNER")" == drill_case_end ]]
-sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep -q '^restore --dump "\$DB_DUMP"$'
-sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep -q 'private-browser.cjs'
-sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep -q '^drill_step closed-observation-60s$'
+sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep '^restore --dump "\$DB_DUMP"$' >/dev/null
+sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep 'private-browser.cjs' >/dev/null
+sed -n "${wrap_l},${fiA_l}p" "$RUNNER" | grep '^drill_step closed-observation-60s$' >/dev/null
 # reset_case and kill_point are defined before the diagnostic's call; the call is guarded, bare, and before every full-only case
 rs_l="$(grep -n '^reset_case() {$' "$RUNNER" | cut -d: -f1)"; kp_l="$(grep -n '^kill_point() {$' "$RUNNER" | cut -d: -f1)"
 call_l="$(grep -n '^crossings_only_run$' "$RUNNER" | cut -d: -f1)"
@@ -98,10 +101,10 @@ fv_l="$(grep -n '^drill_case_begin final-verification$' "$RUNNER" | cut -d: -f1)
 # the full flow after the call is untouched by the mode: no MODE test between the call and the end of the script
 if sed -n "$((call_l + 2)),\$p" "$RUNNER" | grep -n 'MODE'; then echo 'the full-only part of the runner tests the mode' >&2; exit 1; fi
 # the full run's end is exactly what it was
-sed -n "$fv_l,\$p" "$RUNNER" | head -n 8 | grep -q '^assert_statement_history$'
-sed -n "$fv_l,\$p" "$RUNNER" | grep -q '^assert_crossing_evidence$'
-sed -n "$fv_l,\$p" "$RUNNER" | grep -q '^drill_progress_complete$'
-sed -n "$fv_l,\$p" "$RUNNER" | grep -q '^printf .restore drill passed: revision=%s project=%s artifacts=%s\\n.'
+sed -n "$fv_l,$((fv_l + 7))p" "$RUNNER" | grep '^assert_statement_history$' >/dev/null
+sed -n "$fv_l,\$p" "$RUNNER" | grep '^assert_crossing_evidence$' >/dev/null
+sed -n "$fv_l,\$p" "$RUNNER" | grep '^drill_progress_complete$' >/dev/null
+sed -n "$fv_l,\$p" "$RUNNER" | grep '^printf .restore drill passed: revision=%s project=%s artifacts=%s\\n.' >/dev/null
 
 # --- cleanup: the diagnostic uses the full run's cleanup, with its exit code kept honest ------------------------------------------------------------------
 body="$(sed -n '/^cleanup() {$/,/^}$/p' "$RUNNER")"
@@ -239,7 +242,7 @@ grep -q -- ' bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossin
 grep -q 'browser-prepare.sh' "$WORK/stub.log"   # the Chromium preparation and its preflight still run
 [[ "$(grep '^run ' "$WORK/stub.log" | sed 's/fold-drill-[0-9a-f]*/NAME/g')" == "$(grep '^run ' "$WORK/stub.default" | sed 's/fold-drill-[0-9a-f]*/NAME/g')" ]]          # the same container, flags and image
 [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
-if grep '^run ' "$WORK/stub.log" | grep -qE -- ' -v |--volume|--mount|--network|docker\.sock|--cap-add'; then echo 'the diagnostic gives the runner more than the default does' >&2; exit 1; fi
+if grep '^run ' "$WORK/stub.log" | grep -E -- ' -v |--volume|--mount|--network|docker\.sock|--cap-add' >/dev/null; then echo 'the diagnostic gives the runner more than the default does' >&2; exit 1; fi
 grep -q 'set -a; . /work/prep/browser.env; set +a; fi; exec "\$@"' "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"          # cleanup: the container is removed by id
 grep -q "^cp c\{64\}:/work/prep/. $WORK/L2/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/L2/" "$WORK/stub.log"
 grep -q 'NOT full-drill evidence and NOT acceptance' "$WORK/L2/PARTIAL-NOT-FULL-ACCEPTANCE.txt"
@@ -258,5 +261,5 @@ if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the drill ran after a
 : >"$WORK/stub.log"; rc=0; launch --out "$WORK/L7" --qc1 --crossings-only >"$WORK/l7.out" 2>&1 || rc=$?
 [[ "$rc" == 1 ]] && grep -q 'different runs' "$WORK/l7.out"; [[ ! -s "$WORK/stub.log" ]]; [[ ! -e "$WORK/L7" ]]
 # the help names it
-bash "$HERE/restore-drill-nested.sh" --help | grep -q 'PARTIAL DIAGNOSTIC'
+bash "$HERE/restore-drill-nested.sh" --help | grep 'PARTIAL DIAGNOSTIC' >/dev/null
 echo 'restore drill modes fixtures: ok'
