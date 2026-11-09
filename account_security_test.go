@@ -23,7 +23,7 @@ func pendingSecurityCapabilities(t *testing.T, app *App, user *models.User) map[
 		if kind == models.TokenEmailVerify {
 			payload = map[string]any{"new_email": "pending-takeover@example.com"}
 		}
-		raw, err := createAccountToken(app.DB, kind, user.ID, payload, tokenTTL)
+		raw, _, err := issueAccountToken(app.DB, kind, user.ID, payload, tokenTTL)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -35,7 +35,7 @@ func pendingSecurityCapabilities(t *testing.T, app *App, user *models.User) map[
 func TestLockedAccountTokenClaimRejectsRotatedHash(t *testing.T) {
 	app := testApp(t)
 	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-	raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	raw, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestPasswordResetDeliveryAndRedemptionLockOrders(t *testing.T) {
 		t.Run(first+" first", func(t *testing.T) {
 			app := testApp(t)
 			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
-			old, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+			old, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 			if err != nil {
 				t.Fatal(err)
 			}

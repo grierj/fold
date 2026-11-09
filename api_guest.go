@@ -64,17 +64,12 @@ type guestRegistrationJSON struct {
 	WaitlistPosition *int `json:"waitlistPosition,omitempty"`
 }
 
-// guestDisplay builds the signed-out view of one registration. Group
+// guestDisplayWith builds the signed-out view of one registration. Group
 // details come only through groupShownTo for a nil viewer, so an opened
-// invite-only event keeps its group hidden.
-func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence,
-	ev *models.Event, grp *models.Group) guestRegistrationJSON {
-	return a.guestDisplayWith(a.siteName, reg, occ, ev, grp)
-}
-
-// guestDisplayWith takes the church name from siteName, called only when the
-// event is the church's own. Mail preparation passes a value it already read in
-// its transaction, so rendering opens no second connection.
+// invite-only event keeps its group hidden. The church name comes from siteName,
+// called only when the event is the church's own; mail preparation passes a
+// value it already read in its transaction, so rendering opens no second
+// connection.
 func (a *App) guestDisplayWith(siteName func() string, reg *models.Registration, occ *models.EventOccurrence,
 	ev *models.Event, grp *models.Group) guestRegistrationJSON {
 	shown := a.groupShownTo(nil, grp, policy.Rel{})
@@ -118,7 +113,7 @@ func (a *App) loadGuestOccurrence(c *gin.Context, date string) (*models.EventOcc
 		jsonError(c, 404, "event not found")
 		return nil, false
 	}
-	f := a.factsFor(nil, dateEvent(&ev, &occ))
+	f := eventFactsIn(a.DB, nil, dateEvent(&ev, &occ))
 	gp := policy.Group{}
 	if f.group != nil {
 		gp = asGroup(f.group)
@@ -360,7 +355,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).Limit(1).Find(&prior).RowsAffected == 1
 		// Seat check under the lock, before anything is created.
 		cap := events.EffectiveCapacity(ev.Capacity, occ.CapacityOverride)
-		used, err := seatsUsed(tx, occ.ID)
+		used, err := seatsUsedForMode(tx, occ.ID, models.AttendanceInPerson)
 		if err != nil {
 			return err
 		}
@@ -454,12 +449,12 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		}
 		askedAccount = signup.CreateAccount
 		if signup.CreateAccount {
-			_, err := createGuestUpgradeRequest(tx, &signup)
+			err := createGuestUpgradeRequest(tx, &signup)
 			if err != nil {
 				return err
 			}
 		}
-		display = a.guestDisplay(&reg, occ, &ev, grp)
+		display = a.guestDisplayWith(a.siteName, &reg, occ, &ev, grp)
 		display.WaitlistPosition = waitlistPos
 		guestEmail = signup.Email
 		guestZone = recipientZone(tx, user.ID)
@@ -529,12 +524,12 @@ func claimGuestSignup(tx *gorm.DB, signup *models.GuestSignup, at time.Time) err
 // createGuestUpgradeRequest opens the guest_upgrade account request a
 // guest asked for on the form (5.10). A still-pending request for the
 // same address is left alone: the admins already have the task.
-func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint, error) {
+func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) error {
 	var pending int64
 	tx.Model(&models.AccountRequest{}).
 		Where("email = ? AND status = ?", signup.Email, models.RequestPending).Count(&pending)
 	if pending > 0 {
-		return nil, nil
+		return nil
 	}
 	req := models.AccountRequest{
 		Name: signup.Name, Email: signup.Email,
@@ -543,14 +538,14 @@ func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint,
 		ExpiresAt: time.Now().UTC().Add(requestLifetime),
 	}
 	if err := tx.Create(&req).Error; err != nil {
-		return nil, err
+		return err
 	}
 	if err := audit.Write(tx, audit.Entry{Action: audit.AccountRequested,
 		TargetType: "account_request", TargetID: req.ID,
 		Meta: map[string]any{"source": models.RequestGuestUpgrade,
 			"accountType": models.AccountAdult, "hasWarnings": false},
 		IP: signup.IP}); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyAccountRequested(tx, &req, models.RequestFlags{})
 }
@@ -691,7 +686,7 @@ func (a *App) apiGetGuestRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		display = a.guestDisplay(reg, occ, ev, grp)
+		display = a.guestDisplayWith(a.siteName, reg, occ, ev, grp)
 		if reg.Status == models.RegWaitlisted {
 			pos, err := waitlistPosition(tx, occ.ID, reg.ID)
 			if err != nil {
@@ -729,7 +724,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		cancellable := before == models.RegGoing || before == models.RegMaybe ||
 			before == models.RegWaitlisted
 		if !cancellable {
-			display = a.guestDisplay(reg, occ, ev, grp)
+			display = a.guestDisplayWith(a.siteName, reg, occ, ev, grp)
 			return nil
 		}
 		// authorizedTokenManage keeps the occurrence locked through the
@@ -762,12 +757,12 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			return err
 		}
 		if before == models.RegGoing {
-			_, err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
+			err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
 			if err != nil {
 				return err
 			}
 		}
-		display = a.guestDisplay(reg, occ, ev, grp)
+		display = a.guestDisplayWith(a.siteName, reg, occ, ev, grp)
 		return nil
 	})
 	if err != nil {

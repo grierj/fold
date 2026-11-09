@@ -283,7 +283,7 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 	// must never become a header boundary.
 	// Non-ASCII subjects go out as RFC 2047 encoded words; ASCII is unchanged.
 	subject := mime.QEncoding.Encode("utf-8", oneLine(m.Subject))
-	msgID, err := messageID(fromAddress(from))
+	msgID, err := messageID(Address(from))
 	if err != nil {
 		return "", fmt.Errorf("mail: message id: %w", err)
 	}
@@ -336,7 +336,7 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 			return "", fmt.Errorf("mail: auth: %w", err)
 		}
 	}
-	if err := c.Mail(fromAddress(from)); err != nil {
+	if err := c.Mail(Address(from)); err != nil {
 		return "", fmt.Errorf("mail: from: %w", err)
 	}
 	if err := c.Rcpt(m.To); err != nil {
@@ -388,9 +388,9 @@ func messageID(addr string) (string, error) {
 	return "<" + hex.EncodeToString(b) + "@" + domain + ">", nil
 }
 
-// fromAddress strips a display name ("Fold <a@b>") to the bare address for
-// the SMTP envelope.
-func fromAddress(from string) string {
+// Address strips a display name ("Fold <a@b>") to the bare address, for the
+// SMTP envelope and the sender checks.
+func Address(from string) string {
 	if i := strings.LastIndex(from, "<"); i >= 0 {
 		if j := strings.Index(from[i:], ">"); j >= 0 {
 			return strings.TrimSpace(from[i+1 : i+j])
@@ -421,9 +421,6 @@ var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDE
 // NotConfigured: err came from NoSender. Retrying in this process can't
 // help; a restart with a provider set can.
 func NotConfigured(err error) bool { return errors.Is(err, errNoSender) }
-
-// Address is the bare address of a From value like "Fold <a@b.org>".
-func Address(from string) string { return fromAddress(from) }
 
 // oneURL: s is a single absolute http(s) URL with nothing that could end
 // the List-Unsubscribe header's <…> or add another header.
@@ -483,7 +480,7 @@ func fromWithName(from string, m Message) string {
 	if name == "" {
 		return from
 	}
-	return (&netmail.Address{Name: name, Address: fromAddress(from)}).String()
+	return (&netmail.Address{Name: name, Address: Address(from)}).String()
 }
 
 // replyToOK: empty, or exactly one plain address with no display name.

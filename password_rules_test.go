@@ -59,7 +59,7 @@ func TestPasswordResetRejectsMoreThan72Bytes(t *testing.T) {
 	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
-	raw, err := createAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	raw, _, err := issueAccountToken(app.DB, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestAccountSetupRejectsMoreThan72Bytes(t *testing.T) {
 	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
-	raw, err := createAccountToken(app.DB, models.TokenAccountSetup, user.ID, nil, tokenTTL)
+	raw, _, err := issueAccountToken(app.DB, models.TokenAccountSetup, user.ID, nil, tokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

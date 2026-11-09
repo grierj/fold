@@ -170,7 +170,7 @@ func householdPersonName(tx *gorm.DB, id uint) string {
 
 // reconcileHouseholdPerson runs while the household is locked, and locks
 // affected dates in ID order before cancelling or clearing invalid requests.
-func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor uint, ip string) ([]uint, error) {
+func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPerson, deleting bool, actor uint, ip string) error {
 	var actorID *uint
 	if actor != 0 {
 		actorID = &actor
@@ -179,20 +179,19 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 	now := time.Now().UTC()
 	if err := tx.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Where("registrations.household_person_id = ? AND event_occurrences.starts_at > ? AND event_occurrences.status = ? AND registrations.status IN ?", person.ID, now, models.OccurrenceScheduled, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Order("registrations.occurrence_id, registrations.id").Find(&regs).Error; err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	for _, r := range regs {
 		o, err := lockOccurrence(tx, r.OccurrenceID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := tx.First(&r, r.ID).Error; err != nil {
-			return nil, err
+			return err
 		}
 		var ev models.Event
 		if err := tx.First(&ev, o.EventID).Error; err != nil {
-			return nil, err
+			return err
 		}
 		old := r
 		if deleting || !a.eligibleRegistration(tx, r, &ev, now) {
@@ -213,27 +212,23 @@ func (a *App) reconcileHouseholdPerson(tx *gorm.DB, person *models.HouseholdPers
 			continue
 		}
 		if err := tx.Omit(registrationSaveOmits()...).Save(&r).Error; err != nil {
-			return nil, err
+			return err
 		}
 		if err := auditRegistration(tx, actor, audit.RegistrationChanged, ev.ID, old, r, ip); err != nil {
-			return nil, err
+			return err
 		}
 		if r.Status == models.RegCancelled {
-			ids, err := notifyRegistrationRemoved(tx, &ev, o, r, "This household person's details changed. Check their profile before signing them up again.", actor)
-			if err != nil {
-				return nil, err
+			if err := notifyRegistrationRemoved(tx, &ev, o, r, "This household person's details changed. Check their profile before signing them up again.", actor); err != nil {
+				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 		if old.Status == models.RegGoing {
-			ids, err := a.promoteLocked(tx, &ev, o, now, actorID)
-			if err != nil {
-				return nil, err
+			if err := a.promoteLocked(tx, &ev, o, now, actorID); err != nil {
+				return err
 			}
-			mailed = append(mailed, ids...)
 		}
 	}
-	return mailed, nil
+	return nil
 }
 
 type registeredByJSON struct {

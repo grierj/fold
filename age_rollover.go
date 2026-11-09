@@ -49,7 +49,7 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 			}
 			// Keep contact endings in the committed birthday mutation too,
 			// even when the preliminary try-locked sweep was busy.
-			_, err = a.reconcileContacts(tx, now, contactChange{UserID: id})
+			err = a.reconcileContacts(tx, now, contactChange{UserID: id})
 			return err
 		})
 		if err != nil {
@@ -162,10 +162,10 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 		}
 	}
 	if oldStatus == models.UserDisabled && status != models.UserDisabled {
-		if _, err := restoreMemberships(tx, user.ID, 0, ""); err != nil {
+		if err := restoreMemberships(tx, user.ID, 0, ""); err != nil {
 			return false, err
 		}
-		if _, err := a.restoreRegistrations(tx, user.ID, status, 0, "", now); err != nil {
+		if err := a.restoreRegistrations(tx, user.ID, status, 0, "", now); err != nil {
 			return false, err
 		}
 	}

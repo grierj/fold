@@ -911,7 +911,7 @@ func TestConversionRetryErrorIsConflict(t *testing.T) {
 // decideAccountRequest -> contactMutation (gate first) ->
 // lockConversionParticipants (every conversion participant locked NO KEY UPDATE,
 // unscoped, in id order, then the household row) -> approveHouseholdConversion ->
-// moveHouseholdConversion -> transferHouseholdConversion: registrations moved,
+// transferHouseholdConversion: registrations moved,
 // audit, then notify.Send to the participants who may manage the household.
 // The recipients come from the locked set, not from a live-user read, so a
 // participant erased first is still in the list the code builds; the recipient

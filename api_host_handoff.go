@@ -209,18 +209,18 @@ func (errNeedHostSuccessors) Error() string {
 // is given, with who may host them next. Nothing else is read when there are
 // none; otherwise exactly three reads, however many events there are. The
 // second result is the sole-hosted event ids, ascending.
-func soleHostEventsFor(db *gorm.DB, actor *models.User, targetID uint, seats map[uint][]policy.HostSeat, now time.Time) (soleHostEventsJSON, []uint, error) {
+func soleHostEventsFor(db *gorm.DB, actor *models.User, targetID uint, seats map[uint][]policy.HostSeat, now time.Time) (soleHostEventsJSON, error) {
 	out := soleHostEventsJSON{Events: []soleHostEventJSON{}, Candidates: []successorJSON{}}
 	sole := soleHosted(seats, targetID)
 	if len(sole) == 0 {
-		return out, nil, nil
+		return out, nil
 	}
 	var events []struct {
 		ID    uint
 		Title string
 	}
 	if err := db.Model(&models.Event{}).Select("id, title").Where("id IN ?", sole).Order("title, id").Scan(&events).Error; err != nil {
-		return out, nil, err
+		return out, err
 	}
 	var next []struct {
 		EventID  uint
@@ -229,7 +229,7 @@ func soleHostEventsFor(db *gorm.DB, actor *models.User, targetID uint, seats map
 	if err := db.Raw(`SELECT DISTINCT ON (event_id) event_id, starts_at FROM event_occurrences
 		WHERE event_id IN ? AND status = ? AND starts_at >= ? ORDER BY event_id, starts_at`,
 		sole, models.OccurrenceScheduled, now).Scan(&next).Error; err != nil {
-		return out, nil, err
+		return out, err
 	}
 	nextAt := make(map[uint]time.Time, len(next))
 	for _, n := range next {
@@ -245,14 +245,14 @@ func soleHostEventsFor(db *gorm.DB, actor *models.User, targetID uint, seats map
 	}
 	var users []models.User
 	if err := db.Where("status = ? AND id <> ?", models.UserActive, targetID).Order("name, id").Find(&users).Error; err != nil {
-		return out, nil, err
+		return out, err
 	}
 	for i := range users {
 		if policy.CanAssignHost(asPerson(actor), asPerson(&users[i])) {
 			out.Candidates = append(out.Candidates, successorJSON{ID: users[i].ID, Name: users[i].PublicName(), Admin: asPerson(&users[i]).Admin})
 		}
 	}
-	return out, sole, nil
+	return out, nil
 }
 
 // apiAdminSoleHostEvents: GET /admin/users/:id/sole-host-events. No locks; the
@@ -265,7 +265,7 @@ func (a *App) apiAdminSoleHostEvents(c *gin.Context) {
 	seats, err := hostSeatsByEvent(a.DB, u.ID)
 	if err == nil {
 		var out soleHostEventsJSON
-		out, _, err = soleHostEventsFor(a.DB, apiUser(c), u.ID, seats, time.Now().UTC())
+		out, err = soleHostEventsFor(a.DB, apiUser(c), u.ID, seats, time.Now().UTC())
 		if err == nil {
 			c.JSON(http.StatusOK, out)
 			return
@@ -456,7 +456,7 @@ func deletionHostPlan(tx *gorm.DB, u *models.User, me *models.User, requested ma
 		return nil, nil, nil, err
 	}
 	need := func() error {
-		data, _, err := soleHostEventsFor(tx, &actor, u.ID, seats, time.Now().UTC())
+		data, err := soleHostEventsFor(tx, &actor, u.ID, seats, time.Now().UTC())
 		if err != nil {
 			return err
 		}

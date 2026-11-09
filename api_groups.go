@@ -163,7 +163,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 			return err
 		}
 		if g.Status == models.GroupPending {
-			_, err := notifyGroupPending(tx, &g, u.ID)
+			err := notifyGroupPending(tx, &g, u.ID)
 			return err
 		}
 		return nil
@@ -458,7 +458,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		if body.Visibility != nil {
 			var err error
-			if impact, _, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
 		}
@@ -475,7 +475,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			// Only an admin's decision is news to the leaders; a leader
 			// archiving their own pending group is not "an admin decided".
 			if policy.IsAdmin(asPerson(u)) {
-				if _, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, ""); err != nil {
+				if err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, ""); err != nil {
 					return err
 				}
 			}
@@ -657,10 +657,10 @@ func normalizeVisibility(visibility string) (string, string) {
 	return visibility, ""
 }
 
-func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, *models.User, bool) {
+func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, bool) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, _, ok := a.loadManagedGroupID(c, uint(id))
-	return g, apiUser(c), ok
+	return g, ok
 }
 
 // apiSetMemberRole makes an active member a leader, or a leader a member
@@ -668,7 +668,7 @@ func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, *models.User, boo
 // is no admin-approval gate (DEC-31), but every change is audited and shown
 // to admins as an in-app notice.
 func (a *App) apiSetMemberRole(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}
@@ -857,7 +857,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		}
 		return nil
 	}
-	_, err := auditAndNotifyLeadership(tx, audit.Entry{
+	err := auditAndNotifyLeadership(tx, audit.Entry{
 		Actor: &actor.ID, Action: audit.RoleChanged,
 		TargetType: "group", TargetID: g.ID,
 		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
@@ -901,7 +901,7 @@ func roleOrNone(r string) string {
 // apiAddGroupMember lets a leader add someone by selection or email. Invite-only
 // groups have no public join button, so this is how they grow.
 func (a *App) apiAddGroupMember(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}
@@ -980,7 +980,7 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error // already requested: the admins already have the task
 		}
-		_, err := notifyDeletionRequested(tx, g, u.ID)
+		err := notifyDeletionRequested(tx, g, u.ID)
 		return err
 	})
 	if err != nil {
@@ -1027,10 +1027,9 @@ func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string)
 
 // auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
 // tells the other admins about a leadership change in the same transaction.
-// It returns the notification IDs.
-func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
+func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	if err := audit.Write(tx, e); err != nil {
-		return nil, err
+		return err
 	}
 	return notifyLeadership(tx, e)
 }

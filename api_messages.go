@@ -22,7 +22,7 @@ import (
 // The composer's API (M3.4, PLAN 7.1–7.3). Leaders, hosts and admins write
 // announcements to the people they may reach (policy.CanMessageAudience),
 // save drafts, and schedule them for now or later; M3.5 sends them. Email
-// only for now: texting stays hidden until an SMS provider exists (DEC-117).
+// only for now: texting is not built (DEC-117).
 
 type messageJSON struct {
 	ID          uint         `json:"id"`
@@ -345,9 +345,6 @@ type composeEventJSON struct {
 type composeOptionsJSON struct {
 	CanCompose         bool `json:"canCompose"`
 	CanMessageEveryone bool `json:"canMessageEveryone"`
-	// SmsEnabled shows the composer's SMS tab. Always false until an SMS
-	// provider can be set up (M3.7, DEC-117).
-	SmsEnabled bool `json:"smsEnabled"`
 	// PushEnabled shows "Push notification too": the church's switch for
 	// notifications on devices (DEC-124). Off, no announcement pushes.
 	PushEnabled bool               `json:"pushEnabled"`
@@ -656,7 +653,7 @@ func (a *App) managesOccurrenceEvent(me *models.User, occID uint) (bool, error) 
 	} else if err != nil {
 		return false, err
 	}
-	f := a.factsFor(me, &ev)
+	f := eventFactsIn(a.DB, me, &ev)
 	return policy.CanManageEvent(asPerson(me), f.view, f.rel), nil
 }
 
