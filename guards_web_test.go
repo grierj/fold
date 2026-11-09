@@ -294,7 +294,7 @@ func colorViolations(path, src string) []string {
 			}
 		}
 		for _, c := range paletteClassRe.FindAllString(line, -1) {
-			bad = append(bad, where+c+" is a palette color or scale step, which the theme does not build. Use a role from TOKENS.md: primary, page, surface, sunken, border, text, text-muted, danger, success, warning, info (with -hover, -subtle, -on-subtle, -border, -foreground)")
+			bad = append(bad, where+c+" is a palette color or scale step, which the theme does not build. Use a role from the theme in web/src/index.css: primary, page, surface, sunken, border, text, text-muted, danger, success, warning, info (with -hover, -subtle, -on-subtle, -border, -foreground)")
 		}
 	}
 	return bad
@@ -416,7 +416,7 @@ func TestErrorTextGuardCatchesRawMessages(t *testing.T) {
 	}
 }
 
-// --- UI ratchets (ENFORCEMENT.md B2-B6) ---
+// --- UI ratchets (DEC-60 to DEC-66) ---
 //
 // Each rule counts its pattern per file in web/src (tests and
 // components/ui excluded). ui-ratchet.json holds today's counts: a file may
@@ -433,7 +433,7 @@ type uiRule struct {
 var uiRules = []uiRule{
 	{
 		name: "rawControls",
-		fix:  "use <Button variant=…>, <Chip selected=…> or <Field label=…><Input/></Field> from components/ui (ENFORCEMENT.md A)",
+		fix:  "use <Button variant=…>, <Chip selected=…> or <Field label=…><Input/></Field> from components/ui (AGENTS.md, UI controls)",
 		re:   regexp.MustCompile(`<(button|input|select|textarea)\b|className=["{][^"}]*\b(btn-[a-z-]+|chip)\b`),
 	},
 	{

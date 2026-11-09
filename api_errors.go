@@ -86,7 +86,7 @@ func (e *apiError) body() gin.H {
 	return b
 }
 
-// declaredAPIErrors lists every value made by apiErr, for the table and
+// declaredAPIErrors lists every value made by apiErr, for the
 // guard tests. Values made by apiErrf at run time are not in it.
 var declaredAPIErrors []*apiError
 
