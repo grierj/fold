@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -111,14 +110,14 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		fail(c, errEnterValidEmail)
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if len(name) > 100 {
-		fail(c, errNameTooLong100)
+	name, err := optionalName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
-	phone := strings.TrimSpace(body.Phone)
-	if len(phone) > 30 {
-		fail(c, errPhoneTooLong)
+	phone, err := phoneNumber(body.Phone)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 
@@ -161,7 +160,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		GroupID: body.GroupID, OverLimit: overLimit,
 		ExpiresAt: time.Now().UTC().Add(tokenTTL),
 	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockInvitationEmail(tx, email); err != nil {
 			return err
 		}
@@ -181,7 +180,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			return writeInvitationRefusal(tx, me.ID, reason, c.ClientIP())
 		}
 		if !asPerson(me).Admin {
-			allowed, err := conversionSendAllowed(tx, me.ID, email)
+			allowed, err := inviteSendAllowed(tx, me.ID, email)
 			if err != nil {
 				return err
 			}
@@ -189,28 +188,17 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 				return refuse(errInvitationLimit, "daily_limit")
 			}
 		}
-		var existing models.User
-		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil {
+		hold, err := emailHeldBy(tx, email, 0, 0, true)
+		if err != nil {
 			return err
 		}
-		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
-			return refuse(errEmailTaken, "existing_account")
+		switch hold {
+		case holdAccount:
+			return refuse(errEmailTaken, hold)
+		case holdPendingConversion, holdPendingInvitation:
+			return refuse(errConversionEmail, hold)
 		}
-		var pending int64
-		if err := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending).Count(&pending).Error; err != nil {
-			return err
-		}
-		if pending != 0 {
-			return refuse(errConversionEmail, "pending_conversion")
-		}
-		var n int64
-		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil {
-			return err
-		}
-		if n > 0 {
-			return refuse(errConversionEmail, "pending_invitation")
-		}
-		_, hash, err := createInvitationToken()
+		_, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}
@@ -305,9 +293,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	if !ok {
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if len(name) > 100 {
-		fail(c, errNameTooLong100)
+	name, err := optionalName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	var userID uint
@@ -342,7 +330,6 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return errEmailTaken
 		}
 		var group *models.Group
-		var count int
 		if inv.GroupID != nil {
 			var g models.Group
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, *inv.GroupID).Error; err != nil {
@@ -376,36 +363,21 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		if !policy.CanInvite(asPerson(&inviter), group != nil, leadsTarget, leadsAnywhere) {
 			return errTokenInvalid
 		}
-		if group != nil {
-			var err error
-			if count, err = memberCount(tx, group.ID); err != nil {
-				return err
-			}
-			if !policy.GroupHasRoom(group.MemberLimit, count) && !inv.OverLimit {
-				return errGroupFull // the token stays live: this can be retried
-			}
-		}
-		u := models.User{Email: inv.Email, Name: name, Role: models.RoleMember, Status: models.UserActive}
+		u := models.User{Email: inv.Email, Role: models.RoleMember}
 		if guestRow {
 			u = existing
-			u.Name = name
-			u.Status = models.UserActive
 		}
-		u.AccountType, u.BirthDate = kind, birth
-		if kind == models.AccountTeen {
-			u.Status = models.UserPendingConsent
-		}
+		u.Name, u.AccountType, u.BirthDate = name, kind, birth
+		u.Status = newAccountStatus(kind, true)
 		if err := u.SetPassword(body.Password); err != nil {
 			return err
 		}
 		if guestRow {
-			if err := tx.Save(&u).Error; err != nil {
-				return err
-			}
-			if err := revokeAccountTokens(tx, u.ID); err != nil {
-				return err
-			}
-		} else if err := tx.Create(&u).Error; err != nil {
+			err = upgradeGuestIn(tx, &u, "status", "name", "account_type", "birth_date", "password_hash")
+		} else {
+			err = tx.Create(&u).Error
+		}
+		if err != nil {
 			return err
 		}
 		now := time.Now().UTC()
@@ -426,35 +398,22 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		// Claim the invitation atomically: a concurrent accept of the same
 		// token must lose here, not rely on the users.email unique index.
-		res := tx.Model(&models.Invitation{}).
-			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive, inv.ID, hashToken(body.Token)).
-			Update("accepted_at", now)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errTokenInvalid // another accept claimed it first
+		if err := claimInvitation(tx, inv.ID, body.Token, now); err != nil {
+			return err
 		}
 		meta := map[string]any{"userId": u.ID}
 		if group != nil {
-			if err := tx.Create(&models.Membership{UserID: u.ID, GroupID: group.ID,
-				Role: inv.Role, Status: models.MembershipActive, JoinedAt: now}).Error; err != nil {
+			// The invitation is the authority (checked above under the inviter's
+			// lock); changeRoleIn still holds the capacity rule (DEC-39) and writes
+			// the over-limit audit row, naming this invitation. errGroupFull rolls
+			// the whole accept back, so the token stays live and can be retried.
+			err := a.changeRoleIn(tx, &inviter, c.ClientIP(), group, u.ID, inv.Role, inv.OverLimit,
+				&memberAddOptions{invitationID: inv.ID},
+				func(_, _ *models.User, _, _ policy.Rel, _ int) bool { return true })
+			if err != nil {
 				return err
 			}
 			meta["groupId"] = group.ID
-			if !policy.GroupHasRoom(group.MemberLimit, count) {
-				// Over the limit by the inviting leader's or admin's
-				// explicit choice (DEC-39).
-				if err := audit.Write(tx, audit.Entry{
-					Actor: &inv.InvitedBy, Action: audit.AddedOverLimit,
-					TargetType: "group", TargetID: group.ID,
-					Meta: map[string]any{"userId": u.ID, "count": count,
-						"limit": *group.MemberLimit, "role": inv.Role, "invitationId": inv.ID},
-					IP: c.ClientIP(),
-				}); err != nil {
-					return err
-				}
-			}
 		}
 		userID = u.ID
 		return audit.Write(tx, audit.Entry{Actor: &inv.InvitedBy, Action: audit.InvitationAccepted,

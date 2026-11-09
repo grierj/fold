@@ -35,7 +35,7 @@ QC1_NAV_BUDGET_MS=300
 QC1_CLICKS_PER_CASE=30
 # Dense targets of the scaling design (R5): 100,000 reasons at the tables that can hold them (judged against the SAME budgets; a miss is a failure, not a cap).
 QC1_DENSE_COUNTS_DEFAULT=100000
-# contactLockID (contact_lifecycle.go): the gate pg_advisory_xact_lock takes.
+# contactLockID (advisory_locks.go): the gate pg_advisory_xact_lock takes.
 QC1_GATE_LOCK_ID=0x464f4c44434f4e
 # Items the harness cannot measure at this tree, with the reason it records.
 QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are not in this tree'

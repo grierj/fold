@@ -197,16 +197,15 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 func erasureHouseholdLockProblems(sources guardkit.Sources) []string {
 	want := map[string]bool{
 		"age_rollover.go:rolloverAges":                             true, // flagHouseholdChild13 (N-05)
-		"api_admin.go:decideGuardianLink":                          true,
+		"api_admin_guardian_links.go:decideGuardianLink":           true,
 		"api_admin_household.go:apiAdminAddHouseholdPerson":        true,
 		"api_household_conversion.go:issueHouseholdConversion":     true,
 		"api_household_conversion.go:apiCancelHouseholdConversion": true,
-		"api_household_conversion.go:acceptHouseholdConversion":    true,
 		"api_household_conversion.go:approveHouseholdConversion":   true,
-		"api_profile.go:apiUpdateMyHousehold":                      true, // N-11 family
-		"api_profile.go:apiAddHouseholdPerson":                     true,
-		"api_profile.go:apiUpdateHouseholdPerson":                  true,
-		"api_profile.go:apiDeleteHouseholdPerson":                  true, // reconcileHouseholdPerson
+		"api_households.go:apiUpdateMyHousehold":                   true, // N-11 family
+		"api_households.go:apiAddHouseholdPerson":                  true,
+		"api_households.go:apiUpdateHouseholdPerson":               true,
+		"api_households.go:apiDeleteHouseholdPerson":               true, // reconcileHouseholdPerson
 		"api_registrations.go:apiRegister":                         true,
 		"api_registrations.go:addHouseholdRegistration":            true,
 		"api_teen_conversion.go:lockConversionParticipants":        true,

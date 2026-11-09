@@ -66,22 +66,23 @@ func guardianTokenFromText(t *testing.T, body string) string {
 	return parsed.Query().Get("token")
 }
 
-func TestGuardianEmailResendEnqueuesBeforeItsFixedResponse(t *testing.T) {
+func TestGuardianEmailResendEnqueuesBeforeItAnswers(t *testing.T) {
 	app, guardian, _, link, client, raw := guardianEmailSetup(t)
 	path := "/api/v1/me/guardian-links/" + itoa(link.ID) + "/consent-email"
 	tokensBefore := accountTokens(t, app, guardian.ID, models.TokenTeenConsent)
 	mailsBefore := mailCount(t, app, "")
 	stop := failJobEnqueue(t, app.DB, kindGuardianConsentMail)
 	want := `{"message":"Check your email for a consent link. It expires in 24 hours."}`
-	if got := apiDo(t, client, "POST", path, nil, http.StatusOK); got != want {
-		t.Fatalf("enqueue failure changed resend answer: %s", got)
+	// A resend that could not be queued does not claim that an email is coming.
+	if got := apiDo(t, client, "POST", path, nil, http.StatusInternalServerError); strings.Contains(got, "Check your email") {
+		t.Fatalf("a failed enqueue answered as if mail were queued: %s", got)
 	}
 	stop()
 	if len(mailJobsOfKind(t, app, kindGuardianConsentMail)) != 1 || !reflect.DeepEqual(tokensBefore, accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) || mailCount(t, app, "") != mailsBefore {
 		t.Fatal("failed resend left a partial job, changed the token or sent mail")
 	}
 	// The failed enqueue spent its allowance. Two more requests enqueue,
-	// then the hourly limit keeps returning exactly the same public answer.
+	// then the hourly limit keeps returning the ordinary public answer (DEC-52).
 	for range targetHourLimit + 1 {
 		if got := apiDo(t, client, "POST", path, nil, http.StatusOK); got != want {
 			t.Fatalf("resend answer changed: %s", got)
@@ -320,5 +321,26 @@ func TestAdminGuardianUsesConfirmedGuardianCapacity(t *testing.T) {
 	app.DB.Where("teen_user_id = ?", teen.ID).First(&row)
 	if row.GranterRole != models.ConsentGuardian {
 		t.Fatalf("guardian acting as %s", row.GranterRole)
+	}
+}
+
+// The public preview only reads: it answers while the contact gate is held,
+// where taking the gate would queue it behind every contact writer.
+func TestGuardianEmailPreviewDoesNotWaitForTheContactGate(t *testing.T) {
+	app, _, teen, _, _, raw := guardianEmailSetup(t)
+	release, _ := holdAdvisory(t, app.DB, contactLockID)
+	defer release()
+	anon := newAPIClient(t, app)
+	done := make(chan string, 1)
+	go func() {
+		done <- apiDo(t, anon, "GET", "/api/v1/guardian-consent?token="+url.QueryEscape(raw), nil, http.StatusOK)
+	}()
+	select {
+	case body := <-done:
+		if !strings.Contains(body, teen.PublicName()) {
+			t.Fatalf("preview body: %s", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the preview waited for the contact gate")
 	}
 }

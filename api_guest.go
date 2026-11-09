@@ -144,9 +144,9 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	email := foldmail.NormalizeAddress(body.Email)
@@ -210,7 +210,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	}
 	// Only the hash is kept. Delivery rotates it and mints the link the guest
 	// receives, so no capability exists until the mail is about to be sent.
-	_, hash, err := createInvitationToken()
+	_, hash, err := newTokenAndHash()
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -380,7 +380,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 				return err
 			}
 		}
-		raw, hash, err := createInvitationToken()
+		raw, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}

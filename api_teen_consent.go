@@ -40,15 +40,33 @@ func consentJSON(row models.TeenConsent) teenConsentJSON {
 		GrantedBy: row.GrantedBy, GranterRole: row.GranterRole, EvidenceText: row.EvidenceText, At: row.At}
 }
 
-// latestTeenConsentIn must be read after the teen user lock when deciding
-// status. The user row serializes appends even when no consent exists yet.
-func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
+// latestTeenConsent is the newest consent row for one teen and scope, and
+// whether there is one. Read it after the teen user lock when deciding status:
+// the user row serializes appends even when no consent exists yet.
+func latestTeenConsent(tx *gorm.DB, teenID uint, scope string) (models.TeenConsent, bool, error) {
 	var row models.TeenConsent
-	err := tx.Where("teen_user_id = ? AND scope = ?", teenID, scope).Order("at DESC, id DESC").First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
-	}
-	return row.Status == models.ConsentGranted, err
+	res := tx.Where("teen_user_id = ? AND scope = ?", teenID, scope).Order("at DESC, id DESC").Limit(1).Find(&row)
+	return row, res.RowsAffected == 1, res.Error
+}
+
+// latestTeenConsentIn reports whether the newest consent for scope is a grant.
+func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
+	row, found, err := latestTeenConsent(tx, teenID, scope)
+	return found && row.Status == models.ConsentGranted, err
+}
+
+// latestAccountConsentID is the id of the newest account-scope consent row
+// (0 when there is none): what a guardian email link binds.
+func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
+	row, _, err := latestTeenConsent(tx, teenID, models.TeenConsentAccount)
+	return row.ID, err
+}
+
+// latestTeenConsents is the newest row of every scope for each of the teens.
+func latestTeenConsents(db *gorm.DB, teenIDs []uint) ([]models.TeenConsent, error) {
+	var latest []models.TeenConsent
+	err := db.Raw("SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ? ORDER BY teen_user_id, scope, at DESC, id DESC", teenIDs).Scan(&latest).Error
+	return latest, err
 }
 
 // lockConsentUsers follows the registration/conversion lifecycle lock order:
@@ -114,32 +132,12 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			status = models.UserActive
 		}
 		if status != teen.Status {
-			// Restore while the row still has disabled status, so its kept
-			// memberships and seats are not counted twice. Pending teens are
-			// already listed, so their initial grant needs no restore.
-			if teen.Status == models.UserDisabled && status != models.UserDisabled {
-				if err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP()); err != nil {
-					return err
-				}
-				if err := a.restoreRegistrations(tx, teen.ID, status, &actor.ID, c.ClientIP(), time.Now().UTC()); err != nil {
-					return err
-				}
-			}
-			// Every account-status transition ends old sessions, including
-			// legacy pending cookies. A newly consented teen logs in afresh.
-			updates := map[string]any{"status": status, "session_version": sessionVersionBump()}
-			if err := tx.Model(teen).Updates(updates).Error; err != nil {
+			// setAccountStatusIn ends old sessions (including legacy pending
+			// cookies) and does the seat work in its fixed order; a newly
+			// consented teen logs in afresh.
+			if err := a.setAccountStatusIn(tx, teen, map[string]any{"status": status}, actor.ID, c.ClientIP()); err != nil {
 				return err
 			}
-			if status == models.UserDisabled {
-				if err := revokeAccountTokens(tx, teen.ID); err != nil {
-					return err
-				}
-				if err := a.promoteOnDisable(tx, teen.ID, true); err != nil {
-					return err
-				}
-			}
-			teen.Status = status
 		}
 	}
 	if change.Scope == models.TeenConsentAccount {
@@ -161,11 +159,11 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	}
 	// Evidence stays in the admin history and audit. Notifications contain no
 	// birth date, contact information or consent evidence.
-	var admins []uint
-	if err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Pluck("id", &admins).Error; err != nil {
+	admins, err := activeAdminIDs(tx)
+	if err != nil {
 		return err
 	}
-	_, err := notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: admins, Actor: &actor.ID,
+	_, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: admins, Actor: &actor.ID,
 		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/admin?tab=users",
 		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
 	if err != nil {
