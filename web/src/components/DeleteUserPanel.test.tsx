@@ -2,7 +2,8 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminUsers, ApiError } from "../api";
+import { AdminUsers } from "../api/adminUsers";
+import { ApiError } from "../api/core";
 import { reloadStarted, reloadSucceeded, requireReload } from "../lib/deleteReload";
 import { ERROR_COPY } from "../lib/errors";
 import type { AttemptSettleResponse, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
@@ -30,10 +31,7 @@ vi.mock("../lib/reasonSetDigest", async (importActual) => {
   const actual = await importActual<typeof import("../lib/reasonSetDigest")>();
   return { ...actual, reasonReviewBody: vi.fn(actual.reasonReviewBody) };
 });
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() },
-}));
+vi.mock("../api/adminUsers", async (importActual) => ({ ...(await importActual<typeof import("../api/adminUsers")>()), AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() } }));
 
 const target: User = {
   id: 9, name: "Hana Host", displayName: "", email: "hana@example.com", phone: "", hideContactFromLeaders: true,
@@ -804,7 +802,7 @@ describe("DeleteUserPanel through the real fetch wrapper", () => {
   // Routes the panel's three attempt calls to the real AdminUsers functions and
   // answers the network by hand.
   async function wire(answer: (call: Call) => Response) {
-    const real = await vi.importActual<typeof import("../api")>("../api");
+    const real = await vi.importActual<typeof import("../api/adminUsers")>("../api/adminUsers");
     vi.mocked(AdminUsers.mintAttempt).mockImplementation(real.AdminUsers.mintAttempt);
     vi.mocked(AdminUsers.remove).mockImplementation(real.AdminUsers.remove);
     vi.mocked(AdminUsers.settleAttempt).mockImplementation(real.AdminUsers.settleAttempt);

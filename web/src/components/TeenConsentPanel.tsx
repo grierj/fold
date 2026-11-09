@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AdminTeenConsents } from "../api";
+import { AdminTeenConsents } from "../api/adminUsers";
 import type { TeenConsent, User } from "../types";
 import { errorText } from "../lib/errors";
 import { formatWhen } from "../lib/when";

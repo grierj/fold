@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { AdminRooms, type RoomInput } from "../../api";
+import { AdminRooms, type RoomInput } from "../../api/rooms";
 import type { Room } from "../../types";
 import { usePage } from "../../lib/usePage";
 import { PageCount, Pagination } from "../ui/Pagination";

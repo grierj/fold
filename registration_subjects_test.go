@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -217,54 +215,16 @@ func TestHouseholdClockInUsesTransactionTimezone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := householdClockIn(tx, now)
+		got, err := churchClockIn(tx, now)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !got.Equal(now) || got.Format(time.RFC3339) != tt.want || got.Location().String() != "America/Boise" {
 			t.Fatalf("transaction clock for %s = %s in %s; want %s in America/Boise", tt.instant, got.Format(time.RFC3339), got.Location(), tt.want)
 		}
-		if outside := app.householdClock(now); outside.Location() != time.UTC || !outside.Equal(now) {
+		if outside, err := churchClockIn(app.DB, now); err != nil || outside.Location() != time.UTC || !outside.Equal(now) {
 			t.Fatalf("request clock read uncommitted timezone: %v", outside)
 		}
-	}
-}
-
-func TestHouseholdClockInFallbackAndReadFailure(t *testing.T) {
-	for _, tt := range []struct {
-		name, value string
-	}{
-		{name: "missing"},
-		{name: "empty"},
-		{name: "server local", value: "Local"},
-		{name: "invalid", value: "Not/AZone"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			app := testApp(t)
-			if tt.name != "missing" {
-				if err := app.DB.Create(&models.Setting{Key: settingTimezone, Value: tt.value}).Error; err != nil {
-					t.Fatal(err)
-				}
-			}
-			now := time.Date(2026, 10, 22, 0, 30, 0, 0, time.FixedZone("input", 2*60*60))
-			got, err := householdClockIn(app.DB, now)
-			if err != nil || !got.Equal(now) || got.Location() != time.UTC {
-				t.Fatalf("fallback clock = %v, %v; want %v in UTC", got, err, now.UTC())
-			}
-		})
-	}
-
-	app := testApp(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	db := app.DB.WithContext(ctx)
-	now := time.Date(2026, 10, 22, 0, 30, 0, 0, time.FixedZone("input", 2*60*60))
-	if got, err := householdClockIn(db, now); !errors.Is(err, context.Canceled) || !got.IsZero() {
-		t.Fatalf("failed transaction clock = %v, %v; want zero time and context cancellation", got, err)
-	}
-	requestApp := &App{DB: db}
-	if got := requestApp.householdClock(now); !got.Equal(now) || got.Location() != time.UTC {
-		t.Fatalf("failed request clock = %v; want %v in UTC", got, now.UTC())
 	}
 }
 
@@ -303,7 +263,7 @@ func TestSubjectFactsChurchLocalBirthday(t *testing.T) {
 			if !f.today.IsZero() || f.clock == nil {
 				t.Fatal("facts eagerly chose UTC instead of a lazy church clock")
 			}
-			f.clock = func() time.Time { return app.householdClock(instant) }
+			f.clock = func() time.Time { return instant.In(churchZoneOrUTC(app.DB)) }
 			facts := householdFacts(f.people[person.ID], nil, f.day())
 			if facts.AgeYears == nil || *facts.AgeYears != tt.age {
 				t.Fatalf("age: %+v", facts)

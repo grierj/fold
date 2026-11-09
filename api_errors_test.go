@@ -33,10 +33,6 @@ func TestErrorCodesKeysAreUsed(t *testing.T) {
 		if strings.Contains(src, strconv.Quote(msg)) || strings.Contains(src, "`"+msg+"`") {
 			continue
 		}
-		// "password must be at least "+strconv.Itoa(minPasswordLength)+" characters"
-		if msg == "password must be at least 10 characters" && strings.Contains(src, `"password must be at least "`) {
-			continue
-		}
 		t.Errorf("errorCodes key %q is not sent anywhere; update the key to the new wording", msg)
 	}
 }

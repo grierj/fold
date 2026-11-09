@@ -109,12 +109,13 @@ func (a *App) startJobs(ctx context.Context) func() {
 		for {
 			now := time.Now()
 			// The church's zone decides the day. If it can't be read, nothing
-			// is queued under a guessed day; try again shortly.
+			// is queued under a guessed day; try again shortly. A stored value
+			// that is no zone uses UTC, so the daily jobs still run.
 			next := 30 * time.Second
 			if err := queueHourly(a.DB, hourly, now); err != nil {
 				log.Printf("jobs: queue hourly tasks: %v", err)
 			}
-			if zone, err := churchZoneErr(a.DB); err != nil {
+			if zone, err := churchZoneLenient(a.DB); err != nil {
 				log.Printf("jobs: read the church time zone: %v", err)
 			} else if err := a.queueDaily(kinds, now, zone); err != nil {
 				log.Printf("jobs: queue daily tasks: %v", err)

@@ -5,12 +5,12 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const churchAddress = vi.fn();
 const setChurchAddress = vi.fn();
-vi.mock("../../api", async (orig) => {
-  const real = await orig<typeof import("../../api")>();
+vi.mock("../../api/admin", async (orig) => {
+  const real = await orig<typeof import("../../api/admin")>();
   return { ...real, Admin: { ...real.Admin, churchAddress: () => churchAddress(), setChurchAddress: (a: string) => setChurchAddress(a) } };
 });
 
-import { ApiError } from "../../api";
+import { ApiError } from "../../api/core";
 import { ChurchAddressSetting } from "./ChurchAddressSetting";
 
 const view = () => render(<MemoryRouter><ChurchAddressSetting /></MemoryRouter>);

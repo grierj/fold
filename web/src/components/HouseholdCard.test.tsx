@@ -7,13 +7,10 @@ const addPerson = vi.fn();
 const convert = vi.fn();
 const resend = vi.fn();
 const cancel = vi.fn();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
-  Households: { mine: () => mine(), addPerson: (d: unknown) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn(), convert: (id: number, email: string) => convert(id, email), resendConversion: (id: number) => resend(id), cancelConversion: (id: number) => cancel(id) },
-}));
+vi.mock("../api/households", async (orig) => ({ ...(await orig<typeof import("../api/households")>()), Households: { mine: () => mine(), addPerson: (d: unknown) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn(), convert: (id: number, email: string) => convert(id, email), resendConversion: (id: number) => resend(id), cancelConversion: (id: number) => cancel(id) } }));
 
 import { HouseholdCard, personProblems } from "./HouseholdCard";
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 
 const household = {
   id: 1, name: "Smith household", address: "", createdBy: 1,
@@ -100,7 +97,7 @@ describe("household name and address", () => {
   beforeEach(() => { vi.resetAllMocks(); mine.mockResolvedValue({ household: { ...household, people: [], address: "Old address" } }); });
 
   it("shows an empty household's details and saves through the existing endpoint", async () => {
-    const { Households } = await import("../api");
+    const { Households } = await import("../api/households");
     vi.mocked(Households.update).mockResolvedValue({ household: { ...household, people: [], name: "New household", address: "New address" } } as Awaited<ReturnType<typeof Households.update>>);
     render(<HouseholdCard />);
     const rename = await screen.findByRole("button", { name: "Rename" });
@@ -117,7 +114,7 @@ describe("household name and address", () => {
   });
 
   it("sends an explicit address clear and preserves valid fields on failure", async () => {
-    const { Households } = await import("../api");
+    const { Households } = await import("../api/households");
     vi.mocked(Households.update).mockRejectedValueOnce(new Error("offline"));
     render(<HouseholdCard />);
     await userEvent.click(await screen.findByRole("button", { name: "Edit address" }));
@@ -131,7 +128,7 @@ describe("household name and address", () => {
   });
 
   it("validates a required name before sending", async () => {
-    const { Households } = await import("../api"); render(<HouseholdCard />);
+    const { Households } = await import("../api/households"); render(<HouseholdCard />);
     await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
     await userEvent.clear(screen.getByLabelText(/^Household name/));
     // Native validation and the shared field validation both reject it.
@@ -141,7 +138,7 @@ describe("household name and address", () => {
   });
 
   it("preserves inaccessible care notes while explicitly clearing a visible optional field", async () => {
-    const { Households } = await import("../api");
+    const { Households } = await import("../api/households");
     mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], careNotes: undefined }] } });
     vi.mocked(Households.updatePerson).mockRejectedValue(new Error("offline"));
     render(<HouseholdCard />); await userEvent.click(await screen.findByRole("button", { name: "Edit Kid Smith" }));

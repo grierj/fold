@@ -156,8 +156,8 @@ func (a *App) apiTokenEmailSettings(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load email settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"emailSettings": s, "email": maskEmail(u.Email),
-		"fromCategory": strings.TrimPrefix(link.Scope, "category:"), "canTurnOn": link.boundTo(u.Email)})
+	c.JSON(http.StatusOK, emailSettingsLinkJSON{EmailSettings: s, Email: maskEmail(u.Email),
+		FromCategory: strings.TrimPrefix(link.Scope, "category:"), CanTurnOn: link.boundTo(u.Email)})
 }
 
 // apiTokenUpdateEmailSettings changes one switch from the signed-out page.
@@ -229,9 +229,5 @@ const errChurchAddressCharacters = "the address has a character that can't go in
 
 // churchAddress is the church's postal address for footers, or "".
 func (a *App) churchAddress() string {
-	var s models.Setting
-	if a.DB.Where("key = ?", settingChurchAddress).First(&s).Error != nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Value)
+	return a.settingValue(settingChurchAddress)
 }

@@ -14,7 +14,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -146,8 +145,7 @@ func trySavepoint(tx *gorm.DB, name string, write func() error) (ok bool, err er
 
 // isOverlap reports the exclusion constraint refusing a booking.
 func isOverlap(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23P01" && pgErr.ConstraintName == "room_bookings_no_overlap"
+	return pgConstraint(err, pgExclusionViolation, "room_bookings_no_overlap")
 }
 
 // roomPickerJSON is one bookable room as the picker for a date sees it.
@@ -284,7 +282,7 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	suggestions := a.roomSuggestions(suggestFor{person: me, eventID: ev.ID, groupID: ev.GroupID,
 		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: seats,
 		windows: windowsOf([]models.EventOccurrence{*occ})}, offered)
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking, "suggestions": suggestions})
+	c.JSON(http.StatusOK, dateRoomsJSON{Rooms: out, Booking: booking, Suggestions: suggestions})
 }
 
 // dateBooking is a date's booking for its managers, or nil.
@@ -619,14 +617,10 @@ const roomsChunk = 10000
 // in chunks of 10,000, so a list of dates under that pays one read.
 func roomsFor(db *gorm.DB, occurrenceIDs []uint) (map[uint]*occurrenceRoomJSON, error) {
 	out := map[uint]*occurrenceRoomJSON{}
-	for len(occurrenceIDs) > 0 {
-		n := min(len(occurrenceIDs), roomsChunk)
-		if err := roomsChunkInto(db, occurrenceIDs[:n], out); err != nil {
-			return out, err
-		}
-		occurrenceIDs = occurrenceIDs[n:]
-	}
-	return out, nil
+	err := eachChunk(occurrenceIDs, roomsChunk, func(chunk []uint) error {
+		return roomsChunkInto(db, chunk, out)
+	})
+	return out, err
 }
 
 func roomsChunkInto(db *gorm.DB, occurrenceIDs []uint, out map[uint]*occurrenceRoomJSON) error {

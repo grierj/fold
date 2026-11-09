@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AdminRooms } from "../../api";
+import { useEffect, useRef, useState } from "react";
+import { AdminRooms } from "../../api/rooms";
 import type { Room } from "../../types";
 import { errorText } from "../../lib/errors";
+import { useLoad } from "../../lib/useLoad";
 import { formatEventDay } from "../../lib/when";
 import { Button } from "../ui/Button";
 import { Field, FormError, Input } from "../ui/Field";
@@ -13,8 +14,9 @@ import { ErrorNotice } from "../ErrorNotice";
 // CalendarFeedCard: the link shows once, a new link stops the old one, and
 // a failed load never looks like "no link yet".
 export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => void }) {
-  const [loaded, setLoaded] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const feed = useLoad(() => AdminRooms.getFeed(room.id), [room.id]);
+  const loaded = feed.data !== undefined;
+  const loadError = feed.error ? errorText(feed.error, "We couldn't load this room's calendar link.") : null;
   const [hasToken, setHasToken] = useState(false);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
@@ -23,32 +25,16 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
   const [status, setStatus] = useState("");
   const linkRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const alive = useRef(true);
 
-  const load = useCallback(() => {
-    setLoaded(false);
-    setLoadError(null);
-    AdminRooms.getFeed(room.id)
-      .then((r) => {
-        if (!alive.current) return;
-        setHasToken(r.feed.hasToken);
-        setCreatedAt(r.feed.createdAt);
-        setLoaded(true);
-      })
-      .catch((err) => {
-        if (alive.current) setLoadError(errorText(err, "We couldn't load this room's calendar link."));
-      });
-  }, [room.id]);
-
-  useEffect(() => {
-    alive.current = true;
-    load();
-    // The button that opened the panel is gone, so focus starts on its heading.
-    headingRef.current?.focus();
-    return () => {
-      alive.current = false;
-    };
-  }, [load]);
+  // Each answer fills the state in the render that first sees it.
+  const [applied, setApplied] = useState(feed.data);
+  if (feed.data && feed.data !== applied) {
+    setApplied(feed.data);
+    setHasToken(feed.data.feed.hasToken);
+    setCreatedAt(feed.data.feed.createdAt);
+  }
+  // The button that opened the panel is gone, so focus starts on its heading.
+  useEffect(() => { headingRef.current?.focus(); }, [room.id]);
 
   async function create() {
     setBusy(true);
@@ -123,7 +109,7 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
         Reserved. In a calendar app, choose Add calendar &rarr; From URL (or Subscribe) and paste the link.
       </p>
       {loadError ? (
-        <ErrorNotice message={loadError} onRetry={load} />
+        <ErrorNotice message={loadError} onRetry={feed.retry} />
       ) : !loaded ? (
         <Skeleton kind="lines" count={2} label="Loading the room's calendar link…" />
       ) : (

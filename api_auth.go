@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/mail"
+	netmail "net/mail"
 	"strings"
 	"time"
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -37,7 +38,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "email and password are required")
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	keys := []throttleKey{loginEmailKey(email), loginIPKey(c.ClientIP())}
 	ctx := c.Request.Context()
 	// The attempt is counted before the password check, atomically per key,
@@ -87,19 +88,15 @@ func (a *App) apiLogin(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user), "canCompose": a.canComposeOrLog(user)})
+	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(user), CanCompose: a.canComposeOrLog(user)})
 }
-
-// normalizeEmail trims and lower-cases an address for lookups and throttle
-// keys. The column is citext, so lookups match any case anyway.
-func normalizeEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 // validEmail checks an address before it is stored as a login.
 func validEmail(s string) bool {
 	if len(s) > 254 || !strings.Contains(s, "@") {
 		return false
 	}
-	addr, err := mail.ParseAddress(s)
+	addr, err := netmail.ParseAddress(s)
 	return err == nil && addr.Address == s
 }
 
@@ -333,7 +330,7 @@ func (a *App) endSessionsAtLogout(c *gin.Context) error {
 
 func (a *App) apiMe(c *gin.Context) {
 	me := apiUser(c)
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(me), "canCompose": a.canComposeOrLog(me)})
+	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(me), CanCompose: a.canComposeOrLog(me)})
 }
 
 // canComposeOrLog says whether the nav offers Messages (M3.4c). A failed
@@ -354,7 +351,7 @@ func (a *App) canComposeOrLog(me *models.User) bool {
 func (a *App) apiMyGroups(c *gin.Context) {
 	u := apiUser(c)
 	var memberships []models.Membership
-	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, "active").
+	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, models.MembershipActive).
 		Order("joined_at").Find(&memberships)
 	groups := make([]models.Group, 0, len(memberships))
 	roles := make(map[uint]string, len(memberships))
@@ -425,7 +422,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "email is required")
 		return
 	}
-	email := normalizeEmail(body.Email)
+	email := mail.NormalizeAddress(body.Email)
 	ctx := c.Request.Context()
 	ipOK, err := a.throttleAllow(ctx, pwresetIPKey(c.ClientIP()), resetIPLimit, resetWindow)
 	addrOK := true
@@ -461,7 +458,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, user.ID).Error; err != nil {
 			return err
 		}
-		if fresh.Status != models.UserActive || normalizeEmail(fresh.Email) != email {
+		if fresh.Status != models.UserActive || mail.NormalizeAddress(fresh.Email) != email {
 			return errTokenInvalid
 		}
 		if _, err := jobs.Enqueue(tx, kindPasswordResetMail, userMailJob{UserID: user.ID}, time.Now(), "", directMailAttempts); err != nil {

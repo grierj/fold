@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../../api", () => ({ Site: { get: () => Promise.resolve({ name: "c", timezone: "America/Los_Angeles", selfSignup: "off" }) } }));
+vi.mock("../../api/site", () => ({ Site: { get: () => Promise.resolve({ name: "c", timezone: "America/Los_Angeles", selfSignup: "off" }) } }));
 vi.mock("../../lib/when", async (orig) => ({ ...(await orig<typeof import("../../lib/when")>()), browserTimeZone: () => "America/Boise" }));
 
 import { Field } from "./Field";

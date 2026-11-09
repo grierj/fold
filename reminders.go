@@ -419,7 +419,7 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 		}
 	}
 	if out.Push != nil && *out.Push && !pushWritten {
-		if at, ok := a.pushQuietHours().LastAllowed(occ.StartsAt.Add(-pushReminderLead), "", churchZone(a.DB), pushReminderMaxMove); ok {
+		if at, ok := a.pushQuietHours().LastAllowed(occ.StartsAt.Add(-pushReminderLead), churchZoneOrUTC(a.DB), pushReminderMaxMove); ok {
 			at = at.UTC()
 			out.PushDueAt = &at
 		}

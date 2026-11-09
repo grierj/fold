@@ -51,7 +51,7 @@ func ParsePostmarkWebhook(h http.Header, body []byte) ([]providers.Event, error)
 	default:
 		return nil, nil
 	}
-	e.Address = strings.ToLower(strings.TrimSpace(e.Address))
+	e.Address = NormalizeAddress(e.Address)
 	if len(e.Address) < 3 || len(e.Address) > 320 || !strings.Contains(e.Address, "@") || e.MessageID == "" {
 		return nil, fmt.Errorf("mail: postmark %s webhook without a usable address or message id", r.RecordType)
 	}

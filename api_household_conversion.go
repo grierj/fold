@@ -11,6 +11,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
@@ -50,7 +51,7 @@ func conversionMetadata(inv *models.Invitation) conversionJSON {
 
 // Ordinary and household invitations reserve the same email namespace.
 func lockInvitationEmail(tx *gorm.DB, email string) error {
-	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 7316193))", normalizeEmail(email)).Error
+	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 7316193))", mail.NormalizeAddress(email)).Error
 }
 
 func conversionEmailAvailable(tx *gorm.DB, email string, except uint, exceptRequest ...uint) error {
@@ -130,7 +131,7 @@ func (a *App) householdPersonRow(tx *gorm.DB, person *models.HouseholdPerson, vi
 func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint, links map[uint][]models.GuardianLink) (*conversionBatch, error) {
 	// Use the caller's transaction, including its context and connection. A
 	// mail job must not take another connection while holding an invitation.
-	today, err := householdClockIn(tx, time.Now().UTC())
+	today, err := churchClockIn(tx, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +258,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			jsonError(c, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		body.Email = normalizeEmail(body.Email)
+		body.Email = mail.NormalizeAddress(body.Email)
 		if !validEmail(body.Email) {
 			jsonError(c, http.StatusBadRequest, "enter a valid email address")
 			return
@@ -502,13 +503,9 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err != nil {
 				return err
 			}
-			var users []models.User
-			if err := tx.Unscoped().Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&users).Error; err != nil {
+			locked, err := lockUsersByID(tx, ids, true)
+			if err != nil {
 				return err
-			}
-			locked := map[uint]*models.User{}
-			for i := range users {
-				locked[users[i].ID] = &users[i]
 			}
 			// Test seam (nil in production): the users statement above holds
 			// every participant until this transaction commits.
@@ -683,7 +680,11 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) {
 		return 0, errConversionDetails
 	}
-	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], a.householdClock(time.Now().UTC())); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
+	today, err := churchClockIn(tx, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	if facts := householdFacts(&person, guardianLinksForPeople(tx, []uint{person.ID})[person.ID], today); !policy.MeetsAdultAccountRules(facts) && !policy.MeetsTeenAccountRules(facts) {
 		return 0, errConversionAdult
 	}
 	inviter := locked[inv.InvitedBy]

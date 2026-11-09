@@ -96,7 +96,7 @@ func deviceJSON(d models.PushSubscription) pushDeviceJSON {
 	return pushDeviceJSON{ID: d.ID, Label: d.Label, CreatedAt: d.CreatedAt, LastUsedAt: d.LastUsedAt}
 }
 
-func (a *App) pushEnabled() bool { return a.settingValue(settingPushEnabled) != "false" }
+func (a *App) pushEnabled() bool { return boolSettingIn(a.DB, settingPushEnabled, true) }
 
 // apiAdminGetPushEnabled is the church's switch for notifications on
 // devices (DEC-124, default on).

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Messages } from "../../messages-api";
+import { Messages } from "../../api/messages";
 import type { AudienceRecipient, AudienceSummary, ComposeOptions } from "../../types";
 import { errorText } from "../../lib/errors";
 import { audienceKey, ROLE_CHOICES, STATUS_CHOICES, pushLine, summaryLine, teenLine, toAudience, type AudienceChoice } from "../../lib/messages";

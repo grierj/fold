@@ -843,7 +843,7 @@ func TestHouseholdConversionApprovalRechecksAcceptedFacts(t *testing.T) {
 				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", person.ID).Update("birth_date", "1980-01-01").Error
 			case "under 18":
 				// Keep the snapshot matching to exercise the approval-date age check independently.
-				birth := app.householdClock(time.Now().UTC()).AddDate(-18, 0, 1).Format("2006-01-02")
+				birth := time.Now().UTC().In(churchZoneOrUTC(app.DB)).AddDate(-18, 0, 1).Format("2006-01-02")
 				if err := app.DB.Model(&req).Update("birth_date", birth).Error; err != nil {
 					t.Fatal(err)
 				}

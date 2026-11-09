@@ -1,10 +1,12 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApiError } from "../api/core";
 import { fakeSub, installBrowser, uninstallBrowser, type BrowserOptions } from "../test/push";
 
 const site = vi.fn();
-vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), Site: { get: () => site() } }));
+vi.mock("../api/site", async (orig) => ({ ...(await orig<typeof import("../api/site")>()), Site: { get: () => site() } }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: null }) }));
 
 import { NotificationsSetupPage } from "./NotificationsSetup";
@@ -106,4 +108,14 @@ it("isn't there when the church turned notifications off (DEC-124)", async () =>
   render(<MemoryRouter><NotificationsSetupPage /></MemoryRouter>);
   expect(await screen.findByRole("heading", { name: "Page not found", level: 1 })).toBeInTheDocument();
   expect(screen.queryByText(/Get notifications/)).not.toBeInTheDocument();
+});
+
+it("shows an error with a retry, not the directions, when the church's setting can't be read", async () => {
+  site.mockRejectedValueOnce(new ApiError(500, "x"));
+  installBrowser({ userAgent: UA.android });
+  render(<MemoryRouter><NotificationsSetupPage /></MemoryRouter>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("couldn't load the directions");
+  expect(screen.queryByRole("heading", { name: "Get notifications on your phone", level: 1 })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("heading", { name: "Get notifications on your phone", level: 1 })).toBeInTheDocument();
 });

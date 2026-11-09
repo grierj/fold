@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"log"
@@ -29,14 +28,6 @@ import (
 // the private half AES-GCM encrypted with a key derived from SESSION_SECRET.
 // Nothing for an admin to set up, and no new env var.
 
-const (
-	settingVAPIDPublic  = "vapid_public_key"
-	settingVAPIDPrivate = "vapid_private_key_enc"
-	// settingPushEnabled is the church's switch (DEC-124, default on). The
-	// admin control arrives in M3.13c2; delivery reads it now.
-	settingPushEnabled = "push_enabled"
-)
-
 // vapidAAD binds the ciphertext to what it is.
 const vapidAAD = "vapid-private-key"
 
@@ -45,11 +36,11 @@ const vapidAAD = "vapid-private-key"
 var errVAPIDUnreadable = errors.New("push: the stored web push key can't be read with this SESSION_SECRET")
 
 func vapidCipher(secret []byte) (cipher.AEAD, error) {
-	if len(secret) == 0 {
-		return nil, errors.New("push: SESSION_SECRET is empty")
+	key, err := deriveKey(secret, "vapid:v1")
+	if err != nil {
+		return nil, err
 	}
-	key := sha256.Sum256(append([]byte("fold:vapid:v1:"), secret...))
-	block, err := aes.NewCipher(key[:])
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}

@@ -9,8 +9,8 @@ import { CreateRoomField, scheduleFields, scheduleReady } from "../components/Cr
 import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Events } from "../api";
+import { useNavigate } from "react-router-dom";
+import { Events } from "../api/events";
 import { useAuth } from "../auth";
 import { useEventZone } from "../lib/useEventZone";
 import { useWhenState } from "../lib/useWhenState";
@@ -25,7 +25,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 
 export function NewChurchEvent() {
   const navigate = useNavigate();
-  const { user, loading, isAdmin } = useAuth();
+  const { loading, isAdmin } = useAuth();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const when = useWhenState({ date: "", time: "19:00", duration: 90, recurring: false, days: [] });
@@ -152,17 +152,6 @@ export function NewChurchEvent() {
     return (
       <div className="fold-page fold-page-narrow">
         <Skeleton kind="page" />
-      </div>
-    );
-  }
-  if (!user) {
-    return (
-      <div className="fold-page fold-page-narrow">
-        <h1 className="text-3xl font-bold mb-6">Schedule a church-wide event</h1>
-        <Link to="/login" state={{ from: "/events/new" }} className="text-primary font-semibold">
-          Log in
-        </Link>{" "}
-        to schedule a church-wide event.
       </div>
     );
   }

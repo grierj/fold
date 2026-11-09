@@ -18,7 +18,6 @@ import (
 	"fold/storage"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -202,7 +201,6 @@ func mapAvatarCleanupError(cctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	var pgErr *pgconn.PgError
 	switch {
 	case errors.Is(err, storage.ErrMoreRemain):
 		return jobs.Later(time.Now())
@@ -214,7 +212,7 @@ func mapAvatarCleanupError(cctx context.Context, err error) error {
 		return errAvatarFolderNested
 	case errors.Is(err, storage.ErrCleanupIncomplete):
 		return errAvatarCleanupPartial
-	case errors.As(err, &pgErr) && pgErr.Code == "55P03":
+	case pgCode(err) == pgLockNotAvailable:
 		return errAvatarLockTimeout
 	case cctx.Err() != nil, errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return errAvatarOutOfTime
@@ -387,7 +385,7 @@ func (a *App) sweepAvatarsRun(ctx context.Context, now time.Time, limit int) err
 	sctx, cancel := context.WithTimeout(ctx, avatarSweepTimeout)
 	defer cancel()
 	db := a.DB.WithContext(sctx)
-	zone, err := churchZoneErr(db)
+	zone, err := churchZoneIn(db)
 	if err != nil {
 		if sctx.Err() != nil {
 			return errSweepOutOfTime

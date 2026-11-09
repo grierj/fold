@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ContactHistory, retainedPersonId } from "../contact-history-api";
+import { ContactHistory } from "../api/contactHistory";
+import { retainedPersonId } from "../lib/retainedPersonId";
 import type { ContactHistoryPerson } from "../types";
 import { Button } from "./ui/Button";
 import { Field, Input, Select } from "./ui/Field";

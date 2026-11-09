@@ -1,9 +1,11 @@
 import { Form } from "../components/ui/Form";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router-dom";
-import { ApiError, Site } from "../api";
+import { ApiError } from "../api/core";
+import { useSite } from "../lib/useSite";
 import { useAuth } from "../auth";
-import { ContactHistory, retainedPersonId, type ContactHistoryFilters } from "../contact-history-api";
+import { ContactHistory, type ContactHistoryFilters } from "../api/contactHistory";
+import { retainedPersonId } from "../lib/retainedPersonId";
 import type { ContactHistoryEntry, ContactHistoryPerson } from "../types";
 import { ContactHistoryPersonPicker } from "../components/ContactHistoryPersonPicker";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -40,9 +42,8 @@ type Selection = { personId: string; filters: ContactHistoryFilters; days: { fro
 export function ContactHistoryPage() {
   const { user, loading, isAdmin } = useAuth();
   const { id = "" } = useParams();
-  const location = useLocation();
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return null;
   if (!isAdmin || user.status !== "active" || user.accountType === "teen") return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This page is for church admins only.</p></div>;
   return <HistoryView key={`${user.id}:${user.status}:${user.role}:${user.accountType}:${user.birthDate}:${id}`} initialId={id} />;
 }
@@ -52,9 +53,13 @@ function HistoryView({ initialId }: { initialId: string }) {
   const [person, setPerson] = useState(initialId);
   const [draft, setDraft] = useState(emptyFilters);
   const [names, setNames] = useState<Record<string, string>>({});
-  const [zone, setZone] = useState("");
-  const [zoneError, setZoneError] = useState("");
-  const [zoneRevision, setZoneRevision] = useState(0);
+  // The church's zone bounds the dates. A failed read, or a zone the date
+  // maths can't use, leaves it empty and the date filters off (never the browser's zone).
+  const { site, error: siteError, retry: retryZone } = useSite();
+  const zone = site?.timezone && historyDayBounds("", "", site.timezone) ? site.timezone : "";
+  const zoneError = siteError
+    ? "We couldn't load the church timezone. Try again."
+    : site && !zone ? "We couldn't read the church timezone. Try again, or ask your church office for help." : "";
   const [dateError, setDateError] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(() => {
@@ -105,23 +110,6 @@ function HistoryView({ initialId }: { initialId: string }) {
     setNames((old) => old[person.id] === person.name ? old : { ...old, [person.id]: person.name });
   }, []);
   const pickerFailure = useCallback((e: unknown) => failure(e, generation.current), [failure]);
-  useEffect(() => {
-    let active = true;
-    setZone(""); setZoneError("");
-    Site.get().then((site) => {
-      if (!active) return;
-      if (!site.timezone || !historyDayBounds("", "", site.timezone)) {
-        setZoneError("We couldn't read the church timezone. Try again, or ask your church office for help.");
-        return;
-      }
-      setZone(site.timezone);
-    }).catch((e: unknown) => {
-      if (!active) return;
-      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) pickerFailure(e);
-      else setZoneError("We couldn't load the church timezone. Try again.");
-    });
-    return () => { active = false; };
-  }, [zoneRevision, pickerFailure]);
   useEffect(() => {
     if (authority) return;
     window.addEventListener("focus", refresh);
@@ -224,7 +212,7 @@ function HistoryView({ initialId }: { initialId: string }) {
             <Field label="Until" optional hint="In church time. This whole date is included; choose From or a later date." error={dateError}><Input type="date" min={draft.from || undefined} value={draft.until} onChange={(e) => { setDraft({ ...draft, until: e.target.value }); setDateError(""); }} /></Field>
           </div>
           <p className="text-sm text-text-muted">{zone ? `Dates use church time (${zone}).` : zoneError ? "Church time isn't available yet." : "Loading church timezone…"}</p>
-          {zoneError && <div className="space-y-2"><FormError>{zoneError}</FormError><Button variant="secondary" onClick={() => setZoneRevision((n) => n + 1)}>Try loading church time again</Button></div>}
+          {zoneError && <div className="space-y-2"><FormError>{zoneError}</FormError><Button variant="secondary" onClick={retryZone}>Try loading church time again</Button></div>}
           <Button variant="primary" type="submit" disabled={!zone}>Apply filters</Button>
         </div>}
       </div>

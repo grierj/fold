@@ -1,13 +1,13 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { EmailSettingsChange } from "../api";
+import type { EmailSettingsChange } from "../api/notifications";
 import type { EmailKind } from "../types";
 
 const get = vi.fn();
 const update = vi.fn();
-vi.mock("../api", async (orig) => ({
-  ...(await orig<typeof import("../api")>()),
+vi.mock("../api/notifications", async (orig) => ({
+  ...(await orig<typeof import("../api/notifications")>()),
   NotificationSettings: { get: () => get(), update: (c: EmailSettingsChange) => update(c) },
   // The church has notifications on devices off unless a test says so, so
   // these tests see the email card alone (PushDeviceCard.test.tsx has the rest).
@@ -15,7 +15,7 @@ vi.mock("../api", async (orig) => ({
 }));
 const config = vi.fn();
 
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 
 const all = "Turn off all optional email";

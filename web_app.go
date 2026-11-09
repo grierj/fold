@@ -50,7 +50,7 @@ type webManifest struct {
 func manifestFor(siteName string) webManifest {
 	short := siteName
 	if utf8.RuneCountInString(short) > manifestShortNameMax {
-		short = "Fold"
+		short = defaultSiteName
 	}
 	return webManifest{
 		ID: "/", Name: siteName, ShortName: short,

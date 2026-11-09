@@ -1,12 +1,12 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Groups } from "../api";
+import { Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
 import { MyGroups } from "./MyGroups";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Groups: { mine: vi.fn(), list: vi.fn() } }));
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { mine: vi.fn(), list: vi.fn() } }));
 
 function group(id: number, over: Partial<GroupSummary> = {}): GroupSummary {
   return {

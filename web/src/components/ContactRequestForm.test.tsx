@@ -2,11 +2,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
-import { Contacts } from "../contact-api";
+import { ApiError } from "../api/core";
+import { Contacts } from "../api/contacts";
 import { ContactRequestForm } from "./ContactRequestForm";
 
-vi.mock("../contact-api", () => ({ Contacts: { create: vi.fn() } }));
+vi.mock("../api/contacts", () => ({ Contacts: { create: vi.fn() } }));
 beforeEach(() => vi.clearAllMocks());
 const props = { subjectUserId: 2, subjectName: "Pat", contextType: "group" as const, contextId: 3, onClose: vi.fn() };
 const mount = () => render(<MemoryRouter><ContactRequestForm {...props} /></MemoryRouter>);

@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Guardians, type GuardianConsentScope } from "../guardian-api";
+import { Guardians, type GuardianConsentScope } from "../api/guardians";
 import type { GuardianTeen } from "../types";
 import { errorText } from "../lib/errors";
 import { Button } from "./ui/Button";

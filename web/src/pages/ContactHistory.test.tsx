@@ -2,15 +2,17 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Site } from "../api";
-import { ContactHistory } from "../contact-history-api";
+import { ApiError } from "../api/core";
+import { Site } from "../api/site";
+import { ContactHistory } from "../api/contactHistory";
 import type { ContactHistoryEntry, ContactHistoryResponse } from "../types";
 import { ContactHistoryPage } from "./ContactHistory";
+import { RequireUser } from "../components/RequireUser";
 
 const auth = vi.hoisted(() => ({ user: { id: 1, role: "admin", status: "active" } as { id: number; role: string; status: string } | null, loading: false, isAdmin: true }));
 vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../api", async (actual) => ({ ...await actual<typeof import("../api")>(), Site: { get: vi.fn() } }));
-vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
+vi.mock("../api/site", async (actual) => ({ ...(await actual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
+vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
 const entry: ContactHistoryEntry = { id: "9007199254740993", at: "2026-10-01T12:00:00Z", action: "contact.decision", outcome: "decision", actorId: "9223372036854775807", requesterId: "9007199254740992", subjectUserId: "9007199254740993", purpose: "contact", requestId: "9223372036854775807", contextType: "group", contextId: "9007199254740993", party: "subject", decision: "approved", fields: "both" };
 const empty = { purpose: "", action: "", from: "", until: "" };
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
@@ -18,8 +20,8 @@ function Switch() { const navigate = useNavigate(); return <button onClick={() =
 const openFilters = () => userEvent.click(screen.getByRole("button", { name: "Filters" }));
 function mount(path = "/admin/users/9223372036854775807/contact-history") {
   return render(<MemoryRouter initialEntries={[path]}><Switch /><Routes>
-    <Route path="/admin/users/:id/contact-history" element={<ContactHistoryPage />} />
-    <Route path="/admin/contact-history" element={<ContactHistoryPage />} />
+    <Route path="/admin/users/:id/contact-history" element={<RequireUser><ContactHistoryPage /></RequireUser>} />
+    <Route path="/admin/contact-history" element={<RequireUser><ContactHistoryPage /></RequireUser>} />
     <Route path="/login" element={<p>Sign in first</p>} />
   </Routes></MemoryRouter>);
 }
