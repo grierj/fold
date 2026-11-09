@@ -1,30 +1,19 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests } from "../api/accountRequests";
-import { Site } from "../api/site";
 import { AccountRequestForm } from "../components/AccountRequestForm";
+import { ErrorNotice } from "../components/ErrorNotice";
+import { Skeleton } from "../components/ui/Skeleton";
+import { errorText } from "../lib/errors";
+import { churchName, useSite } from "../lib/useSite";
 
 // Self-signup (M1.3, DEC-4): the person asks for an account and an
 // admin decides. The answer is the same whether or not the email
 // already has an account; when self-signup is off this page says so
 // and the server refuses the form too.
 export function Join() {
-  const [site, setSite] = useState("");
-  const [mode, setMode] = useState<"request" | "off">("request");
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    Site.get()
-      .then((s) => {
-        setSite(s.name);
-        setMode(s.selfSignup);
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true));
-  }, []);
-
-  // "Fold" is the default name, not a church's (the header treats it the same way).
-  const church = site && site !== "Fold" ? site : "";
+  // A failed read shows no form: signup may be off, and the server refuses it then.
+  const { site, error, loading, retry } = useSite();
+  const church = churchName(site);
 
   return (
     <div className="fold-auth wrap-anywhere">
@@ -37,7 +26,11 @@ export function Join() {
       <p className="text-sm text-text-muted mb-6">
         Already have an account? <Link to="/login" className="text-link">Log in</Link>
       </p>
-      {loaded && mode === "off" ? (
+      {loading ? (
+        <Skeleton kind="lines" />
+      ) : error || !site ? (
+        <ErrorNotice message={errorText(error, "We couldn't check whether this church takes account requests.")} onRetry={retry} />
+      ) : site.selfSignup === "off" ? (
         <div className="fold-section text-text-muted">
           Self-signup is turned off for this church. Ask your church office for an
           account, or log in if you already have one.

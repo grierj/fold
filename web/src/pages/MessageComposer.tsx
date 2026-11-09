@@ -7,10 +7,9 @@ import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { reminderAudience, reminderDateText, reminderName } from "../lib/reminders";
-import { useChurchZoneLoad } from "../lib/useEventZone";
+import { churchName, useChurchZoneLoad, useSite } from "../lib/useSite";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
-import { useSiteName } from "../lib/useSiteName";
 import { AudiencePicker } from "../components/messages/AudiencePicker";
 import { SendProblem, useMessageHistory, WhoGotIt } from "../components/messages/MessageHistory";
 import { SmsComposer } from "../components/messages/SmsComposer";
@@ -58,7 +57,7 @@ export function MessageComposerPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const { user, isAdmin } = useAuth();
-  const site = useSiteName();
+  const { site } = useSite();
   // The schedule is in the church's zone: wait for it, so a saved time is
   // never read on the browser's clock first.
   const church = useChurchZoneLoad();
@@ -484,7 +483,7 @@ export function MessageComposerPage() {
         <h2 id={`${ids.body}-h`} className="text-xl font-semibold">What it says</h2>
         {options.smsEnabled ? (
           <Tabs label="Channel" value={tab} onChange={setTab} options={[{ id: "email", label: "Email" }, { id: "sms", label: "Text" }]}>
-            {tab === "email" ? emailFields : <SmsComposer church={site || "Fold"} value={sms} onChange={setSms} />}
+            {tab === "email" ? emailFields : <SmsComposer church={churchName(site) || "Fold"} value={sms} onChange={setSms} />}
           </Tabs>
         ) : emailFields}
         <div className="flex flex-wrap gap-2">

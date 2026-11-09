@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Events } from "../api/events";
-import { Site } from "../api/site";
 import type { EventOccurrence } from "../types";
 import { DateBadge } from "../components/DateBadge";
 import { GroupDirectory } from "../components/GroupDirectory";
@@ -9,6 +8,7 @@ import { ComingUp } from "../components/ComingUp";
 import { dayOf, formatTime, greeting } from "../lib/when";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useAuth } from "../auth";
+import { churchName, useSite } from "../lib/useSite";
 import heroSignedOut from "../assets/illustrations/hero-signed-out.svg";
 
 export function Home() {
@@ -19,16 +19,7 @@ export function Home() {
   const [jump, setJump] = useState(false);
   const onAgendaReady = useCallback(() => setAgendaReady(true), []);
   const onJumped = useCallback(() => setJump(false), []);
-  const [site, setSite] = useState<{ name: string; selfSignup: "request" | "off" } | null>(null);
-
-  useEffect(() => {
-    if (user) return;
-    let alive = true;
-    Site.get()
-      .then((s) => { if (alive) setSite({ name: s.name, selfSignup: s.selfSignup }); })
-      .catch(() => { if (alive) setSite({ name: "", selfSignup: "request" }); });
-    return () => { alive = false; };
-  }, [user]);
+  const { site, loading: siteLoading } = useSite();
 
   // Signed-in people see church dates through the calendar's Just mine scope.
   useEffect(() => {
@@ -41,9 +32,9 @@ export function Home() {
     return () => { alive = false; };
   }, [user]);
 
-  const church = site?.name && site.name !== "Fold" ? site.name : "";
+  const church = churchName(site);
   const name = user ? user.displayName || (user.name ?? "").trim().split(/\s+/)[0] : "";
-  const ready = !authLoading && (user ? agendaReady : !!site && eventsReady);
+  const ready = !authLoading && (user ? agendaReady : !siteLoading && eventsReady);
 
   // The continuation includes every preview date, even when the first one is
   // ongoing or the whole schedule starts beyond the calendar's usual 30 days.
@@ -63,9 +54,10 @@ export function Home() {
               <h1 className="text-3xl font-bold">Find your people. Grow in faith together.</h1>
               {church && <p className="mt-2 font-medium">Welcome to {church}</p>}
               <p className="mt-2 text-text-muted max-w-2xl">Small groups, ministries, and activities for your church. Join a group and show up.</p>
-              {!authLoading && site && (
+              {!authLoading && !siteLoading && (
                 <div className="mt-4 flex flex-wrap gap-3">
-                  {site.selfSignup !== "off" && <ButtonLink variant="primary" to="/join" layout="w-full sm:w-auto">Request an account</ButtonLink>}
+                  {/* An unreadable answer hides the request link: the server refuses the form when signup is off. */}
+                  {site?.selfSignup === "request" && <ButtonLink variant="primary" to="/join" layout="w-full sm:w-auto">Request an account</ButtonLink>}
                   <ButtonLink variant="secondary" to="/calendar" layout="w-full sm:w-auto">Browse public events</ButtonLink>
                   <Button variant="link" onClick={() => setJump(true)}>Browse groups</Button>
                 </div>

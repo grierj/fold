@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { Site } from "../../api/site";
+import { useRoomsEnabled } from "../../lib/useSite";
 import { useAuth } from "../../auth";
 import { ViewSwitch } from "../ui/ViewSwitch";
 
@@ -12,20 +11,8 @@ const LABELS: Record<CalendarViewName, string> = { agenda: "Agenda", week: "Week
 // answers, so the Rooms item never flashes in and out.
 export function useRoomCalendarShown(): boolean {
   const { user } = useAuth();
-  const [roomsOn, setRoomsOn] = useState(false);
   const eligible = !!user && user.accountType !== "teen";
-  useEffect(() => {
-    if (!eligible) return;
-    let alive = true;
-    Site.get().then(
-      (s) => alive && setRoomsOn(s.roomsEnabled === true),
-      () => alive && setRoomsOn(false)
-    );
-    return () => {
-      alive = false;
-    };
-  }, [eligible]);
-  return eligible && roomsOn;
+  return useRoomsEnabled() === true && eligible;
 }
 
 // The calendar's one view switch (Agenda | Week | Month, and Rooms when it

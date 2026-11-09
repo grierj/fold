@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Admin } from "../../api/admin";
 import { errorText } from "../../lib/errors";
+import { invalidateSite } from "../../lib/useSite";
 import { Checkbox, FormError } from "../ui/Field";
 import { ErrorNotice } from "../ErrorNotice";
 
@@ -38,6 +39,7 @@ export function PushEnabledSetting() {
     setOk(false);
     try {
       const r = await Admin.setPushEnabled(next);
+      invalidateSite({ pushEnabled: r.on });
       if (alive.current) { setOn(r.on); setOk(true); }
     } catch (err) {
       if (alive.current) { setOn(previous); setError(errorText(err, "We couldn't save that setting.")); }

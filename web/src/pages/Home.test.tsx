@@ -201,6 +201,13 @@ describe("Home signed out (DEC-94)", () => {
     expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
   });
 
+  it("hides Request an account when the setting can't be read, but still offers the rest", async () => {
+    site.mockRejectedValue(new TypeError("offline"));
+    renderHome();
+    expect(await screen.findByRole("link", { name: "Browse public events" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
+  });
+
   it("shows no Log in button in the hero when self-signup is off (the header has it)", async () => {
     site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off" });
     renderHome();
@@ -298,7 +305,6 @@ describe("Home signed in (DEC-94)", () => {
     expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Church events" })).not.toBeInTheDocument();
     expect(openEvents).not.toHaveBeenCalled();
-    expect(site).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Search groups")).toBeInTheDocument();
   });
 

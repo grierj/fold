@@ -103,6 +103,25 @@ it("shows no count on a tab whose list failed to load", async () => {
   expect(screen.getByRole("tab", { name: "Groups" })).toHaveTextContent(/^Groups$/);
 });
 
+it("says the users couldn't load, with a retry, instead of an empty list", async () => {
+  vi.mocked(AdminUsers.list).mockRejectedValueOnce(new ApiError(500, "private server text")).mockResolvedValue({ users: [user(1, "Ann")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't load the users");
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByText("Ann")).toBeInTheDocument();
+});
+
+it("says the church settings couldn't load, rather than showing On, a blank zone or an empty rooms switch", async () => {
+  vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "private server text"));
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("heading", { name: "Church settings" })).toBeInTheDocument();
+  expect(await screen.findByText("We couldn't load the church time zone. Please try again in a minute.")).toBeInTheDocument();
+  expect(screen.getByText("We couldn't load the self-signup setting. Please try again in a minute.")).toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Self-signup" })).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /Use rooms/ })).toBeDisabled();
+});
+
 it("keeps daily work above settings and opens the settings forms only on demand", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
@@ -470,7 +489,10 @@ it("does not fall back to the first user when the selected row has no email", as
 });
 
 it("saves self-signup the moment it changes and says Saved", async () => {
-  vi.mocked(AdminAccountRequests.setSelfSignup).mockResolvedValue({ selfSignup: "request" });
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockImplementation(async (selfSignup) => {
+    vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup, roomsEnabled: false, pushEnabled: true });
+    return { selfSignup };
+  });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const mode = await screen.findByRole("group", { name: "Self-signup" });
   await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
@@ -736,8 +758,8 @@ it("asks /site once and hands the answer to the rooms switch", async () => {
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
-  // The page, the church time zone, its zone picker and self-signup each read it; the rooms switch no longer does.
-  expect(Site.get).toHaveBeenCalledTimes(4);
+  // The page, the church time zone, its zone picker, self-signup and the rooms switch share one read.
+  expect(Site.get).toHaveBeenCalledTimes(1);
 });
 
 it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async () => {
@@ -752,7 +774,7 @@ it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async ()
 });
 
 it("reads the rooms switch from /site and saves it the moment it changes, then shows the tab", async () => {
-  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: true });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   expect(box).not.toBeChecked();
@@ -767,7 +789,7 @@ it("reads the rooms switch from /site and saves it the moment it changes, then s
 
 it("starts the rooms switch on when /site says rooms are on, and hides the tab when it is turned off", async () => {
   withRooms(true);
-  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: false });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
