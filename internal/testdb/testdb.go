@@ -20,12 +20,11 @@ import (
 	"sync"
 	"testing"
 
-	"fold/internal/txguard"
+	"fold/internal/dbopen"
 	"fold/migrations"
 	"fold/models"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -114,15 +113,8 @@ func Open(name string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Discard})
-	if err != nil {
-		return nil, err
-	}
-	// The same plugin the server installs, so notify.WithRecipients works here.
-	if err := db.Use(txguard.Plugin{}); err != nil {
-		return nil, err
-	}
-	return db, nil
+	// The same opener the server uses, so notify.WithRecipients works here.
+	return dbopen.Open(dsn, logger.Discard)
 }
 
 // OpenSQL opens a database/sql handle to database name.
@@ -224,12 +216,7 @@ func migrate(name string) error {
 		return err
 	}
 	defer db.Close()
-	p, err := migrations.NewProvider(db)
-	if err != nil {
-		return err
-	}
-	_, err = p.Up(context.Background())
-	return err
+	return dbopen.Migrate(context.Background(), db)
 }
 
 func dropDB(name string) error {
