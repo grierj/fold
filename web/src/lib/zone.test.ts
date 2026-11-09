@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterZones, shortZoneName, US_ZONES, zoneLabel, zonePickerOptions } from "./eventForm";
+import { filterZones, shortZoneName, US_ZONES, zoneLabel, zonePickerOptions } from "./zone";
 import { zoneOffset } from "./when";
 
 describe("zoneLabel", () => {

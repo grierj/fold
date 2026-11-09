@@ -1,8 +1,9 @@
+import type { View } from "../../lib/calendar";
 import { useRoomsEnabled } from "../../lib/useSite";
 import { useAuth } from "../../auth";
 import { ViewSwitch } from "../ui/ViewSwitch";
 
-export type CalendarViewName = "agenda" | "week" | "month" | "rooms";
+type CalendarViewName = View | "rooms";
 
 const LABELS: Record<CalendarViewName, string> = { agenda: "Agenda", week: "Week", month: "Month", rooms: "Rooms" };
 

@@ -7,7 +7,7 @@ import { ErrorNotice } from "./ErrorNotice";
 import { StatusBadge, calendarState, occurrenceLink } from "./calendar/EventRow";
 import { EmptyState } from "./ui/EmptyState";
 import { Skeleton } from "./ui/Skeleton";
-import { addDays } from "../lib/calendar";
+import { addDays } from "../lib/days";
 import { errorText } from "../lib/errors";
 import { useLoad } from "../lib/useLoad";
 import { browserTimeZone, dayOf, formatNextMeeting } from "../lib/when";

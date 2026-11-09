@@ -2,7 +2,7 @@ import { Form } from "./ui/Form";
 import { childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
 import { useState } from "react";
 import { Events } from "../api/events";
-import { bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
+import { bydays, isSimpleWeekly, isWeekly, weekdayCode, weeklyRule } from "../lib/rrule";
 import { errorText } from "../lib/errors";
 import { useDirty } from "../lib/useDirty";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
@@ -80,7 +80,7 @@ export function SeriesEditor({
     days: (() => {
       const picked = bydays(instance.recurrenceRule);
       if (picked.length > 0) return picked;
-      if (instance.recurrenceRule.startsWith("FREQ=WEEKLY")) return [weekdayCode(instance.startsLocal.slice(0, 10))];
+      if (isWeekly(instance.recurrenceRule)) return [weekdayCode(instance.startsLocal.slice(0, 10))];
       return [];
     })(),
   });
@@ -159,7 +159,7 @@ export function SeriesEditor({
     }
     setBusy(true);
     setError(null);
-    const recurrenceRule = simple ? (recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "") : rule.trim();
+    const recurrenceRule = simple ? (recurring ? weeklyRule(days) : "") : rule.trim();
     const capTrimmed = seats.capacity.trim();
     const capInitial = initialSeats.capacity;
     // Only send capacity fields that changed: on the group page the

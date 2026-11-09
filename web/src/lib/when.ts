@@ -1,4 +1,5 @@
-import { shortZoneName, zoneGenericName } from "./eventForm";
+import { addDays } from "./days";
+import { shortZoneName, zoneGenericName } from "./zone";
 
 // Every event time a person reads is shown in their browser's zone (DEC-57),
 // so nobody converts in their head. The source is always the UTC instant
@@ -21,11 +22,6 @@ function ymd(instant: Date, zone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
 }
 
-function nextDay(day: string, by = 1): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + by)).toISOString().slice(0, 10);
-}
-
 // "7:00 PM"
 export function formatTime(iso: string, zone = browserTimeZone()): string {
   return fmt(iso, zone, { hour: "numeric", minute: "2-digit" });
@@ -39,8 +35,8 @@ export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date
   const today = ymd(now, zone);
   const time = formatTime(iso, zone);
   if (day === today) return `Today at ${time}`;
-  if (day === nextDay(today)) return `Tomorrow at ${time}`;
-  if (past && day === nextDay(today, -1)) return `Yesterday at ${time}`;
+  if (day === addDays(today, 1)) return `Tomorrow at ${time}`;
+  if (past && day === addDays(today, -1)) return `Yesterday at ${time}`;
   return `${fmt(iso, zone, { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
 }
 
@@ -144,7 +140,7 @@ function asDate(day: string): string {
 export function formatDayHeading(day: string, zone = browserTimeZone(), now = new Date()): string {
   const today = ymd(now, zone);
   if (day === today) return "Today";
-  if (day === nextDay(today)) return "Tomorrow";
+  if (day === addDays(today, 1)) return "Tomorrow";
   return fmt(asDate(day), "UTC", { weekday: "long", month: "short", day: "numeric" });
 }
 

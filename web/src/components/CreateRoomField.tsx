@@ -10,6 +10,7 @@ import { seriesRoomLabel } from "./SeriesRoomField";
 import { Field, FormError, Select } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { RoomOptions } from "./RoomOptions";
+import { weeklyRule } from "../lib/rrule";
 import { AlertCircleIcon } from "./icons";
 
 const NONE = "none";
@@ -30,7 +31,7 @@ export function scheduleFields(when: Pick<WhenState, "date" | "time" | "duration
     startsLocal: `${when.date}T${when.time}`,
     durationMinutes: when.duration,
     tzid: tzid.trim(),
-    recurrenceRule: when.recurring ? `FREQ=WEEKLY;BYDAY=${when.days.join(",")}` : "",
+    recurrenceRule: when.recurring ? weeklyRule(when.days) : "",
     capacity: seatsBody(seats).capacity,
   };
 }
