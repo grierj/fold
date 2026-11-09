@@ -113,10 +113,10 @@ type messageRecipientsJSON struct {
 
 const maxHistoryRecipients = 200
 
-const (
-	errMessageNothingToRetry = "there's nothing to send again; everyone it could reach got it"
-	errMessageRetryRefused   = "its author can no longer write to these people, so it can't be sent again"
-	errMessageRetrySending   = "it's already sending again"
+var (
+	errMessageNothingToRetry = apiErr(http.StatusConflict, "message_nothing_to_retry", "there's nothing to send again; everyone it could reach got it")
+	errMessageRetryRefused   = apiErr(http.StatusForbidden, "message_retry_refused", "its author can no longer write to these people, so it can't be sent again")
+	errMessageRetrySending   = apiErr(http.StatusConflict, "message_retry_sending", "it's already sending again")
 )
 
 // recipientCounts counts m's rows by status, and the skipped by reason,
@@ -466,7 +466,7 @@ func (a *App) recheckReminderRows(tx *gorm.DB, m *models.Message, ids []uint, no
 // mayResend is whether m can go out again, and if not, why: an
 // announcement's author must still be able to write to its people; a
 // reminder's date must still be ahead.
-func (a *App) mayResend(m *models.Message) (bool, string, error) {
+func (a *App) mayResend(m *models.Message) (bool, *apiError, error) {
 	if m.Category == models.MessageCategoryReminder {
 		ok, err := a.reminderMayResend(m)
 		return ok, errReminderRetryRefused, err
@@ -518,18 +518,18 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 		return
 	}
 	if goingOut(m) {
-		jsonError(c, http.StatusConflict, errMessageRetrySending)
+		fail(c, errMessageRetrySending)
 		return
 	}
 	if !retryable(m, counts) {
-		jsonError(c, http.StatusConflict, errMessageNothingToRetry)
+		fail(c, errMessageNothingToRetry)
 		return
 	}
 	if may, why, err := a.mayResend(m); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not send the message again")
 		return
 	} else if !may {
-		jsonError(c, http.StatusForbidden, why)
+		fail(c, why)
 		return
 	}
 	me := apiUser(c)
@@ -588,9 +588,9 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 	if errors.Is(err, errLocked) {
 		// Someone else pressed it first.
 		if a.DB.First(m, m.ID).Error == nil && goingOut(m) {
-			jsonError(c, http.StatusConflict, errMessageRetrySending)
+			fail(c, errMessageRetrySending)
 		} else {
-			jsonError(c, http.StatusConflict, errMessageNothingToRetry)
+			fail(c, errMessageNothingToRetry)
 		}
 		return
 	}

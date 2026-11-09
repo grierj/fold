@@ -2208,33 +2208,35 @@ func TestKeepsAnAdminDecidesOnTheInGateCount(t *testing.T) {
 	if err := app.DB.Exec("UPDATE users SET status = 'disabled' WHERE id = ?", a.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	msgs := []string{"cannot delete the last admin", "cannot demote the last admin", "cannot disable the last admin"}
+	changes := []struct {
+		change adminChange
+		want   *apiError
+	}{{adminDelete, errCannotDeleteLastAdmin}, {adminDemote, errCannotDemoteLastAdmin}, {adminDisable, errCannotDisableLastAdmin}}
 	err := app.DB.Transaction(func(tx *gorm.DB) error {
 		if n, err := adminCountIn(tx); err != nil || n != 1 {
 			t.Fatalf("adminCountIn = %d, %v, want 1", n, err)
 		}
-		for _, msg := range msgs {
-			err := keepsAnAdminIn(tx, a, b, msg)
-			var rule errAdminRule
-			if !errors.As(err, &rule) || rule.msg != msg || err.Error() != msg {
-				t.Fatalf("n = 1: err = %v, want errAdminRule %q", err, msg)
+		for _, tc := range changes {
+			err := keepsAnAdminIn(tx, a, b, tc.change)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("n = 1: err = %v, want %q", err, tc.want.Message)
 			}
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			jsonError(c, http.StatusBadRequest, rule.msg)
+			fail(c, err)
 			if w.Code != http.StatusBadRequest || errorCodeOf(w) != "last_admin" {
-				t.Errorf("%q answers %d %q, want 400 last_admin", msg, w.Code, errorCodeOf(w))
+				t.Errorf("%q answers %d %q, want 400 last_admin", tc.want.Message, w.Code, errorCodeOf(w))
 			}
 		}
 		// A target that is not an active admin is allowed at any count.
 		disabled := *b
 		disabled.Status = models.UserDisabled
-		if err := keepsAnAdminIn(tx, a, &disabled, msgs[0]); err != nil {
+		if err := keepsAnAdminIn(tx, a, &disabled, adminDelete); err != nil {
 			t.Fatalf("a disabled target: %v", err)
 		}
 		member := *b
 		member.Role = models.RoleMember
-		if err := keepsAnAdminIn(tx, a, &member, msgs[0]); err != nil {
+		if err := keepsAnAdminIn(tx, a, &member, adminDelete); err != nil {
 			t.Fatalf("a member target: %v", err)
 		}
 		// With the actor active in the database too, n = 2 and it passes.
@@ -2244,7 +2246,7 @@ func TestKeepsAnAdminDecidesOnTheInGateCount(t *testing.T) {
 		if n, err := adminCountIn(tx); err != nil || n != 2 {
 			t.Fatalf("adminCountIn = %d, %v, want 2", n, err)
 		}
-		if err := keepsAnAdminIn(tx, a, b, msgs[0]); err != nil {
+		if err := keepsAnAdminIn(tx, a, b, adminDelete); err != nil {
 			t.Fatalf("n = 2: %v", err)
 		}
 		return nil

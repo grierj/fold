@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -32,20 +31,19 @@ import (
 // remote registrations count against the remote capacity only.
 
 var (
-	// errEventFull: a going request on a full event with the waitlist off.
-	errEventFull = errors.New("this event is full")
 	// errRemoteNotAvailable: a remote request on an event that does
 	// not offer remote attendance.
-	errRemoteNotAvailable = errors.New("remote attendance isn't available for this event")
+	errRemoteNotAvailable = apiErr(http.StatusBadRequest, "remote_not_available", "remote attendance isn't available for this event")
 	// errRemovedBlocked: a pruned registration blocks self-registration.
-	errRemovedBlocked = errors.New("a leader or host removed your registration for this date; ask them to add you back")
-	// errRegNotFound: no matching registration row.
-	errRegNotFound = errors.New("registration not found")
+	errRemovedBlocked = apiErr(http.StatusConflict, "registration_removed", "a leader or host removed your registration for this date; ask them to add you back")
+	// errRegNotFound: no matching registration row. A handler whose person is
+	// not a household person says so in its own words before it calls fail.
+	errRegNotFound = apiErr(http.StatusNotFound, "", "household person not found")
 	// errAddTargetGone: the person a manager is adding was erased while the add
 	// waited for the contact gate.
-	errAddTargetGone = errors.New("person not found")
+	errAddTargetGone = apiErr(http.StatusNotFound, "", "person not found")
 	// errOccurrenceNotFound: no occurrence for the event and date.
-	errOccurrenceNotFound  = errors.New("occurrence not found")
+	errOccurrenceNotFound  = apiErr(http.StatusNotFound, "", "that date is not on this event")
 	errOccurrenceGateRetry = errors.New("retry invitation mutation under contact gate")
 )
 
@@ -53,40 +51,40 @@ var (
 // unlimited, a positive whole number sets it. It mirrors the group
 // member limit's number-or-null JSON pattern (DEC-39). raw is nil when
 // the field is absent.
-func parseCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) {
+func parseCapacity(raw *json.RawMessage) (cap *int, set bool, err error) {
 	if raw == nil {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
-		return nil, true, ""
+		return nil, true, nil
 	}
 	var n int
 	if json.Unmarshal(*raw, &n) != nil || n < 1 || n > 100000 {
-		return nil, false, "capacity must be a positive whole number, or empty for no limit"
+		return nil, false, errInvalidCapacity
 	}
-	return &n, true, ""
+	return &n, true, nil
 }
 
 // parseRemoteCapacity permits 0 only for a per-date override, to close
 // remote seats on that date. For an event, uncheck remote attendance.
-func parseRemoteCapacity(raw json.RawMessage, allowZero bool) (cap *int, set bool, msg string) {
+func parseRemoteCapacity(raw json.RawMessage, allowZero bool) (cap *int, set bool, err error) {
 	if len(raw) == 0 {
-		return nil, false, ""
+		return nil, false, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, true, ""
+		return nil, true, nil
 	}
 	var n int
 	if json.Unmarshal(raw, &n) != nil || n < 0 || n > 100000 {
 		if allowZero {
-			return nil, false, "remote seat limit for this date must be a whole number from 0 to 100000, or empty"
+			return nil, false, errInvalidRemoteCapacityOverride
 		}
-		return nil, false, "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"
+		return nil, false, errInvalidRemoteCapacity
 	}
 	if n == 0 && !allowZero {
-		return nil, false, "Uncheck remote attendance instead of a 0 remote seat limit"
+		return nil, false, errRemoteCapacityZero
 	}
-	return &n, true, ""
+	return &n, true, nil
 }
 
 // capacityEdits holds the parsed M1.5 capacity fields from an event
@@ -109,38 +107,38 @@ type capacityEdits struct {
 // parseGuestsAllowed reads guestsAllowed from a body: null clears it to
 // 0 (no extra guests), a whole number 0-5 sets the per-registration
 // guest cap. raw is nil when the field is absent.
-func parseGuestsAllowed(raw *json.RawMessage) (n int, set bool, msg string) {
+func parseGuestsAllowed(raw *json.RawMessage) (n int, set bool, err error) {
 	if raw == nil {
-		return 0, false, ""
+		return 0, false, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
-		return 0, true, ""
+		return 0, true, nil
 	}
 	var v int
 	if json.Unmarshal(*raw, &v) != nil || v < 0 || v > 5 {
-		return 0, false, "guestsAllowed must be a whole number from 0 to 5, or empty for none"
+		return 0, false, errInvalidGuests
 	}
-	return v, true, ""
+	return v, true, nil
 }
 
 // parseCapacityEdits parses the M1.5 capacity fields, answering 400 on a
 // bad value.
 func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 	var ed capacityEdits
-	var msg string
-	ed.cap, ed.capSet, msg = parseCapacity(body.Capacity)
-	if msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	var err error
+	ed.cap, ed.capSet, err = parseCapacity(body.Capacity)
+	if err != nil {
+		fail(c, err)
 		return ed, false
 	}
-	ed.guests, ed.guestsSet, msg = parseGuestsAllowed(body.GuestsAllowed)
-	if msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	ed.guests, ed.guestsSet, err = parseGuestsAllowed(body.GuestsAllowed)
+	if err != nil {
+		fail(c, err)
 		return ed, false
 	}
-	ed.remoteCap, ed.remoteCapSet, msg = parseRemoteCapacity(body.RemoteCapacity, false)
-	if msg != "" {
-		jsonError(c, http.StatusBadRequest, msg)
+	ed.remoteCap, ed.remoteCapSet, err = parseRemoteCapacity(body.RemoteCapacity, false)
+	if err != nil {
+		fail(c, err)
 		return ed, false
 	}
 	if !parseChildcareEdits(c, body, &ed) {
@@ -148,7 +146,7 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 	}
 	if body.ReminderEmailMinutes != nil {
 		if !validReminderMinutes(*body.ReminderEmailMinutes) {
-			jsonError(c, http.StatusBadRequest, errReminderTime)
+			fail(c, errReminderTime)
 			return ed, false
 		}
 		ed.reminder, ed.reminderSet = *body.ReminderEmailMinutes, true
@@ -879,6 +877,9 @@ type householdAnswer struct {
 	ChildcareRequested *bool  `json:"childcareRequested"`
 }
 
+// householdRegistrationError is a policy refusal to sign a household person up
+// (policy.HouseholdRegistrationProblem and CanRegisterHouseholdPerson return
+// its code). Its answer is the 409 declared for the code, naming the person.
 type householdRegistrationError struct {
 	code     string
 	personID uint
@@ -886,36 +887,25 @@ type householdRegistrationError struct {
 
 func (e householdRegistrationError) Error() string { return e.code }
 
-func registrationError(c *gin.Context, err error) {
-	var own householdRegistrationError
-	switch {
-	case errors.Is(err, errConversionUnavailable):
-		conversionError(c, err)
-	case errors.As(err, &own):
-		body := errorBody(http.StatusConflict, householdRegistrationMessage(own.code))
-		body["code"] = own.code
-		if own.personID != 0 {
-			body["personId"] = own.personID
-		}
-		c.JSON(http.StatusConflict, body)
-	case errors.Is(err, errRegNotFound):
-		jsonError(c, 404, "household person not found")
-	case errors.Is(err, errOccurrenceNotFound):
-		jsonError(c, 404, "that date is not on this event")
-	case errors.Is(err, errChildcareFull):
-		jsonError(c, 409, errChildcareFull.Error())
-	case errors.Is(err, errChildcareUnavailable):
-		jsonError(c, 400, errChildcareUnavailable.Error())
-	case errors.Is(err, errRemoteNotAvailable):
-		jsonError(c, 400, errRemoteNotAvailable.Error())
-	case errors.Is(err, errEventFull):
-		jsonError(c, 409, "This event is full")
-	case errors.Is(err, errRemovedBlocked):
-		jsonError(c, 409, errRemovedBlocked.Error())
-	default:
-		log.Printf("registration: %v", err)
-		jsonError(c, 500, "could not save registration")
+func (e householdRegistrationError) apiAnswer() *apiError {
+	base, ok := householdRegistrationRefusals[e.code]
+	if !ok {
+		base = &apiError{Status: http.StatusConflict, Code: e.code, Message: "household registration needs review"}
 	}
+	if e.personID == 0 {
+		return base
+	}
+	return base.with(gin.H{"personId": e.personID})
+}
+
+// householdRegistrationRefusals are the answers for the codes policy returns.
+var householdRegistrationRefusals = map[string]*apiError{
+	"household_link_pending":                    errHouseholdLinkPending,
+	"household_link_unconfirmed":                errHouseholdLinkUnconfirmed,
+	"household_birth_date_required":             errHouseholdBirthDateRequired,
+	"household_age_mismatch":                    errHouseholdAgeMismatch,
+	"household_remote_childcare":                errHouseholdRemoteChildcare,
+	"household_registration_holder_unavailable": errHouseholdRegistrationHolderUnavailable,
 }
 
 func validAnswer(status string) bool {
@@ -960,7 +950,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		mode = *body.AttendanceMode
 	}
 	if !validMode(mode) {
-		jsonError(c, 400, "attendanceMode must be in_person or remote")
+		fail(c, errInvalidAttendanceMode)
 		return
 	}
 	seen := map[uint]bool{}
@@ -1007,7 +997,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		guests = *body.GuestCount
 	}
 	if guests < 0 || guests > ev.GuestsAllowed {
-		jsonErrorCode(c, 400, "too_many_guests", "too many guests")
+		fail(c, errTooManyGuests)
 		return
 	}
 	// Discover responsible accounts before acquiring any household/date lock.
@@ -1231,7 +1221,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		registrationError(c, err)
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, response)
@@ -1302,7 +1292,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 	}
 	note := strings.TrimSpace(body.Note)
 	if len(note) > 500 {
-		jsonError(c, http.StatusBadRequest, "note is too long")
+		fail(c, errNoteTooLong)
 		return
 	}
 	var o models.EventOccurrence
@@ -1504,13 +1494,10 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "no waitlisted registration for that person")
 		return
 	case errors.Is(err, errEventFull):
-		jsonError(c, http.StatusConflict, "that party doesn't fit in the seats left")
-		return
-	case errors.Is(err, errChildcareFull):
-		jsonError(c, http.StatusConflict, errChildcareFull.Error())
+		fail(c, errPartyTooBig)
 		return
 	case err != nil:
-		registrationError(c, err)
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
@@ -1554,7 +1541,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			mode = *body.AttendanceMode
 		}
 		if !validMode(mode) {
-			a.managerDateAddError(c, 400, "attendanceMode must be in_person or remote")
+			a.managerDateAddRefusal(c, errInvalidAttendanceMode)
 			return
 		}
 		a.addHouseholdRegistration(c, ev, body.Date, body.PersonID, body.RegisteredBy, mode, body.ChildcareRequested, body.OverCapacity != nil && *body.OverCapacity)
@@ -1564,8 +1551,8 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		a.managerDateAddError(c, 400, "choose one registration target")
 		return
 	}
-	if msg := body.childcareRequest.problem(ev); msg != "" {
-		a.managerDateAddError(c, 400, msg)
+	if err := body.childcareRequest.problem(ev); err != nil {
+		a.managerDateAddRefusal(c, err)
 		return
 	}
 	addMode := ""
@@ -1574,11 +1561,11 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		switch addMode {
 		case models.AttendanceInPerson, models.AttendanceRemote:
 		default:
-			a.managerDateAddError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
+			a.managerDateAddRefusal(c, errInvalidAttendanceMode)
 			return
 		}
 		if addMode == models.AttendanceRemote && !ev.RemoteAvailable {
-			a.managerDateAddError(c, http.StatusBadRequest, "remote attendance isn't available for this event")
+			a.managerDateAddRefusal(c, errRemoteNotAvailable)
 			return
 		}
 	}
@@ -1591,8 +1578,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			jsonError(c, 500, "could not add registration")
 			return
 		}
-		jsonErrorCode(c, http.StatusBadRequest, "too_many_guests",
-			fmt.Sprintf("at most %d guests are allowed", ev.GuestsAllowed))
+		fail(c, apiErrf(http.StatusBadRequest, "too_many_guests", "at most %d guests are allowed", ev.GuestsAllowed))
 		return
 	}
 	var target models.User
@@ -1601,7 +1587,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	if body.SelectionID != "" {
 		id, err := a.parsePeopleSelection(body.SelectionID, apiUser(c).ID, time.Now())
 		if err != nil || a.DB.Where("id = ? AND status = ? AND account_type IN ?", id, models.UserActive, []string{models.AccountAdult, models.AccountTeen}).First(&target).Error != nil {
-			a.managerDateAddError(c, 400, "that selection is unavailable; search for the person again")
+			a.managerDateAddRefusal(c, errPeopleSelectionUnavailable)
 			return
 		}
 	} else if body.UserID != 0 {
@@ -1721,31 +1707,11 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		err = businessErr
 	}
 	switch {
-	case errors.Is(err, errDateAddApproval), errors.Is(err, errDateAddThrottled):
-		jsonError(c, 409, err.Error())
-		return
-	case errors.Is(err, errChildcareFull):
-		jsonError(c, http.StatusConflict, errChildcareFull.Error())
-		return
-	case errors.Is(err, errChildcareUnavailable):
-		jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
-		return
 	case errors.Is(err, errEventFull):
-		body := errorBody(http.StatusConflict, "This event is full")
-		body["full"] = true
-		c.JSON(http.StatusConflict, body)
-		return
-	case errors.Is(err, errPeopleAddForbidden):
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	case errors.Is(err, errTeenAddApproval):
-		jsonError(c, 409, errTeenAddApproval.Error())
-		return
-	case errors.Is(err, errAddTargetGone):
-		jsonError(c, http.StatusNotFound, "person not found")
+		fail(c, errEventFullNoWaitlist)
 		return
 	case err != nil:
-		jsonError(c, http.StatusInternalServerError, "could not add registration")
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
@@ -2037,29 +2003,10 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 			jsonError(c, 500, "could not add registration")
 			return
 		}
-		registrationError(c, err)
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
-}
-
-func householdRegistrationMessage(code string) string {
-	switch code {
-	case "household_link_pending":
-		return "waiting for an admin to confirm; ask your church office to check the household link"
-	case "household_link_unconfirmed":
-		return "this household link is not confirmed; ask your church office to check it"
-	case "household_birth_date_required":
-		return "add a birth date in profile before signing this person up"
-	case "household_age_mismatch":
-		return "the birth date does not match an adult; correct it or choose child or teen in profile"
-	case "household_remote_childcare":
-		return "remote attendees cannot request childcare; clear the childcare choice first"
-	case "household_registration_holder_unavailable":
-		return "the responsible account cannot register this person; ask your church office to check their account and household"
-	default:
-		return "household registration needs review"
-	}
 }
 
 // managerRegistrationOptions retains the original PATCH resolution for ordinary

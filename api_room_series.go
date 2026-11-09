@@ -29,8 +29,8 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	errRoomGone   = errors.New("room gone")
-	errRestricted = errors.New("restricted")
+	errRoomGone   = apiErr(http.StatusNotFound, "", "room not found")
+	errRestricted = errRoomRestricted
 )
 
 // seriesRoomJSON is one bookable room as the series picker sees it.
@@ -250,7 +250,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		jsonError(c, http.StatusBadRequest, "the reason must be 500 characters or fewer")
+		fail(c, errReasonTooLong500)
 		return
 	}
 	user := apiUser(c)
@@ -274,7 +274,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	case errors.Is(err, errRoomGone):
 		jsonError(c, http.StatusNotFound, "room not found")
 	case errors.Is(err, errRestricted):
-		jsonError(c, http.StatusForbidden, "only an admin can book this room")
+		fail(c, errRoomRestricted)
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:
@@ -617,17 +617,4 @@ func (a *App) bookCreatedSeries(tx *gorm.DB, ev *models.Event, roomID *uint, use
 	}
 	_, err := bookWholeSeries(tx, ev, roomID, user, "", ip)
 	return err
-}
-
-// createRoomFailed answers a create whose room couldn't be booked.
-func createRoomFailed(c *gin.Context, err error) bool {
-	switch {
-	case errors.Is(err, errRoomGone):
-		jsonError(c, http.StatusNotFound, "room not found")
-	case errors.Is(err, errRestricted):
-		jsonError(c, http.StatusForbidden, "only an admin can book this room")
-	default:
-		return false
-	}
-	return true
 }

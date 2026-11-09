@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -36,12 +37,9 @@ func writeInvitationRefusal(tx *gorm.DB, actor uint, reason, ip string) error {
 		Meta: map[string]any{"reason": reason, "limit": leaderInviteDailyLimit}, IP: ip})
 }
 
-// errEmailTaken: the address got an account after the invitation was sent.
-var errEmailTaken = errors.New("email taken")
-
 // errGroupNotActive: the invitation's group is no longer active.
 var errGroupNotActive = errors.New("group not active")
-var errInvitationLimit = errors.New("invitation limit reached (20 per day)")
+var errInvitationLimit = apiErr(http.StatusTooManyRequests, "invite_limit", fmt.Sprintf("invitation limit reached (%d per day)", leaderInviteDailyLimit))
 
 type invitationJSON struct {
 	ID          uint      `json:"id"`
@@ -111,17 +109,17 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	}
 	email := mail.NormalizeAddress(body.Email)
 	if !validEmail(email) {
-		jsonError(c, http.StatusBadRequest, "enter a valid email address")
+		fail(c, errEnterValidEmail)
 		return
 	}
 	name := strings.TrimSpace(body.Name)
 	if len(name) > 100 {
-		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+		fail(c, errNameTooLong100)
 		return
 	}
 	phone := strings.TrimSpace(body.Phone)
 	if len(phone) > 30 {
-		jsonError(c, http.StatusBadRequest, "phone must be at most 30 characters")
+		fail(c, errPhoneTooLong)
 		return
 	}
 
@@ -152,7 +150,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	}
 	// An invitation into a group that isn't active could never be accepted.
 	if g != nil && !policy.CanInviteIntoGroup(g.Status) {
-		jsonError(c, http.StatusConflict, "this group isn't approved yet; you can invite people once an admin approves it")
+		fail(c, errGroupNotApprovedToInvite)
 		return
 	}
 
@@ -238,13 +236,13 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	}
 	switch {
 	case errors.Is(refusal, errInvitationLimit):
-		jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
+		fail(c, errInvitationLimit)
 		return
 	case errors.Is(refusal, errEmailTaken):
-		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		fail(c, errEmailTaken)
 		return
 	case errors.Is(refusal, errConversionEmail):
-		jsonError(c, http.StatusConflict, "that email was already invited")
+		fail(c, errAlreadyInvited)
 		return
 	case refusal != nil:
 		jsonError(c, http.StatusInternalServerError, "could not create invitation")
@@ -297,7 +295,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	}
 	initial, err := liveInvitation(a.DB, body.Token)
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
+		fail(c, errInvitationExpired)
 		return
 	}
 	if initial.HouseholdPersonID != nil {
@@ -310,7 +308,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	}
 	name := strings.TrimSpace(body.Name)
 	if len(name) > 100 {
-		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+		fail(c, errNameTooLong100)
 		return
 	}
 	var userID uint
@@ -458,19 +456,19 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):
-		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
+		fail(c, errInvitationExpired)
 		return
 	case errors.Is(err, errNeedName):
-		jsonError(c, http.StatusBadRequest, "name is required")
+		fail(c, errNameRequired)
 		return
 	case errors.Is(err, errEmailTaken), emailTaken(err):
-		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		fail(c, errEmailTaken)
 		return
 	case errors.Is(err, errGroupNotActive):
-		jsonError(c, http.StatusConflict, "that group is no longer active")
+		fail(c, errGroupInactive)
 		return
 	case errors.Is(err, errGroupFull):
-		groupFull(c) // 409 "This group is full" with full:true, like a leader's add
+		fail(c, errGroupFull)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not accept invitation")

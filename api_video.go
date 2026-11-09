@@ -93,31 +93,31 @@ func parseVideoEdits(c *gin.Context, body eventBody, base *models.Event) (videoE
 	switch ed.provider {
 	case models.VideoProviderNone, models.VideoProviderLink, models.VideoProviderJitsi:
 	default:
-		jsonError(c, http.StatusBadRequest, "videoProvider must be none, link, or jitsi")
+		fail(c, errInvalidVideoProvider)
 		return ed, false
 	}
 	switch ed.reveal {
 	case models.VideoRevealAlways, models.VideoRevealRegisteredOnly:
 	default:
-		jsonError(c, http.StatusBadRequest, "videoReveal must be always or registered_only")
+		fail(c, errInvalidVideoReveal)
 		return ed, false
 	}
 	if len(ed.url) > maxVideoURLLen {
-		jsonError(c, http.StatusBadRequest, "video link is too long")
+		fail(c, errVideoLinkTooLong)
 		return ed, false
 	}
 	if ed.provider == models.VideoProviderNone {
 		// A supplied address is still validated, then cleared: none
 		// means the event has no video link.
 		if ed.url != "" && !validVideoURL(ed.url) {
-			jsonError(c, http.StatusBadRequest, "video link must be a full https:// address")
+			fail(c, errInvalidVideoUrl)
 			return ed, false
 		}
 		ed.url = ""
 		return ed, true
 	}
 	if !validVideoURL(ed.url) {
-		jsonError(c, http.StatusBadRequest, "video link must be a full https:// address")
+		fail(c, errInvalidVideoUrl)
 		return ed, false
 	}
 	return ed, true

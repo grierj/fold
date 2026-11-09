@@ -14,7 +14,7 @@ import (
 // messages to teens (DEC-19, off by default) and where replies to an
 // announcement go (DEC-130). Each change is audited in its transaction.
 
-const errReplyToInvalid = "enter one email address, or leave it empty"
+var errReplyToInvalid = apiErr(http.StatusBadRequest, "reply_to_invalid", "enter one email address, or leave it empty")
 
 // saveSetting writes key = value and its audit row together.
 func (a *App) saveSetting(c *gin.Context, key, value, action string, meta map[string]any) error {
@@ -67,7 +67,7 @@ func (a *App) apiAdminSetReplyTo(c *gin.Context) {
 	}
 	addr := strings.TrimSpace(*body.Address)
 	if addr != "" && !validEmail(addr) {
-		jsonError(c, http.StatusBadRequest, errReplyToInvalid)
+		fail(c, errReplyToInvalid)
 		return
 	}
 	if err := a.saveSetting(c, settingReplyTo, addr, audit.ReplyToChanged, map[string]any{"set": addr != ""}); err != nil {

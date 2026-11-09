@@ -102,7 +102,7 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 
 // errJobHandled: the job is no longer dead (another admin, or a second
 // tab, already retried or dismissed it).
-const errJobHandled = "that task was already handled; refresh the list"
+var errJobHandled = apiErr(http.StatusConflict, "job_handled", "that task was already handled; refresh the list")
 
 // decideDeadJob moves one dead job to status, audited, or answers why not.
 func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]any) {
@@ -156,7 +156,7 @@ func (a *App) decideDeadJob(c *gin.Context, action string, updates map[string]an
 	case !found:
 		jsonError(c, http.StatusNotFound, "job not found")
 	case !handled:
-		jsonError(c, http.StatusConflict, errJobHandled)
+		fail(c, errJobHandled)
 	default:
 		c.JSON(http.StatusOK, gin.H{"status": updates["status"]})
 	}

@@ -253,7 +253,7 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		jsonError(c, http.StatusBadRequest, "the reason must be 500 characters or fewer")
+		fail(c, errReasonTooLong500)
 		return
 	}
 	me := apiUser(c)
@@ -356,7 +356,7 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.Reason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		jsonError(c, http.StatusBadRequest, "the reason must be 500 characters or fewer")
+		fail(c, errReasonTooLong500)
 		return
 	}
 	me := apiUser(c)

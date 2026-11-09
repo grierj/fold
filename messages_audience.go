@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -38,8 +38,8 @@ const (
 )
 
 var (
-	errAudienceInvalid = errors.New("choose who gets this message")
-	errAudienceGone    = errors.New("that group or event isn't there anymore")
+	errAudienceInvalid = apiErr(http.StatusBadRequest, "message_audience", "choose who gets this message")
+	errAudienceGone    = apiErr(http.StatusNotFound, "message_audience_gone", "that group or event isn't there anymore")
 )
 
 // Registrants a message can reach by default: Going and on the waitlist.

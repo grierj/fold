@@ -155,7 +155,7 @@ func (a *App) apiDateVisibilityImpact(c *gin.Context) {
 	}
 	value, _, err := parseDateVisibility(json.RawMessage(strconv.Quote(c.Query("visibility"))))
 	if err != nil {
-		jsonError(c, 400, "that visibility isn't allowed on this event")
+		fail(c, errVisibilityNotAllowed)
 		return
 	}
 	var occ models.EventOccurrence

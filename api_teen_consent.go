@@ -17,11 +17,11 @@ import (
 )
 
 var (
-	errConsentForbidden    = errors.New("forbidden")
-	errConsentTeen         = errors.New("consent is only available for teen accounts; refresh the user list")
-	errConsentEvidence     = errors.New("record the consent evidence before granting consent")
-	errConsentInvalid      = errors.New("choose account, sms or photos and granted or revoked")
-	errConsentEvidenceLong = errors.New("consent evidence must be at most 1000 characters")
+	errConsentForbidden    = apiErr(http.StatusForbidden, "", "forbidden")
+	errConsentTeen         = apiErr(http.StatusConflict, "consent_teen_only", "consent is only available for teen accounts; refresh the user list")
+	errConsentEvidence     = apiErr(http.StatusBadRequest, "consent_evidence_required", "record the consent evidence before granting consent")
+	errConsentInvalid      = apiErr(http.StatusBadRequest, "consent_invalid", "choose account, sms or photos and granted or revoked")
+	errConsentEvidenceLong = apiErr(http.StatusBadRequest, "consent_evidence_long", "consent evidence must be at most 1000 characters")
 )
 
 type teenConsentJSON struct {
@@ -197,21 +197,14 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	return err
 }
 
+// consentError answers a consent writer's failure: the account it names is
+// gone, or the refusal it carries.
 func consentError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, errConversionRetry), errors.Is(err, errConversionHolder), errors.Is(err, errConversionDetails):
-		conversionError(c, err)
-	case errors.Is(err, errConsentForbidden):
-		jsonError(c, http.StatusForbidden, err.Error())
-	case errors.Is(err, gorm.ErrRecordNotFound):
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		jsonError(c, http.StatusNotFound, "user not found")
-	case errors.Is(err, errConsentTeen):
-		jsonError(c, http.StatusConflict, err.Error())
-	case errors.Is(err, errConsentEvidence), errors.Is(err, errConsentEvidenceLong), errors.Is(err, errConsentInvalid):
-		jsonError(c, http.StatusBadRequest, err.Error())
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not save teen consent")
+		return
 	}
+	fail(c, err)
 }
 
 func (a *App) apiListTeenConsents(c *gin.Context) {

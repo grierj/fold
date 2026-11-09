@@ -44,6 +44,12 @@ var ErrTooManyDates = errors.New("that repeat rule makes too many dates")
 // MINUTELY or SECONDLY).
 var ErrTooFrequent = errors.New("that repeat rule repeats more than once a day")
 
+// ErrBadStart means the start is not a YYYY-MM-DDTHH:MM wall clock.
+var ErrBadStart = errors.New("startsLocal must be YYYY-MM-DDTHH:MM")
+
+// ErrBadDuration means the duration is outside 1 minute to 7 days.
+var ErrBadDuration = errors.New("duration must be between 1 minute and 7 days")
+
 // Spec is the series rule. StartsLocal is a wall clock in TZID.
 type Spec struct {
 	StartsLocal     string
@@ -71,7 +77,7 @@ func ParseWall(value, tzid string) (time.Time, *time.Location, error) {
 	}
 	t, err := time.ParseInLocation(WallLayout, strings.TrimSpace(value), loc)
 	if err != nil {
-		return time.Time{}, nil, fmt.Errorf("startsLocal must be YYYY-MM-DDTHH:MM")
+		return time.Time{}, nil, ErrBadStart
 	}
 	return t, loc, nil
 }
@@ -117,7 +123,7 @@ func Expand(spec Spec, horizonEnd time.Time) ([]When, error) {
 		return nil, err
 	}
 	if spec.DurationMinutes < 1 || spec.DurationMinutes > MaxDurationMinutes {
-		return nil, fmt.Errorf("duration must be between 1 minute and 7 days")
+		return nil, ErrBadDuration
 	}
 	until := strings.TrimSpace(spec.Until)
 	if until != "" {

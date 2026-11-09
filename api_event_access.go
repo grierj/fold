@@ -269,10 +269,10 @@ func (a *App) apiGetEvent(c *gin.Context) {
 	})
 }
 
-func (a *App) hostCandidate(actor *models.User, email string) (*models.User, int, string) {
+func (a *App) hostCandidate(actor *models.User, email string) (*models.User, error) {
 	email = mail.NormalizeAddress(email)
 	if email == "" {
-		return nil, http.StatusBadRequest, "email is required"
+		return nil, errEmailRequired
 	}
 	var u models.User
 	var found *models.User
@@ -282,9 +282,9 @@ func (a *App) hostCandidate(actor *models.User, email string) (*models.User, int
 	// The unlocked preflight for a fast answer; the transaction rechecks the
 	// same rule under the user's row lock (lockHostUsers).
 	if r := hostEligibility(actor, found); r != nil {
-		return nil, r.status, r.msg
+		return nil, r
 	}
-	return found, 0, ""
+	return found, nil
 }
 
 func (a *App) apiCreateChurchEvent(c *gin.Context) {
@@ -298,7 +298,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		return
 	}
 	if body.Title == nil || strings.TrimSpace(*body.Title) == "" {
-		jsonError(c, http.StatusBadRequest, "title is required")
+		fail(c, errTitleRequired)
 		return
 	}
 	vis := models.VisibilityPublic
@@ -306,7 +306,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		vis = strings.TrimSpace(*body.Visibility)
 	}
 	if vis == models.VisibilityInviteOnly {
-		jsonError(c, http.StatusBadRequest, "a church-wide event can't be invite-only")
+		fail(c, errChurchEventInviteOnly)
 		return
 	}
 	if vis != models.VisibilityPublic && vis != models.VisibilityPrivate {
@@ -332,9 +332,9 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		if strings.TrimSpace(email) == "" {
 			continue
 		}
-		u, code, msg := a.hostCandidate(creator, email)
-		if msg != "" {
-			jsonError(c, code, msg)
+		u, err := a.hostCandidate(creator, email)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		if seen[u.ID] {
@@ -387,11 +387,8 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
 		return err
 	})
-	if hostWriteFailed(c, err) || createRoomFailed(c, err) {
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not create event")
+		fail(c, err)
 		return
 	}
 	f := eventFactsIn(a.DB, creator, &ev)
@@ -421,7 +418,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	vis := strings.TrimSpace(body.Visibility)
 	reason := strings.TrimSpace(body.Reason)
 	if len(reason) > 500 {
-		jsonError(c, http.StatusBadRequest, "reason is too long")
+		fail(c, errReasonTooLong)
 		return
 	}
 	me := apiUser(c)
@@ -430,7 +427,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		return
 	}
 	if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
-		jsonError(c, http.StatusBadRequest, "that visibility isn't allowed on this event")
+		fail(c, errVisibilityNotAllowed)
 		return
 	}
 	opened := f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
@@ -554,16 +551,16 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Email) == "" {
-		jsonError(c, http.StatusBadRequest, "email is required")
+		fail(c, errEmailRequired)
 		return
 	}
-	target, code, msg := a.hostCandidate(apiUser(c), body.Email)
-	if msg != "" {
-		jsonError(c, code, msg)
+	target, err := a.hostCandidate(apiUser(c), body.Email)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	me := apiUser(c)
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		locked, err := lockHostUsers(tx, []uint{me.ID, target.ID})
 		if err != nil {
 			return err
@@ -600,35 +597,15 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 		// host is added again.
 		return removeDeletedHostRows(tx, me.ID, []uint{ev.ID}, c.ClientIP())
 	})
-	if hostWriteFailed(c, err) {
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not add host")
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"hosts": a.eventHosts(ev.ID)})
 }
 
 // errEventGone: the church-wide event was deleted while the request waited.
-var errEventGone = errors.New("event not found")
-
-// hostWriteFailed answers the refusals a locked recheck of a host write can
-// return, after the transaction. It is false for any other error.
-func hostWriteFailed(c *gin.Context, err error) bool {
-	var refusal *hostRefusal
-	switch {
-	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
-	case errors.As(err, &refusal):
-		jsonError(c, refusal.status, refusal.msg)
-	case errors.Is(err, errEventGone):
-		jsonError(c, http.StatusNotFound, "event not found")
-	default:
-		return false
-	}
-	return true
-}
+var errEventGone = apiErr(http.StatusNotFound, "", "event not found")
 
 func (a *App) apiRemoveEventHost(c *gin.Context) {
 	ev, ok := a.loadChurchEvent(c)
@@ -668,7 +645,7 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 			return errHostGone
 		}
 		if !policy.EventKeepsHost(seats, uint(uid)) {
-			jsonError(c, http.StatusBadRequest, "a church-wide event needs at least one host")
+			fail(c, errNeedsHost)
 			return errLastHost
 		}
 		if err := tx.Where("event_id = ? AND user_id = ?", ev.ID, uid).Delete(&models.EventHost{}).Error; err != nil {
@@ -680,11 +657,8 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 	if err == errHostGone || err == errLastHost {
 		return
 	}
-	if hostWriteFailed(c, err) {
-		return
-	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not remove host")
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"hosts": a.eventHosts(ev.ID)})

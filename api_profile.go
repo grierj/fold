@@ -72,7 +72,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if utf8.RuneCountInString(name) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		updates["name"] = name
@@ -80,7 +80,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	if body.DisplayName != nil {
 		dn := strings.TrimSpace(*body.DisplayName)
 		if utf8.RuneCountInString(dn) > 100 {
-			jsonError(c, http.StatusBadRequest, "display name must be at most 100 characters")
+			fail(c, errDisplayNameTooLong)
 			return
 		}
 		updates["display_name"] = dn
@@ -95,7 +95,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	if body.Phone != nil {
 		phone := strings.TrimSpace(*body.Phone)
 		if len(phone) > 30 {
-			jsonError(c, http.StatusBadRequest, "phone must be at most 30 characters")
+			fail(c, errPhoneTooLong)
 			return
 		}
 		updates["phone"] = phone
@@ -103,7 +103,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	if body.Timezone != nil {
 		tz := strings.TrimSpace(*body.Timezone)
 		if _, err := events.LoadZone(tz); err != nil {
-			jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
+			fail(c, errInvalidTimezone)
 			return
 		}
 		updates["timezone"] = tz
@@ -119,7 +119,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// so a wrong password leaves the other fields as they were.
 	if emailChange != nil {
 		if !validEmail(mail.NormalizeAddress(*emailChange)) {
-			jsonError(c, http.StatusBadRequest, "enter a valid email address")
+			fail(c, errEnterValidEmail)
 			return
 		}
 		if !a.reauthenticate(c, u, body.CurrentPassword) {
@@ -205,7 +205,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 			return
 		}
 		if taken > 0 {
-			jsonError(c, http.StatusConflict, "an account with that email already exists")
+			fail(c, errEmailTaken)
 			return
 		}
 		addrOK, err = a.targetAllow(ctx, emailChangeAddrKey(newEmail))
@@ -342,10 +342,10 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):
-		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		fail(c, errLinkExpired)
 		return
 	case errors.Is(err, errEmailTaken):
-		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		fail(c, errEmailTaken)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not verify email")
@@ -376,41 +376,41 @@ func clampFocal(v float64) float64 {
 // limit and content sniffing. Returns a temp file (caller closes/removes
 // it), the canonical extension, and the MIME type.
 func readImageUpload(c *gin.Context, field string) (*os.File, string, string, error) {
-	fail := func(format string, args ...interface{}) (*os.File, string, string, error) {
-		return nil, "", "", fmt.Errorf(format, args...)
+	refuse := func(err error) (*os.File, string, string, error) {
+		return nil, "", "", err
 	}
 	fh, err := c.FormFile(field)
 	if err != nil {
-		return fail("missing file")
+		return refuse(errMissingFile)
 	}
 	src, err := fh.Open()
 	if err != nil {
-		return fail("cannot read file")
+		return refuse(errImageUnreadable)
 	}
 	defer src.Close()
 
 	tmp, err := os.CreateTemp("", "upload-*")
 	if err != nil {
-		return fail("server error")
+		return refuse(errUploadFailed)
 	}
 	cleanup := func() { tmp.Close(); os.Remove(tmp.Name()) }
 	// Enforce the real byte count, not the client-declared size.
 	n, err := io.Copy(tmp, io.LimitReader(src, maxUploadBytes+1))
 	if err != nil {
 		cleanup()
-		return fail("server error")
+		return refuse(errUploadFailed)
 	}
 	if n > maxUploadBytes {
 		cleanup()
-		return fail("file too large (max 5MB)")
+		return refuse(errFileTooLarge)
 	}
 	if n == 0 {
 		cleanup()
-		return fail("empty file")
+		return refuse(errEmptyFile)
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		cleanup()
-		return fail("server error")
+		return refuse(errUploadFailed)
 	}
 	head := make([]byte, 512)
 	rn, _ := io.ReadFull(tmp, head)
@@ -423,7 +423,7 @@ func readImageUpload(c *gin.Context, field string) (*os.File, string, string, er
 	}
 	if _, ok := allowedImageTypes[mime]; !ok {
 		cleanup()
-		return fail("only JPEG, PNG, and GIF images are allowed")
+		return refuse(errFileType)
 	}
 	// Re-encode so no metadata (EXIF, text chunks, comments) is stored.
 	ext, mime, err := normalizeImage(tmp, mime)
@@ -432,7 +432,7 @@ func readImageUpload(c *gin.Context, field string) (*os.File, string, string, er
 		if errors.Is(err, errImageTooLarge) || errors.Is(err, errImageUnreadable) {
 			return nil, "", "", err
 		}
-		return fail("server error")
+		return refuse(errUploadFailed)
 	}
 	return tmp, ext, mime, nil
 }
@@ -452,12 +452,12 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 	start := requestStart(c)
 	u := apiUser(c)
 	if !policy.CanUploadAvatar(asPerson(u)) {
-		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
+		fail(c, errTeenAvatar)
 		return
 	}
 	tmp, _, mime, err := readImageUpload(c, "avatar")
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
+		fail(c, err)
 		return
 	}
 	defer tmp.Close()
@@ -471,10 +471,10 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 	avatarURL, err := a.storeAvatar(c.Request.Context(), u, tmp, st.Size(), mime, avatarTxDeadline(start, time.Now()))
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return
 	case errors.Is(err, errTeenAvatar):
-		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
+		fail(c, errTeenAvatar)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not store avatar")
@@ -490,7 +490,7 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	err := a.removeAvatar(c.Request.Context(), u, avatarTxDeadline(start, start))
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not remove avatar")
@@ -522,7 +522,7 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 	}
 	tmp, ext, mime, err := readImageUpload(c, "cover")
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
+		fail(c, err)
 		return
 	}
 	defer tmp.Close()
@@ -689,10 +689,10 @@ func defaultHouseholdName(u *models.User) string {
 var (
 	// errHouseholdForbidden is a failed policy.CanManageHousehold or
 	// CanCreateHousehold check made under the user lock.
-	errHouseholdForbidden = errors.New("household not allowed")
+	errHouseholdForbidden = apiErr(http.StatusForbidden, "", "forbidden")
 	// errHouseholdPersonGone means the person is not in the household the
 	// locked seat names.
-	errHouseholdPersonGone = errors.New("household person not found")
+	errHouseholdPersonGone = apiErr(http.StatusNotFound, "", "household person not found")
 )
 
 // lockHouseholdSeat is the first lock of every household self-service writer:
@@ -716,24 +716,6 @@ func lockHouseholdSeat(tx *gorm.DB, me *models.User, noSeat error) (*models.User
 		return nil, seat, errHouseholdForbidden
 	}
 	return fresh, seat, nil
-}
-
-// answerHouseholdWriterError answers the errors the lock helpers return and
-// reports whether it did. Statuses and copy are the ones the routes already
-// use: 401 unauthorized for a session the lock found stale, 403 forbidden,
-// 404 for a person outside the caller's household.
-func answerHouseholdWriterError(c *gin.Context, err error) bool {
-	switch {
-	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
-	case errors.Is(err, errHouseholdForbidden):
-		jsonError(c, http.StatusForbidden, "forbidden")
-	case errors.Is(err, errHouseholdPersonGone):
-		jsonError(c, http.StatusNotFound, "household person not found")
-	default:
-		return false
-	}
-	return true
 }
 
 // ensureHousehold loads the user's household, creating it on first use
@@ -779,7 +761,8 @@ func (a *App) ensureHousehold(c *gin.Context, u *models.User) (*models.Household
 		return audit.Write(tx, audit.Entry{Actor: &fresh.ID, Action: audit.HouseholdCreated,
 			TargetType: "household", TargetID: household.ID, IP: c.ClientIP()})
 	})
-	if answerHouseholdWriterError(c, err) {
+	if isAPIError(err) {
+		fail(c, err)
 		return nil, models.HouseholdAccount{}, false
 	}
 	if err != nil {
@@ -1083,11 +1066,11 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if name == "" {
-			jsonError(c, http.StatusBadRequest, "name is required")
+			fail(c, errNameRequired)
 			return
 		}
 		if utf8.RuneCountInString(name) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		updates["name"] = name
@@ -1095,7 +1078,7 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 	if body.Address != nil {
 		address := strings.TrimSpace(*body.Address)
 		if utf8.RuneCountInString(address) > 500 {
-			jsonError(c, http.StatusBadRequest, "address is too long")
+			fail(c, errAddressTooLong)
 			return
 		}
 		updates["address"] = address
@@ -1123,10 +1106,7 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 			sort.Strings(fields)
 			return audit.Write(tx, audit.Entry{Actor: &fresh.ID, Action: audit.HouseholdUpdated, TargetType: "household", TargetID: householdID, Meta: map[string]any{"fields": fields}, IP: c.ClientIP()})
 		}); err != nil {
-			if answerHouseholdWriterError(c, err) {
-				return
-			}
-			jsonError(c, http.StatusInternalServerError, "could not save household")
+			fail(c, err)
 			return
 		}
 		var saved models.Household
@@ -1185,11 +1165,11 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 		first, last = splitPersonName(*body.Name)
 	}
 	if first == "" {
-		jsonError(c, http.StatusBadRequest, "first name is required")
+		fail(c, errFirstNameRequired)
 		return models.HouseholdPerson{}, false
 	}
 	if utf8.RuneCountInString(first) > 100 || utf8.RuneCountInString(last) > 100 {
-		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+		fail(c, errNameTooLong100)
 		return models.HouseholdPerson{}, false
 	}
 	kind := ""
@@ -1197,14 +1177,14 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 		kind = strings.TrimSpace(*body.Kind)
 	}
 	if !validHouseholdKind(kind) {
-		jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
+		fail(c, errInvalidKind)
 		return models.HouseholdPerson{}, false
 	}
 	var birth *time.Time
 	if body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != "" {
 		parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
 		if err != nil {
-			jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+			fail(c, errInvalidBirthDate)
 			return models.HouseholdPerson{}, false
 		}
 		birth = parsed
@@ -1216,7 +1196,7 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 			return models.HouseholdPerson{}, false
 		}
 		if age := accounts.AgeOn(*birth, today); age < 0 || (kind == models.HouseholdAdult && age < 18) {
-			registrationError(c, householdRegistrationError{code: "household_age_mismatch"})
+			fail(c, errHouseholdAgeMismatch)
 			return models.HouseholdPerson{}, false
 		}
 	}
@@ -1225,7 +1205,7 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 		careNotes = strings.TrimSpace(*body.CareNotes)
 	}
 	if utf8.RuneCountInString(careNotes) > 5000 {
-		jsonError(c, http.StatusBadRequest, "care notes are too long")
+		fail(c, errCareNotesTooLong)
 		return models.HouseholdPerson{}, false
 	}
 	photoConsent := false
@@ -1281,10 +1261,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 			TargetType: "household", TargetID: seat.HouseholdID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
-		if answerHouseholdWriterError(c, err) {
-			return
-		}
-		jsonError(c, http.StatusInternalServerError, "could not add that person")
+		fail(c, err)
 		return
 	}
 	row, err := a.householdPersonRow(a.DB, &person, me)
@@ -1321,7 +1298,7 @@ func (a *App) loadMyHouseholdPerson(c *gin.Context) (*models.Household, *models.
 		return nil, nil, false
 	}
 	if person.ConvertedUserID != nil {
-		jsonError(c, http.StatusConflict, "this person has their own account; use their account instead")
+		fail(c, errPersonHasAccount)
 		return nil, nil, false
 	}
 	return &household, &person, true
@@ -1349,11 +1326,11 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	if body.FirstName != nil {
 		first := strings.TrimSpace(*body.FirstName)
 		if first == "" {
-			jsonError(c, http.StatusBadRequest, "first name is required")
+			fail(c, errFirstNameRequired)
 			return
 		}
 		if utf8.RuneCountInString(first) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		updates["first_name"] = first
@@ -1361,7 +1338,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	if body.LastName != nil {
 		last := strings.TrimSpace(*body.LastName)
 		if utf8.RuneCountInString(last) > 100 {
-			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			fail(c, errNameTooLong100)
 			return
 		}
 		updates["last_name"] = last
@@ -1370,7 +1347,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	if body.Kind != nil {
 		newKind = strings.TrimSpace(*body.Kind)
 		if !validHouseholdKind(newKind) {
-			jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
+			fail(c, errInvalidKind)
 			return
 		}
 		updates["kind"] = newKind
@@ -1381,7 +1358,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		} else {
 			parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
 			if err != nil {
-				jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+				fail(c, errInvalidBirthDate)
 				return
 			}
 			updates["birth_date"] = parsed
@@ -1390,7 +1367,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	if body.CareNotes != nil {
 		careNotes := strings.TrimSpace(*body.CareNotes)
 		if utf8.RuneCountInString(careNotes) > 5000 {
-			jsonError(c, http.StatusBadRequest, "care notes are too long")
+			fail(c, errCareNotesTooLong)
 			return
 		}
 		updates["care_notes"] = careNotes
@@ -1496,14 +1473,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonUpdated, TargetType: "household", TargetID: person.HouseholdID, Meta: map[string]any{"personId": person.ID, "fields": fields}, IP: c.ClientIP()})
 	})
 	if err != nil {
-		if answerHouseholdWriterError(c, err) {
-			return
-		}
-		if errors.Is(err, errConversionConsent) {
-			conversionError(c, err)
-			return
-		}
-		registrationError(c, err)
+		fail(c, err)
 		return
 	}
 	var fresh models.HouseholdPerson
@@ -1572,14 +1542,7 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		return tx.Delete(person).Error
 	})
 	if err != nil {
-		if answerHouseholdWriterError(c, err) {
-			return
-		}
-		if errors.Is(err, errConversionUnavailable) || errors.Is(err, errConversionConsent) {
-			conversionError(c, err)
-			return
-		}
-		jsonError(c, http.StatusInternalServerError, "could not remove that person")
+		fail(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"net/http"
 	"os"
 )
 
@@ -33,11 +33,11 @@ const (
 	jpegQuality = 85
 )
 
-// These strings are the API's error messages; api_errors.go gives each a code.
+// The API's answers for an image it will not take (api_errors.go).
 var (
-	errImageTooLarge   = errors.New("that image is too large to process")
-	errImageUnreadable = errors.New("cannot read file")
-	errImageWebP       = errors.New("WebP images are not supported; use a JPEG or PNG")
+	errImageTooLarge   = apiErr(http.StatusBadRequest, "image_too_large", "that image is too large to process")
+	errImageUnreadable = apiErr(http.StatusBadRequest, "file_unreadable", "cannot read file")
+	errImageWebP       = apiErr(http.StatusBadRequest, "image_unsupported", "WebP images are not supported; use a JPEG or PNG")
 )
 
 // normalizeImage re-encodes the image in f (already sniffed as mime) and

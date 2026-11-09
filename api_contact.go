@@ -137,8 +137,7 @@ type contactOperation struct {
 	now               time.Time
 	zone              *time.Location
 	refused           bool
-	refusalMessage    string
-	refusalStatus     int
+	refusal           *apiError // nil answers errContactUnavailable
 	completionProblem string
 }
 
@@ -184,11 +183,10 @@ func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn 
 		return
 	}
 	if op.refused {
-		if op.refusalMessage == "" {
-			op.refusalMessage = "direct-contact access is unavailable; refresh the request"
-			op.refusalStatus = http.StatusForbidden
+		if op.refusal == nil {
+			op.refusal = errContactUnavailable
 		}
-		jsonError(c, op.refusalStatus, op.refusalMessage)
+		fail(c, op.refusal)
 		return
 	}
 }
@@ -268,8 +266,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		r := models.ContactRequest{Purpose: policy.RequestContact, RequesterID: op.actor.ID, SubjectUserID: body.SubjectUserID, ContextType: body.ContextType, ContextID: body.ContextID, Fields: body.Fields, Reason: strings.TrimSpace(body.Reason)}
 		if !valid {
 			if utf8.RuneCountInString(body.Reason) > policy.ContactReasonLimit {
-				op.refusalMessage = "contact reason must be at most 1000 characters"
-				op.refusalStatus = http.StatusBadRequest
+				op.refusal = errContactReasonLong
 			}
 			return refuseContact(tx, op, r, "invalid_request", c.ClientIP())
 		}
@@ -287,8 +284,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		}
 		if !policy.CanCreateContactRequest(contactScope(r), f, int(count)) {
 			if count >= policy.ContactOpenLimit && policy.CanCreateContactRequest(contactScope(r), f, 0) {
-				op.refusalMessage = "you already have 10 open requests; withdraw one or wait for a decision"
-				op.refusalStatus = http.StatusConflict
+				op.refusal = errRequestOpenLimit
 			}
 			return refuseContact(tx, op, r, "create", c.ClientIP())
 		}
@@ -743,7 +739,7 @@ func refuseAdd(tx *gorm.DB, op *contactOperation, r models.ContactRequest, opera
 	if r.Purpose != policy.RequestOccurrenceAdd {
 		r.Purpose = policy.RequestGroupAdd
 	}
-	op.refusalMessage, op.refusalStatus = "this ask to add is unavailable; refresh the request", http.StatusForbidden
+	op.refusal = errAddRequestUnavailable
 	return refuseContact(tx, op, r, operation, ip)
 }
 func (a *App) apiCreateAddRequest(c *gin.Context) {
@@ -769,7 +765,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		}
 		if !valid || (body.ContextType != policy.ContactGroup && body.ContextType != policy.ContactEvent) {
 			if utf8.RuneCountInString(body.Reason) > policy.ContactReasonLimit {
-				op.refused, op.refusalMessage, op.refusalStatus = true, "add reason must be at most 1000 characters", http.StatusBadRequest
+				op.refused, op.refusal = true, errAddReasonLong
 				return contactAudit(tx, &op.actor.ID, audit.ContactRefused, r, "invalid_request", c.ClientIP())
 			}
 			return refuseAdd(tx, op, r, "invalid_request", c.ClientIP())
@@ -830,8 +826,7 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		if !policy.CanCreateAddRequest(addRequestPolicy(r).AddScope, f, int(count)) {
 			if count >= policy.ContactOpenLimit && policy.CanCreateAddRequest(addRequestPolicy(r).AddScope, f, 0) {
 				op.refused = true
-				op.refusalMessage = "you already have 10 open requests; withdraw one or wait for a decision"
-				op.refusalStatus = http.StatusConflict
+				op.refusal = errRequestOpenLimit
 				return contactAudit(tx, &op.actor.ID, audit.ContactRefused, r, "open_limit", c.ClientIP())
 			}
 			return refuseAdd(tx, op, r, "create", c.ClientIP())

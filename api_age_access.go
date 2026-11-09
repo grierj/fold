@@ -15,7 +15,7 @@ import (
 func (a *App) classifyAccountInput(c *gin.Context, band, birthDate string) (string, *time.Time, bool) {
 	birth, err := accounts.ParseBirthDate(strings.TrimSpace(birthDate))
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+		fail(c, errInvalidBirthDate)
 		return "", nil, false
 	}
 	today, err := churchClockIn(a.DB, time.Now().UTC())
@@ -25,11 +25,11 @@ func (a *App) classifyAccountInput(c *gin.Context, band, birthDate string) (stri
 	}
 	kind, err := accounts.Classify(strings.TrimSpace(band), birth, today)
 	if errors.Is(err, accounts.ErrUnder13) {
-		jsonError(c, http.StatusBadRequest, "Fold accounts start at 13. A parent or guardian can add a younger child to their household and sign them up for events.")
+		fail(c, errUnder13)
 		return "", nil, false
 	}
 	if err != nil {
-		jsonError(c, http.StatusBadRequest, "pick 18 or older, or 13 to 17 with a birth date that matches")
+		fail(c, errAgeMismatch)
 		return "", nil, false
 	}
 	if kind == models.AccountAdult {

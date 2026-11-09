@@ -87,21 +87,27 @@ const (
 var (
 	// errNeedsReasonReview: the account has reasons to review and the DELETE
 	// carried no review.
-	errNeedsReasonReview = errors.New("the account has contact-request reasons to review")
+	errNeedsReasonReview = apiErr(http.StatusConflict, "needs_reason_review", "the account has contact-request reasons to review")
 	// errReasonReviewChanged: the reviewed set is not the current set.
-	errReasonReviewChanged = errors.New("the contact-request reasons changed since they were reviewed")
+	errReasonReviewChanged = apiErr(http.StatusConflict, "reason_review_changed", "the contact-request reasons changed since they were reviewed")
 	// errReasonReviewForbidden: the signed-in admin may not review reasons.
-	errReasonReviewForbidden = errors.New("the signed-in admin may not review contact-request reasons")
+	errReasonReviewForbidden = apiErr(http.StatusForbidden, "reason_review_not_allowed", "only an adult admin can review these reasons")
 	// errReasonReviewOutdated: the body carried the pre-set-v1 items envelope and
 	// the account has reasons; nothing in it is ever applied.
-	errReasonReviewOutdated = errors.New("the contact-request reason review was made by an older version of this page")
+	errReasonReviewOutdated = apiErr(http.StatusConflict, "reason_review_outdated", "the page that made this review is out of date")
 	// errReasonCounterpartBusy: blanking a reason made the request trigger
 	// share-lock a soft-deleted party's users row NOWAIT (migration 00007) and
 	// another transaction held it, SQLSTATE 55P03. It wraps the *pgconn.PgError,
 	// so errors.As still finds the code and the household retry rules apply
 	// unchanged (only a 55P03 whose ROLLBACK was acknowledged is retried); it
 	// exists so the answer names this cause and not a busy household.
-	errReasonCounterpartBusy = errors.New("another transaction holds a deleted party of a reviewed request")
+	errReasonCounterpartBusy = apiErr(http.StatusConflict, "delete_reason_busy", "someone was changing a request that involves this person, so nothing was deleted")
+	// errReasonReviewPageForbidden is errReasonReviewForbidden for the review
+	// page, whose answer also tells the panel a review is required.
+	errReasonReviewPageForbidden = apiErrWith(errReasonReviewForbidden, gin.H{"reviewRequired": true})
+	// errReasonReviewBusy: the page could not load the reasons (busy after
+	// every try, a timeout or a database error), which is not "no reasons".
+	errReasonReviewBusy = apiErr(http.StatusServiceUnavailable, "reason_review_busy", "could not load the reasons")
 	// errReasonInvariant: a blanking changed a different number of rows than
 	// the review named; the whole deletion rolls back.
 	errReasonInvariant = errors.New("the reason review changed an unexpected number of rows")
@@ -545,11 +551,7 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 			return err
 		}
 		if !policy.CanDemoteOrDelete(asPerson(&actor), asPerson(target), admins) {
-			msg := "cannot delete the last admin"
-			if target.ID == actor.ID {
-				msg = "you cannot delete your own account"
-			}
-			return errAdminRule{msg: msg}
+			return adminRuleRefusal(adminDelete, target.ID == actor.ID)
 		}
 		unit, err := scanReasonUnit(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests, reasonScanBatched)
 		if err != nil {
@@ -804,20 +806,19 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 	case err == nil:
 		c.JSON(http.StatusOK, step.page)
 	case errors.Is(err, errSecuritySession):
-		jsonStaleSession(c)
+		fail(c, errSecuritySession)
 	case errors.Is(err, errReasonReviewForbidden) || (errors.Is(err, errActorForbidden) && step.predFailed):
-		c.JSON(http.StatusForbidden, gin.H{"error": "only an adult admin can review these reasons", "code": "reason_review_not_allowed", "reviewRequired": true})
+		fail(c, errReasonReviewPageForbidden)
 	case errors.Is(err, errActorForbidden):
-		jsonError(c, http.StatusForbidden, "forbidden")
+		fail(c, err)
 	default:
-		var rule errAdminRule
-		if errors.As(err, &rule) {
-			jsonError(c, http.StatusBadRequest, rule.msg)
+		if isAdminRuleRefusal(err) {
+			fail(c, err)
 			return
 		}
 		// Busy after every try, a timeout, or a database error: not "empty".
 		log.Printf("reason review page failed (busy: %v): %s", errors.Is(err, errActorBusy), jobs.CleanError(err))
-		jsonErrorCode(c, http.StatusServiceUnavailable, "reason_review_busy", "could not load the reasons")
+		fail(c, errReasonReviewBusy)
 	}
 }
 

@@ -383,7 +383,7 @@ func feedScopeOK(c *gin.Context, scope string) bool {
 	if scope == models.CalendarFeedMine || scope == models.CalendarFeedAll {
 		return true
 	}
-	jsonError(c, http.StatusBadRequest, "scope must be mine or all")
+	fail(c, errInvalidFeedScope)
 	return false
 }
 

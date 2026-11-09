@@ -333,16 +333,16 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	me := asPerson(user)
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		jsonError(c, http.StatusBadRequest, "the reason must be 500 characters or fewer")
+		fail(c, errReasonTooLong500)
 		return
 	}
 	if (body.SetupMinutes != nil || body.TeardownMinutes != nil) && !policy.CanAdjustBookingPadding(me) {
-		jsonError(c, http.StatusForbidden, "only an admin can change a booking's setup and cleanup time")
+		fail(c, errBookingSetupAdminOnly)
 		return
 	}
 	for _, m := range []*int{body.SetupMinutes, body.TeardownMinutes} {
 		if m != nil && (*m < 0 || *m > maxRoomPadding) {
-			jsonError(c, http.StatusBadRequest, "setup and cleanup minutes must be from 0 to 240")
+			fail(c, errInvalidSetupMinutes)
 			return
 		}
 	}
@@ -461,16 +461,16 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	case errors.Is(err, errAdminBooking):
-		jsonError(c, http.StatusForbidden, "only an admin can change this booking")
+		fail(c, errBookingAdminOnly)
 		return
 	case errors.Is(err, errRoomGone):
 		jsonError(c, http.StatusNotFound, "room not found")
 		return
 	case errors.Is(err, errRestricted):
-		jsonError(c, http.StatusForbidden, "only an admin can book this room")
+		fail(c, errRoomRestricted)
 		return
 	case errors.Is(err, errBusy):
-		jsonError(c, http.StatusConflict, "that room is already booked then")
+		fail(c, errRoomBusy)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
