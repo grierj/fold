@@ -347,16 +347,15 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		var prior models.Registration
 		havePrior := found &&
 			tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).Limit(1).Find(&prior).RowsAffected == 1
-		// Seat check under the lock, before anything is created.
-		cap := events.EffectiveCapacity(ev.Capacity, occ.CapacityOverride)
-		used, err := seatsUsedForMode(tx, occ.ID, models.AttendanceInPerson)
-		if err != nil {
-			return err
-		}
-		if havePrior && prior.Status == models.RegGoing && prior.AttendanceMode == models.AttendanceInPerson {
-			used -= 1 + prior.GuestCount
-		}
-		if cap != nil && used+1 > *cap && !ev.WaitlistEnabled {
+		// Guests register in person. The seat check runs under the lock, before
+		// anything is created, through the same ledger as every other writer.
+		reg := prior
+		reg.OccurrenceID, reg.Status, reg.Source = occ.ID, models.RegGoing, models.RegSourceGuestForm
+		reg.AttendanceMode = models.AttendanceInPerson
+		if err := seatChange(tx, &ev, occ, prior, &reg, time.Now().UTC()); err != nil {
+			if !errors.Is(err, errEventFull) {
+				return err
+			}
 			// No seat and no waitlist: the link dies here (the update
 			// commits), nothing is created, and the page says the
 			// event is full.
@@ -368,7 +367,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			fullNoWaitlist = true
 			return nil
 		}
-		full := cap != nil && used+1 > *cap
+		full := reg.Status == models.RegWaitlisted
 		// Claim the link atomically: a second redeem of the same token
 		// loses here instead of registering twice.
 		now := time.Now().UTC()
@@ -404,34 +403,13 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			return err
 		}
 		manageRaw = raw
-		status := models.RegGoing
-		var wlAt *time.Time
-		if full {
-			status = models.RegWaitlisted
-			wlAt = &now
-			if havePrior && prior.Status == models.RegWaitlisted && prior.WaitlistedAt != nil {
-				wlAt = prior.WaitlistedAt // keep their place in line
-			}
-		}
-		reg := models.Registration{UserID: &user.ID, OccurrenceID: occ.ID}
 		if havePrior && prior.Status == models.RegRemoved {
 			// A pruned guest can't re-enter through the public form;
 			// a leader or host adds them back (mirrors registerLocked).
 			return errRemovedBlocked
 		}
-		err = tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
-			Attrs(models.Registration{Status: status, Source: models.RegSourceGuestForm, AttendanceMode: models.AttendanceInPerson}).
-			FirstOrCreate(&reg).Error
-		if err != nil {
-			return err
-		}
-		reg.Status = status
-		reg.Source = models.RegSourceGuestForm
-		// Guests register in person; the seat check above counted that pool.
-		reg.AttendanceMode = models.AttendanceInPerson
-		reg.ManageTokenHash = hash
-		reg.WaitlistedAt = wlAt
-		if err := tx.Omit(registrationAccessColumns...).Save(&reg).Error; err != nil {
+		reg.UserID, reg.ManageTokenHash = &user.ID, hash
+		if err := saveRegistration(tx, &reg); err != nil {
 			return err
 		}
 		if full {

@@ -206,26 +206,18 @@ func (a *App) managedOccurrence(c *gin.Context) (*models.Event, *models.EventOcc
 }
 
 // seatsWanted is what a room must hold for a date: the larger of its seat
-// cap and the seats already going.
-func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) int {
+// cap and the seats already going. The count is the one capacity uses: listed
+// accounts only, remote attendees aside.
+func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) (int, error) {
 	want := 0
-	if cap := effectiveCapacity(ev, occ); cap != nil {
+	if cap := capacityForMode(ev, occ, models.AttendanceInPerson); cap != nil {
 		want = *cap
 	}
-	// The same in-person count capacity uses: listed accounts only, remote
-	// attendees aside. A failed count leaves just the cap; it's a warning.
-	going, _ := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson)
-	if going > want {
-		want = going
+	going, err := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson, 0)
+	if err != nil {
+		return 0, err
 	}
-	return want
-}
-
-func effectiveCapacity(ev *models.Event, occ *models.EventOccurrence) *int {
-	if occ.CapacityOverride != nil {
-		return occ.CapacityOverride
-	}
-	return ev.Capacity
+	return max(want, going), nil
 }
 
 func tooSmall(capacity *int, want int) bool { return capacity != nil && want > *capacity }
@@ -256,7 +248,11 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	for _, id := range busy {
 		isBusy[id] = true
 	}
-	want := seatsWanted(a.DB, ev, occ)
+	want, err := seatsWanted(a.DB, ev, occ)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list rooms")
+		return
+	}
 	out := []roomPickerJSON{}
 	for _, r := range rooms {
 		if !policy.CanBookRoom(me, true, r.Restricted) {
@@ -476,7 +472,12 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 		return
 	}
-	booking, err := a.dateBooking(a.DB, occ.ID, seatsWanted(a.DB, ev, occ))
+	want, err := seatsWanted(a.DB, ev, occ)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the room")
+		return
+	}
+	booking, err := a.dateBooking(a.DB, occ.ID, want)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the room")
 		return

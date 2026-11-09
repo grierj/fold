@@ -514,7 +514,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	}
 	// All refusal paths below are before registration writes. Capacity/childcare
 	// never require rolling back a valid party decision or a nested transaction.
-	if r.AddGuestCount > ev.GuestsAllowed || (r.AddAttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable) || (r.AddChildcareCount > 0 && !ev.ChildcareAvailable) {
+	if r.AddGuestCount > ev.GuestsAllowed || remoteUnavailable(&ev, r.AddAttendanceMode) || (r.AddChildcareCount > 0 && !ev.ChildcareAvailable) {
 		op.completionProblem = "options"
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "options_changed", ip)
 	}

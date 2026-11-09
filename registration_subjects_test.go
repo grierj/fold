@@ -113,7 +113,7 @@ func TestListedRegistrationSubjects(t *testing.T) {
 	}
 	assertSeats := func(want int) {
 		t.Helper()
-		got, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson)
+		got, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson, 0)
 		if err != nil || got != want {
 			t.Fatalf("seats %d want %d: %v", got, want, err)
 		}

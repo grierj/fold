@@ -476,32 +476,17 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	}
 	// One waitlist, two pools: each entry keeps its mode and is filled
 	// from its own pool in line order (M1.8 slice 2).
-	pools := map[string]events.Pool{}
-	for _, mode := range []string{models.AttendanceInPerson, models.AttendanceRemote} {
-		used, err := seatsUsedForMode(tx, o.ID, mode)
-		if err != nil {
-			return err
-		}
-		pools[mode] = events.Pool{Capacity: capacityForMode(ev, o, mode), Used: used}
-	}
-	childcare := events.Pool{}
-	if ev.ChildcareAvailable && ev.ChildcareCapacity != nil {
-		used, err := childcareUsedFor(tx, o.ID, 0)
-		if err != nil {
-			return err
-		}
-		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
+	tally, err := loadSeatTally(tx, ev, o)
+	if err != nil {
+		return err
 	}
 	// A greedy pass takes the first entry that fits an untouched pool, so if
 	// none fits even before eligibility filters the line, nobody can be picked.
-	entryOf := func(r models.Registration) events.WaitEntry {
-		return events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: effectiveChildcare(ev, r)}
-	}
 	line := make([]events.WaitEntry, 0, len(wl))
 	for _, r := range wl {
-		line = append(line, entryOf(r))
+		line = append(line, tally.entry(r))
 	}
-	if len(events.PickPromotionsByPool(line, pools, childcare)) == 0 {
+	if len(tally.pick(line)) == 0 {
 		return nil
 	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
@@ -514,17 +499,17 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		if !facts.eligible(a, tx, r, ev, access, now) {
 			continue
 		}
-		entries = append(entries, entryOf(r))
+		entries = append(entries, tally.entry(r))
 	}
+	picks := tally.pick(entries)
 	if events.InCutoff(now, o.StartsAt) {
 		// Nobody is auto-promoted; the leaders or hosts are told only
 		// when someone in line could actually take a freed seat.
-		if len(events.PickPromotionsByPool(entries, pools, childcare)) > 0 {
+		if len(picks) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
 		return nil
 	}
-	picks := events.PickPromotionsByPool(entries, pools, childcare)
 	if len(picks) == 0 {
 		return nil
 	}
@@ -612,8 +597,8 @@ func prepareRegistration(old models.Registration, o *models.EventOccurrence, sub
 	if want == models.RegGoing && ch.old.Status == models.RegWaitlisted && ch.old.AttendanceMode == ch.next.AttendanceMode {
 		ch.next.Status = models.RegWaitlisted
 	}
-	if ch.next.Status == models.RegWaitlisted && (ch.old.WaitlistedAt == nil || ch.old.AttendanceMode != ch.next.AttendanceMode) {
-		ch.next.WaitlistedAt = &now
+	if ch.next.Status == models.RegWaitlisted {
+		placeOnWaitlist(&ch.next, ch.old, now)
 	}
 	return ch, nil
 }
@@ -632,34 +617,12 @@ func saveRegistration(tx *gorm.DB, r *models.Registration) error {
 // promotion scheduling belong to the caller, never to this per-row function.
 func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, ch *registrationChange, now time.Time) error {
 	r := &ch.next
-	if r.Status != models.RegDeclined && r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable {
+	if r.Status != models.RegDeclined && remoteUnavailable(ev, r.AttendanceMode) {
 		return errRemoteNotAvailable
 	}
 	if r.Status == models.RegGoing {
-		used, err := seatsUsedForMode(tx, o.ID, r.AttendanceMode)
-		if err != nil {
+		if err := seatChange(tx, ev, o, ch.old, r, now); err != nil {
 			return err
-		}
-		var current models.Registration
-		if r.ID != 0 && tx.First(&current, r.ID).Error == nil && current.Status == models.RegGoing && current.AttendanceMode == r.AttendanceMode {
-			used -= 1 + current.GuestCount
-		}
-		sameGoing := current.Status == models.RegGoing && current.AttendanceMode == r.AttendanceMode
-		if !(sameGoing && r.GuestCount <= current.GuestCount) && !events.Fits(capacityForMode(ev, o, r.AttendanceMode), used, 1+r.GuestCount) {
-			if ch.old.Status == models.RegGoing && ch.old.AttendanceMode == r.AttendanceMode {
-				return errEventFull
-			}
-			if !ev.WaitlistEnabled {
-				return errEventFull
-			}
-			r.Status = models.RegWaitlisted
-			if r.WaitlistedAt == nil || ch.old.AttendanceMode != r.AttendanceMode {
-				r.WaitlistedAt = &now
-			}
-		} else if !(sameGoing && effectiveChildcare(ev, *r) <= effectiveChildcare(ev, current)) {
-			if err := checkChildcare(tx, ev, o.ID, r.ID, effectiveChildcare(ev, *r)); err != nil {
-				return err
-			}
 		}
 	}
 	return saveRegistration(tx, r)
@@ -1387,13 +1350,11 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 			return householdRegistrationError{code: "household_registration_holder_unavailable"}
 		}
 		// A waitlisted entry promotes into its own pool (M1.8 slice 2).
-		cap := capacityForMode(ev, locked, r.AttendanceMode)
-		used, err := seatsUsedForMode(tx, locked.ID, r.AttendanceMode)
+		fits, _, _, err := poolFits(tx, ev, locked, r)
 		if err != nil {
 			return err
 		}
-		seats := 1 + r.GuestCount
-		if !events.Fits(cap, used, seats) {
+		if !fits {
 			return errEventFull
 		}
 		// Automatic picks are childcare-checked by PickPromotionsByPool; a
@@ -1489,7 +1450,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			a.managerDateAddRefusal(c, errInvalidAttendanceMode)
 			return
 		}
-		if addMode == models.AttendanceRemote && !ev.RemoteAvailable {
+		if remoteUnavailable(ev, addMode) {
 			a.managerDateAddRefusal(c, errRemoteNotAvailable)
 			return
 		}
@@ -1706,8 +1667,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 	var currentID uint
 	var o *models.EventOccurrence
 	var ev models.Event
-	used := map[string]int{}
-	careUsed := 0
+	var tally *seatTally
 	var facts subjectFacts
 	var access map[uint]bool
 	for _, r := range regs {
@@ -1722,18 +1682,9 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 			if err := tx.First(&ev, o.EventID).Error; err != nil {
 				return err
 			}
-			for _, mode := range []string{models.AttendanceInPerson, models.AttendanceRemote} {
-				n, err := seatsUsedForMode(tx, o.ID, mode)
-				if err != nil {
-					return err
-				}
-				used[mode] = n
-			}
-			n, err := childcareUsedFor(tx, o.ID, 0)
-			if err != nil {
+			if tally, err = loadSeatTally(tx, &ev, o); err != nil {
 				return err
 			}
-			careUsed = n
 			currentRegs := []models.Registration{}
 			for _, candidate := range regs {
 				if candidate.OccurrenceID == o.ID {
@@ -1751,15 +1702,12 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 		} else {
 			fits = a.canRegisterDate(tx, &holder, &ev, o)
 		}
-		mode := attendanceModeOf(r.AttendanceMode)
-		demand := effectiveChildcare(&ev, r)
 		if r.Status == models.RegGoing {
-			fits = fits && events.Fits(capacityForMode(&ev, o, mode), used[mode], 1+r.GuestCount) && (demand == 0 || !ev.ChildcareAvailable || events.Fits(ev.ChildcareCapacity, careUsed, demand))
+			fits = fits && tally.fits(r)
 		}
 		if fits {
 			if r.Status == models.RegGoing {
-				used[mode] += 1 + r.GuestCount
-				careUsed += demand
+				tally.take(r)
 			}
 			if err := auditRegistration(tx, actor, audit.RegistrationRestored, ev.ID, r, r, ip); err != nil {
 				return err
@@ -1888,19 +1836,16 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if namedCare != nil && *namedCare && !ev.ChildcareAvailable && !old.ChildcareRequested {
 			return errChildcareUnavailable
 		}
-		if r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable {
+		if remoteUnavailable(ev, r.AttendanceMode) {
 			return errRemoteNotAvailable
-		}
-		used, err := seatsUsedForMode(tx, o.ID, r.AttendanceMode)
-		if err != nil {
-			return err
 		}
 		// An idempotent re-add of a row already going in this pool keeps its own
 		// seat, as addAccountRegistrationLocked does.
-		if old.Status == models.RegGoing && attendanceModeOf(old.AttendanceMode) == r.AttendanceMode {
-			used -= 1 + old.GuestCount
+		fits, _, _, err := poolFits(tx, ev, locked, r)
+		if err != nil {
+			return err
 		}
-		over := !events.Fits(capacityForMode(ev, locked, r.AttendanceMode), used, 1)
+		over := !fits
 		if over && !overCapacity {
 			return errEventFull
 		}
@@ -1975,7 +1920,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	if options.mode != "" {
 		mode = options.mode
 	}
-	if mode == models.AttendanceRemote && !ev.RemoteAvailable {
+	if remoteUnavailable(ev, mode) {
 		return models.Registration{}, errRemoteNotAvailable
 	}
 	if options.care.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable {
@@ -1997,16 +1942,13 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 
 	// The add seats the person in their pool; over-capacity is
 	// judged against that pool only (M1.8 slice 2).
-	cap := capacityForMode(ev, locked, mode)
-	used, err := seatsUsedForMode(tx, locked.ID, mode)
+	want := models.Registration{ID: r.ID, AttendanceMode: mode, GuestCount: options.guests}
+	fits, used, cap, err := poolFits(tx, ev, locked, want)
 	if err != nil {
 		return models.Registration{}, err
 	}
-	if found && r.Status == models.RegGoing && attendanceModeOf(r.AttendanceMode) == mode {
-		used -= 1 + r.GuestCount
-	}
-	seats := 1 + options.guests
-	over := !events.Fits(cap, used, seats)
+	seats := partySeats(want)
+	over := !fits
 	if over && !options.overCapacity {
 		return models.Registration{}, errEventFull
 	}

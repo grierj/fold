@@ -158,7 +158,7 @@ func TestConcurrentGoingRespectsCapacity(t *testing.T) {
 	if got := countRegs(t, app, occ.ID, models.RegWaitlisted); got != 40 {
 		t.Fatalf("waitlisted = %d, want 40", got)
 	}
-	used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson)
+	used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -875,10 +875,10 @@ func TestRemotePoolFillsSeparatelyFromInPerson(t *testing.T) {
 	if got := regMode(t, app, uRe.ID, occ.ID); got != models.AttendanceRemote {
 		t.Fatalf("remote registration mode = %q", got)
 	}
-	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson, 0); err != nil || used != 1 {
 		t.Fatalf("in-person seats = %d (%v), want 1", used, err)
 	}
-	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote); err != nil || used != 1 {
+	if used, err := seatsUsedForMode(app.DB, occ.ID, models.AttendanceRemote, 0); err != nil || used != 1 {
 		t.Fatalf("remote seats = %d (%v), want 1", used, err)
 	}
 
@@ -1017,7 +1017,7 @@ func TestSwitchingModeReRegistersInNewPool(t *testing.T) {
 	if got := regMode(t, app, uSw.ID, occ.ID); got != models.AttendanceRemote {
 		t.Fatalf("waitlisted switch mode = %q, want remote", got)
 	}
-	if used, _ := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson); used != 0 {
+	if used, _ := seatsUsedForMode(app.DB, occ.ID, models.AttendanceInPerson, 0); used != 0 {
 		t.Fatalf("in-person seats after switch = %d, want 0 (seat freed)", used)
 	}
 
@@ -1513,7 +1513,7 @@ func TestHouseholdBatchAnswersAndStableHolder(t *testing.T) {
 		}
 		ids[r.RegistrationID] = true
 	}
-	if used, err := seatsUsedForMode(app.DB, result.Registration.OccurrenceID, models.AttendanceInPerson); err != nil || used != 2 {
+	if used, err := seatsUsedForMode(app.DB, result.Registration.OccurrenceID, models.AttendanceInPerson, 0); err != nil || used != 2 {
 		t.Fatalf("seats %d: %v", used, err)
 	}
 	if used, err := childcareUsedFor(app.DB, result.Registration.OccurrenceID, 0); err != nil || used != 1 {
@@ -1642,7 +1642,7 @@ func TestConcurrentHouseholdAndAccountSeats(t *testing.T) {
 	}
 	var o models.EventOccurrence
 	app.DB.Where("event_id = ?", eventID).First(&o)
-	if got, err := seatsUsedForMode(app.DB, o.ID, models.AttendanceInPerson); err != nil || got != 10 {
+	if got, err := seatsUsedForMode(app.DB, o.ID, models.AttendanceInPerson, 0); err != nil || got != 10 {
 		t.Fatalf("seats %d: %v", got, err)
 	}
 	if countRegs(t, app, o.ID, models.RegWaitlisted) != 10 {

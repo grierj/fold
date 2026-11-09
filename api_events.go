@@ -1452,13 +1452,13 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
-		used, err := seatsUsedForMode(tx, o.ID, models.AttendanceInPerson)
+		used, err := seatsUsedForMode(tx, o.ID, models.AttendanceInPerson, 0)
 		if err != nil {
 			return err
 		}
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
-		remoteUsed, err := seatsUsedForMode(tx, o.ID, models.AttendanceRemote)
+		remoteUsed, err := seatsUsedForMode(tx, o.ID, models.AttendanceRemote, 0)
 		if err != nil {
 			return err
 		}

@@ -130,7 +130,7 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 			allowed = err == nil && live
 		}
 	}
-	if !allowed || (r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable) {
+	if !allowed || remoteUnavailable(ev, r.AttendanceMode) {
 		return false
 	}
 	if r.HouseholdPersonID == nil {
