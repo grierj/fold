@@ -98,34 +98,72 @@ func sqlWritesWords(s string) bool {
 	return false
 }
 
-// fenceWriterProblems parses production sources: the row's key appears as a
-// string only in restore_fence.go, and a statement that writes it appears only
-// in the boot step and takeRestoreTicket. restoreFenceKey is referenced only
-// there too.
+// fenceKeyUsers may name restoreFenceKey: the two writers, the refusal every
+// other settings writer calls, and the boot step's error text.
+var fenceKeyUsers = map[string]bool{"bootRestoreFence": true, "takeRestoreTicket": true, "refuseRestoreFenceKey": true}
+
+// fenceWriterProblems parses production sources. The row's key is spelled as a
+// string only once, as the value of the restoreFenceKey constant in
+// restore_fence.go; restoreFenceKey is used only in restore_fence.go, by the two
+// writers and the refusal; and a statement that writes (an inline literal, or
+// a constant of restore_fence.go whose value writes) is used only by the boot
+// step and takeRestoreTicket.
 func fenceWriterProblems(sources map[string]string) []string {
 	parsed := guardkit.Sources(sources).Parse(0)
 	bad := append([]string(nil), parsed.Problems...)
 	fset := parsed.Fset
+	// The write statements restore_fence.go declares as constants.
+	writeConsts := map[string]bool{}
+	if f := parsed.File("restore_fence.go"); f != nil {
+		for _, d := range f.AST.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, v := range vs.Values {
+					if lit, ok := v.(*ast.BasicLit); ok && lit.Kind == token.STRING && sqlWritesWords(lit.Value) && i < len(vs.Names) {
+						writeConsts[vs.Names[i].Name] = true
+					}
+				}
+			}
+		}
+	}
 	for _, pf := range parsed.Files {
 		path, tree := pf.Path, pf.AST
 		for _, d := range tree.Decls {
 			fd, isFunc := d.(*ast.FuncDecl)
+			keyDecl := false
+			if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.CONST && path == "restore_fence.go" {
+				for _, sp := range gd.Specs {
+					for _, n := range sp.(*ast.ValueSpec).Names {
+						if n.Name == "restoreFenceKey" {
+							keyDecl = true
+						}
+					}
+				}
+			}
+			writer := isFunc && fenceWriterFuncs[fd.Name.Name] && path == "restore_fence.go"
 			ast.Inspect(d, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.BasicLit:
-					if x.Kind != token.STRING || !strings.Contains(x.Value, "restore_fence") {
+					if x.Kind != token.STRING {
 						return true
 					}
-					if path != "restore_fence.go" {
-						bad = append(bad, fmt.Sprintf("%s:%d: names the restore_fence row in a string; only restore_fence.go may", path, fset.Position(x.Pos()).Line))
+					if strings.Contains(x.Value, "restore_fence") && !keyDecl {
+						bad = append(bad, fmt.Sprintf("%s:%d: names the restore_fence row in a string; only the restoreFenceKey constant may", path, fset.Position(x.Pos()).Line))
 						return true
 					}
-					if sqlWritesWords(x.Value) && !(isFunc && fenceWriterFuncs[fd.Name.Name]) {
-						bad = append(bad, fmt.Sprintf("%s:%d: writes restore_fence outside the boot step and takeRestoreTicket", path, fset.Position(x.Pos()).Line))
+					if isFunc && path == "restore_fence.go" && sqlWritesWords(x.Value) && !writer {
+						bad = append(bad, fmt.Sprintf("%s:%d: writes in restore_fence.go outside the boot step and takeRestoreTicket", path, fset.Position(x.Pos()).Line))
 					}
 				case *ast.Ident:
-					if x.Name == "restoreFenceKey" && path != "restore_fence.go" {
-						bad = append(bad, fmt.Sprintf("%s:%d: uses restoreFenceKey outside restore_fence.go", path, fset.Position(x.Pos()).Line))
+					if x.Name == "restoreFenceKey" && !keyDecl && (path != "restore_fence.go" || !isFunc || !fenceKeyUsers[fd.Name.Name]) {
+						bad = append(bad, fmt.Sprintf("%s:%d: uses restoreFenceKey outside the boot step, takeRestoreTicket and refuseRestoreFenceKey", path, fset.Position(x.Pos()).Line))
+					}
+					if writeConsts[x.Name] && isFunc && !writer {
+						bad = append(bad, fmt.Sprintf("%s:%d: runs the restore fence's write statement %s outside the boot step and takeRestoreTicket", path, fset.Position(x.Pos()).Line, x.Name))
 					}
 				}
 				return true
@@ -142,9 +180,14 @@ func TestRestoreFenceHasTwoWriters(t *testing.T) {
 	}
 	// Negative fixtures.
 	clean := map[string]string{"restore_fence.go": `package main
-func (a *App) bootRestoreFence() error { tx.Exec("INSERT INTO settings (key, value) VALUES ('restore_fence', '0')"); return nil }
-func (a *App) takeRestoreTicket() { tx.Raw("UPDATE settings SET value = '1' WHERE key = 'restore_fence'") }
 const restoreFenceKey = "restore_fence"
+const (
+	restoreFenceCreateSQL  = "INSERT INTO settings (key, value) VALUES (?, '0') ON CONFLICT (key) DO NOTHING"
+	restoreFenceAdvanceSQL = "UPDATE settings SET value = (value::bigint + 1)::text WHERE key = ? RETURNING value::bigint"
+)
+func refuseRestoreFenceKey(key string) error { if key == restoreFenceKey { return errRestoreFenceKey }; return nil }
+func (a *App) bootRestoreFence() error { tx.Exec(restoreFenceCreateSQL, restoreFenceKey); tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey); return nil }
+func (a *App) takeRestoreTicket() { tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey) }
 `, "other.go": "package main\nfunc f() {}\n"}
 	if bad := fenceWriterProblems(clean); len(bad) != 0 {
 		t.Fatalf("the clean fixture failed: %v", bad)
@@ -154,6 +197,12 @@ const restoreFenceKey = "restore_fence"
 			"other.go": "package main\nfunc f() { tx.Exec(\"UPDATE settings SET value = '0' WHERE key = 'restore_fence'\") }\n"},
 		"a third writer in the file": {"restore_fence.go": clean["restore_fence.go"] +
 			"func (a *App) other() { tx.Exec(\"DELETE FROM settings WHERE key = 'restore_fence'\") }\n", "other.go": clean["other.go"]},
+		"a third writer through the key": {"restore_fence.go": clean["restore_fence.go"] +
+			"func (a *App) other() { tx.Exec(\"DELETE FROM settings WHERE key = ?\", restoreFenceKey) }\n", "other.go": clean["other.go"]},
+		"a third writer through the advance statement": {"restore_fence.go": clean["restore_fence.go"] +
+			"func (a *App) other(k string) { tx.Raw(restoreFenceAdvanceSQL, k) }\n", "other.go": clean["other.go"]},
+		"the key spelled again in the file": {"restore_fence.go": clean["restore_fence.go"] +
+			"func (a *App) bootCopy() string { return \"restore_fence\" }\n", "other.go": clean["other.go"]},
 		"the key constant used elsewhere": {"restore_fence.go": clean["restore_fence.go"],
 			"other.go": "package main\nfunc f() { _ = models.Setting{Key: restoreFenceKey} }\n"},
 	} {
@@ -912,7 +961,7 @@ func TestRestoreFenceDelayedAcknowledgment(t *testing.T) {
 			}
 			if s.rig != nil {
 				for _, e := range s.rig.proxy.Events()[mark:] {
-					if strings.Contains(e.SQL, "pg_advisory_xact_lock") || strings.Contains(e.SQL, "restore_fence") {
+					if strings.Contains(e.SQL, "pg_advisory_xact_lock") || isRestoreFenceStatement(e.SQL) {
 						t.Errorf("settle after the detection sent %q", e.SQL)
 					}
 				}
@@ -1169,4 +1218,12 @@ func TestRestoreFenceFencedIdAcrossARestart(t *testing.T) {
 	if s.counter() != counter || s.receipts() != receipts || fresh.restoreFenceFloor() != mark || s.deleted(a.ID) {
 		t.Fatal("the new App's answers moved the counter, the receipts or the account before any transaction")
 	}
+}
+
+// isRestoreFenceStatement reports whether wire SQL is one of the restore
+// fence's two statements. The key travels as a bind parameter, so the text is
+// recognised by the statements themselves.
+func isRestoreFenceStatement(sql string) bool {
+	return strings.Contains(sql, "restore_fence") || strings.Contains(sql, "(value::bigint + 1)::text") ||
+		strings.Contains(sql, "INSERT INTO settings (key, value) VALUES (")
 }

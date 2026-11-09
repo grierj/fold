@@ -42,18 +42,18 @@ import (
 
 // setHouseholdRetry sets the retry window and the two backoffs for one test and
 // puts them back. A test that sets them stays serial.
-func setHouseholdRetry(t *testing.T, window time.Duration, backoff [householdAttempts - 1]time.Duration) {
+func setHouseholdRetry(t *testing.T, window time.Duration, backoff [busyRetryTries - 1]time.Duration) {
 	t.Helper()
-	oldWindow, oldBackoff := deleteRetryWindow, householdRetryBackoff
-	deleteRetryWindow, householdRetryBackoff = window, backoff
-	t.Cleanup(func() { deleteRetryWindow, householdRetryBackoff = oldWindow, oldBackoff })
+	oldWindow, oldBackoff := busyRetryWindow, busyRetryBackoff
+	busyRetryWindow, busyRetryBackoff = window, backoff
+	t.Cleanup(func() { busyRetryWindow, busyRetryBackoff = oldWindow, oldBackoff })
 }
 
 func busyErr() error { return &pgconn.PgError{Code: "55P03", Message: "could not obtain lock on row"} }
 
 // runHouseholdRetry is the loop apiAdminDeleteUser owns, with a fake attempt.
 func runHouseholdRetry(ctx context.Context, attempt func(n int) error) (attempts int, err error) {
-	retry := newHouseholdRetry(ctx)
+	retry := newDeleteRetry(ctx)
 	for {
 		attempts++
 		err = attempt(attempts)
@@ -81,7 +81,7 @@ func TestHouseholdRetryOnlyRepeatsAConfirmedBusy(t *testing.T) {
 			}
 			return nil
 		}, want: 3},
-		{name: "a bare 55P03 that never clears stops at three", attempt: func(int) error { return busyErr() }, want: householdAttempts, wantBusy: true},
+		{name: "a bare 55P03 that never clears stops at three", attempt: func(int) error { return busyErr() }, want: busyRetryTries, wantBusy: true},
 		{name: "a 55P03 whose rollback was not acknowledged runs once", attempt: func(int) error {
 			return &contactRollbackError{Cause: busyErr(), Rollback: errors.New("connection closed")}
 		}, want: 1, wantBusy: true, check: func(t *testing.T, err error) {
@@ -156,10 +156,45 @@ func TestHouseholdRetryStopsWithTheWindowAndTheContext(t *testing.T) {
 // TestErasureHouseholdLockCensus pins the lock census of the erasure (written in
 // the comment of account_erasure_households.go): the only functions that call
 // lockHousehold are the household writers and conversion paths listed here,
-// none of them reachable from the deletion callback's helpers, and the callback
-// takes its households once, NOWAIT, between the identity sets and the first
+// none of them reachable from the erasure's helpers, and eraseAccountIn, the
+// one erasure both the admin deletion and the tombstone sweep run, takes its
+// households once, NOWAIT, after the identity sets and before its first
 // write. A new caller fails here until a person has classified it.
 func TestErasureHouseholdLockCensus(t *testing.T) {
+	sources := guardkit.Production(t)
+	for _, p := range erasureHouseholdLockProblems(sources) {
+		t.Error(p)
+	}
+	with := func(old, replacement string) guardkit.Sources {
+		const file = "account_erasure.go"
+		if strings.Count(sources[file], old) != 1 {
+			t.Fatalf("fixture anchor %q must occur once in %s", old, file)
+		}
+		out := guardkit.Sources{}
+		for k, v := range sources {
+			out[k] = v
+		}
+		out[file] = strings.Replace(sources[file], old, replacement, 1)
+		return out
+	}
+	lock := "\thomes, err := lockErasureHouseholdsIn(tx, s)\n"
+	credentials := "\tif err := eraseAccountCredentialsIn(tx, s); err != nil {\n\t\treturn out, err\n\t}\n"
+	for name, mutated := range map[string]guardkit.Sources{
+		"the lock after the first write": with(lock+"\tif err != nil {\n\t\treturn out, err\n\t}\n"+credentials,
+			credentials+lock+"\tif err != nil {\n\t\treturn out, err\n\t}\n"),
+		"a write before the lock":        with(lock, "\t_ = queueAvatarCleanup(tx, s.ID)\n"+lock),
+		"a second lock call":             with(lock, lock+"\t_, _ = lockErasureHouseholdsIn(tx, s)\n"),
+		"a households row locked in SQL": with(lock, "\ttx.Exec(\"SELECT id FROM households WHERE id = 1 FOR UPDATE\")\n"+lock),
+		"the lock outside the pipeline":  with("func (a *App) eraseAccountIn(", "func (a *App) otherErasure(tx *gorm.DB, s erasureSubject) { _, _ = lockErasureHouseholdsIn(tx, s) }\n\nfunc (a *App) eraseAccountIn("),
+	} {
+		if len(erasureHouseholdLockProblems(mutated)) == 0 {
+			t.Errorf("%s: the census accepted it", name)
+		}
+	}
+}
+
+// erasureHouseholdLockProblems checks the census over sources.
+func erasureHouseholdLockProblems(sources guardkit.Sources) []string {
 	want := map[string]bool{
 		"age_rollover.go:rolloverAges":                             true, // flagHouseholdChild13 (N-05)
 		"api_admin_guardian_links.go:decideGuardianLink":           true,
@@ -176,18 +211,21 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 		"api_teen_conversion.go:lockConversionParticipants":        true,
 		"api_teen_conversion.go:lockTeenLifecycleUsers":            true,
 	}
+	var bad []string
 	got := map[string]bool{}
-	var calls = map[string][]token.Pos{}
-	parsed := guardkit.Production(t).Parse(parser.SkipObjectResolution)
-	for _, problem := range parsed.Problems {
-		t.Error(problem)
-	}
+	lockSites := 0
+	var pipeline *ast.FuncDecl
+	parsed := sources.Parse(parser.SkipObjectResolution)
+	bad = append(bad, parsed.Problems...)
 	for _, pf := range parsed.Files {
 		name, f := pf.Path, pf.AST
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
 			if !ok || fd.Body == nil {
 				continue
+			}
+			if name == "account_erasure.go" && fd.Name.Name == "eraseAccountIn" && fd.Recv != nil {
+				pipeline = fd
 			}
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
@@ -198,9 +236,10 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 					switch id.Name {
 					case "lockHousehold":
 						got[name+":"+fd.Name.Name] = true
-					case "captureErasureSetsIn", "lockErasureHouseholdsIn", "eraseAccountCredentialsIn":
-						if fd.Name.Name == "apiAdminDeleteUser" {
-							calls[id.Name] = append(calls[id.Name], call.Pos())
+					case "lockErasureHouseholdsIn":
+						lockSites++
+						if fd != pipeline {
+							bad = append(bad, fmt.Sprintf("%s:%s calls lockErasureHouseholdsIn; only eraseAccountIn (account_erasure.go) takes the erasure's households", name, fd.Name.Name))
 						}
 					}
 				}
@@ -215,28 +254,51 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 			}
 			text := strings.ToUpper(lit.Value)
 			if strings.Contains(text, "FROM HOUSEHOLDS") && strings.Contains(text, "FOR UPDATE") && name != "account_erasure_households.go" {
-				t.Errorf("%s locks a households row in SQL; every household lock goes through lockHousehold or lockErasureHouseholdsIn", name)
+				bad = append(bad, name+" locks a households row in SQL; every household lock goes through lockHousehold or lockErasureHouseholdsIn")
 			}
 			return true
 		})
 	}
 	for k := range got {
 		if !want[k] {
-			t.Errorf("%s calls lockHousehold and is not in the census; classify it (does it hold the row while it notifies or locks a user?) and add it", k)
+			bad = append(bad, k+" calls lockHousehold and is not in the census; classify it (does it hold the row while it notifies or locks a user?) and add it")
 		}
 	}
 	for k := range want {
 		if !got[k] {
-			t.Errorf("%s no longer calls lockHousehold; update the census", k)
+			bad = append(bad, k+" no longer calls lockHousehold; update the census")
 		}
 	}
-	if len(calls["lockErasureHouseholdsIn"]) != 1 || len(calls["captureErasureSetsIn"]) != 1 || len(calls["eraseAccountCredentialsIn"]) != 1 {
-		t.Fatalf("apiAdminDeleteUser calls: %v, want one each of captureErasureSetsIn, lockErasureHouseholdsIn, eraseAccountCredentialsIn", calls)
+	if lockSites != 1 {
+		bad = append(bad, fmt.Sprintf("lockErasureHouseholdsIn is called %d times, want once, in eraseAccountIn", lockSites))
 	}
-	captured, locked, first := calls["captureErasureSetsIn"][0], calls["lockErasureHouseholdsIn"][0], calls["eraseAccountCredentialsIn"][0]
-	if !(captured < locked && locked < first) {
-		t.Error("lockErasureHouseholdsIn must run after captureErasureSetsIn and before the first write")
+	if pipeline == nil {
+		return append(bad, "account_erasure.go: eraseAccountIn is gone")
 	}
+	// In eraseAccountIn the only calls before the household lock are the two
+	// plain-read steps, and the credentials delete (the first write) follows it.
+	before := map[string]bool{"captureErasureSetsIn": true, "validatePersIn": true}
+	locked, first := token.NoPos, token.NoPos
+	ast.Inspect(pipeline.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := guardkit.Callee(call)
+		switch {
+		case name == "lockErasureHouseholdsIn" && !locked.IsValid():
+			locked = call.Pos()
+		case name == "eraseAccountCredentialsIn" && !first.IsValid():
+			first = call.Pos()
+		case !locked.IsValid() && !before[name]:
+			bad = append(bad, "eraseAccountIn calls "+name+" before lockErasureHouseholdsIn; only captureErasureSetsIn and validatePersIn may run before the household lock")
+		}
+		return true
+	})
+	if !locked.IsValid() || !first.IsValid() || first < locked {
+		bad = append(bad, "eraseAccountIn must run lockErasureHouseholdsIn after captureErasureSetsIn and validatePersIn and before eraseAccountCredentialsIn, its first write")
+	}
+	return bad
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +568,7 @@ func runHouseholdWriterOrders(t *testing.T, w hlWriter) {
 		if got := awaitResult(t, del); got.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s, want 200 after a retry", got.code, got.body)
 		}
-		if n := states.Count("55P03"); n < 1 || n >= householdAttempts {
+		if n := states.Count("55P03"); n < 1 || n >= busyRetryTries {
 			t.Errorf("%d busy answers, want one or two and then a commit", n)
 		}
 		if n := states.Count("40P01"); n != 0 {

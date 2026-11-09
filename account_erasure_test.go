@@ -7032,13 +7032,13 @@ func explainScaleErasure(t *testing.T, app *App) scaleExplain {
 		if err := captureErasureSetsIn(tx, &s); err != nil {
 			return err
 		}
-		if err := eraseAccountRequestsIn(tx, s, 1); err != nil {
+		if err := eraseAccountRequestsIn(tx, s, new(uint(1))); err != nil {
 			return err
 		}
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
 		}
-		if err := eraseDependentRecordsIn(tx, s, 1, "198.51.100.1"); err != nil {
+		if err := eraseDependentRecordsIn(tx, s, new(uint(1)), "198.51.100.1"); err != nil {
 			return err
 		}
 		// The send path's lock over a 5,000-person audience: every user

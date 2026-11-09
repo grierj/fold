@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -28,18 +28,12 @@ type tombstoneReport struct {
 	MembershipsKept     int64
 }
 
-// tombstoneErasureSubject deliberately has no address. The old handler lost
-// it, and neither audit text nor a later holder proves ownership (O-17).
-func tombstoneErasureSubject(id uint) erasureSubject {
-	return erasureSubject{ID: id}
-}
-
 // lockTombstoneIn is L0, after the contact gate. Raw SQL is unscoped. An
 // arbitrary soft-deleted user or a lookalike placeholder is never selected.
 func lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) {
 	var ids []uint
 	err := tx.Raw(`SELECT id FROM users WHERE id = ? AND deleted_at IS NOT NULL
-		AND email = 'deleted-' || id || '@deleted.invalid' FOR UPDATE`, id).Scan(&ids).Error
+		AND email = `+tombstoneEmailSQL("id")+` FOR UPDATE`, id).Scan(&ids).Error
 	return len(ids) == 1, err
 }
 
@@ -51,15 +45,33 @@ func lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) {
 // tombstone's status transition cannot queue push.devices_off. The trigger
 // census and whole-database tests pin this absence of side effects.
 func scrubTombstoneRowIn(tx *gorm.DB, id uint) error {
-	return tx.Exec(`UPDATE users SET name = '', display_name = '', phone = '', timezone = '',
-		password_hash = NULL, birth_date = NULL, avatar_focal_x = 50, avatar_focal_y = 50,
-		hide_contact_from_leaders = false, avatar_key = '', status = 'disabled',
-		administratively_disabled = true, updated_at = now()
-		WHERE id = ? AND deleted_at IS NOT NULL AND email = 'deleted-' || id || '@deleted.invalid'
-		AND (name IS DISTINCT FROM '' OR display_name IS DISTINCT FROM '' OR phone IS DISTINCT FROM '' OR timezone <> ''
-		OR password_hash IS NOT NULL OR birth_date IS NOT NULL OR avatar_focal_x IS DISTINCT FROM 50
-		OR avatar_focal_y IS DISTINCT FROM 50 OR hide_contact_from_leaders OR avatar_key IS DISTINCT FROM ''
-		OR status <> 'disabled' OR NOT administratively_disabled)`, id).Error
+	return tx.Exec(scrubTombstoneRowSQL, id).Error
+}
+
+// scrubTombstoneRowSQL sets every erasedUserColumns value, and only on a row
+// where one of them differs (IS DISTINCT FROM, so a NULL counts as dirty).
+var scrubTombstoneRowSQL = func() string {
+	set := make([]string, 0, len(erasedUserColumns)+1)
+	dirty := make([]string, 0, len(erasedUserColumns))
+	for _, c := range erasedUserColumns {
+		set = append(set, c.name+" = "+c.sql)
+		dirty = append(dirty, c.name+" IS DISTINCT FROM "+c.sql)
+	}
+	set = append(set, "updated_at = now()")
+	return "UPDATE users SET " + strings.Join(set, ", ") +
+		" WHERE id = ? AND deleted_at IS NOT NULL AND email = " + tombstoneEmailSQL("id") +
+		" AND (" + strings.Join(dirty, " OR ") + ")"
+}()
+
+// tombstoneSweptSQL is true when target (a SQL expression for a user id) has a
+// sweep marker at version ? or above; it binds the marker action, then (when target
+// is "?") the user id, then the version. The CASE deliberately excludes string, null and malformed
+// historical versions without ever casting them.
+func tombstoneSweptSQL(target string) string {
+	return `EXISTS (SELECT 1 FROM audit_logs l
+		WHERE l.action = ? AND l.target_type = 'user' AND l.target_id = ` + target + `
+		AND CASE WHEN jsonb_typeof(l.meta_json->'version') = 'number'
+		THEN (l.meta_json->>'version')::numeric ELSE 0 END >= ?)`
 }
 
 // eraseTombstoneOnce performs one whole erasure under one contact transaction.
@@ -96,103 +108,22 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 			return errTombstoneNoop
 		}
 		var marked bool
-		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM audit_logs
-			WHERE action = ? AND target_type = 'user' AND target_id = ?
-			AND CASE WHEN jsonb_typeof(meta_json->'version') = 'number'
-			THEN (meta_json->>'version')::numeric ELSE 0 END >= ?)`,
+		if err := tx.Raw("SELECT "+tombstoneSweptSQL("?"),
 			audit.UserErasureSwept, id, version).Scan(&marked).Error; err != nil {
 			return err
 		}
 		if marked {
 			return errTombstoneNoop
 		}
-		// L1: only retained id links, validated before locks or writes.
-		s := tombstoneErasureSubject(id)
-		if err := captureErasureSetsIn(tx, &s); err != nil {
-			return err
-		}
-		if err := validatePersIn(tx, s); err != nil {
-			return err
-		}
-		homes, err := lockErasureHouseholdsIn(tx, s)
-		if err != nil {
-			return err // NOWAIT 55P03 rolls back whole; the job retries later.
-		}
-		// L2 before L3 prevents the users trigger from queuing device notices.
-		if err := eraseAccountCredentialsIn(tx, s); err != nil {
-			return err
-		}
-		if err := scrubTombstoneRowIn(tx, id); err != nil {
-			return err
-		}
-		// L4 is named maintenance even when avatar_key is empty: only the
-		// storage scan can find leftover blobs. At most one queued job.
-		if err := queueAvatarCleanup(tx, id); err != nil {
-			return err
-		}
-		// L5-L8. System actor; reasons remain under the separate T07B gate.
-		if err := eraseAccountRequestsIn(tx, s, 0); err != nil {
-			return err
-		}
-		if err := tx.Where("user_id = ?", id).Delete(&models.Notification{}).Error; err != nil {
-			return err
-		}
-		if err := eraseConsentEvidenceIn(tx, s); err != nil {
-			return err
-		}
-		if err := eraseContactRequestTextIn(tx, s); err != nil {
-			return err
-		}
-		// L9 re-evaluates every locked household, even when its other erased
-		// owner already has a sweep marker. Markers never authorize ownership.
-		hh, err := a.eraseHouseholdRecordsIn(tx, s, homes, 0, "")
+		// L1-L14, with a system actor and no address: the old handler lost it,
+		// and neither audit text nor a later holder proves ownership (O-17).
+		// A NOWAIT 55P03 on a household rolls back whole; the job retries later.
+		counts, err := a.eraseAccountIn(tx, erasureSubject{ID: id}, erasureOptions{})
 		if err != nil {
 			return err
 		}
-		report.HouseholdsKept = hh.HouseholdsKept
-		// L10-L11 skip all address arms; each UPDATE selects unfinished work.
-		if err := a.promoteOnDisable(tx, id, false); err != nil {
-			return err
-		}
-		if err := eraseDependentRecordsIn(tx, s, 0, ""); err != nil {
-			return err
-		}
-		// L12: hostIDs and EventKeepsHost already ignore tombstones. There
-		// can be no successor choice here, so remove each stale host row with
-		// R4-H's audit, without changing the event or inventing a handoff.
-		// Lock-order review: handOffHosting (including removeDeletedHostRows),
-		// apiRemoveEventHost, apiDeleteEvent and deleteGroup all hold the same
-		// exclusive contact gate as this sweep, so their multi-row deletes
-		// cannot interleave here. The ungated apiAddEventHost cleanup holds
-		// live users FOR SHARE and one event FOR KEY SHARE, then deletes only
-		// that event's stale seats. It holds no tombstone user lock and cannot
-		// hold another event's seat while waiting for this user's seat. There
-		// is at most one (event_id, user_id) row. Creation inserts live hosts
-		// only. No event lock is added after the sweep's user lock: doing so
-		// would reverse deletionHostPlan's event-before-user order. This does
-		// not claim the whole erasure is deadlock-free (throttle limit D2);
-		// any 40P01 still returns unchanged for the job runner to retry.
-		var hosts []uint
-		if err := tx.Raw(`DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id`, id).Scan(&hosts).Error; err != nil {
-			return err
-		}
-		sort.Slice(hosts, func(i, j int) bool { return hosts[i] < hosts[j] })
-		for _, eventID := range hosts {
-			if err := audit.Write(tx, audit.Entry{Action: audit.EventHostRemoved,
-				TargetType: "event", TargetID: eventID,
-				Meta: map[string]any{"userId": id, "reason": "deleted_host_cleanup"}}); err != nil {
-				return err
-			}
-		}
-		// L13-L14 preserve every audit/IP retention gate and delete id keys only.
-		ac, err := eraseAuditDetailsIn(tx, s)
-		if err != nil {
-			return err
-		}
-		report.ActivityEntriesKept = newErasureReport(hh, ac).ActivityEntriesKept
-		if err := eraseOwnedThrottleKeysIn(tx, s); err != nil {
-			return err
-		}
+		report.HouseholdsKept = counts.Households.HouseholdsKept
+		report.ActivityEntriesKept = newErasureReport(counts.Households, counts.Audit).ActivityEntriesKept
 		// Old deletion hard-deleted memberships. Unexpected rows are reported,
 		// never transferred or deleted by a sweep that cannot choose a leader.
 		if err := tx.Model(&models.Membership{}).Where("user_id = ?", id).Count(&report.MembershipsKept).Error; err != nil {
@@ -214,6 +145,24 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 	return report, nil
 }
 
+// removeTombstoneHostRowsIn is L12: hostIDs and EventKeepsHost already ignore
+// tombstones. There can be no successor choice here, so each stale host row is
+// removed with R4-H's audit, without changing the event or inventing a
+// handoff. Lock-order review: handOffHosting (including removeDeletedHostRows),
+// apiRemoveEventHost, apiDeleteEvent and deleteGroup all hold the same
+// exclusive contact gate as this sweep, so their multi-row deletes cannot
+// interleave here. The ungated apiAddEventHost cleanup holds live users FOR
+// SHARE and one event FOR KEY SHARE, then deletes only that event's stale
+// seats. It holds no tombstone user lock and cannot hold another event's seat
+// while waiting for this user's seat. There is at most one (event_id, user_id)
+// row. Creation inserts live hosts only. No event lock is added after the
+// sweep's user lock: doing so would reverse deletionHostPlan's event-before-user
+// order. This does not claim the whole erasure is deadlock-free (throttle limit
+// D2); any 40P01 still returns unchanged for the job runner to retry.
+func removeTombstoneHostRowsIn(tx *gorm.DB, id uint) error {
+	return deleteHostRowsAudited(tx, nil, "", hostRemovedDeleted, hostRowsOfUserSQL, id)
+}
+
 // Bump the version only when a reviewed erasure slice adds work. Markers,
 // rather than retained jobs, decide whether a subject needs that work.
 const (
@@ -221,10 +170,13 @@ const (
 	kindTombstonePage     = "erasure.tombstone_page"
 	kindTombstone         = "erasure.tombstone"
 	tombstoneSweepVersion = 1
-	tombstoneSweepPage    = 200
 	tombstonePageTimeout  = 30 * time.Second
 	tombstoneJobTimeout   = 2 * time.Minute
 )
+
+// tombstoneSweepPage is the most subjects one discovery page queues. A var so
+// tests can shorten it; a test that sets it stays serial.
+var tombstoneSweepPage = 200
 
 // The erasure job types; each takes the default attempts.
 var (
@@ -266,19 +218,12 @@ func (a *App) runTombstonePageJob(ctx context.Context, raw json.RawMessage) erro
 	return a.runSweepPage(ctx, p.AfterID, p.Day)
 }
 
-// The CASE deliberately excludes string, null and malformed historical
-// versions without ever casting them. Keep it aligned with eraseTombstoneOnce.
-const tombstoneCandidatesSQL = `SELECT u.id FROM users u
- WHERE u.deleted_at IS NOT NULL AND u.email = 'deleted-' || u.id || '@deleted.invalid'
- AND u.id > ? AND NOT EXISTS (SELECT 1 FROM audit_logs l
- WHERE l.action = ? AND l.target_type = 'user' AND l.target_id = u.id
- AND CASE WHEN jsonb_typeof(l.meta_json->'version') = 'number'
- THEN (l.meta_json->>'version')::numeric ELSE 0 END >= ?)
+// tombstoneCandidatesSQL binds the cursor, the marker action, the version and
+// the page size.
+var tombstoneCandidatesSQL = `SELECT u.id FROM users u
+ WHERE u.deleted_at IS NOT NULL AND u.email = ` + tombstoneEmailSQL("u.id") + `
+ AND u.id > ? AND NOT ` + tombstoneSweptSQL("u.id") + `
  ORDER BY u.id LIMIT ?`
-
-func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {
-	return a.runSweepPageSize(ctx, afterID, day, tombstoneSweepPage)
-}
 
 // One page owns one transaction and one INSERT of at most 201 jobs. Discovery
 // never waits for erasure. A poisoned subject dies alone and alerts on System;
@@ -288,8 +233,9 @@ func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error 
 // unknown per subject: neither this query nor the worker reconstructs O-17.
 // After restore, a tombstone missing its marker is rediscovered under the next
 // date key. An active account restored from a backup is outside this sweep.
-func (a *App) runSweepPageSize(ctx context.Context, afterID uint, day string, pageSize int) error {
-	if _, err := time.Parse("2006-01-02", day); err != nil || pageSize < 1 || pageSize > tombstoneSweepPage {
+func (a *App) runSweepPage(ctx context.Context, afterID uint, day string) error {
+	pageSize := tombstoneSweepPage
+	if _, err := time.Parse("2006-01-02", day); err != nil {
 		return errors.New("invalid deleted-account discovery task")
 	}
 	ctx, cancel := context.WithTimeout(ctx, tombstonePageTimeout)

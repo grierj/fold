@@ -24,7 +24,6 @@ func emailChoiceViolations(sources map[string]string) []string {
 			continue
 		}
 		models := guardkit.ImportNames(tree, "fold/models")
-		inventory := erasureInventoryTableLiterals(path, tree)
 		for _, decl := range tree.Decls {
 			owner := ""
 			if f, ok := decl.(*ast.FuncDecl); ok {
@@ -34,7 +33,7 @@ func emailChoiceViolations(sources map[string]string) []string {
 				flagged := false
 				switch n := n.(type) {
 				case *ast.BasicLit:
-					if n.Kind == token.STRING && !inventory[n] {
+					if n.Kind == token.STRING {
 						s, _ := strconv.Unquote(n.Value)
 						flagged = strings.Contains(strings.ToLower(s), "email_address_optouts") && path != "email_optouts.go"
 					}

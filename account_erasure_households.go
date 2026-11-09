@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sort"
 	"strconv"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -29,11 +28,12 @@ import (
 // Lock census (rechecked by TestErasureHouseholdLockCensus, which reads the
 // production source):
 //
-//   - The deletion callback in apiAdminDeleteUser takes, in order: the contact
-//     gate (contactMutationCtx); the hosted events FOR KEY SHARE and the
-//     account FOR UPDATE (deletionHostPlan); the actor row, a plain read; the
-//     households of the account's seat and of PERS, NOWAIT, ascending
-//     (lockErasureHouseholdsIn); then, in the order the callback runs them,
+//   - The admin deletion takes, in order: the contact gate
+//     (contactMutationCtx); the hosted events FOR KEY SHARE and the account FOR
+//     UPDATE (deletionHostPlan); the actor row, a plain read; then, in
+//     eraseAccountIn, the households of the account's seat and of PERS,
+//     NOWAIT, ascending (lockErasureHouseholdsIn); then, in the order
+//     eraseAccountIn runs them,
 //     the groups of handOffLeadership, the events of handOffHosting, the
 //     request, notification and occurrence rows of eraseAccountRequestsIn,
 //     promoteOnDisable and eraseDependentRecordsIn. None of those helpers
@@ -64,21 +64,7 @@ import (
 // Only 55P03 retries. A cycle through an occurrence lock (D4-class) is not
 // closed by NOWAIT: the database breaks it with one 40P01 and the whole
 // erasure rolls back and answers as any other failure; nothing retries it.
-const (
-	// householdAttempts is the most times one deletion request runs the whole
-	// erasure transaction.
-	householdAttempts = 3
-)
-
-var (
-	// deleteRetryWindow is how long after the first attempt began a new
-	// attempt may still start. Inside an attempt the bound is the request
-	// context. A var so tests can shorten it; a test that sets it stays serial.
-	deleteRetryWindow = 2 * time.Second
-	// householdRetryBackoff is the wait before attempt 2 and attempt 3.
-	householdRetryBackoff = [householdAttempts - 1]time.Duration{25 * time.Millisecond, 100 * time.Millisecond}
-)
-
+// The retry is deleteRetry, below, on the shared busy-retry policy.
 // errErasureHouseholdGone: a household the erasure selected has no row to lock.
 // Foreign keys make that impossible; the erasure stops rather than guess.
 var errErasureHouseholdGone = errors.New("an erasure household has no row to lock")
@@ -122,67 +108,62 @@ func lockErasureHouseholdsIn(tx *gorm.DB, s erasureSubject) ([]uint, error) {
 	return ids, nil
 }
 
-// householdRetry is the bounded retry of the whole erasure on a busy household
-// (the plan's retryHouseholdBusy, in the shape guard R-6 allows: the guard
-// requires the a.contactMutationCtx call to sit in apiAdminDeleteUser itself,
-// never in a func literal, so the caller owns the loop and asks after each
-// attempt).
+// deleteRetry is the admin deletion's rule on the shared busy retry
+// (busy_retry.go): the whole erasure runs again when a row it takes NOWAIT is
+// busy (a household, the actor seal, a reviewed request's deleted party).
 //
-//	retry := newHouseholdRetry(ctx)
+//	retry := newDeleteRetry(ctx)
 //	for {
-//		err = a.contactMutationCtx(ctx, change, fn)
+//		err = a.fencedContactMutation(ctx, change, fn)
 //		var again bool
 //		if again, err = retry.after(err); !again { break }
 //	}
 //
-// At most householdAttempts attempts share ctx. Only a 55P03 whose rollback was
-// acknowledged (rollbackConfirmed) runs again: that acknowledgment proves the
-// server released the gate and the user locks, so the next BEGIN cannot wait
-// on this attempt. Everything else comes back at once, and a COMMIT whose
-// result is unknown (checked first) is never run twice. A 55P03 inside a
-// *contactRollbackError also comes back at once, with no further BEGIN.
+// Only a 55P03 whose rollback was acknowledged (rollbackConfirmed) runs again:
+// that acknowledgment proves the server released the gate and the user locks,
+// so the next BEGIN cannot wait on this attempt. Everything else comes back at
+// once, and a COMMIT whose result is unknown (checked first) is never run
+// twice. A 55P03 inside a *contactRollbackError also comes back at once, with
+// no further BEGIN; a 40P01 is never retried.
 //
-// A new attempt starts only within deleteRetryWindow of the first attempt's
-// start and while ctx is live, after a backoff that ends early with ctx. When
-// the window or the attempts run out the last 55P03 comes back; when ctx ends
-// first the error carries the context's, so classifyContactErr answers timed
-// out. The caller makes every attempt read its facts again.
-type householdRetry struct {
-	ctx     context.Context
-	started time.Time
-	n       int // attempts finished
-}
+// When the tries or the window run out the last 55P03 comes back; when ctx
+// ends first the error carries the context's, so classifyContactErr answers
+// timed out. The caller makes every attempt read its facts again.
+type deleteRetry struct{ busy *busyRetry }
 
-func newHouseholdRetry(ctx context.Context) *householdRetry {
-	return &householdRetry{ctx: ctx, started: time.Now()}
+func newDeleteRetry(ctx context.Context) *deleteRetry {
+	return &deleteRetry{busy: newBusyRetry(ctx)}
 }
 
 // after takes the error of the attempt that just finished. It returns true (and a
 // nil error) when, after the backoff, the caller should run the next attempt,
 // or false and the error to answer with.
-func (r *householdRetry) after(err error) (again bool, final error) {
+func (r *deleteRetry) after(err error) (again bool, final error) {
 	if err == nil || classifyContactErr(err) == outcomeUnknown || !isHouseholdBusy(err) || !rollbackConfirmed(err) {
 		return false, err
 	}
-	r.n++
-	if r.n >= householdAttempts {
+	again, cerr := r.busy.again()
+	if cerr != nil {
+		return false, errors.Join(cerr, err)
+	}
+	if !again {
 		return false, err
-	}
-	timer := time.NewTimer(householdRetryBackoff[r.n-1])
-	select {
-	case <-r.ctx.Done():
-		timer.Stop()
-		return false, errors.Join(r.ctx.Err(), err)
-	case <-timer.C:
-	}
-	if time.Since(r.started) >= deleteRetryWindow {
-		return false, err
-	}
-	if r.ctx.Err() != nil {
-		return false, errors.Join(r.ctx.Err(), err)
 	}
 	return true, nil
 }
+
+// stagedConversionSQL is the predicate of an approved household_conversion
+// request, the staged arm of PERS (inventory 3.1).
+const stagedConversionSQL = "source = 'household_conversion' AND status = 'approved'"
+
+// persSQL selects PERS(U), the household people who are the individual U,
+// unscoped (soft-deleted people count): completed (converted_user_id = U) or
+// staged (the person of U's approved household_conversion request). It binds
+// U twice.
+const persSQL = `SELECT id FROM household_people WHERE converted_user_id = ?
+	UNION
+	SELECT household_person_id FROM account_requests
+	WHERE ` + stagedConversionSQL + ` AND approved_user_id = ? AND household_person_id IS NOT NULL`
 
 // removedHouseholdName is the neutral name of a sole-subject household (T16,
 // O-9). Nobody sees it: no account or person remains on the household.
@@ -241,7 +222,7 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 		InvitationID *uint `gorm:"column:invitation_id"`
 	}
 	if err := tx.Raw(`SELECT household_person_id AS person_id, invitation_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
+		WHERE `+stagedConversionSQL+`
 		AND approved_user_id = ? AND household_person_id IS NOT NULL ORDER BY id`, s.ID).Scan(&staged).Error; err != nil {
 		return err
 	}
@@ -258,7 +239,7 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 	for id := range distinct {
 		var claimed int64
 		if err := tx.Raw(`SELECT count(*) FROM account_requests
-			WHERE source = 'household_conversion' AND status = 'approved'
+			WHERE `+stagedConversionSQL+`
 			AND household_person_id = ? AND approved_user_id IS NOT NULL AND approved_user_id <> ?`, id, s.ID).Scan(&claimed).Error; err != nil {
 			return err
 		}
@@ -304,8 +285,8 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 }
 
 // eraseHouseholdRecordsIn is the household step of an account erasure (T12,
-// T14-T16, T28, T36, inventory 9.6; R4-3b-2). It runs once, right after
-// eraseContactRequestTextIn (so the account is already soft-deleted) and before
+// T14-T16, T28, T36, inventory 9.6; R4-3b-2). It runs once, in eraseAccountIn, after
+// the reason scrub (so the account is already soft-deleted) and before
 // promoteOnDisable, and touches only the households lockErasureHouseholdsIn
 // already locked. In order:
 //
@@ -323,12 +304,8 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 //     resolved; check_note and finished rows untouched (O-4);
 //  5. unused teen_consent tokens that name the account as the teen;
 //  6. each locked household scrubbed when householdErasedOwnerIn says so.
-func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households []uint, actorID uint, ip string) (householdErasureCounts, error) {
+func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households []uint, actor *uint, ip string) (householdErasureCounts, error) {
 	var counts householdErasureCounts
-	var actor *uint
-	if actorID != 0 {
-		actor = &actorID
-	}
 	locked := make(map[uint]bool, len(households))
 	for _, h := range households {
 		locked[h] = true
@@ -434,7 +411,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 	}
 	// (6) Each locked household, ascending.
 	for _, h := range households {
-		_, ok, err := householdErasedOwnerIn(tx, h, s, seatHouseholds)
+		ok, err := householdErasedOwnerIn(tx, h, s, seatHouseholds)
 		if err != nil {
 			return counts, err
 		}
@@ -453,7 +430,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 }
 
 // householdErasedOwnerIn decides whether household h now describes only an
-// erased individual (T16, O-9) and whose it is. It is evaluated after the
+// erased individual (T16, O-9). It is evaluated after the
 // subject's seat is deleted and PERS anonymized, with h locked, and reads
 // everything unscoped (soft-deleted people and every user's seat count).
 //
@@ -470,23 +447,23 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 // same. Two erased subjects who each own a person of h leave it shared. No
 // marker is read or written, so every erasure that locks h asks again. It
 // returns database errors unchanged; ok is false for anything it cannot prove.
-func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHouseholds map[uint]bool) (owner uint, ok bool, err error) {
+func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHouseholds map[uint]bool) (bool, error) {
 	var seat []uint
 	if err := tx.Raw(`SELECT id FROM household_accounts WHERE household_id = ? LIMIT 1`, h).Scan(&seat).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(seat) > 0 {
-		return 0, false, nil
+		return false, nil
 	}
 	var people []uint
 	if err := tx.Raw(`SELECT id FROM household_people WHERE household_id = ? ORDER BY id`, h).Scan(&people).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(people) == 0 {
 		if seatHouseholds[h] {
-			return s.ID, true, nil
+			return true, nil
 		}
-		return 0, false, nil
+		return false, nil
 	}
 	mine := make(map[uint]bool, len(s.People))
 	for _, id := range s.People {
@@ -500,7 +477,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		}
 	}
 	if all {
-		return s.ID, true, nil
+		return true, nil
 	}
 	var owned []struct {
 		PersonID uint `gorm:"column:person_id"`
@@ -511,9 +488,9 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 			WHERE id IN ? AND converted_user_id IS NOT NULL
 			UNION
 			SELECT household_person_id, approved_user_id FROM account_requests
-			WHERE household_person_id IN ? AND source = 'household_conversion' AND status = 'approved'
+			WHERE household_person_id IN ? AND `+stagedConversionSQL+`
 			AND approved_user_id IS NOT NULL) o`, people, people).Scan(&owned).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	owners := make(map[uint]map[uint]bool, len(people))
 	for _, row := range owned {
@@ -527,7 +504,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		got := owners[id]
 		if len(got) != 1 {
 			// Nobody owns the person (shared), or two users do (ambiguous).
-			return 0, false, nil
+			return false, nil
 		}
 		if candidates == nil {
 			candidates = got
@@ -542,7 +519,7 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 		candidates = next
 	}
 	if len(candidates) != 1 {
-		return 0, false, nil
+		return false, nil
 	}
 	var x uint
 	for u := range candidates {
@@ -550,22 +527,18 @@ func householdErasedOwnerIn(tx *gorm.DB, h uint, s erasureSubject, seatHousehold
 	}
 	var gone []uint
 	if err := tx.Raw(`SELECT id FROM users WHERE id = ? AND deleted_at IS NOT NULL`, x).Scan(&gone).Error; err != nil {
-		return 0, false, err
+		return false, err
 	}
 	if len(gone) != 1 {
-		return 0, false, nil
+		return false, nil
 	}
 	var whole []uint
-	if err := tx.Raw(`SELECT id FROM household_people WHERE converted_user_id = ?
-		UNION
-		SELECT household_person_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
-		AND approved_user_id = ? AND household_person_id IS NOT NULL`, x, x).Scan(&whole).Error; err != nil {
-		return 0, false, err
+	if err := tx.Raw(persSQL, x, x).Scan(&whole).Error; err != nil {
+		return false, err
 	}
 	sort.Slice(whole, func(i, j int) bool { return whole[i] < whole[j] })
 	if len(whole) > 1 {
-		return 0, false, nil
+		return false, nil
 	}
-	return x, true, nil
+	return true, nil
 }
