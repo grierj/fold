@@ -112,7 +112,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		q = q.Where("childcare_available = ?", true)
 	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
-	vs, err := a.eventCandidates(me, q, c.Query("deleted") == "1", true)
+	vs, err := a.eventCandidates(me, q, c.Query("deleted") == "1")
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return

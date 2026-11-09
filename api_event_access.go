@@ -721,14 +721,14 @@ type visibleSet struct {
 // dateCandidates loads candidate series facts without granting series rights.
 // Every date list must filter each date through visibleSet.canSeeDate.
 func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.eventCandidates(viewer, q, false, true)
+	return a.eventCandidates(viewer, q, false)
 }
 
-// eventCandidates is the shared event visibility loader. With dates=false it
-// filters series through CanSeeEvent; dates=true only loads candidates and
-// callers must separately authorize each date, never the series. Deleted groups
-// stay hidden except for the admin-only withDeleted calendar switch (DEC-68).
-func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, dates bool) (visibleSet, error) {
+// eventCandidates is the shared event loader. It only loads candidates: callers
+// must separately authorize each date, never the series. Events whose group is
+// missing are skipped, and deleted groups stay hidden except for the
+// admin-only withDeleted calendar switch (DEC-68).
+func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
 	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
 	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
 	var evs []models.Event
@@ -760,20 +760,11 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, date
 	if err != nil {
 		return vs, err
 	}
-	p := asPerson(viewer)
 	for i := range evs {
-		ev := evs[i]
-		grp, rel := groupAndRel(&ev, vs.Groups, vs.Rels)
-		if ev.GroupID != nil && grp == nil {
+		if grp, _ := groupAndRel(&evs[i], vs.Groups, vs.Rels); evs[i].GroupID != nil && grp == nil {
 			continue
 		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		if dates || policy.CanSeeEvent(p, viewOf(&ev, vs.Hosted[ev.ID]), gp, rel) {
-			vs.Events = append(vs.Events, ev)
-		}
+		vs.Events = append(vs.Events, evs[i])
 	}
 	for i := range vs.Events {
 		vs.ByID[vs.Events[i].ID] = &vs.Events[i]
