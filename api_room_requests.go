@@ -444,13 +444,11 @@ func settleRoomDecision(tx *gorm.DB, ev *models.Event, requestID, actor uint, ch
 // notifyRoomDecided tells the event's leaders (or hosts) what an admin
 // decided; the admin is the actor and isn't told.
 func notifyRoomDecided(tx *gorm.DB, ev *models.Event, actor uint, change, note string) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return err
 	}
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RoomRequestDecided, To: to, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change, Note: note}, // group-ok: the event's own leaders and hosts

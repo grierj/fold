@@ -1461,7 +1461,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 				return err
 			}
 		}
-		err = a.reconcileHouseholdPerson(tx, person, false, me.ID, c.ClientIP())
+		err = a.reconcileHouseholdPerson(tx, person, false, &me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
@@ -1527,7 +1527,7 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
 			return err
 		}
-		err = a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
+		err = a.reconcileHouseholdPerson(tx, person, true, &me.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}

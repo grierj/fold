@@ -123,7 +123,7 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 				want = policy.OccurrenceDeleted
 				mutate = func(tx *gorm.DB) error {
 					// A date's rows can only go once its live grants have ended.
-					if err := endLiveAccessOnDates(tx, []uint{f.dates[1].ID}, policy.OccurrenceDeleted, time.Now().UTC(), false); err != nil {
+					if err := endLiveAccessOnDates(tx, []uint{f.dates[1].ID}, policy.OccurrenceDeleted, time.Now().UTC()); err != nil {
 						return err
 					}
 					if err := tx.Where("occurrence_id = ?", f.dates[1].ID).Delete(&models.Registration{}).Error; err != nil {

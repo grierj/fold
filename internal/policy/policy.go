@@ -738,25 +738,41 @@ func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	return ""
 }
 
+// HouseholdHolder is the responsible adult of a household registration: who they
+// are, their relation to the person's household, whether they can sign in, and
+// whether they may register for the event (access).
+type HouseholdHolder struct {
+	Person *Person
+	Rel    HouseholdRel
+	Active bool
+	Access bool
+}
+
 // CanRegisterHouseholdPerson grants self-service only through an adult
-// household account, with both actor and responsible holder event access.
-func CanRegisterHouseholdPerson(actor, holder *Person, actorRel, rel HouseholdRel, person HouseholdPerson, holderActive, actorAccess, holderAccess bool) string {
-	if actor == nil || actor.Teen || holder == nil || holder.Teen || !holderActive || !rel.Adult || !rel.Account {
-		return "household_registration_holder_unavailable"
-	}
-	if !actorRel.Account || !actorRel.Adult || !actorAccess || !holderAccess {
+// household account that can sign in and may register for the event.
+func CanRegisterHouseholdPerson(h HouseholdHolder, person HouseholdPerson) string {
+	if h.Person == nil || h.Person.Teen || !h.Active || !h.Rel.Adult || !h.Rel.Account || !h.Access {
 		return "household_registration_holder_unavailable"
 	}
 	return HouseholdRegistrationProblem(person)
 }
 
+// HouseholdManager is a leader, host or admin adding a household person to an
+// event on the holder's behalf: whether they manage the event and whether the
+// holder already registered this person for the date.
+type HouseholdManager struct {
+	Person               *Person
+	ManagesEvent         bool
+	PreviouslyRegistered bool
+}
+
 // CanManageHouseholdRegistration never lets management bypass the holder's
 // authority, event visibility, age or confirmation.
-func CanManageHouseholdRegistration(actor, holder *Person, managesEvent, previouslyRegistered bool, rel HouseholdRel, person HouseholdPerson, holderActive, holderAccess bool) string {
-	if actor == nil || actor.Teen || (!actor.Admin && (!managesEvent || !previouslyRegistered)) {
+func CanManageHouseholdRegistration(m HouseholdManager, h HouseholdHolder, person HouseholdPerson) string {
+	if m.Person == nil || m.Person.Teen || (!m.Person.Admin && (!m.ManagesEvent || !m.PreviouslyRegistered)) {
 		return "household_registration_holder_unavailable"
 	}
-	return CanRegisterHouseholdPerson(holder, holder, rel, rel, person, holderActive, holderAccess, holderAccess)
+	return CanRegisterHouseholdPerson(h, person)
 }
 
 // CanSeeMinorRosterIdentity limits minor roster names and badges to managers.
