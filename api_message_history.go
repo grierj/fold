@@ -277,7 +277,7 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
 		  AND (r.channel <> ? OR NOT EXISTS (SELECT 1 FROM message_recipients e
 			WHERE e.message_id = r.message_id AND e.user_id = r.user_id AND e.channel <> ? AND e.copy_of_user_id IS NULL))
-		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member')), r.id
+		ORDER BY lower(`+models.PublicNameSQL("u")+`), r.id
 		LIMIT ?`, models.DeliveryPush, models.DeliveryPush, id, admin, models.DeliveryPush, models.DeliveryPush, maxHistoryRecipients+1).Scan(&rows).Error
 	more := len(rows) > maxHistoryRecipients
 	if more {

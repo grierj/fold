@@ -127,18 +127,13 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	if action != notify.ActionApproveGroup {
 		outcome, auditAction = "rejected", audit.GroupRejected
 	}
-	errHandled := errors.New("already handled")
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		set := map[string]any{"status": status}
 		if tags != nil {
 			set["tags"] = *tags
 		}
-		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).Updates(set)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errHandled
+		if err := decidePendingIn(tx, &models.Group{}, g.ID, models.GroupPending, set); err != nil {
+			return err
 		}
 		// Answer with the row as stored, not the unlocked read from above.
 		if err := tx.First(&g, g.ID).Error; err != nil {
@@ -156,8 +151,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errHandled) {
-		a.alreadyHandled(c, notify.GroupPending, g.ID)
+	if a.answerAlreadyHandled(c, err, notify.GroupPending, g.ID) {
 		return
 	}
 	if err != nil {
@@ -336,7 +330,6 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	if confirm {
 		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
 	}
-	errHandled := errors.New("already handled")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if link.TeenUserID != nil {
 			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
@@ -388,13 +381,8 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		if confirm {
 			updates["confirmed_by"] = me.ID
 		}
-		res := tx.Model(&models.GuardianLink{}).Where("id = ? AND status = ?", link.ID, models.GuardianPending).
-			Updates(updates)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errHandled
+		if err := decidePendingIn(tx, &models.GuardianLink{}, link.ID, models.GuardianPending, updates); err != nil {
+			return err
 		}
 		if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, &me.ID, outcome); err != nil {
 			return err
@@ -428,8 +416,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
 			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errHandled) {
-		a.alreadyHandled(c, notify.HouseholdLinkPending, link.ID)
+	if a.answerAlreadyHandled(c, err, notify.HouseholdLinkPending, link.ID) {
 		return
 	}
 	if err != nil {

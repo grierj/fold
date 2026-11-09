@@ -359,33 +359,38 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 }
 
-// apiConfirmPasswordReset redeems a reset token and sets the new password.
-// Unknown, expired, or already-used tokens all get the same answer, and a
-// successful reset signs the person in.
-func (a *App) apiConfirmPasswordReset(c *gin.Context) {
+// redeemPasswordLink is the one redemption of an emailed set-password link
+// (reset or first setup): it reads the token and the new password, pays for
+// bcrypt before the gate, then claims the token, replaces the password and
+// records auditAction in one transaction, and signs the person in. Unknown,
+// expired or used tokens all get the same answer. It answers the request
+// itself when it fails (ok is false); otherwise the caller writes the success
+// body. pendingConsent reports a teen still waiting for consent when they set
+// the password.
+func (a *App) redeemPasswordLink(c *gin.Context, kind, auditAction, failMsg string) (fresh models.User, pendingConsent, ok bool) {
 	var body struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" || body.Password == "" {
 		jsonError(c, http.StatusBadRequest, "token and password are required")
-		return
+		return fresh, false, false
 	}
 	if !checkNewPassword(c, body.Password) {
-		return
+		return fresh, false, false
 	}
-	var fresh models.User
-	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenPasswordReset, body.Token, body.Password)
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), kind, body.Token, body.Password)
 	if err == nil {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, _, err := lockAndConsumeAccountToken(tx, models.TokenPasswordReset, body.Token)
+			u, _, err := lockAndConsumeAccountToken(tx, kind, body.Token)
 			if err != nil {
 				return err
 			}
+			pendingConsent = u.Status == models.UserPendingConsent
 			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
 				return err
 			}
-			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: auditAction,
 				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
 				return err
 			}
@@ -395,14 +400,24 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	}
 	if errors.Is(err, errTokenInvalid) {
 		fail(c, errLinkExpired)
-		return
+		return fresh, false, false
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reset password")
-		return
+		jsonError(c, http.StatusInternalServerError, failMsg)
+		return fresh, false, false
 	}
 	if err := a.signInSession(c, &fresh); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
+		return fresh, false, false
+	}
+	return fresh, pendingConsent, true
+}
+
+// apiConfirmPasswordReset redeems a reset token and sets the new password. A
+// successful reset signs the person in.
+func (a *App) apiConfirmPasswordReset(c *gin.Context) {
+	fresh, _, ok := a.redeemPasswordLink(c, models.TokenPasswordReset, audit.PasswordResetCompleted, "could not reset password")
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})

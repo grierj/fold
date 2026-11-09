@@ -840,7 +840,6 @@ var auditWriterCensus = map[string]string{
 	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
-	"api_account_requests.go:apiConfirmAccountSetup":              "f97b48dcb56a3e178e94d2c297f260fa526f176e68252f55b8085d4a774e0acb",
 	"api_account_requests.go:apiSetSelfSignup":                    "46f34cd7e73d9cf344b3e9378c76b811b88b06d10a20b7f495aadac78da63e82",
 	"api_account_requests.go:decideAccountRequest":                "18bb2e5e2f8af270aef775f8a7cdbdf8f7eaa0f5d151615576dc938bd4d21fe9",
 	"api_account_requests.go:expirePendingRequests":               "b30d60d413fdc04420d5ef85fed5141945bbad23cd3c882a19a4e160d067446f",
@@ -848,7 +847,7 @@ var auditWriterCensus = map[string]string{
 	"api_admin.go:apiAdminCreateUser":                             "6d94b5f538e0ac21ef2812e65b5bf9dd6da4434ebf5635c0fbeb6e8df06ec1c4",
 	"api_admin.go:apiAdminDeleteUser":                             "beda70946e599d9df50effed52b98044534ae7c33f90272ec47c9c3b7d371db2",
 	"api_admin.go:apiAdminResetPassword":                          "a5986e9dbf1710c87fec4483407977aa9f587bc64c8619363aef2f26d72c514f",
-	"api_admin.go:apiAdminUpdateUser":                             "393506599017bf070142cef9cf59a88b9bd08cb73a34937d8257c64da2abffc2",
+	"api_admin.go:apiAdminUpdateUser":                             "aa7bd3e1f541a1b039858f6a2397cadde395e6932b29952892e4f8b5af0c808c",
 	"api_admin.go:decideGroup":                                    "faa6da1ee041b4d39f734458a51662ca5be8359d0ebc31c4a8e811ac897c1f2f",
 	"api_admin.go:decideGuardianLink":                             "0d2559e7a9ccefe3156c283990dc4653610534becb9e47c4a52a0ab473c50cf5",
 	"api_admin_household.go:apiAdminAddHouseholdPerson":           "8cf7bd69171a89be85dc1274e7086c190bcf9ad4b70f9ab22d10b0dc81c4c385",
@@ -856,8 +855,8 @@ var auditWriterCensus = map[string]string{
 	"api_admin_jobs.go:decideDeadJob":                             "04e9851ad53e2151ac2bc13599645fe06b1025aa77319bd291be047403485d08",
 	"api_admin_suppressions.go:apiAdminClearSuppression":          "9044a4250a72408b0ccb7354305dd22e93dd2082f630b5993b7586c79035b4ea",
 	"api_auth.go:apiChangePassword":                               "09345a72be2ea9e67394b3ee2bec5e8c127451fb3fd6e21978d7498994fffc18",
-	"api_auth.go:apiConfirmPasswordReset":                         "ca2949268c280855e19fb399c0a1a707a9d9a827fcfcf552b0e6bd255de50fc2",
 	"api_auth.go:apiRequestPasswordReset":                         "dc3a3d5d37afce904a46dd6dd87342be9b49ea3b9379a2d2556f0f889158683e",
+	"api_auth.go:redeemPasswordLink":                              "841741c26844e3d9414a86b0128034760bc5057f9594496f59da2713855960b3",
 	"api_contact.go:addAuditAction":                               "ea9a9c1e495429e447216252cea05dc7ac323e24fa12a30a4191429f7de7aaf8",
 	"api_contact.go:auditContactRejection":                        "8f4a0a44cefad81ea6960135662ecc6fbb1b0d752c5aa267b7a39118034f3673",
 	"api_contact_history.go:apiExportContactHistory":              "5df09267b49abc795ee0f42a03f5d376bd233f87e77455d53e529b8068a97a24",
@@ -1207,8 +1206,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 121 {
-		t.Fatalf("audit.Write sites = %d, expected 121; review every changed site", len(c.Sites))
+	if len(c.Sites) != 119 {
+		t.Fatalf("audit.Write sites = %d, expected 119; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)

@@ -31,7 +31,7 @@ type guardianNominationJSON struct {
 func unresolvedGuardianNominations(db *gorm.DB) ([]guardianNominationJSON, error) {
 	rows := make([]guardianNominationJSON, 0)
 	err := db.Raw(`SELECT r.id AS request_id, u.id AS teen_user_id,
-	COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member') AS teen_name, r.guardian_email
+	` + models.PublicNameSQL("u") + ` AS teen_name, r.guardian_email
 	FROM account_requests r JOIN users u ON u.id = r.approved_user_id AND u.deleted_at IS NULL
 	WHERE r.status = 'approved' AND r.guardian_email <> '' AND u.account_type = 'teen'
 	AND NOT EXISTS (SELECT 1 FROM guardian_links l JOIN users g ON g.id = l.guardian_user_id

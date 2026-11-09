@@ -498,16 +498,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		if approve {
 			status = models.RequestApproved
 		}
-		res := tx.Model(&models.AccountRequest{}).
-			Where("id = ? AND status = ?", req.ID, models.RequestPending).
-			Updates(map[string]any{
-				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
-			})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errRequestHandled
+		if err := decidePendingIn(tx, &models.AccountRequest{}, req.ID, models.RequestPending, map[string]any{
+			"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
+		}); err != nil {
+			return err
 		}
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
@@ -595,8 +589,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
 			TargetType: "account_request", TargetID: req.ID, Meta: meta, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errRequestHandled) {
-		a.alreadyHandled(c, notify.AccountRequested, req.ID)
+	if a.answerAlreadyHandled(c, err, notify.AccountRequested, req.ID) {
 		return
 	}
 	if err != nil && req.Source == models.RequestHouseholdConversion {
@@ -623,48 +616,8 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 // apiConfirmAccountSetup redeems the emailed set-password link. An
 // active account gets a login; a pending teen gets the public consent explanation.
 func (a *App) apiConfirmAccountSetup(c *gin.Context) {
-	var body struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" || body.Password == "" {
-		jsonError(c, http.StatusBadRequest, "token and password are required")
-		return
-	}
-	if !checkNewPassword(c, body.Password) {
-		return
-	}
-	var fresh models.User
-	var pendingConsent bool
-	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenAccountSetup, body.Token, body.Password)
-	if err == nil {
-		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, _, err := lockAndConsumeAccountToken(tx, models.TokenAccountSetup, body.Token)
-			if err != nil {
-				return err
-			}
-			pendingConsent = u.Status == models.UserPendingConsent
-			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
-				return err
-			}
-			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
-				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-				return err
-			}
-			fresh = *u
-			return nil
-		})
-	}
-	if errors.Is(err, errTokenInvalid) {
-		fail(c, errLinkExpired)
-		return
-	}
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not set your password")
-		return
-	}
-	if err := a.signInSession(c, &fresh); err != nil {
-		jsonError(c, http.StatusInternalServerError, "session error")
+	fresh, pendingConsent, ok := a.redeemPasswordLink(c, models.TokenAccountSetup, audit.AccountSetupCompleted, "could not set your password")
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, accountRequestConfirmJSON{User: a.toUserJSON(&fresh), PendingConsent: pendingConsent})

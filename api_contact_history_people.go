@@ -59,7 +59,7 @@ func (a *App) apiContactHistoryPeople(c *gin.Context) {
 	}
 
 	var users []models.User
-	if err := db.Order("LOWER(COALESCE(NULLIF(BTRIM(display_name), ''), NULLIF(BTRIM(name), ''), 'Member')), id").Limit(contactHistoryPeopleLimit).Find(&users).Error; err != nil {
+	if err := db.Order("LOWER(" + models.PublicNameSQL("") + "), id").Limit(contactHistoryPeopleLimit).Find(&users).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load people")
 		return
 	}

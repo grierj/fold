@@ -179,7 +179,7 @@ func (a *App) apiSearchPeople(c *gin.Context) {
 	// Escape SQL wildcards: punctuation must not become an account-browse query.
 	pattern := "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(query) + "%"
 	var users []models.User
-	if err := db.Select("id", "name", "display_name", "account_type", "avatar_key", "avatar_focal_x", "avatar_focal_y").Where("status = ? AND account_type IN ? AND (name ILIKE ? OR display_name ILIKE ?)", models.UserActive, []string{models.AccountAdult, models.AccountTeen}, pattern, pattern).Order("lower(COALESCE(NULLIF(display_name,''),name)), id").Limit(10).Find(&users).Error; err != nil {
+	if err := db.Select("id", "name", "display_name", "account_type", "avatar_key", "avatar_focal_x", "avatar_focal_y").Where("status = ? AND account_type IN ? AND (name ILIKE ? OR display_name ILIKE ?)", models.UserActive, []string{models.AccountAdult, models.AccountTeen}, pattern, pattern).Order("lower(" + models.PublicNameSQL("") + "), id").Limit(10).Find(&users).Error; err != nil {
 		jsonError(c, 500, "could not search people")
 		return
 	}
