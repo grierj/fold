@@ -910,6 +910,20 @@ func (r *ctxRig) lockRows(pid int, where string) int64 {
 
 // awaitReleased polls until the backend holds and awaits nothing (it is gone,
 // or no lock row names it) and returns when that was first seen.
+// awaitCancel waits until the proxy has logged the driver's cancel request with
+// the given action (dropped or held). The cancel is sent from the driver's own
+// goroutine after the deadline, so the call returning does not mean it arrived.
+func (r *ctxRig) awaitCancel(action string) {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(r.proxy.Find(testdb.KindCancel, action)) == 0 {
+		if time.Now().After(deadline) {
+			r.t.Fatalf("the proxy never logged a %s cancel", action)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (r *ctxRig) awaitReleased(pid int, within time.Duration) time.Time {
 	r.t.Helper()
 	deadline := time.Now().Add(within)
@@ -1059,7 +1073,7 @@ func TestContactMutationCtxCancelDroppedTerminateWithheld(t *testing.T) {
 		if _, wt, ok := r.backendState(pid); !ok || wt != "Lock" {
 			t.Fatalf("at the return the backend should still wait on the gate: present=%v wait %q", ok, wt)
 		}
-		time.Sleep(300 * time.Millisecond)
+		r.awaitCancel(testdb.ActionDropped)
 		g := time.Now()
 		release()
 		r.awaitState(pid, time.Second, func(s, _ string, ok bool) bool { return ok && s == "idle in transaction" }, "idle in transaction")
@@ -1126,7 +1140,7 @@ func TestContactMutationCtxCancelDroppedTerminateWithheld(t *testing.T) {
 		ch := r.call(budget, contactChange{}, sentinel(&ran))
 		pid := r.pidOf("pg_advisory_xact_lock")
 		r.await(ch)
-		time.Sleep(300 * time.Millisecond)
+		r.awaitCancel(testdb.ActionDropped)
 		g := time.Now()
 		release()
 		ended := r.awaitState(pid, budget, func(_, _ string, ok bool) bool { return !ok }, "gone before the idle timeout")
@@ -1173,7 +1187,7 @@ func TestContactMutationCtxCancelDelayed(t *testing.T) {
 		if _, wt, ok := r.backendState(pid); !ok || wt != "Lock" {
 			t.Fatalf("at the return the backend should still wait: present=%v wait %q", ok, wt)
 		}
-		time.Sleep(300 * time.Millisecond)
+		r.awaitCancel(testdb.ActionHeld)
 		released := time.Now()
 		if !c.returned.Before(released) {
 			t.Error("the call should return before the cancel is released")

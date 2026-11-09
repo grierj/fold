@@ -3241,14 +3241,24 @@ func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
 	old := erasureRecipientWait
 	erasureRecipientWait = time.Second
 	t.Cleanup(func() { erasureRecipientWait = old })
+	// setWait sets the statement timeout for one subtest. A subtest that ends in
+	// success never waits it out, so it takes a long one; the ones that end in a
+	// timeout keep the short default and say so.
+	setWait := func(t *testing.T, d time.Duration) {
+		prev := erasureRecipientWait
+		erasureRecipientWait = d
+		t.Cleanup(func() { erasureRecipientWait = prev })
+	}
 
 	t.Run("one row released in time", func(t *testing.T) {
+		setWait(t, time.Minute)
 		r := newErasureWaitRun(t)
+		w1pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r1.ID)
 		w1 := r.worker(r.seed.m1, r.seed.r1.ID)
 		awaitDBSignal(t, r.sender.Reached(r.seed.key1()))
 		del := r.erase()
-		erasureTestStatementWait(t, r.app)
-		time.Sleep(200 * time.Millisecond)
+		epid, qs := erasureTestStatementWait(t, r.app)
+		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load()))
 		r.sender.Release(r.seed.key1())
 		if res := awaitResult(t, del); res.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s", res.code, res.body)
@@ -3327,6 +3337,13 @@ func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
 	})
 
 	t.Run("staggered rows outlast the whole statement", func(t *testing.T) {
+		// The schedule is a fraction of the statement timeout, and the timeout is
+		// long enough that a slow machine still releases R1 well inside it:
+		// R1 is released at 0.4T, so a whole-statement bound answers about 0.6T
+		// after R2's wait is first seen and a per-row bound a full T after it;
+		// the 0.8T line sits 0.2T from each.
+		const wait = 2500 * time.Millisecond
+		setWait(t, wait)
 		r := newErasureWaitRun(t)
 		db := r.app.DB
 		ctidOf := func(id uint) (page, off int) {
@@ -3383,13 +3400,13 @@ func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
 		w2 := r.worker(r.seed.m2, r.seed.r2.ID)
 		awaitDBSignal(t, r.sender.Reached(r.seed.key2()))
 		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load())) // still W1 alone
-		time.Sleep(time.Until(t1.Add(600 * time.Millisecond)))
+		time.Sleep(time.Until(t1.Add(wait * 2 / 5)))
 		r.sender.Release(r.seed.key1())
 		r.awaitStatus(r.seed.r1.ID, models.RecipientSent)
 		t2 := erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w2pid.Load()))
 		res := awaitResult(t, del)
-		if since := time.Since(t2); since >= 900*time.Millisecond {
-			t.Errorf("the erasure answered %v after the second wait, want under 900ms", since)
+		if since := time.Since(t2); since >= wait*4/5 {
+			t.Errorf("the erasure answered %v after the second wait, want under %v", since, wait*4/5)
 		}
 		select {
 		case <-w2:
@@ -3411,6 +3428,7 @@ func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
 	})
 
 	t.Run("staggered rows within the bound", func(t *testing.T) {
+		setWait(t, time.Minute)
 		r := newErasureWaitRun(t)
 		w1pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r1.ID)
 		w2pid := erasureTestWorkerPID(t, r.app.DB, r.seed.r2.ID)
@@ -3421,11 +3439,9 @@ func TestAccountErasureRecipientWaitIsBounded(t *testing.T) {
 		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w1pid.Load()))
 		w2 := r.worker(r.seed.m2, r.seed.r2.ID)
 		awaitDBSignal(t, r.sender.Reached(r.seed.key2()))
-		time.Sleep(200 * time.Millisecond)
 		r.sender.Release(r.seed.key1())
 		r.awaitStatus(r.seed.r1.ID, models.RecipientSent)
 		erasureTestWaitBlockedOnlyBy(t, r.app, epid, qs, int(w2pid.Load()))
-		time.Sleep(200 * time.Millisecond)
 		r.sender.Release(r.seed.key2())
 		if res := awaitResult(t, del); res.code != http.StatusOK {
 			t.Fatalf("erasure: %d %s", res.code, res.body)

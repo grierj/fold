@@ -671,6 +671,12 @@ func tombstoneDeadlineCall(r *ctxRig, budget time.Duration, uid uint) <-chan *ct
 	return ch
 }
 
+// tombstoneBlockedBudget is the deadline for a tombstone call the test blocks
+// on purpose. It only has to exceed the time the erasure needs to reach the
+// blocked statement (about a dozen statements, tens of milliseconds locally,
+// several hundred on a slow CI runner).
+const tombstoneBlockedBudget = 3 * time.Second
+
 func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 	for _, gate := range []bool{true, false} {
 		t.Run(fmt.Sprintf("gate=%v", gate), func(t *testing.T) {
@@ -711,7 +717,12 @@ func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			ch := tombstoneDeadlineCall(r, 300*time.Millisecond, f.subject.ID)
+			// The deadline is fixed when the call starts (the erasure reads it
+			// before its first statement), so it cannot start only once the
+			// call is blocked. The budget is instead long against the dozen
+			// statements before the blocked one, so the call reaches it at any
+			// machine speed; the wait for the deadline is the test's cost.
+			ch := tombstoneDeadlineCall(r, tombstoneBlockedBudget, f.subject.ID)
 			needle := "FROM \"contact_requests\""
 			if gate {
 				needle = "pg_advisory_xact_lock"
@@ -730,8 +741,8 @@ func TestTombstoneDeadlineDuringGateAndReconciliation(t *testing.T) {
 			if classifyContactErr(c.err) != outcomeTimedOut || !errors.Is(c.err, context.DeadlineExceeded) {
 				t.Fatalf("deadline returned %v", c.err)
 			}
-			if elapsed := c.returned.Sub(c.start); elapsed > 1300*time.Millisecond {
-				t.Errorf("returned after %s, want within 1.3s", elapsed)
+			if late := c.returned.Sub(c.deadline); late > time.Second {
+				t.Errorf("returned %s after its deadline, want within 1s", late)
 			}
 			// Return is not release. Observe this backend separately, within
 			// D + S + I; no assertion makes the response time a release proof.
