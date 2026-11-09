@@ -63,7 +63,7 @@ deadcode:
 # The second pass counts only production code, so an export that only a test
 # uses is caught; one kept for a test says so with a @public tag and a reason.
 lint-web:
-	cd web && npx knip && npx knip --production
+	cd web && npx tsc --noEmit && npx knip && npx knip --production
 
 # Shell scripts under deploy/digitalocean, scripts (go-test.sh, compose-smoke.sh) and web/e2e.
 # -x follows source= directives.

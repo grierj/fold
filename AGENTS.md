@@ -468,7 +468,7 @@ together, or changes 3+ tables. Smaller work is exempt.
 `make dev` (dev Postgres from `deploy/docker-compose.dev.yml`, Go server, Vite), `make test`
 (against `DATABASE_URL`, root package sharded, starts the dev DB if unset), `make lint` (shell, Go
 vet/gofmt/staticcheck, web), `make e2e` (Playwright in parallel shards on fresh databases),
-`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded). Run the
+`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded) (its type check skips tests via `web/tsconfig.build.json`, so the image build needs only `web/`; `make lint-web` type-checks everything, tests included). Run the
 build once before `make dev` to try push: the Go server serves `/sw.js` from `web/dist`.
 `make compose-smoke` boots the shipped Compose stack (app and Postgres) and checks `/healthz`,
 the redirect to `/setup`, and that 5432 and 8080 are not published off loopback. CI's `compose`
