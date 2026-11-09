@@ -137,6 +137,11 @@ func newProjectorFixture(t *testing.T) *projectorFixture {
 	reg(f.member, potluck[0], models.RegMaybe, 0)
 	seedReadInvitation(t, app, f.admin, f.invited, eventJSON{ID: f.study.ID}, occs[2])
 
+	// Freeze the change times (they feed DTSTAMP): the event a day before today at
+	// its id in hours, each date at 90 minutes times its id, so either may be later.
+	gormMust(t, app.DB.Exec("UPDATE events SET updated_at = ?::timestamptz + id * interval '1 hour'", f.base.Add(-24*time.Hour)))
+	gormMust(t, app.DB.Exec("UPDATE event_occurrences SET updated_at = ?::timestamptz + id * interval '90 minutes'", f.base.Add(-24*time.Hour)))
+
 	for _, u := range []*models.User{f.admin, f.leader, f.member, f.invited, f.stranger, f.host, f.teen} {
 		f.byName[u.Name] = loginAPI(t, app, u.Name, "password1234")
 	}
@@ -155,7 +160,7 @@ var projectorViewers = []string{"signed out", "Ada Admin", "Lee Leader", "Mia Me
 
 var (
 	projectorDateRe  = regexp.MustCompile(`\d{4}-\d{2}-\d{2}|\d{8}`)
-	projectorStampRe = regexp.MustCompile(`(?m)^(DTSTAMP|LAST-MODIFIED|CREATED)[^\r\n]*\r?\n`)
+	projectorStampRe = regexp.MustCompile(`(?m)^(LAST-MODIFIED|CREATED)[^\r\n]*\r?\n`)
 )
 
 // normalize replaces the fixture's moving dates with offsets from today, so
