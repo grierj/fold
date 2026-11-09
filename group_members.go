@@ -44,3 +44,14 @@ func memberCount(db *gorm.DB, groupID uint) (int, error) {
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, models.MembershipActive).Count(&n).Error
 	return int(n), err
 }
+
+// roleNone is the role audit rows record for a person who had no active
+// membership or has none left.
+const roleNone = "none"
+
+func roleOrNone(r string) string {
+	if r == "" {
+		return roleNone
+	}
+	return r
+}

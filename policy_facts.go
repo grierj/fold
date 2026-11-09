@@ -17,10 +17,16 @@ func asPerson(u *models.User) *policy.Person {
 	if u == nil {
 		return nil
 	}
-	// A disabled admin has no admin powers (and can't sign in anyway).
+	return personOf(u.ID, u.Role, u.Status, u.AccountType)
+}
+
+// personOf is the one place an account's id, role, status and type become
+// policy facts, for a user row and for a snapshot of one alike. A disabled
+// admin has no admin powers (and can't sign in anyway).
+func personOf(id uint, role, status, accountType string) *policy.Person {
 	return &policy.Person{
-		ID: u.ID, Admin: u.Role == models.RoleAdmin && u.Status == models.UserActive,
-		Teen: u.AccountType == models.AccountTeen, Inactive: u.Status != models.UserActive,
+		ID: id, Admin: role == models.RoleAdmin && status == models.UserActive,
+		Teen: accountType == models.AccountTeen, Inactive: status != models.UserActive,
 	}
 }
 

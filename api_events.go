@@ -321,6 +321,18 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	return out, truncated, nil
 }
 
+// changeVariant names what changed on a date for its event.changed notice:
+// the time, the place, or both. At least one is true.
+func changeVariant(timeChanged, placeChanged bool) string {
+	switch {
+	case timeChanged && placeChanged:
+		return "time and place"
+	case placeChanged:
+		return "place"
+	}
+	return "time"
+}
+
 // setMine fills the viewer's own answer on this date: their row, and their
 // place in line when they are waitlisted.
 func (o *occurrenceJSON) setMine(db *gorm.DB, r *models.Registration) error {
@@ -1036,11 +1048,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if o == nil {
 				continue
 			}
-			variant := "time"
-			if placeChanged && o.LocationOverride == nil {
-				variant = "time and place"
-			}
-			err := notifyEventChanged(tx, &locked, o, variant, &me.ID)
+			err := notifyEventChanged(tx, &locked, o, changeVariant(true, placeChanged && o.LocationOverride == nil), &me.ID)
 			if err != nil {
 				return err
 			}
@@ -1455,14 +1463,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			}
 		}
 		if timeChanged || placeChanged {
-			variant := "time"
-			if placeChanged {
-				variant = "place"
-			}
-			if timeChanged && placeChanged {
-				variant = "time and place"
-			}
-			err := notifyEventChanged(tx, ev, &o, variant, &me.ID)
+			err := notifyEventChanged(tx, ev, &o, changeVariant(timeChanged, placeChanged), &me.ID)
 			if err != nil {
 				return err
 			}

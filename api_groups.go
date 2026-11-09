@@ -283,7 +283,8 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return
 	}
-	upcoming, hasMore, err := a.occurrencesForEventsAfterErr(eventIDs, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me, limit, cursor)
+	from, to := upcomingWindow(now)
+	upcoming, hasMore, err := a.occurrencesForEventsAfterErr(eventIDs, from, to, &now, me, limit, cursor)
 	if err != nil {
 		log.Printf("group %d dates: %v", g.ID, err)
 		jsonError(c, http.StatusInternalServerError, "could not load group")
@@ -914,13 +915,6 @@ func fixPrimaryContact(tx *gorm.DB, g *models.Group) error {
 	}
 	g.LeaderID = next.UserID
 	return tx.Model(&models.Group{}).Where("id = ?", g.ID).Update("leader_id", next.UserID).Error
-}
-
-func roleOrNone(r string) string {
-	if r == "" {
-		return "none"
-	}
-	return r
 }
 
 // apiAddGroupMember lets a leader add someone by selection or email. Invite-only

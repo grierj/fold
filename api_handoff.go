@@ -164,7 +164,7 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if err := tx.Where("user_id = ? AND group_id = ?", sid, g.ID).Limit(1).Find(&m).Error; err != nil {
 			return err
 		}
-		oldRole := "none"
+		oldRole := roleNone
 		if membershipRel(m).Member {
 			oldRole = m.Role
 		}

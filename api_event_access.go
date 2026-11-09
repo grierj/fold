@@ -110,6 +110,12 @@ func (a *App) eventPermissions(me *models.User, f eventFacts) (manage, setVis bo
 	return
 }
 
+// upcomingWindow is the original-date range the "upcoming" views list: from
+// yesterday, so a date whose original day (UTC) has passed but that starts
+// later today in the viewer's zone is not lost, through 90 days out. Those
+// views always pair it with a start-after-now filter, which drops what already
+// began. parseDateWindow's default begins today instead because the explicit
+// range endpoints it serves have no such filter and must not list past dates.
 func upcomingWindow(now time.Time) (from, to string) {
 	return now.Add(-24 * time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02")
 }
@@ -390,7 +396,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		}
 		if body.ResetOverrides {
 			var dates []models.EventOccurrence
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ? AND starts_at > ? AND visibility_override IS NOT NULL", locked.ID, time.Now().UTC()).Order("id").Find(&dates).Error; err != nil {
+			if err := futureOverrides(tx, locked.ID).Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&dates).Error; err != nil {
 				return err
 			}
 			for i := range dates {

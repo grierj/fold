@@ -179,7 +179,7 @@ func eventImpactOfReset(tx *gorm.DB, ev *models.Event, next string, reset bool) 
 		return impact, err
 	}
 	var dates []models.EventOccurrence
-	if err := tx.Where("event_id = ? AND starts_at > ? AND visibility_override IS NOT NULL", ev.ID, time.Now().UTC()).Find(&dates).Error; err != nil {
+	if err := futureOverrides(tx, ev.ID).Find(&dates).Error; err != nil {
 		return impact, err
 	}
 	impact.FutureOverrides = int64(len(dates))
@@ -214,7 +214,7 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string) ([]models.Event
 		return nil, evs, nil
 	}
 	var dates []models.EventOccurrence
-	if err := tx.Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", ids, time.Now().UTC()).Order("id").Find(&dates).Error; err != nil {
+	if err := futureOverrides(tx, ids...).Order("id").Find(&dates).Error; err != nil {
 		return nil, nil, err
 	}
 	out := []models.EventOccurrence{}
@@ -224,6 +224,13 @@ func openedDates(tx *gorm.DB, groupID uint, oldVis, next string) ([]models.Event
 		}
 	}
 	return out, evs, nil
+}
+
+// futureOverrides selects the upcoming dates of the events that carry their own
+// visibility.
+func futureOverrides(tx *gorm.DB, eventIDs ...uint) *gorm.DB {
+	return tx.Model(&models.EventOccurrence{}).
+		Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", eventIDs, time.Now().UTC())
 }
 
 func dateDecisionKey(id uint) string { return "date:" + strconv.FormatUint(uint64(id), 10) }

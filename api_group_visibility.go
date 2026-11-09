@@ -319,8 +319,7 @@ func lockGroupDates(tx *gorm.DB, groupID uint, oldVis, newVis string) error {
 		return err
 	}
 	var dates []uint
-	return tx.Model(&models.EventOccurrence{}).Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", ids, time.Now().UTC()).
+	return futureOverrides(tx, ids...).Clauses(clause.Locking{Strength: "UPDATE"}).
 		Order("id").Pluck("id", &dates).Error
 }
 
