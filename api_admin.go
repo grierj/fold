@@ -438,7 +438,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				if status == models.UserDisabled && !wasDisabled {
 					// The handoff must see the account listed (leaderCount
 					// counts listed users), so it runs before the status flips.
-					if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled"); err != nil {
+					if err := handOffLeadership(tx, me.ID, c.ClientIP(), u.ID, body.Successors, exitAccountDisabled); err != nil {
 						return err
 					}
 				}
@@ -624,7 +624,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// The subject is read from the row deletionHostPlan just locked, so
 			// the address is the one the account holds now (memory only).
 			counts, err = a.eraseAccountIn(tx, captureErasureSubject(u), erasureOptions{Actor: &me.ID, IP: c.ClientIP(), Live: &liveErasure{
-				User: u, C: c, Successors: body.Successors, HostPicks: picks, LockedHosted: lockedHosted, Reasons: plan,
+				User: u, Successors: body.Successors, HostPicks: picks, LockedHosted: lockedHosted, Reasons: plan,
 			}})
 			if err != nil {
 				return nil, err

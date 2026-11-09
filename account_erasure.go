@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"fold/internal/audit"
@@ -547,10 +546,7 @@ type erasureOptions struct {
 // successors of what the account leads and hosts alone, and the admin's
 // decisions about the account's contact-request reasons.
 type liveErasure struct {
-	User *models.User
-	// C is the request: handOffLeadership reads the acting admin and the
-	// address from it.
-	C            *gin.Context
+	User         *models.User
 	Successors   map[string]uint
 	HostPicks    map[uint]uint
 	LockedHosted []uint
@@ -630,7 +626,7 @@ func (a *App) eraseAccountIn(tx *gorm.DB, s erasureSubject, opts erasureOptions)
 		return out, err
 	}
 	if live := opts.Live; live != nil {
-		if err := handOffLeadership(live.C, tx, s.ID, live.Successors, "account_deleted"); err != nil {
+		if err := handOffLeadership(tx, *opts.Actor, opts.IP, s.ID, live.Successors, exitAccountDeleted); err != nil {
 			return out, err
 		}
 		if err := handOffHosting(tx, *opts.Actor, s.ID, live.HostPicks, live.LockedHosted, opts.IP); err != nil {

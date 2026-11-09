@@ -218,7 +218,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "role must be leader or member")
 		return
 	}
-	err := a.changeRole(c, &g, u.ID, role, body.OverLimit, &memberAddOptions{}, func(me, target *models.User, actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(apiUser(c), c.ClientIP(), &g, u.ID, role, body.OverLimit, &memberAddOptions{}, func(me, target *models.User, actor, t policy.Rel, leaders int) bool {
 		// Admins may add someone straight in with either role.
 		return policy.IsAdmin(asPerson(me)) && policy.CanChangeRole(asPerson(me), actor, asPerson(target),
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)

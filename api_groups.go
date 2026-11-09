@@ -567,7 +567,7 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 	}
 	if !rel.Member {
 		// Self-join never goes over the member limit (DEC-39).
-		err := a.changeRole(c, g, u.ID, models.MembershipMember, false, nil, func(me, _ *models.User, _, t policy.Rel, _ int) bool {
+		err := a.changeRole(apiUser(c), c.ClientIP(), g, u.ID, models.MembershipMember, false, nil, func(me, _ *models.User, _, t policy.Rel, _ int) bool {
 			return policy.CanJoinGroup(asPerson(me), asGroup(g), t)
 		})
 		switch err {
@@ -705,7 +705,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		return
 	}
 	makeLeader := body.Role == models.MembershipLeader
-	err := a.changeRole(c, g, target.ID, body.Role, false, nil, func(me, target *models.User, actor, targetRel policy.Rel, leaders int) bool {
+	err := a.changeRole(apiUser(c), c.ClientIP(), g, target.ID, body.Role, false, nil, func(me, target *models.User, actor, targetRel policy.Rel, leaders int) bool {
 		return policy.CanChangeRole(asPerson(me), actor, asPerson(target), targetRel, makeLeader, leaders)
 	})
 	switch err {
@@ -747,11 +747,10 @@ type memberAddOptions struct {
 // facts, keeps the displayed primary contact pointing at a leader, and
 // writes a membership.role_changed audit row when leadership changes. Direct manager additions require
 // adult actors/targets and write membership.added.
-func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions,
+func (a *App) changeRole(actor *models.User, ip string, g *models.Group, userID uint, newRole string, overLimit bool, add *memberAddOptions,
 	allow func(me, target *models.User, actorRel, targetRel policy.Rel, leaders int) bool) error {
-	actor := apiUser(c)
 	return a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
-		return a.changeRoleIn(tx, actor, c.ClientIP(), g, userID, newRole, overLimit, add, allow)
+		return a.changeRoleIn(tx, actor, ip, g, userID, newRole, overLimit, add, allow)
 	})
 }
 
@@ -938,7 +937,7 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		fail(c, errTeenAddApproval)
 		return
 	}
-	err := a.changeRole(c, g, target.ID, models.MembershipMember, body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
+	err := a.changeRole(apiUser(c), c.ClientIP(), g, target.ID, models.MembershipMember, body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), actor)
 	})
 	if err != nil {
