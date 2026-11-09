@@ -211,7 +211,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		if n > 0 {
 			return refuse(errConversionEmail, "pending_invitation")
 		}
-		_, hash, err := createInvitationToken()
+		_, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}
@@ -420,14 +420,8 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		// Claim the invitation atomically: a concurrent accept of the same
 		// token must lose here, not rely on the users.email unique index.
-		res := tx.Model(&models.Invitation{}).
-			Where("id = ? AND token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive, inv.ID, hashToken(body.Token)).
-			Update("accepted_at", now)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errTokenInvalid // another accept claimed it first
+		if err := claimInvitation(tx, inv.ID, body.Token, now); err != nil {
+			return err
 		}
 		meta := map[string]any{"userId": u.ID}
 		if group != nil {

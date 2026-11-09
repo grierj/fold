@@ -301,16 +301,12 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 	}
 	var fresh models.User
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		u, err := lockAccountTokenUser(tx, models.TokenEmailVerify, body.Token)
+		u, tok, err := lockAndConsumeAccountToken(tx, models.TokenEmailVerify, body.Token)
 		if err != nil {
 			return err
 		}
 		if !u.CanSignIn() {
-			return errTokenInvalid
-		}
-		tok, err := consumeAccountToken(tx, models.TokenEmailVerify, body.Token)
-		if err != nil {
-			return err
+			return errTokenInvalid // rolls the claim back
 		}
 		var payload struct {
 			NewEmail string `json:"new_email"`

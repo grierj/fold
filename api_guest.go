@@ -210,7 +210,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	}
 	// Only the hash is kept. Delivery rotates it and mints the link the guest
 	// receives, so no capability exists until the mail is about to be sent.
-	_, hash, err := createInvitationToken()
+	_, hash, err := newTokenAndHash()
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -399,7 +399,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 				return err
 			}
 		}
-		raw, hash, err := createInvitationToken()
+		raw, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}

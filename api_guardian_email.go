@@ -79,22 +79,19 @@ func (a *App) createGuardianEmailToken(tx *gorm.DB, guardian, teen *models.User,
 		return "", err
 	}
 	raw := nonce + "." + sig
-	if err := tx.Where("kind = ? AND user_id = ? AND used_at IS NULL AND payload->>'linkId' = ?", models.TokenTeenConsent, guardian.ID, fmt.Sprint(linkID)).Delete(&models.AccountToken{}).Error; err != nil {
-		return "", err
-	}
-	row := models.AccountToken{Kind: models.TokenTeenConsent, UserID: guardian.ID, TokenHash: hashToken(raw), Payload: jsonString(payload), ExpiresAt: expires}
-	return raw, tx.Create(&row).Error
+	_, err = storeAccountToken(tx, raw, models.TokenTeenConsent, guardian.ID, jsonString(payload), expires,
+		"payload->>'linkId' = ?", fmt.Sprint(linkID))
+	return raw, err
 }
 
 func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken, guardianEmailAuthority, error) {
 	var payload guardianEmailAuthority
 	parts := strings.Split(raw, ".")
-	if len(parts) != 2 || len(parts[0]) != 43 || len(parts[1]) != 43 {
+	if len(parts) != 2 || len(parts[0]) != rawTokenLen || len(parts[1]) != digestLen {
 		return nil, payload, errTokenInvalid
 	}
-	var row models.AccountToken
-	res := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND "+sqlStillLive, models.TokenTeenConsent, hashToken(raw)).Limit(1).Find(&row)
-	if res.Error != nil || res.RowsAffected == 0 {
+	row, err := findAccountToken(tx, models.TokenTeenConsent, raw)
+	if err != nil {
 		return nil, payload, errTokenInvalid
 	}
 	if json.Unmarshal([]byte(row.Payload), &payload) != nil || payload.GuardianID != row.UserID ||
@@ -105,7 +102,7 @@ func (a *App) guardianEmailToken(tx *gorm.DB, raw string) (*models.AccountToken,
 	if err != nil || !hmac.Equal([]byte(parts[1]), []byte(want)) {
 		return nil, payload, errTokenInvalid
 	}
-	return &row, payload, nil
+	return row, payload, nil
 }
 
 func (a *App) guardianEmailActors(tx *gorm.DB, payload guardianEmailAuthority) (*models.User, *models.User, error) {

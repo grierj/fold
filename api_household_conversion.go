@@ -329,7 +329,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			// check still spends an actor attempt rather than becoming free.
 			return writeInvitationRefusal(tx, actor.ID, "household_invitation_open", c.ClientIP())
 		}
-		_, hash, err := createInvitationToken()
+		_, hash, err := newTokenAndHash()
 		if err != nil {
 			return err
 		}
@@ -558,12 +558,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 				return err
 			}
 
-			claim := tx.Model(&inv).Where("accepted_at IS NULL AND revoked_at IS NULL AND "+sqlStillLive+" AND token_hash = ?", hashToken(raw)).Update("accepted_at", time.Now().UTC())
-			if claim.Error != nil {
-				return claim.Error
-			}
-			if claim.RowsAffected != 1 {
-				return errTokenInvalid
+			if err := claimInvitation(tx, inv.ID, raw, time.Now().UTC()); err != nil {
+				return err
 			}
 			return audit.Write(tx, audit.Entry{Actor: &inv.InvitedBy, Action: audit.InvitationAccepted, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID}, IP: c.ClientIP()})
 		})
