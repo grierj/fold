@@ -297,6 +297,7 @@ type calendarFeedJSON struct {
 	URL      string `json:"url,omitempty"`
 }
 
+// errCalendarFeedGone means the person's link was not there under the lock.
 var errCalendarFeedGone = errors.New("calendar feed not found")
 
 // calendarTokenFor is the person's feed link, nil when they have none. A

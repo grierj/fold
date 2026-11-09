@@ -20,6 +20,8 @@ const HorizonMonths = 18
 
 const WallLayout = "2006-01-02T15:04"
 
+// MaxDurationMinutes is seven days. Longer than a retreat, shorter than a
+// series.
 const MaxDurationMinutes = 7 * 24 * 60
 
 // MaxOccurrences is the most dates a series may have in the two years before

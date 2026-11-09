@@ -320,6 +320,7 @@ func newSubjectFacts(today time.Time) *subjectFacts {
 	return &subjectFacts{people: map[uint]*models.HouseholdPerson{}, links: map[uint][]models.GuardianLink{}, households: map[uint]models.Household{}, users: map[uint]*models.User{}, accounts: map[uint]models.HouseholdAccount{}, loadedAccounts: map[uint]bool{}, today: today}
 }
 
+// requestFacts is one request's shared facts, on the church-local clock.
 func (a *App) requestFacts() *subjectFacts {
 	f := newSubjectFacts(time.Time{})
 	f.clock = func() time.Time { return time.Now().UTC().In(churchZoneOrUTC(a.DB)) }

@@ -30,7 +30,8 @@ const roomFeedTitle = "Reserved"
 type roomFeedJSON struct {
 	HasToken  bool       `json:"hasToken"`
 	CreatedAt *time.Time `json:"createdAt"`
-	URL       string     `json:"url,omitempty"`
+	// URL is the raw link, only in the response that made it.
+	URL string `json:"url,omitempty"`
 }
 
 func (a *App) roomFeedURL(roomID uint, raw string) string {

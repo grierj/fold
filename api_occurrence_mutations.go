@@ -607,6 +607,8 @@ func (a *App) auditManagerDateRefusal(c *gin.Context) error {
 
 const operationManagerAdd = "manager_add"
 
+// writeOccurrenceRefusal records a refused exact-date request in the caller's
+// transaction.
 func writeOccurrenceRefusal(tx *gorm.DB, actorID uint, ip, operation string) error {
 	return audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: ip, Meta: map[string]any{"operation": operation}})
 }

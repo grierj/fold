@@ -332,6 +332,7 @@ func CanRegisterGuest(ev EventView, g Group) bool {
 	return CanSeeEvent(nil, ev, g, Rel{})
 }
 
+// Video reveal settings (5.8, M1.8).
 const (
 	VideoRevealAlways         = "always"
 	VideoRevealRegisteredOnly = "registered_only"
@@ -722,6 +723,10 @@ func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	// Nobody 18 or older is a child or teen, and a teen can't be under 13.
 	// A child who turned 13 stays registrable until the guardian updates
 	// the kind; the accounts.age_rollover job flags them (judgment call 39).
+	// PLAN 2.x bands: child under 13, teen 13 to 17. Nobody 18 or older is a
+	// child or teen, and a teen can't be under 13. A child who turned 13 stays
+	// registrable until the guardian updates the kind; the accounts.age_rollover
+	// job flags them (judgment call 39).
 	if *person.AgeYears >= 18 || (person.Kind == KindTeen && *person.AgeYears < 13) {
 		return "household_age_mismatch"
 	}
@@ -776,6 +781,7 @@ func CanSeeMinorRosterIdentity(p *Person, manager bool) bool {
 	return p != nil && (p.Admin || manager)
 }
 
+// CanUploadAvatar: teens have no public avatar (DEC-8).
 func CanUploadAvatar(p *Person) bool { return p != nil && !p.Teen }
 
 // EffectiveVisibility resolves only the date's ordinary visibility. It never

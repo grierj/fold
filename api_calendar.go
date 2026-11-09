@@ -101,6 +101,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	if c.Query("childcare") == "1" {
 		q = q.Where("childcare_available = ?", true)
 	}
+	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
 	candidates := a.eventCandidates
 	if c.Query("deleted") == "1" {
 		candidates = a.deletedEventCandidates

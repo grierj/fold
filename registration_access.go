@@ -37,6 +37,7 @@ var (
 	errAccessHistoryCorrupt = errors.New("occurrence access history is corrupt")
 )
 
+// accessTargetType is the audit target of the three access actions.
 const accessTargetType = "registration"
 
 // registrationAccessLiveSQL is models.Registration.AccessLive as a condition on

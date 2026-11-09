@@ -63,6 +63,8 @@ func hostSeatsByEvent(db *gorm.DB, userID uint) (map[uint][]policy.HostSeat, err
 	return out, nil
 }
 
+// soleHosted is, ascending, the events in seats that userID cannot leave
+// without leaving them hostless.
 func soleHosted(seats map[uint][]policy.HostSeat, userID uint) []uint {
 	var out []uint
 	for id, hosts := range seats {
@@ -175,6 +177,8 @@ func deleteHostRowsAudited(tx *gorm.DB, actor *uint, ip, reason, query string, a
 	}
 	return nil
 }
+
+// Replacement host before account deletion (M7.4, R4-H, owner decision 3).
 
 const maxHostSuccessors = 1000
 

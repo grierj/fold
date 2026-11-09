@@ -479,6 +479,8 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"booking": booking})
 }
 
+// releaseRoomBookings frees the rooms of dates that were cancelled, in the
+// cancelling transaction (9.2).
 func releaseRoomBookings(tx *gorm.DB, occurrenceIDs []uint) error {
 	if len(occurrenceIDs) == 0 {
 		return nil

@@ -30,6 +30,7 @@ import (
 
 const roomRequestsLink = "/admin?tab=rooms"
 
+// roomApprovalOn reads the setting in the caller's transaction.
 func roomApprovalOn(db *gorm.DB) bool {
 	return boolSettingIn(db, settingRoomApproval, false)
 }

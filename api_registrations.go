@@ -1091,6 +1091,10 @@ func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool 
 	return policy.CanRegisterEvent(asPerson(u), f.view, asGroup(f.group), f.rel)
 }
 
+// Leader and host actions (DEC-20, DEC-30, M1.5). Every action is gated by
+// policy.CanManageEvent, runs on the locked path, and writes its audit row
+// in the same transaction as the change and its notification.
+
 func (a *App) apiRemoveRegistration(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
 	if !ok {
@@ -1544,6 +1548,8 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 // notifyInsideCutoff is false for tombstone maintenance: deleted accounts
 // already do not count, so revisiting their registrations must not announce
 // another newly opened seat. Admin disable/delete keeps its usual notices.
+// Disabled and re-enabled accounts (DEC-38, DEC-47, M1.5).
+
 func (a *App) promoteOnDisable(tx *gorm.DB, userID uint, notifyInsideCutoff bool) error {
 	var occIDs []uint
 	if err := tx.Model(&models.Registration{}).
@@ -1821,6 +1827,8 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// managerRegistrationOptions retains the original PATCH resolution for ordinary
+// manager adds. A request finalizer must supply its persisted final values.
 type managerRegistrationOptions struct {
 	approved     *verifiedOccurrenceAdd
 	mode         string

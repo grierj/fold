@@ -458,6 +458,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			(body.Status != nil && !policy.CanSetGroupStatus(asPerson(actor), rel, *body.Status)) {
 			return errForbidden
 		}
+		// Downstream visibility/audit helpers use the same fresh actor.
 		*u = *actor
 		*g = locked
 		if body.Name != nil {
@@ -722,6 +723,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 	a.respondRoster(c, g.ID, true)
 }
 
+// errRoleRefused means policy said no once the group row was locked.
 var errRoleRefused = apiErr(http.StatusForbidden, "", "forbidden")
 
 // errGroupNotApprovedForAdds: only admins add people to a pending or
@@ -1018,6 +1020,8 @@ func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string)
 	return err
 }
 
+// auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
+// tells the other admins about a leadership change in the same transaction.
 func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	if err := audit.Write(tx, e); err != nil {
 		return err

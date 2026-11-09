@@ -192,6 +192,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 		log.Printf("list event dates: childcare: %v", err)
 		childcareUsed = map[uint]int{}
 	}
+	// One set of household facts and one church-local clock per request.
 	facts := a.requestFacts()
 	names, removed, err := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
 	if err != nil {
@@ -1132,6 +1133,8 @@ func lockManagedEventIn(tx *gorm.DB, me *models.User, eventID uint) (*models.Eve
 	return &locked, f, nil
 }
 
+// answerEventWrite answers a failed write on a locked event: its own answer,
+// 404 when the event went away while the request waited, else a 500.
 func answerEventWrite(c *gin.Context, err error, failure string) {
 	switch {
 	case isAPIError(err):
@@ -1261,6 +1264,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		// A cancelled date frees its room (9.2).
 		return releaseRoomBookings(tx, []uint{occ.ID})
 	})
 	if err != nil {

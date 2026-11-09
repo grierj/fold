@@ -6,6 +6,7 @@ package policy
 // Members ask instead (7.6). The check runs when a message is saved and again
 // when it is sent (M3.5), since roles change.
 
+// Audience kinds (PLAN 7.2).
 const (
 	AudienceOccurrence  = "occurrence"
 	AudienceEventSeries = "event_series"
