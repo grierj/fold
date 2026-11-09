@@ -2321,20 +2321,26 @@ func TestAdminDeleteCommitPhaseAnswersUnknown(t *testing.T) {
 			app.DB.Exec("DROP FUNCTION IF EXISTS fold_test_fail_at_commit()")
 		})
 	}
+	// The deletion must reach its COMMIT inside the budget, or it answers
+	// delete_timed_out, a different outcome from the one under test. Cases b to d
+	// end as soon as the COMMIT is answered, so their budget is long; only a
+	// waits it out, and its budget is long against the deletion's own statements.
+	const reachesCommit = 30 * time.Second
 	cases := []struct {
 		name    string
+		budget  time.Duration
 		fault   testdb.Faults
 		setup   func(*testing.T, *App, *models.User)
 		deleted bool
 	}{
-		{name: "a: the reply held past the budget", fault: testdb.Faults{Match: claim, Commit: testdb.CommitHoldReply}, deleted: true},
-		{name: "b: forwarded, client closed before the reply", fault: testdb.Faults{Match: claim, Commit: testdb.CommitForwardThenClose}, deleted: true},
-		{name: "c: closed without forwarding", fault: testdb.Faults{Match: claim, Commit: testdb.CommitCloseUnforwarded}, deleted: false},
-		{name: "d: a deferred constraint fails at COMMIT", setup: deferredFailure, deleted: false},
+		{name: "a: the reply held past the budget", budget: 8 * time.Second, fault: testdb.Faults{Match: claim, Commit: testdb.CommitHoldReply}, deleted: true},
+		{name: "b: forwarded, client closed before the reply", budget: reachesCommit, fault: testdb.Faults{Match: claim, Commit: testdb.CommitForwardThenClose}, deleted: true},
+		{name: "c: closed without forwarding", budget: reachesCommit, fault: testdb.Faults{Match: claim, Commit: testdb.CommitCloseUnforwarded}, deleted: false},
+		{name: "d: a deferred constraint fails at COMMIT", budget: reachesCommit, setup: deferredFailure, deleted: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			setAdminDeleteBounds(t, 4*time.Second, 300*time.Millisecond)
+			setAdminDeleteBounds(t, tc.budget, 300*time.Millisecond)
 			app := testApp(t)
 			newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 			target := newTestUser(t, app, "target", "pw", models.RoleMember)
