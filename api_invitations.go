@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -112,14 +111,14 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		fail(c, errEnterValidEmail)
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if len(name) > 100 {
-		fail(c, errNameTooLong100)
+	name, err := optionalName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
-	phone := strings.TrimSpace(body.Phone)
-	if len(phone) > 30 {
-		fail(c, errPhoneTooLong)
+	phone, err := phoneNumber(body.Phone)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 
@@ -162,7 +161,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		GroupID: body.GroupID, OverLimit: overLimit,
 		ExpiresAt: time.Now().UTC().Add(tokenTTL),
 	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockInvitationEmail(tx, email); err != nil {
 			return err
 		}
@@ -306,9 +305,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	if !ok {
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if len(name) > 100 {
-		fail(c, errNameTooLong100)
+	name, err := optionalName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	var userID uint

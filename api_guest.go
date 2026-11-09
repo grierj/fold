@@ -144,9 +144,9 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	if !ok {
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	email := foldmail.NormalizeAddress(body.Email)

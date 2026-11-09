@@ -498,9 +498,9 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		fail(c, errValidEmailRequired)
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	if body.Password != "" && !checkNewPassword(c, body.Password) {
@@ -530,7 +530,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	}
 	u.Status = newAccountStatus(kind, body.Password != "")
 	me := apiUser(c)
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
@@ -693,18 +693,20 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	updates := map[string]interface{}{}
 	bump := false
 	if body.Name != nil {
-		if len(*body.Name) > 100 {
-			fail(c, errNameTooLong100)
+		name, err := optionalName(*body.Name)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["name"] = strings.TrimSpace(*body.Name)
+		updates["name"] = name
 	}
 	if body.DisplayName != nil {
-		if len(*body.DisplayName) > 100 {
-			fail(c, errDisplayNameTooLong)
+		dn, err := displayName(*body.DisplayName)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
+		updates["display_name"] = dn
 	}
 	if body.Email != nil {
 		email := mail.NormalizeAddress(*body.Email)
@@ -718,11 +720,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		}
 	}
 	if body.Phone != nil {
-		if len(*body.Phone) > 30 {
-			fail(c, errPhoneTooLong)
+		phone, err := phoneNumber(*body.Phone)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["phone"] = strings.TrimSpace(*body.Phone)
+		updates["phone"] = phone
 	}
 	if body.Role != nil {
 		role := strings.TrimSpace(*body.Role)

@@ -132,9 +132,9 @@ type validatedRequest struct {
 // (DEC-8). Under 13 answers 400 with the household explanation and the
 // caller stores nothing.
 func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (validatedRequest, bool) {
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return validatedRequest{}, false
 	}
 	email := foldmail.NormalizeAddress(body.Email)
@@ -142,9 +142,9 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 		fail(c, errEnterValidEmail)
 		return validatedRequest{}, false
 	}
-	phone := strings.TrimSpace(body.Phone)
-	if len(phone) > 30 {
-		fail(c, errPhoneTooLong)
+	phone, err := phoneNumber(body.Phone)
+	if err != nil {
+		fail(c, err)
 		return validatedRequest{}, false
 	}
 	message := strings.TrimSpace(body.Message)

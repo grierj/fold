@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fold/internal/accounts"
 	"fold/internal/audit"
@@ -70,17 +69,17 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	}
 	updates := map[string]interface{}{}
 	if body.Name != nil {
-		name := strings.TrimSpace(*body.Name)
-		if utf8.RuneCountInString(name) > 100 {
-			fail(c, errNameTooLong100)
+		name, err := optionalName(*body.Name)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		updates["name"] = name
 	}
 	if body.DisplayName != nil {
-		dn := strings.TrimSpace(*body.DisplayName)
-		if utf8.RuneCountInString(dn) > 100 {
-			fail(c, errDisplayNameTooLong)
+		dn, err := displayName(*body.DisplayName)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		updates["display_name"] = dn
@@ -93,9 +92,9 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		emailChange = body.Email
 	}
 	if body.Phone != nil {
-		phone := strings.TrimSpace(*body.Phone)
-		if len(phone) > 30 {
-			fail(c, errPhoneTooLong)
+		phone, err := phoneNumber(*body.Phone)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		updates["phone"] = phone
@@ -1060,21 +1059,17 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 	}
 	updates := map[string]any{}
 	if body.Name != nil {
-		name := strings.TrimSpace(*body.Name)
-		if name == "" {
-			fail(c, errNameRequired)
-			return
-		}
-		if utf8.RuneCountInString(name) > 100 {
-			fail(c, errNameTooLong100)
+		name, err := requiredName(*body.Name)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		updates["name"] = name
 	}
 	if body.Address != nil {
-		address := strings.TrimSpace(*body.Address)
-		if utf8.RuneCountInString(address) > 500 {
-			fail(c, errAddressTooLong)
+		address, err := postalAddress(*body.Address)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		updates["address"] = address
@@ -1149,68 +1144,101 @@ func splitPersonName(name string) (string, string) {
 	return fields[0], strings.Join(fields[1:], " ")
 }
 
-func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInput) (models.HouseholdPerson, bool) {
-	first, last := "", ""
+// householdPersonFields validates the person fields a request names and
+// returns them as column updates: first_name, last_name, kind, birth_date (nil
+// clears it), care_notes, photo_consent. Create and update share it, so a
+// person is held to the same rules either way; only the fields a request
+// carries are returned.
+func householdPersonFields(body householdPersonInput) (map[string]any, error) {
+	if body.Name != nil && body.FirstName == nil && body.LastName == nil {
+		first, last := splitPersonName(*body.Name)
+		body.FirstName, body.LastName = &first, &last
+	}
+	fields := map[string]any{}
 	if body.FirstName != nil {
-		first = strings.TrimSpace(*body.FirstName)
+		first, ok := cleanText(*body.FirstName, maxNameChars)
+		switch {
+		case first == "":
+			return nil, errFirstNameRequired
+		case !ok:
+			return nil, errNameTooLong100
+		}
+		fields["first_name"] = first
 	}
 	if body.LastName != nil {
-		last = strings.TrimSpace(*body.LastName)
-	}
-	if first == "" && body.Name != nil {
-		first, last = splitPersonName(*body.Name)
-	}
-	if first == "" {
-		fail(c, errFirstNameRequired)
-		return models.HouseholdPerson{}, false
-	}
-	if utf8.RuneCountInString(first) > 100 || utf8.RuneCountInString(last) > 100 {
-		fail(c, errNameTooLong100)
-		return models.HouseholdPerson{}, false
-	}
-	kind := ""
-	if body.Kind != nil {
-		kind = strings.TrimSpace(*body.Kind)
-	}
-	if !validHouseholdKind(kind) {
-		fail(c, errInvalidKind)
-		return models.HouseholdPerson{}, false
-	}
-	var birth *time.Time
-	if body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != "" {
-		parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
+		last, err := optionalName(*body.LastName)
 		if err != nil {
-			fail(c, errInvalidBirthDate)
-			return models.HouseholdPerson{}, false
+			return nil, err
 		}
-		birth = parsed
+		fields["last_name"] = last
 	}
-	if birth != nil {
+	if body.Kind != nil {
+		kind := strings.TrimSpace(*body.Kind)
+		if !validHouseholdKind(kind) {
+			return nil, errInvalidKind
+		}
+		fields["kind"] = kind
+	}
+	if body.BirthDate != nil {
+		raw := strings.TrimSpace(*body.BirthDate)
+		if raw == "" {
+			fields["birth_date"] = (*time.Time)(nil)
+		} else {
+			parsed, err := accounts.ParseBirthDate(raw)
+			if err != nil {
+				return nil, errInvalidBirthDate
+			}
+			fields["birth_date"] = parsed
+		}
+	}
+	if body.CareNotes != nil {
+		notes, ok := cleanText(*body.CareNotes, 5000)
+		if !ok {
+			return nil, errCareNotesTooLong
+		}
+		fields["care_notes"] = notes
+	}
+	if body.PhotoConsent != nil {
+		fields["photo_consent"] = *body.PhotoConsent
+	}
+	return fields, nil
+}
+
+// householdAgeFits is the age rule for a household person: a birth date is
+// never in the future, and an adult is at least 18.
+func householdAgeFits(kind string, birth *time.Time, today time.Time) bool {
+	age := accounts.AgeOn(*birth, today)
+	return age >= 0 && !(kind == models.HouseholdAdult && age < 18)
+}
+
+func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInput) (models.HouseholdPerson, bool) {
+	fields, err := householdPersonFields(body)
+	if err == nil {
+		if _, named := fields["first_name"]; !named {
+			err = errFirstNameRequired
+		} else if _, ok := fields["kind"]; !ok {
+			err = errInvalidKind
+		}
+	}
+	if err != nil {
+		fail(c, err)
+		return models.HouseholdPerson{}, false
+	}
+	person := models.HouseholdPerson{FirstName: fields["first_name"].(string), Kind: fields["kind"].(string)}
+	person.LastName, _ = fields["last_name"].(string)
+	person.CareNotes, _ = fields["care_notes"].(string)
+	person.PhotoConsent, _ = fields["photo_consent"].(bool)
+	person.BirthDate, _ = fields["birth_date"].(*time.Time)
+	if person.BirthDate != nil {
 		today, err := churchClockIn(a.DB, time.Now().UTC())
 		if err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not check the birth date")
 			return models.HouseholdPerson{}, false
 		}
-		if age := accounts.AgeOn(*birth, today); age < 0 || (kind == models.HouseholdAdult && age < 18) {
+		if !householdAgeFits(person.Kind, person.BirthDate, today) {
 			fail(c, errHouseholdAgeMismatch)
 			return models.HouseholdPerson{}, false
 		}
-	}
-	careNotes := ""
-	if body.CareNotes != nil {
-		careNotes = strings.TrimSpace(*body.CareNotes)
-	}
-	if utf8.RuneCountInString(careNotes) > 5000 {
-		fail(c, errCareNotesTooLong)
-		return models.HouseholdPerson{}, false
-	}
-	photoConsent := false
-	if body.PhotoConsent != nil {
-		photoConsent = *body.PhotoConsent
-	}
-	person := models.HouseholdPerson{
-		FirstName: first, LastName: last, Kind: kind,
-		BirthDate: birth, CareNotes: careNotes, PhotoConsent: photoConsent,
 	}
 	return person, true
 }
@@ -1314,64 +1342,16 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	updates := map[string]any{}
-	if body.Name != nil && body.FirstName == nil && body.LastName == nil {
-		first, last := splitPersonName(*body.Name)
-		body.FirstName, body.LastName = &first, &last
-	}
-	if body.FirstName != nil {
-		first := strings.TrimSpace(*body.FirstName)
-		if first == "" {
-			fail(c, errFirstNameRequired)
-			return
-		}
-		if utf8.RuneCountInString(first) > 100 {
-			fail(c, errNameTooLong100)
-			return
-		}
-		updates["first_name"] = first
-	}
-	if body.LastName != nil {
-		last := strings.TrimSpace(*body.LastName)
-		if utf8.RuneCountInString(last) > 100 {
-			fail(c, errNameTooLong100)
-			return
-		}
-		updates["last_name"] = last
+	updates, err := householdPersonFields(body)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	newKind := person.Kind
-	if body.Kind != nil {
-		newKind = strings.TrimSpace(*body.Kind)
-		if !validHouseholdKind(newKind) {
-			fail(c, errInvalidKind)
-			return
-		}
-		updates["kind"] = newKind
+	if k, ok := updates["kind"].(string); ok {
+		newKind = k
 	}
-	if body.BirthDate != nil {
-		if strings.TrimSpace(*body.BirthDate) == "" {
-			updates["birth_date"] = nil
-		} else {
-			parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
-			if err != nil {
-				fail(c, errInvalidBirthDate)
-				return
-			}
-			updates["birth_date"] = parsed
-		}
-	}
-	if body.CareNotes != nil {
-		careNotes := strings.TrimSpace(*body.CareNotes)
-		if utf8.RuneCountInString(careNotes) > 5000 {
-			fail(c, errCareNotesTooLong)
-			return
-		}
-		updates["care_notes"] = careNotes
-	}
-	if body.PhotoConsent != nil {
-		updates["photo_consent"] = *body.PhotoConsent
-	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// User lock first, then the household the locked seat names; the
 		// person must be in it.
 		_, seat, err := lockHouseholdSeat(tx, me, errHouseholdPersonGone)
@@ -1414,18 +1394,14 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 			newKind = person.Kind
 		}
 		if birth, set := updates["birth_date"]; set {
-			if birth == nil {
-				merged.BirthDate = nil
-			} else {
-				merged.BirthDate = birth.(*time.Time)
-			}
+			merged.BirthDate = birth.(*time.Time)
 		}
 		if merged.BirthDate != nil {
 			today, err := churchClockIn(tx, time.Now().UTC())
 			if err != nil {
 				return err
 			}
-			if age := accounts.AgeOn(*merged.BirthDate, today); age < 0 || (merged.Kind == models.HouseholdAdult && age < 18) {
+			if !householdAgeFits(merged.Kind, merged.BirthDate, today) {
 				return householdRegistrationError{code: "household_age_mismatch", personID: person.ID}
 			}
 		}

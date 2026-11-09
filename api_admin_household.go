@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	"fold/internal/audit"
 	"fold/internal/policy"
@@ -116,24 +114,20 @@ func (a *App) apiAdminCreateHousehold(c *gin.Context) {
 		return
 	}
 	if body.Name != nil {
-		name := strings.TrimSpace(*body.Name)
-		if name == "" {
-			fail(c, errNameRequired)
-			return
-		}
-		if len(name) > 100 {
-			fail(c, errNameTooLong100)
+		name, err := requiredName(*body.Name)
+		if err != nil {
+			fail(c, err)
 			return
 		}
 		body.Name = &name
 	}
-	address := strings.TrimSpace(body.Address)
-	if utf8.RuneCountInString(address) > 500 {
-		fail(c, errAddressTooLong)
+	address, err := postalAddress(body.Address)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	var household models.Household
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		actor, holder, _, err := lockAdminHouseholdParticipants(tx, apiUser(c), id, 0)
 		if err != nil {
 			return err
