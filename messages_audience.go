@@ -363,11 +363,7 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 				return err
 			}
 			for a, rs := range reasons {
-				for _, r := range rs {
-					if suppressed[a] != models.SuppressComplaint {
-						suppressed[a] = r
-					}
-				}
+				suppressed[a] = mail.StrongestReason(rs)
 			}
 		}
 		dests := make([]emailDest, 0, len(part))

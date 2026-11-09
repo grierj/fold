@@ -584,7 +584,7 @@ func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 		t.Fatalf("lost or duplicated rows: got %v, want %v", got, wantReasons)
 	}
 	for addr, wantReason := range map[string]string{
-		"complaintfirst@example.com": models.SuppressComplaint,
+		"complaintfirst@example.com": models.SuppressHardBounce,
 		"bouncefirst@example.com":    models.SuppressHardBounce,
 		"hashed@example.com":         models.SuppressHardBounce,
 	} {

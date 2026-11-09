@@ -28,19 +28,20 @@ func openSuppressions(db *gorm.DB) (map[string]*emailSuppressionJSON, error) {
 	if err := db.Where("channel = ? AND cleared_at IS NULL", "email").Order("created_at").Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	reasons := map[string][]string{}
 	out := map[string]*emailSuppressionJSON{}
 	for _, r := range rows {
 		key := mail.StoredAddressHash(r.Address)
 		if r.AddressHash != nil {
 			key = *r.AddressHash
 		}
-		cur := out[key]
-		switch {
-		case cur == nil:
-			out[key] = &emailSuppressionJSON{Reason: r.Reason, Since: r.CreatedAt}
-		case cur.Reason == models.SuppressComplaint && r.Reason != models.SuppressComplaint:
-			cur.Reason = r.Reason
+		reasons[key] = append(reasons[key], r.Reason)
+		if out[key] == nil {
+			out[key] = &emailSuppressionJSON{Since: r.CreatedAt}
 		}
+	}
+	for key, cur := range out {
+		cur.Reason = mail.StrongestReason(reasons[key])
 	}
 	return out, nil
 }

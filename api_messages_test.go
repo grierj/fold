@@ -263,8 +263,8 @@ func TestAudiencePreview(t *testing.T) {
 }
 
 // The preview skips someone whose address has an open row, hashed or legacy,
-// in either order, with the same words; a cleared row skips nobody. Any
-// complaint says "marked our email as spam", whichever row is older.
+// in either order, with the same words; a cleared row skips nobody. A complaint
+// alone says "marked our email as spam"; beside a bounce the bounce wins.
 func TestAudiencePreviewHashedAndLegacySuppressions(t *testing.T) {
 	f := newComposeFixture(t)
 	cases := suppressionCases()

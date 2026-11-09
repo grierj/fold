@@ -82,9 +82,9 @@ func suppressionCases() []suppressionCase {
 		{"hashed complaint", []suppressionSpec{{hashed: true, reason: cp}}, "", cp},
 		{"legacy cleared hard bounce", []suppressionSpec{{cleared: true, reason: hb}}, "", ""},
 		{"hashed cleared hard bounce", []suppressionSpec{{hashed: true, cleared: true, reason: hb}}, "", ""},
-		{"hashed complaint then bounce", []suppressionSpec{{hashed: true, reason: cp}, {hashed: true, reason: hb}}, hb, cp},
+		{"hashed complaint then bounce", []suppressionSpec{{hashed: true, reason: cp}, {hashed: true, reason: hb}}, hb, hb},
 		{"hashed bounce then complaint", []suppressionSpec{{hashed: true, reason: hb}, {hashed: true, reason: cp}}, hb, hb},
-		{"legacy complaint then bounce", []suppressionSpec{{reason: cp}, {reason: hb}}, hb, cp},
+		{"legacy complaint then bounce", []suppressionSpec{{reason: cp}, {reason: hb}}, hb, hb},
 		{"legacy bounce then complaint", []suppressionSpec{{reason: hb}, {reason: cp}}, hb, hb},
 	}
 }
