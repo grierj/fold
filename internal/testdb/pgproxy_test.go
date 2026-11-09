@@ -73,14 +73,7 @@ func (r *proxyRig) backendExists(pid uint32) bool {
 
 func (r *proxyRig) waitFor(what string, within time.Duration, cond func() bool) {
 	r.t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	r.t.Fatalf("timed out after %s waiting for %s", within, what)
+	WaitUntil(r.t, what, within, cond)
 }
 
 // pidOf is the backend of the first logged statement containing sql.
