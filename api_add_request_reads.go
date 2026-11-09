@@ -46,7 +46,17 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 	if err != nil {
 		return nil, err
 	}
-	names := publicNamesIn(tx, nameIDs)
+	// A failed name read fails the page; it never becomes a placeholder.
+	names := publicNames{}
+	if len(nameIDs) > 0 {
+		var rows []models.User
+		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", nameIDs).Find(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, u := range rows {
+			names[u.ID] = u.PublicName()
+		}
+	}
 	evs := map[uint]models.Event{}
 	if len(eventIDs) > 0 {
 		var rows []models.Event
