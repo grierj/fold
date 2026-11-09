@@ -111,14 +111,6 @@ func TestSMTPInsecureRequiresExplicitOptOut(t *testing.T) {
 	}
 }
 
-func TestShortSessionSecretRefusedOutsideDev(t *testing.T) {
-	t.Setenv("APP_ENV", "prod")
-	t.Setenv("SESSION_SECRET", "changeme")
-	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "at least 32") {
-		t.Fatalf("short secret: %v", err)
-	}
-}
-
 func TestShortSecretMessageIsActionableAndHidesTheValue(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")
 	t.Setenv("SESSION_SECRET", "hunter2-secret")
@@ -208,9 +200,9 @@ func TestWebhookSecretMustBeLong(t *testing.T) {
 	}
 }
 
-// TestDangerousConfigRefusedAtStartup: three values that LoadConfig used to
-// accept make the server unsafe (SEC1 slice e). Each refusal names the
-// variable and the fix, and none echoes SESSION_SECRET.
+// TestDangerousConfigRefusedAtStartup: a trust-everyone proxy list, an http
+// SITE_URL and COOKIE_SECURE=false make the server unsafe outside dev. Each
+// refusal names the variable and the fix, and none echoes SESSION_SECRET.
 func TestDangerousConfigRefusedAtStartup(t *testing.T) {
 	const secret = "test-session-secret-at-least-32-bytes"
 	cases := []struct {

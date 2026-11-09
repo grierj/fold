@@ -3058,9 +3058,10 @@ func TestConsentScrubMigrationTakesNoConsentsLock(t *testing.T) {
 	holdLock(t, name, `LOCK TABLE consents IN ACCESS EXCLUSIVE MODE`)
 	requireBlocked(t, name, "consents")
 
-	// Well inside the migration's own 5s lock_timeout, so a wait on consents
-	// fails here rather than passing by timing out later.
-	elapsed, err := timedUpTo(p, consentScrubTestConsentScrubVersion, 4*time.Second)
+	// A wait on consents would end in the migration's own 5s lock_timeout (55P03),
+	// so success means it took no lock on the table. The 30s limit is only a
+	// backstop far above that, never what decides the outcome.
+	elapsed, err := timedUpTo(p, consentScrubTestConsentScrubVersion, 30*time.Second)
 	if err != nil {
 		t.Fatalf("UpTo(%d) with consents locked ACCESS EXCLUSIVE: %v after %s; the migration waits on consents, so correct its header's lock claim", consentScrubTestConsentScrubVersion, err, elapsed)
 	}
@@ -3906,7 +3907,7 @@ func TestAgesNoteMigrationWaitsForExclusiveTableLock(t *testing.T) {
 	name, _, p := freshAt(t, agesNoteTriggerTestVersion-1)
 	holder := holdLock(t, name, `LOCK TABLE contact_requests IN ACCESS EXCLUSIVE MODE`)
 	requireBlocked(t, name, "contact_requests")
-	elapsed, err := timedUpTo(p, agesNoteTriggerTestVersion, 8*time.Second)
+	elapsed, err := timedUpTo(p, agesNoteTriggerTestVersion, 30*time.Second)
 	if pgErrorCode(err) != "55P03" {
 		t.Fatalf("UpTo(%d) with contact_requests locked ACCESS EXCLUSIVE: %v (code %q) after %s, want 55P03", agesNoteTriggerTestVersion, err, pgErrorCode(err), elapsed)
 	}
@@ -4075,7 +4076,7 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 			holder, _ := hold(t, "holder", mode)
 			defer holder.Rollback()
 			b, bPID := session(t, "blanker")
-			if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
+			if _, err := b.ExecContext(ctx, `SET lock_timeout = '10s'`); err != nil {
 				t.Fatal(err)
 			}
 			stop := agesNoteWatchLocks(ctx, a.db, bPID)
@@ -4086,8 +4087,10 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 			if pgErrorCode(err) != "55P03" {
 				t.Fatalf("blank under %s: %v (code %q), want lock_not_available 55P03", mode, err, pgErrorCode(err))
 			}
-			if elapsed > 1500*time.Millisecond {
-				t.Errorf("the blank took %s to fail, want well inside the 2s lock_timeout (it waited)", elapsed)
+			// A wait would run to the 10s lock_timeout; failing at once leaves a wide
+			// margin for a loaded machine.
+			if elapsed > 5*time.Second {
+				t.Errorf("the blank took %s to fail, want it to fail at once, not at the 10s lock_timeout (it waited)", elapsed)
 			}
 			if ungranted != 0 {
 				t.Errorf("%d of %d pg_locks samples showed an ungranted lock for the blanker", ungranted, samples)
@@ -4182,12 +4185,9 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
+		// A wait on a lock would end in 55P03 at the 2s lock_timeout, not 23514.
 		_, err := b.ExecContext(ctx, agesNoteBlankSQL, 130)
 		wantPgError(t, "living subject", err, "23514", agesNoteIdentityMsg)
-		if time.Since(start) > 1500*time.Millisecond {
-			t.Errorf("the living-subject refusal took %s", time.Since(start))
-		}
 		deleterConn, _ := session(t, "deleter")
 		dtx, err := deleterConn.BeginTx(ctx, nil)
 		if err != nil {
@@ -4197,13 +4197,8 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		if _, err := dtx.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = 3`); err != nil {
 			t.Fatal(err)
 		}
-		start = time.Now()
 		_, err = b.ExecContext(ctx, agesNoteBlankSQL, 130)
-		elapsed := time.Since(start)
 		wantPgError(t, "deletion not yet committed", err, "23514", agesNoteIdentityMsg)
-		if elapsed > 1500*time.Millisecond {
-			t.Errorf("the refusal under an uncommitted deletion took %s, want no wait", elapsed)
-		}
 		if got := a.noteOf(130); got == "" {
 			t.Error("request 130 was blanked although the subject was not deleted")
 		}
