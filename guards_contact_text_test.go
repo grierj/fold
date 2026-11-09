@@ -1274,8 +1274,8 @@ func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr, rea
 	}
 	osel, ok := outer.Fun.(*ast.SelectorExpr)
 	isArg := len(outer.Args) > 0 && outer.Args[len(outer.Args)-1] == ast.Expr(fl)
-	if !ok || osel.Sel.Name != "contactMutationCtx" || !isArg {
-		return "called in a func literal that is not the last argument of a.contactMutationCtx (a nested tx.Transaction body and the old a.contactMutation are not allowed)"
+	if !ok || (osel.Sel.Name != "contactMutationCtx" && osel.Sel.Name != "fencedContactMutation") || !isArg {
+		return "called in a func literal that is not the last argument of a.contactMutationCtx or a.fencedContactMutation (a nested tx.Transaction body and the old a.contactMutation are not allowed)"
 	}
 	var decl *ast.FuncDecl
 	for i := lit - 2; i >= 0 && decl == nil; i-- {
@@ -1293,6 +1293,12 @@ func ctgEraseCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr, rea
 	}
 	if !admin && !tombstone {
 		return "called from a function other than apiAdminDeleteUser in api_admin.go or eraseTombstoneOnce in account_erasure_tombstones.go"
+	}
+	if admin && osel.Sel.Name != "fencedContactMutation" {
+		return "the admin deletion's callback must be the last argument of a.fencedContactMutation"
+	}
+	if tombstone && osel.Sel.Name != "contactMutationCtx" {
+		return "the tombstone callback must be the last argument of a.contactMutationCtx"
 	}
 	if !ctgIsAppReceiver(decl, osel.X) {
 		return "the callback must be passed to contactMutationCtx on the allowed method's own App receiver, not on another value that has a method of that name"
@@ -1591,7 +1597,7 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 }
 
 func ctgAdminFile(before, after string) string {
-	return ctgAdminFileShape("err := a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, ", ")", before, after)
+	return ctgAdminFileShape("err := a.fencedContactMutation(ctx, contactChange{UserID: u.ID}, ", ")", before, after)
 }
 
 // ctgAdminFileShape builds the admin fixture with the call's head (up to the
@@ -2213,18 +2219,18 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		// transaction-and-gate wrapper, whether it is a different variable or a local
 		// that reuses the receiver's name.
 		ctgSource("contactMutation on another receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(admin, "err := a.contactMutationCtx(", "runner := directRunner{db: a.DB}\n\terr := runner.contactMutationCtx(", 1),
+			"api_admin.go": strings.Replace(admin, "err := a.fencedContactMutation(", "runner := directRunner{db: a.DB}\n\terr := runner.fencedContactMutation(", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) fencedContactMutation(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a local that shadows the receiver", "R-6", "api_admin.go", map[string]string{
-			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.contactMutationCtx(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.contactMutationCtx(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
+			"api_admin.go": strings.Replace(strings.Replace(admin, "err := a.fencedContactMutation(", "{\n\t\ta := directRunner{db: a.DB}\n\t\terr := a.fencedContactMutation(", 1), "_ = err\n}", "_ = err\n\t}\n}", 1),
 			"api_runner.go": "package main\n\nimport \"gorm.io/gorm\"\n\ntype directRunner struct{ db *gorm.DB }\n\n" +
-				"func (d directRunner) contactMutationCtx(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
+				"func (d directRunner) fencedContactMutation(_ context.Context, _ contactChange, fn func(*gorm.DB) error) error { return fn(d.db) }\n",
 		}),
 		ctgSource("contactMutation on a parameter, not the receiver", "R-6", "api_admin.go", map[string]string{
 			"api_admin.go": strings.Replace(strings.Replace(admin, "(a *App) apiAdminDeleteUser(c *gin.Context)", "(a *App) apiAdminDeleteUser(c *gin.Context, runner directRunner)", 1),
-				"err := a.contactMutationCtx(", "err := runner.contactMutationCtx(", 1),
+				"err := a.fencedContactMutation(", "err := runner.fencedContactMutation(", 1),
 		}),
 		// R4-CTX: the callback is the last argument of a.contactMutationCtx; the
 		// old call shape fails at the admin site.

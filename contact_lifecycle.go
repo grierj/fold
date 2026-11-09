@@ -45,8 +45,9 @@ type contactChange struct {
 	GroupID uint
 	// Seal, when set, runs after reconcileContacts and immediately before the
 	// commit-reserve check (T07B-1b, R5-C01). It is a pointer so contactChange
-	// stays comparable; reconcileContacts reads only the three ids above. A nil
-	// Seal sends exactly the statements a call sent before.
+	// stays comparable; reconcileContacts reads only the three ids above. Only
+	// fencedContactMutation sets it (from its callback's result); a nil Seal
+	// sends exactly the statements a call sent before.
 	Seal *contactSeal
 }
 

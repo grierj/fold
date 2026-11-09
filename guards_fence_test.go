@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -15,11 +14,26 @@ import (
 // ---------------------------------------------------------------------------
 // T07B-1b guards. Parse-only: they read syntax, not types, and bind names with
 // go/parser's object resolution inside one file.
+//
+// One wrapper, a.fencedContactMutation (restore_fence.go), is the only place
+// the restore ticket is taken, acknowledged or abandoned, and the only place a
+// contactChange gets its actor seal. The guard checks the wrapper's shape (the
+// ticket first in the callback on the callback's own transaction, abandon
+// deferred before the call, acknowledgment with the call's own result as the
+// very next statement) and that both fenced routes go through it.
 // ---------------------------------------------------------------------------
 
-// fenceNamed lists the functions that run a fenced a.contactMutationCtx: every
-// call in them takes a restore ticket first in its callback, abandons it by a
-// defer before the call and acknowledges it in the very next statement.
+// fenceWrapper is where the ticket protocol lives.
+const (
+	fenceWrapperFile = "restore_fence.go"
+	fenceWrapper     = "fencedContactMutation"
+)
+
+// fenceTicketFuncs are the ticket's three steps; only the wrapper names them.
+var fenceTicketFuncs = map[string]bool{"takeRestoreTicket": true, "acknowledgeRestoreTicket": true, "abandonRestoreTicket": true}
+
+// fenceNamed lists the fenced routes: each runs its transaction through the
+// wrapper and never calls a contact mutation directly.
 var fenceNamed = []struct{ file, fn string }{
 	{"api_admin.go", "apiAdminDeleteUser"},
 	{"admin_operation_attempts.go", "apiAdminSettleOperationAttempt"},
@@ -53,10 +67,62 @@ func fenceCallOf(s ast.Stmt) (*ast.CallExpr, bool) {
 	return c, ok
 }
 
-// fenceProblems checks every a.contactMutationCtx call of the named functions.
+// fenceMethod finds the method name of App in tree.
+func fenceMethod(tree *ast.File, name string) *ast.FuncDecl {
+	for _, d := range tree.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && fd.Name.Name == name {
+			return fd
+		}
+	}
+	return nil
+}
+
+// fenceProblems checks the production tree (or a fixture of it).
 func fenceProblems(sources map[string]string) []string {
 	parsed := guardkit.Sources(sources).Parse(0)
 	bad := append([]string(nil), parsed.Problems...)
+	var wrapper *ast.FuncDecl
+	if f := parsed.File(fenceWrapperFile); f != nil {
+		wrapper = fenceMethod(f.AST, fenceWrapper)
+	}
+	if wrapper == nil {
+		bad = append(bad, fenceWrapperFile+": "+fenceWrapper+" is gone; the ticket protocol has no home")
+	} else {
+		bad = append(bad, fenceWrapperProblems(wrapper)...)
+	}
+	// Every use of a ticket step, and every seal given to a contactChange, sits
+	// in the wrapper. Declarations of the steps themselves are not uses.
+	for _, pf := range parsed.Files {
+		guardkit.InspectStack(pf.AST, func(n ast.Node, stack []ast.Node) bool {
+			inWrapper := false
+			for _, s := range stack {
+				if s == ast.Node(wrapper) && wrapper != nil && pf.Path == fenceWrapperFile {
+					inWrapper = true
+				}
+			}
+			pos := parsed.Fset.Position(n.Pos())
+			switch x := n.(type) {
+			case *ast.SelectorExpr:
+				if fenceTicketFuncs[x.Sel.Name] && !inWrapper {
+					bad = append(bad, fmt.Sprintf("%s:%d: %s used outside %s; every fenced transaction goes through the wrapper", pf.Path, pos.Line, x.Sel.Name, fenceWrapper))
+				}
+				if x.Sel.Name == "Seal" && !inWrapper && fenceAssigned(stack) {
+					bad = append(bad, fmt.Sprintf("%s:%d: a contactChange seal is set outside %s", pf.Path, pos.Line, fenceWrapper))
+				}
+			case *ast.Ident:
+				// A bare reference (a function value of the same name declared
+				// elsewhere) is a use too; the method declarations are not.
+				if fenceTicketFuncs[x.Name] && !inWrapper && !fenceDeclName(stack, x) && !fenceSelName(stack, x) {
+					bad = append(bad, fmt.Sprintf("%s:%d: %s used outside %s", pf.Path, pos.Line, x.Name, fenceWrapper))
+				}
+			case *ast.KeyValueExpr:
+				if k, ok := x.Key.(*ast.Ident); ok && k.Name == "Seal" && !inWrapper && fenceInContactChange(stack) {
+					bad = append(bad, fmt.Sprintf("%s:%d: a contactChange literal sets Seal outside %s", pf.Path, pos.Line, fenceWrapper))
+				}
+			}
+			return true
+		})
+	}
 	for _, n := range fenceNamed {
 		file := parsed.File(n.file)
 		if file == nil {
@@ -65,42 +131,121 @@ func fenceProblems(sources map[string]string) []string {
 			}
 			continue // a file that does not parse is already in Problems
 		}
-		tree := file.AST
-		var decl *ast.FuncDecl
-		for _, d := range tree.Decls {
-			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && fd.Name.Name == n.fn {
-				decl = fd
-			}
-		}
+		decl := fenceMethod(file.AST, n.fn)
 		if decl == nil {
 			bad = append(bad, n.file+": "+n.fn+" no longer exists; update fenceNamed")
 			continue
 		}
-		calls := 0
-		guardkit.InspectStack(decl.Body, func(node ast.Node, stack []ast.Node) bool {
+		wrapped := 0
+		ast.Inspect(decl.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if _, ok := fenceIsSel(call.Fun, "contactMutationCtx"); !ok {
-				return true
+			if _, ok := fenceIsSel(call.Fun, fenceWrapper); ok {
+				wrapped++
 			}
-			calls++
-			if why := fenceCallProblem(append([]ast.Node(nil), stack...)); why != "" {
-				bad = append(bad, fmt.Sprintf("%s: %s: %s", n.file, n.fn, why))
+			for _, direct := range []string{"contactMutationCtx", "contactMutation", "contactMutationOn"} {
+				if _, ok := fenceIsSel(call.Fun, direct); ok {
+					bad = append(bad, fmt.Sprintf("%s: %s calls a.%s directly; a fenced route runs its transaction through a.%s", n.file, n.fn, direct, fenceWrapper))
+				}
 			}
 			return true
 		})
-		if calls == 0 {
-			bad = append(bad, n.file+": "+n.fn+" has no a.contactMutationCtx call; update fenceNamed")
+		if wrapped == 0 {
+			bad = append(bad, fmt.Sprintf("%s: %s does not call a.%s; update fenceNamed", n.file, n.fn, fenceWrapper))
 		}
 	}
 	sort.Strings(bad)
 	return bad
 }
 
-// fenceCallProblem checks one call; stack ends with the call.
-func fenceCallProblem(stack []ast.Node) string {
+// fenceAssigned reports whether the innermost node of stack is the left-hand
+// side of an assignment (x.Seal = ...).
+func fenceAssigned(stack []ast.Node) bool {
+	if len(stack) < 2 {
+		return false
+	}
+	as, ok := stack[len(stack)-2].(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+	for _, l := range as.Lhs {
+		if l == stack[len(stack)-1] {
+			return true
+		}
+	}
+	return false
+}
+
+func fenceDeclName(stack []ast.Node, id *ast.Ident) bool {
+	if len(stack) < 2 {
+		return false
+	}
+	fd, ok := stack[len(stack)-2].(*ast.FuncDecl)
+	return ok && fd.Name == id
+}
+
+func fenceSelName(stack []ast.Node, id *ast.Ident) bool {
+	if len(stack) < 2 {
+		return false
+	}
+	sel, ok := stack[len(stack)-2].(*ast.SelectorExpr)
+	return ok && sel.Sel == id
+}
+
+func fenceInContactChange(stack []ast.Node) bool {
+	if len(stack) < 2 {
+		return false
+	}
+	cl, ok := stack[len(stack)-2].(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	t, ok := guardkit.Unparen(cl.Type).(*ast.Ident)
+	return ok && t.Name == "contactChange"
+}
+
+// fenceWrapperProblems checks the wrapper's one contactMutationCtx call.
+func fenceWrapperProblems(decl *ast.FuncDecl) []string {
+	var bad []string
+	if decl.Type.Params == nil || len(decl.Type.Params.List) < 1 {
+		return []string{fenceWrapper + " has no parameters"}
+	}
+	last := decl.Type.Params.List[len(decl.Type.Params.List)-1]
+	if len(last.Names) != 1 {
+		return []string{fenceWrapper + "'s last parameter must be the one named callback"}
+	}
+	fnParam := last.Names[0]
+	calls := 0
+	guardkit.InspectStack(decl.Body, func(node ast.Node, stack []ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, other := range []string{"contactMutation", "contactMutationOn"} {
+			if _, ok := fenceIsSel(call.Fun, other); ok {
+				bad = append(bad, fenceWrapper+" must run a.contactMutationCtx, not a."+other)
+			}
+		}
+		if _, ok := fenceIsSel(call.Fun, "contactMutationCtx"); !ok {
+			return true
+		}
+		calls++
+		if why := fenceCallProblem(append([]ast.Node(nil), stack...), fnParam); why != "" {
+			bad = append(bad, fenceWrapperFile+": "+fenceWrapper+": "+why)
+		}
+		return true
+	})
+	if calls != 1 {
+		bad = append(bad, fmt.Sprintf("%s must make exactly one a.contactMutationCtx call, found %d", fenceWrapper, calls))
+	}
+	return bad
+}
+
+// fenceCallProblem checks the wrapper's call; stack ends with the call. fn is
+// the wrapper's callback parameter, which the callback runs after the ticket.
+func fenceCallProblem(stack []ast.Node, fn *ast.Ident) string {
 	call := stack[len(stack)-1].(*ast.CallExpr)
 	for _, n := range stack[:len(stack)-1] {
 		switch n.(type) {
@@ -145,12 +290,28 @@ func fenceCallProblem(stack []ast.Node) string {
 	if len(lit.Body.List) == 0 {
 		return "the callback is empty"
 	}
+	// The ticket is taken by the first statement, or by the first after a
+	// plain var declaration of the callback's own error variable.
+	first := 0
+	if ds, ok := lit.Body.List[0].(*ast.DeclStmt); ok {
+		if gd, ok := ds.Decl.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+			first = 1
+			for _, sp := range gd.Specs {
+				if vs, ok := sp.(*ast.ValueSpec); !ok || len(vs.Values) != 0 {
+					first = 0
+				}
+			}
+		}
+	}
+	if first >= len(lit.Body.List) {
+		return "the callback takes no ticket"
+	}
 	var take *ast.AssignStmt
-	switch first := lit.Body.List[0].(type) {
+	switch s := lit.Body.List[first].(type) {
 	case *ast.AssignStmt:
-		take = first
+		take = s
 	case *ast.IfStmt:
-		take, _ = first.Init.(*ast.AssignStmt)
+		take, _ = s.Init.(*ast.AssignStmt)
 	}
 	if take == nil || take.Tok != token.ASSIGN || len(take.Lhs) != 2 || len(take.Rhs) != 1 {
 		return "the callback's first statement must assign the ticket with = from a.takeRestoreTicket"
@@ -168,6 +329,23 @@ func fenceCallProblem(stack []ast.Node) string {
 	tk, ok := take.Lhs[0].(*ast.Ident)
 	if !ok || tk.Obj == nil || tk.Obj.Pos() >= lit.Pos() {
 		return "the ticket variable must be declared before the call, outside the callback"
+	}
+	// The caller's work runs after the ticket, on the same transaction.
+	ran := false
+	for _, s := range lit.Body.List[first+1:] {
+		ast.Inspect(s, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				if id, ok := c.Fun.(*ast.Ident); ok && fenceSameVar(id, fn) && len(c.Args) == 1 {
+					if arg, ok := c.Args[0].(*ast.Ident); ok && fenceSameVar(arg, param) {
+						ran = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	if !ran {
+		return "the callback must run the wrapper's callback on its own transaction after the ticket"
 	}
 	// The abandon defer comes before the call, in the same block.
 	abandoned := false
@@ -219,120 +397,124 @@ func fenceCallProblem(stack []ast.Node) string {
 	return ""
 }
 
-const fenceBase = `package main
+// fenceWrapperBase is the clean wrapper fixture.
+const fenceWrapperBase = `package main
+
+func (a *App) fencedContactMutation(ctx context.Context, change contactChange, fn func(tx *gorm.DB) (*contactSeal, error)) error {
+	var tk restoreTicket
+	defer a.abandonRestoreTicket(&tk)
+	var seal *contactSeal
+	change.Seal = &contactSeal{run: func(tx *gorm.DB) error { return seal.run(tx) }}
+	err := a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+		var err error
+		if tk, err = a.takeRestoreTicket(tx); err != nil {
+			return err
+		}
+		seal, err = fn(tx)
+		return err
+	})
+	a.acknowledgeRestoreTicket(&tk, err)
+	return err
+}
+
+func (a *App) takeRestoreTicket(tx *gorm.DB) (restoreTicket, error) { return restoreTicket{}, nil }
+
+func (a *App) acknowledgeRestoreTicket(tk *restoreTicket, err error) {}
+
+func (a *App) abandonRestoreTicket(tk *restoreTicket) {}
+`
+
+// fenceRoutesBase holds both fenced routes.
+const fenceRoutesBase = `package main
 
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	var err error
 	for {
-		var tk restoreTicket
-		var terr error
-		defer a.abandonRestoreTicket(&tk)
-		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
-			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
-				return terr
-			}
-			return nil
+		err = a.fencedContactMutation(ctx, contactChange{UserID: 1}, func(tx *gorm.DB) (*contactSeal, error) {
+			return seal, nil
 		})
-		a.acknowledgeRestoreTicket(&tk, err)
 	}
+	_ = err
 }
 
 func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
-	var err error
-	for {
-		var tk restoreTicket
-		var terr error
-		defer a.abandonRestoreTicket(&tk)
-		err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
-			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
-				return terr
-			}
-			return nil
-		})
-		a.acknowledgeRestoreTicket(&tk, err)
-	}
+	err := a.fencedContactMutation(ctx, contactChange{UserID: 1}, func(*gorm.DB) (*contactSeal, error) {
+		return seal, nil
+	})
+	_ = err
 }
 `
 
-func fenceSources(src string) map[string]string {
-	// Both named functions live in the one fixture; each file entry parses it.
-	return map[string]string{"api_admin.go": src, "admin_operation_attempts.go": src}
+func fenceSources(wrapper, routes string) map[string]string {
+	// Both named routes live in the one fixture; each file entry parses it,
+	// so only one of the two entries keeps a route that the other also holds.
+	return map[string]string{
+		fenceWrapperFile:              wrapper,
+		"api_admin.go":                strings.Replace(routes, "func (a *App) apiAdminSettleOperationAttempt", "func (a *App) settleCopy", 1),
+		"admin_operation_attempts.go": strings.Replace(routes, "func (a *App) apiAdminDeleteUser", "func (a *App) deleteCopy", 1),
+	}
 }
 
 func TestFencedTransactionsTakeTheTicketFirst(t *testing.T) {
-	sources := map[string]string{}
-	for _, n := range fenceNamed {
-		b, err := os.ReadFile(n.file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sources[n.file] = string(b)
-	}
-	for _, v := range fenceProblems(sources) {
+	for _, v := range fenceProblems(guardkit.Production(t)) {
 		t.Error(v)
 	}
-	if bad := fenceProblems(fenceSources(fenceBase)); len(bad) != 0 {
+	if bad := fenceProblems(fenceSources(fenceWrapperBase, fenceRoutesBase)); len(bad) != 0 {
 		t.Fatalf("the positive fixture failed: %v", bad)
 	}
 }
 
 func TestFencedTransactionsGuardCatchesBypasses(t *testing.T) {
-	// Every case changes the clean fixture in one way (both named functions
-	// carry the change, because the replacement applies to every occurrence).
-	with := func(old, replacement string) map[string]string {
-		if !strings.Contains(fenceBase, old) {
-			t.Fatalf("fixture anchor %q is missing", old)
+	wrap := func(old, replacement string) map[string]string {
+		if !strings.Contains(fenceWrapperBase, old) {
+			t.Fatalf("wrapper fixture anchor %q is missing", old)
 		}
-		return fenceSources(strings.ReplaceAll(fenceBase, old, replacement))
+		return fenceSources(strings.Replace(fenceWrapperBase, old, replacement, 1), fenceRoutesBase)
 	}
-	take := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n"
+	route := func(old, replacement string) map[string]string {
+		if !strings.Contains(fenceRoutesBase, old) {
+			t.Fatalf("route fixture anchor %q is missing", old)
+		}
+		return fenceSources(fenceWrapperBase, strings.ReplaceAll(fenceRoutesBase, old, replacement))
+	}
+	take := "if tk, err = a.takeRestoreTicket(tx); err != nil {\n\t\t\treturn err\n\t\t}\n"
 	ack := "a.acknowledgeRestoreTicket(&tk, err)\n"
 	cases := []struct {
 		name    string
 		sources map[string]string
 	}{
-		{"ticket not first", with(take, "x := 1\n\t\t\t_ = x\n\t\t\t"+take)},
-		{"taken with a.DB", with("a.takeRestoreTicket(tx)", "a.takeRestoreTicket(a.DB)")},
-		{"taken on a shadowing local", with("func(tx *gorm.DB) error {", "func(db *gorm.DB) error {")},
-		{"no ticket", with(take, "terr = nil\n\t\t\t")},
-		{"ticket declared inside the callback", with("if tk, terr = ", "if tk, terr := ")},
-		{"acknowledge missing", with(ack, "")},
-		{"acknowledge not next", with(ack, "x := 1\n\t\t_ = x\n\t\t"+ack)},
-		{"acknowledge deferred", with(ack, "defer "+ack)},
-		{"acknowledge in a goroutine", with(ack, "go "+ack)},
-		{"acknowledge on another variable", with(ack, "var other restoreTicket\n\t\ta.acknowledgeRestoreTicket(&other, err)\n")},
-		{"acknowledge with another result", with(ack, "a.acknowledgeRestoreTicket(&tk, terr)\n")},
-		{"acknowledge inside the callback", with("return nil\n\t\t})", "a.acknowledgeRestoreTicket(&tk, nil)\n\t\t\treturn nil\n\t\t})")},
-		{"abandon missing", with("defer a.abandonRestoreTicket(&tk)\n", "")},
-		{"non-literal callback", with("func(tx *gorm.DB) error {\n\t\t\tif tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\t\treturn terr\n\t\t\t}\n\t\t\treturn nil\n\t\t})", "callback)")},
-		{"result not captured", with("err = a.contactMutationCtx", "a.contactMutationCtx")},
-		{"call in a goroutine", with("err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "go a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {")},
-		{"listed function gone", fenceSources(strings.ReplaceAll(fenceBase, "apiAdminSettleOperationAttempt", "renamed"))},
-		{"no call in a listed function", fenceSources(strings.Replace(fenceBase, "err = a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {", "err = other(ctx, change, func(tx *gorm.DB) error {", 2))},
+		{"ticket not first", wrap(take, "x := 1\n\t\t_ = x\n\t\t"+take)},
+		{"work before the ticket", wrap("\t\tvar err error\n\t\t"+take, "\t\tvar err error\n\t\tseal, err = fn(tx)\n\t\t"+take)},
+		{"taken with a.DB", wrap("a.takeRestoreTicket(tx)", "a.takeRestoreTicket(a.DB)")},
+		{"taken on a shadowing local", wrap("func(tx *gorm.DB) error {\n\t\tvar err error", "func(db *gorm.DB) error {\n\t\tvar err error")},
+		{"no ticket", wrap(take, "err = nil\n\t\t")},
+		{"ticket declared inside the callback", wrap("if tk, err = ", "if tk, err := ")},
+		{"callback never run", wrap("seal, err = fn(tx)", "seal, err = nil, nil")},
+		{"callback run on a.DB", wrap("seal, err = fn(tx)", "seal, err = fn(a.DB)")},
+		{"acknowledge missing", wrap(ack, "")},
+		{"acknowledge not next", wrap(ack, "x := 1\n\t_ = x\n\t"+ack)},
+		{"acknowledge deferred", wrap(ack, "defer "+ack)},
+		{"acknowledge in a goroutine", wrap(ack, "go "+ack)},
+		{"acknowledge on another variable", wrap(ack, "var other restoreTicket\n\ta.acknowledgeRestoreTicket(&other, err)\n")},
+		{"acknowledge with another result", wrap(ack, "a.acknowledgeRestoreTicket(&tk, nil)\n")},
+		{"acknowledge inside the callback", wrap("\t\treturn err\n\t})", "\t\ta.acknowledgeRestoreTicket(&tk, nil)\n\t\treturn err\n\t})")},
+		{"abandon missing", wrap("defer a.abandonRestoreTicket(&tk)\n", "")},
+		{"result not captured", wrap("err := a.contactMutationCtx", "a.contactMutationCtx")},
+		{"two calls in the wrapper", wrap("\treturn err\n}\n\nfunc (a *App) takeRestoreTicket", "\t_ = a.contactMutationCtx(ctx, change, nil)\n\treturn err\n}\n\nfunc (a *App) takeRestoreTicket")},
+		{"the wrapper on contactMutation", wrap("err := a.contactMutationCtx(ctx, change, ", "err := a.contactMutation(change, ")},
+		{"wrapper gone", fenceSources(strings.Replace(fenceWrapperBase, "fencedContactMutation", "renamed", 1), fenceRoutesBase)},
+		{"a ticket taken outside the wrapper", route("return seal, nil", "tk, err := a.takeRestoreTicket(tx)\n\t\t\t_, _ = tk, err\n\t\t\treturn seal, nil")},
+		{"an acknowledgment outside the wrapper", route("\t_ = err\n}", "\ta.acknowledgeRestoreTicket(&tk, err)\n\t_ = err\n}")},
+		{"a ticket step as a method value", route("\t_ = err\n}", "\tf := a.abandonRestoreTicket\n\t_ = f\n\t_ = err\n}")},
+		{"a seal set outside the wrapper", route("contactChange{UserID: 1}", "contactChange{UserID: 1, Seal: seal}")},
+		{"a seal assigned outside the wrapper", route("\t_ = err\n}", "\tchange.Seal = seal\n\t_ = err\n}")},
+		{"a fenced route calling contactMutationCtx", route("a.fencedContactMutation(ctx, contactChange{UserID: 1}, ", "a.contactMutationCtx(ctx, contactChange{UserID: 1}, ")},
+		{"a fenced route that also calls contactMutation", route("\t_ = err\n}", "\t_ = a.contactMutation(contactChange{}, nil)\n\t_ = err\n}")},
+		{"listed function gone", fenceSources(fenceWrapperBase, strings.ReplaceAll(fenceRoutesBase, "apiAdminSettleOperationAttempt", "renamed"))},
 	}
 	for _, tc := range cases {
 		if bad := fenceProblems(tc.sources); len(bad) == 0 {
 			t.Errorf("%s: the guard accepted it", tc.name)
-		}
-	}
-	// R-6 stays satisfied by the ticket statement before the soft delete: the
-	// admin callback with the ticket first and eraseContactRequestTextIn after
-	// the soft delete passes both guards.
-	ticket := "if tk, terr = a.takeRestoreTicket(tx); terr != nil {\n\t\t\treturn terr\n\t\t}"
-	head := "var tk restoreTicket\n\tvar terr error\n\tvar err error\n\tdefer a.abandonRestoreTicket(&tk)\n\terr = a.contactMutationCtx(ctx, contactChange{UserID: u.ID}, "
-	tail := ")\n\ta.acknowledgeRestoreTicket(&tk, err)"
-	admin := ctgAdminFileShape(head, tail, ticket, ctgEraseCall)
-	clean := ctgClean()
-	clean["api_admin.go"] = admin
-	if bad := ctgViolations(clean); len(bad) != 0 {
-		t.Errorf("R-6 rejected the fenced admin callback: %v", bad)
-	}
-	if bad := fenceProblems(map[string]string{"api_admin.go": admin, "admin_operation_attempts.go": fenceBase}); len(bad) != 0 {
-		// The fixture file holds no settle function, so only that is allowed to complain.
-		for _, b := range bad {
-			if !strings.Contains(b, "apiAdminSettleOperationAttempt") && !strings.Contains(b, "admin_operation_attempts.go") {
-				t.Errorf("the fenced admin callback failed the ticket guard: %s", b)
-			}
 		}
 	}
 }

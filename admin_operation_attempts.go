@@ -546,8 +546,8 @@ type settleFacts struct {
 // apiAdminSettleOperationAttempt answers what became of an attempt id. Order:
 // pure mac and age checks (history_unavailable, nothing touched); a read-only
 // ledger look (a running attempt is waited for outside every lock and
-// transaction); then one fenced transaction whose callback is the ticket, then
-// the wrapper's reconcile of the subject, then the seal: the actor decided
+// transaction); then one fenced transaction (fencedContactMutation) whose
+// callback adds nothing after the ticket, then the wrapper's reconcile of the subject, then the seal: the actor decided
 // FOR SHARE NOWAIT, the ledger transition (absent -> fenced), and plain reads
 // of the receipt and the subject. The answer is sent only after the call
 // returns nil, an acknowledged COMMIT. The response carries no actor,
@@ -618,16 +618,10 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			}
 			return tx.Raw("SELECT EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NOT NULL)", subject).Scan(&facts.subjectDeleted).Error
 		}}
-		var tk restoreTicket
-		var terr error
-		defer a.abandonRestoreTicket(&tk)
-		err := a.contactMutationCtx(ctx, contactChange{UserID: body.SubjectUserID, Seal: seal}, func(tx *gorm.DB) error {
-			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
-				return terr
-			}
-			return nil
+		// Nothing runs after the ticket but the seal: settle's work is the seal.
+		err := a.fencedContactMutation(ctx, contactChange{UserID: body.SubjectUserID}, func(*gorm.DB) (*contactSeal, error) {
+			return seal, nil
 		})
-		a.acknowledgeRestoreTicket(&tk, err)
 		switch {
 		case err == nil:
 			c.JSON(http.StatusOK, settleAnswer(facts))

@@ -1737,8 +1737,8 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 //   - auditReaders: functions that read audit_logs (a SELECT literal over the
 //     table, or a models.AuditLog model passed to a query), the readers that
 //     must never scan a signed decision target into a uint (R4-C04);
-//   - gatedFenced: callers of a.contactMutationCtx, the fenced exclusive-gate
-//     transactions.
+//   - gatedFenced: callers of a.contactMutationCtx and a.fencedContactMutation,
+//     the deadline-bounded exclusive-gate transactions.
 //
 // It reads syntax only. Like the other guards it does not see SQL built from
 // non-literal pieces, SQL sent around GORM or a model reached through another
@@ -1793,7 +1793,7 @@ func reasonCensus(sources map[string]string) map[string][]string {
 						return true
 					}
 					switch sel.Sel.Name {
-					case "contactMutationCtx":
+					case "contactMutationCtx", "fencedContactMutation":
 						out["gatedFenced"][site] = true
 					case "Create", "Save", "Update", "Updates", "UpdateColumn", "UpdateColumns", "Delete":
 						for _, arg := range x.Args {
@@ -1876,12 +1876,13 @@ func TestReasonReviewCensus(t *testing.T) {
 	}
 	// The pin sees a new site of each kind.
 	for name, src := range map[string]struct{ kind, code string }{
-		"a new row locker":    {"rowLockers", "package main\nfunc newLocker(tx *gorm.DB) { tx.Raw(\"SELECT id FROM contact_requests WHERE id = ? FOR UPDATE\", 1) }\n"},
-		"a new request write": {"requestWriters", "package main\nfunc newWriter(tx *gorm.DB) { tx.Exec(\"UPDATE contact_requests SET status = 'x'\") }\n"},
-		"a model write":       {"requestWriters", "package main\nfunc newModelWriter(tx *gorm.DB) { tx.Create(&models.ContactRequest{}) }\n"},
-		"a new audit reader":  {"auditReaders", "package main\nfunc newReader(tx *gorm.DB) { tx.Raw(\"SELECT target_id FROM audit_logs\").Scan(&ids) }\n"},
-		"a model audit read":  {"auditReaders", "package main\nfunc newModelReader(tx *gorm.DB) { tx.Model(&models.AuditLog{}).Count(&n) }\n"},
-		"a new fenced caller": {"gatedFenced", "package main\nfunc (a *App) newFenced() { a.contactMutationCtx(ctx, change, fn) }\n"},
+		"a new row locker":     {"rowLockers", "package main\nfunc newLocker(tx *gorm.DB) { tx.Raw(\"SELECT id FROM contact_requests WHERE id = ? FOR UPDATE\", 1) }\n"},
+		"a new request write":  {"requestWriters", "package main\nfunc newWriter(tx *gorm.DB) { tx.Exec(\"UPDATE contact_requests SET status = 'x'\") }\n"},
+		"a model write":        {"requestWriters", "package main\nfunc newModelWriter(tx *gorm.DB) { tx.Create(&models.ContactRequest{}) }\n"},
+		"a new audit reader":   {"auditReaders", "package main\nfunc newReader(tx *gorm.DB) { tx.Raw(\"SELECT target_id FROM audit_logs\").Scan(&ids) }\n"},
+		"a model audit read":   {"auditReaders", "package main\nfunc newModelReader(tx *gorm.DB) { tx.Model(&models.AuditLog{}).Count(&n) }\n"},
+		"a new fenced caller":  {"gatedFenced", "package main\nfunc (a *App) newFenced() { a.contactMutationCtx(ctx, change, fn) }\n"},
+		"a new wrapper caller": {"gatedFenced", "package main\nfunc (a *App) newWrapped() { a.fencedContactMutation(ctx, change, fn) }\n"},
 	} {
 		with := map[string]string{"new_site.go": src.code}
 		for k, v := range sources {
@@ -1957,6 +1958,7 @@ var reasonCensusPinned = map[string][]string{
 		"account_erasure_tombstones.go:eraseTombstoneOnce",
 		"admin_operation_attempts.go:apiAdminSettleOperationAttempt",
 		"api_admin.go:apiAdminDeleteUser",
+		"restore_fence.go:fencedContactMutation",
 	},
 }
 

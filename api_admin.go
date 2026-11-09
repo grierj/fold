@@ -1044,115 +1044,108 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	seal := a.deletionSeal(me, &sealPred)
 	for {
 		u := &models.User{ID: targetID}
-		// A fresh restore ticket per attempt (T07B-1b): taken first in the
-		// callback, acknowledged by the statement right after the call, and
-		// abandoned by the defer if the call never reached its acknowledgment.
-		var tk restoreTicket
-		var terr error
-		defer a.abandonRestoreTicket(&tk)
-		err = a.contactMutationCtx(ctx, contactChange{UserID: u.ID, Seal: seal}, func(tx *gorm.DB) error {
-			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
-				return terr
-			}
+		// A fresh restore ticket per attempt (T07B-1b), taken by the wrapper
+		// before the callback runs.
+		err = a.fencedContactMutation(ctx, contactChange{UserID: u.ID}, func(tx *gorm.DB) (*contactSeal, error) {
 			// The receipt: the first write after the ticket, committing only
 			// with the deletion, so a lost reply can be answered "applied".
 			if claim != nil {
 				if err := insertAttemptReceipt(tx, claim.nonce); err != nil {
-					return err
+					return nil, err
 				}
 			}
 			// Hosted events FOR KEY SHARE, then the account FOR UPDATE, then the
 			// admin (plain read) and the facts again; see api_host_handoff.go.
 			picks, lockedHosted, actor, err := deletionHostPlan(tx, u, me, hostPicks)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			// The last-admin rule again, on the locked target, the re-read actor
 			// and an in-gate count (defense in depth; the pre-gate check above
 			// decides the usual answers).
 			if err := keepsAnAdminIn(tx, actor, u, adminDelete); err != nil {
-				return err
+				return nil, err
 			}
 			// The contact-request reasons: locked and hashed here, decided at
 			// the statement after eraseContactRequestTextIn. An account without
 			// any ignores the review.
 			plan, sealPred, err = a.planReasonReviewIn(tx, actor, u, reasonEnv, c.ClientIP())
 			if err != nil {
-				return err
+				return nil, err
 			}
 			// The address the account holds now, read from the row just locked
 			// (memory only), then every credential goes in the slot that revoked
 			// the unused tokens (R4-1-2).
 			s := captureErasureSubject(u)
 			if err := captureErasureSetsIn(tx, &s); err != nil {
-				return err
+				return nil, err
 			}
 			// PERS must be one clean individual before anything is locked or
 			// written; a contradiction aborts the whole erasure (T15, O-18).
 			if err := validatePersIn(tx, s); err != nil {
-				return err
+				return nil, err
 			}
 			// Every household the erasure touches, NOWAIT, before its first write
 			// and while no household writer's notice can be waiting on a row this
 			// transaction holds (retryHouseholdBusy runs the whole thing again).
 			lockedHouseholds, err := lockErasureHouseholdsIn(tx, s)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if err := eraseAccountCredentialsIn(tx, s); err != nil {
-				return err
+				return nil, err
 			}
 			err = handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if err := handOffHosting(tx, me.ID, u.ID, picks, lockedHosted, c.ClientIP()); err != nil {
-				return err
+				return nil, err
 			}
 			if err := tombstoneUserIn(tx, u); err != nil {
-				return err
+				return nil, err
 			}
 			// The photo files go with the person: the cleanup job keeps nothing
 			// for a deleted account. Queued here, under the row lock already held
 			// (R4-5).
 			if err := queueAvatarCleanup(tx, u.ID); err != nil {
-				return err
+				return nil, err
 			}
 			if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDeleted,
 				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-				return err
+				return nil, err
 			}
 			// Every account_requests statement runs before the person's
 			// notifications are deleted, the order expirePendingRequests also
 			// takes (request, then notifications; L2). Its waiting tasks close
 			// as withdrawn by this admin.
 			if err := eraseAccountRequestsIn(tx, s, me.ID); err != nil {
-				return err
+				return nil, err
 			}
 			// Notifications go with the person (5.3); the audit log stays. The
 			// exact form of this statement is what the erasure tests' barrier
 			// (erasureTestBeforeNotificationsDelete) matches.
 			if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
-				return err
+				return nil, err
 			}
 			if err := tx.Delete(u).Error; err != nil {
-				return err
+				return nil, err
 			}
 			// Right after the soft delete: the consents trigger lets this scrub
 			// through only once the transaction's own deleted_at is set.
 			if err := eraseConsentEvidenceIn(tx, s); err != nil {
-				return err
+				return nil, err
 			}
 			// Also after the soft delete: the request trigger (migration 00004)
 			// lets the ages-note blank through only for a deleted subject. The
 			// reason text stays under R4-T07B.
 			if err := eraseContactRequestTextIn(tx, s); err != nil {
-				return err
+				return nil, err
 			}
 			// The admin's decisions about the reasons: one audit row each, and
 			// the removed text blanked (T07B-2b). Directly after the line above.
 			if err := eraseContactRequestReasonsIn(tx, s, plan); err != nil {
-				return err
+				return nil, err
 			}
 			// The household step: the seat, the individual's household person
 			// rows, a staged person's registrations, guardian links, unused
@@ -1162,28 +1155,27 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			// as erased.
 			householdCounts, err = a.eraseHouseholdRecordsIn(tx, s, lockedHouseholds, me.ID, c.ClientIP())
 			if err != nil {
-				return err
+				return nil, err
 			}
 			// The deleted account no longer counts, so its seats and childcare
 			// spots are free: promote waiters now (Whittler, PR 109).
 			if err := a.promoteOnDisable(tx, u.ID, true); err != nil {
-				return err
+				return nil, err
 			}
 			// Invitations, guest signups and the dev outbox at the held address,
 			// reached after the user and occurrence locks above, in the order
 			// guest redemption holds them (holder, occurrence, signup).
 			if err := eraseDependentRecordsIn(tx, s, me.ID, c.ClientIP()); err != nil {
-				return err
+				return nil, err
 			}
 			auditCounts, err = eraseAuditDetailsIn(tx, s)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			// Last statement of the callback, so the sign-in rows are held for the
 			// shortest time before commit (detected limit D2).
-			return eraseOwnedThrottleKeysIn(tx, s)
+			return seal, eraseOwnedThrottleKeysIn(tx, s)
 		})
-		a.acknowledgeRestoreTicket(&tk, err)
 		var again bool
 		if again, err = retry.after(err); !again {
 			break
