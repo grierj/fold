@@ -197,18 +197,11 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 		if reason == "" {
 			continue
 		}
-		if err := endRegistrationAccess(tx, row, scopes[row.OccurrenceID], reason, nil, now, "", true); err != nil {
+		if err := endRegistrationAccess(tx, row, scopes[row.OccurrenceID], reason, nil, now, ""); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// endOccurrenceAccessWithoutNoticeIn is for a larger summarized operation,
-// such as group departure. It preserves the irreversible end stamp and its audit
-// snapshot without generating one recipient notice per date.
-func endOccurrenceAccessWithoutNoticeIn(tx *gorm.DB, row *models.Registration, scope accessScope, reason string, actor *uint, now time.Time, ip string) error {
-	return endRegistrationAccess(tx, row, scope, reason, actor, now, ip, false)
 }
 
 // liveOccurrenceInvitationIn is transaction authority only while the contact
@@ -353,12 +346,12 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		if err != nil {
 			return err
 		}
-		err = a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, actor.ID, c.ClientIP())
+		err = a.applyRegistrationBatch(tx, &ev, locked, []registrationChange{change}, now, &actor.ID, c.ClientIP())
 		if err != nil {
 			return err
 		}
 		if reason != "" {
-			err = endRegistrationAccess(tx, &reg, scope, reason, &actor.ID, now, c.ClientIP(), true)
+			err = endRegistrationAccess(tx, &reg, scope, reason, &actor.ID, now, c.ClientIP())
 			if err != nil {
 				return err
 			}
@@ -509,7 +502,7 @@ func (a *App) completeAddAsk(tx *gorm.DB, op *contactOperation, r *models.Contac
 	}
 	// All refusal paths below are before registration writes. Capacity/childcare
 	// never require rolling back a valid party decision or a nested transaction.
-	if r.AddGuestCount > ev.GuestsAllowed || (r.AddAttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable) || (r.AddChildcareCount > 0 && !ev.ChildcareAvailable) {
+	if r.AddGuestCount > ev.GuestsAllowed || remoteUnavailable(&ev, r.AddAttendanceMode) || (r.AddChildcareCount > 0 && !ev.ChildcareAvailable) {
 		op.completionProblem = "options"
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "options_changed", ip)
 	}

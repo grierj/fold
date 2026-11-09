@@ -1491,6 +1491,133 @@ func TestGuestReconfirmDoesNotCountOwnSeat(t *testing.T) {
 	}
 }
 
+// guestReconfirmCode submits the guest form again and redeems the new link,
+// returning the confirm answer's status.
+func guestReconfirmCode(t *testing.T, app *App, c *apiClient, eventID uint, email string) int {
+	t.Helper()
+	guestSubmit(t, c, eventID, guestBody("Gail Guest", email, true), http.StatusOK)
+	token := tokenInEmail(t, latestEmail(t, app, email))
+	return c.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true).Code
+}
+
+// Re-confirming goes through the same seat ledger as every other writer: a
+// party that already holds its seat is never bumped or grown, retained childcare
+// demand is checked when the party is not already holding it, and moving pools
+// checks the capacity of the pool it moves into.
+func TestGuestReconfirmUsesTheSeatLedger(t *testing.T) {
+	type fixture struct {
+		app  *App
+		anon *apiClient
+		ev   eventJSON
+		occ  models.EventOccurrence
+		user models.User
+		row  models.Registration
+	}
+	// setup: a published event with capacity, a guest who confirmed once.
+	setup := func(t *testing.T, ip string, event map[string]any) fixture {
+		app := testApp(t)
+		newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		admin := loginAPI(t, app, "admin", "password1234")
+		gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+		ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+		apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), event, http.StatusOK)
+		var occ models.EventOccurrence
+		app.DB.Where("event_id = ?", ev.ID).First(&occ)
+		anon := anonClient(t, app, ip)
+		guestConfirm(t, app, anon, ev.ID, "Gail Guest", "gail@example.com", false)
+		user := guestUser(t, app, "gail@example.com")
+		return fixture{app: app, anon: anon, ev: ev, occ: occ, user: user, row: guestRegistrationRow(t, app, user.ID)}
+	}
+	member := func(t *testing.T, f fixture, name string, care int) {
+		u := newTestUser(t, f.app, name, "password1234", models.RoleMember)
+		r := models.Registration{UserID: &u.ID, OccurrenceID: f.occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb, AttendanceMode: models.AttendanceInPerson, ChildcareCount: care}
+		if err := f.app.DB.Create(&r).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seats := func(t *testing.T, f fixture, mode string) int {
+		n, err := seatsUsedForMode(f.app.DB, f.occ.ID, mode, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("an over-capacity going guest stays going and attendance does not grow", func(t *testing.T) {
+		f := setup(t, "10.4.9.2", map[string]any{"capacity": 2, "waitlistEnabled": true})
+		member(t, f, "member", 0)
+		// Capacity is cut below what is already going.
+		f.app.DB.Model(&models.Event{}).Where("id = ?", f.ev.ID).Update("capacity", 1)
+		before := seats(t, f, models.AttendanceInPerson)
+		if code := guestReconfirmCode(t, f.app, f.anon, f.ev.ID, "gail@example.com"); code != http.StatusOK {
+			t.Fatalf("re-confirm: %d", code)
+		}
+		after := guestRegistrationRow(t, f.app, f.user.ID)
+		if after.ID != f.row.ID || after.Status != models.RegGoing || after.WaitlistedAt != nil {
+			t.Fatalf("an over-capacity going guest was moved: %+v", after)
+		}
+		if got := seats(t, f, models.AttendanceInPerson); got != before {
+			t.Fatalf("seats used %d -> %d: re-confirming must not add attendance", before, got)
+		}
+	})
+
+	t.Run("childcare the guest already holds is kept even when childcare is now over", func(t *testing.T) {
+		f := setup(t, "10.4.9.3", map[string]any{"capacity": 10, "waitlistEnabled": true, "childcareAvailable": true, "childcareCapacity": 2})
+		f.app.DB.Model(&models.Registration{}).Where("id = ?", f.row.ID).Update("childcare_count", 1)
+		member(t, f, "member", 1)
+		f.app.DB.Model(&models.Event{}).Where("id = ?", f.ev.ID).Update("childcare_capacity", 1)
+		if code := guestReconfirmCode(t, f.app, f.anon, f.ev.ID, "gail@example.com"); code != http.StatusOK {
+			t.Fatalf("re-confirm: %d", code)
+		}
+		after := guestRegistrationRow(t, f.app, f.user.ID)
+		if after.Status != models.RegGoing || after.ChildcareCount != 1 {
+			t.Fatalf("held childcare changed: %+v", after)
+		}
+	})
+
+	t.Run("childcare demand the guest does not hold yet is checked", func(t *testing.T) {
+		f := setup(t, "10.4.9.4", map[string]any{"capacity": 1, "waitlistEnabled": true, "childcareAvailable": true, "childcareCapacity": 1})
+		// The guest's retained row is a waiter that asks for one childcare place;
+		// seats are free again but another party now holds the only place.
+		f.app.DB.Model(&models.Registration{}).Where("id = ?", f.row.ID).Updates(map[string]any{"status": models.RegWaitlisted, "childcare_count": 1})
+		other := newTestUser(t, f.app, "other", "password1234", models.RoleMember)
+		f.app.DB.Model(&models.Event{}).Where("id = ?", f.ev.ID).Update("capacity", 5)
+		if err := f.app.DB.Create(&models.Registration{UserID: &other.ID, OccurrenceID: f.occ.ID, Status: models.RegGoing, Source: models.RegSourceWeb, AttendanceMode: models.AttendanceInPerson, ChildcareCount: 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if code := guestReconfirmCode(t, f.app, f.anon, f.ev.ID, "gail@example.com"); code != http.StatusConflict {
+			t.Fatalf("re-confirm with childcare full: %d, want 409", code)
+		}
+		if after := guestRegistrationRow(t, f.app, f.user.ID); after.Status != models.RegWaitlisted {
+			t.Fatalf("a refused re-confirm changed the row: %+v", after)
+		}
+	})
+
+	for _, waitlist := range []bool{true, false} {
+		name := "switching from the remote pool checks in-person capacity (waitlist on)"
+		if !waitlist {
+			name = "switching from the remote pool checks in-person capacity (waitlist off)"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := setup(t, "10.4.9.5", map[string]any{"capacity": 1, "waitlistEnabled": waitlist, "remoteAvailable": true})
+			// The guest sits in the remote pool; a member now holds the one in-person seat.
+			f.app.DB.Model(&models.Registration{}).Where("id = ?", f.row.ID).Update("attendance_mode", models.AttendanceRemote)
+			member(t, f, "member", 0)
+			code := guestReconfirmCode(t, f.app, f.anon, f.ev.ID, "gail@example.com")
+			after := guestRegistrationRow(t, f.app, f.user.ID)
+			if waitlist {
+				if code != http.StatusOK || after.Status != models.RegWaitlisted || after.AttendanceMode != models.AttendanceInPerson || after.WaitlistedAt == nil {
+					t.Fatalf("pool switch into a full pool: %d %+v", code, after)
+				}
+				return
+			}
+			if code != http.StatusConflict || after.Status != models.RegGoing || after.AttendanceMode != models.AttendanceRemote {
+				t.Fatalf("pool switch into a full pool without a waitlist: %d %+v", code, after)
+			}
+		})
+	}
+}
+
 // The existing-account hint is queued before the answer. If it cannot be, the
 // guest door fails like its stored path does.
 func TestGuestHintEnqueueFailureMatchesStoredFailure(t *testing.T) {

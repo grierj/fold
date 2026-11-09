@@ -206,26 +206,18 @@ func (a *App) managedOccurrence(c *gin.Context) (*models.Event, *models.EventOcc
 }
 
 // seatsWanted is what a room must hold for a date: the larger of its seat
-// cap and the seats already going.
-func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) int {
+// cap and the seats already going. The count is the one capacity uses: listed
+// accounts only, remote attendees aside.
+func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) (int, error) {
 	want := 0
-	if cap := effectiveCapacity(ev, occ); cap != nil {
+	if cap := capacityForMode(ev, occ, models.AttendanceInPerson); cap != nil {
 		want = *cap
 	}
-	// The same in-person count capacity uses: listed accounts only, remote
-	// attendees aside. A failed count leaves just the cap; it's a warning.
-	going, _ := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson)
-	if going > want {
-		want = going
+	going, err := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson, 0)
+	if err != nil {
+		return 0, err
 	}
-	return want
-}
-
-func effectiveCapacity(ev *models.Event, occ *models.EventOccurrence) *int {
-	if occ.CapacityOverride != nil {
-		return occ.CapacityOverride
-	}
-	return ev.Capacity
+	return max(want, going), nil
 }
 
 func tooSmall(capacity *int, want int) bool { return capacity != nil && want > *capacity }
@@ -256,7 +248,11 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	for _, id := range busy {
 		isBusy[id] = true
 	}
-	want := seatsWanted(a.DB, ev, occ)
+	want, err := seatsWanted(a.DB, ev, occ)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list rooms")
+		return
+	}
 	out := []roomPickerJSON{}
 	for _, r := range rooms {
 		if !policy.CanBookRoom(me, true, r.Restricted) {
@@ -476,7 +472,12 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 		return
 	}
-	booking, err := a.dateBooking(a.DB, occ.ID, seatsWanted(a.DB, ev, occ))
+	want, err := seatsWanted(a.DB, ev, occ)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the room")
+		return
+	}
+	booking, err := a.dateBooking(a.DB, occ.ID, want)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the room")
 		return
@@ -559,17 +560,15 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 // the date is told too (no Actor): the move saved, and a lost room is easy
 // to miss on a page that no longer shows it.
 func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return err
 	}
 	change := "1 date"
 	if len(dates) > 1 {
 		change = fmt.Sprintf("%d dates", len(dates))
 	}
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RoomLost, To: to,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change}, // group-ok: the event's own leaders and hosts

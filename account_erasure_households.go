@@ -380,7 +380,7 @@ func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households 
 			if err := tx.Unscoped().First(&person, id).Error; err != nil {
 				return counts, err
 			}
-			if err := a.reconcileHouseholdPerson(tx, &person, true, actorID, ip); err != nil {
+			if err := a.reconcileHouseholdPerson(tx, &person, true, actor, ip); err != nil {
 				return counts, err
 			}
 		}

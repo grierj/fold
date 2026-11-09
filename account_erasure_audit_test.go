@@ -918,7 +918,7 @@ var auditWriterCensus = map[string]string{
 	"api_registrations.go:apiAddRegistration":                     "f0f0e9f448c5f0827c38a1aa17338174cd4ac6cd6bbca2f94f334679df3b90a5",
 	"api_registrations.go:apiPromoteRegistration":                 "bfae49fa5d285bd4a62dfa54bf07cce99018741ccae89e6f278fe721a7a266a8",
 	"api_registrations.go:apiRemoveRegistration":                  "421058046fa2065b397cf0ff8aacd77eb404f316cc849840247abf0cd5da5467",
-	"api_registrations.go:auditRegistration":                      "6e44b7fd9ff8f15ef2bf34dd02339a9f03f0043efbfdb874d8b4d9ae1f17e5d8",
+	"api_registrations.go:auditRegistration":                      "011710eca9426fd208c2fdb6e0a05ce1d0e5ec0a1ed6782306d219f634afdd14",
 	"api_registrations.go:registrationMeta":                       "8236e28a52344add82f99db6ef37c4957bf2019ef8cf20563e76e13442a0a795",
 	"api_room_bookings.go:apiSetDateRoom":                         "be47016c5047112df855bb542f0c456c5e16df55e2f31efef8c60042e3bd183b",
 	"api_room_feeds.go:apiAdminCreateRoomFeed":                    "e8017f2ddcb5315ab98d24dd76d573f7370388622ed80718017febe611a3645f",
