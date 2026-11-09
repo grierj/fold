@@ -3,7 +3,7 @@ import { ApiError } from "../api";
 // What people read when something goes wrong (UI makeover PR 4, DEC-61).
 // The API sends a stable code with every error; this is the only place
 // that turns a code into words. The server's English "error" text is for
-// logs and is never shown (guards_test.go checks that no page reads an
+// logs and is never shown (guards_web_test.go checks that no page reads an
 // error's .message). Each line says what happened and what to do next.
 //
 // DEC-52: errors nobody can act on, or that would reveal an account or a
