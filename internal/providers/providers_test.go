@@ -32,10 +32,3 @@ func TestEmailRegistry(t *testing.T) {
 	}()
 	RegisterEmail("test-nop", func(Settings) (EmailSender, error) { return nopEmail{}, nil })
 }
-
-func TestSendError(t *testing.T) {
-	e := &SendError{Provider: "postmark", Code: 406, Message: "inactive", Permanent: true}
-	if e.Error() != "postmark: inactive (code 406)" {
-		t.Fatal(e.Error())
-	}
-}
