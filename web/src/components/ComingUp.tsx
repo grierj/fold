@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Calendar } from "../api/calendar";
 import type { CalendarOccurrence } from "../types";
@@ -9,6 +9,7 @@ import { EmptyState } from "./ui/EmptyState";
 import { Skeleton } from "./ui/Skeleton";
 import { addDays } from "../lib/calendar";
 import { errorText } from "../lib/errors";
+import { useLoad } from "../lib/useLoad";
 import { browserTimeZone, dayOf, formatNextMeeting } from "../lib/when";
 
 const SHOWN = 4;
@@ -19,34 +20,20 @@ const WINDOW_DAYS = 60;
 // Just mine, so it never lists another group's unanswered public events
 // (DEC-76). It loads and fails on its own, so the groups below still work.
 export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
-  const [rows, setRows] = useState<CalendarOccurrence[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0);
-
-  useEffect(() => {
-    let alive = true;
-    setRows(null);
-    setError(null);
+  const load = useLoad(async () => {
     const now = new Date();
     const zone = browserTimeZone();
     const from = dayOf(now.toISOString(), zone);
-    Calendar.list({ from, to: addDays(from, WINDOW_DAYS), tz: zone, mine: true })
-      .then(({ occurrences }) => {
-        if (!alive) return;
-        // The range starts at the beginning of today, so drop what has ended.
-        // A date the person can't go to is not "coming up for" them.
-        const upcoming = occurrences
-          .filter((o) => Date.parse(o.endsAt || o.startsAt) > now.getTime() && o.myStatus !== "declined")
-          .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt));
-        setRows(upcoming.slice(0, SHOWN));
-      })
-      .catch((e) => {
-        if (alive) setError(errorText(e, "We couldn't load your calendar."));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [retry]);
+    const { occurrences } = await Calendar.list({ from, to: addDays(from, WINDOW_DAYS), tz: zone, mine: true });
+    // The range starts at the beginning of today, so drop what has ended.
+    // A date the person can't go to is not "coming up for" them.
+    return occurrences
+      .filter((o) => Date.parse(o.endsAt || o.startsAt) > now.getTime() && o.myStatus !== "declined")
+      .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
+      .slice(0, SHOWN);
+  }, []);
+  const rows = load.data ?? null;
+  const error = load.error ? errorText(load.error, "We couldn't load your calendar.") : null;
 
   useEffect(() => {
     if (rows !== null || error) onReady?.();
@@ -61,7 +48,7 @@ export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
         </Link>
       </div>
       {error ? (
-        <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />
+        <ErrorNotice message={error} onRetry={load.retry} />
       ) : rows === null ? (
         <Skeleton kind="lines" count={3} label="Loading your dates…" />
       ) : rows.length === 0 ? (
