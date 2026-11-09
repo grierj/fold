@@ -7,7 +7,6 @@ import { dayOf } from "./when";
 
 export type View = "agenda" | "week" | "month";
 
-// The 7 days, Sunday to Saturday, of the week holding day.
 export function weekRange(day: string): string[] {
   const start = addDays(day, -weekdayIndex(day));
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));

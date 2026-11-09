@@ -29,7 +29,6 @@ const DEFAULT_ROLES: AudienceRole[] = ["member", "leader"];
 
 export const emptyChoice = (): AudienceChoice => ({ target: "", dates: "all", statuses: DEFAULT_STATUSES, roles: DEFAULT_ROLES });
 
-// toAudience is the API shape of a choice, or null until it names someone.
 export function toAudience(c: AudienceChoice): MessageAudience | null {
   const [kind, raw] = c.target.split(":");
   const id = Number(raw);
@@ -60,7 +59,6 @@ export function fromAudience(a: MessageAudience, options: ComposeOptions): Audie
   }
 }
 
-// prefill reads /messages/new?group=, ?event= or ?occurrence=.
 export function prefillChoice(params: URLSearchParams, options: ComposeOptions): AudienceChoice {
   const group = Number(params.get("group")), event = Number(params.get("event")), occurrence = Number(params.get("occurrence"));
   if (group) return fromAudience({ type: "group", groupId: group }, options);
@@ -179,7 +177,6 @@ export function guardianLine(c: Pick<MessageRecipientCounts, "guardianCopies" | 
 export const failedLine = (failed: number, copies: number) =>
   failed > 0 || copies === 0 ? `${people(failed)} didn't get this` : `${guardianCopies(copies)} didn't go out`;
 
-// Each person's status in a message's history, in words.
 export const HISTORY_WORDS: Record<HistoryStatus, string> = {
   sent: "Sent",
   delivered: "Delivered",

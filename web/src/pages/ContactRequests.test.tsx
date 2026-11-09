@@ -91,7 +91,10 @@ it("paginates request and grant histories using their own last exclusive IDs", a
   vi.mocked(Contacts.requests).mockResolvedValueOnce({ requests: Array.from({ length: 100 }, (_, i) => ({ ...request, id: 300 - i })) }).mockResolvedValue({ requests: [{ ...request, id: 200 }] });
   vi.mocked(Contacts.grants).mockResolvedValueOnce({ grants: Array.from({ length: 100 }, (_, i) => ({ ...grant, id: 500 - i, canRevoke: false })) }).mockResolvedValue({ grants: [] });
   mount("/contact-requests");
-  await userEvent.click(await screen.findByRole("button", { name: "Load older requests" }));
+  // 100 request cards and 100 grant cards are on screen: a role query (and waitFor polling one) walks all of them,
+  // which is what timed out under load. Wait by text, and find each button by role once.
+  await screen.findByText("Load older requests");
+  await userEvent.click(screen.getByRole("button", { name: "Load older requests" }));
   expect(Contacts.requests).toHaveBeenLastCalledWith(201);
   await userEvent.click(screen.getByRole("button", { name: "Load older grants" }));
   expect(Contacts.grants).toHaveBeenLastCalledWith(401);

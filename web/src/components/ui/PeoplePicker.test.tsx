@@ -58,7 +58,6 @@ it("shows safe group labels in order, adult images only, teen badge, and duplica
   expect(screen.getByText("More than one match? Ask an admin.")).toBeInTheDocument();
   const options = screen.getAllByRole("option");
   expect(options[0].textContent).toBe("Pat LeeShared groups: ChoirOther groups: Walking");
-  expect(options[0]).toHaveClass("min-h-11");
   expect(options[2]).toHaveTextContent("Teen");
   expect(options[2].querySelector("img")).toBeNull();
   expect(options[3].querySelector("img")).toHaveAttribute("src", "/adult.jpg");

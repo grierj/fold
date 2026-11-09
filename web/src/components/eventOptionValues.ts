@@ -54,7 +54,6 @@ export function optionFieldOfError(err: unknown): OptionField | null {
   return null;
 }
 
-// The wire form on create.
 export function eventOptionsBody(v: EventOptionValues) {
   return {
     ...videoBody(v.video),

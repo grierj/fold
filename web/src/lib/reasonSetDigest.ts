@@ -34,7 +34,6 @@ export class DigestUnavailableError extends Error {
   }
 }
 
-// --- the preimage -----------------------------------------------------------
 
 /**
  * The preimage in pieces: the 35-byte header, then runs of at most itemsPerChunk
@@ -61,7 +60,6 @@ export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, coun
   }
 }
 
-/** The whole preimage in one array (35 + 40n bytes). */
 /** @public test seam for the digest vectors. */
 export function digestPreimage(ids: readonly string[], hashes: Uint8Array, count: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(HEADER + count * ITEM);
@@ -73,7 +71,6 @@ export function digestPreimage(ids: readonly string[], hashes: Uint8Array, count
   return out;
 }
 
-// --- a bundled SHA-256 -------------------------------------------------------
 
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74,
@@ -166,7 +163,6 @@ export class Sha256 {
   }
 }
 
-// --- choosing an implementation ---------------------------------------------
 
 const toHex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const bytesOf = (s: string) => Uint8Array.from(s, (ch) => ch.charCodeAt(0));
@@ -251,7 +247,6 @@ export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, c
   return toHex(sha.digest());
 }
 
-// --- the choice vector -------------------------------------------------------
 
 /** Packs two-bit codes (1 keep, 2 remove) for count items as standard padded base64. */
 /** @public test seam for the digest vectors. */
@@ -263,7 +258,6 @@ export function encodeChoices(codes: Uint8Array, count: number): string {
   return btoa(binary);
 }
 
-/** The DELETE body's reasonReview (set-v1). */
 export interface ReasonReviewBody {
   format: "set-v1";
   count: string;

@@ -105,7 +105,6 @@ function Toolbar({ editor, oneEvent, panel, onPanel }: { editor: Editor; oneEven
   );
 }
 
-// LinkPanel adds or changes a link or a button block at the cursor.
 function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: "link" | "button"; oneEvent: boolean; onClose: () => void }) {
   const current = editor.isActive("link") ? (editor.getAttributes("link") as { href?: string; class?: string }) : null;
   const editing = !!current && (current.class === BUTTON_CLASS) === (kind === "button");

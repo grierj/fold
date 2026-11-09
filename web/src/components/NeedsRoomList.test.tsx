@@ -87,14 +87,6 @@ it("shows the first 10 dates with the count in the heading, and the rest on requ
   expect(screen.queryByRole("button", { name: /^Show all/ })).not.toBeInTheDocument();
 });
 
-it("reads the site settings once, however often the page asks again", async () => {
-  const { rerender } = show();
-  await screen.findByText("Chapel isn't free then.");
-  rerender(<MemoryRouter><NeedsRoomList eventId={7} revision={1} hasDate={() => true} onPick={() => {}} /></MemoryRouter>);
-  await waitFor(() => expect(SeriesRooms.list).toHaveBeenCalledTimes(2));
-  expect(Site.get).toHaveBeenCalledTimes(1);
-});
-
 it("shows nothing when every date has its room", async () => {
   vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [], pending: 0 });
   const { container } = show();

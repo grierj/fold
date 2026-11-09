@@ -5,7 +5,7 @@ import { open, partSelected, UI_PARTS, uiPages, uiPart } from "./ui-pages";
 // @ts-expect-error plain JS module shared with .cursor/skills/verify-ui
 import { measure } from "./ui-measure.mjs";
 
-// Layout and target size (ENFORCEMENT.md C2, C3) at 390, 768 and 1280.
+// Layout and target size at 390, 768 and 1280.
 // Hard gates (PR 5 cleared the last ones): no page scrolls sideways, no
 // control is cut off by an overflow box or the screen edge, no
 // select's chosen label is cut off (PR #51, the event visibility select),

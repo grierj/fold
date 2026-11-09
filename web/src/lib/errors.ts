@@ -66,7 +66,6 @@ export const ERROR_COPY = {
   attempt_closed: "Fold is checking what happened to this request.",
   attempt_busy: "Fold is busy. Wait a minute, then try again.",
   restore_detected: "Fold noticed its database was restored while it was running, so nothing was changed. It is restarting; try again in a minute.",
-  // Signing in and passwords
   bad_credentials: "That email and password don't match. Check them and try again.",
   locked_out: "Too many sign-in attempts. Please wait 15 minutes, then try again.",
   wrong_password: "Your current password isn't right. Try typing it again.",
@@ -115,7 +114,6 @@ export const ERROR_COPY = {
   session_expired: "Your session timed out. Reload the page and try again.",
   signed_out: "You've been signed out. Please sign in again.",
 
-  // Email addresses and accounts
   invalid_email: "That doesn't look like an email address. Check it and try again.",
   email_taken: "That email already has an account. They can sign in instead.",
   email_taken_sign_in: "That email already has an account. Sign in to register.",
@@ -131,7 +129,6 @@ export const ERROR_COPY = {
   needs_successor: "Some groups this person leads have no other leader. Pick a new leader for each one first.",
   needs_host_successor: "Some church-wide events this person hosts alone still need a new host, or the list changed. Check the host for each event and try again.",
 
-  // Groups and members
   group_full: "This group is full.",
   invite_only: "This group is invite only. Ask a leader to invite you.",
   cannot_join: "You can't join this group. Ask a leader if you think that's a mistake.",
@@ -148,7 +145,6 @@ export const ERROR_COPY = {
   needs_admin_queue: "This one needs a closer look. Open the admin page to decide.",
   open_page_instead: "That can't be done from the bell. Open the page to do it there.",
 
-  // Events and registrations
   event_full: "This event is full.",
   party_too_big: "There aren't enough seats left for everyone in your party. Try fewer guests.",
   too_many_guests: "That's more guests than this event allows. Try fewer.",
@@ -200,14 +196,12 @@ export const ERROR_COPY = {
   undo_date_ended: "One of those dates is no longer open. Refresh the event to see the dates you can answer.",
   undo_not_found: "That Undo is no longer available. Refresh the event to see your current answers.",
 
-  // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",
   file_type: "That kind of image isn't supported. Try a JPEG or PNG.",
   image_unsupported: "WebP pictures aren't supported yet. Try a JPEG or PNG instead.",
   image_too_large: "That picture is too big to use. Try a smaller one, or one with fewer animation frames.",
   file_unreadable: "We couldn't read that file. Try another picture.",
 
-  // Form fields
   too_long: "Some of what you typed is too long. Shorten it and try again.",
   missing_field: "Please fill in the required fields.",
 

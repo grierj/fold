@@ -126,7 +126,6 @@ export async function appReady(page: Page) {
   }, null, { timeout: 2_000 }).catch(() => undefined);
 }
 
-// page.goto, then appReady.
 export async function gotoReady(page: Page, path: string) {
   await page.goto(path);
   await appReady(page);

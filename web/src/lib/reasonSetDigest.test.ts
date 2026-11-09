@@ -134,11 +134,9 @@ describe("encodeChoices", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Chunking and the 16 MiB line. A record is 40 bytes, so a 1 MiB chunk holds
 // 26,214 whole records (1 MiB / 40 is 26,214.4); the reference below is built
 // here, whole, with no chunking, and hashed by Node.
-// ---------------------------------------------------------------------------
 
 // n ascending ids from -3 (so the walk crosses zero) with pseudo-random hashes.
 function fixture(n: number) {

@@ -94,7 +94,6 @@ export function sameKey(sub: PushSubscription, publicKey: string): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
-// localSubscription is this browser's push subscription, if it has one.
 export async function localSubscription(): Promise<PushSubscription | null> {
   const reg = await registration();
   if (!reg?.pushManager) return null;

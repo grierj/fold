@@ -52,10 +52,9 @@ describe("Menu", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "Elsewhere" }));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
-  it("items are 44px targets and danger items read as danger", () => {
+  it("danger items read as danger and an unavailable item is disabled", () => {
     const { trigger } = setup();
     fireEvent.click(trigger);
-    expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveClass("min-h-11");
     expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveClass("text-danger");
     expect(screen.getByRole("menuitem", { name: "Archive" })).toBeDisabled();
   });

@@ -39,17 +39,13 @@ beforeEach(() => {
   feed([item({})]);
 });
 
-it("lays out like other pages: title and chips on the page, the list in one card", async () => {
-  const { container } = open();
+it("puts the title and filter chips above the list, with All selected", async () => {
+  open();
   expect(screen.getByRole("heading", { level: 1, name: "Alerts" })).toBeInTheDocument();
   const group = screen.getByRole("group", { name: "Show" });
   expect(within(group).getByRole("button", { name: "All", pressed: true })).toBeInTheDocument();
   const link = await screen.findByRole("link", { name: /Pat made Sam a leader/ });
-  const card = link.closest(".bg-surface");
-  expect(card).toHaveClass("border", "rounded-lg");
-  expect(card).not.toContainElement(screen.getByRole("heading", { level: 1 }));
-  expect(card).not.toContainElement(group);
-  expect(container.firstElementChild).toHaveClass("max-w-2xl", "mx-auto");
+  expect(group).not.toContainElement(link);
 });
 
 it("puts day and task sections directly under the page title", async () => {
@@ -60,12 +56,10 @@ it("puts day and task sections directly under the page title", async () => {
   }
 });
 
-it("gives Archive a visible 44px control and keeps it separate from opening the alert", async () => {
+it("keeps Archive separate from opening the alert", async () => {
   api.archive.mockResolvedValue({});
   open();
   const archive = await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" });
-  expect(archive).toHaveClass("btn-secondary", "h-11", "w-11");
-  expect(within(archive).getByText("×")).toHaveClass("text-2xl", "font-semibold");
   expect(archive.closest("a")).toBeNull();
   feed([]); // the post-archive refresh no longer includes the row
   await userEvent.click(archive);

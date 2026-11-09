@@ -32,14 +32,12 @@ export function slotLabel(slot: RoomSlot, zone: string): string {
   return [time, slot.title, slotByline(slot), slot.waiting && "Waiting for approval"].filter(Boolean).join(", ");
 }
 
-// The days a view covers, first to last.
 export function viewDays(from: string, to: string): string[] {
   const out: string[] = [];
   for (let d = from; d <= to && out.length < 7; d = addDays(d, 1)) out.push(d);
   return out;
 }
 
-// Bookings bucketed by the church day they start on, kept in time order.
 export function slotsByDay(slots: RoomSlot[], zone: string): Map<string, RoomSlot[]> {
   const out = new Map<string, RoomSlot[]>();
   for (const s of [...slots].sort(byStart)) {

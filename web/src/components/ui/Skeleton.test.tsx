@@ -13,7 +13,8 @@ describe("Skeleton", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading group…");
   });
   it("renders three cards by default", () => {
-    const { container } = render(<Skeleton kind="cards" />);
-    expect(container.querySelectorAll(".h-40")).toHaveLength(3);
+    render(<Skeleton kind="cards" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading…");
+    expect(screen.getByRole("status").querySelectorAll(':scope > [aria-hidden="true"]')).toHaveLength(3);
   });
 });

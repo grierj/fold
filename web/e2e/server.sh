@@ -22,7 +22,8 @@ else
   (cd "$root" && go build -tags e2eclock -o "$work/fold" .)
 fi
 
-# Production by default. The invitation scenarios use dev mode's outbox.
+# Production by default. The specs that read an email from dev mode's outbox
+# (GET /dev/outbox) get an E2E_APP_ENV=dev server from e2e/run.sh's dev shard.
 # Secure cookies still work over plain http on 127.0.0.1 (browsers treat it as
 # secure), so COOKIE_SECURE stays at its default: prod refuses COOKIE_SECURE=false.
 export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}" \

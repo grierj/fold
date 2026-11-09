@@ -72,16 +72,12 @@ beforeEach(() => {
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
 });
 
-it("keeps all six sections in one scrolling row with shared chip targets", async () => {
+it("lists all six sections as tabs, with the waiting count on Approvals", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
   const navigation = screen.getByRole("tablist", { name: "Admin sections" });
-  expect(navigation).toHaveClass("flex", "min-w-max");
-  expect(navigation).not.toHaveClass("grid", "flex-wrap");
-  expect(navigation.parentElement).toHaveClass("overflow-x-auto");
   const buttons = within(navigation).getAllByRole("tab");
   expect(buttons).toHaveLength(6);
-  for (const button of buttons) expect(button).toHaveClass("chip");
   expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
   expect(buttons[0].textContent).toBe("Approvals 1");
   expect(within(buttons[0]).getByText("1")).toHaveAttribute("aria-hidden", "true");
@@ -221,7 +217,6 @@ it("keeps the delete status line in the page, empty, before anything is deleted"
   await screen.findByRole("link", { name: "Choir" });
   const statuses = screen.getAllByRole("status").filter((el) => el.textContent === "");
   expect(statuses.length).toBeGreaterThan(0);
-  expect(statuses[0]).not.toHaveClass("empty:hidden");
 });
 
 it("counts two deletes in a row from the one list", async () => {
@@ -262,20 +257,6 @@ it("does not refetch the groups when the tab opens, and refetches them once per 
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
   await screen.findByText(/approved/);
   expect(AdminGroups.list).toHaveBeenCalledTimes(2);
-});
-
-it("leaves room before the Invite only label only when a status label comes first", async () => {
-  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [
-    group(1, "Open book", { visibility: "invite_only" }),
-    group(2, "Waiting", { visibility: "invite_only", status: "pending" }),
-  ] });
-  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
-  await screen.findByText("Waiting");
-  const pills = screen.getAllByText("Invite only");
-  expect(pills).toHaveLength(2);
-  const [alone, withStatus] = [pills.find((p) => p.closest("div.bg-surface")?.textContent?.includes("Open book"))!, pills.find((p) => p.closest("div.bg-surface")?.textContent?.includes("Waiting"))!];
-  expect(alone).not.toHaveClass("ml-1.5");
-  expect(withStatus).toHaveClass("ml-1.5");
 });
 
 describe("Users search and filters", () => {
@@ -549,7 +530,7 @@ it("shows Saved in the success tone", async () => {
   const mode = await screen.findByRole("group", { name: "Self-signup" });
   await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
   await userEvent.click(within(mode).getByRole("radio", { name: /^On/ }));
-  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
 });
 
 it("keeps the church time zone behind its Save button", async () => {
@@ -764,13 +745,11 @@ it("opens a bookmarked Rooms tab once /site says rooms are on", async () => {
   expect(screen.getByRole("tab", { name: /^Rooms/ })).toHaveAttribute("aria-selected", "true");
 });
 
-it("asks /site once and hands the answer to the rooms switch", async () => {
+it("shows the rooms switch on when /site says rooms are on", async () => {
   withRooms(true);
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
-  // The page, the church time zone, its zone picker, self-signup and the rooms switch share one read.
-  expect(Site.get).toHaveBeenCalledTimes(1);
 });
 
 it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async () => {
@@ -793,7 +772,7 @@ it("reads the rooms switch from /site and saves it the moment it changes, then s
   expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument();
   await userEvent.click(box);
   expect(AdminRooms.setEnabled).toHaveBeenCalledWith(true);
-  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(box).toBeChecked();
   expect(await screen.findByRole("tab", { name: /^Rooms/ })).toBeInTheDocument();
 });

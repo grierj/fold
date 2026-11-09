@@ -1,8 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { apiAs, email, PASSWORD, signIn } from "./helpers";
 
-// Run with E2E_APP_ENV=dev to exercise the real mail and acceptance path.
-// Production-mode runs keep the outbox closed.
+// Reads the invitation from the dev mail outbox, so it runs in e2e/run.sh's dev shard (APP_ENV=dev).
 async function latestInvite(page: Page, address: string, previous = ""): Promise<string> {
   let link = "";
   await expect.poll(async () => {

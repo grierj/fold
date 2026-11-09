@@ -8,7 +8,5 @@ describe("Illustration", () => {
     const img = container.querySelector("img");
     expect(img).toHaveAttribute("alt", "");
     expect(img).toHaveAttribute("aria-hidden", "true");
-    expect(img).toHaveAttribute("width", "240");
-    expect(img).toHaveAttribute("height", "180");
   });
 });

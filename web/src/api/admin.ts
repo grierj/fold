@@ -1,7 +1,6 @@
 import type { AdminJobsResponse, GroupSummary } from "../types";
 import { api, path, type Id } from "./core";
 
-// The group approval queue and the church's settings.
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
   // Tags are sent only when the admin edited them; left out, the leader's own stay.
@@ -35,7 +34,6 @@ export const AdminGroups = {
     api<unknown>(path`/admin/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "number" ? { userId: target } : target), role, overLimit } }),
 };
 
-// Background jobs that ran out of attempts, for the admin System page (M3.1b).
 export const AdminJobs = {
   list: () => api<AdminJobsResponse>("/admin/jobs"),
   retry: (id: Id) => api<{ status: string }>(path`/admin/jobs/${id}/retry`, { method: "POST" }),
