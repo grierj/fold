@@ -1,20 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EmailSettingsChange } from "../api/notifications";
-import type { EmailKind, NotificationSettings } from "../types";
+import type { NotificationSettings } from "../types";
+import { EMAIL_KIND_COPY } from "../lib/emailKinds";
 import { errorText } from "../lib/errors";
 import { Checkbox, Choices, FormError } from "./ui/Field";
 import { Skeleton } from "./ui/Skeleton";
 import { ErrorNotice } from "./ErrorNotice";
-
-// What each optional kind of email is called, with a line about what it is
-// (DEC-115). The words match the email footer ("You're getting group updates
-// …"). The order is the order the server lists them in.
-export const EMAIL_KIND_COPY: Record<EmailKind["category"], { label: string; hint: string }> = {
-  groups: { label: "Group updates", hint: "When your groups change or are approved" },
-  events: { label: "Event updates", hint: "Cancelled or restored dates you can see" },
-  messages: { label: "Messages from leaders", hint: "Announcements from your group leaders, event hosts and church admins" },
-  admin: { label: "Admin notices", hint: "For church admins" },
-};
 
 // The email switches (DEC-115), shared by Me > Notifications and the email
 // settings page an email's link opens: one per optional kind plus "Turn off

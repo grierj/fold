@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { addDays, addMonths, groupByDay, monthGrid, rangeFor, weekRange } from "./calendar";
+import { addDays } from "./days";
+import { groupByDay, monthGrid, rangeFor, weekRange } from "./calendar";
 
 describe("calendar dates", () => {
   it("starts weeks on Sunday", () => {
@@ -20,11 +21,6 @@ describe("calendar dates", () => {
     expect(g[0][0]).toBe("2026-09-27");
     expect(g[0][4]).toBe("2026-10-01");
     expect(g.flat()).toContain("2026-10-31");
-  });
-
-  it("moves by months from the 1st", () => {
-    expect(addMonths("2026-01-31", 1)).toBe("2026-02-01");
-    expect(addMonths("2026-01-15", -1)).toBe("2025-12-01");
   });
 
   it("gives each view its range", () => {

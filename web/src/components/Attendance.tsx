@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from "react";
 import { Button } from "./ui/Button";
 import { AttendeeDetails } from "./AttendeeDetails";
 import type { EventOccurrence } from "../types";
+import { registrationStatusLabel } from "../lib/status";
 
 // Attendance for one date (UI makeover PR 6, DEC-63): counts first, then
 // an expand that lists names, shown only when the server says this viewer
@@ -22,9 +23,9 @@ export function Attendance({ instance, headingLevel = 4 }: { instance: EventOccu
     : [];
   // These section counts describe visible names, not the total seats above.
   const sections = [
-    { label: "Going", people: coming.filter((a) => a.status === "going") },
-    { label: "Maybe", people: coming.filter((a) => a.status === "maybe") },
-    { label: "Can't go", people: cant },
+    { label: registrationStatusLabel("going"), people: coming.filter((a) => a.status === "going") },
+    { label: registrationStatusLabel("maybe"), people: coming.filter((a) => a.status === "maybe") },
+    { label: registrationStatusLabel("declined"), people: cant },
   ];
   return (
     <div className="mt-1 text-sm text-text-muted">

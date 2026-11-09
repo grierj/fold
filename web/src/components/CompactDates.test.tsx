@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
 import { occurrence } from "../test/occurrence";
 import { CompactDates } from "./CompactDates";
-import { addDays } from "../lib/calendar";
+import { addDays } from "../lib/days";
 const dates = Array.from({ length: 40 }, (_, i) => {
   const date = addDays("2026-12-01", i);
   return occurrence({ id: i + 1, title: `Gathering ${i + 1}`, date, startsAt: `${date}T18:00:00Z`, endsAt: `${date}T19:00:00Z` });

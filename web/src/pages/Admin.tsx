@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { Form } from "../components/ui/Form";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
@@ -20,6 +21,8 @@ import { Invitations } from "../api/invitations";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
+import { SavedStatus, SettingSwitch, useSavedSetting } from "../components/admin/SettingSwitch";
+import { NewPasswordField } from "../components/NewPasswordField";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
@@ -570,7 +573,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
                 <option value="">Select…</option>
                 {candidates.map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.displayName || u.name}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
+                    {publicName(u)}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
                   </option>
                 ))}
               </Select>
@@ -877,9 +880,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   return (
     <Form noValidate onSubmit={reset} className="mt-2 max-w-xl space-y-4">
       {error && <FormError>{error}</FormError>}
-      <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
-        <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-      </Field>
+      <NewPasswordField id="admin-new-password-for" label={`New password for ${user.email}`} value={password} onChange={setPassword} />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set password"}
@@ -927,12 +928,12 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }, [feedStatus]);
 
   async function revokeCalendarLink(u: User) {
-    if (!confirm(`Revoke ${u.displayName || u.name}'s calendar link? It will stop working right away.`)) return;
+    if (!confirm(`Revoke ${publicName(u)}'s calendar link? It will stop working right away.`)) return;
     setBusy(true);
     setError(null);
     setFeedStatus("");
     try {
-      const who = u.displayName || u.name;
+      const who = publicName(u);
       const r = await AdminUsers.revokeCalendarFeed(u.id);
       setFeedStatus(r.hadLink ? `Calendar link revoked for ${who}.` : `${who} didn't have a calendar link.`);
     } catch (e) {
@@ -943,7 +944,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }
 
   async function setStatus(u: User, status: "active" | "disabled") {
-    if (status === "disabled" && !confirm(`Disable ${u.displayName || u.name}? They will be signed out and can't sign in.`)) return;
+    if (status === "disabled" && !confirm(`Disable ${publicName(u)}? They will be signed out and can't sign in.`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -1003,7 +1004,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   // Let Fold email someone again after a bounce or complaint (M3.2c, DEC-113).
   async function clearSuppression(u: User) {
-    const who = u.displayName || u.name;
+    const who = publicName(u);
     // Clearing a complaint restarts optional mail to someone who marked it as spam.
     const ask = u.emailSuppression?.reason === "complaint"
       ? `${who} marked Fold's email as spam. Only do this if they asked for email again. Let Fold email ${who} again?`
@@ -1086,14 +1087,14 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   <div className="flex items-center gap-2">
                     <Avatar
                       url={u.avatarUrl || undefined}
-                      name={u.displayName || u.name}
+                      name={publicName(u)}
                       focalX={u.avatarFocalX}
                       focalY={u.avatarFocalY}
                       size="w-8 h-8"
                       textSize="text-xs"
                     />
                     <div>
-                      <div className="font-medium">{u.displayName || u.name}</div>
+                      <div className="font-medium">{publicName(u)}</div>
                       <div className="text-xs text-text-muted">{u.email}</div>
                     </div>
                   </div>
@@ -1145,7 +1146,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   {/* Your own row has no Disable or Delete: the server refuses both. */}
                   <Menu
                     tone="quiet"
-                    label={`More for ${u.displayName || u.name}`}
+                    label={`More for ${publicName(u)}`}
                     items={[
                       { label: "Edit", onSelect: () => { setEditingId(u.id); setResetId(null); setCreating(false); } },
                       { label: "Contact access history", onSelect: () => void openContactHistory(u), disabled: busy },
@@ -1323,32 +1324,13 @@ function InviteTab() {
 // choice, so it saves when changed and goes back if saving fails (DEC-98).
 function SelfSignupSetting() {
   const { site, error: siteError, loading, retry } = useSite();
-  // The choice shown while a save is in flight; null means show the saved one.
-  const [pending, setPending] = useState<"request" | "off" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const setting = useSavedSetting<"request" | "off">();
   // An unreadable setting is not shown as On or Off.
-  const mode = pending ?? site?.selfSignup;
-
-  async function change(next: "request" | "off") {
-    // The options are disabled while a save is in flight, so changes are one
-    // at a time and a failure goes back to the value from before this save.
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminAccountRequests.setSelfSignup(next);
-      invalidateSite({ selfSignup: r.selfSignup });
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
+  const mode = setting.pending ?? site?.selfSignup;
+  const change = (next: "request" | "off") => setting.change(next, async () => {
+    const r = await AdminAccountRequests.setSelfSignup(next);
+    invalidateSite({ selfSignup: r.selfSignup });
+  });
 
   if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the self-signup setting.")} onRetry={retry} /></div>;
   if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
@@ -1360,7 +1342,7 @@ function SelfSignupSetting() {
           label="On"
           description="Requests wait for an admin's approval."
           checked={mode === "request"}
-          disabled={saving}
+          disabled={setting.saving}
           onChange={() => void change("request")}
         />
         <Radio
@@ -1368,12 +1350,11 @@ function SelfSignupSetting() {
           label="Off"
           description="The church office creates accounts."
           checked={mode === "off"}
-          disabled={saving}
+          disabled={setting.saving}
           onChange={() => void change("off")}
         />
       </Choices>
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
+      <SavedStatus ok={setting.ok} error={setting.error} />
     </div>
   );
 }
@@ -1383,41 +1364,16 @@ function SelfSignupSetting() {
 // shows the Rooms tab at once; turning it off hides rooms and deletes nothing.
 // `enabled` is what AdminPage already read from /site (null until it answers).
 function RoomsSetting({ enabled }: { enabled: boolean | null }) {
-  // The choice shown while a save is in flight; null means show `enabled`.
-  const [pending, setPending] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  async function change(next: boolean) {
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminRooms.setEnabled(next);
-      invalidateSite({ roomsEnabled: r.roomsEnabled });
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
-
   return (
-    <div className="mb-6 max-w-xl space-y-2">
-      <Checkbox
-        label="Use rooms"
-        description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
-        checked={pending ?? enabled === true}
-        disabled={saving || enabled === null}
-        onChange={(e) => void change(e.target.checked)}
-      />
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
-    </div>
+    <SettingSwitch
+      label="Use rooms"
+      description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
+      value={enabled}
+      save={async (next) => {
+        const r = await AdminRooms.setEnabled(next);
+        invalidateSite({ roomsEnabled: r.roomsEnabled });
+      }}
+    />
   );
 }
 
@@ -1425,40 +1381,16 @@ function RoomsSetting({ enabled }: { enabled: boolean | null }) {
 // switch it saves when changed and goes back if saving fails (DEC-98). It
 // appears only while rooms are on; `enabled` is null until the rooms list answers.
 function RoomApprovalSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
-  const [pending, setPending] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  async function change(next: boolean) {
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminRooms.setApproval(next);
-      onChanged(r.needApproval);
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
-
   return (
-    <div className="mb-6 max-w-xl space-y-2">
-      <Checkbox
-        label="Room bookings need an admin's approval"
-        description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide."
-        checked={pending ?? enabled === true}
-        disabled={saving || enabled === null}
-        onChange={(e) => void change(e.target.checked)}
-      />
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
-    </div>
+    <SettingSwitch
+      label="Room bookings need an admin's approval"
+      description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide."
+      value={enabled}
+      save={async (next) => {
+        const r = await AdminRooms.setApproval(next);
+        onChanged(r.needApproval);
+      }}
+    />
   );
 }
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { weekdayCode } from "./eventForm";
+import { weekdayCode } from "./rrule";
 
 export interface WhenInit {
   date: string;

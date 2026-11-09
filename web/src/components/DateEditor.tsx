@@ -1,11 +1,11 @@
 import { Form } from "./ui/Form";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Events } from "../api/events";
 import type { EventOccurrence, Visibility } from "../types";
 import { errorText } from "../lib/errors";
 import { zoneNote } from "../lib/when";
-import { focusRemoteCapacity, isRemoteError, remoteProblem } from "./RemoteField";
-import { Field, FormError, Input } from "./ui/Field";
+import { isRemoteError, remoteProblem } from "./RemoteField";
+import { Field, FormError, Input, showFieldErrors } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { VisibilityField } from "./EventVisibility";
@@ -39,6 +39,7 @@ export function DateEditor({
   );
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const remotePrefix = `date-${instance.id}`;
+  const root = useRef<HTMLFormElement>(null);
   const [visibility, setVisibility] = useState<Visibility | "series">(instance.visibilityOverride ?? "series");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -47,11 +48,11 @@ export function DateEditor({
   async function save(e: React.FormEvent) {
     e.preventDefault();
     const remoteMsg = remoteProblem({ available: instance.remoteAvailable, capacity: remoteCapacity }, true);
-    setRemoteError(remoteMsg);
     if (remoteMsg) {
-      focusRemoteCapacity(remotePrefix);
+      showFieldErrors(root.current, () => setRemoteError(remoteMsg));
       return;
     }
+    setRemoteError(null);
     const body: {
       startsLocal?: string;
       durationMinutes?: number;
@@ -94,17 +95,20 @@ export function DateEditor({
       onSaved();
     } catch (err) {
       const msg = errorText(err, "We couldn't update this date.");
-      setError(msg);
       if (isRemoteError(err)) {
-        setRemoteError(msg);
-        focusRemoteCapacity(remotePrefix);
+        showFieldErrors(root.current, () => {
+          setError(msg);
+          setRemoteError(msg);
+        });
+      } else {
+        setError(msg);
       }
       setBusy(false);
     }
   }
 
   return (
-    <Form noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+    <Form ref={root} noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
       <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>

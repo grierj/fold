@@ -1,7 +1,7 @@
 import { useAuth } from "../auth";
-import { ButtonLink } from "../components/ui/Button";
-import { EmptyState } from "../components/ui/EmptyState";
-import { Illustration } from "../components/ui/Illustration";
+import { ButtonLink } from "./ui/Button";
+import { EmptyState } from "./ui/EmptyState";
+import { Illustration } from "./ui/Illustration";
 
 // A page that isn't there (DEC-66): the title is the page's h1, and "Go
 // home" is the way out. Group and event pages use Missing for a real 404
@@ -31,6 +31,7 @@ export function Missing({ title, body, myGroups }: { title: string; body: string
   );
 }
 
+// The page for a path or setting that isn't there.
 export function NotFound() {
   const { user } = useAuth();
   return <Missing title="Page not found" body="The link may be old, or the page may have moved." myGroups={!!user} />;

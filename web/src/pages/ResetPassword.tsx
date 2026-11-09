@@ -1,11 +1,8 @@
-import { Form } from "../components/ui/Form";
-import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Auth as AuthApi } from "../api/auth";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
-import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { NewPasswordForm } from "../components/NewPasswordForm";
 
 // Set a new password from a reset link (M1.2). The token is single use and
 // expires; confirming signs the person in.
@@ -14,36 +11,6 @@ export function ResetPassword() {
   const token = params.get("token") ?? "";
   const navigate = useNavigate();
   const { signedIn } = useAuth();
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [mismatch, setMismatch] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (password !== confirm) {
-      showFieldErrors(e.currentTarget as HTMLFormElement, () => setMismatch(true));
-      return;
-    }
-    setMismatch(false);
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await AuthApi.confirmPasswordReset(token, password);
-      setPassword("");
-      setConfirm("");
-      navigate(await signedIn(result), { replace: true });
-    } catch (e) {
-      setError(
-        errorCode(e) === "link_expired"
-          ? "This link has expired or was already used. Request a new one below."
-          : errorText(e, "We couldn't reset your password.")
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
 
   if (!token) {
     return (
@@ -64,30 +31,19 @@ export function ResetPassword() {
   return (
     <div className="fold-auth wrap-anywhere">
       <h1 className="fold-page-header text-3xl font-bold mb-6">Choose a new password</h1>
-      <Form noValidate onSubmit={submit} className="fold-form space-y-5">
-        {error && <FormError>{error}</FormError>}
-        <Field id="rp-password" label="New password" hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
-          <Input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-        </Field>
-        <Field id="rp-confirm" label="Confirm new password" error={mismatch && "The passwords don't match."}>
-          <Input
-            type="password"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-        </Field>
-        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
-          {busy ? "Saving…" : "Set new password"}
-        </Button>
-      </Form>
+      <NewPasswordForm
+        idPrefix="rp"
+        passwordLabel="New password"
+        confirmLabel="Confirm new password"
+        submitLabel="Set new password"
+        submit={async (password) => {
+          const result = await AuthApi.confirmPasswordReset(token, password);
+          navigate(await signedIn(result), { replace: true });
+        }}
+        describe={(e) => errorCode(e) === "link_expired"
+          ? "This link has expired or was already used. Request a new one below."
+          : errorText(e, "We couldn't reset your password.")}
+      />
     </div>
   );
 }
