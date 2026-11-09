@@ -215,7 +215,7 @@ func (a *App) apiMyGuardianTeens(c *gin.Context) {
 	var latest []models.TeenConsent
 	if len(ids) > 0 {
 		var err error
-		if latest, err = latestTeenConsents(a.DB, ids); err != nil {
+		if latest, err = latestConsentIn(a.DB, ids); err != nil {
 			consentError(c, err)
 			return
 		}

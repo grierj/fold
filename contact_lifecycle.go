@@ -292,13 +292,8 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	if err := lockContacts(tx); err != nil {
 		return rollback(err)
 	}
-	// Event edits can move a retained departure date after its old end.
-	// Persist expiry under the shared gate before the event/occurrence rows
-	// change, so a move cannot resurrect authority that already elapsed.
-	if change.EventID != 0 {
-		if err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
-			return rollback(err)
-		}
+	if err := a.reconcileAccessesBefore(tx, time.Now().UTC(), change); err != nil {
+		return rollback(err)
 	}
 	if err := fn(tx); err != nil {
 		return rollback(err)
@@ -558,6 +553,7 @@ func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange
 			}
 		}
 	}
+	// The "after" run of the pair reconcileAccessesBefore describes.
 	return a.reconcileOccurrenceAccesses(tx, now, change)
 }
 

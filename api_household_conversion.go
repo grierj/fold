@@ -605,7 +605,7 @@ func (a *App) transferHouseholdConversion(tx *gorm.DB, inv *models.Invitation, p
 
 // approveHouseholdConversion reuses the participant locks acquired before the
 // account-request decision. A changed lock set refuses the decision.
-func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *models.AccountRequest, locked map[uint]*models.User) (uint, error) {
+func (a *App) approveHouseholdConversion(tx *gorm.DB, ip string, req *models.AccountRequest, locked map[uint]*models.User) (uint, error) {
 	if req.HouseholdPersonID == nil || req.InvitationID == nil || req.PasswordHash == nil {
 		return 0, errConversionUnavailable
 	}
@@ -679,7 +679,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 			if guardian == nil || guardian.Status != models.UserActive || guardian.AccountType == models.AccountTeen || guardian.DeletedAt.Valid {
 				continue
 			}
-			err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", c.ClientIP())
+			err := requestTeenGuardian(tx, guardian.ID, user.ID, &inv.InvitedBy, "household_conversion", ip)
 			if err != nil {
 				return 0, err
 			}
@@ -690,7 +690,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if err := tx.Create(&user).Error; err != nil {
 		return 0, err
 	}
-	if err := a.transferHouseholdConversion(tx, &inv, &person, locked, fresh, &user, c.ClientIP()); err != nil {
+	if err := a.transferHouseholdConversion(tx, &inv, &person, locked, fresh, &user, ip); err != nil {
 		return 0, err
 	}
 	return user.ID, nil

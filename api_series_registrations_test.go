@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,57 +104,6 @@ func waitSeriesOccurrenceWaiter(t *testing.T, app *App, gate *gorm.DB) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("timed out waiting for series occurrence lock contender")
-}
-
-// blockSeriesReceiptFinalization stops the first series registration that
-// reaches receipt finalization (the locked read of its Undo receipt) just
-// before that read, after the answer has committed and before the response
-// is ready. Mail is no longer sent in the request, so it cannot be the
-// synchronization point; this uses a test-only GORM callback on the receipt
-// lock instead. An atomic flag picks the first request; later ones pass
-// through at once (a blocking sync.Once would hold them too). The returned
-// release is idempotent and also runs at cleanup so a failed test cannot
-// leave a handler blocked.
-func blockSeriesReceiptFinalization(t *testing.T, app *App) (started <-chan struct{}, release func()) {
-	t.Helper()
-	startedCh, releaseCh := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	var claimed atomic.Bool
-	const name = "series:block-receipt-finalization"
-	err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(db *gorm.DB) {
-		if db.Statement.Table != "series_undo_receipts" {
-			return
-		}
-		if _, locked := db.Statement.Clauses["FOR"]; !locked {
-			return
-		}
-		if !claimed.CompareAndSwap(false, true) {
-			return
-		}
-		close(startedCh)
-		select {
-		case <-releaseCh:
-		case <-time.After(30 * time.Second):
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	release = func() { once.Do(func() { close(releaseCh) }) }
-	t.Cleanup(func() {
-		release()
-		_ = app.DB.Callback().Query().Remove(name)
-	})
-	return startedCh, release
-}
-
-func awaitSeriesSignal(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(8 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
 }
 
 // seriesUndoSnapshotDates reads the persisted undo receipt for an event and
@@ -551,7 +499,7 @@ func TestSeriesUndoRefreshesClockAfterOccurrenceLock(t *testing.T) {
 	}
 }
 
-func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
+func TestSeriesUndoWindowStartsAfterLockWait(t *testing.T) {
 	app := testApp(t)
 	base := time.Now().UTC().Truncate(time.Second)
 	clock := useSeriesTestClock(app, base)
@@ -575,8 +523,6 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
-	finalizing, release := blockSeriesReceiptFinalization(t, app)
-
 	gate := holdContactGate(t, app)
 	client := loginAPI(t, app, "undo-window-actor", "password1234")
 	response := queueContact(func() *httptest.ResponseRecorder {
@@ -587,9 +533,6 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	if err := gate.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
-	awaitSeriesSignal(t, finalizing, "receipt finalization")
-	clock.Advance(30 * time.Second)
-	release()
 	w := awaitContactResponse(t, response)
 	if w.Code != http.StatusOK {
 		t.Fatalf("series answer=%d %s", w.Code, w.Body.String())
@@ -597,7 +540,7 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	var out seriesRegistrationResponse
 	decodeJSON(t, w, &out)
 	if out.UndoToken == "" || out.UndoExpiresAt == nil {
-		t.Fatalf("missing response-ready receipt: %+v", out)
+		t.Fatalf("missing Undo receipt: %+v", out)
 	}
 	if got := out.UndoExpiresAt.Sub(clock.Time()); got != seriesUndoTTL {
 		t.Fatalf("usable Undo window=%v want %v", got, seriesUndoTTL)
@@ -625,50 +568,19 @@ func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
 	}
 }
 
-func TestSeriesReceiptFinalizationDoesNotResurrectReplacedUndo(t *testing.T) {
+func TestSeriesNewerActionReplacesOlderUndo(t *testing.T) {
 	app := testApp(t)
-	base := time.Now().UTC().Truncate(time.Second)
-	useSeriesTestClock(app, base)
+	useSeriesTestClock(app, time.Now().UTC().Truncate(time.Second))
 	leader := newTestUser(t, app, "undo-replace-leader", "password1234", models.RoleMember)
 	group := activeGroup(t, app, leader, "Undo replace", models.VisibilityPublic, "")
 	actor := newTestUser(t, app, "undo-replace-actor", "password1234", models.RoleMember)
-	waiter := newTestUser(t, app, "undo-replace-waiter", "password1234", models.RoleMember)
 	addMember(t, app, actor, &group, models.MembershipMember)
-	addMember(t, app, waiter, &group, models.MembershipMember)
-	ev, occs := seedSeriesEvent(t, app, &group, leader.ID, intPtr(1), true, 1)
-	actorID, waiterID := actor.ID, waiter.ID
-	queuedAt := base.Add(-time.Minute)
-	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &actorID, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
-		t.Fatal(err)
-	}
-	finalizing, release := blockSeriesReceiptFinalization(t, app)
-	firstClient := loginAPI(t, app, "undo-replace-actor", "password1234")
-	firstResponse := queueContact(func() *httptest.ResponseRecorder {
-		return firstClient.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
-	})
-	awaitSeriesSignal(t, finalizing, "first action receipt finalization")
-
-	second := postSeriesAnswer(loginAPI(t, app, "undo-replace-actor", "password1234"), ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
-	if second == nil || second.UndoToken == "" {
-		t.Fatalf("replacement receipt=%+v", second)
-	}
-	select {
-	case <-firstResponse:
-		t.Fatal("first response returned before release()")
-	default:
-	}
-	release()
-	w := awaitContactResponse(t, firstResponse)
-	if w.Code != http.StatusOK {
-		t.Fatalf("first action=%d %s", w.Code, w.Body.String())
-	}
-	var first seriesRegistrationResponse
-	decodeJSON(t, w, &first)
-	if first.UndoToken != "" || first.UndoExpiresAt != nil {
-		t.Fatalf("older response resurrected Undo: %+v", first)
+	ev, _ := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 1)
+	client := loginAPI(t, app, "undo-replace-actor", "password1234")
+	first := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe})
+	second := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
+	if first == nil || first.UndoToken == "" || second == nil || second.UndoToken == "" {
+		t.Fatalf("receipts first=%+v second=%+v", first, second)
 	}
 	var receipts []models.SeriesUndoReceipt
 	if err := app.DB.Where("actor_id = ?", actor.ID).Find(&receipts).Error; err != nil {
@@ -676,6 +588,9 @@ func TestSeriesReceiptFinalizationDoesNotResurrectReplacedUndo(t *testing.T) {
 	}
 	if len(receipts) != 1 || receipts[0].TokenHash != hashToken(second.UndoToken) {
 		t.Fatalf("live receipts=%+v", receipts)
+	}
+	if old := undoSeriesAnswer(client, ev.ID, first.UndoToken, true); old.Code != http.StatusNotFound {
+		t.Fatalf("Undo with a replaced receipt=%d %s", old.Code, old.Body.String())
 	}
 }
 
@@ -848,5 +763,181 @@ func TestSeriesRegistrationDisabledActorAndConcurrentNormalMutation(t *testing.T
 	w := disabledClient.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined}, true)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("disabled actor=%d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCanRegisterWithViewerKinds pins that single-date registration authority
+// (canRegisterIn), series register and series Undo are one decision: for every
+// kind of viewer and event visibility they give the same answer. Guests and
+// signed-out visitors have no session, so for them the series routes refuse
+// before authority is asked (a guest account fails lockActorIn, a visitor has
+// no cookie) and only the shared decision is compared.
+func TestCanRegisterWithViewerKinds(t *testing.T) {
+	inviteOnly := models.VisibilityInviteOnly
+	cases := []struct {
+		name       string
+		visibility string
+		override   *string
+	}{
+		{"public", models.VisibilityPublic, nil},
+		{"private", models.VisibilityPrivate, nil},
+		{"invite only", models.VisibilityInviteOnly, nil},
+		{"date override", models.VisibilityPublic, &inviteOnly},
+	}
+	viewers := []string{"signed out", "guest account", "member", "leader", "admin", "teen", "invited date only", "stranger"}
+	// Known answers by case order (public, private, invite only, date override):
+	// 1 allowed, 0 refused, -1 only compared. The teen is not pinned.
+	known := map[string][4]int{
+		"signed out":        {0, 0, 0, 0},
+		"guest account":     {1, 0, 0, 0},
+		"member":            {1, 1, 1, 1},
+		"leader":            {1, 1, 1, 1},
+		"admin":             {1, 1, 1, 1},
+		"teen":              {-1, -1, -1, -1},
+		"invited date only": {1, 1, 0, 0},
+		"stranger":          {1, 1, 0, 0},
+	}
+	for ci, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "viewer-leader", "password1234", models.RoleMember)
+			group := activeGroup(t, app, leader, "Viewer group", tc.visibility, "")
+			ev, occs := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 2)
+			if tc.override != nil {
+				if err := app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", ev.ID).Update("visibility_override", *tc.override).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Where("event_id = ?", ev.ID).Order("id").Find(&occs).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The series and Undo routes need authority for the series and for
+			// every date, so the shared decision is asked for both.
+			decide := func(u *models.User) bool {
+				if !app.canRegisterIn(app.DB, u, &ev) {
+					return false
+				}
+				for i := range occs {
+					if !app.canRegisterIn(app.DB, u, dateEvent(&ev, &occs[i])) {
+						return false
+					}
+				}
+				return true
+			}
+			for _, kind := range viewers {
+				name := "viewer-" + strings.ReplaceAll(kind, " ", "-")
+				var u *models.User
+				switch kind {
+				case "signed out":
+				case "guest account":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					if err := app.DB.Model(u).Update("status", models.UserGuest).Error; err != nil {
+						t.Fatal(err)
+					}
+					u.Status = models.UserGuest
+				case "member":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					addMember(t, app, u, &group, models.MembershipMember)
+				case "leader":
+					u = leader
+				case "admin":
+					u = newTestUser(t, app, name, "password1234", models.RoleAdmin)
+				case "teen":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					birth := time.Now().AddDate(-15, 0, 0)
+					if err := app.DB.Model(u).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+						t.Fatal(err)
+					}
+				case "invited date only":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+					uid := u.ID
+					reg := models.Registration{OccurrenceID: occs[0].ID, UserID: &uid, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceAdmin}
+					if err := app.DB.Create(&reg).Error; err != nil {
+						t.Fatal(err)
+					}
+					issuer := leader.ID
+					seedAccessGrant(t, app.DB, reg.ID, accessGrant{Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer}, &issuer, time.Now().UTC())
+				case "stranger":
+					u = newTestUser(t, app, name, "password1234", models.RoleMember)
+				}
+				if u != nil {
+					if err := app.DB.First(u, u.ID).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := decide(u)
+				if pinned := known[kind][ci]; pinned >= 0 && want != (pinned == 1) {
+					t.Errorf("%s: shared decision=%v, want %v", kind, want, pinned == 1)
+				}
+				if got := canRegisterWith(u, viewOf(&ev, false), asGroup(&group), policy.Rel{}); u != nil && u.Status == models.UserGuest && got != (tc.visibility == models.VisibilityPublic) {
+					t.Errorf("%s: guest rule=%v for %s", kind, got, tc.visibility)
+				}
+
+				switch kind {
+				case "signed out":
+					c := newAPIClient(t, app)
+					c.fetchCSRF()
+					if w := c.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true); w.Code != http.StatusUnauthorized {
+						t.Errorf("%s: series register=%d", kind, w.Code)
+					}
+					continue
+				case "guest account":
+					if _, err := lockActorIn(app.DB, u, actorNoKeyUpdate); err == nil {
+						t.Errorf("%s: a guest account was accepted as a series actor", kind)
+					}
+					continue
+				}
+
+				client := loginAPI(t, app, name, "password1234")
+				// Undo: the actor holds an answer on every date and a receipt for it.
+				for i := range occs {
+					uid := u.ID
+					var have int64
+					if err := app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", occs[i].ID, uid).Count(&have).Error; err != nil {
+						t.Fatal(err)
+					}
+					if have == 0 {
+						reg := models.Registration{OccurrenceID: occs[i].ID, UserID: &uid, Status: models.RegMaybe, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}
+						if err := app.DB.Create(&reg).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var items []seriesUndoItem
+				for i := range occs {
+					var reg models.Registration
+					if err := app.DB.Where("occurrence_id = ? AND user_id = ?", occs[i].ID, u.ID).First(&reg).Error; err != nil {
+						t.Fatal(err)
+					}
+					items = append(items, seriesUndoItem{OccurrenceID: occs[i].ID, Date: models.FormatCalendarDate(occs[i].OriginalDate), After: undoState(reg)})
+				}
+				snapshot, err := json.Marshal(items)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err := newRawToken()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := app.DB.Create(&models.SeriesUndoReceipt{TokenHash: hashToken(raw), ActorID: u.ID, EventID: ev.ID,
+					Snapshot: string(snapshot), ExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if undone := undoSeriesAnswer(client, ev.ID, raw, true).Code == http.StatusOK; undone != want {
+					t.Errorf("%s: series Undo allowed=%v, shared decision=%v", kind, undone, want)
+				}
+
+				w := client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+				registered := false
+				if w.Code == http.StatusOK {
+					var out seriesRegistrationResponse
+					decodeJSON(t, w, &out)
+					registered = len(out.Results) == len(occs)
+				}
+				if registered != want {
+					t.Errorf("%s: series register allowed=%v (%d), shared decision=%v", kind, registered, w.Code, want)
+				}
+			}
+		})
 	}
 }

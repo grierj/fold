@@ -721,7 +721,7 @@ func TestOccurrenceRegistrationCoreRejectsUnverifiedTeenAndWrongPurpose(t *testi
 			if err != nil {
 				return err
 			}
-			_, err = f.app.addAccountRegistrationLocked(tx, &ev, locked, subject.ID, f.leader.ID, managerRegistrationOptions{approved: proof, mode: models.AttendanceInPerson}, time.Now().UTC(), "")
+			_, err = f.app.addAccountRegistrationLocked(tx, &ev, locked, subject.ID, &f.leader.ID, managerRegistrationOptions{approved: proof, mode: models.AttendanceInPerson}, time.Now().UTC(), "")
 			return err
 		})
 		if !errors.Is(err, errPeopleAddForbidden) {

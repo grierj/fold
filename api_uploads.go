@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"fold/internal/images"
+	"fold/internal/jobs"
 	"fold/internal/policy"
 	"fold/storage"
 
@@ -178,12 +181,12 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 	oldURL := g.ImageURL
 	g.ImageURL = a.Uploads.URL(key)
 	if err := a.DB.Model(g).Update("image_url", g.ImageURL).Error; err != nil {
-		_ = a.Uploads.Delete(ctx, key)
+		a.deleteCoverBlob(ctx, key)
 		jsonError(c, http.StatusInternalServerError, "could not save cover")
 		return
 	}
 	if oldKey, ok := uploadKeyFromURL(oldURL); ok {
-		_ = a.Uploads.Delete(ctx, oldKey)
+		a.deleteCoverBlob(ctx, oldKey)
 	}
 	c.JSON(http.StatusOK, coverUploadResponseJSON{ImageURL: g.ImageURL})
 }
@@ -199,9 +202,20 @@ func (a *App) apiDeleteGroupCover(c *gin.Context) {
 		return
 	}
 	if oldKey, ok := uploadKeyFromURL(oldURL); ok {
-		_ = a.Uploads.Delete(c.Request.Context(), oldKey)
+		a.deleteCoverBlob(c.Request.Context(), oldKey)
 	}
 	c.JSON(http.StatusOK, gin.H{})
+}
+
+// deleteCoverBlob removes a cover no group row points at any more. The row is
+// already right, so a failure only leaves an unreferenced file: it is logged
+// (the store's errors carry no key) and not retried. Avatars have a cleanup
+// job because their owner folder can be listed; covers have no such store
+// contract, and building one is out of proportion to an orphaned image.
+func (a *App) deleteCoverBlob(ctx context.Context, key string) {
+	if err := a.Uploads.Delete(ctx, key); err != nil {
+		log.Printf("group cover: old file not removed: %s", jobs.CleanError(err))
+	}
 }
 
 // serveUpload serves a stored upload. Keys are validated so nothing outside

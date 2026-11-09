@@ -106,14 +106,26 @@ func (e errNeedSuccessors) apiAnswer() *apiError {
 	return errNeedsSuccessor.with(gin.H{"groups": e.groups})
 }
 
+// leadershipExit is why a leader is handing off, and what that does to the rest
+// of their memberships: deletion ends them all, while disabling keeps them as
+// plain memberships (DEC-38). reason is the audit meta value.
+type leadershipExit struct {
+	reason           string
+	keepsMemberships bool
+}
+
+var (
+	exitAccountDeleted  = leadershipExit{reason: "account_deleted"}
+	exitAccountDisabled = leadershipExit{reason: "account_disabled", keepsMemberships: true}
+)
+
 // handOffLeadership runs inside the delete or disable transaction. For each
 // group leaving solely leads it makes successors[groupID] a leader (adding
 // them to the group if needed, as an admin may not be a member), points the
-// primary contact at them, and audits it with reason. Then deletion ends all
+// primary contact at them, and audits it with exit.reason. Then deletion ends all
 // of leaving's memberships, while disabling keeps them as plain
-// memberships (DEC-38).
-func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map[string]uint, reason string) error {
-	actor := apiUser(c)
+// memberships (DEC-38). actor and ip are the acting admin's.
+func handOffLeadership(tx *gorm.DB, actor uint, ip string, leaving uint, successors map[string]uint, exit leadershipExit) error {
 	groups, err := soleLedGroups(tx, leaving)
 	if err != nil {
 		return err
@@ -174,25 +186,23 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 			return err
 		}
 		err := auditAndNotifyLeadership(tx, audit.Entry{
-			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: g.ID,
+			Actor: &actor, Action: audit.RoleChanged, TargetType: "group", TargetID: g.ID,
 			Meta: map[string]any{"userId": sid, "oldRole": oldRole, "newRole": models.MembershipLeader,
-				"reason": reason, "departingUserId": leaving},
-			IP: c.ClientIP(),
+				"reason": exit.reason, "departingUserId": leaving},
+			IP: ip,
 		})
 		if err != nil {
 			return err
 		}
 	}
-	if reason == "account_deleted" {
-		if err := tx.Where("user_id = ?", leaving).Delete(&models.Membership{}).Error; err != nil {
+	if exit.keepsMemberships {
+		// They are hidden while the account is disabled, and any leadership
+		// becomes plain membership.
+		if err := demoteEverywhere(tx, actor, ip, leaving, exit.reason); err != nil {
 			return err
 		}
-	} else {
-		if err := demoteEverywhere(c, tx, leaving, reason); err != nil {
-			// Disabling keeps memberships (DEC-38); they are hidden while the
-			// account is disabled, and any leadership becomes plain membership.
-			return err
-		}
+	} else if err := tx.Where("user_id = ?", leaving).Delete(&models.Membership{}).Error; err != nil {
+		return err
 	}
 	// Groups they co-led still show them as the primary contact; move it.
 	var contactOf []models.Group
@@ -210,8 +220,7 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 // demoteEverywhere makes every leadership of userID a plain membership, with
 // a membership.role_changed audit row per group (DEC-38: a disabled
 // account keeps its memberships but never its leadership).
-func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) error {
-	actor := apiUser(c)
+func demoteEverywhere(tx *gorm.DB, actor uint, ip string, userID uint, reason string) error {
 	var led []models.Membership
 	if err := tx.Where("user_id = ? AND role = ? AND status = ?", userID, models.MembershipLeader, models.MembershipActive).
 		Find(&led).Error; err != nil {
@@ -222,10 +231,10 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 			return err
 		}
 		err := auditAndNotifyLeadership(tx, audit.Entry{
-			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
+			Actor: &actor, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
 			Meta: map[string]any{"userId": userID, "oldRole": models.MembershipLeader,
 				"newRole": models.MembershipMember, "reason": reason},
-			IP: c.ClientIP(),
+			IP: ip,
 		})
 		if err != nil {
 			return err

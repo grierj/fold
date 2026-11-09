@@ -507,7 +507,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
 			var err error
-			userID, err = a.approveHouseholdConversion(tx, c, req, conversionLocked)
+			userID, err = a.approveHouseholdConversion(tx, c.ClientIP(), req, conversionLocked)
 			if err != nil {
 				return err
 			}
