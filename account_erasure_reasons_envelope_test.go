@@ -105,10 +105,6 @@ func TestReasonSetDigestVectors(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The strict envelope reader.
-// ---------------------------------------------------------------------------
-
 const (
 	envDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	envHash   = "ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01ab01"
@@ -303,7 +299,6 @@ func FuzzReasonEnvelope(f *testing.F) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Keys written with JSON escapes. encoding/json decodes a key before the reader
 // compares it, so an escaped spelling is the same key as the plain one: allowed
 // once, a collision twice, and a case variant when it decodes to one.
@@ -313,7 +308,6 @@ func FuzzReasonEnvelope(f *testing.F) {
 // backslash and a quote) and expanded by jsonEsc, so that no editor, generator
 // or raw-string rule can quietly turn them back into plain letters;
 // TestReasonEnvelopeEscapesAreReal checks that they stayed escapes.
-// ---------------------------------------------------------------------------
 
 // jsonEsc expands "#u" into a backslash and u, and "#q" into a backslash and a quote.
 func jsonEsc(s string) string {
@@ -450,14 +444,12 @@ func TestReasonEnvelopeEscapesAreReal(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // What parsing costs in memory, apart from the consume. Reading the review
 // allocates in proportion to the body (the value is held, decoded and checked)
 // and that is unavoidable; it is measured here alone, with a tight per-item
 // slope, so the consume's own retention can be asserted claim-independent in
 // the database test. Measured at the time of writing: about 2.3 bytes per
 // claimed reason to parse the envelope and 1.4 to scan the top-level keys.
-// ---------------------------------------------------------------------------
 
 func allocated(f func()) uint64 {
 	var before, after runtime.MemStats

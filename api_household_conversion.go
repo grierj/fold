@@ -55,7 +55,6 @@ func openConversionRequests(tx *gorm.DB) *gorm.DB {
 	return tx.Model(&models.AccountRequest{}).Where("source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved)
 }
 
-// conversionDetailsMatch: the person is still the one the request named.
 func conversionDetailsMatch(person *models.HouseholdPerson, req *models.AccountRequest) bool {
 	return person.FullName() == req.Name && formatBirthDate(person.BirthDate) == formatBirthDate(req.BirthDate)
 }

@@ -119,7 +119,6 @@ func (a *App) guardianEmailPreviewActors(tx *gorm.DB, payload guardianEmailAutho
 	return guardian, teen, guardianEmailStillBinds(tx, payload, guardian, teen)
 }
 
-// guardianEmailStillBinds: the facts the link was signed over still hold.
 func guardianEmailStillBinds(tx *gorm.DB, payload guardianEmailAuthority, guardian, teen *models.User) error {
 	consentID, err := latestAccountConsentID(tx, teen.ID)
 	if err != nil || consentID != payload.ConsentID || guardian.SessionVersion != payload.SessionVersion || mail.NormalizeAddress(guardian.Email) != payload.GuardianEmail {

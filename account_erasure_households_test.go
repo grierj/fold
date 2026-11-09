@@ -301,12 +301,10 @@ func erasureHouseholdLockProblems(sources guardkit.Sources) []string {
 	return bad
 }
 
-// ---------------------------------------------------------------------------
 // The scene: a household H held by a member (the writer) and by the person the
 // erasure removes (the victim, who holds a seat in H). Every household writer
 // that notifies the victim while it holds H, in both orders, with the real
 // router, the real session cookie and the real DELETE.
-// ---------------------------------------------------------------------------
 
 type hlScene struct {
 	coreErasureScene
@@ -804,10 +802,6 @@ func TestHouseholdNoWaitPromotionRecipient(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// Households selected through PERS (R4-3b-1; lockErasureHouseholdsIn).
-// ---------------------------------------------------------------------------
-
 // The households the erasure locks are the union of the account's seat and the
 // households of PERS, read unscoped (a soft-deleted person counts), each once,
 // ascending. This runs lockErasureHouseholdsIn directly (not through DELETE), so
@@ -1031,13 +1025,11 @@ func TestHouseholdDeadlockThroughAnOccurrenceIsRecordedNotRetried(t *testing.T) 
 	}
 }
 
-// ---------------------------------------------------------------------------
 // The household step (M7.4 R4-3b-2): PERS integrity, the seat, PERS
 // anonymization, a staged person's registrations, guardian links, teen-consent
 // tokens, sole-subject households and the erasure report. These tests seed rows
 // directly and use the real DELETE; the barrier and lock-order tests above and
 // below it use the proxied handle.
-// ---------------------------------------------------------------------------
 
 // hrReport is the "erasure" object of a 200 answer.
 func hrReport(t *testing.T, r httpResult) erasureReportJSON {
@@ -1736,13 +1728,11 @@ func TestHouseholdStagedErasureMeetsOccurrenceWriters(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // The 9.6 barriers with the household step in place (R4-3b-2): rows 1, 3, 4 and
 // 5 and first-use creation, erasure first and writer first, assert what the
 // erasure leaves in the household (closing R4-3a's limit, which only proved
 // that neither side deadlocked); rows 6 and 7 refuse an erased holder, inviter
 // or actor; fixtures (g) and (h) of T16.
-// ---------------------------------------------------------------------------
 
 // hbRoute is the hwRoute of that name. The person-add routes add a child, so a
 // pending guardian link and an admin waiting task come with the person.
@@ -2063,8 +2053,15 @@ func TestHouseholdBarriersFirstUseGapRefusesTheSecondStep(t *testing.T) {
 			del := hbErase(s)
 			waiter := waitForRowLockWaiter(t, s.app)
 			waitDBBlocked(t, s.app.DB, waiter, int(writerPID.Load()))
+			// Rows have no lock queue: when the first step commits, the erasure
+			// and the second step's lock request race for the user row. Hold the
+			// second step before it asks, so the erasure takes the row first.
+			secondReached, secondRelease := erasureTestPause(t, s.app.DB, erasureTestPoint{Processor: "query",
+				Step: "gorm:query", Table: "users", Locking: true, NotPID: int64(waiter)})
 			release()
+			awaitDBSignal(t, secondReached)
 			rep := hrReport(t, awaitResult(t, del))
+			secondRelease()
 			got := awaitResult(t, res)
 			if got.code != http.StatusUnauthorized || !strings.Contains(got.body, `"unauthorized"`) {
 				t.Fatalf("%s: %d %s, want 401 unauthorized for the second step", r.name, got.code, got.body)
@@ -2324,7 +2321,6 @@ func TestHouseholdConversionWritersRefuseAnErasedInviterOrActor(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // R4-3b-LOCK-UPGRADE (9.6): the erasure of an account with a staged person
 // against occurrence writers, both orders, with SQLSTATE evidence.
 //
@@ -2349,7 +2345,6 @@ func TestHouseholdConversionWritersRefuseAnErasedInviterOrActor(t *testing.T) {
 //     with the erasure's ascending occurrence run; it is the one cycle left, the
 //     database breaks it with one 40P01, the loser rolls back whole and nothing
 //     retries it (TestHouseholdStagedErasureMeetsOccurrenceWriters).
-// ---------------------------------------------------------------------------
 
 // hlStagedSecondDate gives the scene's victim a staged person in H with a going
 // registration on each of two dates (two groups, ascending occurrence ids),

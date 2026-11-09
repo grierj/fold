@@ -16,11 +16,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Admin: guardian links (M1.9 slice 1, DEC-32). A child or teen added to
 // a household waits here; only an admin confirms it, with a note on how
 // it was checked. There is no auto-confirm path.
-// ---------------------------------------------------------------------------
 
 type guardianLinkJSON struct {
 	ID             uint       `json:"id"`

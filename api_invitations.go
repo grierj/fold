@@ -16,11 +16,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// ---------------------------------------------------------------------------
 // Invitations (M1.2, 5.10, DEC-4): admin and leader invitations, with no
 // approval step. The person sets a password on acceptance and gets an
 // active account.
-// ---------------------------------------------------------------------------
 
 // leaderInviteDailyLimit: a leader may send 20 invitations per rolling day
 // (10.1). The 21st gets 429 and is audited. Admins set the limit later;
@@ -35,7 +33,6 @@ func writeInvitationRefusal(tx *gorm.DB, actor uint, reason, ip string) error {
 		Meta: map[string]any{"reason": reason, "limit": leaderInviteDailyLimit}, IP: ip})
 }
 
-// errGroupNotActive: the invitation's group is no longer active.
 var errGroupNotActive = errors.New("group not active")
 var errInvitationLimit = apiErr(http.StatusTooManyRequests, "invite_limit", fmt.Sprintf("invitation limit reached (%d per day)", leaderInviteDailyLimit))
 
@@ -452,5 +449,4 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: &user, PendingConsent: fresh.Status == models.UserPendingConsent})
 }
 
-// errNeedName: the accept form needs a name and the invitation had none.
 var errNeedName = errors.New("name required")

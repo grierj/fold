@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fold/internal/audit"
+	"fold/internal/guardkit"
 	"fold/internal/notify"
+	"go/ast"
 	"gorm.io/gorm"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -272,14 +273,31 @@ func TestContactPrivacyChurchEventHost(t *testing.T) {
 	}
 }
 
+// toUserJSON carries a user's email and phone unconditionally. Only the files
+// that show a person their own account, or an admin an account they manage, may
+// call it; every other surface presents a person through the contact rules.
 func TestContactPresentationDoesNotUseUnrestrictedUserJSON(t *testing.T) {
-	for _, path := range []string{"api_groups.go", "api_events.go", "api_event_access.go", "api_contact.go", "registration_subjects.go"} {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+	allowed := map[string]bool{"api_auth.go": true, "api_admin.go": true, "api_invitations.go": true,
+		"api_profile.go": true, "api_account_requests.go": true}
+	callers := map[string]bool{}
+	for _, f := range guardkit.Production(t).Parse(0).Package("main") {
+		ast.Inspect(f.AST, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "toUserJSON" {
+					callers[f.Path] = true
+				}
+			}
+			return true
+		})
+	}
+	for path := range callers {
+		if !allowed[path] {
+			t.Errorf("%s calls toUserJSON, which presents a user's contact details unconditionally", path)
 		}
-		if strings.Contains(string(src), ".toUserJSON(") {
-			t.Errorf("%s uses unrestricted user presentation", path)
+	}
+	for path := range allowed {
+		if !callers[path] {
+			t.Errorf("%s no longer calls toUserJSON: shrink the allowed list (or the scan stopped seeing it)", path)
 		}
 	}
 }

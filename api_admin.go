@@ -22,10 +22,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
-// Admin: user management
-// ---------------------------------------------------------------------------
-
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
 	if err := a.DB.Order("lower(name), email").Find(&users).Error; err != nil {
@@ -220,14 +216,12 @@ func adminRuleRefusal(change adminChange, self bool) *apiError {
 	return adminRuleRefusals[change][0]
 }
 
-// adminRuleRefusals are the last-admin and self answers, by change.
 var adminRuleRefusals = [...][2]*apiError{
 	adminDemote:  {errCannotDemoteLastAdmin, errCannotDemoteSelf},
 	adminDisable: {errCannotDisableLastAdmin, errCannotDisableSelf},
 	adminDelete:  {errCannotDeleteLastAdmin, errCannotDeleteSelf},
 }
 
-// isAdminRuleRefusal reports whether err is one of adminRuleRefusals.
 func isAdminRuleRefusal(err error) bool {
 	for _, pair := range adminRuleRefusals {
 		if errors.Is(err, pair[0]) || errors.Is(err, pair[1]) {
@@ -262,8 +256,6 @@ func keepsAnAdminIn(tx *gorm.DB, actor, target *models.User, change adminChange)
 	return nil
 }
 
-// errTeenActivation: a teen account waiting for consent cannot be made active
-// by an edit; consent activates it.
 var errTeenActivation = apiErr(http.StatusBadRequest, "", "a teen account waiting for consent becomes active only when consent is granted")
 
 // errAdminTargetGone: the person an admin edit names was erased while the edit
@@ -484,7 +476,6 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
 }
 
-// deleteUserBody is the body of DELETE /admin/users/:id.
 type deleteUserBody struct {
 	// AttemptID is the id minted for this press (POST
 	// /admin/operation-attempts). Old clients send none and keep today's

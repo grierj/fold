@@ -21,7 +21,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// jsonString marshals v, falling back to "{}" (payloads are small maps).
 func jsonString(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -53,7 +52,6 @@ const (
 	digestLen     = (sha256.Size*8 + 5) / 6
 )
 
-// newRawToken makes a 256-bit token, encoded for URLs.
 func newRawToken() (string, error) {
 	b := make([]byte, rawTokenBytes)
 	if _, err := rand.Read(b); err != nil {
@@ -62,14 +60,11 @@ func newRawToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// hashToken is the SHA-256 of the raw token: what is stored.
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// newTokenAndHash makes a raw capability and its stored hash, for invitations,
-// guest verifications, registrations and conversions.
 func newTokenAndHash() (raw, hash string, err error) {
 	raw, err = newRawToken()
 	if err != nil {
@@ -248,7 +243,6 @@ func rotateAccountToken(tx *gorm.DB, id uint, kind string, userID uint) (raw str
 		"id = ? AND kind = ? AND user_id = ? AND used_at IS NULL AND "+sqlStillLive, id, kind, userID)
 }
 
-// sqlInvitationOpen: not accepted, not revoked.
 const sqlInvitationOpen = "accepted_at IS NULL AND revoked_at IS NULL"
 
 // rotateInvitationToken replaces only the capability, never its deadline.
@@ -278,8 +272,6 @@ func rotateGuestSignupToken(tx *gorm.DB, id uint) (string, error) {
 	return raw, nil
 }
 
-// liveInvitation finds an invitation by its raw token: not accepted, not
-// revoked and not expired.
 func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {
 	var inv models.Invitation
 	res := tx.Where("token_hash = ? AND "+sqlInvitationOpen+" AND "+sqlStillLive, hashToken(raw)).Limit(1).Find(&inv)
@@ -292,8 +284,6 @@ func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {
 	return &inv, nil
 }
 
-// claimInvitation is the single-use claim of an invitation: it marks the row
-// accepted only if the presented capability is still its hash, open and live.
 func claimInvitation(tx *gorm.DB, id uint, raw string, at time.Time) error {
 	res := tx.Model(&models.Invitation{}).
 		Where("id = ? AND token_hash = ? AND "+sqlInvitationOpen+" AND "+sqlStillLive, id, hashToken(raw)).

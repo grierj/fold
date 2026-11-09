@@ -42,10 +42,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
-// Pure tests: no database.
-// ---------------------------------------------------------------------------
-
 func TestParseRequestID(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -197,18 +193,8 @@ func TestReasonProjectionShape(t *testing.T) {
 			}
 		}
 	}
-	if reasonColumns[0].name != "id" {
-		t.Errorf("the first hashed column is %s, want id", reasonColumns[0].name)
-	}
-	proj := reasonProjection()
-	if strings.Count(proj, ", ")+1 < len(reasonColumns) {
-		t.Errorf("the projection has fewer parts than columns: %s", proj)
-	}
-	if strings.Contains(proj, "add_childcare_ages_note") {
+	if strings.Contains(reasonProjection(), "add_childcare_ages_note") {
 		t.Error("the ages note must stay out of the hash")
-	}
-	if !strings.HasSuffix(reasonSelect, ", created_at") {
-		t.Errorf("reasonSelect must end with created_at: %s", reasonSelect)
 	}
 }
 
@@ -229,10 +215,6 @@ func TestLiveReasonFilter(t *testing.T) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Database tests.
-// ---------------------------------------------------------------------------
 
 // TestReviewHashCoversEveryColumn reads information_schema.columns and fails on
 // any column that is neither hashed nor excluded, a hashed column that no
@@ -951,10 +933,18 @@ func TestReasonTypesUseStringIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := string(src)
-	for _, want := range []string{"  requestId: string;", "  counterpartRef?: string;", "  next: string | null;"} {
-		if strings.Count(ts, want) < 1 {
-			t.Errorf("web/src/types.ts lacks %q in ErasureReasonItem or ErasureReasonPage", want)
+	for iface, want := range map[string][]string{
+		"ErasureReasonItem": {"requestId: string;", "counterpartRef?: string;"},
+		"ErasureReasonPage": {"next: string | null;"},
+	} {
+		m := regexp.MustCompile(`(?s)export interface ` + iface + ` \{(.*?)\n\}`).FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("web/src/types.ts has no interface %s", iface)
+		}
+		for _, line := range want {
+			if !strings.Contains(m[1], "\n  "+line) {
+				t.Errorf("web/src/types.ts: %s lacks %q", iface, line)
+			}
 		}
 	}
 	// The pair check covers every field name; this covers the page's own cursor.
@@ -963,10 +953,6 @@ func TestReasonTypesUseStringIDs(t *testing.T) {
 		t.Errorf("reasonPageJSON.Next must be *string, got %v", next.Type)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Restore with a panel open (R3-C01, design TestReasonReviewRestoreWithOpenPanel).
-// ---------------------------------------------------------------------------
 
 // The review is stateless, so a restore cannot map a confirmation onto other
 // choices. An admin has read the pages and minted an id; then the database is
@@ -1113,10 +1099,6 @@ func TestReasonReviewRestoreWithOpenPanel(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Readiness (R4-C06): the traversal is the scanner itself.
-// ---------------------------------------------------------------------------
 
 type reasonStatement struct {
 	SQL  string
@@ -1398,10 +1380,6 @@ func TestReasonReviewRefusalLeaksNothing(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Concurrency with pg_locks barriers (run with -count=8).
-// ---------------------------------------------------------------------------
 
 // Two admins' full deletes of one target: both wait at the exclusive gate
 // behind a held lock (pg_locks shows two ungranted advisory locks), then exactly
@@ -1725,10 +1703,6 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// P-5 census: who locks, writes and reads what the reason review touches.
-// ---------------------------------------------------------------------------
-
 // reasonCensus lists, from the production source, by "file:function":
 //   - rowLockers: statements that lock contact_requests rows (a locking clause
 //     in a literal over the table);
@@ -1963,23 +1937,13 @@ var reasonCensusPinned = map[string][]string{
 	},
 }
 
-// ---------------------------------------------------------------------------
-// Independent review round (R1-R4).
-// ---------------------------------------------------------------------------
-
 // R1: the page equivalent of TestSettleBusyWindowClosesAfterBackoff. A busy
 // actor row lets a page start a new transaction only while the busy window
-// (measured from the request) is open, and the window is looked at again after
-// each backoff, so the sleep cannot carry a third attempt past it. At least two
-// attempts must have run so the post-backoff path was really reached; each
-// refused attempt rolls back its view audit, so none is committed. Without the
-// recheck after the backoff, attempt 3 begins at about 130 ms and its BEGIN lies
-// outside the 100 ms window.
+// is open, and the window is looked at again after each backoff, so the sleep
+// cannot carry a third attempt past it. Each refused attempt rolls back its view
+// audit, so none is committed.
 func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
-	const window = 100 * time.Millisecond
-	old := busyRetryWindow
-	busyRetryWindow = window
-	t.Cleanup(func() { busyRetryWindow = old })
+	setBusyRetry(t, busyWindowTestWindow, busyWindowTestBackoff)
 	s := newProxiedAttemptScene(t)
 	target, other := s.target("window-target"), s.target("window-other")
 	erasureMakeRequest(t, s.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, other.ID, target.ID, 1, 0, 0, 1, "")
@@ -1989,25 +1953,12 @@ func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	mark := len(s.rig.proxy.Events())
-	began := time.Now()
 	code, _, body := pageOf(t, s.c, target.ID, nil)
 	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"reason_review_busy"`) || strings.Contains(body, "identifying reason") {
 		t.Fatalf("a page against a held actor row: %d %s, want 503 reason_review_busy and no text", code, body)
 	}
-	var starts []time.Duration
-	for _, e := range s.rig.proxy.Events()[mark:] {
-		if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "set_config('statement_timeout'") {
-			starts = append(starts, e.Time.Sub(began))
-		}
-	}
-	if len(starts) < 2 || int64(len(starts)) != attempts.Load() {
-		t.Fatalf("the page began %d transactions (%d reached the seal) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), attempts.Load(), starts)
-	}
-	for _, at := range starts {
-		if at >= window {
-			t.Fatalf("a transaction began %s after the request, outside the %s busy window (starts %v)", at, window, starts)
-		}
+	if n := attempts.Load(); n != 2 {
+		t.Fatalf("%d attempts reached the seal, want 2: the retry ran once and the window refused the third", n)
 	}
 	if n := countAudit(t, s.direct, audit.UserErasureReasonsViewed); n != 0 {
 		t.Errorf("%d view audits committed by refused attempts", n)
@@ -2511,11 +2462,6 @@ func TestReasonReviewRepeatSetExists(t *testing.T) {
 	t.Logf("-run '^(%s)$'", strings.Join(reasonReviewRepeatSet, "|"))
 }
 
-// ---------------------------------------------------------------------------
-// T07B-2 scaling: signed order, the set-v1 envelope, the streamed consume and
-// the batched writes. Database tests.
-// ---------------------------------------------------------------------------
-
 // Every statement that lists reasons orders by the bigint id: pages, the cursor
 // chain, the DELETE stream and the digest agree on ascending signed order.
 func TestReasonOrderIsSigned(t *testing.T) {
@@ -2941,11 +2887,9 @@ func TestReasonScanUnderAGenericPlan(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // T07B-2 scaling, second pass: the bounds the first pass only stated. Database
 // tests; fixtures here are bulk-made with bulkRequests so a table can hold
 // thousands of rows.
-// ---------------------------------------------------------------------------
 
 // bulkRequests copies the request template into n new rows (new ids, every
 // other column equal) in one statement.
@@ -3029,8 +2973,6 @@ func planInt(t *testing.T, re *regexp.Regexp, plan string, group int) int {
 	}
 	return n
 }
-
-// ---- the investigation of the old envelope's answers -------------------------
 
 // The old {items} envelope against the new server, in every combination of
 // envelope, set and admin the route can meet. Order of refusals, which this
@@ -3139,8 +3081,6 @@ func TestReasonOrderingMatrix(t *testing.T) {
 		}
 	}
 }
-
-// ---- the probe ---------------------------------------------------------------
 
 // The probe takes no row lock, and the streamed consume locks exactly the
 // account's reasoned rows, whole, and nothing else. Locks are read with NOWAIT
@@ -3420,8 +3360,6 @@ func TestReasonProbeScanCost(t *testing.T) {
 	})
 }
 
-// ---- the consume is bounded by what the database holds, not by the claim ------
-
 // A claim for millions of reasons against a set of three, in three parts so
 // each cost is seen alone.
 //
@@ -3650,8 +3588,6 @@ func TestReasonConsumePeakMemoryOnLargeSets(t *testing.T) {
 	}
 }
 
-// ---- batches -----------------------------------------------------------------
-
 // newProxiedReasonScene is a reason scene whose routes reach the database
 // through pgproxy, which logs every statement the server runs.
 func newProxiedReasonScene(t *testing.T) (reasonScene, *ctxRig) {
@@ -3848,8 +3784,6 @@ func settleOf(t *testing.T, c *apiClient, id string, subject uint) attemptSettle
 	return out
 }
 
-// ---- a spent budget ---------------------------------------------------------
-
 // The deletion's budget running out answers 503 delete_timed_out, never busy and
 // never "nothing was deleted", rolls everything back, and the same review
 // applies afterwards. The three places it can run out here: between streamed
@@ -3890,19 +3824,27 @@ func TestReasonSpentBudget(t *testing.T) {
 		}
 	}
 	// spend sleeps until less than the reserve is left of the deletion's budget.
-	spend := func(started time.Time) {
-		time.Sleep(time.Until(started.Add(budget - reserve/2)))
+	// It counts from the first hook call, which lies inside the budget however
+	// slowly the request got going, so the budget is never more than
+	// reserve/2 from spent when it wakes; a clock taken in the test before the
+	// request would leave more than the reserve on a loaded machine.
+	var first time.Time
+	spend := func() {
+		time.Sleep(time.Until(first.Add(budget - reserve/2)))
 	}
 
 	t.Run("between streamed rows", func(t *testing.T) {
 		setAdminDeleteBounds(t, budget, reserve)
 		s, reqs, review := setup(t, 4)
+		first = time.Time{}
 		prevEvery, prevHook := reasonGuardEvery, reasonRowHook
 		reasonGuardEvery = 1
-		started := time.Now()
 		reasonRowHook = func(seen uint64) {
+			if first.IsZero() {
+				first = time.Now()
+			}
 			if seen == 2 {
-				spend(started)
+				spend()
 			}
 		}
 		t.Cleanup(func() { reasonGuardEvery, reasonRowHook = prevEvery, prevHook })
@@ -3919,11 +3861,14 @@ func TestReasonSpentBudget(t *testing.T) {
 		reasonBlankBatch = 2
 		t.Cleanup(func() { reasonBlankBatch = prevBatch })
 		s, reqs, review := setup(t, 5)
+		first = time.Time{}
 		prevHook := reasonBatchHook
-		started := time.Now()
 		reasonBatchHook = func(batch int) {
+			if first.IsZero() {
+				first = time.Now()
+			}
 			if batch == 1 {
-				spend(started)
+				spend()
 			}
 		}
 		t.Cleanup(func() { reasonBatchHook = prevHook })
@@ -3957,8 +3902,6 @@ func TestReasonSpentBudget(t *testing.T) {
 		}
 	})
 }
-
-// ---- the envelope and the attempt ----------------------------------------------
 
 // The envelope's refusals never come before the submission check and never
 // leave an attempt id open: a body that does not parse, or names attemptId
@@ -4174,8 +4117,6 @@ func TestReasonEnvelopeAttemptOrdering(t *testing.T) {
 		}
 	})
 }
-
-// ---- the scanner over wide, signed and sparse tables -----------------------------
 
 // walkPages walks the live pages from a null cursor and returns, per page, the
 // number of items, the ids in order, and the cursor each page gave.

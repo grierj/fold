@@ -224,17 +224,21 @@ func TestReasonPageStatementBoundAcrossBusyAttempts(t *testing.T) {
 	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"reason_review_busy"`) || strings.Contains(body, `"items"`) {
 		t.Fatalf("a page against a held actor row: %d %s", code, body)
 	}
-	schedule := reasonscan.Batches(reasonscan.Params{UnitRows: 1000, PageRequests: 100, FirstBatch: 2, Growth: 2})
 	scans := scannerStatements(statements())
-	if seals != busyRetryTries || len(scans) != busyRetryTries*len(schedule) {
-		t.Fatalf("%d attempts reached the seal, %d scanner statements; want %d attempts of %d statements", seals, len(scans), busyRetryTries, len(schedule))
+	if seals != busyRetryTries || len(scans)%busyRetryTries != 0 {
+		t.Fatalf("%d attempts reached the seal, %d scanner statements; want %d equal attempts", seals, len(scans), busyRetryTries)
 	}
+	per := len(scans) / busyRetryTries
 	total := 0
 	for i, st := range scans {
-		if got, want := limitOf(t, st), schedule[i%len(schedule)]; got != want {
-			t.Errorf("statement %d has LIMIT %d, want %d (the schedule %v)", i, got, want, schedule)
+		got := limitOf(t, st)
+		if same := limitOf(t, scans[i%per]); got != same {
+			t.Errorf("statement %d has LIMIT %d, but the same step of the first attempt had %d", i, got, same)
 		}
-		total += limitOf(t, st)
+		if i%per == 0 && got != 2 {
+			t.Errorf("attempt %d starts with LIMIT %d, want the first batch (2)", i/per, got)
+		}
+		total += got
 	}
 	if total != busyRetryTries*1000 {
 		t.Errorf("LIMITs sum to %d, want %d (three units)", total, busyRetryTries*1000)

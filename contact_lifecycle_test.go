@@ -784,7 +784,6 @@ func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-CTX: the context-bound contact transaction (contactMutationCtx).
 //
 // An App whose handle goes through the fault proxy (internal/testdb/pgproxy.go)
@@ -793,7 +792,6 @@ func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
 // pg_locks and pg_stat_activity for the backend the proxy log names. Tests that
 // set the package bounds restore them and stay serial (no root-package test
 // uses t.Parallel).
-// ---------------------------------------------------------------------------
 
 func setContactBounds(t *testing.T, reserve, serverCap time.Duration) {
 	t.Helper()
@@ -913,12 +911,15 @@ func (r *ctxRig) lockRows(pid int, where string) int64 {
 // awaitCancel waits until the proxy has logged the driver's cancel request with
 // the given action (dropped or held). The cancel is sent from the driver's own
 // goroutine after the deadline, so the call returning does not mean it arrived.
-func (r *ctxRig) awaitCancel(action string) {
+func (r *ctxRig) awaitCancel(action string) { r.awaitEvent(testdb.KindCancel, action) }
+
+// awaitEvent waits until the proxy has logged an event of that kind and action.
+func (r *ctxRig) awaitEvent(kind, action string) {
 	r.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for len(r.proxy.Find(testdb.KindCancel, action)) == 0 {
+	for len(r.proxy.Find(kind, action)) == 0 {
 		if time.Now().After(deadline) {
-			r.t.Fatalf("the proxy never logged a %s cancel", action)
+			r.t.Fatalf("the proxy never logged a %s %s", action, kind)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -995,6 +996,9 @@ func TestContactMutationCtxGateWaitExpiry(t *testing.T) {
 	bound := c.deadline.Sub(c.start) + contactServerCap + 300*time.Millisecond + time.Second
 	released := r.awaitReleased(pid, bound)
 	t.Logf("returned %s after D; backend released %s after D", c.returned.Sub(c.deadline), released.Sub(c.deadline))
+	// The cancel alone frees the backend; the Terminate follows the return, so
+	// wait for it instead of assuming it is already logged.
+	r.awaitEvent(testdb.KindTerminate, testdb.ActionForwarded)
 	if len(r.proxy.Find(testdb.KindCancel, testdb.ActionForwarded)) != 1 || len(r.proxy.Find(testdb.KindTerminate, testdb.ActionForwarded)) != 1 {
 		t.Errorf("want the cancel and Terminate forwarded: %+v", r.proxy.Events())
 	}
@@ -1804,7 +1808,6 @@ func (c *contactCleanupConn) Rollback() error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
 // T07B-1b: the actor seal against household conversion (R5-C01, R6-C02,
 // R7-C01, R7-C02). TestActorSealVsConversion runs the real DELETE and
 // invitation-acceptance routes with the seams of the design (deleteBeforeSeal,
@@ -1815,7 +1818,6 @@ func (c *contactCleanupConn) Rollback() error {
 // (E2) a parked holder is idle in transaction and waits on nothing; (E3) held
 // modes come from NOWAIT probes on a third connection, each rolled back at once;
 // (E4) later entries of deleteBeforeSeal re-run (E2) and the probe on A only.
-// ---------------------------------------------------------------------------
 
 // probeNoWait reports whether a third connection can take the row lock now.
 // FOR KEY SHARE fails only while someone holds FOR UPDATE; FOR SHARE fails

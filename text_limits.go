@@ -20,7 +20,6 @@ var (
 	tagsField        = textField{500, errTagsTooLong}
 )
 
-// check returns the field's refusal when s is longer than its limit.
 func (f textField) check(s string) error {
 	if utf8.RuneCountInString(s) > f.max {
 		return f.tooLong
@@ -28,13 +27,11 @@ func (f textField) check(s string) error {
 	return nil
 }
 
-// validateGroupText checks every text field of a group.
 func validateGroupText(name, description, location, tags string) error {
 	return firstErr(groupNameField.check(name), descriptionField.check(description),
 		locationField.check(location), tagsField.check(tags))
 }
 
-// validateEventText checks every text field of an event.
 func validateEventText(title, description, location string) error {
 	return firstErr(eventTitleField.check(title), descriptionField.check(description),
 		locationField.check(location))
@@ -49,7 +46,6 @@ func firstErr(errs ...error) error {
 	return nil
 }
 
-// strOrEmpty is the string a patch field holds, "" when the field was not sent.
 func strOrEmpty(p *string) string {
 	if p == nil {
 		return ""
@@ -76,13 +72,11 @@ var (
 	careNotesField   = textField{maxCareNotesChars, errCareNotesTooLong}
 )
 
-// clean trims s and returns it, or the field's refusal when it is too long.
 func (f textField) clean(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	return s, f.check(s)
 }
 
-// requiredName is a person's name where one must be given.
 func requiredName(s string) (string, error) {
 	name, err := personNameField.clean(s)
 	if name == "" || err != nil {
@@ -91,7 +85,6 @@ func requiredName(s string) (string, error) {
 	return name, nil
 }
 
-// optionalName is a person's name that may be empty.
 func optionalName(s string) (string, error) { return personNameField.clean(s) }
 
 func displayName(s string) (string, error) { return displayNameField.clean(s) }
