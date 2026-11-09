@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { placeLine, roomName } from "./place";
+import cases from "./place-cases.json";
 
 const hall = { id: 1, name: "Fellowship Hall", building: "Main" };
 
@@ -27,4 +28,10 @@ it("doesn't repeat a typed location that is just the room (M2.1e)", () => {
   expect(placeLine(hall, " fellowship hall ")).toBe("Fellowship Hall · Main");
   expect(placeLine(hall, "Fellowship Hall · Main")).toBe("Fellowship Hall · Main");
   expect(placeLine(hall, "Fellowship Hall annex")).toBe("Fellowship Hall · Main · Fellowship Hall annex");
+});
+
+// The same cases run against the Go placeLine (api_room_bookings_test.go),
+// which writes feed and calendar locations the way this does.
+it.each(cases)("shared case: $name", ({ room, location, want }) => {
+  expect(placeLine(room && { id: 1, ...room }, location)).toBe(want);
 });

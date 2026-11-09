@@ -197,6 +197,12 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   bump plus `revokeAccountTokens`); a bump alone uses `sessionVersionBump()`. The cookie's keys are the
   `session*Key` constants and `setSessionLogin`/`clearSessionLogin`; `errSecuritySession` is answered
   401 by `fail(c, errSecuritySession)` (`answerStaleSession` when the caller only wants that case).
+- Rooms (`internal/rooms`): "the room is busy" is one definition, `rooms.HeldCondition` over `rooms.PaddedRange` (a
+  booking's date widened by setup and teardown; `paddedRangeSQL` is its four-placeholder form), and every busy count
+  (date picker, series picker, create-form check, suggestions) is `rooms.BusyCounts`. Only the admin request list and
+  `heldByOverlap` embed the condition directly. A date's place is `events.EffectivePlace` / `EffectivePlaceSQL`
+  (override, else the event's, else the group's); group tags compare through `internal/grouptags`; a default-off
+  switch read inside SQL is `settingOnSQL`. Each SQL form has a test that it agrees with its Go form.
 - Membership rules live in `internal/policy` (`CanRemoveMember`, `CanBeSuccessor`, role changes).
   Removal keeps the row with `status=removed` (DEC-35); voluntary departure keeps `status=left`
   (DEC-86); neither counts as active. Adding anyone to a group goes through `changeRole`, which

@@ -196,20 +196,18 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 			g = row
 		}
 	}
-	// The place resolves through the date's override, like
-	// occurrenceToJSON: a date with its own place keeps it even when
-	// the viewer may see the group.
-	place := ev.Location
-	if o.LocationOverride != nil {
-		place = *o.LocationOverride
+	// The place resolves through the date's override (events.EffectivePlace,
+	// like occurrenceToJSON): a date with its own place keeps it even when
+	// the viewer may see the group; the group's place is for those who may.
+	groupPlace := ""
+	if g != nil {
+		groupPlace = g.Location // group-ok: g is set only when facts.canSeeGroup is true
 	}
-	vars := notify.Vars{Event: effectiveOccurrenceTitle(ev, o), When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
+	vars := notify.Vars{Event: effectiveOccurrenceTitle(ev, o), When: formatWhen(o.StartsAt, facts.zone(userID)),
+		Place: events.EffectivePlace(ev.Location, o.LocationOverride, groupPlace)}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
 		vars.Event = firstNonEmpty(effectiveOccurrenceTitle(ev, o), g.Name) // group-ok: g is set only when facts.canSeeGroup is true
-		if o.LocationOverride == nil {
-			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when facts.canSeeGroup is true
-		}
 		link = fmt.Sprintf("/groups/%d", g.ID)
 	}
 	return vars, link

@@ -73,6 +73,12 @@ func boolSettingIn(tx *gorm.DB, key string, def bool) bool {
 	return def
 }
 
+// settingOnSQL is boolSettingIn(key, false) as a SQL condition with the key
+// as its one argument, for a query that must read the switch in the same
+// statement (the rooms lookup pays one read whether rooms are on or off).
+// TestSettingOnSQLAgreesWithTheGoReader pins it to the Go reader.
+const settingOnSQL = `EXISTS (SELECT 1 FROM settings WHERE key = ? AND btrim(value) = 'true')`
+
 // settingValue is the trimmed value of key, or "" when it is missing or the
 // read failed.
 func (a *App) settingValue(key string) string {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/content"
+	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -214,12 +215,11 @@ func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccu
 	return m.ID, nil
 }
 
-// occurrencePlace is the date's place: its own, else the event's.
+// occurrencePlace is the date's place: its own, else the event's. Never the
+// group's: a reminder's place is read by registrants who may not see the
+// group (events.EffectivePlace with no group place).
 func occurrencePlace(ev *models.Event, occ *models.EventOccurrence) string {
-	if occ.LocationOverride != nil {
-		return *occ.LocationOverride
-	}
-	return ev.Location
+	return events.EffectivePlace(ev.Location, occ.LocationOverride, "")
 }
 
 // reminderText is a reminder's subject and body. The event, time and links

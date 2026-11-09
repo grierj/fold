@@ -9,14 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
-)
+	"fold/internal/grouptags"
+	"fold/internal/policy"
+	"fold/models"
 
-// Visibility values, as stored on events and occurrences.
-const (
-	public     = "public"
-	private    = "private"
-	inviteOnly = "invite_only"
+	"gorm.io/gorm"
 )
 
 // MaxSuggestions is how many rooms a picker suggests (9.3 Rule 4).
@@ -97,9 +94,9 @@ const effectiveVisibility = "COALESCE(o.visibility_override, e.visibility)"
 // events and events of deleted groups never count.
 func countingUsagePredicate(s Subject) (string, []any) {
 	since := s.Now.AddDate(0, -usageLookback, 0)
-	counts := []string{effectiveVisibility + " IN ('" + public + "', '" + private + "')"}
+	counts := []string{effectiveVisibility + " IN ('" + policy.Public + "', '" + policy.Private + "')"}
 	args := []any{since}
-	if s.Visibility == inviteOnly && s.GroupID != nil {
+	if s.Visibility == policy.InviteOnly && s.GroupID != nil {
 		counts = append(counts, "e.group_id = ?")
 		args = append(args, *s.GroupID)
 	}
@@ -107,7 +104,7 @@ func countingUsagePredicate(s Subject) (string, []any) {
 		counts = append(counts, "e.id = ?")
 		args = append(args, s.EventID)
 	}
-	sql := "b.status = 'confirmed' AND o.status = 'scheduled' AND b.starts_at >= ?" +
+	sql := "b.status = '" + models.BookingConfirmed + "' AND o.status = '" + models.OccurrenceScheduled + "' AND b.starts_at >= ?" +
 		" AND e.deleted_at IS NULL AND (e.group_id IS NULL OR g.id IS NOT NULL)" +
 		" AND (" + strings.Join(counts, " OR ") + ")"
 	return sql, args
@@ -124,22 +121,10 @@ type roomUsage struct {
 	busyDates  int
 }
 
-// normalizeTags lowercases and trims tags as the Home tag filter compares
-// them, dropping empty ones.
-func normalizeTags(tags []string) []string {
-	out := []string{}
-	for _, t := range tags {
-		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
 // Suggest ranks rooms for s (9.3 Rules 2 to 4): two reads, the counting
 // usages per candidate room and, for those rooms, their conflicts.
 func Suggest(db *gorm.DB, s Subject) (Result, error) {
-	tags := normalizeTags(s.Tags)
+	tags := grouptags.Normalize(s.Tags)
 	// "The next 8" dates: soonest first, whatever order they came in.
 	windows := append([]Window(nil), s.Windows...)
 	sort.Slice(windows, func(i, j int) bool { return windows[i].Start.Before(windows[j].Start) })
@@ -155,9 +140,9 @@ func Suggest(db *gorm.DB, s Subject) (Result, error) {
 	}
 	// Rule 3's "shares a tag" compares tags the way the Home filter does,
 	// once per group rather than once per booking. No tags match nothing.
-	selectArgs := []any{"{" + strings.Join(quoteArray(tags), ",") + "}", s.EventID, group}
+	selectArgs := []any{grouptags.Array(tags), s.EventID, group}
 	q := `WITH kind AS (SELECT id FROM groups WHERE deleted_at IS NULL
-			AND regexp_split_to_array(lower(tags), '\s*,\s*') && ?::text[])
+			AND ` + grouptags.MatchAnySQL + `)
 		SELECT r.id AS room_id, r.capacity, count(*) AS total,
 			count(*) FILTER (WHERE e.id = ?) AS same_series,
 			count(*) FILTER (WHERE e.group_id = ?) AS same_group,
@@ -209,53 +194,15 @@ func Suggest(db *gorm.DB, s Subject) (Result, error) {
 	return res, nil
 }
 
-// quoteArray writes tags as Postgres array elements.
-func quoteArray(tags []string) []string {
-	out := make([]string, len(tags))
-	for i, t := range tags {
-		out[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(t) + `"`
-	}
-	return out
-}
-
-// markBusy counts, per candidate, the windows another confirmed booking
-// holds it on, with the room's own setup and teardown padding (9.2). Like
-// the exclusion constraint, it reads booking rows alone: cancelling a date
-// or deleting an event releases its booking, so none is left to count.
+// markBusy sets each candidate's busyDates (Rule 2).
 func markBusy(db *gorm.DB, usages []roomUsage, windows []Window) error {
-	if len(windows) == 0 {
-		return nil
-	}
 	ids := make([]uint, len(usages))
 	for i, u := range usages {
 		ids[i] = u.RoomID
 	}
-	starts, ends, occs := make([]time.Time, len(windows)), make([]time.Time, len(windows)), make([]int64, len(windows))
-	for i, w := range windows {
-		starts[i], ends[i], occs[i] = w.Start.UTC(), w.End.UTC(), int64(w.OccurrenceID)
-	}
-	var rows []struct {
-		RoomID uint
-		Dates  int
-	}
-	// Each (room, date) pair is padded first, then probes the confirmed
-	// bookings' range index (migration 00050) once.
-	err := db.Raw(`SELECT x.room_id, count(*) AS dates
-		FROM (SELECT r.id AS room_id, w.occurrence_id,
-				tstzrange(w.starts_at - make_interval(mins => r.default_setup_minutes::int),
-					w.ends_at + make_interval(mins => r.default_teardown_minutes::int), '[)') AS want
-			FROM rooms r
-			CROSS JOIN unnest(?::timestamptz[], ?::timestamptz[], ?::bigint[]) AS w(starts_at, ends_at, occurrence_id)
-			WHERE r.id IN ?) x
-		CROSS JOIN LATERAL (SELECT 1 FROM room_bookings b WHERE b.room_id = x.room_id AND b.status = 'confirmed'
-			AND b.padded_range && x.want AND b.occurrence_id <> x.occurrence_id LIMIT 1) hit
-		GROUP BY x.room_id`, pgTimes(starts), pgTimes(ends), pgInts(occs), ids).Scan(&rows).Error
+	busy, err := BusyCounts(db, ids, windows, 0)
 	if err != nil {
 		return err
-	}
-	busy := map[uint]int{}
-	for _, r := range rows {
-		busy[r.RoomID] = r.Dates
 	}
 	for i := range usages {
 		usages[i].busyDates = busy[usages[i].RoomID]

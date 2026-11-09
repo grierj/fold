@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -388,5 +389,34 @@ func TestRoomLostNoticeGoesToLiveChurchHosts(t *testing.T) {
 	}
 	if n, d := rowsFor(t, f.app.DB, "notifications", tomb.ID), rowsFor(t, f.app.DB, "notification_deliveries", tomb.ID); n != 0 || d != 0 {
 		t.Fatalf("the deleted host has %d notices and %d delivery rows", n, d)
+	}
+}
+
+// placeLine is the Go twin of web/src/lib/place.ts; both run the same cases.
+func TestPlaceLineSharesCasesWithTheWeb(t *testing.T) {
+	raw, err := os.ReadFile("web/src/lib/place-cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name     string
+		Room     *struct{ Name, Building string }
+		Location string
+		Want     string
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("no cases")
+	}
+	for _, c := range cases {
+		var room *occurrenceRoomJSON
+		if c.Room != nil {
+			room = &occurrenceRoomJSON{Name: c.Room.Name, Building: c.Room.Building}
+		}
+		if got := placeLine(room, c.Location); got != c.Want {
+			t.Errorf("%s: placeLine = %q, want %q", c.Name, got, c.Want)
+		}
 	}
 }

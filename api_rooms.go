@@ -10,6 +10,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/policy"
+	"fold/internal/rooms"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -31,7 +32,6 @@ const (
 	maxRoomFeatures = 500
 	maxRoomNotes    = 2000
 	maxRoomCapacity = 100000
-	maxRoomPadding  = 240
 )
 
 func (a *App) roomsEnabled() bool {
@@ -145,7 +145,7 @@ func (b roomBody) apply(r *models.Room) ([]string, error) {
 		if v == nil {
 			return nil
 		}
-		if *v < 0 || *v > maxRoomPadding {
+		if *v < 0 || *v > rooms.MaxPaddingMinutes {
 			return errInvalidSetupMinutes
 		}
 		if *v != *dst {
@@ -294,25 +294,33 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 // apiSetRoomsEnabled turns rooms on or off (9.1). Turning them off hides
 // every room screen and endpoint; nothing is deleted.
 func (a *App) apiSetRoomsEnabled(c *gin.Context) {
+	if enabled, ok := a.setRoomSwitch(c, settingRoomsEnabled, audit.RoomsEnabledChanged); ok {
+		c.JSON(http.StatusOK, gin.H{"roomsEnabled": enabled})
+	}
+}
+
+// setRoomSwitch is the body of both rooms switches: read {enabled}, store it
+// in the setting and audit it in one transaction. It answers the errors
+// itself and reports ok only after a saved change.
+func (a *App) setRoomSwitch(c *gin.Context, key, action string) (enabled, ok bool) {
 	var body struct {
 		Enabled *bool `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Enabled == nil {
 		jsonError(c, http.StatusBadRequest, "invalid request")
-		return
+		return false, false
 	}
 	me := apiUser(c)
-	value := strconv.FormatBool(*body.Enabled)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := setSettingIn(tx, settingRoomsEnabled, value); err != nil {
+		if err := setSettingIn(tx, key, strconv.FormatBool(*body.Enabled)); err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomsEnabledChanged,
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action,
 			TargetType: "setting", Meta: map[string]any{"enabled": *body.Enabled}, IP: c.ClientIP()})
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save the setting")
-		return
+		return false, false
 	}
-	c.JSON(http.StatusOK, gin.H{"roomsEnabled": *body.Enabled})
+	return *body.Enabled, true
 }

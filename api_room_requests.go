@@ -13,6 +13,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/rooms"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -40,26 +41,9 @@ func roomApprovalOn(db *gorm.DB) bool {
 // apiSetRoomApproval turns "Room bookings need an admin's approval" on or
 // off (DEC-102). Turning it off leaves open requests for admins to decide.
 func (a *App) apiSetRoomApproval(c *gin.Context) {
-	var body struct {
-		Enabled *bool `json:"enabled"`
+	if enabled, ok := a.setRoomSwitch(c, settingRoomApproval, audit.RoomApprovalChanged); ok {
+		c.JSON(http.StatusOK, gin.H{"needApproval": enabled})
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Enabled == nil {
-		jsonError(c, http.StatusBadRequest, "invalid request")
-		return
-	}
-	me := apiUser(c)
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := setSettingIn(tx, settingRoomApproval, strconv.FormatBool(*body.Enabled)); err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomApprovalChanged,
-			TargetType: "setting", Meta: map[string]any{"enabled": *body.Enabled}, IP: c.ClientIP()})
-	})
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not save the setting")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"needApproval": *body.Enabled})
 }
 
 // openRoomRequest starts a request; the caller places its dates.
@@ -149,9 +133,7 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 	if err := a.DB.Raw(`SELECT q.id, q.event_id, e.title AS event_title, coalesce(g.name, '') AS group_name,
 			q.room_id, r.name AS room_name, r.building, q.series, q.requested_by AS requested_by_id, q.created_at,
 			count(*) AS dates, to_char(min(o.original_date), 'YYYY-MM-DD') AS first_date, min(o.starts_at) AS first_starts_at,
-			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM room_bookings c WHERE c.room_id = b.room_id AND c.status = 'confirmed'
-				AND c.starts_at < b.ends_at + interval '480 minutes' AND c.starts_at > b.starts_at - interval '8 days' -- an event lasts at most 7 days (events.MaxDurationMinutes), padding 4 hours
-				AND c.occurrence_id <> b.occurrence_id AND c.padded_range && b.padded_range)) AS busy_dates
+			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM room_bookings c WHERE `+rooms.HeldCondition("c", "b.room_id", "b.occurrence_id", "b.padded_range")+`)) AS busy_dates
 		FROM room_requests q
 		JOIN events e ON e.id = q.event_id
 		LEFT JOIN groups g ON g.id = e.group_id
@@ -253,7 +235,7 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		fail(c, errReasonTooLong500)
+		fail(c, errOverlapReasonTooLong)
 		return
 	}
 	me := apiUser(c)
@@ -356,7 +338,7 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.Reason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		fail(c, errReasonTooLong500)
+		fail(c, errOverlapReasonTooLong)
 		return
 	}
 	me := apiUser(c)

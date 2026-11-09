@@ -347,12 +347,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 	if o.TitleOverride != nil {
 		title = *o.TitleOverride
 	}
-	location := ev.Location
-	if o.LocationOverride != nil {
-		location = *o.LocationOverride
-	} else if location == "" {
-		location = groupLoc
-	}
+	location := events.EffectivePlace(ev.Location, o.LocationOverride, groupLoc)
 	until := ""
 	if ev.RRuleUntil != nil {
 		until = models.FormatCalendarDate(*ev.RRuleUntil)

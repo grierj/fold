@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/policy"
 	"fold/internal/testdb"
 	"fold/models"
 
@@ -123,19 +124,19 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("1 a room used only by an invite-only group is not suggested for a public event", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -7, "")
-		other := f.group("Other", public, "")
-		if res := f.suggest(f.subject(0, other, public, "")); find(res, r) != nil {
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -7, "")
+		other := f.group("Other", policy.Public, "")
+		if res := f.suggest(f.subject(0, other, policy.Public, "")); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
 		}
 	})
 	t.Run("2 nor for a private event an admin creates", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -7, "")
-		s := f.subject(0, 0, private, "")
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -7, "")
+		s := f.subject(0, 0, policy.Private, "")
 		s.IncludeRestricted = true
 		if res := f.suggest(s); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
@@ -144,9 +145,9 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("3 but it is for a new invite-only event of the same group", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -7, "")
-		res := f.suggest(f.subject(f.event(x, inviteOnly), x, inviteOnly, ""))
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -7, "")
+		res := f.suggest(f.subject(f.event(x, policy.InviteOnly), x, policy.InviteOnly, ""))
 		if s := find(res, r); s == nil || s.Uses != 1 || s.Reason != "Used by this group once" {
 			t.Fatalf("not suggested: %+v", res)
 		}
@@ -154,21 +155,21 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("4 and not for another invite-only group", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -7, "")
-		y := f.group("Y", inviteOnly, "")
-		if res := f.suggest(f.subject(f.event(y, inviteOnly), y, inviteOnly, "")); find(res, r) != nil {
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -7, "")
+		y := f.group("Y", policy.InviteOnly, "")
+		if res := f.suggest(f.subject(f.event(y, policy.InviteOnly), y, policy.InviteOnly, "")); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
 		}
 	})
 	t.Run("5 only counting usages are counted", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		p := f.group("P", private, "")
-		f.use(r, f.event(p, private), -3, "")
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -2, "")
-		res := f.suggest(f.subject(0, f.group("New", public, ""), public, ""))
+		p := f.group("P", policy.Private, "")
+		f.use(r, f.event(p, policy.Private), -3, "")
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -2, "")
+		res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, ""))
 		if s := find(res, r); s == nil || s.Uses != 1 || s.Reason != "Used once" {
 			t.Fatalf("want 1 usage: %+v", res)
 		}
@@ -176,25 +177,25 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("6 widening the group never widens its events", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -7, "")
-		f.db.Model(&models.Group{}).Where("id = ?", x).Update("visibility", private)
-		if res := f.suggest(f.subject(0, f.group("New", public, ""), public, "")); find(res, r) != nil {
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -7, "")
+		f.db.Model(&models.Group{}).Where("id = ?", x).Update("visibility", policy.Private)
+		if res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, "")); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
 		}
 	})
 	t.Run("7 a type filter that matches nothing falls back, labelled", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		f.use(r, f.event(f.group("Choir", public, "music"), public), -7, "")
-		res := f.suggest(f.subject(0, f.group("Youth", public, "youth, games"), public, "youth, games"))
+		f.use(r, f.event(f.group("Choir", policy.Public, "music"), policy.Public), -7, "")
+		res := f.suggest(f.subject(0, f.group("Youth", policy.Public, "youth, games"), policy.Public, "youth, games"))
 		if !res.OtherKinds || find(res, r) == nil {
 			t.Fatalf("want the labelled fallback: %+v", res)
 		}
 		// With a match, only matching rooms are listed.
 		m := f.room("M", false, nil)
-		f.use(m, f.event(f.group("Teens", public, "Youth"), public), -7, "")
-		res = f.suggest(f.subject(0, f.group("Youth 2", public, "youth"), public, "youth"))
+		f.use(m, f.event(f.group("Teens", policy.Public, "Youth"), policy.Public), -7, "")
+		res = f.suggest(f.subject(0, f.group("Youth 2", policy.Public, "youth"), policy.Public, "youth"))
 		if res.OtherKinds || find(res, r) != nil || find(res, m) == nil || find(res, m).Reason != "Used by similar groups once" {
 			t.Fatalf("want only the same-kind room: %+v", res)
 		}
@@ -202,8 +203,8 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("8 a restricted room is suggested to admins only", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("Nursery", true, nil)
-		f.use(r, f.event(f.group("Kids", public, ""), public), -7, "")
-		s := f.subject(0, f.group("New", public, ""), public, "")
+		f.use(r, f.event(f.group("Kids", policy.Public, ""), policy.Public), -7, "")
+		s := f.subject(0, f.group("New", policy.Public, ""), policy.Public, "")
 		if find(f.suggest(s), r) != nil {
 			t.Fatal("a leader shouldn't be offered a restricted room")
 		}
@@ -215,24 +216,24 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("9 a usage older than 12 months doesn't count", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		f.use(r, f.event(f.group("Old", public, ""), public), -370, "")
-		if res := f.suggest(f.subject(0, f.group("New", public, ""), public, "")); find(res, r) != nil {
+		f.use(r, f.event(f.group("Old", policy.Public, ""), policy.Public), -370, "")
+		if res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, "")); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
 		}
 	})
 	t.Run("10 a room with a conflict is listed last, marked busy", func(t *testing.T) {
 		f := newFixture(t)
 		busy, free := f.room("Busy", false, nil), f.room("Free", false, nil)
-		g := f.group("G", public, "")
-		ev := f.event(g, public)
+		g := f.group("G", policy.Public, "")
+		ev := f.event(g, policy.Public)
 		for i := 0; i < 3; i++ {
 			f.use(busy, ev, -7*(i+1), "")
 		}
-		f.use(free, f.event(f.group("Other", public, ""), public), -7, "")
-		taken := f.use(busy, f.event(f.group("Third", public, ""), public), 2, "")
+		f.use(free, f.event(f.group("Other", policy.Public, ""), policy.Public), -7, "")
+		taken := f.use(busy, f.event(f.group("Third", policy.Public, ""), policy.Public), 2, "")
 		var occ models.EventOccurrence
 		f.db.First(&occ, taken)
-		s := f.subject(ev, g, public, "")
+		s := f.subject(ev, g, policy.Public, "")
 		s.Windows = []Window{{Start: occ.StartsAt.Add(30 * time.Minute), End: occ.EndsAt.Add(30 * time.Minute)}, {Start: occ.StartsAt.AddDate(0, 0, 7), End: occ.EndsAt.AddDate(0, 0, 7)}}
 		res := f.suggest(s)
 		if len(res.Suggestions) != 2 || res.Suggestions[0].RoomID != free || res.Suggestions[1].RoomID != busy ||
@@ -243,12 +244,12 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("11 an opened event of an invite-only group counts at its own level", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -9, "")
-		opened := f.event(x, public)
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -9, "")
+		opened := f.event(x, policy.Public)
 		f.use(r, opened, -8, "")
 		f.use(r, opened, -1, "")
-		res := f.suggest(f.subject(0, f.group("New", public, ""), public, ""))
+		res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, ""))
 		if s := find(res, r); s == nil || s.Uses != 2 {
 			t.Fatalf("want the 2 public usages: %+v", res)
 		}
@@ -256,9 +257,9 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("12 a church-wide event skips same-group ranking and the type filter", func(t *testing.T) {
 		f := newFixture(t)
 		a, b := f.room("A", false, nil), f.room("B", false, nil)
-		f.use(a, f.event(f.group("Choir", public, "music"), public), -20, "")
-		f.use(b, f.event(0, public), -5, "")
-		res := f.suggest(f.subject(f.event(0, public), 0, public, ""))
+		f.use(a, f.event(f.group("Choir", policy.Public, "music"), policy.Public), -20, "")
+		f.use(b, f.event(0, policy.Public), -5, "")
+		res := f.suggest(f.subject(f.event(0, policy.Public), 0, policy.Public, ""))
 		if res.OtherKinds || len(res.Suggestions) != 2 || res.Suggestions[0].RoomID != b {
 			t.Fatalf("want both, most recent first: %+v", res)
 		}
@@ -266,10 +267,10 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("13 an invite-only group's event made private counts for a private event", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		f.use(r, f.event(x, inviteOnly), -9, "")
-		f.use(r, f.event(x, private), -8, "")
-		res := f.suggest(f.subject(0, f.group("New", private, ""), private, ""))
+		x := f.group("X", policy.InviteOnly, "")
+		f.use(r, f.event(x, policy.InviteOnly), -9, "")
+		f.use(r, f.event(x, policy.Private), -8, "")
+		res := f.suggest(f.subject(0, f.group("New", policy.Private, ""), policy.Private, ""))
 		if s := find(res, r); s == nil || s.Uses != 1 {
 			t.Fatalf("want the private usage only: %+v", res)
 		}
@@ -277,11 +278,11 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("an explicitly opened date counts at its level; the rest of its series doesn't", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		x := f.group("X", inviteOnly, "")
-		ev := f.event(x, inviteOnly)
+		x := f.group("X", policy.InviteOnly, "")
+		ev := f.event(x, policy.InviteOnly)
 		f.use(r, ev, -9, "")
-		f.use(r, ev, -8, public)
-		res := f.suggest(f.subject(0, f.group("New", public, ""), public, ""))
+		f.use(r, ev, -8, policy.Public)
+		res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, ""))
 		if s := find(res, r); s == nil || s.Uses != 1 {
 			t.Fatalf("want the opened date only: %+v", res)
 		}
@@ -289,23 +290,23 @@ func TestSuggestionCases(t *testing.T) {
 	t.Run("a public event's date made invite-only doesn't count", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.room("R", false, nil)
-		f.use(r, f.event(f.group("G", public, ""), public), -8, inviteOnly)
-		if res := f.suggest(f.subject(0, f.group("New", public, ""), public, "")); find(res, r) != nil {
+		f.use(r, f.event(f.group("G", policy.Public, ""), policy.Public), -8, policy.InviteOnly)
+		if res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, "")); find(res, r) != nil {
 			t.Fatalf("suggested: %+v", res)
 		}
 	})
 	t.Run("an event's own earlier dates always count, first", func(t *testing.T) {
 		f := newFixture(t)
 		mine, other := f.room("Mine", false, nil), f.room("Other", false, nil)
-		x := f.group("X", inviteOnly, "")
-		ev := f.event(x, inviteOnly)
+		x := f.group("X", policy.InviteOnly, "")
+		ev := f.event(x, policy.InviteOnly)
 		f.use(mine, ev, -30, "")
 		for i := 0; i < 4; i++ {
-			f.use(other, f.event(f.group(fmt.Sprintf("P%d", i), public, ""), public), -2, "")
+			f.use(other, f.event(f.group(fmt.Sprintf("P%d", i), policy.Public, ""), policy.Public), -2, "")
 		}
 		// Even asked as a public event (its next date opened), its own
 		// invite-only dates count.
-		res := f.suggest(f.subject(ev, x, public, ""))
+		res := f.suggest(f.subject(ev, x, policy.Public, ""))
 		if len(res.Suggestions) != 2 || res.Suggestions[0].RoomID != mine || res.Suggestions[0].Reason != "Used by this event once" {
 			t.Fatalf("want the event's own room first: %+v", res)
 		}
@@ -315,18 +316,18 @@ func TestSuggestionCases(t *testing.T) {
 // Rule 4's order: series, group, kind, recency, total, then capacity.
 func TestSuggestionRanking(t *testing.T) {
 	f := newFixture(t)
-	g := f.group("G", public, "study")
-	ev := f.event(g, public)
+	g := f.group("G", policy.Public, "study")
+	ev := f.event(g, policy.Public)
 	series, group, kind := f.room("Series", false, nil), f.room("Group", false, nil), f.room("Kind", false, nil)
 	recent, small, fits, big := f.room("Recent", false, nil), f.room("Small", false, ptr(10)), f.room("Fits", false, ptr(30)), f.room("Big", false, ptr(200))
 	f.use(series, ev, -100, "")
-	f.use(group, f.event(g, public), -90, "")
-	f.use(group, f.event(g, public), -80, "")
-	f.use(kind, f.event(f.group("Study 2", public, "study"), public), -1, "")
-	f.use(kind, f.event(f.group("Study 3", public, "Study, men"), public), -2, "")
+	f.use(group, f.event(g, policy.Public), -90, "")
+	f.use(group, f.event(g, policy.Public), -80, "")
+	f.use(kind, f.event(f.group("Study 2", policy.Public, "study"), policy.Public), -1, "")
+	f.use(kind, f.event(f.group("Study 3", policy.Public, "Study, men"), policy.Public), -2, "")
 	// The rest share a kind once, at the same moment, to reach the later
 	// tiebreaks: recency, then capacity closest to and at least 25.
-	sameKind := f.event(f.group("Study 4", public, "study"), public)
+	sameKind := f.event(f.group("Study 4", policy.Public, "study"), policy.Public)
 	at := f.now.AddDate(0, 0, -50)
 	for _, r := range []uint{small, fits, big} {
 		occ := models.EventOccurrence{EventID: sameKind, OriginalDate: time.Date(2020, 1, int(r%28)+1, 0, 0, 0, 0, time.UTC), StartsAt: at, EndsAt: at.Add(time.Hour), Status: "scheduled"}
@@ -335,7 +336,7 @@ func TestSuggestionRanking(t *testing.T) {
 			occ.ID, r, at, at.Add(time.Hour), at, at.Add(time.Hour))
 	}
 	f.use(recent, sameKind, -10, "")
-	s := f.subject(ev, g, public, "study")
+	s := f.subject(ev, g, policy.Public, "study")
 	s.Capacity = ptr(25)
 	res := f.suggest(s)
 	got := []uint{}
@@ -356,19 +357,19 @@ func TestSuggestionRanking(t *testing.T) {
 func TestSuggestionsIgnoreWhatIsGone(t *testing.T) {
 	f := newFixture(t)
 	gone, inactive, cancelled, requested := f.room("Gone", false, nil), f.room("Inactive", false, nil), f.room("Cancelled", false, nil), f.room("Requested", false, nil)
-	deletedEvent := f.event(f.group("A", public, ""), public)
+	deletedEvent := f.event(f.group("A", policy.Public, ""), policy.Public)
 	f.use(gone, deletedEvent, -3, "")
 	f.db.Delete(&models.Event{}, deletedEvent)
-	dg := f.group("B", public, "")
-	f.use(gone, f.event(dg, public), -3, "")
+	dg := f.group("B", policy.Public, "")
+	f.use(gone, f.event(dg, policy.Public), -3, "")
 	f.db.Delete(&models.Group{}, dg)
-	f.use(inactive, f.event(f.group("C", public, ""), public), -3, "")
+	f.use(inactive, f.event(f.group("C", policy.Public, ""), policy.Public), -3, "")
 	f.db.Model(&models.Room{}).Where("id = ?", inactive).Update("active", false)
-	occ := f.use(cancelled, f.event(f.group("D", public, ""), public), -3, "")
+	occ := f.use(cancelled, f.event(f.group("D", policy.Public, ""), policy.Public), -3, "")
 	f.db.Model(&models.EventOccurrence{}).Where("id = ?", occ).Update("status", "cancelled")
-	occ = f.use(requested, f.event(f.group("E", public, ""), public), -3, "")
+	occ = f.use(requested, f.event(f.group("E", policy.Public, ""), policy.Public), -3, "")
 	f.db.Exec("UPDATE room_bookings SET status = 'requested' WHERE occurrence_id = ?", occ)
-	if res := f.suggest(f.subject(0, f.group("New", public, ""), public, "")); len(res.Suggestions) != 0 {
+	if res := f.suggest(f.subject(0, f.group("New", policy.Public, ""), policy.Public, "")); len(res.Suggestions) != 0 {
 		t.Fatalf("want nothing: %+v", res)
 	}
 }
@@ -423,7 +424,7 @@ func seedLoad(t testing.TB, f *fixture) Subject {
 		}
 	}
 	exec(`INSERT INTO rooms (name) SELECT 'Room ' || n FROM generate_series(1, 50) n`)
-	vis, kinds := []string{public, private, inviteOnly}, []string{"study", "youth", "music", "men"}
+	vis, kinds := []string{policy.Public, policy.Private, policy.InviteOnly}, []string{"study", "youth", "music", "men"}
 	var groups []models.Group
 	for n := 1; n <= 40; n++ {
 		groups = append(groups, models.Group{Name: fmt.Sprintf("Group %d", n), LeaderID: f.user, Status: "active", Visibility: vis[n%3], Tags: kinds[n%4]})
@@ -459,7 +460,7 @@ func seedLoad(t testing.TB, f *fixture) Subject {
 	f.db.Where("visibility = ? AND tags = ?", "invite_only", "study").First(&g)
 	var ev models.Event
 	f.db.Where("group_id = ?", g.ID).First(&ev)
-	s := f.subject(ev.ID, g.ID, inviteOnly, "study")
+	s := f.subject(ev.ID, g.ID, policy.InviteOnly, "study")
 	for i := 0; i < MaxBusyDates; i++ {
 		start := f.now.AddDate(0, 0, 7*(i+1))
 		s.Windows = append(s.Windows, Window{Start: start, End: start.Add(time.Hour)})
@@ -474,11 +475,11 @@ func TestSuggestionBusyCheck(t *testing.T) {
 	f := newFixture(t)
 	hall := f.room("Hall", false, nil)
 	f.db.Model(&models.Room{}).Where("id = ?", hall).Update("default_teardown_minutes", 30)
-	g := f.group("G", public, "")
-	f.use(hall, f.event(g, public), -7, "")
+	g := f.group("G", policy.Public, "")
+	f.use(hall, f.event(g, policy.Public), -7, "")
 	// Another event's ordinary booking, 19:00-20:00 in 3 days with 30
 	// minutes of setup: it holds [18:30, 20:00).
-	other := f.event(f.group("Other", public, ""), public)
+	other := f.event(f.group("Other", policy.Public, ""), policy.Public)
 	start := time.Date(f.now.Year(), f.now.Month(), f.now.Day(), 19, 0, 0, 0, time.UTC).AddDate(0, 0, 3)
 	occ := models.EventOccurrence{EventID: other, OriginalDate: start, StartsAt: start, EndsAt: start.Add(time.Hour), Status: "scheduled"}
 	if err := f.db.Create(&occ).Error; err != nil {
@@ -488,7 +489,7 @@ func TestSuggestionBusyCheck(t *testing.T) {
 		VALUES (?, ?, ?, ?, 30, 0, tstzrange(?, ?, '[)'), 'confirmed')`, occ.ID, hall, start, start.Add(time.Hour), start.Add(-30*time.Minute), start.Add(time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
-	s := f.subject(f.event(g, public), g, public, "")
+	s := f.subject(f.event(g, policy.Public), g, policy.Public, "")
 	busyAt := func(w Window) int {
 		s.Windows = []Window{w}
 		return f.suggest(s).Suggestions[0].BusyDates
