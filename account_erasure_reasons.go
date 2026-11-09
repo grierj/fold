@@ -637,7 +637,7 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 			counterparts[u.ID] = reasonCounterpartFacts{u.PublicName(), u.DeletedAt.Valid}
 		}
 	}
-	labels, err := reasonContextLabels(tx, actor, read)
+	labels, err := a.reasonContextLabels(tx, actor, read)
 	if err != nil {
 		return nil, err
 	}
@@ -682,74 +682,29 @@ func reasonCounterpart(r reasonRow, target int64) int64 {
 }
 
 // reasonContextLabels names the group or event each request was made in, only
-// when canSeeGroupIn allows the actor to see the group it belongs to.
-func reasonContextLabels(tx *gorm.DB, actor *models.User, rows []reasonRow) (map[int64]string, error) {
-	groupIDs, eventIDs := map[uint]bool{}, map[uint]bool{}
+// when requestContexts.shown says the actor may see it: the same rule the
+// contact and add request lists use.
+func (a *App) reasonContextLabels(tx *gorm.DB, actor *models.User, rows []reasonRow) (map[int64]string, error) {
+	refs := make([]contextRef, 0, len(rows))
 	for _, r := range rows {
-		switch {
-		case r.ContextType == policy.ContactGroup && r.ContextID > 0:
-			groupIDs[uint(r.ContextID)] = true
-		case r.ContextType == policy.ContactEvent && r.ContextID > 0:
-			eventIDs[uint(r.ContextID)] = true
+		if r.ContextID > 0 {
+			refs = append(refs, contextRef{r.ContextType, uint(r.ContextID)})
 		}
 	}
-	groups := map[uint]models.Group{}
-	events := map[uint]models.Event{}
-	if len(eventIDs) > 0 {
-		var evs []models.Event
-		if err := tx.Where("id IN ?", reasonIDList(eventIDs)).Find(&evs).Error; err != nil {
-			return nil, err
-		}
-		for _, e := range evs {
-			events[e.ID] = e
-			if e.GroupID != nil {
-				groupIDs[*e.GroupID] = true
-			}
-		}
-	}
-	if len(groupIDs) > 0 {
-		var gs []models.Group
-		if err := tx.Where("id IN ?", reasonIDList(groupIDs)).Find(&gs).Error; err != nil {
-			return nil, err
-		}
-		for _, g := range gs {
-			groups[g.ID] = g
-		}
-	}
-	shown := func(id uint) *models.Group {
-		g, ok := groups[id]
-		if !ok || !canSeeGroupIn(tx, actor, &g) {
-			return nil
-		}
-		return &g
+	contexts, err := loadRequestContexts(tx, refs, []uint{actor.ID})
+	if err != nil {
+		return nil, err
 	}
 	out := map[int64]string{}
 	for _, r := range rows {
-		switch r.ContextType {
-		case policy.ContactGroup:
-			if g := shown(uint(r.ContextID)); g != nil {
-				out[r.ID] = g.Name
-			}
-		case policy.ContactEvent:
-			e, ok := events[uint(r.ContextID)]
-			if !ok {
-				continue
-			}
-			if e.GroupID != nil && shown(*e.GroupID) == nil {
-				continue
-			}
-			out[r.ID] = e.Title
+		if r.ContextID <= 0 {
+			continue
+		}
+		if label, ok := contexts.shown(a, actor, contextRef{r.ContextType, uint(r.ContextID)}); ok {
+			out[r.ID] = label
 		}
 	}
 	return out, nil
-}
-
-func reasonIDList(m map[uint]bool) []uint {
-	out := make([]uint, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }
 
 // apiAdminErasureReasonsPage serves one audited page of the reasons an account
@@ -1068,20 +1023,13 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 		batch := plan.Decisions[start:min(start+size, len(plan.Decisions))]
 		entries, remove = entries[:0], remove[:0]
 		for _, d := range batch {
-			var action, target string
-			switch d.Purpose {
-			case policy.RequestContact:
-				action, target = audit.ContactReasonKept, "contact_request"
-				if d.Remove {
-					action = audit.ContactReasonRemoved
-				}
-			case policy.RequestGroupAdd, policy.RequestOccurrenceAdd:
-				action, target = audit.AddReasonKept, "add_request"
-				if d.Remove {
-					action = audit.AddReasonRemoved
-				}
-			default:
+			k := requestKindOf(d.Purpose)
+			if k == nil {
 				return fmt.Errorf("reason review: unknown request purpose %q", d.Purpose)
+			}
+			action, target := k.reasonKept, k.target
+			if d.Remove {
+				action = k.reasonRemoved
 			}
 			entries = append(entries, audit.SignedEntry{
 				Actor: &actor, Action: action, TargetType: target, TargetID: d.RequestID, IP: plan.IP,

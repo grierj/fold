@@ -136,7 +136,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 				return err
 			}
 			if value, supplied := updates["hide_contact_from_leaders"]; supplied && value != oldHidden {
-				if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: contactPrivacyChanged,
+				if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.ContactPrivacyChanged,
 					TargetType: "user", TargetID: u.ID, IP: c.ClientIP(),
 					Meta: map[string]any{"hideContactFromLeaders": value}}); err != nil {
 					return err

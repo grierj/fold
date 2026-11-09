@@ -10,39 +10,35 @@ import (
 	"gorm.io/gorm"
 )
 
-type contactReadPair struct{ user, context uint }
-
 // contactPageReads holds only this page's facts, loaded under the contact gate.
 // Live eligibility and unscoped historical names deliberately use separate maps.
+// One request is a page of one: loadContactFacts reads through this too.
 type contactPageReads struct {
+	*requestContexts
 	users      map[uint]*models.User
 	names      map[uint]string
-	groups     map[uint]*models.Group
-	events     map[uint]models.Event
-	rels       map[contactReadPair]policy.Rel
-	hosts      map[contactReadPair]bool
-	registered map[contactReadPair]bool
+	registered map[userContext]bool
 	lastEnds   map[uint]*time.Time
 	guardians  map[uint]bool
 }
 
-func loadContactPageReads(tx *gorm.DB, op *contactOperation, rs []models.ContactRequest, guardians bool) (*contactPageReads, error) {
+// loadContactPageReads loads the facts of rs for one viewer. The viewer's own
+// memberships and hosting are loaded with the requesters' and subjects'.
+func loadContactPageReads(tx *gorm.DB, actor uint, rs []models.ContactRequest, guardians bool) (*contactPageReads, error) {
 	p := &contactPageReads{
-		users: map[uint]*models.User{}, names: map[uint]string{}, groups: map[uint]*models.Group{},
-		events: map[uint]models.Event{}, rels: map[contactReadPair]policy.Rel{}, hosts: map[contactReadPair]bool{},
-		registered: map[contactReadPair]bool{}, lastEnds: map[uint]*time.Time{}, guardians: map[uint]bool{},
+		names: map[uint]string{}, users: map[uint]*models.User{},
+		registered: map[userContext]bool{}, lastEnds: map[uint]*time.Time{}, guardians: map[uint]bool{},
 	}
-	userIDs, groupIDs, eventIDs, subjectIDs := []uint{op.actor.ID}, []uint{}, []uint{}, []uint{}
+	userIDs, refs, eventIDs, subjectIDs := []uint{actor}, []contextRef{}, []uint{}, []uint{}
 	for _, r := range rs {
 		if r.Purpose != policy.RequestContact {
 			return nil, errors.New("not a contact request")
 		}
 		userIDs = append(userIDs, r.RequesterID, r.SubjectUserID)
 		subjectIDs = append(subjectIDs, r.SubjectUserID)
+		refs = append(refs, contextRef{r.ContextType, r.ContextID})
 		if r.ContextType == policy.ContactEvent {
 			eventIDs = append(eventIDs, r.ContextID)
-		} else {
-			groupIDs = append(groupIDs, r.ContextID)
 		}
 	}
 	var users []models.User
@@ -56,42 +52,11 @@ func loadContactPageReads(tx *gorm.DB, op *contactOperation, rs []models.Contact
 			p.users[u.ID] = u
 		}
 	}
-	if len(eventIDs) > 0 {
-		var rows []models.Event
-		if err := tx.Where("id IN ?", eventIDs).Find(&rows).Error; err != nil {
-			return nil, err
-		}
-		for _, ev := range rows {
-			p.events[ev.ID] = ev
-			if ev.GroupID != nil {
-				groupIDs = append(groupIDs, *ev.GroupID)
-			}
-		}
-	}
-	if len(groupIDs) > 0 {
-		var groups []models.Group
-		if err := tx.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
-			return nil, err
-		}
-		for i := range groups {
-			p.groups[groups[i].ID] = &groups[i]
-		}
-		var memberships []models.Membership
-		if err := tx.Where("group_id IN ? AND user_id IN ?", groupIDs, userIDs).Find(&memberships).Error; err != nil {
-			return nil, err
-		}
-		for _, m := range memberships {
-			p.rels[contactReadPair{m.UserID, m.GroupID}] = membershipRel(m)
-		}
+	var err error
+	if p.requestContexts, err = loadRequestContexts(tx, refs, userIDs); err != nil {
+		return nil, err
 	}
 	if len(eventIDs) > 0 {
-		var hosts []models.EventHost
-		if err := tx.Where("event_id IN ? AND user_id IN ?", eventIDs, userIDs).Find(&hosts).Error; err != nil {
-			return nil, err
-		}
-		for _, h := range hosts {
-			p.hosts[contactReadPair{h.UserID, h.EventID}] = true
-		}
 		var registrations []struct {
 			EventID uint
 			UserID  uint
@@ -104,7 +69,7 @@ func loadContactPageReads(tx *gorm.DB, op *contactOperation, rs []models.Contact
 			return nil, err
 		}
 		for _, r := range registrations {
-			p.registered[contactReadPair{r.UserID, r.EventID}] = true
+			p.registered[userContext{r.UserID, r.EventID}] = true
 		}
 		var ends []struct {
 			EventID uint
@@ -121,31 +86,26 @@ func loadContactPageReads(tx *gorm.DB, op *contactOperation, rs []models.Contact
 		}
 	}
 	if guardians {
-		var links []models.GuardianLink
-		if err := tx.Where("guardian_user_id = ? AND teen_user_id IN ? AND status = ?", op.actor.ID, subjectIDs, models.GuardianConfirmed).Find(&links).Error; err != nil {
+		if p.guardians, err = confirmedGuardianLinks(tx, actor, subjectIDs); err != nil {
 			return nil, err
-		}
-		for _, link := range links {
-			if link.TeenUserID != nil {
-				p.guardians[*link.TeenUserID] = true
-			}
 		}
 	}
 	return p, nil
 }
 
-func (p *contactPageReads) facts(op *contactOperation, r models.ContactRequest) policy.ContactAccessFacts {
-	f := policy.ContactAccessFacts{Now: op.now,
-		Requester: contactAccount(p.users[r.RequesterID], op.now, op.zone),
-		Subject:   contactAccount(p.users[r.SubjectUserID], op.now, op.zone),
+// facts are the eligibility facts of one request at now, in the church zone.
+func (p *contactPageReads) facts(now time.Time, zone *time.Location, r models.ContactRequest) policy.ContactAccessFacts {
+	f := policy.ContactAccessFacts{Now: now,
+		Requester: contactAccount(p.users[r.RequesterID], now, zone),
+		Subject:   contactAccount(p.users[r.SubjectUserID], now, zone),
 		Context:   policy.ContactContext{Type: r.ContextType, ID: r.ContextID},
 	}
 	switch r.ContextType {
 	case policy.ContactGroup:
 		if g := p.groups[r.ContextID]; g != nil {
 			f.Context.Active = g.Status == models.GroupActive
-			f.Context.GroupLeader = p.rels[contactReadPair{r.RequesterID, g.ID}].Leader
-			f.Context.GroupMember = p.rels[contactReadPair{r.SubjectUserID, g.ID}].Member
+			f.Context.GroupLeader = p.rels[userContext{r.RequesterID, g.ID}].Leader
+			f.Context.GroupMember = p.rels[userContext{r.SubjectUserID, g.ID}].Member
 		}
 	case policy.ContactEvent:
 		if ev := p.events[r.ContextID]; ev.ID != 0 {
@@ -154,10 +114,10 @@ func (p *contactPageReads) facts(op *contactOperation, r models.ContactRequest) 
 			if ev.GroupID != nil {
 				g := p.groups[*ev.GroupID]
 				f.Context.Active = g != nil && g.Status == models.GroupActive
-				rel = p.rels[contactReadPair{r.RequesterID, *ev.GroupID}]
+				rel = p.rels[userContext{r.RequesterID, *ev.GroupID}]
 			}
-			f.Context.EventManager = policy.CanManageEvent(asPerson(p.users[r.RequesterID]), viewOf(&ev, p.hosts[contactReadPair{r.RequesterID, ev.ID}]), rel)
-			f.Context.EventRegistrant = p.registered[contactReadPair{r.SubjectUserID, ev.ID}]
+			f.Context.EventManager = policy.CanManageEvent(asPerson(p.users[r.RequesterID]), viewOf(&ev, p.hosts[userContext{r.RequesterID, ev.ID}]), rel)
+			f.Context.EventRegistrant = p.registered[userContext{r.SubjectUserID, ev.ID}]
 			f.Context.LastOccurrenceEnd = p.lastEnds[ev.ID]
 		}
 	}
@@ -168,53 +128,46 @@ func (p *contactPageReads) name(id uint) string {
 	if name, ok := p.names[id]; ok {
 		return name
 	}
-	return "Someone"
+	return unknownPersonName
 }
 
-func (p *contactPageReads) contextID(a *App, op *contactOperation, r models.ContactRequest) *uint {
-	if r.ContextType == policy.ContactEvent {
-		ev := p.events[r.ContextID]
-		if ev.ID == 0 {
-			return nil
-		}
-		group, rel := policy.Group{}, policy.Rel{}
-		if ev.GroupID != nil {
-			if g := p.groups[*ev.GroupID]; g != nil {
-				group = asGroup(g)
-				rel = p.rels[contactReadPair{op.actor.ID, g.ID}]
-			}
-		}
-		// Date invitations/overrides never authorize the parent series.
-		if !policy.CanSeeEvent(asPerson(op.actor), viewOf(&ev, p.hosts[contactReadPair{op.actor.ID, ev.ID}]), group, rel) {
-			return nil
-		}
-	} else if a.groupShownTo(op.actor, p.groups[r.ContextID], p.rels[contactReadPair{op.actor.ID, r.ContextID}]) == nil {
+// contextID is the request's group or event id when the viewer may see it.
+func (p *contactPageReads) contextID(a *App, viewer *models.User, r models.ContactRequest) *uint {
+	if _, ok := p.shown(a, viewer, contextRef{r.ContextType, r.ContextID}); !ok {
 		return nil
 	}
 	id := r.ContextID
 	return &id
 }
 
+// presentContactRequests presents rs, which the caller has already filtered to
+// the ones the viewer may see. One request is a page of one.
 func (a *App) presentContactRequests(tx *gorm.DB, op *contactOperation, rs []models.ContactRequest) ([]contactRequestJSON, error) {
 	out := []contactRequestJSON{}
 	if len(rs) == 0 {
 		return out, nil
 	}
-	page, err := loadContactPageReads(tx, op, rs, false)
+	page, err := loadContactPageReads(tx, op.actor.ID, rs, false)
 	if err != nil {
 		return nil, err
 	}
 	actor := contactAccount(op.actor, op.now, op.zone)
 	for _, r := range rs {
 		p := contactRequestPolicy(r)
-		if !policy.CanViewContactRequest(actor, p) {
-			continue
-		}
-		f := page.facts(op, r)
-		out = append(out, contactRequestJSON{ID: r.ID, RequesterID: r.RequesterID, RequesterName: page.name(r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: page.name(r.SubjectUserID), ContextType: r.ContextType, ContextID: page.contextID(a, op, r), Fields: r.Fields, Reason: r.Reason, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, SubjectDecidedBy: r.SubjectDecidedBy, SubjectDecidedAt: r.SubjectDecidedAt, AdminDecision: r.AdminDecision, AdminDecidedBy: r.AdminDecidedBy, AdminDecidedAt: r.AdminDecidedAt, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
+		f := page.facts(op.now, op.zone, r)
+		out = append(out, contactRequestJSON{ID: r.ID, RequesterID: r.RequesterID, RequesterName: page.name(r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: page.name(r.SubjectUserID), ContextType: r.ContextType, ContextID: page.contextID(a, op.actor, r), Fields: r.Fields, Reason: r.Reason, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, SubjectDecidedBy: r.SubjectDecidedBy, SubjectDecidedAt: r.SubjectDecidedAt, AdminDecision: r.AdminDecision, AdminDecidedBy: r.AdminDecidedBy, AdminDecidedAt: r.AdminDecidedAt, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
 			CanSubjectDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactSubject, policy.ContactApproved, p, f) != "", CanAdminDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactAdmin, policy.ContactApproved, p, f) != "", CanWithdraw: policy.CanWithdrawContactRequest(actor, p, op.now)})
 	}
 	return out, nil
+}
+
+// presentContactRequest is the page of one request.
+func (a *App) presentContactRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (contactRequestJSON, error) {
+	rows, err := a.presentContactRequests(tx, op, []models.ContactRequest{r})
+	if err != nil {
+		return contactRequestJSON{}, err
+	}
+	return rows[0], nil
 }
 
 func (a *App) presentContactGrants(tx *gorm.DB, op *contactOperation, gs []models.ContactGrant) ([]contactGrantJSON, error) {
@@ -234,7 +187,7 @@ func (a *App) presentContactGrants(tx *gorm.DB, op *contactOperation, gs []model
 	for _, r := range rs {
 		requests[r.ID] = r
 	}
-	page, err := loadContactPageReads(tx, op, rs, true)
+	page, err := loadContactPageReads(tx, op.actor.ID, rs, true)
 	if err != nil {
 		return nil, err
 	}
@@ -244,14 +197,13 @@ func (a *App) presentContactGrants(tx *gorm.DB, op *contactOperation, gs []model
 		if !ok {
 			return nil, gorm.ErrRecordNotFound
 		}
-		f := page.facts(op, r)
+		f := page.facts(op.now, op.zone, r)
 		guardian := page.guardians[r.SubjectUserID]
 		p := contactGrantPolicy(g, r)
-		teen := f.Subject.Person != nil && f.Subject.Person.Teen && f.Subject.AgeYears != nil && *f.Subject.AgeYears >= 13 && *f.Subject.AgeYears < 18
-		if !policy.CanViewContactGrant(actor, guardian, teen, p) {
+		if !policy.CanViewContactGrant(actor, guardian, f.Subject.IsTeen(), p) {
 			continue
 		}
-		out = append(out, contactGrantJSON{ID: g.ID, RequestID: r.ID, RequesterID: r.RequesterID, RequesterName: page.name(r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: page.name(r.SubjectUserID), ContextType: r.ContextType, ContextID: page.contextID(a, op, r), Fields: r.Fields, NeedsAdmin: r.NeedsAdmin, GrantedAt: g.GrantedAt, EndedAt: g.EndedAt, EndReason: g.EndReason, EndedBy: g.EndedBy,
+		out = append(out, contactGrantJSON{ID: g.ID, RequestID: r.ID, RequesterID: r.RequesterID, RequesterName: page.name(r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: page.name(r.SubjectUserID), ContextType: r.ContextType, ContextID: page.contextID(a, op.actor, r), Fields: r.Fields, NeedsAdmin: r.NeedsAdmin, GrantedAt: g.GrantedAt, EndedAt: g.EndedAt, EndReason: g.EndReason, EndedBy: g.EndedBy,
 			CanReveal: policy.CanRevealContactGrant(actor, contactScope(r), p, f), CanRevoke: policy.ContactGrantRevocationReason(actor, guardian, p) != ""})
 	}
 	return out, nil

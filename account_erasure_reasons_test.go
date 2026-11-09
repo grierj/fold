@@ -1901,8 +1901,8 @@ func TestReasonReviewCensus(t *testing.T) {
 // subject's occurrence_add rows FOR UPDATE after the soft delete;
 // planReasonReviewIn locks the target's reasoned rows FOR UPDATE in id order,
 // after keepsAnAdminIn and before every household lock; the others are the
-// lifecycle's own model queries (reconcileContacts and the contact and add
-// request routes) under the same gate.
+// lifecycle's own model queries (reconcileContacts, lockRequest and the contact
+// grant route) under the same gate.
 //
 // requestWriters by literal or inline model: the ages-note blank and the reason
 // blank, each guarded by TestContactRequestTextChangesStayInTheirHelpers. The
@@ -1918,7 +1918,7 @@ func TestReasonReviewCensus(t *testing.T) {
 // conversionSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
 // count; eraseAuditDetailsIn updates and aggregates in SQL (the five new actions
 // are classified in auditIPAttribution); contactHistoryQuery selects only the
-// actions in contactHistoryTargets, which has no decision action.
+// actions in contactHistoryActions, which has no decision action.
 //
 // gatedFenced: the three callers of a.contactMutationCtx. The reason review adds
 // no fourth: its consume step is a statement of apiAdminDeleteUser's callback and
@@ -1927,12 +1927,10 @@ var reasonCensusPinned = map[string][]string{
 	"rowLockers": {
 		"account_erasure.go:eraseContactRequestTextIn",
 		"account_erasure_reasons.go:planReasonReviewIn",
-		"api_contact.go:apiDecideContactRequest",
-		"api_contact.go:apiWithdrawContactRequest",
-		"api_contact.go:mutateAddRequest",
 		"api_contact.go:useContactGrant",
 		"api_registrations.go:apiAddRegistration",
 		"contact_lifecycle.go:reconcileContacts",
+		"request_lifecycle.go:lockRequest",
 	},
 	"requestWriters": {
 		"account_erasure.go:eraseContactRequestTextIn",

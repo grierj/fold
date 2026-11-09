@@ -249,7 +249,7 @@ func presentGuardianLink(link models.GuardianLink, users map[uint]models.User, p
 		if user, ok := users[id]; ok {
 			return user.PublicName()
 		}
-		return "Someone"
+		return unknownPersonName
 	}
 	out := guardianLinkJSON{
 		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: name(link.GuardianUserID),

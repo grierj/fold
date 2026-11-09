@@ -118,7 +118,7 @@ func (a *App) parseUnsubscribeToken(token string) (unsubscribeLink, error) {
 // validUnsubscribeScope: an optional notification category, the only kind
 // of optional email so far (announcement scopes arrive with M3.4).
 func validUnsubscribeScope(scope string) bool {
-	cat, ok := strings.CutPrefix(scope, "category:")
+	cat, ok := categoryOfScope(scope)
 	if !ok {
 		return false
 	}
@@ -253,16 +253,8 @@ func footerFactsIn(db *gorm.DB) (footerFacts, error) {
 	return footerFacts{site: site, address: address}, err
 }
 
-// addressLines are the address's non-empty lines, trimmed.
-func (f footerFacts) addressLines() []string {
-	var lines []string
-	for _, line := range strings.Split(strings.ReplaceAll(f.address, "\r", ""), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
-}
+// addressLines are the address's lines as the footer renders them (churchAddressLines).
+func (f footerFacts) addressLines() []string { return churchAddressLines(f.address) }
 
 // emailSettingsURL is the link in an optional email's footer to change which
 // emails the token's owner gets.

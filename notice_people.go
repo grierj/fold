@@ -29,6 +29,11 @@ func leaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
 	return ids, err
 }
 
+// unknownPersonName stands for a person with no row at all. A nameless person
+// shows as "Member" (User.PublicName); an erased one is shown by the surface
+// that says so.
+const unknownPersonName = "Someone"
+
 // publicNames keeps historical display names for one response. Like nameIn,
 // it includes soft-deleted users and never falls back to an email address.
 type publicNames map[uint]string
@@ -42,7 +47,7 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 	unique := make([]uint, 0, len(ids))
 	for _, id := range ids {
 		if _, ok := names[id]; !ok {
-			names[id] = "Someone"
+			names[id] = unknownPersonName
 			unique = append(unique, id)
 		}
 	}
@@ -60,7 +65,7 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 		// Preserve the historical all-fallback behavior on read failure;
 		// never publish names determined by which batch failed.
 		for id := range names {
-			names[id] = "Someone"
+			names[id] = unknownPersonName
 		}
 	}
 	return names
@@ -70,7 +75,7 @@ func (names publicNames) name(id uint) string {
 	if name, ok := names[id]; ok {
 		return name
 	}
-	return "Someone"
+	return unknownPersonName
 }
 
 func (names publicNames) actorName(id *uint) string {
@@ -87,7 +92,7 @@ func nameOf(tx *gorm.DB, id uint) (string, error) {
 	var u models.User
 	switch err := tx.Unscoped().First(&u, id).Error; {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		return "Someone", nil
+		return unknownPersonName, nil
 	case err != nil:
 		return "", err
 	}
@@ -100,7 +105,7 @@ func nameIn(tx *gorm.DB, id uint) string {
 	name, err := nameOf(tx, id)
 	if err != nil {
 		log.Printf("names: could not read user %d: %s", id, jobs.CleanError(err))
-		return "Someone"
+		return unknownPersonName
 	}
 	return name
 }
