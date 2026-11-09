@@ -807,24 +807,7 @@ func txWithPID(t *testing.T, db *gorm.DB) (*gorm.DB, int) {
 // waitBlocked returns once the waiter backend is blocked by the blocker backend.
 func waitBlocked(t *testing.T, db *gorm.DB, waiter, blocker int) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
-	for {
-		var blocked bool
-		if err := db.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, waiter).Scan(&blocked).Error; err != nil {
-			t.Fatal(err)
-		}
-		if blocked {
-			return
-		}
-		select {
-		case <-tick.C:
-		case <-deadline.C:
-			t.Fatalf("session %d never waited on session %d", waiter, blocker)
-		}
-	}
+	testdb.WaitBlocked(t, db, waiter, blocker)
 }
 
 // async runs fn on its own goroutine; await collects its error.

@@ -9,6 +9,7 @@ import (
 	"fold/internal/images"
 	"fold/internal/images/imagetest"
 	"fold/internal/notify"
+	"fold/internal/testdb"
 	"fold/models"
 	"fold/storage"
 	"image/color"
@@ -37,7 +38,7 @@ func TestFocalPoints(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "grier", "password1234", "member")
 	leader := newTestUser(t, app, "leader", "password1234", "member")
-	c := loginAs(t, app, "grier", "password1234")
+	c := loginAPI(t, app, "grier", "password1234")
 
 	w := c.do("PUT", "/api/v1/me", map[string]interface{}{
 		"avatarFocal": map[string]float64{"x": 30, "y": 70},
@@ -70,8 +71,8 @@ func TestFocalPoints(t *testing.T) {
 		UserID: leader.ID, GroupID: g.ID,
 		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
 	})
-	lc := loginAs(t, app, "leader", "password1234")
-	w = lc.do("PUT", "/api/v1/groups/"+itoa2(g.ID), map[string]interface{}{
+	lc := loginAPI(t, app, "leader", "password1234")
+	w = lc.do("PUT", "/api/v1/groups/"+itoa(g.ID), map[string]interface{}{
 		"coverFocal": map[string]float64{"x": 25, "y": 25},
 	}, true)
 	if w.Code != http.StatusOK {
@@ -941,7 +942,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 	c := loginAPI(t, app, "pat", "password1234")
 
 	child := addMyPerson(t, c, map[string]any{"firstName": "Kid", "kind": "child", "birthDate": "2021-01-02"})
-	path := "/api/v1/me/household/people/" + itoa2(child.ID)
+	path := "/api/v1/me/household/people/" + itoa(child.ID)
 
 	w := c.do("PUT", path, map[string]any{"firstName": "Kidd", "careNotes": "Asthma inhaler"}, true)
 	if w.Code != http.StatusOK {
@@ -1001,7 +1002,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 	if _, _, waiting, _ := badge(t, admin, ""); waiting != 1 {
 		t.Fatalf("admin waiting before removing Pip: %d", waiting)
 	}
-	apiDo(t, c, "DELETE", "/api/v1/me/household/people/"+itoa2(pendingChild.ID), nil, http.StatusOK)
+	apiDo(t, c, "DELETE", "/api/v1/me/household/people/"+itoa(pendingChild.ID), nil, http.StatusOK)
 	if _, _, waiting, _ := badge(t, admin, ""); waiting != 0 {
 		t.Fatalf("admin waiting after removing pending child: %d", waiting)
 	}
@@ -1021,7 +1022,7 @@ func TestHouseholdIsolation(t *testing.T) {
 		t.Fatalf("Ben's household: %+v", hb)
 	}
 	// Ben can't edit or remove Ana's person, and the answer is 404.
-	path := "/api/v1/me/household/people/" + itoa2(child.ID)
+	path := "/api/v1/me/household/people/" + itoa(child.ID)
 	if w := ben.do("PUT", path, map[string]any{"firstName": "Hacked"}, true); w.Code != http.StatusNotFound {
 		t.Fatalf("Ben edits Ana's person: %d, want 404", w.Code)
 	}
@@ -2113,21 +2114,16 @@ func hwHoldUser(t *testing.T, app *App, uid uint, mutate string) (blocker int, c
 // PIDs.
 func hwWaiters(t *testing.T, app *App, want int) []int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var pids []int
+	var pids []int
+	testdb.WaitUntil(t, fmt.Sprintf("%d backends waiting on the user lock", want), 10*time.Second, func() bool {
 		if err := app.DB.Raw(`SELECT pid FROM pg_stat_activity WHERE datname = current_database()
 			AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE ? ORDER BY pid`,
 			`%"users"%FOR NO KEY UPDATE%`).Scan(&pids).Error; err != nil {
 			t.Fatal(err)
 		}
-		if len(pids) == want {
-			return pids
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("never saw %d backends waiting on the user lock", want)
-	return nil
+		return len(pids) == want
+	})
+	return pids
 }
 
 // hwOneBlockedBy waits until at least one of the waiters is blocked by the
@@ -2135,20 +2131,18 @@ func hwWaiters(t *testing.T, app *App, want int) []int {
 // on the first instead.
 func hwOneBlockedBy(t *testing.T, app *App, waiters []int, blocker int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, fmt.Sprintf("a waiter in %v to wait on session %d", waiters, blocker), 5*time.Second, func() bool {
 		for _, w := range waiters {
 			var blocked bool
 			if err := app.DB.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, w).Scan(&blocked).Error; err != nil {
 				t.Fatal(err)
 			}
 			if blocked {
-				return
+				return true
 			}
 		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("no waiter in %v ever waited on session %d", waiters, blocker)
+		return false
+	})
 }
 
 // hwRefusedWhileLocked: the request reaches its user lock while the test

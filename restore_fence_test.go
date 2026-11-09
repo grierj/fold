@@ -546,7 +546,7 @@ func TestRestoreFenceNoFalseDetection(t *testing.T) {
 			t.Fatal("A never reached its acknowledgment")
 		}
 		go func() { bDone <- s.deleteAs(cB, "", b.ID) }()
-		waitFor(t, 10*time.Second, "B waiting on the turn", func() bool { return s.app.fenceTurnWaiters() == 1 })
+		testdb.WaitUntil(t, "B waiting on the turn", 10*time.Second, func() bool { return s.app.fenceTurnWaiters() == 1 })
 		if s.app.restoreFenceFloor() != base {
 			t.Fatal("A raised the floor before its acknowledgment")
 		}
@@ -577,7 +577,7 @@ func TestRestoreFenceNoFalseDetection(t *testing.T) {
 		s.app.fence.turnChan() <- struct{}{} // another holder has the turn
 		done := make(chan *httptest.ResponseRecorder, 1)
 		go func() { done <- s.del("", b.ID) }()
-		waitFor(t, 5*time.Second, "B waiting on the turn", func() bool { return s.app.fenceTurnWaiters() == 1 })
+		testdb.WaitUntil(t, "B waiting on the turn", 5*time.Second, func() bool { return s.app.fenceTurnWaiters() == 1 })
 		select {
 		case w := <-done:
 			if w.Code != http.StatusServiceUnavailable || codeOf(t, w) != "delete_timed_out" {
@@ -593,18 +593,6 @@ func TestRestoreFenceNoFalseDetection(t *testing.T) {
 		adminDeleteBudget = 40 * time.Second
 		s.nextDeleteSucceeds("next")
 	})
-}
-
-func waitFor(t *testing.T, within time.Duration, what string, ok func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if ok() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 // pgClients maps a client tool to the command that runs it: the tool itself, or
@@ -864,7 +852,7 @@ func TestRestoreFenceDelayedAcknowledgment(t *testing.T) {
 			aDone, bDone := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
 			go func() { aDone <- s.deleteAs(s.c, idA, a.ID) }()
 			if v.proxyHeldAck {
-				waitFor(t, 15*time.Second, "A's COMMIT to be sent and held", func() bool {
+				testdb.WaitUntil(t, "A's COMMIT to be sent and held", 15*time.Second, func() bool {
 					return len(s.rig.proxy.Find(testdb.KindCommit, "")) > 0 && s.deleted(a.ID)
 				})
 			} else {
@@ -887,7 +875,7 @@ func TestRestoreFenceDelayedAcknowledgment(t *testing.T) {
 			} else {
 				go func() { bDone <- s.deleteAs(cB, idB, b.ID) }()
 			}
-			waitFor(t, 15*time.Second, "B waiting on the turn", func() bool { return s.app.fenceTurnWaiters() == 1 })
+			testdb.WaitUntil(t, "B waiting on the turn", 15*time.Second, func() bool { return s.app.fenceTurnWaiters() == 1 })
 			var holders, sentUpdate int64
 			if err := s.direct.Raw("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND " + advisoryInThisDatabase).Scan(&holders).Error; err != nil {
 				t.Fatal(err)
@@ -1019,7 +1007,7 @@ func TestRestoreFenceServerOutlivesHandler(t *testing.T) {
 	}
 	bDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() { bDone <- bClient.do("DELETE", "/api/v1/admin/users/"+itoa(next.ID), nil, true) }()
-	waitFor(t, 10*time.Second, "B blocked by A's backend", func() bool {
+	testdb.WaitUntil(t, "B blocked by A's backend", 10*time.Second, func() bool {
 		var n int64
 		f.app.DB.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
 			AND query ILIKE '%pg_advisory_xact_lock%' AND ? = ANY(pg_blocking_pids(pid))`, apid).Scan(&n)
@@ -1093,7 +1081,7 @@ func TestRestoreFenceUndetectedCases(t *testing.T) {
 		if w.Code != http.StatusInternalServerError || codeOf(t, w) != "delete_outcome_unknown" {
 			t.Fatalf("delete: %d %s, want 500 delete_outcome_unknown", w.Code, w.Body.String())
 		}
-		waitFor(t, 5*time.Second, "the commit to reach the server", func() bool { return r.deletedUser(target.ID) })
+		testdb.WaitUntil(t, "the commit to reach the server", 5*time.Second, func() bool { return r.deletedUser(target.ID) })
 		fenceRestore(t, app.DB, dump, false)
 		recycleConnections(t, r.papp.DB)
 		if r.deletedUser(target.ID) {

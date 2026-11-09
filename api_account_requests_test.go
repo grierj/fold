@@ -635,7 +635,7 @@ func TestAccountRequestPerAddressLimit(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	for i := 0; i < targetHourLimit+3; i++ {
-		anon := anonClient(t, app, "10.20.0."+itoa2(uint(i+1)))
+		anon := anonClient(t, app, "10.20.0."+itoa(uint(i+1)))
 		w := anon.do("POST", "/api/v1/account-requests",
 			signupBody("Victim", "victim@example.com", "adult", ""), true)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
@@ -662,7 +662,7 @@ func TestAccountExistsHintPerAddressLimit(t *testing.T) {
 	app := testApp(t)
 	alice := newTestUser(t, app, "alice", "pw", models.RoleMember)
 	for i := 0; i < targetHourLimit+3; i++ {
-		anon := anonClient(t, app, "10.21.0."+itoa2(uint(i+1)))
+		anon := anonClient(t, app, "10.21.0."+itoa(uint(i+1)))
 		if w := anon.do("POST", "/api/v1/account-requests",
 			signupBody("Alice", alice.Email, "adult", ""), true); w.Code != http.StatusOK {
 			t.Fatalf("submit %d: %d", i, w.Code)

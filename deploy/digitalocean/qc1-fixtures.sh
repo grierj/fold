@@ -179,7 +179,7 @@ body() { qc1_delete_body_n "$@"; }
 # The key order and compactness are those of AdminUsers.remove and JSON.stringify; the review is four keys, no per-reason list.
 [[ "$(body keep "$WORK/real-items.json" 2 "$ID80" | jq -c 'keys_unsorted')" == '["successors","hostSuccessors","attemptId","reasonReview"]' ]]
 [[ "$(body keep "$WORK/real-items.json" 2 "$ID80" | jq -c '.reasonReview | keys_unsorted')" == '["format","count","digest","choices"]' ]]
-if body keep "$WORK/real-items.json" 40 "$ID80" | grep -q '"items"\|requestId\|reviewHash'; then echo 'qc1: a set-v1 body carries per-reason entries' >&2; exit 1; fi
+if body keep "$WORK/real-items.json" 40 "$ID80" | grep '"items"\|requestId\|reviewHash' >/dev/null; then echo 'qc1: a set-v1 body carries per-reason entries' >&2; exit 1; fi
 # Independent oracle: the digest and the choices computed here with xxd and sha256sum from the format alone (label, 0x00, uint64 count, then
 # int64 id and the raw 32-byte hash of each item in the order given), not by the helper under test.
 oracle_digest() { # items-file n
@@ -315,7 +315,7 @@ gen_env >"$WORK/env.json"
 [[ -z "$(qc1_environment_problems "$WORK/env.json" "$HEAD_FAKE")" ]]
 env_bad() { # name jq-filter needle: the mutated record is refused and the problem is named
   jq -c "$2" "$WORK/env.json" >"$WORK/env.$1"
-  qc1_environment_problems "$WORK/env.$1" "$HEAD_FAKE" | grep -qF -- "$3" || { echo "environment mutation $1 not named ($3): $(qc1_environment_problems "$WORK/env.$1" "$HEAD_FAKE")" >&2; exit 1; }
+  qc1_environment_problems "$WORK/env.$1" "$HEAD_FAKE" | grep -F -- "$3" >/dev/null || { echo "environment mutation $1 not named ($3): $(qc1_environment_problems "$WORK/env.$1" "$HEAD_FAKE")" >&2; exit 1; }
 }
 [[ -n "$(qc1_environment_problems "$WORK/env.json" 2222222222222222222222222222222222222222)" ]]
 env_bad head '.revision = "2222222222222222222222222222222222222222"' 'is not HEAD'
@@ -657,7 +657,7 @@ mut b-obj-gone 'if .item == 10 and .case == "browser-panel-100" then del(.browse
 # The environment must record a passing browser preflight when the browser is on.
 for spec in '.browserRuntime.ok = false' 'del(.browserRuntime)' '.browserRuntime.chromium = ""' '.browserRuntime.playwright = null'; do
   jq -c "$spec" "$WORK/env.json" >"$WORK/env.brt"
-  qc1_environment_problems "$WORK/env.brt" "$HEAD_FAKE" | grep -q 'browser preflight is not recorded as passing' || { echo "environment accepted: $spec" >&2; exit 1; }
+  qc1_environment_problems "$WORK/env.brt" "$HEAD_FAKE" | grep 'browser preflight is not recorded as passing' >/dev/null || { echo "environment accepted: $spec" >&2; exit 1; }
 done
 jq -c '.settings.browser = false | del(.browserRuntime)' "$WORK/env.json" >"$WORK/env.nobrowser"
 [[ -z "$(qc1_environment_problems "$WORK/env.nobrowser" "$HEAD_FAKE")" ]]   # skipped on purpose: the rows are missing instead
@@ -1318,7 +1318,7 @@ mut top-win "$BP then del(.window.topStatements) else . end"; expect_invalid top
 mut top-put 'if .item == 5 and .case == "legacy-put" then del(.put.topStatements) else . end'; [[ "$(legacy_pending "$WORK/e2.top-put")" == 1 ]]
 ts_sql="$HERE/qc1/top-statements.sql"
 for pat in 'pg_stat_statements' 'total_exec_time DESC' 'LIMIT 8' 'cluster-wide' 'NOT attributed'; do grep -qF -- "$pat" "$ts_sql" || { echo "qc1: top-statements.sql lost: $pat" >&2; exit 1; }; done
-if grep -v '^--' "$ts_sql" | grep -Eiqw 'reset|insert|update|delete|truncate|alter|create|drop|vacuum'; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
+if grep -v '^--' "$ts_sql" | grep -Eiw 'reset|insert|update|delete|truncate|alter|create|drop|vacuum' >/dev/null; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
 ins_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
 [[ "$(grep -c 'pg_stat_statements_reset' <<<"$ins_body")" == 1 ]]   # one reset, at the start of the window, as before: the COMMIT timing is read from the same window
 l_reset="$(grep -n 'pg_stat_statements_reset' <<<"$ins_body" | cut -d: -f1)"; l_end="$(grep -n 'OP_END="\$(ms)"' <<<"$ins_body" | cut -d: -f1)"; l_commit="$(grep -n 'COMMIT_CALLS COMMIT_TOTAL COMMIT_MAX' <<<"$ins_body" | cut -d: -f1)"; l_top="$(grep -n 'TOP_STATEMENTS="\$(top_statements)"' <<<"$ins_body" | cut -d: -f1)"
@@ -1621,7 +1621,7 @@ grep -q 'start_app 2' "$RUNNER"; grep -q 'RECORD_STATUS=observation record 9 wor
 grep -q 'if \[\[ "\$n" == "\$MAX_SIZE" \]\]; then observe_workers_on' "$RUNNER"
 # The observation restores the workers-off app before the next measurement.
 obs_start="$(grep -n '^observe_workers_on() {' "$RUNNER" | cut -d: -f1)"
-sed -n "$obs_start,/^}/p" "$RUNNER" | tail -n 4 | grep -q 'start_app 0'
+sed -n "$obs_start,/^}/p" "$RUNNER" | tail -n 4 | grep 'start_app 0' >/dev/null
 # Commit, WAL and gate are labelled for what they are.
 for label in cluster-wide 'not a hold time' 'commitMsMax is the slowest COMMIT' walControlBytes 'not attributable' 'FOLD_WORKERS=0 turns the job workers off'; do grep -qF -- "$label" "$RUNNER"; done
 # The verdict never hides a failed judge or an incomplete run.
@@ -1659,8 +1659,8 @@ if grep -nE 'Contact-request reasons|Reasons pages|Not chosen yet|Changed since 
 # The runner measures the counts it lists (plus the dense targets), with the real API, and a missing browser leaves the row missing (never invented).
 grep -qF 'for bk in "${ALL_BROWSER_LIST[@]}"; do (( bk <= n )) && measure_browser_panel "$n" "$bk"; done' "$RUNNER"
 grep -q 'node "\$HERE/qc1/panel-measure.mjs"' "$RUNNER"
-sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep -q 'the row is missing and the run is not complete'
-sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep -q '(( BROWSER )) || return 0'
+sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep 'the row is missing and the run is not complete' >/dev/null
+sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep '(( BROWSER )) || return 0' >/dev/null
 mbp="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER")"; rpm="$(sed -n '/^run_panel_measure() {/,/^}/p' "$RUNNER")"
 grep -qF 'QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE"' <<<"$rpm"
 # The changed-reason hook must alter even a maximum-length reason without
@@ -1671,7 +1671,7 @@ grep -qF 'instrumented run_panel_measure' <<<"$mbp"; grep -qF 'window:$window' <
 grep -qF 'RECORD_STATUS=partial record 10' <<<"$mbp"; grep -qF 'failed:$b[0].failed' <<<"$mbp"; grep -qF 'PANEL_RC == 6' <<<"$mbp"
 # The phase hook only READS (WAL position, audit rows, bytes and rows by action); the change hook only edits one seeded reason.
 grep -qF "pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')" <<<"$mbp"; grep -qF 'json_object_agg(action, c)' <<<"$mbp"
-if sed -n '/^  cat >"$PANEL_PHASE" <<SH/,/^SH$/p' "$RUNNER" | grep -Eiq 'UPDATE|DELETE|INSERT|TRUNCATE|session_replication_role'; then echo 'qc1: the phase hook writes' >&2; exit 1; fi
+if sed -n '/^  cat >"$PANEL_PHASE" <<SH/,/^SH$/p' "$RUNNER" | grep -Ei 'UPDATE|DELETE|INSERT|TRUNCATE|session_replication_role' >/dev/null; then echo 'qc1: the phase hook writes' >&2; exit 1; fi
 # The hook only edits one seeded reason of the harness's own table, by a numeric id, and says so.
 grep -qF 'case "$1" in *[!0-9]*|"") exit 2 ;; esac' <<<"$mbp"
 # (the default browser counts are asserted above, before the fixture narrows them)
@@ -1851,7 +1851,7 @@ s_l="$(grep -n 'app_mem_start "\$WORK/mem.app"' <<<"$i_body" | cut -d: -f1)"; o_
 r_l="$(grep -n 'hwm_reset="\$(app_status_kb VmHWM' <<<"$i_body" | cut -d: -f1)"; p_l="$(grep -n 'qc1_app_peak "\$hwm_reset" "\$hwm_end" "\$WORK/mem.app"' <<<"$i_body" | cut -d: -f1)"
 [[ -n "$s_l$o_l$e_l$r_l$p_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$o_l" && "$o_l" -lt "$e_l" && "$e_l" -lt "$p_l" ]]
 grep -qF "APP_HWM_RESET\" == true ]] || APP_PEAK_KB=null" <<<"$i_body"        # an unverified reset still yields no figure
-sed -n '/^app_status_kb() {/,/^}/p' "$RUNNER_SRC" | grep -q 'for i in 1 2 3'
+sed -n '/^app_status_kb() {/,/^}/p' "$RUNNER_SRC" | grep 'for i in 1 2 3' >/dev/null
 grep -qF 'appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow' "$RUNNER_SRC"
 
 # (3) auto_explain: the capture's ALTER SYSTEM must not be outranked by the command line (pilot2 logged no plan at all).

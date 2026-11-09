@@ -35,7 +35,7 @@ cat >"$WORK/mi.sock" <<'M'
 M
 [[ "$(isolation_mount_problems "$WORK/mi.sock")" == "the Docker socket /var/run/docker.sock is a mount: the daemon would be the host's" ]]
 sed 's|/var/run/docker.sock|/run/docker.sock|' "$WORK/mi.sock" >"$WORK/mi.sock2"
-isolation_mount_problems "$WORK/mi.sock2" | grep -q '/run/docker.sock is a mount'
+isolation_mount_problems "$WORK/mi.sock2" | grep '/run/docker.sock is a mount' >/dev/null
 cat >"$WORK/mi.owner" <<'M'
 36 35 0:50 / / rw - overlay overlay rw
 42 36 8:1 /home/me/etc /etc rw,relatime - ext4 /dev/sda1 rw
@@ -51,8 +51,8 @@ cat "$WORK/mi.owner" "$WORK/mi.sock" >"$WORK/mi.both"; [[ "$(isolation_mount_pro
 # --- existing configuration: refuse, never preserve ------------------------------------------------------
 : >"$WORK/exists"; ln -s "$WORK/nowhere" "$WORK/dangling"
 [[ -z "$(isolation_preexisting_problems "$WORK/absent")" ]]
-isolation_preexisting_problems "$WORK/exists" | grep -q 'already exists; the drill would overwrite or later remove an owner'
-isolation_preexisting_problems "$WORK/dangling" | grep -q 'already exists'
+isolation_preexisting_problems "$WORK/exists" | grep 'already exists; the drill would overwrite or later remove an owner' >/dev/null
+isolation_preexisting_problems "$WORK/dangling" | grep 'already exists' >/dev/null
 [[ "$(isolation_preexisting_problems "$WORK/exists" "$WORK/absent" "$WORK/dangling" | wc -l)" == 2 ]]
 # Every host path the drill's provisioners write is on the list, and the list is what the crossings library cleans.
 for p in /etc/cron.d/fold-health /etc/cron.d/fold-backup /etc/logrotate.d/fold-backup /opt/fold /etc/sudoers.d/fold-admin; do
@@ -70,8 +70,8 @@ done < <(grep -oE 'write_file /etc/[a-zA-Z0-9_./-]+' "$HERE/provision.sh" | awk 
 
 # --- the daemon --------------------------------------------------------------------------------------------
 [[ -z "$(isolation_daemon_problems '{"Name":"fold-drill-1","ContainersRunning":0}' fold-drill-1)" ]]
-isolation_daemon_problems '{"Name":"prod-droplet","ContainersRunning":0}' fold-drill-1 | grep -q 'not a daemon of this filesystem'
-isolation_daemon_problems '{"Name":"fold-drill-1","ContainersRunning":4}' fold-drill-1 | grep -q 'already runs 4 container'
+isolation_daemon_problems '{"Name":"prod-droplet","ContainersRunning":0}' fold-drill-1 | grep 'not a daemon of this filesystem' >/dev/null
+isolation_daemon_problems '{"Name":"fold-drill-1","ContainersRunning":4}' fold-drill-1 | grep 'already runs 4 container' >/dev/null
 [[ "$(isolation_daemon_problems '{"Name":"x","ContainersRunning":2}' y | wc -l)" == 2 ]]
 
 # --- the whole guard ----------------------------------------------------------------------------------------
@@ -266,7 +266,7 @@ printf '%s\n' '36 35 0:50 / / rw - overlay overlay rw' '39 36 0:60 / /var/spool/
 [[ "$(isolation_mount_problems "$OS/mi.tmpfs")" == 'writable mount of /var/spool/cron (a whole filesystem, mount root /)' ]]
 for who in /etc /etc/cron.d /etc/logrotate.d /opt /opt/fold /root /home /srv /var/spool/cron; do
   printf '%s\n' '36 35 0:50 / / rw - overlay overlay rw' "39 36 8:1 / $who rw - ext4 /dev/sda1 rw" >"$OS/mi.each"
-  isolation_mount_problems "$OS/mi.each" | grep -q "writable mount of $who " || { echo "a writable whole-filesystem mount of $who is not refused" >&2; exit 1; }
+  isolation_mount_problems "$OS/mi.each" | grep "writable mount of $who " >/dev/null || { echo "a writable whole-filesystem mount of $who is not refused" >&2; exit 1; }
 done
 # the guard and the stand-in both refuse a root-/ /etc mount, writing nothing
 rm -f "$OS/state/s.json"* "$OS/etc/os-release"; ln -s ../usr/lib/os-release "$OS/etc/os-release"; before="$(snap_tree)"
@@ -276,8 +276,8 @@ MI="$OS/mi.rootetc" refused 'writable mount of /etc' guard
 # an unreadable, missing or empty mount table fails closed everywhere it is read
 : >"$OS/mi.empty"; before="$(snap_tree)"
 for t in "$OS/mi.absent" "$OS/mi.empty"; do
-  isolation_mount_problems "$t" | grep -q 'cannot be read, so no mount can be ruled out'
-  isolation_mount_problems "$t" sockets | grep -q 'cannot be read'
+  isolation_mount_problems "$t" | grep 'cannot be read, so no mount can be ruled out' >/dev/null
+  isolation_mount_problems "$t" sockets | grep 'cannot be read' >/dev/null
   MI="$t" refused 'cannot be read' standin
   MI="$t" refused 'cannot be read' guard
 done
@@ -301,8 +301,8 @@ printf '%s\n' '36 35 0:50 / / rw - overlay overlay rw' "41 36 8:1 / $OS/mnt/host
 rc=0; FOLD_DRILL_ISOLATED_DAEMON=1 FOLD_DRILL_ASSUME_CONTAINER=1 isolation_os_standin "$OS/state/p.json" "$OS/linkparent/os-release" "$OS/mi.parentro" >"$WORK/out" 2>&1 || rc=$?; [[ "$rc" != 0 ]] && grep -q 'is on the mount' "$WORK/out"
 # a mount whose name merely starts like the directory does not cover it
 printf '%s\n' '36 35 0:50 / / rw - overlay overlay rw' "41 36 8:1 / $OS/mnt/host rw - ext4 /dev/sda1 rw" >"$OS/mi.prefix"
-isolation_covering_mount "$OS/mi.prefix" "$OS/mnt/hostfs/sub" | grep -qx '/ rw'
-isolation_covering_mount "$OS/mi.prefix" "$OS/mnt/host/x" | grep -qx "$OS/mnt/host rw"
+isolation_covering_mount "$OS/mi.prefix" "$OS/mnt/hostfs/sub" | grep -x '/ rw' >/dev/null
+isolation_covering_mount "$OS/mi.prefix" "$OS/mnt/host/x" | grep -x "$OS/mnt/host rw" >/dev/null
 [[ "$(printf '%s\n' '1 0 0:1 / / rw - overlay o rw' '2 1 0:2 / /a rw - x x rw' '3 1 0:3 / /a ro - y y ro' >"$OS/mi.shadow"; isolation_covering_mount "$OS/mi.shadow" /a/b)" == '/a ro' ]]   # the later mount shadows
 if isolation_covering_mount "$OS/mi.absent" /a; then echo 'a missing mount table covered a path' >&2; exit 1; fi
 printf '%s\n' '2 1 0:2 / /a rw - x x rw' >"$OS/mi.nocover"; if isolation_covering_mount "$OS/mi.nocover" /b/c; then echo 'a path no mount covers was covered' >&2; exit 1; fi
@@ -436,7 +436,7 @@ isolation_os_restore "$OS/state/s.json"; [[ "$(stat -c %a "$OS/etc/os-release")"
 isolation_table_readable <(printf '36 35 0:50 / / rw - overlay overlay rw\n')
 if [[ -r /proc/self/mountinfo ]]; then
   isolation_table_readable /proc/self/mountinfo
-  if isolation_mount_problems /proc/self/mountinfo | grep -q 'cannot be read'; then echo '/proc/self/mountinfo was treated as unreadable' >&2; exit 1; fi
+  if isolation_mount_problems /proc/self/mountinfo | grep 'cannot be read' >/dev/null; then echo '/proc/self/mountinfo was treated as unreadable' >&2; exit 1; fi
   isolation_covering_mount /proc/self/mountinfo "$WORK" >/dev/null
 fi
 fresh_file; standin

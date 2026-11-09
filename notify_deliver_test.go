@@ -17,6 +17,7 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/providers"
+	"fold/internal/testdb"
 	"fold/models"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -1331,25 +1332,15 @@ func eraseNoticesNow(t *testing.T, db *gorm.DB, uid uint) {
 // waiterOn returns the pid of a backend blocked by blocker, once there is one.
 func waiterOn(t *testing.T, db *gorm.DB, blocker int) int {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
-	for {
-		var pid int
+	var pid int
+	testdb.WaitUntil(t, fmt.Sprintf("a session to wait on session %d", blocker), 5*time.Second, func() bool {
 		if err := db.Raw(`SELECT coalesce(min(pid), 0) FROM pg_stat_activity
 			WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid))`, blocker).Scan(&pid).Error; err != nil {
 			t.Fatal(err)
 		}
-		if pid != 0 {
-			return pid
-		}
-		select {
-		case <-tick.C:
-		case <-deadline.C:
-			t.Fatalf("no session ever waited on session %d", blocker)
-		}
-	}
+		return pid != 0
+	})
+	return pid
 }
 
 // pauseOnStatement installs a statement-level trigger (when is "AFTER INSERT"

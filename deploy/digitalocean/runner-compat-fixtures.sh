@@ -87,7 +87,7 @@ missing_packages() { # pkgs-file script...
   for f in "$@"; do
     for entry in "${REQUIRES[@]}"; do
       pat="${entry%|*}"; pkg="${entry##*|}"
-      if code_of "$f" | grep -Eq -- "$pat" && ! grep -qx "$pkg" "$pkgs"; then echo "$f needs $pkg ($pat)"; fi
+      if code_of "$f" | grep -E -- "$pat" >/dev/null && ! grep -qx "$pkg" "$pkgs"; then echo "$f needs $pkg ($pat)"; fi
     done
   done
 }
@@ -138,7 +138,7 @@ sample_for_require() { # index -> sample line the pattern must match
 (( ${#REQUIRES[@]} == 22 ))   # a pattern added without a sample fails here
 for ((i=0; i<${#REQUIRES[@]}; i++)); do
   pat="${REQUIRES[i]%|*}"
-  sample_for_require "$i" | grep -Eq -- "$pat" || { echo "runner compat: REQUIRES[$i] ($pat) does not match its own sample" >&2; exit 1; }
+  sample_for_require "$i" | grep -E -- "$pat" >/dev/null || { echo "runner compat: REQUIRES[$i] ($pat) does not match its own sample" >&2; exit 1; }
 done
 sample_for_forbid() {
   case "$1" in
@@ -155,7 +155,7 @@ sample_for_forbid() {
 (( ${#FORBIDS[@]} == 8 ))
 for ((i=0; i<${#FORBIDS[@]}; i++)); do
   pat="${FORBIDS[i]%|*}"
-  sample_for_forbid "$i" | grep -Eq -- "$pat" || { echo "runner compat: FORBIDS[$i] ($pat) does not match its own sample" >&2; exit 1; }
+  sample_for_forbid "$i" | grep -E -- "$pat" >/dev/null || { echo "runner compat: FORBIDS[$i] ($pat) does not match its own sample" >&2; exit 1; }
 done
 # ...and common safe lines are not flagged
 for safe in 'grep -qF -- "$x" "$f"' 'sed -n "s/a/b/p" f' 'awk -F "|" "{print \$1}" f' 'echo "run: sudo fuser -v x"' '  timeout 2 bash -c true' "printf '%s\\n' ps"; do

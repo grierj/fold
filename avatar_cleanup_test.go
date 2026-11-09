@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/testdb"
 	"fold/models"
 	"fold/storage"
 
@@ -298,20 +299,15 @@ func isLater(err error) bool {
 // running a statement that matches the LIKE pattern, and returns its pid.
 func waitForLockedUsersQuery(t *testing.T, app *App, like string) int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var pid int
+	var pid int
+	testdb.WaitUntil(t, "a backend to wait on "+like, 10*time.Second, func() bool {
 		if err := app.DB.Raw(`SELECT coalesce(min(pid), 0) FROM pg_stat_activity WHERE datname = current_database()
 			AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE ?`, like).Scan(&pid).Error; err != nil {
 			t.Fatal(err)
 		}
-		if pid != 0 {
-			return pid
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("no backend ever waited on %s", like)
-	return 0
+		return pid != 0
+	})
+	return pid
 }
 
 // waitForRowLockWaiter waits until an erasure (users ... FOR UPDATE) is

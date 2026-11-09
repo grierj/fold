@@ -142,9 +142,9 @@ func TestAdminPasswordPathsRejectMoreThan72Bytes(t *testing.T) {
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
 	admin := loginAPI(t, app, "admin", "password1234")
-	w := admin.do("POST", "/api/v1/admin/users/"+itoa2(alice.ID)+"/password", map[string]string{"password": strings.Repeat("a", 73)}, true)
+	w := admin.do("POST", "/api/v1/admin/users/"+itoa(alice.ID)+"/password", map[string]string{"password": strings.Repeat("a", 73)}, true)
 	assertTooLong(t, w.Code, w.Body.String())
-	apiDo(t, admin, "POST", "/api/v1/admin/users/"+itoa2(alice.ID)+"/password", map[string]string{"password": strings.Repeat("a", 72)}, http.StatusOK)
+	apiDo(t, admin, "POST", "/api/v1/admin/users/"+itoa(alice.ID)+"/password", map[string]string{"password": strings.Repeat("a", 72)}, http.StatusOK)
 	w = admin.do("POST", "/api/v1/admin/users", map[string]any{"ageBand": "adult", "email": "bob@example.com", "name": "Bob", "password": strings.Repeat("a", 73)}, true)
 	assertTooLong(t, w.Code, w.Body.String())
 }

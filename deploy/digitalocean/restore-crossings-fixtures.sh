@@ -447,7 +447,7 @@ for family in real_binary_refusals real_level_lineage real_same_level_rollback r
   grep -q "$family" <<<"$loop"
   declare -F "$family" >/dev/null
 done
-sed -n '/^drill_case_begin final-verification/,/^drill_case_end/p' "$RUNNER" | grep -q '^assert_crossing_evidence$'
+sed -n '/^drill_case_begin final-verification/,/^drill_case_end/p' "$RUNNER" | grep '^assert_crossing_evidence$' >/dev/null
 declare -F assert_crossing_evidence >/dev/null
 validate_line="$(grep -n '^crossing_validate_revisions "\$ROOT"' "$RUNNER" | cut -d: -f1)"
 bootstrap_line="$(grep -n '^drill_case_begin bootstrap$' "$RUNNER" | cut -d: -f1)"
@@ -483,7 +483,7 @@ want_digest="$({ printf '%s' 'fold:erasure-reason-set:v1' | xxd -p | tr -d '\n';
 [[ "$(crossing_panel_body "$WORK/panel.json" ID1 | jq -c 'keys_unsorted')" == '["successors","hostSuccessors","attemptId","reasonReview"]' ]]
 [[ "$(crossing_panel_body "$WORK/panel.json" "" | jq -c 'has("attemptId")')" == false ]]
 # No old-form per-reason list anywhere in the crossing bodies.
-if crossing_panel_body "$WORK/panel.json" ID1 | grep -q '"items"'; then echo 'crossing: a panel body carries the old items envelope' >&2; exit 1; fi
+if crossing_panel_body "$WORK/panel.json" ID1 | grep '"items"' >/dev/null; then echo 'crossing: a panel body carries the old items envelope' >&2; exit 1; fi
 if grep -n 'reasonReview:{items' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh"; then echo 'crossing: the crossings still build the old items envelope' >&2; exit 1; fi
 # The helper's byte-for-byte contract is the product's shared vectors.
 node "$ROOT/deploy/digitalocean/qc1/set-v1.mjs" selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json" >/dev/null
@@ -501,7 +501,7 @@ for step in 'restore_detected' 'attempt_expired' 'history_unavailable' 'crossing
 reload_line="$(grep -n 'crossing_reload_shows "\$t3"' <<<"$body" | head -n 1 | cut -d: -f1)"; press_line="$(grep -n 'status="\$(crossing_press "\$t3"' <<<"$body" | head -n 1 | cut -d: -f1)"
 [[ -n "$reload_line" && -n "$press_line" && "$reload_line" -lt "$press_line" ]]
 # The reload is the users list, as the panel does it.
-sed -n '/^crossing_reload_shows() {/,/^}/p' "$CROSS" | grep -q 'api GET /admin/users'
+sed -n '/^crossing_reload_shows() {/,/^}/p' "$CROSS" | grep 'api GET /admin/users' >/dev/null
 # The wording the first-church check promises matches the drill.
 fcc="$ROOT/docs/FIRST-CHURCH-CHECKS.md"
 panel_item="$(grep -n 'reason-review panel' "$fcc" | head -n 1 | cut -d: -f1)"
@@ -528,7 +528,7 @@ grep -q 'isolation_os_restore "\$CROSSING_OS_STATE"' "$RUNNER"
 cleanup_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
 [[ "$(grep -n 'crossing_cleanup_all' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'isolation_os_restore' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" ]]
 [[ "$(grep -n 'isolation_os_restore' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'drill_emit result' <<<"$cleanup_body" | head -n 1 | cut -d: -f1)" ]]
-sed -n '/^assert_crossing_evidence() {/,/^}/p' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh" | grep -qxF "  jq -e '.applied != null and .path == \"/etc/os-release\"' \"\$cdir/os-release-standin.json\" >/dev/null"
+sed -n '/^assert_crossing_evidence() {/,/^}/p' "$ROOT/deploy/digitalocean/restore-drill-crossings.sh" | grep -xF "  jq -e '.applied != null and .path == \"/etc/os-release\"' \"\$cdir/os-release-standin.json\" >/dev/null" >/dev/null
 guard_l="$(grep -n '^isolation_require_disposable || exit 1' "$RUNNER" | cut -d: -f1)"; loop_l="$(grep -n '^for drill_family in' "$RUNNER" | cut -d: -f1)"
 [[ "$guard_l" -lt "$loop_l" ]]
 # The only callers of the writer are the crossing library (after that guard); no --allow-os was added to any upgrade.sh call; no shipped tool mentions the stand-in.
@@ -589,7 +589,7 @@ isolation_os_restore "$WORK/crossings/os-release-standin.json"; [[ -L "$CXO/etc/
 CASES="$ROOT/deploy/digitalocean/restore-drill-cases.sh"; CROSS="$ROOT/deploy/digitalocean/restore-drill-crossings.sh"
 grep -q "UPDATE drill_sentinel SET value='live' WHERE id=2" <(sed -n '/^capture_original() {$/,/^}$/p' "$CASES")          # the cause: every reset leaves "live" behind
 grep -qF "[[ \"\$(pg fold -c 'SELECT value FROM drill_sentinel WHERE id=2')\" == archive ]]" "$RUNNER"                    # the assertion stays exactly as strict as it was
-sed -n '/^assert_private() {$/,/^}$/p' "$RUNNER" | grep -qF "drill_sentinel WHERE id=2')\" == archive ]]"
+sed -n '/^assert_private() {$/,/^}$/p' "$RUNNER" | grep -F "drill_sentinel WHERE id=2')\" == archive ]]" >/dev/null
 # No crossing case dumps the live database with a raw pg_dump (the older-archive case dumps its own fixture database, which has no sentinel)
 if grep -vE '^[[:space:]]*#' "$CROSS" | grep -nE 'pg_dump -U church -Fc fold( |>|$)' | grep -v 'CROSSING_FORBID_UP'; then echo 'a crossing case dumps the live database without the archive marker' >&2; exit 1; fi
 cur_body="$(sed -n '/^real_current_release_restore() {$/,/^}$/p' "$CROSS")"

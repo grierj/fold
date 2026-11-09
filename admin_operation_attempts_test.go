@@ -1123,7 +1123,7 @@ func TestAttemptSettleWaitsForARunningAttempt(t *testing.T) {
 
 	first := make(chan *httptest.ResponseRecorder, 1)
 	go func() { first <- s.del(id, a.ID) }()
-	waitFor(t, 10*time.Second, "the deletion to claim its id", func() bool { return s.state(id, a.ID) == attemptRunning })
+	testdb.WaitUntil(t, "the deletion to claim its id", 10*time.Second, func() bool { return s.state(id, a.ID) == attemptRunning })
 
 	// B submits the same id: attempt_closed at once.
 	c2 := loginAPI(t, s.app, "admin", "pw")
@@ -1207,7 +1207,7 @@ func TestSettleAuthorizationBehindAParkedHolder(t *testing.T) {
 			s.c.holdNotices = true
 			done := make(chan *httptest.ResponseRecorder, 1)
 			go func() { done <- s.settle(id, a.ID) }()
-			waitFor(t, 10*time.Second, "settle waiting for the gate", func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
+			testdb.WaitUntil(t, "settle waiting for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
 			if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -1526,7 +1526,7 @@ func TestRunningAttemptCrossesTheSubmitWindow(t *testing.T) {
 	defer release()
 	del := make(chan *httptest.ResponseRecorder, 1)
 	go func() { del <- s.del(id, a.ID) }()
-	waitFor(t, 15*time.Second, "the deletion to claim and wait at the gate", func() bool {
+	testdb.WaitUntil(t, "the deletion to claim and wait at the gate", 15*time.Second, func() bool {
 		return s.state(id, a.ID) == attemptRunning && advisoryWaiters(t, s.direct) == 1
 	})
 	s.advance(2 * time.Minute) // 11m59s since the mint: the submit window has passed
@@ -1586,7 +1586,7 @@ func TestDeletionRefusesARevocationAfterTheMiddleware(t *testing.T) {
 			defer release()
 			done := make(chan *httptest.ResponseRecorder, 1)
 			go func() { done <- s.del(id, a.ID) }()
-			waitFor(t, 10*time.Second, "the deletion waiting for the gate", func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
+			testdb.WaitUntil(t, "the deletion waiting for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
 			if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -1617,7 +1617,7 @@ func TestTwoPressesReleasedTogether(t *testing.T) {
 	ch1, ch2 := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
 	go func() { ch1 <- s.deleteAs(s.c, id1, a.ID) }()
 	go func() { ch2 <- s.deleteAs(c2, id2, a.ID) }()
-	waitFor(t, 10*time.Second, "both presses waiting for the gate", func() bool { return advisoryWaiters(t, s.app.DB) == 2 })
+	testdb.WaitUntil(t, "both presses waiting for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 2 })
 	release()
 	w1, w2 := awaitRec(t, ch1, "press 1"), awaitRec(t, ch2, "press 2")
 	winner, loser, wid, lid := w1, w2, id1, id2
@@ -1696,7 +1696,7 @@ func TestAttemptFailsValidationWhileHeld(t *testing.T) {
 	defer release()
 	first := make(chan *httptest.ResponseRecorder, 1)
 	go func() { first <- s.del(id, a.ID) }()
-	waitFor(t, 10*time.Second, "the deletion to wait for the gate", func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
+	testdb.WaitUntil(t, "the deletion to wait for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
 	c2 := loginAPI(t, s.app, "admin", "pw")
 	before := advisoryWaiters(t, s.app.DB)
 	if w := s.deleteAs(c2, id, a.ID); w.Code != http.StatusConflict || codeOf(t, w) != "attempt_closed" {

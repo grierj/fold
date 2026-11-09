@@ -184,7 +184,7 @@ func TestPeopleSelectionFailsClosed(t *testing.T) {
 	}
 	g := newTestGroup(t, app, actor, "Add", models.GroupActive)
 	app.DB.Model(target).Update("status", models.UserDisabled)
-	w := client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", map[string]any{"selectionId": token}, true)
+	w := client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", map[string]any{"selectionId": token}, true)
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "people_selection_unavailable") || strings.Contains(w.Body.String(), target.Email) {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -212,7 +212,7 @@ func TestPeopleSelectionRevokedManagerAndWrongActor(t *testing.T) {
 	addMember(t, app, other, g, models.MembershipLeader)
 	token, _ := app.newPeopleSelection(leader.ID, target.ID, time.Now())
 	otherClient := loginAPI(t, app, "other leader", "pw")
-	path := "/api/v1/groups/" + itoa2(g.ID) + "/members"
+	path := "/api/v1/groups/" + itoa(g.ID) + "/members"
 	if w := otherClient.do("POST", path, map[string]any{"selectionId": token}, true); w.Code != 400 {
 		t.Fatal(w.Code, w.Body.String())
 	}
