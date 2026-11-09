@@ -10,6 +10,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/testdb"
 	"fold/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -153,18 +154,13 @@ func TestTeenConsentAdminGuardianNoticeAndAdultHistory(t *testing.T) {
 
 func waitForBlockedConsent(t *testing.T, app *App) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, "the consent request to wait on the lifecycle lock", 5*time.Second, func() bool {
 		var count int64
 		if err := app.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND state = 'active' AND query LIKE '%users%'").Scan(&count).Error; err != nil {
 			t.Fatal(err)
 		}
-		if count > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("consent request never waited on the lifecycle lock")
+		return count > 0
+	})
 }
 
 func TestTeenEnableReadsConsentAfterLifecycleLock(t *testing.T) {
@@ -173,7 +169,7 @@ func TestTeenEnableReadsConsentAfterLifecycleLock(t *testing.T) {
 	admin := loginAPI(t, app, "admin", "pw")
 	teen := consentTeen(t, app)
 	apiDo(t, admin, "POST", consentPath(teen), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Paper"}, 200)
-	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(teen.ID), map[string]string{"status": "disabled"}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(teen.ID), map[string]string{"status": "disabled"}, 200)
 	tx := app.DB.Begin()
 	defer tx.Rollback()
 	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&models.User{}, teen.ID).Error; err != nil {
@@ -184,7 +180,7 @@ func TestTeenEnableReadsConsentAfterLifecycleLock(t *testing.T) {
 	}
 	done := make(chan int, 1)
 	go func() {
-		done <- admin.do("PUT", "/api/v1/admin/users/"+itoa2(teen.ID), map[string]string{"status": "active"}, true).Code
+		done <- admin.do("PUT", "/api/v1/admin/users/"+itoa(teen.ID), map[string]string{"status": "active"}, true).Code
 	}()
 	waitForBlockedConsent(t, app)
 	if err := tx.Commit().Error; err != nil {
@@ -247,7 +243,7 @@ func TestApproveTeenAndGrantConsentAtomically(t *testing.T) {
 	anon := anonClient(t, app, "10.4.9.1")
 	apiDo(t, anon, "POST", "/api/v1/account-requests", signupBody("Teen Casey", "casey@example.com", "teen", teenBirthDate()), 200)
 	req := pendingRequest(t, app, "casey@example.com")
-	path := "/api/v1/admin/account-requests/" + itoa2(req.ID) + "/approve"
+	path := "/api/v1/admin/account-requests/" + itoa(req.ID) + "/approve"
 	apiDo(t, admin, "POST", path, map[string]string{"accountConsentEvidenceText": " "}, 400)
 	app.DB.First(&req, req.ID)
 	if req.Status != models.RequestPending {
@@ -293,7 +289,7 @@ func TestApproveTeenConsentNeverChangesExistingAccount(t *testing.T) {
 	apiDo(t, anon, "POST", "/api/v1/account-requests", signupBody("Teen Another", "another@example.com", "teen", teenBirthDate()), 200)
 	req := pendingRequest(t, app, "another@example.com")
 	existing := newTestUser(t, app, "another", "pw", models.RoleMember)
-	path := "/api/v1/admin/account-requests/" + itoa2(req.ID) + "/approve"
+	path := "/api/v1/admin/account-requests/" + itoa(req.ID) + "/approve"
 	apiDo(t, admin, "POST", path, map[string]string{"accountConsentEvidenceText": "Paper"}, 409)
 	app.DB.First(&req, req.ID)
 	app.DB.First(existing, existing.ID)
@@ -308,7 +304,7 @@ func TestApproveTeenConsentNeverChangesExistingAccount(t *testing.T) {
 }
 
 func consentPath(teen *models.User) string {
-	return "/api/v1/admin/users/" + itoa2(teen.ID) + "/teen-consents"
+	return "/api/v1/admin/users/" + itoa(teen.ID) + "/teen-consents"
 }
 
 func TestAdminTeenConsentScopesAndHistory(t *testing.T) {
@@ -375,7 +371,7 @@ func TestTeenConsentPreservesAdministrativeSuspension(t *testing.T) {
 	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "pw")
 	teen := consentTeen(t, app)
-	path := "/api/v1/admin/users/" + itoa2(teen.ID)
+	path := "/api/v1/admin/users/" + itoa(teen.ID)
 	change := func(status string) {
 		apiDo(t, admin, "POST", consentPath(teen), map[string]string{"scope": "account", "status": status, "evidenceText": "Paper form"}, 200)
 	}

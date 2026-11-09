@@ -49,19 +49,14 @@ func holdContactGate(t *testing.T, a *App) *gorm.DB {
 }
 func waitContactWaiters(t *testing.T, a *App, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, fmt.Sprintf("%d contact gate contenders", n), 5*time.Second, func() bool {
 		var count int64
 		err := a.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory' AND query LIKE 'SELECT pg_advisory_xact_lock%'").Scan(&count).Error
 		if err != nil {
 			t.Fatal(err)
 		}
-		if count >= int64(n) {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %d contact gate contenders", n)
+		return count >= int64(n)
+	})
 }
 func awaitContactResponse(t *testing.T, ch <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1854,9 +1849,10 @@ type waiterRow struct {
 // five seconds fails the test.
 func waiterBlockedBy(t testing.TB, db *gorm.DB, holder int, fragment string) int {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var rows []waiterRow
+	var rows []waiterRow
+	var waiter int
+	testdb.WaitUntil(t, fmt.Sprintf("a unique waiter on backend %d with a statement containing %q", holder, fragment), 5*time.Second, func() bool {
+		rows = nil
 		if err := db.Raw(`SELECT pid, query FROM pg_stat_activity WHERE datname = current_database()
 			AND wait_event_type = 'Lock' AND ? = ANY(pg_blocking_pids(pid))`, holder).Scan(&rows).Error; err != nil {
 			t.Fatalf("find the waiter: %v", err)
@@ -1870,14 +1866,13 @@ func waiterBlockedBy(t testing.TB, db *gorm.DB, holder int, fragment string) int
 				t.Fatalf("pg_locks: %v", err)
 			}
 			if n > 0 {
-				return rows[0].PID
+				waiter = rows[0].PID
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no unique waiter on backend %d with a statement containing %q: %+v", holder, fragment, rows)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false
+	})
+	return waiter
 }
 
 // assertWaitsOnNothing is (E2): the backend is parked inside its transaction

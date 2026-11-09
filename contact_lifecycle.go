@@ -292,13 +292,14 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	if err := lockContacts(tx); err != nil {
 		return rollback(err)
 	}
-	if err := a.reconcileAccessesBefore(tx, time.Now().UTC(), change); err != nil {
+	now := a.now().UTC()
+	if err := a.reconcileAccessesBefore(tx, now, change); err != nil {
 		return rollback(err)
 	}
 	if err := fn(tx); err != nil {
 		return rollback(err)
 	}
-	if err := a.reconcileContacts(tx, time.Now().UTC(), change); err != nil {
+	if err := a.reconcileContacts(tx, now, change); err != nil {
 		return rollback(err)
 	}
 	// The actor seal is the last locking statement (R5-C01): after it the

@@ -1832,8 +1832,8 @@ func TestSelectionRegistrationCapacityVisibilityAndTeenGate(t *testing.T) {
 	app, actor, client := peopleTestApp(t)
 	g := newTestGroup(t, app, actor, "Event selection", models.GroupActive)
 	adult := newTestUser(t, app, "event chosen", "pw", models.RoleMember)
-	ev, date := seedCappedEvent(t, app, client, itoa2(g.ID), intPtr(1), false)
-	path := "/api/v1/events/" + itoa2(ev) + "/registrations/add"
+	ev, date := seedCappedEvent(t, app, client, itoa(g.ID), intPtr(1), false)
+	path := "/api/v1/events/" + itoa(ev) + "/registrations/add"
 	token, _ := app.newPeopleSelection(actor.ID, adult.ID, time.Now())
 	w := client.do("POST", path, map[string]any{"selectionId": token, "date": date}, true)
 	if w.Code != 200 {
@@ -1879,7 +1879,7 @@ func TestManagerRegistrationAddRefreshesActorAfterContactGate(t *testing.T) {
 				leader := newTestUser(t, app, "event destination leader", "pw", models.RoleMember)
 				g := newTestGroup(t, app, leader, "Event authority", models.GroupActive)
 				target := newTestUser(t, app, "private registration target", "pw", models.RoleMember)
-				ev, date := seedCappedEvent(t, app, client, itoa2(g.ID), intPtr(1), false)
+				ev, date := seedCappedEvent(t, app, client, itoa(g.ID), intPtr(1), false)
 				body := map[string]any{"date": date, "userId": target.ID}
 				switch targetKind {
 				case "selection":
@@ -1893,7 +1893,7 @@ func TestManagerRegistrationAddRefreshesActorAfterContactGate(t *testing.T) {
 				}
 				gate := holdContactGate(t, app)
 				response := queueContact(func() *httptest.ResponseRecorder {
-					return client.do("POST", "/api/v1/events/"+itoa2(ev)+"/registrations/add", body, true)
+					return client.do("POST", "/api/v1/events/"+itoa(ev)+"/registrations/add", body, true)
 				})
 				waitContactWaiters(t, app, 1)
 				// Prove gate-FIRST ordering: the waiting add holds neither the
@@ -1931,7 +1931,7 @@ func TestManagerRegistrationAddRechecksScopeAfterContactGate(t *testing.T) {
 				actor := newTestUser(t, app, "queued event manager", "pw", models.RoleMember)
 				g := newTestGroup(t, app, actor, "Revoked scope", models.GroupActive)
 				addMember(t, app, admin, g, models.MembershipLeader)
-				ev, date := seedCappedEvent(t, app, adminClient, itoa2(g.ID), intPtr(1), false)
+				ev, date := seedCappedEvent(t, app, adminClient, itoa(g.ID), intPtr(1), false)
 				if scope == "church host" {
 					if err := app.DB.Model(&models.Event{}).Where("id = ?", ev).Update("group_id", nil).Error; err != nil {
 						t.Fatal(err)
@@ -1957,7 +1957,7 @@ func TestManagerRegistrationAddRechecksScopeAfterContactGate(t *testing.T) {
 				}
 				gate := holdContactGate(t, app)
 				response := queueContact(func() *httptest.ResponseRecorder {
-					return client.do("POST", "/api/v1/events/"+itoa2(ev)+"/registrations/add", body, true)
+					return client.do("POST", "/api/v1/events/"+itoa(ev)+"/registrations/add", body, true)
 				})
 				waitContactWaiters(t, app, 1)
 				if scope == "church host" {

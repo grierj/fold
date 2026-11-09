@@ -12,6 +12,7 @@ import (
 
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/testdb"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -92,18 +93,13 @@ func waitSeriesOccurrenceWaiter(t *testing.T, app *App, gate *gorm.DB) {
 	if err := gate.Raw("SELECT pg_backend_pid()").Scan(&pid).Error; err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testdb.WaitUntil(t, "a series occurrence lock contender", 5*time.Second, func() bool {
 		var blocked bool
 		if err := app.DB.Raw("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND ? = ANY(pg_blocking_pids(pid)))", pid).Scan(&blocked).Error; err != nil {
 			t.Fatal(err)
 		}
-		if blocked {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("timed out waiting for series occurrence lock contender")
+		return blocked
+	})
 }
 
 // seriesUndoSnapshotDates reads the persisted undo receipt for an event and
