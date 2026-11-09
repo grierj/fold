@@ -177,10 +177,6 @@ func TestSuppressingMatchesHashedAndLegacyRows(t *testing.T) {
 type countingAdapter struct{ sent []string }
 
 func (c *countingAdapter) Capabilities() providers.EmailCaps { return providers.EmailCaps{} }
-func (c *countingAdapter) Send(ctx context.Context, m Message) error {
-	_, err := c.SendEmail(ctx, m)
-	return err
-}
 func (c *countingAdapter) SendEmail(_ context.Context, m Message) (string, error) {
 	c.sent = append(c.sent, m.To)
 	return "id", nil
@@ -188,9 +184,10 @@ func (c *countingAdapter) SendEmail(_ context.Context, m Message) (string, error
 
 // With a complaint and a hard bounce both open, in either insert order and
 // whether the rows are hashed or legacy NULL-hash rows: required mail is
-// refused with hard_bounce, and optional mail follows the older row (this
-// order was unspecified before R4-S). Nothing reaches the inner sender when
-// refused, and a cleared companion row changes nothing.
+// refused with hard_bounce, and so is optional mail: the strongest reason
+// stands for the address whichever row is older (StrongestReason). Nothing
+// reaches the inner sender when refused, and a cleared companion row changes
+// nothing.
 func TestSuppressingBothReasonsInEitherOrder(t *testing.T) {
 	db := testdb.Shared(t)
 	inner := &countingAdapter{}
@@ -223,9 +220,6 @@ func TestSuppressingBothReasonsInEitherOrder(t *testing.T) {
 		}
 		for _, optional := range []bool{false, true} {
 			want := models.SuppressHardBounce
-			if optional {
-				want = p.first
-			}
 			_, err := s.SendEmail(context.Background(), providers.EmailMessage{To: " " + p.address + " ", Subject: "s", Text: "t", Optional: optional})
 			var sup *ErrSuppressed
 			if !errors.As(err, &sup) || sup.Reason != want {
@@ -381,5 +375,22 @@ func TestOpenSuppressionReasons(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, wantMany) {
 		t.Fatalf("chunked lookup = %v, want %v", got, wantMany)
+	}
+}
+
+func TestStrongestReason(t *testing.T) {
+	for _, tc := range []struct {
+		reasons []string
+		want    string
+	}{
+		{nil, ""},
+		{[]string{models.SuppressComplaint}, models.SuppressComplaint},
+		{[]string{models.SuppressComplaint, models.SuppressManual}, models.SuppressManual},
+		{[]string{models.SuppressManual, models.SuppressHardBounce}, models.SuppressHardBounce},
+		{[]string{models.SuppressComplaint, "something new", models.SuppressComplaint}, "something new"},
+	} {
+		if got := StrongestReason(tc.reasons); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.reasons, got, tc.want)
+		}
 	}
 }

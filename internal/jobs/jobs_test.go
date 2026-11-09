@@ -34,17 +34,22 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
+// enqueue queues one job of a throwaway type with the given attempts.
+func enqueue(db *gorm.DB, kind string, payload any, at time.Time, key string, attempts int) (bool, error) {
+	return Type{Name: kind, MaxAttempts: attempts}.Enqueue(db, payload, at, key)
+}
+
 func TestEnqueueDedupes(t *testing.T) {
 	db := testdb.Shared(t)
 	now := time.Now()
-	if ok, err := Enqueue(db, "x", map[string]int{"n": 1}, now, "x:1", 0); !ok || err != nil {
+	if ok, err := enqueue(db, "x", map[string]int{"n": 1}, now, "x:1", 0); !ok || err != nil {
 		t.Fatalf("first: %v %v", ok, err)
 	}
-	if ok, err := Enqueue(db, "x", nil, now, "x:1", 0); ok || err != nil {
+	if ok, err := enqueue(db, "x", nil, now, "x:1", 0); ok || err != nil {
 		t.Fatalf("a repeated key should add nothing: %v %v", ok, err)
 	}
 	for i := 0; i < 2; i++ {
-		if ok, err := Enqueue(db, "x", nil, now, "", 0); !ok || err != nil {
+		if ok, err := enqueue(db, "x", nil, now, "", 0); !ok || err != nil {
 			t.Fatalf("no key never conflicts: %v %v", ok, err)
 		}
 	}
@@ -60,12 +65,12 @@ func TestEnqueueDedupes(t *testing.T) {
 func TestEnqueueManyDedupes(t *testing.T) {
 	db := testdb.Shared(t)
 	now := time.Now()
-	if _, err := Enqueue(db, "x", nil, now, "x:1", 0); err != nil {
+	if _, err := enqueue(db, "x", nil, now, "x:1", 0); err != nil {
 		t.Fatal(err)
 	}
-	specs := []Spec{{Kind: "x", RunAt: now, UniqueKey: "x:1"}}
+	specs := []Spec{{Type: Type{Name: "x"}, RunAt: now, UniqueKey: "x:1"}}
 	for i := 2; i <= 1200; i++ {
-		specs = append(specs, Spec{Kind: "x", Payload: map[string]int{"n": i}, RunAt: now, UniqueKey: "x:" + strconv.Itoa(i), MaxAttempts: 3})
+		specs = append(specs, Spec{Type: Type{Name: "x", MaxAttempts: 3}, Payload: map[string]int{"n": i}, RunAt: now, UniqueKey: "x:" + strconv.Itoa(i)})
 	}
 	n, err := EnqueueMany(db, specs)
 	if err != nil || n != 1199 {
@@ -92,9 +97,9 @@ func runner(db *gorm.DB, kinds ...Kind) *Runner {
 func TestJobRunsOnceAndIsDone(t *testing.T) {
 	db := testdb.Shared(t)
 	var got string
-	r := runner(db, Kind{Name: "hello", Run: func(_ context.Context, p json.RawMessage) error { got = string(p); return nil }})
-	Enqueue(db, "hello", map[string]string{"to": "you"}, time.Now(), "", 0)
-	Enqueue(db, "hello", nil, time.Now().Add(time.Hour), "", 0) // not due
+	r := runner(db, Kind{Type: Type{Name: "hello"}, Run: func(_ context.Context, p json.RawMessage) error { got = string(p); return nil }})
+	enqueue(db, "hello", map[string]string{"to": "you"}, time.Now(), "", 0)
+	enqueue(db, "hello", nil, time.Now().Add(time.Hour), "", 0) // not due
 	if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
 		t.Fatalf("run: %v %v", ran, err)
 	}
@@ -116,11 +121,11 @@ func TestJobRunsOnceAndIsDone(t *testing.T) {
 func TestLastAttempt(t *testing.T) {
 	db := testdb.Shared(t)
 	var seen []bool
-	r := runner(db, Kind{Name: "count", Run: func(ctx context.Context, _ json.RawMessage) error {
+	r := runner(db, Kind{Type: Type{Name: "count"}, Run: func(ctx context.Context, _ json.RawMessage) error {
 		seen = append(seen, LastAttempt(ctx))
 		return errors.New("again")
 	}})
-	Enqueue(db, "count", nil, time.Now(), "", 3)
+	enqueue(db, "count", nil, time.Now(), "", 3)
 	for range 3 {
 		db.Model(&models.Job{}).Where("status = ?", models.JobFailed).Update("run_at", time.Now().Add(-time.Second))
 		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
@@ -142,14 +147,14 @@ func TestLaterWaitsWithoutUsingAnAttempt(t *testing.T) {
 	db := testdb.Shared(t)
 	calls := 0
 	at := time.Now().Add(9 * time.Hour).Truncate(time.Second)
-	r := runner(db, Kind{Name: "wait", Run: func(context.Context, json.RawMessage) error {
+	r := runner(db, Kind{Type: Type{Name: "wait"}, Run: func(context.Context, json.RawMessage) error {
 		calls++
 		if calls <= 3 {
 			return fmt.Errorf("quiet hours: %w", Later(at))
 		}
 		return nil
 	}})
-	Enqueue(db, "wait", nil, time.Now(), "wait:1", 1)
+	enqueue(db, "wait", nil, time.Now(), "wait:1", 1)
 	for i := 1; i <= 3; i++ {
 		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
 			t.Fatalf("run %d: %v %v", i, ran, err)
@@ -178,8 +183,8 @@ func TestLaterWaitsWithoutUsingAnAttempt(t *testing.T) {
 func TestFailingJobRetriesThenDies(t *testing.T) {
 	db := testdb.Shared(t)
 	calls := 0
-	r := runner(db, Kind{Name: "flaky", Run: func(context.Context, json.RawMessage) error { calls++; return errors.New("provider down") }})
-	Enqueue(db, "flaky", nil, time.Now(), "", 3)
+	r := runner(db, Kind{Type: Type{Name: "flaky"}, Run: func(context.Context, json.RawMessage) error { calls++; return errors.New("provider down") }})
+	enqueue(db, "flaky", nil, time.Now(), "", 3)
 	for attempt := 1; attempt <= 3; attempt++ {
 		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
 			t.Fatalf("attempt %d: %v %v", attempt, ran, err)
@@ -209,9 +214,9 @@ func TestFailingJobRetriesThenDies(t *testing.T) {
 // know waits (an upgrade rolled back), and is dead only after a week.
 func TestPanicsAndUnknownKinds(t *testing.T) {
 	db := testdb.Shared(t)
-	r := runner(db, Kind{Name: "boom", MaxAttempts: 2, Run: func(context.Context, json.RawMessage) error { panic("oops") }})
-	Enqueue(db, "boom", nil, time.Now(), "", 2)
-	Enqueue(db, "nobody", nil, time.Now(), "", 5)
+	r := runner(db, Kind{Type: Type{Name: "boom", MaxAttempts: 2}, Run: func(context.Context, json.RawMessage) error { panic("oops") }})
+	enqueue(db, "boom", nil, time.Now(), "", 2)
+	enqueue(db, "nobody", nil, time.Now(), "", 5)
 	r.RunOnce(context.Background(), "w")
 	r.RunOnce(context.Background(), "w")
 	var boom, nobody models.Job
@@ -238,10 +243,10 @@ func TestPanicsAndUnknownKinds(t *testing.T) {
 func TestExpiredLeases(t *testing.T) {
 	db := testdb.Shared(t)
 	runs := 0
-	r := runner(db, Kind{Name: "work", Run: func(context.Context, json.RawMessage) error { runs++; return nil }})
+	r := runner(db, Kind{Type: Type{Name: "work"}, Run: func(context.Context, json.RawMessage) error { runs++; return nil }})
 	r.Lease = time.Minute
-	Enqueue(db, "work", nil, time.Now(), "a", 3)
-	Enqueue(db, "work", nil, time.Now(), "b", 1)
+	enqueue(db, "work", nil, time.Now(), "a", 3)
+	enqueue(db, "work", nil, time.Now(), "b", 1)
 	stale := time.Now().Add(-2 * time.Minute)
 	db.Model(&models.Job{}).Where("unique_key = ?", "a").Updates(map[string]any{"status": models.JobRunning, "attempts": 1, "locked_at": stale, "locked_by": "gone"})
 	db.Model(&models.Job{}).Where("unique_key = ?", "b").Updates(map[string]any{"status": models.JobRunning, "attempts": 1, "locked_at": stale, "locked_by": "gone"})
@@ -279,16 +284,16 @@ func TestOnDeadFiresOnceWhenAJobDies(t *testing.T) {
 	db := testdb.Shared(t)
 	var calls []deadCall
 	r := runner(db,
-		Kind{Name: "die", Run: func(context.Context, json.RawMessage) error { return errors.New("provider down\nsecond line") }},
-		Kind{Name: "retry", Run: func(context.Context, json.RawMessage) error { return errors.New("try later") }},
-		Kind{Name: "wait", Run: func(context.Context, json.RawMessage) error { return Later(time.Now().Add(time.Hour)) }},
+		Kind{Type: Type{Name: "die"}, Run: func(context.Context, json.RawMessage) error { return errors.New("provider down\nsecond line") }},
+		Kind{Type: Type{Name: "retry"}, Run: func(context.Context, json.RawMessage) error { return errors.New("try later") }},
+		Kind{Type: Type{Name: "wait"}, Run: func(context.Context, json.RawMessage) error { return Later(time.Now().Add(time.Hour)) }},
 	)
 	r.OnDead = func(id uint, kind string, attempts int, errText string) {
 		calls = append(calls, deadCall{id, kind, attempts, errText})
 	}
-	Enqueue(db, "retry", nil, time.Now().Add(-3*time.Second), "", 3)
-	Enqueue(db, "wait", nil, time.Now().Add(-2*time.Second), "", 1)
-	Enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
+	enqueue(db, "retry", nil, time.Now().Add(-3*time.Second), "", 3)
+	enqueue(db, "wait", nil, time.Now().Add(-2*time.Second), "", 1)
+	enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
 	for range 3 {
 		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
 			t.Fatalf("run: %v %v", ran, err)
@@ -318,7 +323,7 @@ func TestOnDeadSkippedWhenLeaseLost(t *testing.T) {
 	r.OnDead = func(id uint, kind string, attempts int, errText string) {
 		calls = append(calls, deadCall{id, kind, attempts, errText})
 	}
-	Enqueue(db, "work", nil, time.Now(), "", 1)
+	enqueue(db, "work", nil, time.Now(), "", 1)
 	var j models.Job
 	db.First(&j)
 	db.Model(&j).Updates(map[string]any{"status": models.JobRunning, "attempts": 1, "locked_at": time.Now(), "locked_by": "holder"})
@@ -345,13 +350,13 @@ func TestOnDeadPanicDoesNotStopWorker(t *testing.T) {
 	db := testdb.Shared(t)
 	ran := 0
 	r := runner(db,
-		Kind{Name: "die", Run: func(context.Context, json.RawMessage) error { return errors.New("nope") }},
-		Kind{Name: "ok", Run: func(context.Context, json.RawMessage) error { ran++; return nil }},
+		Kind{Type: Type{Name: "die"}, Run: func(context.Context, json.RawMessage) error { return errors.New("nope") }},
+		Kind{Type: Type{Name: "ok"}, Run: func(context.Context, json.RawMessage) error { ran++; return nil }},
 	)
 	hook := 0
 	r.OnDead = func(uint, string, int, string) { hook++; panic("hook broke") }
-	Enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
-	Enqueue(db, "ok", nil, time.Now(), "", 1)
+	enqueue(db, "die", nil, time.Now().Add(-time.Second), "", 1)
+	enqueue(db, "ok", nil, time.Now(), "", 1)
 	for i := range 2 {
 		if got, err := r.RunOnce(context.Background(), "w"); !got || err != nil {
 			t.Fatalf("run %d: %v %v", i, got, err)
@@ -371,7 +376,7 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 	db := testdb.Shared(t)
 	var mu sync.Mutex
 	seen := map[int]int{}
-	kind := Kind{Name: "count", Run: func(_ context.Context, p json.RawMessage) error {
+	kind := Kind{Type: Type{Name: "count"}, Run: func(_ context.Context, p json.RawMessage) error {
 		time.Sleep(2 * time.Millisecond) // long enough for workers to contend
 		var body struct{ N int }
 		_ = json.Unmarshal(p, &body)
@@ -381,7 +386,7 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 		return nil
 	}}
 	for i := 0; i < 200; i++ {
-		if _, err := Enqueue(db, "count", map[string]int{"n": i}, time.Now(), fmt.Sprintf("count:%d", i), 0); err != nil {
+		if _, err := enqueue(db, "count", map[string]int{"n": i}, time.Now(), fmt.Sprintf("count:%d", i), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -427,14 +432,14 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 func TestNewJobStartsWithinTwoSeconds(t *testing.T) {
 	db := testdb.Shared(t)
 	started := make(chan time.Time, 1)
-	r := runner(db, Kind{Name: "ping", Run: func(context.Context, json.RawMessage) error { started <- time.Now(); return nil }})
+	r := runner(db, Kind{Type: Type{Name: "ping"}, Run: func(context.Context, json.RawMessage) error { started <- time.Now(); return nil }})
 	r.Poll = DefaultPoll // the real setting: the bound is what a deployment gets
 	ctx, cancel := context.WithCancel(context.Background())
 	wait := r.Start(ctx, 1)
 	defer func() { cancel(); wait() }()
 	time.Sleep(100 * time.Millisecond) // the worker is idle, mid-poll
 	queued := time.Now()
-	Enqueue(db, "ping", nil, queued, "", 0)
+	enqueue(db, "ping", nil, queued, "", 0)
 	select {
 	case at := <-started:
 		if d := at.Sub(queued); d > 2*time.Second {
@@ -448,7 +453,7 @@ func TestNewJobStartsWithinTwoSeconds(t *testing.T) {
 func TestPruneDone(t *testing.T) {
 	db := testdb.Shared(t)
 	for _, s := range []string{models.JobDone, models.JobDismissed, models.JobDead, models.JobQueued} {
-		Enqueue(db, s, nil, time.Now(), "", 0)
+		enqueue(db, s, nil, time.Now(), "", 0)
 		db.Model(&models.Job{}).Where("kind = ?", s).Updates(map[string]any{"status": s, "updated_at": time.Now().AddDate(0, 0, -40)})
 	}
 	n, err := PruneDone(db, time.Now().AddDate(0, 0, -30))
@@ -479,7 +484,7 @@ func TestCleanError(t *testing.T) {
 func TestTypedNilPayloadIsAnEmptyObject(t *testing.T) {
 	db := testdb.Shared(t)
 	var none map[string]string
-	Enqueue(db, "x", none, time.Now(), "", 0)
+	enqueue(db, "x", none, time.Now(), "", 0)
 	var j models.Job
 	db.First(&j)
 	if j.Payload != "{}" {

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"fold/internal/httpx"
-	"fold/internal/providers"
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"io"
@@ -285,7 +284,7 @@ func TestChooseMailer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.want, err)
 		}
-		if got := s.(providers.EmailSender).Capabilities().Name; got != tc.want {
+		if got := s.Capabilities().Name; got != tc.want {
 			t.Errorf("chose %s, want %s", got, tc.want)
 		}
 	}

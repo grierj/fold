@@ -115,7 +115,7 @@ func TestMessagePipelineSendsAndRecordsWhoWasSkipped(t *testing.T) {
 	// Running again sends nothing twice.
 	var before int64
 	f.app.DB.Model(&models.MailOutbox{}).Count(&before)
-	if _, err := jobs.Enqueue(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
+	if _, err := enqueueJob(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	runMessageJobs(t, f.app)
@@ -228,11 +228,6 @@ func TestMessagePipelineGuardianCopies(t *testing.T) {
 // failingSender stands in for a provider that is down, or that refuses.
 type failingSender struct{ permanent bool }
 
-func (s failingSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s failingSender) SendEmail(context.Context, mail.Message) (string, error) {
 	return "", &providers.SendError{Provider: "fake", Code: 503, Message: "service unavailable", Permanent: s.permanent}
 }
@@ -253,7 +248,7 @@ func TestMessagePipelineShowsAProviderOutage(t *testing.T) {
 	}
 	var attempts int
 	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindMessageBatch).Pluck("attempts", &attempts)
-	if attempts != messageBatchAttempts {
+	if attempts != messageBatchType.MaxAttempts {
 		t.Fatalf("batch attempts: %d", attempts)
 	}
 	if rows := recipientsOf(t, f.app, id); rows[f.teen.Email].Status != models.RecipientFailed || rows[f.teen.Email].Error == "" {
@@ -323,16 +318,11 @@ type pickySender struct {
 	code int
 }
 
-func (s pickySender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s pickySender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
 	if m.To == s.bad {
 		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: s.code, Msg: "no"})
 	}
-	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+	return mail.Unwrap(s.next).SendEmail(ctx, m)
 }
 
 func (pickySender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "picky"} }
@@ -470,16 +460,11 @@ type failSetSender struct {
 	bad  map[string]bool
 }
 
-func (s failSetSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s failSetSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
 	if s.bad[m.To] {
 		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 550, Msg: "no"})
 	}
-	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+	return mail.Unwrap(s.next).SendEmail(ctx, m)
 }
 
 func (failSetSender) Capabilities() providers.EmailCaps {
@@ -599,7 +584,7 @@ func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 		t.Fatalf("lost or duplicated rows: got %v, want %v", got, wantReasons)
 	}
 	for addr, wantReason := range map[string]string{
-		"complaintfirst@example.com": models.SuppressComplaint,
+		"complaintfirst@example.com": models.SuppressHardBounce,
 		"bouncefirst@example.com":    models.SuppressHardBounce,
 		"hashed@example.com":         models.SuppressHardBounce,
 	} {
@@ -659,21 +644,25 @@ func newErasureTestBlockingSender(t *testing.T, keys ...string) *erasureTestBloc
 	return s
 }
 
-func (s *erasureTestBlockingSender) Send(ctx context.Context, m mail.Message) error {
+func (s *erasureTestBlockingSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
 	k := s.keys[erasureTestSendKey(m.To, m.Subject)]
 	if k == nil {
 		s.mu.Lock()
 		s.others = append(s.others, m)
 		s.mu.Unlock()
-		return nil
+		return "", nil
 	}
 	k.reachedOnce.Do(func() { close(k.reached) })
 	select {
 	case <-k.release:
-		return nil
+		return "", nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	}
+}
+
+func (s *erasureTestBlockingSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "erasure-blocking"}
 }
 
 // Reached closes when a message with the key is inside Send.
@@ -705,8 +694,15 @@ func snapshotCtx() context.Context {
 // snapshotPoint is the snapshot's locking read of users: facts GORM sets
 // before gorm:query (the table, the FOR clause and the operation), so a Before
 // barrier matches it (F6).
-func snapshotPoint(after bool) erasureTestPoint {
-	return erasureTestPoint{Processor: "query", Step: "gorm:query", After: after, Table: "users", Locking: true, Operation: "snapshot-prepare"}
+// snapshotPoint stops the snapshot before it locks its users.
+func snapshotPoint() erasureTestPoint {
+	return erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "FOR KEY SHARE", Operation: "snapshot-prepare"}
+}
+
+// snapshotClaimPoint stops the snapshot after it locked its users and before
+// it claims the message.
+func snapshotClaimPoint() erasureTestPoint {
+	return erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "messages", Operation: "snapshot-prepare"}
 }
 
 func snapshotRowsOf(t *testing.T, app *App, messageID, userID uint) []models.MessageRecipient {
@@ -722,7 +718,7 @@ func snapshotRowsOf(t *testing.T, app *App, messageID, userID uint) []models.Mes
 // users, erases the person, and lets the snapshot go on.
 func snapshotSendsAfterErasure(t *testing.T, f composeFixture, id, erased uint) {
 	t.Helper()
-	reached, release := erasureTestPause(t, f.app.DB, snapshotPoint(false))
+	reached, release := erasureTestPause(t, f.app.DB, snapshotPoint())
 	done := make(chan error, 1)
 	go func() { done <- f.app.prepareMessageOnce(snapshotCtx(), id) }()
 	awaitDBSignal(t, reached)
@@ -844,7 +840,7 @@ func TestMessageSnapshotRevalidatesRecipientsUnderLock(t *testing.T) {
 		address := strings.ToLower(u.Email)
 		id := f.scheduleNow(t, f.leader, "Snapshot D", "<p>Hi</p>", groupAudience(f))
 		var prepPID atomic.Int64
-		p := snapshotPoint(true)
+		p := snapshotClaimPoint()
 		p.PID = &prepPID
 		reached, release := erasureTestPause(t, f.app.DB, p)
 		done := make(chan error, 1)

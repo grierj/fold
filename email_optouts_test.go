@@ -231,7 +231,7 @@ func (s *blockingChoiceSender) sent() []mail.Message {
 	defer s.mu.Unlock()
 	return append([]mail.Message(nil), s.messages...)
 }
-func (s *blockingChoiceSender) Send(ctx context.Context, m mail.Message) error {
+func (s *blockingChoiceSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
 	s.mu.Lock()
 	s.messages = append(s.messages, m)
 	first := len(s.messages) == 1
@@ -241,13 +241,17 @@ func (s *blockingChoiceSender) Send(ctx context.Context, m mail.Message) error {
 		select {
 		case <-s.release:
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		}
 	}
 	if s.next != nil {
-		return s.next.Send(ctx, m)
+		return s.next.SendEmail(ctx, m)
 	}
-	return nil
+	return "", nil
+}
+
+func (s *blockingChoiceSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "blocking-choice"}
 }
 
 func TestRequiredAccountMailIgnoresRetainedOptOuts(t *testing.T) {

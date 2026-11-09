@@ -891,7 +891,7 @@ func TestQueuedAccountMailForErasedAccountSendsNothing(t *testing.T) {
 		{kindAccountRequestMail, requestMailJob{RequestID: approvedReq.ID, Case: requestMailApproved}},
 	}
 	for _, job := range queued {
-		if _, err := jobs.Enqueue(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := enqueueJob(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2597,7 +2597,7 @@ func TestQueuedDependentMailForErasedAccountSendsNothing(t *testing.T) {
 		{kindAccountRequestMail, requestMailJob{RequestID: rejected.ID, Case: requestMailRejected}},
 		{kindAccountRequestMail, requestMailJob{RequestID: conversion.ID, Case: requestMailConversionApproved}},
 	} {
-		if _, err := jobs.Enqueue(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
+		if _, err := enqueueJob(db, job.kind, job.payload, time.Now(), "", directMailAttempts); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3666,7 +3666,7 @@ func TestErasureTestMessageProjectionDetectsDifferences(t *testing.T) {
 	app := testApp(t)
 	seed := erasureTestRecipientSeed(t, app)
 	db := app.DB
-	if _, err := jobs.Enqueue(db, kindMessageSend, messageSendJob{MessageID: seed.m1.ID}, time.Now(), "", 0); err != nil {
+	if _, err := enqueueJob(db, kindMessageSend, messageSendJob{MessageID: seed.m1.ID}, time.Now(), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	base := erasureTestMessageProjection(t, db, seed.labels)

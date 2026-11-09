@@ -109,7 +109,7 @@ func TestChurchAddressSetting(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"Grace Church\n12 Main St\nBoise, ID"`) {
 		t.Fatalf("save: %d %s", w.Code, w.Body.String())
 	}
-	if app.churchAddress() != "Grace Church\n12 Main St\nBoise, ID" || auditCount(t, app, "setting.church_address_changed") != 1 {
+	if settingText(t, app, settingChurchAddress) != "Grace Church\n12 Main St\nBoise, ID" || auditCount(t, app, "setting.church_address_changed") != 1 {
 		t.Fatal("not saved or not audited")
 	}
 	for _, bad := range []string{"a\u0000b", "tab\there", "rtl\u202eoverride", "line\u2028sep"} {
@@ -125,8 +125,8 @@ func TestChurchAddressSetting(t *testing.T) {
 	if !strings.Contains(root.do("GET", "/api/v1/admin/settings/church-address", nil, false).Body.String(), "12 Main St") {
 		t.Fatal("read back")
 	}
-	if w := root.do("PUT", "/api/v1/admin/settings/church-address", map[string]any{"address": ""}, true); w.Code != http.StatusOK || app.churchAddress() != "" {
-		t.Fatalf("clear: %d %q", w.Code, app.churchAddress())
+	if w := root.do("PUT", "/api/v1/admin/settings/church-address", map[string]any{"address": ""}, true); w.Code != http.StatusOK || settingText(t, app, settingChurchAddress) != "" {
+		t.Fatalf("clear: %d %q", w.Code, settingText(t, app, settingChurchAddress))
 	}
 }
 

@@ -228,7 +228,7 @@ func futureOverrides(tx *gorm.DB, eventIDs ...uint) *gorm.DB {
 		Where("event_id IN ? AND starts_at > ? AND visibility_override IS NOT NULL", eventIDs, time.Now().UTC())
 }
 
-func dateDecisionKey(id uint) string { return "date:" + strconv.FormatUint(uint64(id), 10) }
+func dateDecisionKey(id uint) string { return "date:" + idString(id) }
 
 func (vs visibleSet) canSeeSeries(viewer *models.User, ev *models.Event) bool {
 	return vs.canSeeDate(viewer, ev, &models.EventOccurrence{})

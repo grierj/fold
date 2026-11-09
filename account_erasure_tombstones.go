@@ -226,6 +226,13 @@ const (
 	tombstoneJobTimeout   = 2 * time.Minute
 )
 
+// The erasure job types; each takes the default attempts.
+var (
+	tombstoneSweepType = jobs.Type{Name: kindTombstoneSweep}
+	tombstonePageType  = jobs.Type{Name: kindTombstonePage}
+	tombstoneType      = jobs.Type{Name: kindTombstone}
+)
+
 type tombstoneJob struct {
 	UserID uint `json:"userId"`
 }
@@ -236,8 +243,8 @@ type tombstonePageJob struct {
 
 func (a *App) erasureKinds() []jobs.Kind {
 	return []jobs.Kind{
-		{Name: kindTombstonePage, Label: "Finding more deleted accounts to finish erasing", MaxAttempts: jobs.DefaultMaxAttempts, Run: a.runTombstonePageJob},
-		{Name: kindTombstone, Label: "Finishing the erasure of a deleted account", MaxAttempts: jobs.DefaultMaxAttempts,
+		{Type: tombstonePageType, Label: "Finding more deleted accounts to finish erasing", Run: a.runTombstonePageJob},
+		{Type: tombstoneType, Label: "Finishing the erasure of a deleted account",
 			Run: func(ctx context.Context, raw json.RawMessage) error {
 				var p tombstoneJob
 				if err := json.Unmarshal(raw, &p); err != nil || p.UserID == 0 {
@@ -295,13 +302,13 @@ func (a *App) runSweepPageSize(ctx context.Context, afterID uint, day string, pa
 		now := time.Now().UTC()
 		specs := make([]jobs.Spec, 0, len(ids)+1)
 		for _, id := range ids {
-			specs = append(specs, jobs.Spec{Kind: kindTombstone, Payload: tombstoneJob{UserID: id}, RunAt: now,
-				UniqueKey: fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, id, tombstoneSweepVersion, day), MaxAttempts: jobs.DefaultMaxAttempts})
+			specs = append(specs, tombstoneType.Spec(tombstoneJob{UserID: id}, now,
+				fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, id, tombstoneSweepVersion, day)))
 		}
 		if len(ids) == pageSize {
 			last := ids[len(ids)-1]
-			specs = append(specs, jobs.Spec{Kind: kindTombstonePage, Payload: tombstonePageJob{AfterID: last, Day: day}, RunAt: now,
-				UniqueKey: fmt.Sprintf("%s:v%d:%s:%d", kindTombstonePage, tombstoneSweepVersion, day, last), MaxAttempts: jobs.DefaultMaxAttempts})
+			specs = append(specs, tombstonePageType.Spec(tombstonePageJob{AfterID: last, Day: day}, now,
+				fmt.Sprintf("%s:v%d:%s:%d", kindTombstonePage, tombstoneSweepVersion, day, last)))
 		}
 		_, err := jobs.EnqueueMany(tx, specs)
 		return err

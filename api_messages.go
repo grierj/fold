@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,19 +83,16 @@ type messageReminderJSON struct {
 // (the date's title, its time on the event's clock); any other field
 // stays as written.
 func reminderSubject(subject string, d messageReminderJSON) string {
-	loc := eventZone(d.TZID)
-	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
+	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", eventTimeText(d.StartsAt, d.TZID)).Replace(subject)
 }
 
-// reminderKind is going, waitlist or push, from a reminder's key
-// ("<kind>:<occurrence>:<start>:<minutes>", writeReminder and
-// pushReminderKey).
+// reminderKind is going, waitlist or push, from a reminder's key (a
+// reminderKey).
 func reminderKind(m *models.Message) string {
-	switch {
-	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderWaitlist+":"):
-		return reminderWaitlist
-	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderPushKind+":"):
-		return reminderPushKind
+	if m.ReminderKey != nil {
+		if k, ok := parseReminderKey(*m.ReminderKey); ok && (k.Kind == reminderWaitlist || k.Kind == reminderPushKind) {
+			return k.Kind
+		}
 	}
 	return reminderGoing
 }
@@ -104,7 +102,8 @@ var (
 	errReminderRetryRefused = apiErr(http.StatusForbidden, "reminder_retry_refused", "this date has started or was cancelled, or its event's reminders are off, so its reminder can't be sent again")
 )
 
-// Composer limits, matching the CHECKs in migration 00054.
+// Composer limits, matching the CHECKs on messages (subject_check,
+// body_html_check, body_text_check); the errors below quote them.
 const (
 	maxMessageSubject = 200
 	maxMessageHTML    = 100000
@@ -114,8 +113,8 @@ const (
 )
 
 var (
-	errMessageSubject  = apiErr(http.StatusBadRequest, "message_subject", "add a subject on one line, up to 200 characters")
-	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about 50,000 characters")
+	errMessageSubject  = apiErr(http.StatusBadRequest, "message_subject", fmt.Sprintf("add a subject on one line, up to %d characters", maxMessageSubject))
+	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about "+thousands(maxMessageText)+" characters")
 	errMessageNobody   = apiErr(http.StatusBadRequest, "message_nobody", "no one would get this message; choose people who can get email")
 	errMessageLocked   = apiErr(http.StatusConflict, "message_locked", "this message is already sending or sent, so it can't change")
 	errMessageWhen     = apiErr(http.StatusBadRequest, "message_when", "pick a time from now to a year ahead")

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -146,7 +145,7 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 			case models.RecipientSent:
 				c.Push.Sent += g.N
 			case models.RecipientQueued:
-				waiting[strings.TrimPrefix(g.Reason, pushWaitPrefix)] += g.N
+				waiting[pushWaitUntil(g.Reason)] += g.N
 			default:
 				c.Push.Missed[g.Reason] += g.N
 			}
@@ -205,16 +204,16 @@ func historyStatus(status, reason, errText string, admin bool) (string, string) 
 		return historySent, ""
 	case models.RecipientDelivered:
 		return historyDelivered, ""
-	case models.RecipientQueued, "deferred":
+	case models.RecipientQueued, models.DeliveryDeferred:
 		return historyWaiting, ""
 	case models.RecipientSuppressed:
 		why = reason
 	case models.RecipientBounced:
 		why = "bounced"
 		switch reason {
-		case "hard bounce":
+		case models.BounceHard:
 			why = "bounced: the address doesn't take email"
-		case "soft bounce":
+		case models.BounceSoft:
 			why = "bounced for now, for example a full mailbox"
 		}
 	case models.RecipientComplained:
@@ -239,7 +238,7 @@ func pushHistoryStatus(status, reason string, admin bool) *historyPushJSON {
 		return &historyPushJSON{Status: historySent}
 	case models.RecipientQueued:
 		// When it goes is no one's private reason: the counts say it too.
-		return &historyPushJSON{Status: historyWaiting, Until: strings.TrimPrefix(reason, pushWaitPrefix)}
+		return &historyPushJSON{Status: historyWaiting, Until: pushWaitUntil(reason)}
 	}
 	h := &historyPushJSON{Status: historyMissed}
 	if admin {
@@ -277,8 +276,8 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
 		  AND (r.channel <> ? OR NOT EXISTS (SELECT 1 FROM message_recipients e
 			WHERE e.message_id = r.message_id AND e.user_id = r.user_id AND e.channel <> ? AND e.copy_of_user_id IS NULL))
-		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member')), r.id
-		LIMIT ?`, models.DeliveryPush, models.DeliveryPush, id, admin, models.DeliveryPush, models.DeliveryPush, maxHistoryRecipients+1).Scan(&rows).Error
+		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), ?)), r.id
+		LIMIT ?`, models.DeliveryPush, models.DeliveryPush, id, admin, models.DeliveryPush, models.DeliveryPush, models.UnnamedMember, maxHistoryRecipients+1).Scan(&rows).Error
 	more := len(rows) > maxHistoryRecipients
 	if more {
 		rows = rows[:maxHistoryRecipients]

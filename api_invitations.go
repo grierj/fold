@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
@@ -227,7 +226,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		_, err = jobs.Enqueue(tx, kindInvitationMail, invitationMailJob{InvitationID: inv.ID}, time.Now(), "", directMailAttempts)
+		_, err = invitationMailType.Enqueue(tx, invitationMailJob{InvitationID: inv.ID}, time.Now(), "")
 		return err
 	})
 	if err != nil {
