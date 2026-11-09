@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/migrations"
 )
 
@@ -14,7 +14,7 @@ func TestAdvisoryLockIDsAreUnique(t *testing.T) {
 		"invitationEmailLockSeed": invitationEmailLockSeed,
 		"inviteSendLockClass":     int64(inviteSendLockClass),
 		"migrations.LockID":       migrations.LockID,
-		"events.LockID":           events.LockID,
+		"eventdates.LockID":       eventdates.LockID,
 	}
 	seen := map[int64]string{}
 	for name, id := range ids {

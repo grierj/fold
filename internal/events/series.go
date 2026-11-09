@@ -22,11 +22,21 @@ type Existing struct {
 	SeriesCancelled bool
 }
 
+// ActionKind is what a series edit does to one date.
+type ActionKind string
+
+const (
+	ActionMove    ActionKind = "move"
+	ActionCancel  ActionKind = "cancel"
+	ActionRestore ActionKind = "restore"
+	ActionAdd     ActionKind = "add"
+)
+
 // Action is one row change from a series edit.
 type Action struct {
-	Kind string // "move" | "cancel" | "restore" | "add"
-	ID   uint   // set for move, cancel and restore
-	When When   // set for move, restore and add
+	Kind ActionKind
+	ID   uint // set for move, cancel and restore
+	When When // set for move, restore and add
 	// Retime is set on restore: move the date onto When as a plain date
 	// would be moved. It is false when the row has another per-date override
 	// (the existing Keep semantics: such a row keeps its own clock).
@@ -65,12 +75,12 @@ func ApplySeries(existing []Existing, next []When, now time.Time) []Action {
 		w, still := byDate[e.OriginalDate]
 		if !still {
 			if !e.Keep && !e.SeriesCancelled {
-				out = append(out, Action{Kind: "cancel", ID: e.ID})
+				out = append(out, Action{Kind: ActionCancel, ID: e.ID})
 			}
 			continue
 		}
 		if e.SeriesCancelled {
-			out = append(out, Action{Kind: "restore", ID: e.ID, When: w, Retime: !e.TimeFrozen && !e.Keep})
+			out = append(out, Action{Kind: ActionRestore, ID: e.ID, When: w, Retime: !e.TimeFrozen && !e.Keep})
 			continue
 		}
 		if e.TimeFrozen || e.Keep {
@@ -79,13 +89,13 @@ func ApplySeries(existing []Existing, next []When, now time.Time) []Action {
 		if e.StartsAt.Equal(w.StartsAt) && e.EndsAt.Equal(w.EndsAt) {
 			continue
 		}
-		out = append(out, Action{Kind: "move", ID: e.ID, When: w})
+		out = append(out, Action{Kind: ActionMove, ID: e.ID, When: w})
 	}
 	for _, w := range next {
 		if seen[w.OriginalDate] || !w.StartsAt.After(now) {
 			continue
 		}
-		out = append(out, Action{Kind: "add", When: w})
+		out = append(out, Action{Kind: ActionAdd, When: w})
 	}
 	return out
 }

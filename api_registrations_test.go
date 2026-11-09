@@ -1760,8 +1760,10 @@ func TestRegistrationReadBudget(t *testing.T) {
 	_ = app.DB.Callback().Raw().Before("gorm:raw").Register("zz:raw", cb)
 	n = 0
 	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "maybe"}, http.StatusOK)
-	if n > 11 {
-		t.Fatalf("solo PUT read %d times, budget 11", n)
+	// 12 since canRegisterIn always reads the membership instead of guessing
+	// from CanSeeEvent's internals when it can be skipped.
+	if n > 12 {
+		t.Fatalf("solo PUT read %d times, budget 12", n)
 	}
 	n = 0
 	apiDo(t, c, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
@@ -1773,8 +1775,8 @@ func TestRegistrationReadBudget(t *testing.T) {
 	solo.holdNotices = true
 	n = 0
 	apiDo(t, solo, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "going"}, http.StatusOK)
-	if n > 12 {
-		t.Fatalf("solo going PUT read %d times, budget 12", n)
+	if n > 13 {
+		t.Fatalf("solo going PUT read %d times, budget 13", n)
 	}
 	n = 0
 	apiDo(t, solo, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)

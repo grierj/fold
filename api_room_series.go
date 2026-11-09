@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"fold/internal/audit"
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/internal/policy"
 	"fold/internal/rooms"
 	"fold/models"
@@ -261,16 +261,19 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := eventFactsIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
+		f, err := eventFactsIn(tx, user, &locked)
+		if err != nil {
+			return err
+		}
+		if !f.canManage(user) {
 			return errNotManager
 		}
-		var err error
 		out, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
 		return err
 	})
 	switch {
 	case errors.Is(err, errNotManager):
-		jsonError(c, http.StatusForbidden, "you can't change this event")
+		fail(c, errCannotChangeEvent)
 	case errors.Is(err, errRoomGone):
 		jsonError(c, http.StatusNotFound, "room not found")
 	case errors.Is(err, errRestricted):
@@ -529,7 +532,7 @@ func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uin
 // its notices queue their own delivery in the same transaction. While rooms
 // are off it books nothing and tells no one. A failure here is logged and
 // undone on its own, so it never stops the event's new dates being added.
-func (a *App) afterExtend() events.AfterEnsure {
+func (a *App) afterExtend() eventdates.AfterEnsure {
 	return func(tx *gorm.DB, ev *models.Event, added []string) error {
 		if ev.DefaultRoomID == nil || !a.roomsEnabled() {
 			return nil
@@ -563,7 +566,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		GroupID *uint `json:"groupId"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
+		fail(c, errStartRequired)
 		return
 	}
 	me := apiUser(c)
@@ -578,8 +581,9 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "admin required")
 		return
 	}
-	_, whens, ok := a.specFrom(c, body.eventBody, nil, true)
-	if !ok {
+	_, whens, err := a.specFrom(body.eventBody, nil, true)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	now := time.Now()
@@ -590,8 +594,9 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 			upcoming = append(upcoming, rooms.Window{Start: w.StartsAt, End: w.EndsAt})
 		}
 	}
-	ed, ok := parseCapacityEdits(c, body.eventBody)
-	if !ok {
+	ed, err := parseCapacityEdits(body.eventBody)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	list, err := roomChoices(a.DB, asPerson(me), windows, 0, ed.cap)

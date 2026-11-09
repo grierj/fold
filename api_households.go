@@ -572,12 +572,12 @@ func householdPersonFields(body householdPersonInput) (map[string]any, error) {
 	}
 	fields := map[string]any{}
 	if body.FirstName != nil {
-		first, ok := cleanText(*body.FirstName, maxNameChars)
-		switch {
-		case first == "":
+		first, err := personNameField.clean(*body.FirstName)
+		if first == "" {
 			return nil, errFirstNameRequired
-		case !ok:
-			return nil, errNameTooLong100
+		}
+		if err != nil {
+			return nil, err
 		}
 		fields["first_name"] = first
 	}
@@ -608,9 +608,9 @@ func householdPersonFields(body householdPersonInput) (map[string]any, error) {
 		}
 	}
 	if body.CareNotes != nil {
-		notes, ok := cleanText(*body.CareNotes, 5000)
-		if !ok {
-			return nil, errCareNotesTooLong
+		notes, err := careNotesField.clean(*body.CareNotes)
+		if err != nil {
+			return nil, err
 		}
 		fields["care_notes"] = notes
 	}

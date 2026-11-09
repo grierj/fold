@@ -649,8 +649,11 @@ func (a *App) managesOccurrenceEvent(me *models.User, occID uint) (bool, error) 
 	} else if err != nil {
 		return false, err
 	}
-	f := eventFactsIn(a.DB, me, &ev)
-	return policy.CanManageEvent(asPerson(me), f.view, f.rel), nil
+	f, err := eventFactsIn(a.DB, me, &ev)
+	if err != nil {
+		return false, err
+	}
+	return f.canManage(me), nil
 }
 
 // loadOwnMessage is loadMessage for the composer's own actions (edit,

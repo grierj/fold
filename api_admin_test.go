@@ -494,7 +494,7 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 	if d := look(joined); d.Upcoming[0].Registrations["going"] != 1 {
 		t.Fatalf("disabled registration counted: %+v", d.Upcoming)
 	}
-	if leaderCount(app.DB, coled.ID) != 1 || !relIn(app.DB, viewer.ID, led.ID).Leader {
+	if leadersIn(app.DB, coled.ID) != 1 || !relIn(app.DB, viewer.ID, led.ID).Leader {
 		t.Fatal("leadership should have moved")
 	}
 
@@ -1684,7 +1684,7 @@ func TestReenableNoticesSerializeWithRealAdminDelete(t *testing.T) {
 			t.Fatalf("filler going: %d %s", code, body)
 		}
 		addMember(t, app, newbie, &g, models.MembershipMember)
-		limit := int(memberCount(app.DB, g.ID))
+		limit := membersIn(app.DB, g.ID)
 		if err := app.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("member_limit", limit).Error; err != nil {
 			t.Fatal(err)
 		}

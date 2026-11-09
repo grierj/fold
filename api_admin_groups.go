@@ -26,7 +26,18 @@ func (a *App) apiPendingGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	a.respondGroups(c, groups)
+}
+
+// respondGroups answers with the groups' summaries, or a 500 when one cannot
+// be built.
+func (a *App) respondGroups(c *gin.Context, groups []models.Group) {
+	out, err := a.groupSummaries(groups)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": out})
 }
 
 // apiApproveGroup and apiRejectGroup decide a pending group. Both are
@@ -46,8 +57,8 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 	var tags *string
 	if body.Tags != nil {
 		joined := joinTags(body.Tags)
-		if len(joined) > maxTagsLen {
-			fail(c, errTagsTooLong)
+		if err := tagsField.check(joined); err != nil {
+			fail(c, err)
 			return
 		}
 		tags = &joined
@@ -153,7 +164,12 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		return
 	}
 	if action == notify.ActionApproveGroup {
-		c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(&g)})
+		summary, err := a.groupSummary(&g)
+		if err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"group": summary})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
@@ -169,7 +185,7 @@ func (a *App) apiAdminListGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	a.respondGroups(c, groups)
 }
 
 func (a *App) apiAdminAddMember(c *gin.Context) {
@@ -236,7 +252,7 @@ func (a *App) apiDeletionRequests(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	a.respondGroups(c, groups)
 }
 
 // apiRejectDeletion keeps the group and clears the leader's request.

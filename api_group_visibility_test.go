@@ -482,3 +482,79 @@ func TestUpdateGroupTighteningFailureRollsBackDependents(t *testing.T) {
 		})
 	}
 }
+
+// TestLosersMatchPolicy keeps losersForDate, the SQL form of "who could no
+// longer see this event", in step with policy.CanSeeEvent: a registrant loses
+// exactly when the event, made newVis, is no longer visible to them.
+func TestLosersMatchPolicy(t *testing.T) {
+	app := testApp(t)
+	owner := newTestUser(t, app, "losers owner", "password1234", models.RoleMember)
+	g := models.Group{Name: "Losers", Status: models.GroupActive, Visibility: models.VisibilityPublic, LeaderID: owner.ID}
+	if err := app.DB.Create(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().Add(72 * time.Hour)
+	groupEvent, groupDate := seedEvent(t, app, &g, owner.ID, start)
+	churchEvent := models.Event{Visibility: models.VisibilityPublic, StartsLocal: start.Format("2006-01-02T15:04"), DurationMinutes: 60, TZID: "UTC", CreatedBy: owner.ID, Title: "Church"}
+	if err := app.DB.Create(&churchEvent).Error; err != nil {
+		t.Fatal(err)
+	}
+	churchDate := models.EventOccurrence{EventID: churchEvent.ID, OriginalDate: calDate(start.Format("2006-01-02")), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+	if err := app.DB.Create(&churchDate).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	admin := newTestUser(t, app, "losers admin", "password1234", models.RoleAdmin)
+	disabledAdmin := newTestUser(t, app, "losers disabled admin", "password1234", models.RoleAdmin)
+	disabledAdmin.Status = models.UserDisabled
+	if err := app.DB.Save(disabledAdmin).Error; err != nil {
+		t.Fatal(err)
+	}
+	member := newTestUser(t, app, "losers member", "password1234", models.RoleMember)
+	addMember(t, app, member, &g, models.MembershipMember)
+	outsider := newTestUser(t, app, "losers outsider", "password1234", models.RoleMember)
+	guest := newTestUser(t, app, "losers guest", "password1234", models.RoleMember)
+	guest.Status = models.UserGuest
+	if err := app.DB.Save(guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	people := []*models.User{admin, disabledAdmin, member, outsider, guest}
+
+	for _, event := range []struct {
+		ev   *models.Event
+		date uint
+	}{{&groupEvent, groupDate.ID}, {&churchEvent, churchDate.ID}} {
+		for _, p := range people {
+			reg := models.Registration{UserID: &p.ID, OccurrenceID: event.date, Status: models.RegGoing, Source: "web", AttendanceMode: models.AttendanceInPerson}
+			if err := app.DB.Create(&reg).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, vis := range []string{models.VisibilityPublic, models.VisibilityPrivate, models.VisibilityInviteOnly} {
+			var rows []models.Registration
+			if err := losersForDate(app.DB, event.ev, vis, time.Now().UTC(), seriesDates).Select("registrations.*").Scan(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			lost := map[uint]bool{}
+			for _, r := range rows {
+				lost[*r.UserID] = true
+			}
+			for _, p := range people {
+				facts, err := eventFactsIn(app.DB, p, event.ev)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// A guest is a signed-out visitor to policy.
+				var viewer *models.User = p
+				if p.Status == models.UserGuest {
+					viewer = nil
+				}
+				facts.view.Visibility = vis
+				want := !policy.CanSeeEvent(asPerson(viewer), facts.view, asGroup(facts.group), facts.rel)
+				if lost[p.ID] != want {
+					t.Errorf("event %d at %s, %s: loses %v, policy says %v", event.ev.ID, vis, p.Name, lost[p.ID], want)
+				}
+			}
+		}
+	}
+}

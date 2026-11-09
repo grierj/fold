@@ -39,7 +39,7 @@ func TestApplySeriesMovesKeepsAndCancels(t *testing.T) {
 		t.Fatalf("actions: %+v", got)
 	}
 	for _, a := range got {
-		key := a.Kind
+		key := string(a.Kind)
 		switch a.Kind {
 		case "move", "cancel":
 			key += ":" + itoa(a.ID)

@@ -44,6 +44,8 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 
 - The wall clock (`starts_local` + IANA `tzid`) is the truth. Occurrences store UTC, generated 18
   months ahead. Rules repeat at most once a day, under a date cap (`events.Expand`, DEC-89).
+  `internal/events` is the pure clock (no database); `internal/eventdates` writes the rows (`Ensure` at
+  creation, `Extend` daily under its advisory lock).
 - An event's `visibility` is its own value, copied from the group at creation (DEC-48). A nullable
   occurrence `visibility_override` wins for that date (`policy.EffectiveVisibility`); date
   candidates never authorize the series. Making a group more private tightens inherited events and
@@ -205,7 +207,19 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - Membership rules live in `internal/policy` (`CanRemoveMember`, `CanBeSuccessor`, role changes).
   Removal keeps the row with `status=removed` (DEC-35); voluntary departure keeps `status=left`
   (DEC-86); neither counts as active. Adding anyone to a group goes through `changeRole`, which
-  locks the group row and checks `policy.GroupHasRoom` (DEC-39) and `policy.CanAddToGroup`.
+  locks the group row and checks `policy.GroupHasRoom` (DEC-39) and `policy.CanAddToGroup`. One
+  exception, on purpose: the sole-leader handoff in an account delete or disable (`handOffLeadership`,
+  `api_handoff.go`, DEC-36) installs the successor directly. It replaces the leaving leader rather than
+  growing the group, so the member limit does not apply, the actor is already sealed by the delete
+  transaction, and it writes its own `role_changed` row carrying `departingUserId`.
+- Policy facts (`policy_facts.go`): `asPerson`, `asGroup` (nil-safe), `membershipRel`, and the one batched
+  loaders for groups, a user's memberships and host rows (`groupsByID`, `groupRels`, `userRels`,
+  `hostedEvents`, `loadFactSet`; `eventFactsIn` is a batch of one). They return their errors; a failed read is
+  never "not visible" or "no member". Host rows count only on church-wide events (DEC-7), so
+  `factSet.Hosted` never holds a group event. Counts for a group's room are `memberCount` and
+  `leaderCount` (`group_members.go`) and return errors too, so `GroupHasRoom` never sees a made-up zero.
+  Visibility is `visibleTo` in `internal/policy`; the SQL forms (`directoryQuery`, `losersForDate`) are kept
+  equal to it by `TestDirectoryMatchesPolicy` and `TestLosersMatchPolicy`.
   Leading a pending or archived group grants no power to add people or invite anyone into Fold
   (DEC-88; `policy.LeadsApprovedGroup`, `CanInviteIntoGroup`).
 - Registrations: seat decisions go through the ledger in `registration_seats.go` (`poolFits`, `seatChange`, `seatTally`;

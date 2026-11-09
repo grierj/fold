@@ -698,7 +698,11 @@ func TestDirectoryMatchesPolicy(t *testing.T) {
 		}
 		var want []string
 		for _, g := range groups {
-			if g.Status == models.GroupActive && policy.CanSeeGroup(asPerson(u), asGroup(g), app.relOf(u, g.ID)) {
+			rel, err := app.relOf(u, g.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g.Status == models.GroupActive && policy.CanSeeGroup(asPerson(u), asGroup(g), rel) {
 				want = append(want, g.Name)
 			}
 		}
@@ -1133,7 +1137,7 @@ func TestGroupManagerAddExistingLeaderKeepsRoleUnderContactGate(t *testing.T) {
 			if w := client.do("POST", path, body, true); w.Code != 200 {
 				t.Fatal(w.Code, w.Body.String())
 			}
-			if !relIn(app.DB, leader.ID, g.ID).Leader || leaderCount(app.DB, g.ID) != 1 {
+			if !relIn(app.DB, leader.ID, g.ID).Leader || leadersIn(app.DB, g.ID) != 1 {
 				t.Fatal("regular add demoted the sole existing leader")
 			}
 			gate := holdContactGate(t, app)
@@ -1623,7 +1627,7 @@ func TestChangeRoleRechecksActorAfterContactGate(t *testing.T) {
 					t.Fatalf("revoked membership mutation: %d %s, want %d", w.Code, w.Body.String(), want)
 				}
 				rel := relIn(app.DB, target.ID, g.ID)
-				if rel.Leader || (operation == "join" && rel.Member) || leaderCount(app.DB, g.ID) != 1 {
+				if rel.Leader || (operation == "join" && rel.Member) || leadersIn(app.DB, g.ID) != 1 {
 					t.Fatal("revoked actor changed membership")
 				}
 				if contactCount(t, app, &models.AuditLog{}, "1=1") != 0 || contactCount(t, app, &models.Notification{}, "1=1") != 0 {
@@ -1819,7 +1823,7 @@ func TestApproveGroupTagsOnlyWhenSent(t *testing.T) {
 	keep, replace, long := mk("Keep tags"), mk("Replace tags"), mk("Long tags")
 	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(keep.ID)+"/approve", map[string]any{}, http.StatusOK)
 	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(replace.ID)+"/approve", map[string]any{"tags": []string{" young adults ", "", "food"}}, http.StatusOK)
-	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(long.ID)+"/approve", map[string]any{"tags": []string{strings.Repeat("x", maxTagsLen+1)}}, http.StatusBadRequest)
+	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(long.ID)+"/approve", map[string]any{"tags": []string{strings.Repeat("x", tagsField.max+1)}}, http.StatusBadRequest)
 	for id, want := range map[uint][2]string{keep.ID: {models.GroupActive, "men,bible"}, replace.ID: {models.GroupActive, "young adults,food"}, long.ID: {models.GroupPending, "men,bible"}} {
 		var got models.Group
 		if err := app.DB.First(&got, id).Error; err != nil {

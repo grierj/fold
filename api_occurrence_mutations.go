@@ -23,36 +23,24 @@ import (
 func occurrenceFactsIn(tx *gorm.DB, eventID, occurrenceID uint) (policy.OccurrenceFacts, error) {
 	f := policy.OccurrenceFacts{ID: occurrenceID, EventID: eventID}
 	var ev models.Event
-	if err := tx.First(&ev, eventID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, nil
-		}
+	if err := tx.Where("id = ?", eventID).Limit(1).Find(&ev).Error; err != nil || ev.ID == 0 {
 		return f, err
 	}
-	f.ContextActive = true
-	f.Organizer = policy.OrganizerScope{Type: policy.ContactEvent, ID: ev.ID}
+	var group *models.Group
 	if ev.GroupID != nil {
-		f.Organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
-		var g models.Group
-		if err := tx.First(&g, *ev.GroupID).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return f, err
-			}
-			f.ContextActive = false
-		} else {
-			f.ContextActive = g.Status == models.GroupActive
+		groups, err := groupsByID(tx, []uint{*ev.GroupID}, false)
+		if err != nil {
+			return f, err
 		}
+		group = groups[*ev.GroupID]
 	}
 	var occ models.EventOccurrence
-	if err := tx.Where("id = ? AND event_id = ?", occurrenceID, eventID).First(&occ).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, nil
-		}
+	if err := tx.Where("id = ? AND event_id = ?", occurrenceID, eventID).Limit(1).Find(&occ).Error; err != nil {
 		return f, err
 	}
-	f.Scheduled = occ.Status == models.OccurrenceScheduled
-	f.EndsAt = occ.EndsAt
-	return f, nil
+	built := occurrenceFactsOf(&occ, &ev, group)
+	built.ID = occurrenceID // a missing date keeps the id it was asked for
+	return built, nil
 }
 
 // occurrenceAccountIn counts the account's age on the church's calendar, as every
@@ -68,19 +56,9 @@ func occurrenceAccountIn(tx *gorm.DB, userID uint, now time.Time) (policy.Contac
 // occurrenceAccountInZone is occurrenceAccountIn for a caller that already read
 // the church zone.
 func occurrenceAccountInZone(tx *gorm.DB, userID uint, now time.Time, zone *time.Location) (policy.ContactAccount, error) {
-	u, err := contactUser(tx, userID)
-	if err != nil {
-		return policy.ContactAccount{}, err
-	}
-	account := contactAccount(u, now, zone)
-	if u != nil && u.AccountType == models.AccountTeen {
-		consent, err := latestTeenConsentIn(tx, u.ID, models.TeenConsentAccount)
-		if err != nil {
-			return account, err
-		}
-		account.Active = account.Active && consent
-	}
-	return account, nil
+	// A batch of one: a missing user is the zero account, as in every list.
+	_, accounts, err := occurrenceAccountsInZone(tx, []uint{userID}, now, zone)
+	return accounts[userID], err
 }
 
 func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now time.Time) (policy.AddFacts, error) {
@@ -117,8 +95,11 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if err != nil {
 		return f, err
 	}
-	facts := eventFactsIn(tx, requester, &ev)
-	f.Manager = policy.CanManageEvent(asPerson(requester), facts.view, facts.rel)
+	facts, err := eventFactsIn(tx, requester, &ev)
+	if err != nil {
+		return f, err
+	}
+	f.Manager = facts.canManage(requester)
 	f.OrdinaryEligible = a.canRegisterDateIn(tx, subject, &ev, *r.OccurrenceID)
 	var block models.ManagerAddBlock
 	if err := tx.Where("subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", r.SubjectUserID, f.Occurrence.Organizer.Type, f.Occurrence.Organizer.ID).Limit(1).Find(&block).Error; err != nil {
@@ -231,9 +212,17 @@ func liveOccurrenceInvitationIn(tx *gorm.DB, row models.Registration, now time.T
 	return n == 1, err
 }
 
-func (a *App) apiDeclineOccurrence(c *gin.Context)  { a.mutateOwnOccurrence(c, "decline") }
-func (a *App) apiBlockOccurrence(c *gin.Context)    { a.mutateOwnOccurrence(c, "block") }
-func (a *App) apiRegisterOccurrence(c *gin.Context) { a.mutateOwnOccurrence(c, "registration") }
+// The three things a person does with their own exact-date invitation. The
+// names are also the operation recorded in occurrence_refused audit rows.
+const (
+	operationDecline  = "decline"
+	operationBlock    = "block"
+	operationRegister = "registration"
+)
+
+func (a *App) apiDeclineOccurrence(c *gin.Context)  { a.mutateOwnOccurrence(c, operationDecline) }
+func (a *App) apiBlockOccurrence(c *gin.Context)    { a.mutateOwnOccurrence(c, operationBlock) }
+func (a *App) apiRegisterOccurrence(c *gin.Context) { a.mutateOwnOccurrence(c, operationRegister) }
 
 func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 	eventID, parseErr := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -247,7 +236,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		ChildcareAgesNote *string `json:"childcareAgesNote"`
 	}
 	valid := parseErr == nil && eventID > 0 && dateErr == nil
-	if operation == "registration" {
+	if operation == operationRegister {
 		decoder := json.NewDecoder(c.Request.Body)
 		decoder.DisallowUnknownFields()
 		valid = valid && decoder.Decode(&input) == nil && validAnswer(input.Status)
@@ -261,7 +250,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		now := time.Now().UTC()
 		refuse := func() error {
 			refused = true
-			return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": operation}})
+			return writeOccurrenceRefusal(tx, apiUser(c).ID, c.ClientIP(), operation)
 		}
 		if !valid {
 			return refuse()
@@ -311,10 +300,10 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			return err
 		}
 		want, reason := input.Status, ""
-		if operation == "decline" || operation == "block" || input.Status == models.RegDeclined {
+		if operation == operationDecline || operation == operationBlock || input.Status == models.RegDeclined {
 			want, reason = models.RegDeclined, policy.OccurrenceDeclined
 		}
-		if operation == "block" {
+		if operation == operationBlock {
 			if !policy.CanBlockManagerAdds(account, occurrenceAccessPolicy(reg, scope)) {
 				return refuse()
 			}
@@ -339,7 +328,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		}
 		care := childcareRequest{ChildcareCount: input.ChildcareCount, ChildcareAgesNote: input.ChildcareAgesNote}
 		count, ages := care.values(reg)
-		if reason == "" && (count < 0 || count > 20 || utf8.RuneCountInString(ages) > 200 || (input.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable)) {
+		if reason == "" && (count < 0 || count > policy.MaxAddChildcare || utf8.RuneCountInString(ages) > policy.MaxAddAgesNote || (input.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable)) {
 			return refuse()
 		}
 		change, err := prepareRegistration(reg, locked, userSubject(actor.ID), want, guests, mode, care, nil, now)
@@ -356,7 +345,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 				return err
 			}
 		}
-		if operation == "block" {
+		if operation == operationBlock {
 			change := contactChange{EventID: scope.EventID}
 			if scope.Organizer.Type == policy.ContactGroup {
 				change = contactChange{GroupID: scope.Organizer.ID}
@@ -380,28 +369,26 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		return nil
 	})
 	if err != nil {
-		auditErr := a.DB.Transaction(func(tx *gorm.DB) error {
-			if err := lockContacts(tx); err != nil {
-				return err
+		// A refusal the person is told about is audited; a database failure is
+		// only logged by fail.
+		if isAPIError(err) {
+			if auditErr := a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operation); auditErr != nil {
+				jsonError(c, http.StatusInternalServerError, "could not save registration")
+				return
 			}
-			return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": operation}})
-		})
-		if auditErr != nil {
-			jsonError(c, 500, "could not save registration")
-			return
 		}
 		fail(c, err)
 		return
 	}
 	if refused {
-		jsonError(c, 404, "event not found")
+		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
-	if operation == "registration" {
-		c.JSON(200, gin.H{"registration": result})
+	if operation == operationRegister {
+		c.JSON(http.StatusOK, gin.H{"registration": result})
 		return
 	}
-	c.JSON(200, gin.H{})
+	c.JSON(http.StatusOK, gin.H{})
 }
 
 // Only an internal request finalizer may supply this proof. It is never decoded
@@ -593,31 +580,16 @@ func sendOccurrenceNotice(tx *gorm.DB, row models.Registration, occ *models.Even
 // Unlike the general manager loader, this entry point must audit every
 // refusal before writing its response, including hidden/missing destinations.
 func (a *App) loadManagedDateAddEvent(c *gin.Context) (*models.Event, bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var ev models.Event
-	if err := a.DB.First(&ev, id).Error; err != nil {
-		a.managerDateAddError(c, 404, "event not found")
-		return nil, false
+	ev, _, err := a.loadManagedEventFor(c)
+	if err != nil {
+		a.managerDateAddRefusal(c, err)
 	}
-	f := eventFactsIn(a.DB, apiUser(c), &ev)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
-	}
-	if !policy.CanSeeEvent(asPerson(apiUser(c)), f.view, gp, f.rel) {
-		a.managerDateAddError(c, 404, "event not found")
-		return nil, false
-	}
-	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
-		a.managerDateAddError(c, 403, "you can't change this event")
-		return nil, false
-	}
-	return &ev, true
+	return ev, err == nil
 }
 
 func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 	if err := a.auditManagerDateRefusal(c); err != nil {
-		jsonError(c, 500, "could not add registration")
+		jsonError(c, http.StatusInternalServerError, "could not add registration")
 		return
 	}
 	jsonError(c, status, message)
@@ -627,17 +599,33 @@ func (a *App) managerDateAddError(c *gin.Context, status int, message string) {
 // own answer.
 func (a *App) managerDateAddRefusal(c *gin.Context, err error) {
 	if auditErr := a.auditManagerDateRefusal(c); auditErr != nil {
-		jsonError(c, 500, "could not add registration")
+		jsonError(c, http.StatusInternalServerError, "could not add registration")
 		return
 	}
 	fail(c, err)
 }
 
 func (a *App) auditManagerDateRefusal(c *gin.Context) error {
+	return a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operationManagerAdd)
+}
+
+// operationManagerAdd names a manager's add of someone to one date in the
+// occurrence_refused audit rows.
+const operationManagerAdd = "manager_add"
+
+// writeOccurrenceRefusal records a refused exact-date request in the caller's
+// transaction.
+func writeOccurrenceRefusal(tx *gorm.DB, actorID uint, ip, operation string) error {
+	return audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: ip, Meta: map[string]any{"operation": operation}})
+}
+
+// auditOccurrenceRefusal records a refusal in a transaction of its own, for a
+// request whose own transaction rolled back.
+func (a *App) auditOccurrenceRefusal(actorID uint, ip, operation string) error {
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": "manager_add"}})
+		return writeOccurrenceRefusal(tx, actorID, ip, operation)
 	})
 }

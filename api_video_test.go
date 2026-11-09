@@ -243,6 +243,28 @@ func TestGenerateJitsiLink(t *testing.T) {
 	newTestGroup(t, app, leader, "Led Group", models.GroupActive)
 	generateJitsi(t, loginAPI(t, app, "jl", "password1234"), http.StatusOK)
 
+	// The same rule as CanManageEvent: leading a pending group (DEC-88) or
+	// holding a host row on a group event (DEC-7) grants nothing, while
+	// hosting a church-wide event does.
+	pendingLeader := newTestUser(t, app, "jp", "password1234", models.RoleMember)
+	newTestGroup(t, app, pendingLeader, "Pending Group", models.GroupPending)
+	generateJitsi(t, loginAPI(t, app, "jp", "password1234"), http.StatusForbidden)
+	staleHost := newTestUser(t, app, "jh", "password1234", models.RoleMember)
+	groupEvent, _ := seedEvent(t, app, newTestGroup(t, app, leader, "Hosted Group", models.GroupActive), leader.ID, time.Now().Add(48*time.Hour))
+	if err := app.DB.Create(&models.EventHost{EventID: groupEvent.ID, UserID: staleHost.ID, AddedBy: leader.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	generateJitsi(t, loginAPI(t, app, "jh", "password1234"), http.StatusForbidden)
+	churchHost := newTestUser(t, app, "jc", "password1234", models.RoleMember)
+	church := models.Event{Visibility: models.VisibilityPublic, StartsLocal: "2030-01-01T10:00", DurationMinutes: 60, TZID: "UTC", CreatedBy: admin2ID(t, app), Title: "All church"}
+	if err := app.DB.Create(&church).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.EventHost{EventID: church.ID, UserID: churchHost.ID, AddedBy: leader.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	generateJitsi(t, loginAPI(t, app, "jc", "password1234"), http.StatusOK)
+
 	// Signed out is a 401.
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
@@ -298,4 +320,14 @@ func TestRemoteHouseholdGoingGivesHolderVideo(t *testing.T) {
 	if strings.Contains(raw, videoLink) {
 		t.Fatalf("maybe household video %s", raw)
 	}
+}
+
+// admin2ID is the id of any existing user, for fixtures that need a creator.
+func admin2ID(t *testing.T, app *App) uint {
+	t.Helper()
+	var u models.User
+	if err := app.DB.Order("id").First(&u).Error; err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
 }

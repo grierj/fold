@@ -349,7 +349,11 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		leadsTarget, leadsAnywhere := false, false
 		if group != nil {
-			leadsTarget = relIn(tx, inviter.ID, group.ID).Leader
+			rel, err := groupRel(tx, inviter.ID, group.ID)
+			if err != nil {
+				return err
+			}
+			leadsTarget = rel.Leader
 		} else {
 			var err error
 			if leadsAnywhere, err = leadsApprovedGroup(tx, inviter.ID); err != nil {

@@ -7,7 +7,6 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -98,50 +97,6 @@ func (a *App) optionalUser() gin.HandlerFunc {
 // ---------------------------------------------------------------------------
 // Policy glue: load the facts, then ask internal/policy (C12)
 // ---------------------------------------------------------------------------
-
-// asPerson describes the signed-in user to policy; nil means signed out.
-func asPerson(u *models.User) *policy.Person {
-	if u == nil {
-		return nil
-	}
-	// A disabled admin has no admin powers (and can't sign in anyway).
-	return &policy.Person{
-		ID: u.ID, Admin: u.Role == models.RoleAdmin && u.Status == models.UserActive,
-		Teen: u.AccountType == models.AccountTeen,
-	}
-}
-
-func asGroup(g *models.Group) policy.Group {
-	return policy.Group{Status: g.Status, Visibility: g.Visibility}
-}
-
-// membershipRel turns a membership row (any status) into policy facts.
-func membershipRel(m models.Membership) policy.Rel {
-	active := m.ID != 0 && m.Status == models.MembershipActive
-	return policy.Rel{
-		Member:  active,
-		Leader:  active && m.Role == models.MembershipLeader,
-		Removed: m.ID != 0 && m.Status == models.MembershipRemoved,
-	}
-}
-
-// listedUsers is the account-only membership join: not deleted or disabled.
-// Registration queries use listedRegistrations for their two subject types.
-func listedUsers(table string) string {
-	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
-}
-
-// leaderCount counts a group's active leaders whose accounts still exist
-// and aren't disabled.
-func leaderCount(db *gorm.DB, groupID uint) int {
-	var n int64
-	db.Model(&models.Membership{}).
-		Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
-			groupID, models.MembershipLeader, models.MembershipActive).
-		Count(&n)
-	return int(n)
-}
 
 // ---------------------------------------------------------------------------
 // Route registration

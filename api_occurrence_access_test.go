@@ -409,7 +409,7 @@ func TestOccurrenceDateReadPendingAskAndRegistrationAreNotAuthority(t *testing.T
 	}
 }
 
-func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
+func TestOccurrenceInvitationBatchEndReasonsAndFailsClosed(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
 	now := time.Now().UTC()
 	// The grant is a property of the registration, so a synthetic variant is a
@@ -427,21 +427,23 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 		return append(rows, bySubject, byDate)
 	}
 	rows := variants()
-	compare := func() {
+	// compare checks what the loader says ends each variant: the live grant
+	// (want0), a grant whose subject account is gone, and one whose date is
+	// gone (want2). Each is also the answer liveOccurrenceInvitationIn gives
+	// for the same row, one at a time.
+	compare := func(want0, want2 string) {
 		t.Helper()
 		rows = variants()
 		facts, err := loadOccurrenceInvitationFacts(f.app.DB, rows, now)
 		if err != nil {
 			t.Fatal(err)
 		}
+		for i, want := range []string{want0, policy.ContactAccountDisabled, want2} {
+			if got := facts.endReason(rows[i], now); got != want {
+				t.Fatalf("variant %d ends for %q, want %q", i, got, want)
+			}
+		}
 		for _, row := range rows {
-			reason, err := f.app.occurrenceAccessEndReason(f.app.DB, row, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if reason != facts.endReason(row, now) {
-				t.Fatalf("reason batch=%q scalar=%q row=%+v", facts.endReason(row, now), reason, row)
-			}
 			live, err := liveOccurrenceInvitationIn(f.app.DB, row, now)
 			if err != nil {
 				t.Fatal(err)
@@ -452,16 +454,16 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 			}
 		}
 	}
-	compare()
+	compare("", policy.OccurrenceDeleted)
 	birth := now.AddDate(-15, 0, 0)
 	if err := f.app.DB.Model(f.recipient).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
 		t.Fatal(err)
 	}
-	compare() // No current account consent: both loaders exclude the teen.
+	compare(policy.OccurrenceConsentLost, policy.OccurrenceConsentLost) // no current account consent: the teen is excluded
 	if err := f.app.DB.Create(&models.TeenConsent{TeenUserID: f.recipient.ID, Scope: models.TeenConsentAccount, Status: models.ConsentGranted, GrantedBy: f.issuer.ID, GranterRole: "admin", EvidenceText: "parent consent", At: now.Add(-time.Minute)}).Error; err != nil {
 		t.Fatal(err)
 	}
-	compare()
+	compare("", policy.OccurrenceDeleted)
 	n := collectionReadCounter(t, f.app.DB)
 	*n = 0
 	if _, err := loadOccurrenceInvitationFacts(f.app.DB, rows[:1], now); err != nil {
@@ -483,11 +485,15 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 	if err := f.app.DB.Model(&f.dates[1]).Update("status", models.OccurrenceCancelled).Error; err != nil {
 		t.Fatal(err)
 	}
-	compare()
+	cancelled := ""
+	if rows[0].OccurrenceID == f.dates[1].ID {
+		cancelled = policy.OccurrenceCancelled
+	}
+	compare(cancelled, policy.OccurrenceDeleted)
 	if err := f.app.DB.Model(f.recipient).Update("status", models.UserDisabled).Error; err != nil {
 		t.Fatal(err)
 	}
-	compare()
+	compare(policy.ContactAccountDisabled, policy.ContactAccountDisabled)
 	// The batch reads the dates, events and groups; the lifecycle sweep also
 	// reads the live grants. Either failing is an error, never an empty answer.
 	for _, tc := range []struct {

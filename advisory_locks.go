@@ -3,7 +3,7 @@ package main
 // Every Postgres advisory lock id this process takes, in one place so two
 // features cannot pick the same number. TestAdvisoryLockIDsAreUnique checks
 // this block together with the ids held by the migrations runner and the
-// occurrence-extension job.
+// occurrence-extension job (eventdates).
 const (
 	// setupLockID serializes first-account creation across server processes.
 	setupLockID int64 = 0x466f6c6453657475
