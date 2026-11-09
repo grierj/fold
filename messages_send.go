@@ -41,16 +41,6 @@ const (
 	messageBatchAttempts = 8
 )
 
-// Church settings the pipeline reads (5.3).
-const (
-	// settingGuardianCopies: "true" sends each confirmed guardian a marked
-	// email copy of messages to their teen (DEC-19, DEC-29). Default off.
-	settingGuardianCopies = "guardian_copies"
-	// settingReplyTo is where replies to an announcement go until the reply
-	// relay (M3.11): the church office address (DEC-130). Empty: none.
-	settingReplyTo = "reply_to_address"
-)
-
 type messageSendJob struct {
 	MessageID uint `json:"messageId"`
 }
@@ -93,14 +83,6 @@ func enqueueMessageSend(tx *gorm.DB, id uint, when time.Time) error {
 	_, err := jobs.Enqueue(tx, kindMessageSend, messageSendJob{MessageID: id}, when,
 		"message.send:"+historyID(id)+":"+strconv.FormatInt(when.Unix(), 10), messageSendAttempts)
 	return err
-}
-
-func (a *App) settingValue(key string) string {
-	var s models.Setting
-	if a.DB.Select("value").Where("key = ?", key).First(&s).Error != nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Value)
 }
 
 // Failure texts a message's author reads on its page.
@@ -235,7 +217,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	}
 	// 5. Guardian copies (DEC-19): by email only (DEC-29), each guardian
 	// filtered like anyone else.
-	if len(teens) > 0 && a.settingValue(settingGuardianCopies) == "true" {
+	if len(teens) > 0 && boolSettingIn(a.DB, settingGuardianCopies, false) {
 		copies, err := guardianCopyRows(db, m.ID, teens, direct, category)
 		if err != nil {
 			return err

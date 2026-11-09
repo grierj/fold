@@ -359,7 +359,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	if !ok {
 		return nil
 	}
-	if a.settingValue(settingPushEnabled) == "false" {
+	if !a.pushEnabled() {
 		return a.recordPush(n, models.DeliverySuppressed, pushWhyChurchOff)
 	}
 	var u models.User

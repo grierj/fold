@@ -29,14 +29,6 @@ import (
 // the private half AES-GCM encrypted with a key derived from SESSION_SECRET.
 // Nothing for an admin to set up, and no new env var.
 
-const (
-	settingVAPIDPublic  = "vapid_public_key"
-	settingVAPIDPrivate = "vapid_private_key_enc"
-	// settingPushEnabled is the church's switch (DEC-124, default on). The
-	// admin control arrives in M3.13c2; delivery reads it now.
-	settingPushEnabled = "push_enabled"
-)
-
 // vapidAAD binds the ciphertext to what it is.
 const vapidAAD = "vapid-private-key"
 

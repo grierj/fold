@@ -23,8 +23,7 @@ import (
 
 // How far a list request may look. Stored occurrences go out 18 months.
 const (
-	maxEventWindow  = 366 * 24 * time.Hour
-	settingTimezone = "timezone"
+	maxEventWindow = 366 * 24 * time.Hour
 )
 
 func (a *App) churchTimezone() string {
@@ -72,9 +71,7 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
 		return
 	}
-	if err := a.DB.Where(models.Setting{Key: settingTimezone}).
-		Assign(models.Setting{Value: tz}).
-		FirstOrCreate(&models.Setting{}).Error; err != nil {
+	if err := setSettingIn(a.DB, settingTimezone, tz); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save timezone")
 		return
 	}

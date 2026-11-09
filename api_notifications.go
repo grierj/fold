@@ -811,8 +811,8 @@ func readEmailRecipients(db *gorm.DB, userIDs []uint, needChoice bool) ([]emailR
 	}
 	var users []emailRecipient
 	err := db.Model(&models.User{}).Select(`users.*,
-		COALESCE((SELECT value FROM settings WHERE key = 'site_name'), '') AS site_name,
-		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`, settingChurchAddress).
+		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS site_name,
+		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`, settingSiteName, settingChurchAddress).
 		Where("users.id IN ?", userIDs).Find(&users).Error
 	if err != nil {
 		return nil, emailOff{}, err
@@ -858,7 +858,7 @@ func readEmailRecipient(db *gorm.DB, userID uint, needChoice bool) (u *models.Us
 func indexEmailRecipients(users []emailRecipient) (byID map[uint]*models.User, suppressed map[uint][]string, footer footerFacts) {
 	byID = make(map[uint]*models.User, len(users))
 	suppressed = make(map[uint][]string, len(users))
-	footer = footerFacts{site: "Fold"}
+	footer = footerFacts{site: defaultSiteName}
 	if len(users) > 0 {
 		if users[0].SiteName != "" {
 			footer.site = users[0].SiteName

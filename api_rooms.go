@@ -25,8 +25,6 @@ import (
 // their history.
 // ---------------------------------------------------------------------------
 
-const settingRoomsEnabled = "rooms_enabled"
-
 // Room field limits, matching the CHECKs in migration 00045.
 const (
 	maxRoomName     = 100
@@ -38,8 +36,7 @@ const (
 )
 
 func (a *App) roomsEnabled() bool {
-	var s models.Setting
-	return a.DB.Where("key = ?", settingRoomsEnabled).First(&s).Error == nil && s.Value == "true"
+	return boolSettingIn(a.DB, settingRoomsEnabled, false)
 }
 
 // roomsOn hides every room route while rooms are off, before auth, so a
@@ -311,9 +308,7 @@ func (a *App) apiSetRoomsEnabled(c *gin.Context) {
 	me := apiUser(c)
 	value := strconv.FormatBool(*body.Enabled)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where(models.Setting{Key: settingRoomsEnabled}).
-			Assign(models.Setting{Value: value}).
-			FirstOrCreate(&models.Setting{}).Error; err != nil {
+		if err := setSettingIn(tx, settingRoomsEnabled, value); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomsEnabledChanged,

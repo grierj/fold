@@ -32,8 +32,6 @@ import (
 // email already has an account (10.1).
 // ---------------------------------------------------------------------------
 
-const settingSelfSignup = "self_signup"
-
 const (
 	selfSignupRequest = "request"
 	selfSignupOff     = "off"
@@ -53,11 +51,7 @@ const (
 // selfSignupMode reads the self_signup setting: off or request (the
 // default; there is no open mode, DEC-4).
 func (a *App) selfSignupMode() string {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", settingSelfSignup).First(&s).Error; err != nil {
-		return selfSignupRequest
-	}
-	if s.Value == selfSignupOff {
+	if v, _, err := settingIn(a.DB, settingSelfSignup); err == nil && v == selfSignupOff {
 		return selfSignupOff
 	}
 	return selfSignupRequest
@@ -715,9 +709,7 @@ func (a *App) apiSetSelfSignup(c *gin.Context) {
 	}
 	me := apiUser(c)
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where(models.Setting{Key: settingSelfSignup}).
-			Assign(models.Setting{Value: body.Mode}).
-			FirstOrCreate(&models.Setting{}).Error; err != nil {
+		if err := setSettingIn(tx, settingSelfSignup, body.Mode); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.SelfSignupChanged,

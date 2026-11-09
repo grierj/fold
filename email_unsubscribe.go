@@ -237,10 +237,6 @@ func setConsent(tx *gorm.DB, row models.Consent, none string, session *models.Us
 	return true, tx.Create(&row).Error
 }
 
-// settingChurchAddress is the church's postal address for email footers
-// (PLAN 10.5, DEC-116); empty until an admin sets it.
-const settingChurchAddress = "church_address"
-
 // footerFacts are the church's name and address for one batch of email.
 type footerFacts struct{ site, address string }
 

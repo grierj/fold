@@ -229,9 +229,5 @@ const errChurchAddressCharacters = "the address has a character that can't go in
 
 // churchAddress is the church's postal address for footers, or "".
 func (a *App) churchAddress() string {
-	var s models.Setting
-	if a.DB.Where("key = ?", settingChurchAddress).First(&s).Error != nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Value)
+	return a.settingValue(settingChurchAddress)
 }
