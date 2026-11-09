@@ -926,13 +926,13 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 	}
 	if len(ids) > 0 {
 		var requests []models.AccountRequest
-		if err := a.DB.Where("household_person_id IN ? AND source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", ids, models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved).Find(&requests).Error; err != nil {
+		if err := openConversionRequests(a.DB).Where("household_person_id IN ?", ids).Find(&requests).Error; err != nil {
 			return out, err
 		}
 		for _, req := range requests {
-			state := "awaiting_approval"
+			state := conversionAwaitingApproval
 			if req.Status == models.RequestApproved {
-				state = "awaiting_consent"
+				state = conversionAwaitingConsent
 			}
 			conversions[*req.HouseholdPersonID] = conversionJSON{Email: req.Email, ExpiresAt: req.ExpiresAt, State: state}
 		}

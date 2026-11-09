@@ -88,7 +88,7 @@ func TestHouseholdConversionTransfersEveryRow(t *testing.T) {
 	}
 	apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": "other@example.com"}, http.StatusConflict)
 	apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusConflict)
-	if err := conversionEmailAvailable(app.DB, request.Email, 0); !errors.Is(err, errConversionEmail) {
+	if err := conversionEmailAvailable(app.DB, request.Email, 0, 0); !errors.Is(err, errConversionEmail) {
 		t.Fatal("pending request did not reserve email", err)
 	}
 	apiDo(t, admin, "POST", "/api/v1/invitations", map[string]any{"email": request.Email, "name": "Reserved"}, http.StatusConflict)

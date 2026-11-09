@@ -54,12 +54,6 @@ func (a *App) guardianEmailSignature(nonce string, authority guardianEmailAuthor
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
-func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
-	var row models.TeenConsent
-	res := tx.Where("teen_user_id = ? AND scope = ?", teenID, models.TeenConsentAccount).Order("at DESC, id DESC").Limit(1).Find(&row)
-	return row.ID, res.Error
-}
-
 // Issuing another email for one link replaces that link only. A guardian
 // with two teens can use both emails independently.
 func (a *App) createGuardianEmailToken(tx *gorm.DB, guardian, teen *models.User, linkID uint) (string, error) {

@@ -135,7 +135,7 @@ func (a *App) completeTeenConversionIfReady(tx *gorm.DB, user *models.User, toda
 	if person.DeletedAt.Valid || person.ConvertedUserID != nil || req.ApprovedUserID == nil || *req.ApprovedUserID != user.ID {
 		return errConversionPerson
 	}
-	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) || formatBirthDate(user.BirthDate) != formatBirthDate(req.BirthDate) {
+	if !conversionDetailsMatch(person, req) || formatBirthDate(user.BirthDate) != formatBirthDate(req.BirthDate) {
 		return errConversionDetails
 	}
 	if user.AdministrativelyDisabled {

@@ -179,7 +179,8 @@ func (a *App) apiMyGuardianTeens(c *gin.Context) {
 	}
 	var latest []models.TeenConsent
 	if len(ids) > 0 {
-		if err := a.DB.Raw("SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ? ORDER BY teen_user_id, scope, at DESC, id DESC", ids).Scan(&latest).Error; err != nil {
+		var err error
+		if latest, err = latestTeenConsents(a.DB, ids); err != nil {
 			consentError(c, err)
 			return
 		}

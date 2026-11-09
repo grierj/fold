@@ -40,41 +40,41 @@ type conversionJSON struct {
 	State     string    `json:"state"`
 }
 
+// The states a household person's conversion shows: an invitation that is
+// pending or expired, then a request awaiting an admin, then an approved
+// teen awaiting account consent.
+const (
+	conversionPending          = "pending"
+	conversionExpired          = "expired"
+	conversionAwaitingApproval = "awaiting_approval"
+	conversionAwaitingConsent  = "awaiting_consent"
+)
+
+// openConversionRequests scopes tx to the conversion requests still in flight:
+// pending, or approved with the account created.
+func openConversionRequests(tx *gorm.DB) *gorm.DB {
+	return tx.Model(&models.AccountRequest{}).Where("source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved)
+}
+
+// conversionDetailsMatch: the person is still the one the request named.
+func conversionDetailsMatch(person *models.HouseholdPerson, req *models.AccountRequest) bool {
+	return person.FullName() == req.Name && formatBirthDate(person.BirthDate) == formatBirthDate(req.BirthDate)
+}
+
 func conversionMetadata(inv *models.Invitation) conversionJSON {
-	state := "pending"
+	state := conversionPending
 	if !inv.ExpiresAt.After(time.Now()) {
-		state = "expired"
+		state = conversionExpired
 	}
 	return conversionJSON{Email: inv.Email, ExpiresAt: inv.ExpiresAt, State: state}
 }
 
-// Ordinary and household invitations reserve the same email namespace.
-func lockInvitationEmail(tx *gorm.DB, email string) error {
-	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, ?))", mail.NormalizeAddress(email), invitationEmailLockSeed).Error
-}
-
-func conversionEmailAvailable(tx *gorm.DB, email string, except uint, exceptRequest ...uint) error {
-	var n int64
-	if err := tx.Unscoped().Model(&models.User{}).Where("email = ?", email).Count(&n).Error; err != nil {
+func conversionEmailAvailable(tx *gorm.DB, email string, exceptInvitation, exceptRequest uint) error {
+	hold, err := emailHeldBy(tx, email, exceptInvitation, exceptRequest, false)
+	if err != nil {
 		return err
 	}
-	if n != 0 {
-		return errConversionEmail
-	}
-	if err := tx.Model(&models.Invitation{}).Where("email = ? AND id <> ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email, except).Count(&n).Error; err != nil {
-		return err
-	}
-	if n != 0 {
-		return errConversionEmail
-	}
-	q := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending)
-	if len(exceptRequest) > 0 {
-		q = q.Where("id <> ?", exceptRequest[0])
-	}
-	if err := q.Count(&n).Error; err != nil {
-		return err
-	}
-	if n != 0 {
+	if hold != "" {
 		return errConversionEmail
 	}
 	return nil
@@ -256,7 +256,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			return errConversionUnavailable
 		}
 		var pending int64
-		if err := tx.Model(&models.AccountRequest{}).Where("household_person_id = ? AND source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", person.ID, models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved).Count(&pending).Error; err != nil {
+		if err := openConversionRequests(tx).Where("household_person_id = ?", person.ID).Count(&pending).Error; err != nil {
 			return err
 		}
 		if pending > 0 {
@@ -294,7 +294,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			}
 			return nil
 		}
-		if err := conversionEmailAvailable(tx, body.Email, inv.ID); err != nil {
+		if err := conversionEmailAvailable(tx, body.Email, inv.ID, 0); err != nil {
 			if !errors.Is(err, errConversionEmail) {
 				return err
 			}
@@ -527,7 +527,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := lockInvitationEmail(tx, inv.Email); err != nil {
 				return err
 			}
-			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
+			if err := conversionEmailAvailable(tx, inv.Email, inv.ID, 0); err != nil {
 				return err
 			}
 			err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
@@ -644,7 +644,7 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.ConvertedUserID != nil {
 		return 0, errConversionPerson
 	}
-	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) {
+	if !conversionDetailsMatch(&person, req) {
 		return 0, errConversionDetails
 	}
 	today, err := churchClockIn(tx, time.Now().UTC())
@@ -677,9 +677,6 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.Kind == models.HouseholdTeen {
 		user := models.User{Email: req.Email, Name: req.Name, Role: models.RoleMember, Status: newAccountStatus(models.AccountTeen, req.PasswordHash != nil), AccountType: models.AccountTeen, BirthDate: req.BirthDate, PasswordHash: req.PasswordHash}
 		if err := tx.Create(&user).Error; err != nil {
-			return 0, err
-		}
-		if err := tx.Model(req).Update("approved_user_id", user.ID).Error; err != nil {
 			return 0, err
 		}
 		links := guardianLinksForPeople(tx, []uint{person.ID})[person.ID]

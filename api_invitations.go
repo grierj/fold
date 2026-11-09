@@ -189,26 +189,15 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 				return refuse(errInvitationLimit, "daily_limit")
 			}
 		}
-		var existing models.User
-		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil {
+		hold, err := emailHeldBy(tx, email, 0, 0, true)
+		if err != nil {
 			return err
 		}
-		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
-			return refuse(errEmailTaken, "existing_account")
-		}
-		var pending int64
-		if err := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending).Count(&pending).Error; err != nil {
-			return err
-		}
-		if pending != 0 {
-			return refuse(errConversionEmail, "pending_conversion")
-		}
-		var n int64
-		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil {
-			return err
-		}
-		if n > 0 {
-			return refuse(errConversionEmail, "pending_invitation")
+		switch hold {
+		case holdAccount:
+			return refuse(errEmailTaken, hold)
+		case holdPendingConversion, holdPendingInvitation:
+			return refuse(errConversionEmail, hold)
 		}
 		_, hash, err := newTokenAndHash()
 		if err != nil {

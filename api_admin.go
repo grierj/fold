@@ -369,7 +369,7 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		}
 		if selfConfirm {
 			var otherAdmins int64
-			if err := tx.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).Count(&otherAdmins).Error; err != nil {
+			if err := activeAdmins(tx).Where("id <> ?", me.ID).Count(&otherAdmins).Error; err != nil {
 				return err
 			}
 			if otherAdmins > 0 {
@@ -561,18 +561,25 @@ func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
 	return &u, true
 }
 
-// adminCount counts admin accounts.
-func (a *App) adminCount() int {
-	var n int64
-	a.DB.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n)
-	return int(n)
+// activeAdmins scopes tx to the active admin accounts: the set the last-admin
+// rule counts and the admins who are told about account changes.
+func activeAdmins(tx *gorm.DB) *gorm.DB {
+	return tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive)
 }
 
-// adminCountIn is adminCount on a transaction, so the in-gate decision counts
-// with the same connection that holds the locks.
+// adminCount is adminCountIn for the early, ungated check. The gated decision
+// (keepsAnAdminIn) is the authority; a failed read here counts as none, which
+// only ever refuses.
+func (a *App) adminCount() int {
+	n, _ := adminCountIn(a.DB)
+	return n
+}
+
+// adminCountIn counts the active admins on the connection that holds the
+// locks, so the in-gate decision sees the same rows.
 func adminCountIn(tx *gorm.DB) (int, error) {
 	var n int64
-	if err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n).Error; err != nil {
+	if err := activeAdmins(tx).Count(&n).Error; err != nil {
 		return 0, err
 	}
 	return int(n), nil
