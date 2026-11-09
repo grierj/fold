@@ -1,13 +1,13 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Messages } from "../../messages-api";
+import { Messages } from "../../api/messages";
 import type { AudienceSummary } from "../../types";
 import { composeOptions, summary } from "../../test/compose";
 import { emptyChoice, type AudienceChoice } from "../../lib/messages";
 import { AudiencePicker, COUNT_DELAY_MS } from "./AudiencePicker";
 
-vi.mock("../../messages-api", () => ({ Messages: { audiencePreview: vi.fn() } }));
+vi.mock("../../api/messages", () => ({ Messages: { audiencePreview: vi.fn() } }));
 
 function Harness({ start = emptyChoice(), everyone = false }: { start?: AudienceChoice; everyone?: boolean }) {
   const [c, setC] = useState(start);

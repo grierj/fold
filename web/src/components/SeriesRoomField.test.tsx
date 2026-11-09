@@ -1,18 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, SeriesRooms, Site } from "../api";
+import { ApiError } from "../api/core";
+import { SeriesRooms } from "../api/rooms";
+import { Site } from "../api/site";
 import type { SeriesBooking, SeriesRoom } from "../types";
 import { Form } from "./ui/Form";
 import { SeriesRoomField } from "./SeriesRoomField";
 
 const actor = { isAdmin: false };
 vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Site: { get: vi.fn() },
-  SeriesRooms: { list: vi.fn(), set: vi.fn() },
-}));
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
+vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { list: vi.fn(), set: vi.fn() } }));
 
 const room = (over: Partial<SeriesRoom>): SeriesRoom => ({ id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busyDates: 0, tooSmall: false, ...over });
 const hall = room({});

@@ -10,7 +10,7 @@ import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type
 import { FormActions } from "../components/ui/FormActions";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Events } from "../api";
+import { Events } from "../api/events";
 import { useAuth } from "../auth";
 import { useEventZone } from "../lib/useEventZone";
 import { useWhenState } from "../lib/useWhenState";

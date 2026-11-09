@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Profile as ProfileApi } from "../api";
+import { Profile as ProfileApi } from "../api/profile";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
 import { passwordLengthProblem } from "../lib/password";

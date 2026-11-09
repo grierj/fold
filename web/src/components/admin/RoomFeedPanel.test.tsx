@@ -5,16 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const getFeed = vi.fn();
 const makeFeed = vi.fn();
 const revokeFeed = vi.fn();
-vi.mock("../../api", async (orig) => ({
-  ...(await orig<typeof import("../../api")>()),
-  AdminRooms: {
+vi.mock("../../api/rooms", async (orig) => ({ ...(await orig<typeof import("../../api/rooms")>()), AdminRooms: {
     getFeed: (id: number) => getFeed(id),
     makeFeed: (id: number) => makeFeed(id),
     revokeFeed: (id: number) => revokeFeed(id),
-  },
-}));
+  } }));
 
-import { ApiError } from "../../api";
+import { ApiError } from "../../api/core";
 import type { Room } from "../../types";
 import { RoomFeedPanel } from "./RoomFeedPanel";
 

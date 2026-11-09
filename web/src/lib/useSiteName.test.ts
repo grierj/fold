@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { useSiteName } from "./useSiteName";
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../api", () => ({ Site: { get } }));
+vi.mock("../api/site", () => ({ Site: { get } }));
 beforeEach(() => { get.mockReset(); });
 
 it("loads the church name", async () => {

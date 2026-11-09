@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../auth";
-import { Messages } from "../../messages-api";
+import { Messages } from "../../api/messages";
 
 // Where a page sends a leader to write to its people (M3.4c). Every entry
 // point uses these words and paths, so a group, an event and a date read

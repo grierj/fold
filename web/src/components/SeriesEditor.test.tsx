@@ -4,15 +4,14 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { SeriesEditor } from "./SeriesEditor";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
-import { DateRooms, Events, SeriesRooms, Site } from "../api";
+import { DateRooms, SeriesRooms } from "../api/rooms";
+import { Events } from "../api/events";
+import { Site } from "../api/site";
 
-vi.mock("../api", () => ({
-  DateRooms: { list: vi.fn() },
-  SeriesRooms: { list: vi.fn() },
-  ApiError: class extends Error {},
-  Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) },
-  Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) },
-}));
+vi.mock("../api/rooms", () => ({ DateRooms: { list: vi.fn() }, SeriesRooms: { list: vi.fn() } }));
+vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
+vi.mock("../api/events", () => ({ Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) } }));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) } }));
 
 describe("SeriesEditor", () => {
   it.each(["1e", "-2", "0"])("focuses the remote seat limit error for %s and keeps the other fields", async (capacity) => {

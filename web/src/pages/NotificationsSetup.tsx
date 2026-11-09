@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Site } from "../api";
+import { Site } from "../api/site";
 import { useAuth } from "../auth";
 import { deviceState, localSubscription, readPushEnv, type DeviceState, type Platform } from "../lib/pushState";
 import { Skeleton } from "../components/ui/Skeleton";

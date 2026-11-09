@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ChevronLeftIcon } from "../components/icons";
 import { useAuth } from "../auth";
-import { Messages } from "../messages-api";
+import { Messages } from "../api/messages";
 import type { MessageRead } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { formatWhen, lowerLead } from "../lib/when";

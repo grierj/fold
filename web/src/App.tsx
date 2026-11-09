@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect } from "react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { lazy, Suspense } from "react";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
@@ -8,10 +8,8 @@ import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { Skeleton } from "./components/ui/Skeleton";
 import { NotFound } from "./pages/NotFound";
-import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 import { UnsavedChangesBlocker } from "./lib/unsavedChanges";
-import { syncAppBadge } from "./lib/push";
 
 const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m.NewGroup })));
 const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
@@ -44,23 +42,7 @@ const MessageReadPage = lazy(() => import("./pages/MessageRead").then((m) => ({ 
 
 export default function App() {
   const { user, loading } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
-
-  // The API returns 401 JSON (never redirects); the SPA owns routing, so any
-  // unauthorized API call sends the user to /login, preserving their place.
-  useEffect(() => {
-    setOnUnauthorized(() => {
-      // Signed out without Log out (the session expired): the icon's count
-      // was this person's. The device stays subscribed; it belongs to the
-      // person, not the session (logout and turning off end it).
-      syncAppBadge(0);
-      if (location.pathname !== "/login") {
-        navigate("/login", { state: { from: location.pathname + location.search }, replace: true });
-      }
-    });
-    return () => setOnUnauthorized(null);
-  }, [navigate, location.pathname, location.search]);
 
   if (loading) return null;
   // The Home Screen app opens at /?source=homescreen (the manifest) with

@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ApiError, Calendar } from "../api";
+import { ApiError } from "../api/core";
+import { Calendar } from "../api/calendar";
 import { useAuth } from "../auth";
 import type { RoomCalendar, RoomCalendarRoom, RoomSlot } from "../types";
 import { addDays } from "../lib/calendar";

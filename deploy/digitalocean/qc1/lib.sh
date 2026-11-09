@@ -178,7 +178,7 @@ qc1_expected_split() { # mode k
 
 # --- the DELETE body the panel sends (set-v1) ------------------------------------------------------------------------------------------
 # Built by qc1/set-v1.mjs, an implementation independent of the browser's, held to the shared vectors by `qc1_setv1 selftest`. The body is
-# exactly what AdminUsers.remove sends (web/src/api.ts): {successors, hostSuccessors, attemptId?, reasonReview?:{format:"set-v1", count, digest,
+# exactly what AdminUsers.remove sends (web/src/api/adminUsers.ts): {successors, hostSuccessors, attemptId?, reasonReview?:{format:"set-v1", count, digest,
 # choices}} in that key order, compact like JSON.stringify, with no trailing newline (so the file length is the request's Content-Length). The
 # attempt id is the 80-hex id a press mints first; no reasons (n = 0) means no reasonReview. The first n items of the file are used, in the order
 # the server issued them, which must be strictly ascending signed id (nothing is sorted: the order is part of what is measured).

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router-dom";
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { useAuth } from "../auth";
-import { Contacts } from "../contact-api";
+import { Contacts } from "../api/contacts";
 import type { ContactGrant, ContactRequest } from "../types";
 import { ContactContextLink, ContactGrantCard, contactFieldsLabel } from "../components/ContactGrantCard";
 import { Button, ButtonLink } from "../components/ui/Button";

@@ -11,12 +11,9 @@ const { refresh, cancelEmailChange } = vi.hoisted(() => ({
 vi.mock("../auth", () => ({
   useAuth: () => ({ refresh }),
 }));
-vi.mock("../api", async (original) => ({
-  ...(await original<typeof import("../api")>()),
-  Profile: { cancelEmailChange },
-}));
+vi.mock("../api/profile", async (original) => ({ ...(await original<typeof import("../api/profile")>()), Profile: { cancelEmailChange } }));
 
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { CancelEmailChange } from "./CancelEmailChange";
 
 function renderPage(path = "/cancel-email-change?token=cancel-token") {

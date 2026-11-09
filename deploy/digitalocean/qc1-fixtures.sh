@@ -206,9 +206,9 @@ jq -c 'reverse' "$WORK/real-items.json" >"$WORK/desc-items.json"
 refused 'ascending' body keep "$WORK/desc-items.json" 3 "$ID80"
 jq -c '.[0].reviewHash = "h"' "$WORK/real-items.json" >"$WORK/bad-items.json"
 refused '64 lowercase hex' body keep "$WORK/bad-items.json" 3 "$ID80"
-# The shape is the source's: the envelope in web/src/api.ts and the 80-hex id.
-grep -qF 'body: { successors, hostSuccessors, ...(attemptId ? { attemptId } : {}), ...(reasonReview ? { reasonReview } : {}) }' "$ROOT/web/src/api.ts"
-grep -qF '/^[0-9a-f]{80}$/.test(res.attemptId)' "$ROOT/web/src/api.ts"
+# The shape is the source's: the envelope in web/src/api/adminUsers.ts and the 80-hex id.
+grep -qF 'body: { successors, hostSuccessors, ...(attemptId ? { attemptId } : {}), ...(reasonReview ? { reasonReview } : {}) }' "$ROOT/web/src/api/adminUsers.ts"
+grep -qF '/^[0-9a-f]{80}$/.test(res.attemptId)' "$ROOT/web/src/api/adminUsers.ts"
 grep -qF 'AdminUsers.remove(target.id, picks, hostPicks, id, reasonReview)' "$ROOT/web/src/components/DeleteUserPanel.tsx"
 # The helper agrees with the product's shared vectors, which are also run by the web and Go tests.
 [[ "$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" == 'ok 4' ]]

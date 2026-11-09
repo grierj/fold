@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { DateRooms, Site, type DateRoomInput } from "../api";
+import { DateRooms, type DateRoomInput } from "../api/rooms";
+import { Site } from "../api/site";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { roomName } from "../lib/place";

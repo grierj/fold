@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Calendar } from "../api";
+import { Calendar } from "../api/calendar";
 import type { CalendarOccurrence } from "../types";
 import { DateBadge } from "./DateBadge";
 import { ErrorNotice } from "./ErrorNotice";

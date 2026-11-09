@@ -3,14 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, RoomRequests } from "../../api";
+import { ApiError } from "../../api/core";
+import { RoomRequests } from "../../api/rooms";
 import type { RoomRequest } from "../../types";
 import { RoomRequestsList } from "./RoomRequestsList";
 
-vi.mock("../../api", async (actual) => ({
-  ...(await actual<typeof import("../../api")>()),
-  RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
-}));
+vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
 
 // The tests run in America/Boise, where 19:00 UTC on Nov 10 is noon.
 const series: RoomRequest = {

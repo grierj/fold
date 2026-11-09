@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Households } from "../api";
+import { Households } from "../api/households";
 import type { HouseholdPerson, User } from "../types";
 import { errorText } from "./errors";
 

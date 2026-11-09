@@ -79,7 +79,7 @@ func (a *App) apiNotificationBadge(c *gin.Context) {
 		c.Status(http.StatusNotModified)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"unread": unread, "waiting": waiting})
+	c.JSON(http.StatusOK, badgeJSON{Unread: unread, Waiting: waiting})
 }
 
 // GET /notifications?filter=all|unread|waiting|archived&before=<cursor>&limit=20

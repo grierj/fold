@@ -88,7 +88,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user), "canCompose": a.canComposeOrLog(user)})
+	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(user), CanCompose: a.canComposeOrLog(user)})
 }
 
 // validEmail checks an address before it is stored as a login.
@@ -330,7 +330,7 @@ func (a *App) endSessionsAtLogout(c *gin.Context) error {
 
 func (a *App) apiMe(c *gin.Context) {
 	me := apiUser(c)
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(me), "canCompose": a.canComposeOrLog(me)})
+	c.JSON(http.StatusOK, sessionJSON{User: a.toUserJSON(me), CanCompose: a.canComposeOrLog(me)})
 }
 
 // canComposeOrLog says whether the nav offers Messages (M3.4c). A failed

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
-import { AdminUsers, ApiError } from "../api";
+import { AdminUsers } from "../api/adminUsers";
+import { ApiError } from "../api/core";
 import { useAuth } from "../auth";
 import type { ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";

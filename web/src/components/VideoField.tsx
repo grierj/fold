@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Events } from "../api";
+import { Events } from "../api/events";
 import { errorCode, errorText } from "../lib/errors";
 import type { VideoProvider, VideoReveal } from "../types";
 import { Button } from "./ui/Button";

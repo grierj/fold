@@ -1,15 +1,13 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Auth as AuthApi, ApiError } from "./api";
-import { AuthProvider, clearClientData, useAuth } from "./auth";
+import { Auth as AuthApi } from "./api/auth";
+import { ApiError } from "./api/core";
+import { AuthProvider, clearClientData, endSession, useAuth } from "./auth";
 import type { User } from "./types";
 import { fakeSub, installBrowser, uninstallBrowser } from "./test/push";
 
-vi.mock("./api", async (actual) => ({
-  ...(await actual<typeof import("./api")>()),
-  Auth: { me: vi.fn(), login: vi.fn(), logout: vi.fn() },
-  ensureCsrf: vi.fn(async () => {}),
-}));
+vi.mock("./api/auth", async (actual) => ({ ...(await actual<typeof import("./api/auth")>()), Auth: { me: vi.fn(), login: vi.fn(), logout: vi.fn() } }));
+vi.mock("./api/core", async (actual) => ({ ...(await actual<typeof import("./api/core")>()), ensureCsrf: vi.fn(async () => {}) }));
 
 it("clears stale adult auth when a pending-teen login ends the server session", async () => {
   const adult: User = { id: 1, name: "Pat", displayName: "Pat", email: "pat@example.com", phone: "", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
@@ -21,6 +19,16 @@ it("clears stale adult auth when a pending-teen login ends the server session", 
     await expect(result.current.login("teen@example.com", "password1234")).rejects.toMatchObject({ status: 403 });
   });
   expect(result.current.user).toBeNull();
+});
+
+it("a session that ended elsewhere stops counting as signed in", async () => {
+  const adult: User = { id: 1, name: "Pat", displayName: "Pat", email: "pat@example.com", phone: "", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  vi.mocked(AuthApi.me).mockResolvedValue({ user: adult, canCompose: true });
+  const { result } = renderHook(useAuth, { wrapper: AuthProvider });
+  await waitFor(() => expect(result.current.user?.id).toBe(1));
+  act(() => endSession());
+  expect(result.current.user).toBeNull();
+  expect(result.current.canCompose).toBe(false);
 });
 
 describe("clearClientData", () => {

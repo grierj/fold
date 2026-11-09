@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Guardians } from "../guardian-api";
+import { Guardians } from "../api/guardians";
 import type { GuardianEmailPreview } from "../types";
 import { Button } from "../components/ui/Button";
 import { FormError } from "../components/ui/Field";

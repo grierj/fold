@@ -10,8 +10,8 @@ const { refresh, verifyEmail } = vi.hoisted(() => ({
 vi.mock("../auth", () => ({
   useAuth: () => ({ refresh }),
 }));
-vi.mock("../api", async (original) => {
-  const actual = await original<typeof import("../api")>();
+vi.mock("../api/profile", async (original) => {
+  const actual = await original<typeof import("../api/profile")>();
   return {
     ...actual,
     Profile: { ...actual.Profile, verifyEmail },

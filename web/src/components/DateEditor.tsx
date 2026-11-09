@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useState } from "react";
-import { Events } from "../api";
+import { Events } from "../api/events";
 import type { EventOccurrence, Visibility } from "../types";
 import { errorText } from "../lib/errors";
 import { zoneNote } from "../lib/when";
