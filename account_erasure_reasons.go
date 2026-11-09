@@ -56,9 +56,6 @@ var (
 	reasonPageRequests = 100
 	// reasonPageBudget is a page route's deadline, including its busy retries.
 	reasonPageBudget = 10 * time.Second
-	// reasonBusyWindow: a busy actor seal may start a new transaction only this
-	// long after the first one began (at most reasonBusyTries of them).
-	reasonBusyWindow = 2 * time.Second
 	// reasonBlankBatch is how many decisions one write batch holds: one audit
 	// INSERT and the matching blanking UPDATE (T07B-2 F4). A var so tests can
 	// shorten it.
@@ -75,7 +72,6 @@ var (
 )
 
 const (
-	reasonBusyTries = 3
 	// reasonReviewVersion is the audit marker version of these decisions.
 	reasonReviewVersion = 1
 	// reasonSourceDeletion marks a decision made inside an account deletion.
@@ -126,16 +122,17 @@ func parseRequestID(s string) (int64, bool) {
 	return v, true
 }
 
-// int64Array formats ids as a Postgres array literal for a ?::bigint[]
-// parameter: GORM would expand a slice into a list of values.
-func int64Array(ids []int64) string {
+// pgBigintArray formats ids as a Postgres array literal for a ?::bigint[] (or
+// CAST(@x AS bigint[])) parameter: GORM would expand a slice into a list of
+// values.
+func pgBigintArray[T int64 | uint](ids []T) string {
 	var b strings.Builder
 	b.WriteByte('{')
 	for i, id := range ids {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString(strconv.FormatInt(id, 10))
+		b.WriteString(fmt.Sprint(id))
 	}
 	b.WriteByte('}')
 	return b.String()
@@ -189,10 +186,6 @@ var reasonColumns = []reasonColumn{
 	{"add_childcare_count", reasonBigint},
 	{"completed_target_id", reasonBigint},
 }
-
-// reasonHashExcluded are the contact_requests columns the hash leaves out, and
-// why (see reasonColumns).
-var reasonHashExcluded = []string{"add_childcare_ages_note"}
 
 // reasonColIndex maps a hashed column to its place in reasonColumns.
 var reasonColIndex = func() map[string]int {
@@ -345,17 +338,12 @@ func internString(m map[string]string, s string) string {
 	return s
 }
 
-// scanReasonRows reads every row of rows with reasonSelect's shape and hashes
-// each for (viewer, party). It calls keep with the row; the caller decides
-// whether to retain it. rows is closed.
-func scanReasonRows(rows *sql.Rows, key []byte, viewer, party int64, keep func(reasonRow) error) error {
-	return scanReasonRowsWith(rows, key, viewer, party, true, nil, keep)
-}
-
-// scanReasonRowsWith is scanReasonRows with two knobs for the streamed consume:
-// wantHex false leaves Hash empty (Raw is always set), and a non-nil intern
-// makes the row carry only the facts of an audit row (see reasonRow.fill). The
-// scan buffers are made once per call and reused for every row (F4).
+// scanReasonRowsWith reads every row of rows with reasonSelect's shape and
+// hashes each for (viewer, party), calling keep with the row; rows is closed.
+// Two knobs serve the streamed consume: wantHex false leaves Hash empty (Raw
+// is always set), and a non-nil intern makes the row carry only the facts of
+// an audit row (see reasonRow.fill). The scan buffers are made once per call
+// and reused for every row (F4).
 func scanReasonRowsWith(rows *sql.Rows, key []byte, viewer, party int64, wantHex bool, intern map[string]string, keep func(reasonRow) error) error {
 	defer rows.Close()
 	fields := make([]sql.NullString, len(reasonColumns))
@@ -392,22 +380,18 @@ type reasonSource struct {
 	HasReason                      bool
 }
 
-// reasonFilter returns the parties of a source row that qualify as items, in
-// the order they are emitted. An empty answer means the row is not an item.
-type reasonFilter func(reasonSource) []int64
+// reasonFilter reports whether a source row is an item.
+type reasonFilter func(reasonSource) bool
 
 // liveReasonFilter qualifies the rows where the live target is a party and
-// the reason is not blank. contact_requests_check keeps requester_id and
-// subject_user_id apart, so there is at most one party.
+// the item is live: the target still has an account (the page reads it as a
+// live row) and the reason is not blank (policy.ErasureReasonItemState).
 func liveReasonFilter(target int64) reasonFilter {
-	return func(s reasonSource) []int64 {
-		if !s.HasReason || (s.RequesterID != target && s.SubjectUserID != target) {
-			return nil
+	return func(s reasonSource) bool {
+		if s.RequesterID != target && s.SubjectUserID != target {
+			return false
 		}
-		if policy.ErasureReasonItemState(policy.ErasureReasonFacts{}) != policy.ReasonItemLive {
-			return nil
-		}
-		return []int64{target}
+		return policy.ErasureReasonItemState(policy.ErasureReasonFacts{ReasonBlank: !s.HasReason}) == policy.ReasonItemLive
 	}
 }
 
@@ -427,55 +411,6 @@ const (
 	reasonScanInitialSQL      = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests ORDER BY id LIMIT ?"
 	reasonScanContinuationSQL = "SELECT id, requester_id, subject_user_id, (reason <> '') AS has_reason FROM contact_requests WHERE id > ?::bigint ORDER BY id LIMIT ?"
 )
-
-// scanReasonItems reads one unit: at most reasonUnitRows rows by primary key,
-// filtered in Go, stopping right after the pageRequests-th qualifying
-// request, so a request's parties are returned together or not at all
-// (R4-C01). next is that request's id; with fewer qualifying requests it is
-// the last id read when the unit read its whole budget, else nil. No statement
-// scans the table: the first page has no lower bound but still reads at most
-// reasonUnitRows rows. pageRequests is an argument only so a test can shorten
-// it; production passes reasonPageRequests.
-func scanReasonItems(tx *gorm.DB, filter reasonFilter, after *int64, pageRequests int) (reasonUnit, error) {
-	var unit reasonUnit
-	var rows *sql.Rows
-	var err error
-	if after == nil {
-		rows, err = tx.Raw(reasonScanInitialSQL, reasonUnitRows).Rows()
-	} else {
-		rows, err = tx.Raw(reasonScanContinuationSQL, *after, reasonUnitRows).Rows()
-	}
-	if err != nil {
-		return unit, err
-	}
-	defer rows.Close()
-	read := 0
-	var last int64
-	for rows.Next() {
-		var s reasonSource
-		if err := rows.Scan(&s.ID, &s.RequesterID, &s.SubjectUserID, &s.HasReason); err != nil {
-			return unit, err
-		}
-		read++
-		last = s.ID
-		if len(filter(s)) == 0 {
-			continue
-		}
-		unit.Requests = append(unit.Requests, s.ID)
-		if len(unit.Requests) == pageRequests {
-			next := s.ID
-			unit.Next = &next
-			return unit, rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return unit, err
-	}
-	if read >= reasonUnitRows {
-		unit.Next = &last
-	}
-	return unit, nil
-}
 
 // --- the page route ---------------------------------------------------------
 
@@ -553,7 +488,7 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 		if !policy.CanDemoteOrDelete(asPerson(&actor), asPerson(target), admins) {
 			return adminRuleRefusal(adminDelete, target.ID == actor.ID)
 		}
-		unit, err := scanReasonUnit(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests, reasonScanBatched)
+		unit, err := scanReasonItemsBatched(tx, liveReasonFilter(int64(target.ID)), after, reasonPageRequests)
 		if err != nil {
 			return err
 		}
@@ -564,18 +499,16 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 		}
 		var pred func(*models.User) bool
 		if len(unit.Requests) > 0 {
-			now := time.Now().UTC()
-			zone, err := churchZoneIn(tx)
+			rule, err := reasonReviewRuleIn(tx, target, admins)
 			if err != nil {
 				return err
 			}
-			targetPerson := *asPerson(target)
-			if !policy.CanReviewErasureReasons(contactAccount(&actor, now, zone), &targetPerson, admins) {
+			if !rule.allows(&actor) {
 				step.predFailed = true
 				return errReasonReviewForbidden
 			}
 			pred = func(u *models.User) bool {
-				ok := policy.CanReviewErasureReasons(contactAccount(u, now, zone), &targetPerson, admins)
+				ok := rule.allows(u)
 				step.predFailed = !ok
 				return ok
 			}
@@ -609,12 +542,12 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 		return nil, err
 	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id",
-		int64Array(ids), target.ID, target.ID).Rows()
+		pgBigintArray(ids), target.ID, target.ID).Rows()
 	if err != nil {
 		return nil, err
 	}
 	var read []reasonRow
-	if err := scanReasonRows(rows, key, int64(actor.ID), int64(target.ID), func(r reasonRow) error {
+	if err := scanReasonRowsWith(rows, key, int64(actor.ID), int64(target.ID), true, nil, func(r reasonRow) error {
 		read = append(read, r)
 		return nil
 	}); err != nil {
@@ -643,14 +576,11 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 	}
 	out := make([]reasonItemJSON, 0, len(read))
 	for _, r := range read {
-		role := "subject"
-		if r.RequesterID == int64(target.ID) {
-			role = "requester"
-		}
+		role, reviewerIsParty := reasonParties(r, int64(actor.ID), int64(target.ID))
 		other := uint(reasonCounterpart(r, int64(target.ID)))
 		item := reasonItemJSON{
 			RequestID: strconv.FormatInt(r.ID, 10), ReviewHash: r.Hash, Role: role, Purpose: r.Purpose, Status: r.Status,
-			CreatedAt: r.CreatedAt, ReviewerIsParty: int64(actor.ID) == r.RequesterID || int64(actor.ID) == r.SubjectUserID,
+			CreatedAt: r.CreatedAt, ReviewerIsParty: reviewerIsParty,
 			ContextLabel: labels[r.ID], Reason: r.Reason,
 		}
 		cp, found := counterparts[other]
@@ -671,6 +601,17 @@ func (a *App) reasonPageItems(tx *gorm.DB, actor, target *models.User, ids []int
 type reasonCounterpartFacts struct {
 	name    string
 	deleted bool
+}
+
+// reasonParties is the target's part in a request (requester or subject) and
+// whether the reviewing admin is one of its parties: what the page shows and
+// the deletion's decision audit row records.
+func reasonParties(r reasonRow, actor, target int64) (role string, reviewerIsParty bool) {
+	role = "subject"
+	if r.RequesterID == target {
+		role = "requester"
+	}
+	return role, actor == r.RequesterID || actor == r.SubjectUserID
 }
 
 // reasonCounterpart is the other party of a request the target is in.
@@ -734,26 +675,16 @@ func (a *App) apiAdminErasureReasonsPage(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), reasonPageBudget)
 	defer cancel()
-	start := time.Now()
+	retry := newBusyRetry(ctx)
 	var step reasonPageStep
 	var err error
-	for attempt := 0; attempt < reasonBusyTries; attempt++ {
+	for {
 		err = a.reasonPageAttempt(ctx, me, target, after, &step)
-		if !errors.Is(err, errActorBusy) {
+		// A busy actor seal runs the whole attempt again (R5-C01).
+		if !errors.Is(err, errActorBusy) || !rollbackConfirmed(err) {
 			break
 		}
-		if attempt == reasonBusyTries-1 || time.Since(start) >= reasonBusyWindow {
-			break
-		}
-		wait := 25 * time.Millisecond
-		if attempt > 0 {
-			wait = 100 * time.Millisecond
-		}
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-		}
-		if ctx.Err() != nil || time.Since(start) >= reasonBusyWindow {
+		if again, _ := retry.again(); !again {
 			break
 		}
 	}
@@ -793,6 +724,9 @@ type reasonPlan struct {
 	Decisions []reasonDecision
 	ActorID   uint
 	IP        string
+	// mayReview is what the deletion's seal decides again on the locked actor
+	// row (reasonReviewRule.allows); nil when the account has no reasons.
+	mayReview func(*models.User) bool
 }
 
 func (p reasonPlan) counts() (kept, removed int) {
@@ -855,8 +789,10 @@ func reasonWriteGuard(tx *gorm.DB) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if dl, ok := ctx.Deadline(); ok && time.Until(dl) <= contactCommitReserve {
-		return errCommitReserve
+	if dl, ok := ctx.Deadline(); ok {
+		if _, left := commitReserveLeft(dl); !left {
+			return errCommitReserve
+		}
 	}
 	return nil
 }
@@ -893,33 +829,33 @@ func reasonSetExistsIn(tx *gorm.DB, target uint) (bool, error) {
 //     Go keeps a compact record per row, never more than the claim (the server
 //     has read and locked the whole set by then, which the exclusive gate needs).
 //
-// The returned predicate is what the deletion's seal re-decides on the locked
+// The plan's mayReview is what the deletion's seal re-decides on the locked
 // actor row. actor is the deletion's re-read actor row; target is the locked
 // account.
-func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env reasonEnvelope, ip string) (reasonPlan, func(*models.User) bool, error) {
+func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env reasonEnvelope, ip string) (reasonPlan, error) {
 	plan := reasonPlan{ActorID: actor.ID, IP: ip}
 	if env.kind != reasonEnvelopeNew {
 		has, err := reasonSetExistsIn(tx, target.ID)
 		if err != nil {
-			return plan, nil, err
+			return plan, err
 		}
 		switch {
 		case !has:
-			return plan, nil, nil
+			return plan, nil
 		case env.kind == reasonEnvelopeLegacy:
-			return plan, nil, errReasonReviewOutdated
+			return plan, errReasonReviewOutdated
 		default:
-			return plan, nil, errNeedsReasonReview
+			return plan, errNeedsReasonReview
 		}
 	}
 	key, err := reasonHashKey(a.Config.SessionSecret)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id FOR UPDATE",
 		target.ID, target.ID).Rows()
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	hasher := newReasonSetHasher(env.count)
 	// Never sized from the claim: it grows from real rows.
@@ -942,58 +878,74 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 			return errReasonStreamStop
 		}
 		hasher.add(r.ID, &r.Raw)
-		role := "subject"
-		if r.RequesterID == int64(target.ID) {
-			role = "requester"
-		}
+		role, reviewerIsParty := reasonParties(r, int64(actor.ID), int64(target.ID))
 		// The text is not kept: only the id and the facts of the audit row.
 		decisions = append(decisions, reasonDecision{RequestID: r.ID, Role: role, Purpose: r.Purpose, Status: r.Status,
-			ReviewerIsParty: int64(actor.ID) == r.RequesterID || int64(actor.ID) == r.SubjectUserID})
+			ReviewerIsParty: reviewerIsParty})
 		return nil
 	})
 	if err != nil && !errors.Is(err, errReasonStreamStop) {
-		return plan, nil, err
+		return plan, err
 	}
 	if seen == 0 {
-		return plan, nil, nil
+		return plan, nil
 	}
 	if err := reasonWriteGuard(tx); err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	admins, err := adminCountIn(tx)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
-	zone, err := churchZoneIn(tx)
+	rule, err := reasonReviewRuleIn(tx, target, admins)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
-	now := time.Now().UTC()
-	targetPerson := *asPerson(target)
-	if !policy.CanReviewErasureReasons(contactAccount(actor, now, zone), &targetPerson, admins) {
-		return plan, nil, errReasonReviewForbidden
-	}
-	pred := func(u *models.User) bool {
-		return policy.CanReviewErasureReasons(contactAccount(u, now, zone), &targetPerson, admins)
+	if !rule.allows(actor) {
+		return plan, errReasonReviewForbidden
 	}
 	if over || seen != env.count {
-		return plan, nil, errReasonReviewChanged
+		return plan, errReasonReviewChanged
 	}
 	sum := hasher.sum()
 	if !hmac.Equal(sum[:], env.digest[:]) {
-		return plan, nil, errReasonReviewChanged
+		return plan, errReasonReviewChanged
 	}
 	for i := range decisions {
 		decisions[i].Remove = env.choiceAt(i) == reasonCodeRemove
 	}
 	plan.Decisions = decisions
-	return plan, pred, nil
+	plan.mayReview = rule.allows
+	return plan, nil
+}
+
+// reasonReviewRule is policy.CanReviewErasureReasons fixed for one target, on
+// one transaction's clock, church zone and admin count: the page and the
+// deletion decide the actor with it, and their seals decide the locked actor
+// row with it again.
+type reasonReviewRule struct {
+	now    time.Time
+	zone   *time.Location
+	target policy.Person
+	admins int
+}
+
+func reasonReviewRuleIn(tx *gorm.DB, target *models.User, admins int) (reasonReviewRule, error) {
+	zone, err := churchZoneIn(tx)
+	if err != nil {
+		return reasonReviewRule{}, err
+	}
+	return reasonReviewRule{now: time.Now().UTC(), zone: zone, target: *asPerson(target), admins: admins}, nil
+}
+
+func (r reasonReviewRule) allows(u *models.User) bool {
+	return policy.CanReviewErasureReasons(contactAccount(u, r.now, r.zone), &r.target, r.admins)
 }
 
 // eraseContactRequestReasonsIn writes the decisions and blanks the removed
 // reasons. It is the only writer of contact_requests.reason (the guard in
 // guards_contact_text_test.go allows its one UPDATE literal here and its one call in
-// apiAdminDeleteUser's callback, directly after eraseContactRequestTextIn).
+// eraseAccountIn, directly after eraseContactRequestTextIn).
 // Decisions go in batches of reasonBlankBatch inside the same transaction: for
 // each batch the signed audit rows are written first, then that batch's removes
 // are blanked in one UPDATE whose RowsAffected must equal the batch's remove
@@ -1049,7 +1001,7 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 			continue
 		}
 		res := tx.Exec("UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)",
-			int64Array(remove), s.ID, s.ID)
+			pgBigintArray(remove), s.ID, s.ID)
 		if res.Error != nil {
 			if pgCode(res.Error) == pgLockNotAvailable {
 				return fmt.Errorf("%w: %w", errReasonCounterpartBusy, res.Error)

@@ -334,7 +334,7 @@ func throttleKeyViolations(sources map[string]string) []string {
 }
 
 // throttleSQLViolations rejects login_throttles SQL and models.LoginThrottle
-// outside the listed functions, apart from literal erasure inventory metadata.
+// outside the listed functions.
 func throttleSQLViolations(sources map[string]string, allowed map[string]map[string]bool) []string {
 	parsed := guardkit.Sources(sources).Parse(0)
 	fset := parsed.Fset
@@ -344,7 +344,6 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 		// package models declares the table's struct and lists it in All(); that is
 		// the model, not a use of it. Only those two declarations are skipped.
 		inModels := pf.Dir() == "models"
-		inventoryTables := erasureInventoryTableLiterals(name, f)
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && allowed[name][fn.Name.Name] {
 				continue
@@ -364,7 +363,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			ast.Inspect(d, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.BasicLit:
-					if x.Kind != token.STRING || jobKinds[x] || inventoryTables[x] {
+					if x.Kind != token.STRING || jobKinds[x] {
 						return true
 					}
 					v, err := strconv.Unquote(x.Value)

@@ -68,8 +68,6 @@ func (a *App) messageKinds() []jobs.Kind {
 	}
 }
 
-// enqueueMessageSend queues message.send for a message scheduled at when.
-// The key carries the time (messageSendKey).
 func enqueueMessageSend(tx *gorm.DB, id uint, when time.Time) error {
 	_, err := messageSendType.Enqueue(tx, messageSendJob{MessageID: id}, when, messageSendKey(id, when))
 	return err
@@ -585,8 +583,6 @@ func markRecipient(tx *gorm.DB, id uint, status, reason, providerID, errText str
 	return tx.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", id, models.RecipientQueued).Updates(updates).Error
 }
 
-// batchReaders loads everyone a batch is for, and the teens its copies
-// are about, in one read.
 func (a *App) batchReaders(db *gorm.DB, rows []models.MessageRecipient) (map[uint]*models.User, error) {
 	ids := []uint{}
 	for _, r := range rows {
@@ -798,8 +794,6 @@ const dailyMessagesPerGroup = 5
 
 var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", fmt.Sprintf("you've sent %d messages to these people today", dailyMessagesPerGroup))
 
-// dailyLimitReached reports whether scheduling message id for when would
-// pass the limit for any group or church-wide event its audience reaches.
 func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when time.Time) (bool, error) {
 	if policy.IsAdmin(asPerson(me)) {
 		return false, nil

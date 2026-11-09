@@ -18,8 +18,8 @@ import (
 // the hash first and the address only on a NULL-hash row. A second reader that
 // compares `address = ...` or `lower(btrim(...))` again would miss hashed rows
 // the day R4-SC drops the plaintext column. So production source may name the
-// table, or models.Suppression, only inside these helpers, apart from literal
-// erasure inventory metadata; everything else goes through mail.OpenSuppressionReasons.
+// table, or models.Suppression, only inside these helpers; everything else goes through
+// mail.OpenSuppressionReasons.
 //
 // Parse-only, the same stance as the mail guard. Known limits: table names
 // built from non-literal pieces, reflection, SQL sent around GORM, dot-imports
@@ -34,133 +34,6 @@ var suppressionSQLAllowed = map[string][]string{
 
 var suppressionTableRe = regexp.MustCompile(`\b(from|join|update|into|table)\s+(public\.)?suppressions\b`)
 
-// erasureInventoryTableLiterals identifies only the Table fields of the root
-// inventory's data-only initializer. Never exempt a whole file or declaration:
-// SQL in another field, an executable initializer or a sibling declaration
-// must still pass through the SQL guards. Inventory coverage stays unchanged.
-func erasureInventoryTableLiterals(path string, tree *ast.File) map[*ast.BasicLit]bool {
-	tables := map[*ast.BasicLit]bool{}
-	if path != "erasure_inventory.go" {
-		return tables
-	}
-	stringLiteral := func(expr ast.Expr) *ast.BasicLit {
-		lit, ok := expr.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return nil
-		}
-		return lit
-	}
-	for _, decl := range tree.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.VAR {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			value, ok := spec.(*ast.ValueSpec)
-			if !ok || len(value.Names) != 1 || value.Names[0].Name != "erasureColumns" || len(value.Values) != 1 {
-				continue
-			}
-			list, ok := value.Values[0].(*ast.CompositeLit)
-			if !ok {
-				continue
-			}
-			array, ok := list.Type.(*ast.ArrayType)
-			if !ok || array.Len != nil {
-				continue
-			}
-			elem, ok := array.Elt.(*ast.Ident)
-			if !ok || elem.Name != "erasureColumn" {
-				continue
-			}
-			for _, expr := range list.Elts {
-				row, ok := expr.(*ast.CompositeLit)
-				if !ok || row.Type != nil || len(row.Elts) != 5 {
-					continue
-				}
-				plain := true
-				for _, field := range row.Elts[:4] {
-					plain = plain && stringLiteral(field) != nil
-				}
-				rules, ok := row.Elts[4].(*ast.CompositeLit)
-				if !plain || !ok {
-					continue
-				}
-				ruleType, ok := rules.Type.(*ast.ArrayType)
-				if !ok || ruleType.Len != nil {
-					continue
-				}
-				ruleElem, ok := ruleType.Elt.(*ast.Ident)
-				if !ok || ruleElem.Name != "string" {
-					continue
-				}
-				for _, rule := range rules.Elts {
-					plain = plain && stringLiteral(rule) != nil
-				}
-				if plain {
-					table := stringLiteral(row.Elts[0])
-					name, err := strconv.Unquote(table.Value)
-					if err == nil && (name == "login_throttles" || name == "suppressions" || name == "email_address_optouts") {
-						tables[table] = true
-					}
-				}
-			}
-		}
-	}
-	return tables
-}
-
-func TestSQLGuardsScopeErasureInventoryMetadata(t *testing.T) {
-	for _, guard := range []struct {
-		table, model string
-		check        func(map[string]string) []string
-	}{
-		{"login_throttles", "LoginThrottle", func(sources map[string]string) []string {
-			return throttleSQLViolations(sources, nil)
-		}},
-		{"suppressions", "Suppression", func(sources map[string]string) []string {
-			return suppressionSQLViolations(sources, nil)
-		}},
-		{"email_address_optouts", "EmailAddressOptOut", emailChoiceViolations},
-	} {
-		t.Run(guard.table, func(t *testing.T) {
-			row := fmt.Sprintf(`{%q, "id", "T01", "RET", []string{"T01"}}`, guard.table)
-			declaration := "var erasureColumns = []erasureColumn{" + row + "}\n"
-			sql := "SELECT * FROM " + guard.table
-			for _, tc := range []struct {
-				name, path, source string
-				wantViolation      bool
-			}{
-				{"literal metadata", "erasure_inventory.go", declaration, false},
-				{"same basename in another directory", "internal/erasure_inventory.go", declaration, true},
-				{"another file", "other.go", declaration, true},
-				{"another variable", "erasure_inventory.go", strings.Replace(declaration, "erasureColumns", "other", 1), true},
-				{"another row type", "erasure_inventory.go", strings.Replace(declaration, "[]erasureColumn", "[]other", 1), true},
-				{"SQL in table field", "erasure_inventory.go", strings.Replace(declaration, strconv.Quote(guard.table), strconv.Quote(sql), 1), true},
-				{"SQL in column field", "erasure_inventory.go", strings.Replace(declaration, `"id"`, strconv.Quote(sql), 1), true},
-				{"SQL in rules", "erasure_inventory.go", strings.Replace(declaration, `[]string{"T01"}`, "[]string{"+strconv.Quote(sql)+"}", 1), true},
-				{"Table call beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("func other() { db.Table(%q) }", guard.table), true},
-				{"SQL constant beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("const query = %q", sql), true},
-				{"TableName beside metadata", "erasure_inventory.go", declaration + fmt.Sprintf("func (other) TableName() string { return %q }", guard.table), true},
-				{"executable initializer", "erasure_inventory.go", "var erasureColumns = func() []erasureColumn { db.Exec(" + strconv.Quote(sql) + "); return []erasureColumn{" + row + "} }()", true},
-				{"executable row field", "erasure_inventory.go", strings.Replace(declaration, `"id"`, "func() string { db.Exec("+strconv.Quote(sql)+"); return \"id\" }()", 1), true},
-				{"computed table", "erasure_inventory.go", strings.Replace(declaration, strconv.Quote(guard.table), strconv.Quote(guard.table)+` + ""`, 1), true},
-				{"model beside metadata", "erasure_inventory.go", declaration + "func other() { _ = &models." + guard.model + "{} }", true},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					src := "package main\nimport \"fold/models\"\n" + tc.source
-					bad := guard.check(map[string]string{tc.path: src})
-					if strings.Contains(strings.Join(bad, "\n"), "parse:") {
-						t.Fatalf("invalid guard fixture: %v", bad)
-					}
-					if (len(bad) != 0) != tc.wantViolation {
-						t.Fatalf("want violation %t, got %v", tc.wantViolation, bad)
-					}
-				})
-			}
-		})
-	}
-}
-
 // suppressionSQLViolations checks parsed sources keyed by slash path from the
 // repository root. A flag outside an allowed top-level function, constant or
 // type is a violation; so is an allowed helper (outside models/) that never
@@ -174,7 +47,6 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 	seen := map[string]bool{}
 	for _, pf := range parsed.Files {
 		path, tree, src := pf.Path, pf.AST, pf.Src
-		inventoryTables := erasureInventoryTableLiterals(path, tree)
 		inModels := strings.HasPrefix(path, "models/")
 		modelNames := guardkit.ImportNames(tree, "fold/models")
 		inspect := func(owner string, node ast.Node) {
@@ -190,7 +62,7 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 				at := func() string { return fmt.Sprintf("%s:%d", path, positions.Position(n.Pos()).Line) }
 				switch n := n.(type) {
 				case *ast.BasicLit:
-					if n.Kind != token.STRING || inventoryTables[n] {
+					if n.Kind != token.STRING {
 						return true
 					}
 					text, err := strconv.Unquote(n.Value)

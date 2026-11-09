@@ -1,0 +1,1462 @@
+### signed out GET /cal/public.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:CONFIRMED
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:CONFIRMED
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:CONFIRMED
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:CONFIRMED
+SUMMARY:Private Event
+DESCRIPTION:http://localhost:8080/events/3/dates/D+16\n\nRemote atten
+ dance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:CONFIRMED
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+END:VCALENDAR
+
+### signed out GET /cal/groups/1.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Open Group
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:CONFIRMED
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:CONFIRMED
+SUMMARY:Private Event
+DESCRIPTION:http://localhost:8080/events/3/dates/D+16\n\nRemote atten
+ dance available
+LOCATION:Private Porch
+END:VEVENT
+END:VCALENDAR
+
+### signed out GET /cal/groups/2.ics -> 404
+not found
+### Ada Admin (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Ada Admin (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Lee Leader (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Lee Leader (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Mia Member (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Mia Member (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+LOCATION:Secret Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Ivy Invited (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:http://localhost:8080/events/1/dates/D+21\n\nJoin by vide
+ o: https://example.com/study-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Ivy Invited (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:CONFIRMED
+SUMMARY:Open Study
+DESCRIPTION:http://localhost:8080/events/1/dates/D+21\n\nJoin by vide
+ o: https://example.com/study-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Sam Stranger (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:CONFIRMED
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Sam Stranger (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:CONFIRMED
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Hal Host (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:CONFIRMED
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Hal Host (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:CONFIRMED
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available\n\nJoin by video: https://ex
+ ample.com/potluck-call
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Tess Teen (mine) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+
+### Tess Teen (all) GET /cal/u/<token>.ics -> 200
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Fold
+BEGIN:VTIMEZONE
+TZID:UTC
+BEGIN:STANDARD
+DTSTART:D-20766T000000
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0000
+TZNAME:UTC
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:event-1-D+7@fold
+DTSTAMP:D-1T013000Z
+DTSTART;TZID=UTC:D+7T190000
+DTEND;TZID=UTC:D+7T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+7\n\nChildcare available (0-5)
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+21@fold
+DTSTAMP:D-1T043000Z
+DTSTART;TZID=UTC:D+21T190000
+DTEND;TZID=UTC:D+21T200000
+STATUS:TENTATIVE
+SUMMARY:Open Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+21\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Open Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-1-D+28@fold
+DTSTAMP:D-1T060000Z
+DTSTART;TZID=UTC:D+28T190000
+DTEND;TZID=UTC:D+28T203000
+STATUS:TENTATIVE
+SUMMARY:Renamed Study
+DESCRIPTION:Open Study description\n\nhttp://localhost:8080/events/1/dates/
+ D+28\n\nChildcare available (0-5)\n\nJoin by video: https://example.
+ com/study-call
+LOCATION:Back Room
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+8@fold
+DTSTAMP:D-1T073000Z
+DTSTART;TZID=UTC:D+8T190000
+DTEND;TZID=UTC:D+8T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+8\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2-D+15@fold
+DTSTAMP:D-1T090000Z
+DTSTART;TZID=UTC:D+15T190000
+DTEND;TZID=UTC:D+15T200000
+STATUS:TENTATIVE
+SUMMARY:Opened Event
+DESCRIPTION:Opened Event description\n\nhttp://localhost:8080/events/2/date
+ s/D+15\n\nJoin by video: https://example.com/opened-call
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+9@fold
+DTSTAMP:D-1T103000Z
+DTSTART;TZID=UTC:D+9T190000
+DTEND;TZID=UTC:D+9T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+9\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3-D+16@fold
+DTSTAMP:D-1T120000Z
+DTSTART;TZID=UTC:D+16T190000
+DTEND;TZID=UTC:D+16T200000
+STATUS:TENTATIVE
+SUMMARY:Private Event
+DESCRIPTION:Private Event description\n\nhttp://localhost:8080/events/3/dat
+ es/D+16\n\nRemote attendance available\n\nJoin by video: https://exa
+ mple.com/private-call
+LOCATION:Private Porch
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4-D+10@fold
+DTSTAMP:D-1T133000Z
+DTSTART;TZID=UTC:D+10T190000
+DTEND;TZID=UTC:D+10T200000
+STATUS:TENTATIVE
+SUMMARY:Church Potluck
+DESCRIPTION:Church Potluck description\n\nhttp://localhost:8080/events/4/da
+ tes/D+10\n\nRemote attendance available
+LOCATION:Fellowship Hall
+END:VEVENT
+BEGIN:VEVENT
+UID:event-5-D+11@fold
+DTSTAMP:D-1T150000Z
+DTSTART;TZID=UTC:D+11T190000
+DTEND;TZID=UTC:D+11T200000
+STATUS:TENTATIVE
+SUMMARY:Staff Retreat
+DESCRIPTION:Staff Retreat description\n\nhttp://localhost:8080/events/5/dat
+ es/D+11
+END:VEVENT
+END:VCALENDAR
+

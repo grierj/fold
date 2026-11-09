@@ -2404,7 +2404,7 @@ func TestAdminDeleteGateWaitAnswersTimedOut(t *testing.T) {
 // ---------------------------------------------------------------------------
 // R4-3b-1: what the DELETE route does when a household row is busy. The
 // erasure takes its households NOWAIT and runs the whole transaction again, at
-// most three attempts inside deleteRetryWindow, sharing the request budget.
+// most three attempts inside busyRetryWindow, sharing the request budget.
 // Every test goes through the proxy so the statements the server really saw
 // (BEGIN, the NOWAIT lock, ROLLBACK) are the evidence. The both-order barriers
 // with real household writers are in account_erasure_households_test.go.

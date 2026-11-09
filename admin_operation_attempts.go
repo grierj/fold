@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -55,9 +54,8 @@ const (
 	attemptReceiptKeep  = 24 * time.Hour
 
 	// attemptSettleBudget is the whole of one settle request; the busy retry
-	// inside it follows R5-C01 (at most 3 sealed transactions within 2 s).
+	// inside it is the shared R5-C01 policy (busy_retry.go).
 	attemptSettleBudget = 10 * time.Second
-	attemptSettleTries  = 3
 
 	attemptVersionTag = "fold/admin-attempt/v1"
 )
@@ -66,10 +64,6 @@ const (
 // receipt sweep; vars so tests can shorten them (a test that sets one stays
 // serial).
 var (
-	// attemptSettleBusyWindow is how long after settle's first sealed transaction
-	// a new one may still start (R5-C01: at most 3 within 2 s). A var so a test
-	// can shorten it; a test that sets it stays serial.
-	attemptSettleBusyWindow = 2 * time.Second
 	attemptSweepBatch       = 5000
 	attemptSweepBatchBudget = 10 * time.Second
 	attemptSweepBudget      = 2 * time.Minute
@@ -440,10 +434,9 @@ func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) 
 
 // deletionSeal is the seal of the admin account deletion: the actor is decided
 // on the locked row as the last locking statement before COMMIT. pred is the
-// caller's variable, read when the seal runs: set when the account has
-// contact-request reasons (the locked actor must be allowed to review them),
-// nil otherwise.
-func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *contactSeal {
+// attempt's reason plan's predicate: set when the account has contact-request
+// reasons (the locked actor must be allowed to review them), nil otherwise.
+func (a *App) deletionSeal(me *models.User, pred func(*models.User) bool) *contactSeal {
 	return &contactSeal{run: func(tx *gorm.DB) error {
 		if a.hooks.sealAttempts != nil {
 			a.hooks.sealAttempts.Add(1)
@@ -451,7 +444,7 @@ func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *cont
 		if a.hooks.deleteBeforeSeal != nil {
 			a.hooks.deleteBeforeSeal(tx)
 		}
-		return currentAdminIn(tx, me, *pred)
+		return currentAdminIn(tx, me, pred)
 	}}
 }
 
@@ -462,16 +455,14 @@ func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *cont
 // process, a restart, another tuple). A replay of an applied deletion therefore
 // reads as "this attempt was used" and the panel settles it, while a missing
 // target with an unclaimed id of its own tuple still answers 404 and records
-// nothing (nothing ran and the id was never claimed).
-func (a *App) adminDeletionTarget(c *gin.Context, me *models.User) (*models.User, bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var u models.User
-	if err := a.DB.First(&u, id).Error; err != nil {
-		var body struct {
-			AttemptID string `json:"attemptId"`
-		}
-		if c.ShouldBindJSON(&body) == nil && body.AttemptID != "" {
-			nonce, _, ok := a.openAttempt(body.AttemptID, attemptKindAccountDelete, me.ID, uint(max(id, 0)))
+// nothing (nothing ran and the id was never claimed). attemptID is the one id
+// readDeleteUserBody found; a body that did not parse or named it
+// ambiguously gives none, so it answers 404 too.
+func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID string) (*models.User, bool) {
+	u, id := a.loadTargetUser(c)
+	if u == nil {
+		if attemptID != "" {
+			nonce, _, ok := a.openAttempt(attemptID, attemptKindAccountDelete, me.ID, uint(max(id, 0)))
 			if !ok {
 				// Not this process's id for this admin and account: the
 				// submission rule's first step, before any lookup.
@@ -486,7 +477,7 @@ func (a *App) adminDeletionTarget(c *gin.Context, me *models.User) (*models.User
 		jsonError(c, http.StatusNotFound, "user not found")
 		return nil, false
 	}
-	return &u, true
+	return u, true
 }
 
 // --- mint and settle routes --------------------------------------------------
@@ -546,8 +537,8 @@ type settleFacts struct {
 // apiAdminSettleOperationAttempt answers what became of an attempt id. Order:
 // pure mac and age checks (history_unavailable, nothing touched); a read-only
 // ledger look (a running attempt is waited for outside every lock and
-// transaction); then one fenced transaction whose callback is the ticket, then
-// the wrapper's reconcile of the subject, then the seal: the actor decided
+// transaction); then one fenced transaction (fencedContactMutation) whose
+// callback adds nothing after the ticket, then the wrapper's reconcile of the subject, then the seal: the actor decided
 // FOR SHARE NOWAIT, the ledger transition (absent -> fenced), and plain reads
 // of the receipt and the subject. The answer is sent only after the call
 // returns nil, an acknowledged COMMIT. The response carries no actor,
@@ -577,8 +568,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), attemptSettleBudget)
 	defer cancel()
-	started := time.Now()
-	sealed := 0
+	retry := newBusyRetry(ctx)
 	for {
 		// s2: a running attempt is waited for with no transaction, gate or lock.
 		if st, done := a.attempts.ledger.look(nonce); st == attemptRunning && done != nil {
@@ -618,16 +608,10 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			}
 			return tx.Raw("SELECT EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NOT NULL)", subject).Scan(&facts.subjectDeleted).Error
 		}}
-		var tk restoreTicket
-		var terr error
-		defer a.abandonRestoreTicket(&tk)
-		err := a.contactMutationCtx(ctx, contactChange{UserID: body.SubjectUserID, Seal: seal}, func(tx *gorm.DB) error {
-			if tk, terr = a.takeRestoreTicket(tx); terr != nil {
-				return terr
-			}
-			return nil
+		// Nothing runs after the ticket but the seal: settle's work is the seal.
+		err := a.fencedContactMutation(ctx, contactChange{UserID: body.SubjectUserID}, func(*gorm.DB) (*contactSeal, error) {
+			return seal, nil
 		})
-		a.acknowledgeRestoreTicket(&tk, err)
 		switch {
 		case err == nil:
 			c.JSON(http.StatusOK, settleAnswer(facts))
@@ -645,20 +629,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			// Back to the wait: the attempt is running.
 			continue
 		case errors.Is(err, errActorBusy) && rollbackConfirmed(err):
-			sealed++
-			if sealed >= attemptSettleTries || time.Since(started) >= attemptSettleBusyWindow {
-				c.JSON(http.StatusOK, attemptSettleJSON{Result: settleChecking})
-				return
-			}
-			timer := time.NewTimer(householdRetryBackoff[sealed-1])
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
-			// The window is checked again after the backoff: a transaction never
-			// starts once it has closed, however the wait was spent.
-			if ctx.Err() != nil || time.Since(started) >= attemptSettleBusyWindow {
+			if again, _ := retry.again(); !again {
 				c.JSON(http.StatusOK, attemptSettleJSON{Result: settleChecking})
 				return
 			}

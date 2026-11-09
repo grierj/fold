@@ -38,7 +38,7 @@ func newErasureReport(h householdErasureCounts, a auditErasureCounts) erasureRep
 			kept += count
 		}
 	}
-	// MalformedConversionLinksRetained is already a subset of RETAIN_*.
+	// A malformed conversion nomination is counted under RETAIN_UNATTRIBUTED.
 	// Conversion rows have a separate class, so these totals do not overlap.
 	return erasureReportJSON{
 		HouseholdsKept: h.HouseholdsKept, HouseholdsScrubbed: h.HouseholdsScrubbed,

@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// requestStartKey holds the time stampRequestStart saw the request.
 const requestStartKey = "requestStart"
 
 // stampRequestStart records when the request reached the router, before any

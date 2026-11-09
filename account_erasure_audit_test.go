@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,18 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// malformedConversionLinksRetained counts the malformed conversion
+// nominations reported under admin uid that still hold an IP: a subset of
+// RETAIN_UNATTRIBUTED, read here so the erasure itself sends no extra query.
+func malformedConversionLinksRetained(t *testing.T, db *gorm.DB, uid uint) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Raw("SELECT count(*) FROM audit_logs WHERE ip <> '' AND ("+auditMalformedConversionLink+")", sql.Named("uid", uid)).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
 
 func runAuditErasure(t *testing.T, db *gorm.DB, s erasureSubject) auditErasureCounts {
 	t.Helper()
@@ -215,7 +228,7 @@ func removedNonempty(m map[uint][]string) []uint {
 func TestAuditErasureReportRetainedTotals(t *testing.T) {
 	h := householdErasureCounts{HouseholdsKept: 1, HouseholdsScrubbed: 2, PeopleAnonymized: 3, GuardianLinksRevoked: 4}
 	a := auditErasureCounts{
-		IPsBlanked: 90, MetadataRowsScrubbed: 80, MalformedConversionLinksRetained: 2,
+		IPsBlanked: 90, MetadataRowsScrubbed: 80,
 		KeptByClassAndAction: map[auditIPClass]map[string]int64{
 			auditIPRetainEssential:    {"fixture.essential": 3},
 			auditIPRetainUnattributed: {audit.GuardianLinkRequested: 2, "fixture.unknown": 4},
@@ -642,14 +655,41 @@ func editAuditCandidate(t *testing.T, f auditAdultFixture, action string, mutate
 	changeAuditCandidate(t, f, action, false, mutate)
 }
 
+// classifyEstablishedConversion is V4, which production never runs while G-8
+// is disabled: a group that passes V0-V3 is classified by the one converted
+// row's account type. Pure classification; nothing writes rows.
+func classifyEstablishedConversion(r auditConversionRequestRow, rows []models.AuditLog) auditConversionGroupCounts {
+	out := classifyAuditConversion(r, rows)
+	if out.Reason != "history_unestablished" {
+		return out
+	}
+	var accountType string
+	for _, row := range rows {
+		if row.Action == audit.HouseholdPersonConverted {
+			var meta map[string]json.RawMessage
+			_ = json.Unmarshal([]byte(row.MetaJSON), &meta)
+			_ = json.Unmarshal(meta["accountType"], &accountType)
+		}
+	}
+	switch {
+	case accountType == "teen" || (accountType == "adult" && r.Marker):
+		out.Reason = "completion"
+	case accountType != "adult":
+		out.Reason = "unclassified"
+	default:
+		out.Reason = "approval"
+	}
+	return out
+}
+
 func TestAuditConversionV0ThroughV4Classification(t *testing.T) {
 	f := newAuditAdultFixture(t)
 	input := auditGroupInput(f)
 	for _, history := range []bool{false, true} {
-		got := classifyAuditConversion(input, f.rows, history)
+		got := classifyAuditConversion(input, f.rows)
 		want := "history_unestablished"
 		if history {
-			want = "approval"
+			got, want = classifyEstablishedConversion(input, f.rows), "approval"
 		}
 		if got.Reason != want || got.TransferCount != 2 || got.ConvertedFound != 1 || got.TransfersFound != 2 {
 			t.Fatalf("V3/V4: %+v", got)
@@ -688,18 +728,18 @@ func TestAuditConversionV0ThroughV4Classification(t *testing.T) {
 			}
 			r := input
 			r.Marker = tc.marker
-			got := classifyAuditConversion(r, rows, true)
+			got := classifyEstablishedConversion(r, rows)
 			if got.Reason != tc.reason {
 				t.Fatalf("V4 %+v", got)
 			}
-			if got := classifyAuditConversion(r, rows, false); got.Reason != "history_unestablished" {
+			if got := classifyAuditConversion(r, rows); got.Reason != "history_unestablished" {
 				t.Fatalf("V3 must precede V4: %+v", got)
 			}
 		})
 	}
 	// Unknown household skips only arm d, not shape validation or identity arms.
 	input.HouseholdID = nil
-	got := classifyAuditConversion(input, f.rows, false)
+	got := classifyAuditConversion(input, f.rows)
 	if got.HouseholdFallbackSkipped != 1 || got.Reason != "history_unestablished" {
 		t.Fatalf("missing household: %+v", got)
 	}
@@ -806,7 +846,7 @@ func TestAuditErasureTeenRealLifecycles(t *testing.T) {
 			}
 			h := f.person.HouseholdID
 			r := auditConversionRequestRow{PersonID: f.person.ID, InvitationID: *f.request.InvitationID, UserID: f.user.ID, HouseholdID: &h, Marker: lifecycle == "L3" || lifecycle == "L4"}
-			if got := classifyAuditConversion(r, rows, true); got.Reason != "completion" {
+			if got := classifyEstablishedConversion(r, rows); got.Reason != "completion" {
 				t.Fatalf("current-history classification %+v", got)
 			}
 			before := dumpRows(t, app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged)
@@ -832,7 +872,8 @@ var auditWriterCensus = map[string]string{
 	// System maintenance: no actor or IP, fixed host-removal metadata and a
 	// version/count-only sweep marker. The two existing erasure writers now
 	// accept a nil system actor, preserving their nonzero admin attribution.
-	"account_erasure_tombstones.go:eraseTombstoneOnce":      "330d5e241aaacac7e1006fac835afd5b17c2a60b3a98b20dc872f94801529504",
+	"account_erasure_tombstones.go:eraseTombstoneOnce":      "275b68295526163c3a5a0f45ca6cc5f1ac1a1c262e8ed8ebd8524be1bdd33a04",
+	"account_erasure.go:eraseAccountIn":                     "1b081dbae07a9d40b613a3c0df8b072777f7e3653d98cb2d8dc28b06c4266d57",
 	"account_erasure.go:eraseMessagesIn":                    "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
 	"account_erasure_households.go:eraseHouseholdRecordsIn": "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
 	// T07B-2b: the page-view row of the reason review (no IP, actor the admin;
@@ -845,7 +886,6 @@ var auditWriterCensus = map[string]string{
 	"api_account_requests.go:expirePendingRequests":               "b30d60d413fdc04420d5ef85fed5141945bbad23cd3c882a19a4e160d067446f",
 	"api_account_requests.go:storeAccountRequest":                 "a2a12aeb0ea4183b87c6773c1b5ba0f75b74d9bc2296be8c6edf2c4070aef3ec",
 	"api_admin.go:apiAdminCreateUser":                             "6d94b5f538e0ac21ef2812e65b5bf9dd6da4434ebf5635c0fbeb6e8df06ec1c4",
-	"api_admin.go:apiAdminDeleteUser":                             "beda70946e599d9df50effed52b98044534ae7c33f90272ec47c9c3b7d371db2",
 	"api_admin.go:apiAdminResetPassword":                          "a5986e9dbf1710c87fec4483407977aa9f587bc64c8619363aef2f26d72c514f",
 	"api_admin.go:apiAdminUpdateUser":                             "aa7bd3e1f541a1b039858f6a2397cadde395e6932b29952892e4f8b5af0c808c",
 	"api_admin_groups.go:decideGroup":                             "faa6da1ee041b4d39f734458a51662ca5be8359d0ebc31c4a8e811ac897c1f2f",
@@ -881,8 +921,8 @@ var auditWriterCensus = map[string]string{
 	"api_handoff.go:demoteEverywhere":                             "3942c7789f1b83307e31f2d2cda7354ea0f7e59338749e79a4f46afca124c159",
 	"api_handoff.go:handOffLeadership":                            "393728be02db620976ea271722aca2900d1fd6fbf558b85cb4c7d3959f265c08",
 	"api_handoff.go:restoreMemberships":                           "7e5274985450108d91a71e530fe4d6256b0a330c3361cff5a271bfb0cf037773",
-	"api_host_handoff.go:handOffHosting":                          "53914ec57672b0fb64eb4f599b0c84df94da0f98985fb4ac5541c1081831a925",
-	"api_host_handoff.go:removeDeletedHostRows":                   "911f1f768d2205b4e9a240a9cf89a1a62455be0e420f152285a9917e52edc79d",
+	"api_host_handoff.go:handOffHosting":                          "93a50176317d4e93ff841272aef57f58ebecc26f8aa682ce85787ebd38232772",
+	"api_host_handoff.go:deleteHostRowsAudited":                   "e4840ae49c5b95f68150584f85c36abeed2bf195f0f91c7ae3f764bb2fe72277",
 	"api_household_conversion.go:acceptHouseholdConversion":       "6cc4414eef3eb20cd4c91809c39acac928e40ff1cfe0fedb0bc0b24d9c603e26",
 	"api_household_conversion.go:approveHouseholdConversion":      "cfcbf9731a399602d784713f4057943e87cba061ccc8bdabacb603d5b2574d3e",
 	"api_household_conversion.go:createConversionApprovalRequest": "b3446035530b204e0fd55527ba5da2ddd14c3e619cf3c50141aaec152b9fdd29",
@@ -1201,8 +1241,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 113 {
-		t.Fatalf("audit.Write sites = %d, expected 113; review every changed site", len(c.Sites))
+	if len(c.Sites) != 111 {
+		t.Fatalf("audit.Write sites = %d, expected 111; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)
@@ -1388,19 +1428,19 @@ func TestAuditErasureMalformedConversionNominationSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if out.MalformedConversionLinksRetained != 1 || out.BlankedByClass[auditIPCApproval] != 1 || out.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 1 {
+	if malformedConversionLinksRetained(t, app.DB, d.ID) != 1 || out.BlankedByClass[auditIPCApproval] != 1 || out.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 1 {
 		t.Fatalf("sibling report: %+v", out)
 	}
 	assertAuditErasureRows(t, app.DB, []models.AuditLog{good, bad}, map[uint]bool{good.ID: true}, nil)
 	again := runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if again.IPsBlanked != 0 || again.MalformedConversionLinksRetained != 1 {
+	if again.IPsBlanked != 0 || malformedConversionLinksRetained(t, app.DB, d.ID) != 1 {
 		t.Fatalf("retry sibling counts %+v", again)
 	}
 	if err := app.DB.Model(&bad).Update("ip", "").Error; err != nil {
 		t.Fatal(err)
 	}
 	again = runAuditErasure(t, app.DB, erasureSubject{ID: d.ID})
-	if again.MalformedConversionLinksRetained != 0 || again.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 0 {
+	if malformedConversionLinksRetained(t, app.DB, d.ID) != 0 || again.KeptByClassAndAction[auditIPRetainUnattributed][audit.GuardianLinkRequested] != 0 {
 		t.Fatalf("empty malformed IP still counted: %+v", again)
 	}
 }

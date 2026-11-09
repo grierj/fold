@@ -80,7 +80,6 @@ func (a *App) postmarkEmailHook(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-// eventKinds are the jobs queued by outside events rather than the clock.
 func (a *App) eventKinds() []jobs.Kind {
 	return []jobs.Kind{{Type: emailEventType, Label: "Recording an email delivery report",
 		Run: func(ctx context.Context, payload json.RawMessage) error {

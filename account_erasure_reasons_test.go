@@ -77,11 +77,11 @@ func TestParseRequestID(t *testing.T) {
 }
 
 func TestInt64Array(t *testing.T) {
-	if got := int64Array([]int64{-9223372036854775808, -1, 0, 9223372036854775807}); got != "{-9223372036854775808,-1,0,9223372036854775807}" {
-		t.Errorf("int64Array = %s", got)
+	if got := pgBigintArray([]int64{-9223372036854775808, -1, 0, 9223372036854775807}); got != "{-9223372036854775808,-1,0,9223372036854775807}" {
+		t.Errorf("pgBigintArray = %s", got)
 	}
-	if got := int64Array(nil); got != "{}" {
-		t.Errorf("int64Array(nil) = %s", got)
+	if got := pgBigintArray[int64](nil); got != "{}" {
+		t.Errorf("pgBigintArray(nil) = %s", got)
 	}
 }
 
@@ -224,8 +224,8 @@ func TestLiveReasonFilter(t *testing.T) {
 		{"blank reason", reasonSource{ID: 1, RequesterID: 5, SubjectUserID: 6}, 0},
 		{"another account's request", reasonSource{ID: 1, RequesterID: 6, SubjectUserID: 7, HasReason: true}, 0},
 	} {
-		if got := f(tc.s); len(got) != tc.want || (tc.want == 1 && got[0] != 5) {
-			t.Errorf("%s: parties %v, want %d", tc.name, got, tc.want)
+		if got := f(tc.s); got != (tc.want == 1) {
+			t.Errorf("%s: item %v, want %d", tc.name, got, tc.want)
 		}
 	}
 }
@@ -325,7 +325,7 @@ func TestReasonProjectionAgainstPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen []reasonRow
-	if err := scanReasonRows(rows, testReasonKey([]byte("k")), 1, 2, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
+	if err := scanReasonRowsWith(rows, testReasonKey([]byte("k")), 1, 2, true, nil, func(rr reasonRow) error { seen = append(seen, rr); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 1 || seen[0].ID != int64(r.ID) || seen[0].Purpose != policy.RequestGroupAdd || seen[0].Reason != r.Reason || !validReviewHash(seen[0].Hash) {
@@ -679,7 +679,7 @@ func TestReasonReviewDeleteExactSet(t *testing.T) {
 				t.Fatal(err)
 			}
 			var items []reasonItemJSON
-			if err := scanReasonRows(rows, testReasonKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), func(r reasonRow) error {
+			if err := scanReasonRowsWith(rows, testReasonKey(p.s.app.Config.SessionSecret), int64(p.s.admin.ID), int64(p.s.other.ID), true, nil, func(r reasonRow) error {
 				items = append(items, reasonItemJSON{RequestID: strconv.FormatInt(r.ID, 10), ReviewHash: r.Hash})
 				return nil
 			}); err != nil {
@@ -1716,7 +1716,7 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 	if rollbackConfirmed(unacknowledged) || !errors.Is(unacknowledged, errReasonCounterpartBusy) {
 		t.Fatal("an unacknowledged rollback must not be retried, and must still name the cause")
 	}
-	retry := newHouseholdRetry(context.Background())
+	retry := newDeleteRetry(context.Background())
 	if again, _ := retry.after(&contactCommitError{Cause: err}); again {
 		t.Error("a COMMIT error was retried")
 	}
@@ -1737,8 +1737,8 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 //   - auditReaders: functions that read audit_logs (a SELECT literal over the
 //     table, or a models.AuditLog model passed to a query), the readers that
 //     must never scan a signed decision target into a uint (R4-C04);
-//   - gatedFenced: callers of a.contactMutationCtx, the fenced exclusive-gate
-//     transactions.
+//   - gatedFenced: callers of a.contactMutationCtx and a.fencedContactMutation,
+//     the deadline-bounded exclusive-gate transactions.
 //
 // It reads syntax only. Like the other guards it does not see SQL built from
 // non-literal pieces, SQL sent around GORM or a model reached through another
@@ -1793,7 +1793,7 @@ func reasonCensus(sources map[string]string) map[string][]string {
 						return true
 					}
 					switch sel.Sel.Name {
-					case "contactMutationCtx":
+					case "contactMutationCtx", "fencedContactMutation":
 						out["gatedFenced"][site] = true
 					case "Create", "Save", "Update", "Updates", "UpdateColumn", "UpdateColumns", "Delete":
 						for _, arg := range x.Args {
@@ -1876,12 +1876,13 @@ func TestReasonReviewCensus(t *testing.T) {
 	}
 	// The pin sees a new site of each kind.
 	for name, src := range map[string]struct{ kind, code string }{
-		"a new row locker":    {"rowLockers", "package main\nfunc newLocker(tx *gorm.DB) { tx.Raw(\"SELECT id FROM contact_requests WHERE id = ? FOR UPDATE\", 1) }\n"},
-		"a new request write": {"requestWriters", "package main\nfunc newWriter(tx *gorm.DB) { tx.Exec(\"UPDATE contact_requests SET status = 'x'\") }\n"},
-		"a model write":       {"requestWriters", "package main\nfunc newModelWriter(tx *gorm.DB) { tx.Create(&models.ContactRequest{}) }\n"},
-		"a new audit reader":  {"auditReaders", "package main\nfunc newReader(tx *gorm.DB) { tx.Raw(\"SELECT target_id FROM audit_logs\").Scan(&ids) }\n"},
-		"a model audit read":  {"auditReaders", "package main\nfunc newModelReader(tx *gorm.DB) { tx.Model(&models.AuditLog{}).Count(&n) }\n"},
-		"a new fenced caller": {"gatedFenced", "package main\nfunc (a *App) newFenced() { a.contactMutationCtx(ctx, change, fn) }\n"},
+		"a new row locker":     {"rowLockers", "package main\nfunc newLocker(tx *gorm.DB) { tx.Raw(\"SELECT id FROM contact_requests WHERE id = ? FOR UPDATE\", 1) }\n"},
+		"a new request write":  {"requestWriters", "package main\nfunc newWriter(tx *gorm.DB) { tx.Exec(\"UPDATE contact_requests SET status = 'x'\") }\n"},
+		"a model write":        {"requestWriters", "package main\nfunc newModelWriter(tx *gorm.DB) { tx.Create(&models.ContactRequest{}) }\n"},
+		"a new audit reader":   {"auditReaders", "package main\nfunc newReader(tx *gorm.DB) { tx.Raw(\"SELECT target_id FROM audit_logs\").Scan(&ids) }\n"},
+		"a model audit read":   {"auditReaders", "package main\nfunc newModelReader(tx *gorm.DB) { tx.Model(&models.AuditLog{}).Count(&n) }\n"},
+		"a new fenced caller":  {"gatedFenced", "package main\nfunc (a *App) newFenced() { a.contactMutationCtx(ctx, change, fn) }\n"},
+		"a new wrapper caller": {"gatedFenced", "package main\nfunc (a *App) newWrapped() { a.fencedContactMutation(ctx, change, fn) }\n"},
 	} {
 		with := map[string]string{"new_site.go": src.code}
 		for k, v := range sources {
@@ -1912,11 +1913,12 @@ func TestReasonReviewCensus(t *testing.T) {
 // auditReaders, each shown not to read the new decision rows (targets
 // contact_request and add_request, actions contact.reason_* and add.reason_*)
 // into a uint: captureErasureSetsIn, discoverAuditConversionsIn,
-// eraseTombstoneOnce, flagHouseholdChild13, rolloverAges,
+// tombstoneSweptSQL (the sweep marker, read by eraseTombstoneOnce and the
+// candidate page), flagHouseholdChild13, rolloverAges,
 // previouslyRegisteredPerson, loadAccessHistory and appendRecoverableRegistrations
 // filter to other actions or target types; conversionInviterDisabled,
 // inviteSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
-// count; eraseAuditDetailsIn updates and aggregates in SQL (the five new actions
+// count; eraseAuditDetailsIn updates in SQL and auditRetentionReportSQL aggregates (the five new actions
 // are classified in auditIPAttribution); contactHistoryQuery selects only the
 // actions in contactHistoryActions, which has no decision action.
 //
@@ -1940,8 +1942,7 @@ var reasonCensusPinned = map[string][]string{
 		"account_erasure.go:captureErasureSetsIn",
 		"account_erasure_audit.go:auditRetentionReportSQL",
 		"account_erasure_audit.go:discoverAuditConversionsIn",
-		"account_erasure_audit.go:eraseAuditDetailsIn",
-		"account_erasure_tombstones.go:eraseTombstoneOnce",
+		"account_erasure_tombstones.go:tombstoneSweptSQL",
 		"age_rollover.go:flagHouseholdChild13",
 		"age_rollover.go:rolloverAges",
 		"api_contact_history.go:contactHistoryQuery",
@@ -1958,6 +1959,7 @@ var reasonCensusPinned = map[string][]string{
 		"account_erasure_tombstones.go:eraseTombstoneOnce",
 		"admin_operation_attempts.go:apiAdminSettleOperationAttempt",
 		"api_admin.go:apiAdminDeleteUser",
+		"restore_fence.go:fencedContactMutation",
 	},
 }
 
@@ -1975,9 +1977,9 @@ var reasonCensusPinned = map[string][]string{
 // outside the 100 ms window.
 func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 	const window = 100 * time.Millisecond
-	old := reasonBusyWindow
-	reasonBusyWindow = window
-	t.Cleanup(func() { reasonBusyWindow = old })
+	old := busyRetryWindow
+	busyRetryWindow = window
+	t.Cleanup(func() { busyRetryWindow = old })
 	s := newProxiedAttemptScene(t)
 	target, other := s.target("window-target"), s.target("window-other")
 	erasureMakeRequest(t, s.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, other.ID, target.ID, 1, 0, 0, 1, "")
@@ -3494,7 +3496,7 @@ func TestReasonConsumeMemoryDoesNotScaleWithClaim(t *testing.T) {
 			err := s.app.DB.Transaction(func(tx *gorm.DB) error {
 				env := reasonEnvelope{kind: reasonEnvelopeNew, count: claim, choices: choices}
 				var err error
-				used = allocated(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+				used = allocated(func() { _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
 				if !errors.Is(err, errReasonReviewChanged) {
 					t.Fatalf("claim of %d: %v, want errReasonReviewChanged", claim, err)
 				}
@@ -3601,7 +3603,7 @@ func TestReasonConsumePeakMemoryOnLargeSets(t *testing.T) {
 		env := reasonEnvelope{kind: reasonEnvelopeNew, count: uint64(n), choices: make([]byte, (n+3)/4)}
 		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
 			var err error
-			p.consume = peakHeapGrowth(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+			p.consume = peakHeapGrowth(func() { _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
 			if !errors.Is(err, errReasonReviewChanged) {
 				t.Fatalf("consume of %d: %v, want errReasonReviewChanged", n, err)
 			}
@@ -4446,3 +4448,7 @@ func testReasonKey(secret []byte) []byte {
 	}
 	return k
 }
+
+// reasonHashExcluded are the contact_requests columns the review hash leaves
+// out, and why (see reasonColumns).
+var reasonHashExcluded = []string{"add_childcare_ages_note"}

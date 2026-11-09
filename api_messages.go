@@ -40,9 +40,8 @@ type messageJSON struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 	// Error says why it failed, or why some people didn't get it (M3.5):
 	// the pipeline's words or the provider's error, never an address.
-	Error string `json:"error"`
-	// FailedCount is how many people a send failed for: "Partly sent".
-	FailedCount int `json:"failedCount"`
+	Error       string `json:"error"`
+	FailedCount int    `json:"failedCount"`
 	// Category is announcement, or reminder for an automatic event
 	// reminder (M3.6), which has no author and is never editable.
 	Category string `json:"category"`
@@ -241,7 +240,6 @@ func messageErrorFor(stored string, admin bool) string {
 	return whyProvider
 }
 
-// respondMessage re-reads m and answers with it.
 func (a *App) respondMessage(c *gin.Context, status int, m *models.Message, extra gin.H) {
 	if err := a.DB.First(m, m.ID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
@@ -898,7 +896,6 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 
 var errLocked = errors.New("message locked")
 
-// apiCancelMessage stops a draft or a scheduled message for good.
 func (a *App) apiCancelMessage(c *gin.Context) {
 	m, ok := a.loadOwnMessage(c)
 	if !ok || !editable(c, m) {

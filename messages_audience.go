@@ -20,7 +20,6 @@ import (
 // and works out who it reaches, with the counts the composer shows. M3.5's
 // sender resolves it again at send time.
 
-// audienceJSON is one PLAN 7.2 audience.
 type audienceJSON struct {
 	Type         string   `json:"type"`
 	OccurrenceID uint     `json:"occurrenceId,omitempty"`
@@ -32,7 +31,6 @@ type audienceJSON struct {
 	Roles        []string `json:"roles,omitempty"`
 }
 
-// Bounds on what one audience may name.
 const (
 	maxAudienceEvents = 50
 	maxAudienceUsers  = 500
@@ -118,8 +116,6 @@ func (au *audienceJSON) canonical() {
 	*au = c
 }
 
-// eventIDs are the events an event audience names, after loading the
-// occurrence's event for an occurrence audience.
 func (a *App) audienceEventIDs(db *gorm.DB, au audienceJSON) ([]uint, error) {
 	switch au.Type {
 	case policy.AudienceOccurrence:

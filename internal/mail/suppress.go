@@ -34,7 +34,6 @@ type Suppressing struct {
 	db    *gorm.DB
 }
 
-// WithSuppressions wraps inner with the suppression check.
 func WithSuppressions(db *gorm.DB, inner Sender) *Suppressing {
 	return &Suppressing{inner: inner, db: db}
 }
@@ -53,7 +52,6 @@ func (s *Suppressing) SendEmail(ctx context.Context, m Message) (string, error) 
 	return s.inner.SendEmail(ctx, m)
 }
 
-// IsSuppressed reports whether err is a refused send to a suppressed address.
 func IsSuppressed(err error) bool {
 	var s *ErrSuppressed
 	return errors.As(err, &s)

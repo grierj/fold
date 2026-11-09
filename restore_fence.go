@@ -28,12 +28,15 @@ import (
 //
 //   - bootRestoreFence runs once at start, after migrations and before the
 //     router: its acknowledged COMMIT is the first floor.
+//   - fencedContactMutation is the only way to run a fenced transaction. It
+//     takes the ticket as the first statement of the callback, runs the
+//     caller's work, hands the caller's actor seal to contactMutationCtx, and
+//     right after the call acknowledges or abandons the ticket:
 //   - takeRestoreTicket takes the fence turn (one holder at a time, selected
 //     against the transaction's context), then increments the counter.
-//   - acknowledgeRestoreTicket, the statement right after the
-//     a.contactMutationCtx call, raises the floor when the call returned nil,
-//     then releases the turn. abandonRestoreTicket (deferred before the call)
-//     releases a still-held turn and raises nothing.
+//   - acknowledgeRestoreTicket raises the floor when the call returned nil,
+//     then releases the turn. abandonRestoreTicket (deferred) releases a
+//     still-held turn and raises nothing.
 //
 // Lock order is exclusive contact gate -> turn -> settings row. The turn keeps
 // each COMMIT-to-acknowledgment interval ahead of later ticket reads, so a
@@ -56,8 +59,17 @@ import (
 // restore tooling and operator procedure land and are verified.
 const recoveryPolicyLevel = 2
 
-// restoreFenceKey is the settings row that holds the counter.
+// restoreFenceKey is the settings row that holds the counter. It is bound as
+// the parameter of the two statements below, which only the two writers run.
 const restoreFenceKey = "restore_fence"
+
+// restoreFenceCreateSQL creates the counter at zero if it is absent, and
+// restoreFenceAdvanceSQL adds one to it and returns the new value. Each takes
+// the key as its one parameter.
+const (
+	restoreFenceCreateSQL  = "INSERT INTO settings (key, value) VALUES (?, '0') ON CONFLICT (key) DO NOTHING"
+	restoreFenceAdvanceSQL = "UPDATE settings SET value = (value::bigint + 1)::text WHERE key = ? RETURNING value::bigint"
+)
 
 // errRestoreDetected: the counter is at or below the floor, or its row is gone,
 // so the database was restored under the running process. The transaction
@@ -129,10 +141,10 @@ func (a *App) bootRestoreFence() error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrations.LockID).Error; err != nil {
 			return err
 		}
-		if err := tx.Exec("INSERT INTO settings (key, value) VALUES ('restore_fence', '0') ON CONFLICT (key) DO NOTHING").Error; err != nil {
+		if err := tx.Exec(restoreFenceCreateSQL, restoreFenceKey).Error; err != nil {
 			return err
 		}
-		res := tx.Raw("UPDATE settings SET value = (value::bigint + 1)::text WHERE key = 'restore_fence' RETURNING value::bigint").Scan(&v)
+		res := tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey).Scan(&v)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -187,7 +199,7 @@ func (a *App) takeRestoreTicket(tx *gorm.DB) (restoreTicket, error) {
 	}
 	tk := restoreTicket{a: a, held: true}
 	var v int64
-	res := tx.Raw("UPDATE settings SET value = (value::bigint + 1)::text WHERE key = 'restore_fence' RETURNING value::bigint").Scan(&v)
+	res := tx.Raw(restoreFenceAdvanceSQL, restoreFenceKey).Scan(&v)
 	if res.Error != nil {
 		tk.release()
 		return restoreTicket{}, res.Error
@@ -210,7 +222,7 @@ func (tk *restoreTicket) release() {
 }
 
 // acknowledgeRestoreTicket is the statement right after the a.contactMutationCtx
-// call. Only a nil result with a taken ticket raises the floor to the ticket's
+// call in fencedContactMutation. Only a nil result with a taken ticket raises the floor to the ticket's
 // value (the COMMIT was acknowledged); then the turn is released. Every error,
 // an unknown COMMIT included, raises nothing. Idempotent.
 func (a *App) acknowledgeRestoreTicket(tk *restoreTicket, err error) {
@@ -226,7 +238,7 @@ func (a *App) acknowledgeRestoreTicket(tk *restoreTicket, err error) {
 	tk.release()
 }
 
-// abandonRestoreTicket is deferred before the call. It releases a turn still
+// abandonRestoreTicket is deferred by fencedContactMutation before the call. It releases a turn still
 // held (a panic, or a path that never acknowledged) and raises nothing.
 // Idempotent.
 func (a *App) abandonRestoreTicket(tk *restoreTicket) {
@@ -234,4 +246,46 @@ func (a *App) abandonRestoreTicket(tk *restoreTicket) {
 		return
 	}
 	tk.release()
+}
+
+// errFenceUnsealed: a fenced callback returned no actor seal. Every fenced
+// transaction decides its actor last (R5-C01), so this is a programming error
+// and the transaction rolls back.
+var errFenceUnsealed = errors.New("a fenced transaction returned no actor seal")
+
+// fencedContactMutation is the only way to run a fenced transaction (the
+// admin account deletion and the settle route). It is a.contactMutationCtx
+// with the restore ticket around it:
+//
+//   - the ticket is the callback's first statement, on the callback's own
+//     transaction, before fn runs;
+//   - fn returns the actor seal; contactMutationOn runs it after
+//     reconcileContacts as the last locking statement before COMMIT;
+//   - right after the call the ticket is acknowledged with the call's own
+//     result, so the floor is raised only on an acknowledged COMMIT, and only
+//     then is the turn released;
+//   - on every other path (a panic included) the deferred abandon releases a
+//     still-held turn and raises nothing.
+//
+// A caller that retries calls it again: each call takes a fresh ticket.
+func (a *App) fencedContactMutation(ctx context.Context, change contactChange, fn func(tx *gorm.DB) (*contactSeal, error)) error {
+	var tk restoreTicket
+	defer a.abandonRestoreTicket(&tk)
+	var seal *contactSeal
+	change.Seal = &contactSeal{run: func(tx *gorm.DB) error {
+		if seal == nil {
+			return errFenceUnsealed
+		}
+		return seal.run(tx)
+	}}
+	err := a.contactMutationCtx(ctx, change, func(tx *gorm.DB) error {
+		var err error
+		if tk, err = a.takeRestoreTicket(tx); err != nil {
+			return err
+		}
+		seal, err = fn(tx)
+		return err
+	})
+	a.acknowledgeRestoreTicket(&tk, err)
+	return err
 }

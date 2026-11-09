@@ -27,33 +27,13 @@ func (a *App) groupShownTo(me *models.User, g *models.Group, rel policy.Rel) *mo
 	return g
 }
 
-// presentGroup names the group an event is hosted by, which is shown (from
-// groupShownTo) or nil. A group the viewer cannot see, and no group at all,
-// says it is hosted by the church and names nobody (DEC-17).
-func presentGroup(inst *occurrenceJSON, shown *models.Group, siteName string) {
-	if shown == nil {
-		inst.HostedBy = siteName
-		return
-	}
-	gid := shown.ID
-	inst.GroupID = &gid
-	inst.GroupName = shown.Name
-	inst.GroupVisibility = shown.Visibility
-}
-
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) (eventJSON, error) {
 	j := toEventJSON(ev)
 	if f.canManage(me) {
 		applyEventVideoReveal(&j, ev, false, true)
 	}
-	if shown := a.groupShownTo(me, f.group, f.rel); ev.GroupID == nil || shown == nil {
-		j.GroupID = nil
-		j.GroupName = ""
-		j.HostedBy = a.siteName()
-	} else {
-		j.GroupName = shown.Name
-		j.GroupVisibility = shown.Visibility
-	}
+	l := labelGroup(a.groupShownTo(me, f.group, f.rel), true, &siteNameOnce{a: a})
+	j.GroupID, j.GroupName, j.GroupVisibility, j.HostedBy = l.ID, l.Name, l.Visibility, l.HostedBy
 	if policy.IsAdmin(asPerson(me)) && ev.GroupID == nil {
 		hosts, err := a.eventHosts(ev.ID)
 		if err != nil {

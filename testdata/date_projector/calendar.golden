@@ -1,0 +1,2187 @@
+### signed out GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "dateUrl": "/events/3/dates/D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### signed out GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "dateUrl": "/events/3/dates/D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### signed out GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Ada Admin GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Ada Admin GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Ada Admin GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Ada Admin GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Lee Leader GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Lee Leader GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Lee Leader GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Lee Leader GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Mia Member GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Mia Member GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Mia Member GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Mia Member GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "Secret Room",
+      "groupId": 2,
+      "groupName": "Hidden Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Ivy Invited GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "dateUrl": "/events/1/dates/D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Ivy Invited GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Ivy Invited GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Ivy Invited GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "maybe",
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "dateUrl": "/events/1/dates/D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "going",
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Sam Stranger GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "declined",
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Sam Stranger GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Sam Stranger GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Sam Stranger GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Hal Host GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Hal Host GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": false
+    }
+  ],
+  "truncated": false
+}
+### Hal Host GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Hal Host GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": "going",
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Tess Teen GET /api/v1/calendar?from=D+0&to=D+60 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "waitlisted",
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+8",
+      "startsAt": "D+8T19:00:00Z",
+      "endsAt": "D+8T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 2,
+      "date": "D+15",
+      "startsAt": "D+15T19:00:00Z",
+      "endsAt": "D+15T20:00:00Z",
+      "title": "Opened Event",
+      "location": "",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "hostedBy": "Fold",
+      "myStatus": null,
+      "ownScope": false
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Tess Teen GET /api/v1/calendar?from=D+0&to=D+60&remote=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Tess Teen GET /api/v1/calendar?from=D+0&to=D+60&church=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}
+### Tess Teen GET /api/v1/calendar?from=D+0&to=D+60&mine=1 -> 200
+{
+  "occurrences": [
+    {
+      "eventId": 1,
+      "date": "D+7",
+      "startsAt": "D+7T19:00:00Z",
+      "endsAt": "D+7T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": "waitlisted",
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+9",
+      "startsAt": "D+9T19:00:00Z",
+      "endsAt": "D+9T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 4,
+      "date": "D+10",
+      "startsAt": "D+10T19:00:00Z",
+      "endsAt": "D+10T20:00:00Z",
+      "title": "Church Potluck",
+      "location": "Fellowship Hall",
+      "churchWide": true,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 5,
+      "date": "D+11",
+      "startsAt": "D+11T19:00:00Z",
+      "endsAt": "D+11T20:00:00Z",
+      "title": "Staff Retreat",
+      "location": "",
+      "churchWide": true,
+      "remoteAvailable": false,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 3,
+      "date": "D+16",
+      "startsAt": "D+16T19:00:00Z",
+      "endsAt": "D+16T20:00:00Z",
+      "title": "Private Event",
+      "location": "Private Porch",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": true,
+      "childcareAvailable": false,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+21",
+      "startsAt": "D+21T19:00:00Z",
+      "endsAt": "D+21T20:00:00Z",
+      "title": "Open Study",
+      "location": "Open Hall",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    },
+    {
+      "eventId": 1,
+      "date": "D+28",
+      "startsAt": "D+28T19:00:00Z",
+      "endsAt": "D+28T20:30:00Z",
+      "title": "Renamed Study",
+      "location": "Back Room",
+      "groupId": 1,
+      "groupName": "Open Group",
+      "churchWide": false,
+      "remoteAvailable": false,
+      "childcareAvailable": true,
+      "myStatus": null,
+      "ownScope": true
+    }
+  ],
+  "truncated": false
+}

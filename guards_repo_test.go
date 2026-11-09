@@ -38,6 +38,9 @@ var testLayoutAllowed = map[string]bool{
 	"migrations/drift_test.go":         true,
 	"migrations/reason_review_test.go": true,
 	"migrations/testhelpers_test.go":   true,
+	// The erasure inventory's data and its check against the live schema and
+	// docs/plan/M7.4-ERASURE-INVENTORY.md section 4 (no production code).
+	"erasure_inventory_test.go": true,
 }
 
 // guardFileRe matches the repo-wide guard files in the root package: guards_<concern>_test.go.

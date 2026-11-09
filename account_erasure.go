@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"fold/internal/audit"
@@ -69,12 +71,7 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 		return err
 	}
 	var pers []uint
-	if err := tx.Raw(`SELECT id FROM household_people WHERE converted_user_id = ?
-		UNION
-		SELECT household_person_id FROM account_requests
-		WHERE source = 'household_conversion' AND status = 'approved'
-		AND approved_user_id = ? AND household_person_id IS NOT NULL`,
-		s.ID, s.ID).Scan(&pers).Error; err != nil {
+	if err := tx.Raw(persSQL, s.ID, s.ID).Scan(&pers).Error; err != nil {
 		return err
 	}
 	inv := map[uint]bool{}
@@ -128,9 +125,21 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 }
 
 // erasedDomain is the reserved domain of every erased row's placeholder
-// address. tombstoneUserIn keeps its own byte-identical
-// deleted-<id>@deleted.invalid form, which R4-6's legacy match depends on.
+// address.
 const erasedDomain = "deleted.invalid"
+
+// tombstoneEmail is the address an erased account's users row keeps,
+// deleted-<id>@deleted.invalid: byte-identical to what every release wrote,
+// which the tombstone sweep's exact match (R4-6) depends on.
+func tombstoneEmail(id uint) string {
+	return fmt.Sprintf("deleted-%d@%s", id, erasedDomain)
+}
+
+// tombstoneEmailSQL is tombstoneEmail as a SQL expression over the id column
+// idCol, a trusted constant.
+func tombstoneEmailSQL(idCol string) string {
+	return "'deleted-' || " + idCol + " || '@" + erasedDomain + "'"
+}
 
 // erasedRowAddressSQL is the SQL expression 'deleted-<table>-' || id ||
 // '@deleted.invalid' (O-10), the placeholder a scrub writes in an address
@@ -224,13 +233,9 @@ func withStatementTimeout(tx *gorm.DB, d time.Duration, fn func() error) error {
 // No audit action and no withdrawal mail are added: user.deleted is the
 // record (a documented Consistency exception). It returns the first error
 // unwrapped, issues no further statement after it, and logs nothing.
-// actorID zero resolves waiting tasks as a system action. Already scrubbed
+// A nil actor resolves waiting tasks as a system action. Already scrubbed
 // requests are not rewritten, including their updated_at.
-func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
-	var actor *uint
-	if actorID != 0 {
-		actor = &actorID
-	}
+func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actor *uint) error {
 	if len(s.Requests) > 0 {
 		var withdrawn []uint
 		if err := tx.Raw(`UPDATE account_requests SET status = 'withdrawn', password_hash = NULL, updated_at = now()
@@ -265,7 +270,7 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 
 // eraseDependentRecordsIn scrubs the address-keyed rows around the erased
 // person, after promoteOnDisable and before the throttle delete, which stays
-// the callback's last statement. In order: (5) the invitations in INV keep
+// eraseAccountIn's last statement. In order: (5) the invitations in INV keep
 // their inviter, group, household person, acceptance time and revocation
 // but lose address, phone, name and token (an open one is revoked, so its
 // link dies); (6) a guest signup at the erased address that was never
@@ -277,10 +282,10 @@ func eraseAccountRequestsIn(tx *gorm.DB, s erasureSubject, actorID uint) error {
 // takes first (holder, then occurrence, then signup), so the signup rows are
 // reached in the order redemption holds them. It returns the first error
 // unwrapped, issues no further statement after it, and logs nothing.
-// actorID and ip are the deleting admin and the request address, used by the
-// message cancellation audit rows.
+// actor and ip are the deleting admin (nil for the sweep) and the request
+// address, used by the message cancellation audit rows.
 // An unavailable held address skips every address-only statement (O-17).
-func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
+func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actor *uint, ip string) error {
 	if len(s.Invitations) > 0 {
 		if err := tx.Exec(`UPDATE invitations SET email = `+erasedRowAddressSQL("invitations")+`,
 			phone = '', name = '', token_hash = `+erasedTokenMarkerSQL("invitations")+`,
@@ -304,7 +309,7 @@ func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actorID uint, ip str
 			return err
 		}
 	}
-	if err := eraseMessagesIn(tx, s, actorID, ip); err != nil {
+	if err := eraseMessagesIn(tx, s, actor, ip); err != nil {
 		return err
 	}
 	return eraseActivityRowsIn(tx, s)
@@ -360,11 +365,7 @@ func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
 // out the error comes back unchanged, the Transaction rolls the whole erasure
 // back, and the admin sees a generic server error and can retry. The handler logs
 // "could not delete user".
-func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actorID uint, ip string) error {
-	var actor *uint
-	if actorID != 0 {
-		actor = &actorID
-	}
+func eraseMessagesIn(tx *gorm.DB, s erasureSubject, actor *uint, ip string) error {
 	var cancelled []uint
 	if err := tx.Raw(`UPDATE messages SET status = ?, updated_at = now()
 		WHERE author_id = ? AND status = ? RETURNING id`,
@@ -479,7 +480,6 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	var total int64
 	for start := 0; start < len(ids); start += lookupChunk {
 		chunk := ids[start:min(start+lookupChunk, len(ids))]
 		res := tx.Exec("UPDATE contact_requests SET add_childcare_ages_note = '' WHERE id IN ? AND purpose = 'occurrence_add' AND subject_user_id = ? AND add_childcare_ages_note <> ''", chunk, s.ID)
@@ -489,34 +489,212 @@ func eraseContactRequestTextIn(tx *gorm.DB, s erasureSubject) error {
 		if res.RowsAffected != int64(len(chunk)) {
 			return fmt.Errorf("ages-note scrub changed %d of %d rows", res.RowsAffected, len(chunk))
 		}
-		total += res.RowsAffected
-	}
-	if total != int64(len(ids)) {
-		return fmt.Errorf("ages-note scrub changed %d of %d rows", total, len(ids))
 	}
 	return nil
 }
 
-// tombstoneUserIn scrubs the personal columns of the erased account in the
-// one UPDATE that also bumps session_version, so every open session ends.
+// erasedUserColumn is one personal column of users that an erasure clears and
+// the value it leaves, for GORM and as SQL.
+type erasedUserColumn struct {
+	name  string
+	value any
+	sql   string
+}
+
+// erasedUserColumns are the personal columns both erasures clear on the users
+// row (tombstoneUserIn on the admin path, scrubTombstoneRowIn in the sweep).
 // The row keeps its id, role (O-11), account_type, created_at and
-// logout_version; the caller soft-deletes it afterwards. The address becomes
-// a placeholder that frees the real one for a new account.
+// logout_version.
+var erasedUserColumns = []erasedUserColumn{
+	{"name", "", "''"},
+	{"display_name", "", "''"},
+	{"phone", "", "''"},
+	{"timezone", "", "''"},
+	{"password_hash", gorm.Expr("NULL"), "NULL"},
+	{"birth_date", gorm.Expr("NULL"), "NULL"},
+	{"avatar_focal_x", 50, "50"},
+	{"avatar_focal_y", 50, "50"},
+	{"hide_contact_from_leaders", false, "false"},
+	{"avatar_key", "", "''"},
+	{"status", models.UserDisabled, "'" + models.UserDisabled + "'"},
+	{"administratively_disabled", true, "true"},
+}
+
+// tombstoneUserIn scrubs the personal columns of the erased account in the
+// one UPDATE that also bumps session_version, so every open session ends;
+// the caller soft-deletes it afterwards. The address becomes a placeholder
+// that frees the real one for a new account.
 func tombstoneUserIn(tx *gorm.DB, u *models.User) error {
-	return tx.Model(u).Updates(map[string]any{
-		"email":                     fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
-		"name":                      "",
-		"display_name":              "",
-		"phone":                     "",
-		"timezone":                  "",
-		"password_hash":             gorm.Expr("NULL"),
-		"birth_date":                gorm.Expr("NULL"),
-		"avatar_focal_x":            50,
-		"avatar_focal_y":            50,
-		"hide_contact_from_leaders": false,
-		"avatar_key":                "",
-		"status":                    models.UserDisabled,
-		"administratively_disabled": true,
-		"session_version":           sessionVersionBump(),
-	}).Error
+	updates := map[string]any{"email": tombstoneEmail(u.ID), "session_version": sessionVersionBump()}
+	for _, c := range erasedUserColumns {
+		updates[c.name] = c.value
+	}
+	return tx.Model(u).Updates(updates).Error
+}
+
+// erasureOptions is everything that differs between the two account erasures:
+// the admin deletion (apiAdminDeleteUser) and the system sweep of a legacy
+// tombstone (eraseTombstoneOnce). Both run eraseAccountIn's steps in its one
+// order; nothing else about them differs.
+type erasureOptions struct {
+	// Actor is the deleting admin. Nil for the sweep: its task resolutions,
+	// audit rows and cancellations are system actions.
+	Actor *uint
+	// IP is the admin request's address; empty for the sweep.
+	IP string
+	// Live is the admin path's part. Nil for the sweep, whose subject is a
+	// tombstone that is already soft-deleted and that lockTombstoneIn locked.
+	Live *liveErasure
+}
+
+// liveErasure is what only the admin deletion brings: the account row that
+// deletionHostPlan locked FOR UPDATE and this erasure soft-deletes, the
+// successors of what the account leads and hosts alone, and the admin's
+// decisions about the account's contact-request reasons.
+type liveErasure struct {
+	User *models.User
+	// C is the request: handOffLeadership reads the acting admin and the
+	// address from it.
+	C            *gin.Context
+	Successors   map[string]uint
+	HostPicks    map[uint]uint
+	LockedHosted []uint
+	Reasons      reasonPlan
+}
+
+// erasureCounts is what the household and audit steps did, for the reports.
+type erasureCounts struct {
+	Households householdErasureCounts
+	Audit      auditErasureCounts
+}
+
+// errErasureOptions: options that are neither the admin path (Live and Actor)
+// nor the sweep (neither). A programming error; nothing is written.
+var errErasureOptions = errors.New("erasure options must carry both an actor and a live account, or neither")
+
+// eraseAccountIn is the one account erasure. It runs inside the caller's
+// contact transaction, after the caller has taken the subject's users row
+// FOR UPDATE (the admin path through deletionHostPlan, the sweep through
+// lockTombstoneIn), and returns the first error unwrapped with no statement
+// after it. The steps and why they run in this order:
+//
+//  1. captureErasureSetsIn reads REQ, PERS and INV once, with plain reads,
+//     before anything is scrubbed (the selectors read columns later steps
+//     blank).
+//  2. validatePersIn aborts before any lock or write when PERS is not one
+//     clean individual (T15, O-18).
+//  3. lockErasureHouseholdsIn takes every household NOWAIT, before the first
+//     write and while no household writer can be waiting on a row this
+//     transaction holds (a 55P03 rolls the whole erasure back).
+//  4. eraseAccountCredentialsIn deletes tokens, the calendar link and push
+//     devices before the users row changes, so the session bump's push trigger
+//     finds no device and queues no notice.
+//  5. Live only: what the account leads and hosts alone is handed off, its
+//     memberships end and its host rows go (handOffLeadership, handOffHosting),
+//     in the lock order deletionHostPlan began (events, then the account).
+//  6. The users row: tombstoneUserIn (live; it bumps the session version) or
+//     scrubTombstoneRowIn (sweep; no version change, a clean row unwritten).
+//  7. queueAvatarCleanup, under the row lock already held (R4-5).
+//  8. Live only: the user.deleted audit row.
+//  9. eraseAccountRequestsIn and then the notifications DELETE: every
+//     account_requests statement runs before the notification rows, the order
+//     expirePendingRequests also takes (L2). The DELETE's exact form is what
+//     the erasure tests' barrier (erasureTestBeforeNotificationsDelete)
+//     matches.
+//  10. Live only: the soft delete. A tombstone already is soft-deleted.
+//  11. eraseConsentEvidenceIn, eraseContactRequestTextIn and
+//     eraseContactRequestReasonsIn, in that order: each table's trigger lets
+//     its scrub through only once the owner's deleted_at is set, which this
+//     transaction now sees. The reasons step has work only on the live path.
+//  12. eraseHouseholdRecordsIn, after the soft delete so the sole-subject test
+//     sees the account as erased, and only on the households step 3 locked.
+//  13. promoteOnDisable: the account no longer counts, so its seats free up.
+//     Only the live path tells people inside the cutoff.
+//  14. eraseDependentRecordsIn: invitations, guest signups and the outbox,
+//     after the user and occurrence locks, in guest redemption's order.
+//  15. Sweep only: the tombstone's stale host rows (the live path removed its
+//     rows in step 5).
+//  16. eraseAuditDetailsIn.
+//  17. eraseOwnedThrottleKeysIn last, so the sign-in rows are held for the
+//     shortest time before commit (detected limit D2).
+func (a *App) eraseAccountIn(tx *gorm.DB, s erasureSubject, opts erasureOptions) (erasureCounts, error) {
+	var out erasureCounts
+	if (opts.Live == nil) != (opts.Actor == nil) {
+		return out, errErasureOptions
+	}
+	if err := captureErasureSetsIn(tx, &s); err != nil {
+		return out, err
+	}
+	if err := validatePersIn(tx, s); err != nil {
+		return out, err
+	}
+	homes, err := lockErasureHouseholdsIn(tx, s)
+	if err != nil {
+		return out, err
+	}
+	if err := eraseAccountCredentialsIn(tx, s); err != nil {
+		return out, err
+	}
+	if live := opts.Live; live != nil {
+		if err := handOffLeadership(live.C, tx, s.ID, live.Successors, "account_deleted"); err != nil {
+			return out, err
+		}
+		if err := handOffHosting(tx, *opts.Actor, s.ID, live.HostPicks, live.LockedHosted, opts.IP); err != nil {
+			return out, err
+		}
+		if err := tombstoneUserIn(tx, live.User); err != nil {
+			return out, err
+		}
+	} else if err := scrubTombstoneRowIn(tx, s.ID); err != nil {
+		return out, err
+	}
+	if err := queueAvatarCleanup(tx, s.ID); err != nil {
+		return out, err
+	}
+	if opts.Live != nil {
+		if err := audit.Write(tx, audit.Entry{Actor: opts.Actor, Action: audit.UserDeleted,
+			TargetType: "user", TargetID: s.ID, IP: opts.IP}); err != nil {
+			return out, err
+		}
+	}
+	if err := eraseAccountRequestsIn(tx, s, opts.Actor); err != nil {
+		return out, err
+	}
+	if err := tx.Where("user_id = ?", s.ID).Delete(&models.Notification{}).Error; err != nil {
+		return out, err
+	}
+	var reasons reasonPlan
+	if opts.Live != nil {
+		if err := tx.Delete(opts.Live.User).Error; err != nil {
+			return out, err
+		}
+		reasons = opts.Live.Reasons
+	}
+	if err := eraseConsentEvidenceIn(tx, s); err != nil {
+		return out, err
+	}
+	if err := eraseContactRequestTextIn(tx, s); err != nil {
+		return out, err
+	}
+	if err := eraseContactRequestReasonsIn(tx, s, reasons); err != nil {
+		return out, err
+	}
+	if out.Households, err = a.eraseHouseholdRecordsIn(tx, s, homes, opts.Actor, opts.IP); err != nil {
+		return out, err
+	}
+	if err := a.promoteOnDisable(tx, s.ID, opts.Live != nil); err != nil {
+		return out, err
+	}
+	if err := eraseDependentRecordsIn(tx, s, opts.Actor, opts.IP); err != nil {
+		return out, err
+	}
+	if opts.Live == nil {
+		if err := removeTombstoneHostRowsIn(tx, s.ID); err != nil {
+			return out, err
+		}
+	}
+	if out.Audit, err = eraseAuditDetailsIn(tx, s); err != nil {
+		return out, err
+	}
+	return out, eraseOwnedThrottleKeysIn(tx, s)
 }
