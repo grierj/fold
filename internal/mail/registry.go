@@ -5,18 +5,14 @@ import (
 	"strings"
 
 	"fold/internal/providers"
+
+	"gorm.io/gorm"
 )
 
 // The email adapters, registered by name (PLAN 5.6). FOLD_EMAIL_PROVIDER
 // picks one; the settings below are read by environment name, and from
 // M4.1 from the encrypted ProviderConfig.
 func init() {
-	providers.RegisterEmail("devoutbox", func(s providers.Settings) (providers.EmailSender, error) {
-		if s.DB == nil {
-			return nil, errors.New("mail: devoutbox needs the database")
-		}
-		return NewDevOutbox(s.DB, s.From), nil
-	})
 	providers.RegisterEmail("smtp", func(s providers.Settings) (providers.EmailSender, error) {
 		raw := s.Get("FOLD_SMTP_URL")
 		if raw == "" {
@@ -35,6 +31,22 @@ func init() {
 	})
 }
 
+// DevOutboxName is the one adapter built outside the registry: it stores mail
+// in the database, so it takes the handle, which no other adapter has.
+const DevOutboxName = "devoutbox"
+
+// NewSender builds the adapter Choose named: the dev outbox on db, else the
+// registered adapter of that name.
+func NewSender(name string, s providers.Settings, db *gorm.DB) (providers.EmailSender, error) {
+	if name == DevOutboxName {
+		if db == nil {
+			return nil, errors.New("mail: devoutbox needs the database")
+		}
+		return NewDevOutbox(db, s.From), nil
+	}
+	return providers.NewEmail(name, s)
+}
+
 // Choose names the email adapter for a deployment: FOLD_EMAIL_PROVIDER when
 // set; otherwise devoutbox in dev, then Postmark if it has a token, then
 // SMTP if it has a URL. "" means none is configured.
@@ -44,7 +56,7 @@ func Choose(get func(string) string, dev bool) string {
 	}
 	switch {
 	case dev:
-		return "devoutbox"
+		return DevOutboxName
 	case get("FOLD_POSTMARK_SERVER_TOKEN") != "":
 		return "postmark"
 	case get("FOLD_SMTP_URL") != "":

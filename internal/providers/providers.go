@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"gorm.io/gorm"
 )
 
 // Stream is the kind of mail a message is (PLAN 7.4, 12.1). Providers that
@@ -76,11 +74,9 @@ func (e *SendError) Error() string {
 }
 
 // Settings configure an adapter: Get reads a setting by its environment
-// name, DB is for adapters that store mail (devoutbox), From is the From
-// address.
+// name, From is the From address.
 type Settings struct {
 	Get  func(key string) string
-	DB   *gorm.DB
 	From string
 }
 
