@@ -222,6 +222,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   with `lockUsersByID` (`user_locks.go`). Enum values (visibility, group status, account status, video reveal) are owned by
   `internal/policy`, and `models` aliases them; `models.CurrentRegStatuses` and `models.MembershipActive` name the
   common status sets.
+- Requests (contact, group add, date add) are one `contact_requests` table and one lifecycle. What a purpose
+  decides (audit target and actions, notice subject, link and kinds, review tasks, reason-review actions) is
+  `requestKind` in `request_kinds.go`; add a purpose there, not in a `switch`. The handlers share `lockRequest`,
+  `openRequest`, `recordDecision`, `withdrawRequest` and `readRequests` (`request_lifecycle.go`). A single request
+  is presented as a page of one (`presentContactRequests`, `presentAddRequests`) and "may this viewer see the
+  request's group or event" is `requestContexts.shown` (`request_context.go`) alone; the account-deletion reason
+  review asks it too. The two creation functions stay in `api_contact.go`: the contact-text guard pins them.
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in the same transaction as
   the change. Admin notices are separate stored notification rows written in that transaction.
 - Migrations: every schema change is a **new** goose file `NNNNN_name.sql`; never edit an old one; the one exception is the pre-live baseline window in DEC-138.
