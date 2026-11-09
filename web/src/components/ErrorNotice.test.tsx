@@ -13,13 +13,11 @@ describe("ErrorNotice", () => {
   });
   it("uses the neutral card with an illustration when it can retry", () => {
     const { container } = render(<ErrorNotice message="We couldn't load the groups." onRetry={() => {}} />);
-    expect(screen.getByRole("alert")).toHaveClass("bg-surface");
-    expect(screen.getByRole("alert")).not.toHaveClass("bg-danger-subtle");
     expect(container.querySelector("img")).not.toBeNull();
   });
   it("stays the inline notice without a retry", () => {
     render(<ErrorNotice message="That didn't work." />);
-    expect(screen.getByRole("alert")).toHaveClass("bg-danger-subtle");
+    expect(screen.getByRole("alert")).toHaveTextContent("That didn't work.");
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 });

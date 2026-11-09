@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Checkbox, Choices, Field, focusFirstInvalid, Input, Radio, Select } from "./Field";
 
-describe("Field (ENFORCEMENT C5, DEC-65)", () => {
+describe("Field (DEC-65)", () => {
   it("labels its control and lists the hint, then the error", async () => {
     render(<Field label="Email" hint="We never share it." error="That email isn't valid."><Input /></Field>);
     const input = screen.getByLabelText("Email");

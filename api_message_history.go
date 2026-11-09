@@ -118,8 +118,6 @@ var (
 	errMessageRetrySending   = apiErr(http.StatusConflict, "message_retry_sending", "it's already sending again")
 )
 
-// recipientCounts counts m's rows by status, and the skipped by reason,
-// in one query.
 func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, error) {
 	var groups []struct {
 		Push   bool

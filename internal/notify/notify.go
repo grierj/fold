@@ -43,7 +43,6 @@ const (
 // hour, the same as the message batch.
 var DeliverJob = jobs.Type{Name: DeliverKind, MaxAttempts: 8}
 
-// DeliverKind is the name of DeliverJob.
 const DeliverKind = "notify.deliver"
 
 // DeliverPayload is notify.deliver's payload: the notice id and nothing else.
@@ -55,15 +54,12 @@ type DeliverPayload struct {
 // looks a job up by key appends the notice id to it.
 const DeliverKeyPrefix = DeliverKind + ":"
 
-// DeliverKey identifies a notice's delivery job in any status.
 func DeliverKey(id uint) string { return DeliverKeyPrefix + strconv.FormatUint(uint64(id), 10) }
 
-// DeliverSpec is the delivery job for notice id, to run at at.
 func DeliverSpec(id uint, at time.Time) jobs.Spec {
 	return DeliverJob.Spec(DeliverPayload{NotificationID: id}, at, DeliverKey(id))
 }
 
-// Msg is one notification to write, for every recipient in To.
 type Msg struct {
 	Kind        string
 	To          []uint
@@ -555,10 +551,6 @@ func LastResolution(db *gorm.DB, kind string, subjectID uint) (by *uint, resolut
 	return n.ResolvedByID, n.Resolution, true
 }
 
-// ---------------------------------------------------------------------------
-// Reading and state changes. Every query is scoped to the user's own rows.
-// ---------------------------------------------------------------------------
-
 // The SQL for each state, so the badge, the feed and read-all agree.
 const (
 	sqlLive    = "archived_at IS NULL AND (expires_at IS NULL OR expires_at > now())"
@@ -656,7 +648,6 @@ func parseCursor(s string) (time.Time, uint, bool) {
 	return time.UnixMicro(us).UTC(), uint(id), true
 }
 
-// Get loads one of the user's own rows (false for anyone else's).
 func Get(db *gorm.DB, userID, id uint) (models.Notification, bool) {
 	var n models.Notification
 	err := db.Where("id = ? AND user_id = ?", id, userID).First(&n).Error
@@ -695,7 +686,6 @@ func ReadAll(db *gorm.DB, userID uint) error {
 		Where("user_id = ? AND "+sqlUnread, userID).UpdateColumn("read_at", gorm.Expr("now()")).Error
 }
 
-// ArchiveRead archives every read item that isn't an open task.
 func ArchiveRead(db *gorm.DB, userID uint) error {
 	return db.Model(&models.Notification{}).
 		Where("user_id = ? AND archived_at IS NULL AND read_at IS NOT NULL AND NOT ("+sqlTask+")", userID).

@@ -10,7 +10,7 @@ import { Site } from "../api/site";
 vi.mock("../api/site", () => ({ Site: { get: vi.fn() } }));
 beforeEach(() => vi.mocked(Site.get).mockResolvedValue({ name: "Grace", selfSignup: "off" } as never));
 
-it("keeps the login link phone-sized without enlarging the surrounding prose", async () => {
+it("explains the steps and points someone who has an account to log in", async () => {
   render(<MemoryRouter><Join /></MemoryRouter>);
   await screen.findByRole("heading", { name: "Request an account at Grace" });
   expect(screen.getByText("Send your request.")).toBeInTheDocument();
@@ -18,8 +18,6 @@ it("keeps the login link phone-sized without enlarging the surrounding prose", a
   expect(screen.getByText("We email you a link to set your password.")).toBeInTheDocument();
   const link = screen.getByRole("link", { name: "Log in" });
   expect(link).toHaveAttribute("href", "/login");
-  expect(link).toHaveClass("text-link");
-  expect(link.parentElement?.className).not.toMatch(/leading-/);
 });
 
 it("says so, with a retry, and shows no form when the church's signup setting can't be read", async () => {

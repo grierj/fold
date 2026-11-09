@@ -9,7 +9,6 @@ function passwordLengthProblem(pw: string): "short" | "long" | null {
 
 export const PASSWORD_HINT = "Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).";
 
-// The sentence for a password that breaks the rule, or null when it is fine.
 export function passwordProblem(pw: string): string | null {
   const problem = passwordLengthProblem(pw);
   if (problem === "short") return "Password must be at least 10 characters.";

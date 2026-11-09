@@ -1,5 +1,5 @@
 // In-page UI measurement shared by web/e2e/layout.spec.ts and
-// .cursor/skills/verify-ui/drive-ui.mjs (ENFORCEMENT.md C2, C3). Pass it to
+// .cursor/skills/verify-ui/drive-ui.mjs. Pass it to
 // page.evaluate. Returns horizontal overflow, selects whose chosen label is
 // (and time zone comboboxes) wider than the room inside them (the PR #51
 // clipped time zone), targets

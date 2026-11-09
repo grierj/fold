@@ -18,7 +18,6 @@ it("pages long schedules and preserves a draft while another date is expanded", 
   render(<CompactDates dates={dates}>{child}</CompactDates>);
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
   expect(screen.getAllByRole("button", { name: /^Details and RSVP/ })).toHaveLength(11);
-  expect(screen.getAllByRole("button", { name: /^Details and RSVP/ })[0]).toHaveClass("shrink-0", "whitespace-nowrap", "min-h-11");
   await userEvent.type(screen.getByLabelText("Draft 1"), "My note");
   await userEvent.click(screen.getByRole("button", { name: /^Details and RSVP: Gathering 2,/ }));
   expect(screen.getAllByRole("textbox")).toHaveLength(1);

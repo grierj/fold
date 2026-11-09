@@ -102,8 +102,6 @@ export function HiddenFileInput({ ref, ...props }: Omit<InputHTMLAttributes<HTML
   return <input ref={ref} type="file" className="hidden" tabIndex={-1} aria-hidden="true" {...props} />;
 }
 
-// --- Radio and checkbox rows ---
-//
 // The whole row is the <label>, at least 44px tall, with a 20px control and
 // the text beside it; a description can sit under the text. Rows that go
 // together sit in <Choices legend="…">, a fieldset whose legend looks like

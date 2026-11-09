@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-// Says what would appear here and offers the next step (ENFORCEMENT.md A).
+// Says what would appear here and offers the next step.
 // Neutral on purpose: there is no tone prop, so an empty list is never red.
 export function EmptyState({
   title,

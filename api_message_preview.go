@@ -35,7 +35,6 @@ var (
 	errMessageTestFail     = apiErr(http.StatusBadGateway, "message_test_failed", "we couldn't send the test")
 )
 
-// testSendsPerHour bounds "Send a test to me" for one person.
 const testSendsPerHour = 10
 
 // mergeFieldError checks the fields s uses: each must be known, and event
@@ -54,7 +53,6 @@ func mergeFieldError(s string, au audienceJSON) error {
 	return nil
 }
 
-// renderedMessage is a message as one reader gets it.
 type renderedMessage struct {
 	Subject string `json:"subject"`
 	Text    string `json:"text"`
@@ -130,7 +128,6 @@ func eventTimeText(startsAt time.Time, tzid string) string {
 	return formatWhen(startsAt, eventZone(tzid))
 }
 
-// firstName is the first word of a name.
 func firstName(name string) string {
 	if f := strings.Fields(name); len(f) > 0 {
 		return f[0]
@@ -138,7 +135,6 @@ func firstName(name string) string {
 	return name
 }
 
-// renderMessage renders m for the reader u with the given merge values.
 func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string) (renderedMessage, error) {
 	footer, err := footerFactsIn(a.DB)
 	if err != nil {
@@ -218,7 +214,6 @@ func (a *App) apiPreviewMessageHTML(c *gin.Context) {
 const emailPreviewCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'; form-action 'none'; " +
 	"frame-ancestors 'self'; sandbox allow-popups allow-popups-to-escape-sandbox"
 
-// serveEmailHTML answers with an email's HTML under emailPreviewCSP.
 func serveEmailHTML(c *gin.Context, html string) {
 	c.Header("Content-Security-Policy", emailPreviewCSP)
 	c.Header("Cache-Control", "no-store")
@@ -304,7 +299,6 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	fail(c, errMessageTestFail)
 }
 
-// answerTestSend answers the composer's test send with how it ended.
 func answerTestSend(c *gin.Context, res sendResult) {
 	switch res.outcome {
 	case sendSent:

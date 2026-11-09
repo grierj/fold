@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
 
-// The one button (ENFORCEMENT.md A). Color comes only from `variant`; there
+// The one button. Color comes only from `variant`; there
 // is no className, so a page can't recolor or resize it with overrides.
 // `layout` takes placement classes such as "w-full" or "self-start".
 export type ButtonVariant = "primary" | "primary-inverse" | "secondary" | "danger" | "danger-outline" | "ghost" | "link";

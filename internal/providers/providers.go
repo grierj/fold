@@ -51,7 +51,6 @@ type EmailMessage struct {
 	ListUnsubscribe string
 }
 
-// EmailCaps says what an email adapter can do.
 type EmailCaps struct {
 	Name string
 }
@@ -85,7 +84,6 @@ type Settings struct {
 	From string
 }
 
-// EmailFactory builds an email adapter from settings.
 type EmailFactory func(Settings) (EmailSender, error)
 
 var (
@@ -104,7 +102,6 @@ func RegisterEmail(name string, f EmailFactory) {
 	email[name] = f
 }
 
-// NewEmail builds the email adapter registered under name.
 func NewEmail(name string, s Settings) (EmailSender, error) {
 	mu.RLock()
 	f, ok := email[name]
@@ -118,7 +115,6 @@ func NewEmail(name string, s Settings) (EmailSender, error) {
 	return f(s)
 }
 
-// EmailProviders lists the registered email adapters by name.
 func EmailProviders() []string {
 	mu.RLock()
 	defer mu.RUnlock()

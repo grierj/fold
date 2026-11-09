@@ -30,14 +30,12 @@ export function registrationStatusLabel(status: string): string {
   return registrationStatuses.get(status) ?? "Unknown status";
 }
 
-// The state of one party's decision on a request (add and contact requests).
 const decisions = new Map([["pending", "Waiting"], ["approved", "Approved"], ["denied", "Denied"], ["not_needed", "Not needed"]]);
 export type DecisionState = "pending" | "approved" | "denied" | "not_needed";
 export function decisionLabel(state: DecisionState): string {
   return decisions.get(state) ?? "Unknown status";
 }
 
-// A contact request's own state.
 const contactRequestStatuses = new Map([
   ["pending", "Waiting for a decision"], ["granted", "Approved"], ["denied", "Denied"],
   ["withdrawn", "Withdrawn"], ["expired", "Expired"], ["ended", "Ended"],

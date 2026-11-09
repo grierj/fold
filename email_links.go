@@ -13,7 +13,6 @@ func (a *App) emailBaseURL() string {
 	return "http://localhost:" + a.Config.Port
 }
 
-// emailLink makes an absolute URL from a notification's internal path.
 func (a *App) emailLink(path string) string {
 	return a.emailBaseURL() + path
 }

@@ -13,8 +13,6 @@ export interface RemoteValue {
 
 export const emptyRemote: RemoteValue = { available: false, capacity: "" };
 
-// remoteFrom builds the field value from an event's stored remote
-// fields (the series values, or a date's effective values).
 export function remoteFrom(available?: boolean, capacity?: number | null): RemoteValue {
   return { available: available ?? false, capacity: capacity == null ? "" : String(capacity) };
 }
@@ -37,8 +35,6 @@ export const isRemoteError = (err: unknown) => {
   return code === "invalid_remote_capacity" || code === "invalid_remote_capacity_override" || code === "remote_capacity_zero";
 };
 
-// remoteBody is the wire form: the checkbox, and the cap as a number
-// (null clears it to no limit).
 export function remoteBody(v: RemoteValue): { remoteAvailable: boolean; remoteCapacity: number | null } {
   const cap = v.capacity.trim();
   return { remoteAvailable: v.available, remoteCapacity: !v.available || cap === "" ? null : Number(cap) };

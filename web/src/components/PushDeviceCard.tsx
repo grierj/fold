@@ -34,7 +34,6 @@ function resaveOnce(sub: PushSubscription): Promise<PushSubscribeResponse | null
   return p;
 }
 
-// Buttons are full width on phones, in every state.
 const FULL = "w-full sm:w-auto";
 
 const NO_PUSH: PushSettings = { on: false, devices: [], kinds: [] };

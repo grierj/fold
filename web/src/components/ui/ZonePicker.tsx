@@ -38,7 +38,6 @@ export function ZonePicker({
 
   useEffect(() => {
     if (open) document.getElementById(optId(active))?.scrollIntoView?.({ block: "nearest" });
-    // optId only depends on w.id, which never changes.
   }, [open, active]);
 
   function openList() {
