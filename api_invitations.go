@@ -484,7 +484,8 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&fresh)), PendingConsent: fresh.Status == models.UserPendingConsent})
+	user := a.toUserJSON(&fresh)
+	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: &user, PendingConsent: fresh.Status == models.UserPendingConsent})
 }
 
 // errNeedName: the accept form needs a name and the invitation had none.

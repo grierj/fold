@@ -211,7 +211,7 @@ func TestEmailAdapterContract(t *testing.T) {
 					t.Fatal(err)
 				}
 				msgs := got()
-				if len(msgs) != 1 || (s.Capabilities().Streams && msgs[0].stream != defaultPostmarkBroadcast) {
+				if len(msgs) != 1 || (h.name == "postmark" && msgs[0].stream != defaultPostmarkBroadcast) {
 					t.Fatalf("received %+v", msgs)
 				}
 			})

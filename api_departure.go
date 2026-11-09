@@ -602,14 +602,14 @@ func departureLeaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
 	return ids, err
 }
 
-func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) ([]uint, error) {
+func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) error {
 	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
 		leaders, err := departureLeaderIDs(tx, facts.GroupID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		actor := facts.Subject.ID
-		return notify.Send(tx, notify.Msg{
+		_, err = notify.Send(tx, notify.Msg{
 			Kind: notify.MembershipLeft, To: leaders, Actor: &actor,
 			SubjectType: "group", SubjectID: facts.GroupID, Link: "/groups/" + strconv.FormatUint(uint64(facts.GroupID), 10),
 			Vars: notify.Vars{Person: facts.SubjectName, Group: facts.GroupName}, // group-ok: current leaders can see their group
@@ -617,16 +617,17 @@ func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) ([]uint
 			DedupeKey: "membership-left:" + strconv.FormatUint(uint64(facts.SubjectMembership.ID), 10) + ":" +
 				strconv.FormatUint(uint64(facts.SubjectMembership.Tenure), 10),
 		})
+		return err
 	}
 	recipients := []uint{facts.Subject.ID}
 	if facts.Subject.AccountType == models.AccountTeen {
 		guardians, err := contactGuardians(tx, facts.Subject.ID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		recipients = append(recipients, guardians...)
 	}
-	return notify.Send(tx, notify.Msg{
+	_, err := notify.Send(tx, notify.Msg{
 		Kind: notify.MembershipDeparture, To: recipients,
 		SubjectType: "membership", SubjectID: facts.SubjectMembership.ID, Link: "/",
 		Vars: notify.Vars{KeptCount: kept, EndedCount: ended},
@@ -634,6 +635,7 @@ func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) ([]uint
 		DedupeKey: "membership-departure:" + strconv.FormatUint(uint64(facts.SubjectMembership.ID), 10) + ":" +
 			strconv.FormatUint(uint64(facts.SubjectMembership.Tenure), 10),
 	})
+	return err
 }
 
 func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]models.EventOccurrence, keep map[uint]bool, now time.Time, note, ip string) (departureConfirmationJSON, error) {
@@ -693,7 +695,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			change.next.RemovalNote = note
 			change.auditAction = audit.RegistrationRemoved
 		}
-		_, err = a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
+		err = a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
 		if err != nil {
 			return departureConfirmationJSON{}, err
 		}
@@ -735,7 +737,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		if note != "" {
 			meta["note"] = note
 		}
-		if _, err := auditAndNotifyLeadership(tx, audit.Entry{Actor: &facts.Actor.ID, Action: audit.MemberRemoved,
+		if err := auditAndNotifyLeadership(tx, audit.Entry{Actor: &facts.Actor.ID, Action: audit.MemberRemoved,
 			TargetType: "group", TargetID: facts.GroupID, Meta: meta, IP: ip}); err != nil {
 			return departureConfirmationJSON{}, err
 		}
@@ -746,12 +748,12 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			return departureConfirmationJSON{}, err
 		}
 		if oldRole == models.MembershipLeader {
-			if _, err := notifyLeadership(tx, entry); err != nil {
+			if err := notifyLeadership(tx, entry); err != nil {
 				return departureConfirmationJSON{}, err
 			}
 		}
 	}
-	if _, err := notifyDeparture(tx, facts, len(keep), len(facts.Dates)-len(keep)); err != nil {
+	if err := notifyDeparture(tx, facts, len(keep), len(facts.Dates)-len(keep)); err != nil {
 		return departureConfirmationJSON{}, err
 	}
 	action := "remove"

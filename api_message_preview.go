@@ -179,6 +179,19 @@ func (a *App) apiPreviewMessageHTML(c *gin.Context) {
 	}
 }
 
+// emailPreviewCSP is the policy for a page that shows an email's HTML (the
+// composer's preview and the dev outbox): email needs inline styles, and
+// nothing in it may run, load anything but images, or reach the app.
+const emailPreviewCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'; form-action 'none'; " +
+	"frame-ancestors 'self'; sandbox allow-popups allow-popups-to-escape-sandbox"
+
+// serveEmailHTML answers with an email's HTML under emailPreviewCSP.
+func serveEmailHTML(c *gin.Context, html string) {
+	c.Header("Content-Security-Policy", emailPreviewCSP)
+	c.Header("Cache-Control", "no-store")
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+}
+
 // apiTestMessage sends the message to the viewer's own address, as an
 // announcement goes out (the broadcast stream, with its unsubscribe link),
 // with "[Test]" before the subject. Ten tries an hour: the audit row is

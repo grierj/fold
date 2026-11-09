@@ -319,10 +319,10 @@ func TestNewSMTPRejects(t *testing.T) {
 }
 
 func TestFromAddress(t *testing.T) {
-	if got := fromAddress("Fold <noreply@example.com>"); got != "noreply@example.com" {
+	if got := Address("Fold <noreply@example.com>"); got != "noreply@example.com" {
 		t.Fatalf("got %q", got)
 	}
-	if got := fromAddress("noreply@example.com"); got != "noreply@example.com" {
+	if got := Address("noreply@example.com"); got != "noreply@example.com" {
 		t.Fatalf("got %q", got)
 	}
 }

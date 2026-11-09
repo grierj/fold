@@ -95,14 +95,6 @@ func groupAndRel(ev *models.Event, groups map[uint]*models.Group, rels map[uint]
 	return groups[*ev.GroupID], rels[*ev.GroupID]
 }
 
-func (a *App) factsFor(u *models.User, ev *models.Event) eventFacts {
-	return a.factsForIn(a.DB, u, ev)
-}
-
-func (a *App) factsForIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
-	return eventFactsIn(db, u, ev)
-}
-
 func eventFactsIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
 	f := eventFacts{}
 	if ev.GroupID != nil {
@@ -194,8 +186,8 @@ func (a *App) eventPermissions(me *models.User, f eventFacts) (manage, setVis bo
 	return
 }
 
-func upcomingWindow(now time.Time) (from, to string, start time.Time) {
-	return now.Add(-24 * time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), now
+func upcomingWindow(now time.Time) (from, to string) {
+	return now.Add(-24 * time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02")
 }
 
 // loadVisibleEvent is 404 when the event is missing or the caller cannot
@@ -207,7 +199,7 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, eventFacts{}, false
 	}
-	f := a.factsFor(apiUser(c), &ev)
+	f := eventFactsIn(a.DB, apiUser(c), &ev)
 	gp := policy.Group{}
 	if f.group != nil {
 		gp = asGroup(f.group)
@@ -224,7 +216,7 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 // an opened group event stays on that group's page for them.
 func (a *App) openEventIDs(u *models.User) []uint {
 	now := time.Now().UTC()
-	from, to, _ := upcomingWindow(now)
+	from, to := upcomingWindow(now)
 	// Only events with a date in the listed window can add anything (#75).
 	vs, err := a.dateCandidates(u, a.DB.Where(
 		"id IN (SELECT event_id FROM event_occurrences WHERE original_date >= ? AND original_date <= ?)", from, to))
@@ -246,8 +238,8 @@ func (a *App) openEventIDs(u *models.User) []uint {
 func (a *App) apiListOpenEvents(c *gin.Context) {
 	me := apiUser(c)
 	now := time.Now().UTC()
-	from, to, start := upcomingWindow(now)
-	listed, err := a.occurrencesForEventsErr(a.openEventIDs(me), from, to, &start, me)
+	from, to := upcomingWindow(now)
+	listed, err := a.occurrencesForEventsErr(a.openEventIDs(me), from, to, &now, me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
 		return
@@ -261,9 +253,9 @@ func (a *App) apiGetEvent(c *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	from, to, start := upcomingWindow(now)
+	from, to := upcomingWindow(now)
 	manage, setVis := a.eventPermissions(apiUser(c), f)
-	listed, err := a.occurrencesForEventsErr([]uint{ev.ID}, from, to, &start, apiUser(c))
+	listed, err := a.occurrencesForEventsErr([]uint{ev.ID}, from, to, &now, apiUser(c))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
 		return
@@ -391,7 +383,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 			return err
 		}
 		// Church-wide events are created by admins, whose bookings never wait.
-		_, err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
+		err = a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
 		return err
 	})
 	if hostWriteFailed(c, err) || createRoomFailed(c, err) {
@@ -401,7 +393,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create event")
 		return
 	}
-	f := a.factsFor(creator, &ev)
+	f := eventFactsIn(a.DB, creator, &ev)
 	c.JSON(http.StatusCreated, gin.H{"event": a.presentEvent(&ev, creator, f)})
 }
 
@@ -456,7 +448,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		f = a.factsForIn(tx, me, &locked)
+		f = eventFactsIn(tx, me, &locked)
 		if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
 			return errDateVisibility
 		}
@@ -479,8 +471,8 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		}
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
-		if policy.Openness(vis) < policy.Openness(oldVis) {
-			_, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+		if policy.MoreOpen(oldVis, vis) {
+			err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -491,7 +483,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 				return err
 			}
 			for i := range dates {
-				_, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
 				if err != nil {
 					return err
 				}
@@ -517,7 +509,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			return err
 		}
 		if action == audit.VisibilityOverride && f.group != nil {
-			_, err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
+			err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
 			return err
 		}
 		return nil
@@ -729,14 +721,14 @@ type visibleSet struct {
 // dateCandidates loads candidate series facts without granting series rights.
 // Every date list must filter each date through visibleSet.canSeeDate.
 func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.eventCandidates(viewer, q, false, true)
+	return a.eventCandidates(viewer, q, false)
 }
 
-// eventCandidates is the shared event visibility loader. With dates=false it
-// filters series through CanSeeEvent; dates=true only loads candidates and
-// callers must separately authorize each date, never the series. Deleted groups
-// stay hidden except for the admin-only withDeleted calendar switch (DEC-68).
-func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, dates bool) (visibleSet, error) {
+// eventCandidates is the shared event loader. It only loads candidates: callers
+// must separately authorize each date, never the series. Events whose group is
+// missing are skipped, and deleted groups stay hidden except for the
+// admin-only withDeleted calendar switch (DEC-68).
+func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
 	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
 	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
 	var evs []models.Event
@@ -768,20 +760,11 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, date
 	if err != nil {
 		return vs, err
 	}
-	p := asPerson(viewer)
 	for i := range evs {
-		ev := evs[i]
-		grp, rel := groupAndRel(&ev, vs.Groups, vs.Rels)
-		if ev.GroupID != nil && grp == nil {
+		if grp, _ := groupAndRel(&evs[i], vs.Groups, vs.Rels); evs[i].GroupID != nil && grp == nil {
 			continue
 		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		if dates || policy.CanSeeEvent(p, viewOf(&ev, vs.Hosted[ev.ID]), gp, rel) {
-			vs.Events = append(vs.Events, ev)
-		}
+		vs.Events = append(vs.Events, evs[i])
 	}
 	for i := range vs.Events {
 		vs.ByID[vs.Events[i].ID] = &vs.Events[i]

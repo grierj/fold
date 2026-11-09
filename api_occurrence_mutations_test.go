@@ -123,7 +123,7 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 				want = policy.OccurrenceDeleted
 				mutate = func(tx *gorm.DB) error {
 					// A date's rows can only go once its live grants have ended.
-					if _, err := endLiveAccessOnDates(tx, []uint{f.dates[1].ID}, policy.OccurrenceDeleted, time.Now().UTC(), false); err != nil {
+					if err := endLiveAccessOnDates(tx, []uint{f.dates[1].ID}, policy.OccurrenceDeleted, time.Now().UTC(), false); err != nil {
 						return err
 					}
 					if err := tx.Where("occurrence_id = ?", f.dates[1].ID).Delete(&models.Registration{}).Error; err != nil {
@@ -554,7 +554,7 @@ func TestOccurrenceRecipientBlockClosesOnlyConflictingPendingAsks(t *testing.T) 
 			t.Fatal(err)
 		}
 		if err := f.app.DB.Transaction(func(tx *gorm.DB) error {
-			_, err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{subject}, "test")
+			err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{subject}, "test")
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -784,7 +784,7 @@ func TestOccurrenceRegistrationCoreRejectsUnverifiedTeenAndWrongPurpose(t *testi
 			if err != nil {
 				return err
 			}
-			_, _, err = f.app.addAccountRegistrationLocked(tx, &ev, locked, subject.ID, f.leader.ID, managerRegistrationOptions{approved: proof, mode: models.AttendanceInPerson}, time.Now().UTC(), "")
+			_, err = f.app.addAccountRegistrationLocked(tx, &ev, locked, subject.ID, f.leader.ID, managerRegistrationOptions{approved: proof, mode: models.AttendanceInPerson}, time.Now().UTC(), "")
 			return err
 		})
 		if !errors.Is(err, errPeopleAddForbidden) {
@@ -1271,7 +1271,7 @@ func TestOccurrenceOrdinaryRSVPRetryRevalidatesEndedInvitation(t *testing.T) {
 				if err := gate.Model(f.recipient).Updates(map[string]any{"status": models.UserDisabled, "session_version": gorm.Expr("session_version + 1")}).Error; err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.app.reconcileContacts(gate, time.Now().UTC(), contactChange{UserID: f.recipient.ID}); err != nil {
+				if err := f.app.reconcileContacts(gate, time.Now().UTC(), contactChange{UserID: f.recipient.ID}); err != nil {
 					t.Fatal(err)
 				}
 				if err := gate.Model(f.recipient).Update("status", models.UserActive).Error; err != nil {

@@ -525,7 +525,7 @@ func (a *App) preparePasswordReset(tx *gorm.DB, userID uint) (mail.Message, bool
 	if user.Status != models.UserActive {
 		return mail.Message{}, false, nil
 	}
-	raw, err := createAccountToken(tx, models.TokenPasswordReset, user.ID, nil, tokenTTL)
+	raw, _, err := issueAccountToken(tx, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 	if err != nil {
 		return mail.Message{}, false, err
 	}
@@ -654,7 +654,7 @@ func (a *App) prepareAccountRequestMail(tx *gorm.DB, requestID uint, kind string
 		if user.PasswordHash != nil {
 			return none, false, nil
 		}
-		if raw, err = createAccountToken(tx, models.TokenAccountSetup, user.ID, nil, tokenTTL); err != nil {
+		if raw, _, err = issueAccountToken(tx, models.TokenAccountSetup, user.ID, nil, tokenTTL); err != nil {
 			return none, false, err
 		}
 		to = user.Email

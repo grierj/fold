@@ -43,7 +43,7 @@ func TestEmailChangeCancellationEndsAllSubjectSessions(t *testing.T) {
 	other := loginAPI(t, app, foreign.Email, "password1234")
 	verify, cancel := requestSecurityEmailChange(t, app, first, user, "cancel-new@example.com")
 	for _, kind := range []string{models.TokenPasswordReset, models.TokenAccountSetup, models.TokenTeenConsent} {
-		if _, err := createAccountToken(app.DB, kind, user.ID, nil, tokenTTL); err != nil {
+		if _, _, err := issueAccountToken(app.DB, kind, user.ID, nil, tokenTTL); err != nil {
 			t.Fatal(err)
 		}
 	}

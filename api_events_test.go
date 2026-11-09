@@ -2049,7 +2049,7 @@ func TestEventChangedNoticeSerializesWithRealAdminDelete(t *testing.T) {
 // N-16 (inventory 9.2.2, a gated entry): cancelling a date tells everyone going
 // or waitlisted on it. The real operation is POST /events/:id/cancel {date} ->
 // apiCancelOccurrence -> contactMutation (gate first, with the event id) -> one
-// UPDATE marks the date cancelled (its row lock; no earlier row lock) -> notifyOccurrencesCancelled -> notifyOccurrences: the
+// UPDATE marks the date cancelled (its row lock; no earlier row lock) -> notifyOccurrences: the
 // registrants are read (listed users only), one WithRecipients lock covers all
 // of them, and each Send reuses the scope; the room is freed after. 200 in
 // both orders.
@@ -2058,7 +2058,7 @@ func TestEventChangedNoticeSerializesWithRealAdminDelete(t *testing.T) {
 // delete waits on the gate. Deletion first: the cancellation waits, then does
 // not see the victim among the registrants. The kept registrant and the member
 // are told in both. Not covered: the series-edit cancel in apiUpdateEvent
-// (api_events.go:1016), the restore variant (notifyOccurrencesRestored, same
+// (api_events.go:1016), the restore variant (notifyOccurrences with OccurrenceRestored, same
 // fan-out with another kind), and a date with invited holders.
 func TestOccurrenceCancelledNoticeSerializesWithRealAdminDelete(t *testing.T) {
 	runGatedErasureBarriers(t, 7402123, 7402124, func(t *testing.T) gatedErasureScene {

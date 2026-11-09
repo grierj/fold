@@ -252,14 +252,11 @@ func requestStart(c *gin.Context) time.Time {
 // write timeout counts from the request headers). start is requestStart, not
 // the handler's own clock: CSRF has already read the body by then.
 func avatarTxDeadline(start, bodyRead time.Time) time.Time {
-	return minTime(bodyRead.Add(avatarTxTimeout), start.Add(avatarHandlerBudget))
-}
-
-func minTime(a, b time.Time) time.Time {
-	if b.Before(a) {
-		return b
+	deadline := bodyRead.Add(avatarTxTimeout)
+	if budget := start.Add(avatarHandlerBudget); budget.Before(deadline) {
+		return budget
 	}
-	return a
+	return deadline
 }
 
 // storeAvatar makes r the user's avatar. Under the row lock it checks the

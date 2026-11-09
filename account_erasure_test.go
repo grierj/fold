@@ -1905,7 +1905,7 @@ func erasureSeedRequest(t *testing.T, db *gorm.DB, r models.AccountRequest) mode
 func erasureSeedTasks(t *testing.T, db *gorm.DB, r *models.AccountRequest) {
 	t.Helper()
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		_, err := notifyAccountRequested(tx, r, models.RequestFlags{})
+		err := notifyAccountRequested(tx, r, models.RequestFlags{})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -4204,13 +4204,13 @@ const (
 func erasureSeedRequestTasks(t *testing.T, db *gorm.DB, r models.ContactRequest, admin uint) {
 	t.Helper()
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if _, err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
+		if err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
 			return err
 		}
 		if !r.NeedsAdmin {
 			return nil
 		}
-		_, err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
+		err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
 		return err
 	})
 	if err != nil {
@@ -9861,7 +9861,7 @@ func (w *agesRaceWorld) holdSweep(now time.Time) (pid int, done <-chan error, re
 			if !locked {
 				return errors.New("the model sweep could not take the contact gate")
 			}
-			if _, err := w.app.reconcileContacts(tx, now, contactChange{}); err != nil {
+			if err := w.app.reconcileContacts(tx, now, contactChange{}); err != nil {
 				return err
 			}
 			close(reached)

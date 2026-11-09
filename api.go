@@ -380,19 +380,6 @@ func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
 	return user, ok && user.Status == models.UserActive
 }
 
-func (a *App) sessionAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		user, ok := a.authenticatedSessionUser(c)
-		if !ok {
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
-			c.Abort()
-			return
-		}
-		c.Set("apiUser", user)
-		c.Next()
-	}
-}
-
 // apiAuth requires a logged-in user; 401 JSON otherwise.
 func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -571,7 +558,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/auth/csrf", a.apiGetCSRF)
 	v1.POST("/auth/login", a.apiLogin)
 	v1.POST("/auth/logout", a.apiLogout)
-	v1.GET("/auth/me", a.sessionAuth(), a.apiMe)
+	v1.GET("/auth/me", a.apiAuth(), a.apiMe)
 	// Password reset (M1.2): uniform response, single-use expiring tokens.
 	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
 	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)
@@ -699,9 +686,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/groups/:id", a.optionalUser(), a.apiGetGroup)
 	v1.PUT("/groups/:id", a.apiAuth(), a.apiUpdateGroup)
 	v1.POST("/groups/:id/join", a.apiAuth(), a.apiJoinGroup)
-	v1.GET("/groups/:id/departure-preview", a.sessionAuth(), a.apiLeaveGroupDeparturePreview)
+	v1.GET("/groups/:id/departure-preview", a.apiAuth(), a.apiLeaveGroupDeparturePreview)
 	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroupConfirmed)
-	v1.GET("/groups/:id/members/:userId/departure-preview", a.sessionAuth(), a.apiRemoveGroupMemberDeparturePreview)
+	v1.GET("/groups/:id/members/:userId/departure-preview", a.apiAuth(), a.apiRemoveGroupMemberDeparturePreview)
 	v1.POST("/groups/:id/members/:userId/departure", a.apiAuth(), a.apiRemoveGroupMemberConfirmed)
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)

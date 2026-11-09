@@ -54,12 +54,6 @@ type EmailMessage struct {
 // EmailCaps says what an email adapter can do.
 type EmailCaps struct {
 	Name string
-	// Streams: transactional and broadcast mail go out separately.
-	Streams bool
-	// Webhooks: the provider reports deliveries, bounces and complaints.
-	Webhooks bool
-	// BatchSize is how many messages one batch call takes (0: no batches).
-	BatchSize int
 }
 
 // EmailSender sends email. SendEmail returns the provider's id for the

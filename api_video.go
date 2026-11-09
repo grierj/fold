@@ -20,7 +20,6 @@ import (
 
 const (
 	settingJitsiDomain = "jitsi_domain"
-	settingChurchName  = "church_name"
 	defaultJitsiDomain = "meet.jit.si"
 	maxVideoURLLen     = 2048
 )
@@ -160,34 +159,6 @@ func revealVideoToManager(j *eventJSON, ev *models.Event) {
 // locally (no API call). Leaders, hosts and admins only.
 // ---------------------------------------------------------------------------
 
-// jitsiDomain reads the jitsi_domain setting, defaulting to meet.jit.si.
-// A value that isn't a plain host name also falls back to the default, so
-// a typo in settings can't mint links onto a malformed host.
-func (a *App) jitsiDomain() string {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", settingJitsiDomain).First(&s).Error; err != nil {
-		return defaultJitsiDomain
-	}
-	d := strings.TrimSpace(s.Value)
-	d = strings.TrimPrefix(d, "https://")
-	d = strings.TrimPrefix(d, "http://")
-	if i := strings.Index(d, "/"); i >= 0 {
-		d = d[:i]
-	}
-	d = strings.ToLower(d)
-	if d == "" {
-		return defaultJitsiDomain
-	}
-	for _, r := range d {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == ':':
-		default:
-			return defaultJitsiDomain
-		}
-	}
-	return d
-}
-
 // churchSlug is the room-name prefix from the church's name: lowercase,
 // a-z0-9 and hyphens, "fold" when nothing usable is left.
 func churchSlug(name string) string {
@@ -208,15 +179,6 @@ func churchSlug(name string) string {
 		return "fold"
 	}
 	return slug
-}
-
-func (a *App) churchSlug() string {
-	var s models.Setting
-	if err := a.DB.Where("key = ?", settingChurchName).First(&s).Error; err == nil &&
-		strings.TrimSpace(s.Value) != "" {
-		return churchSlug(s.Value)
-	}
-	return churchSlug(a.siteName())
 }
 
 const (
@@ -263,5 +225,33 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not generate a video link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"url": "https://" + a.jitsiDomain() + "/" + a.churchSlug() + "-" + room})
+	c.JSON(http.StatusOK, gin.H{"url": "https://" + a.jitsiDomain() + "/" + churchSlug(a.siteName()) + "-" + room})
+}
+
+// jitsiDomain reads the jitsi_domain setting (PLAN 5.8), defaulting to
+// meet.jit.si. A value that isn't a plain host name also falls back to the
+// default, so a typo in settings can't mint links onto a malformed host.
+func (a *App) jitsiDomain() string {
+	var s models.Setting
+	if err := a.DB.Where("key = ?", settingJitsiDomain).First(&s).Error; err != nil {
+		return defaultJitsiDomain
+	}
+	d := strings.TrimSpace(s.Value)
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimPrefix(d, "http://")
+	if i := strings.Index(d, "/"); i >= 0 {
+		d = d[:i]
+	}
+	d = strings.ToLower(d)
+	if d == "" {
+		return defaultJitsiDomain
+	}
+	for _, r := range d {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == ':':
+		default:
+			return defaultJitsiDomain
+		}
+	}
+	return d
 }

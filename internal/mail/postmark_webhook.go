@@ -32,12 +32,7 @@ type postmarkRecord struct {
 // Postmark's Inactive flag says.
 var postmarkHardBounces = map[string]bool{"HardBounce": true, "BadEmailAddress": true}
 
-// ParseWebhook reads one Postmark webhook body.
-func (p *Postmark) ParseWebhook(h http.Header, body []byte) ([]providers.Event, error) {
-	return ParsePostmarkWebhook(h, body)
-}
-
-// ParsePostmarkWebhook is ParseWebhook without an adapter, for the handler.
+// ParsePostmarkWebhook reads one Postmark webhook body.
 func ParsePostmarkWebhook(h http.Header, body []byte) ([]providers.Event, error) {
 	var r postmarkRecord
 	if err := json.Unmarshal(body, &r); err != nil {

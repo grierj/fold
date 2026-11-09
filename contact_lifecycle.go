@@ -292,14 +292,14 @@ func (a *App) contactMutationOn(ctx context.Context, db *gorm.DB, change contact
 	// Persist expiry under the shared gate before the event/occurrence rows
 	// change, so a move cannot resurrect authority that already elapsed.
 	if change.EventID != 0 {
-		if _, err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
+		if err := a.reconcileOccurrenceAccesses(tx, time.Now().UTC(), change); err != nil {
 			return rollback(err)
 		}
 	}
 	if err := fn(tx); err != nil {
 		return rollback(err)
 	}
-	if _, err := a.reconcileContacts(tx, time.Now().UTC(), change); err != nil {
+	if err := a.reconcileContacts(tx, time.Now().UTC(), change); err != nil {
 		return rollback(err)
 	}
 	// The actor seal is the last locking statement (R5-C01): after it the
@@ -491,24 +491,25 @@ func contactConfirmedGuardian(tx *gorm.DB, actor, teen uint) (bool, error) {
 	return n > 0, err
 }
 
-func contactNotice(tx *gorm.DB, r models.ContactRequest, kind string, recipients []uint, key string) ([]uint, error) {
+func contactNotice(tx *gorm.DB, r models.ContactRequest, kind string, recipients []uint, key string) error {
 	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
-		return nil, errors.New("unknown request notice purpose")
+		return errors.New("unknown request notice purpose")
 	}
 	// Deleted/disabled parties retain history but receive no new feed/email.
 	var active []uint
 	if len(recipients) == 0 {
-		return nil, nil
+		return nil
 	}
 	if err := tx.Model(&models.User{}).Where("id IN ? AND status = ? AND password_hash IS NOT NULL", recipients, models.UserActive).Order("id").Pluck("id", &active).Error; err != nil {
-		return nil, err
+		return err
 	}
 	subjectType, link, prefix := "contact_request", "contact-requests", "contact"
 	if r.Purpose == policy.RequestGroupAdd || r.Purpose == policy.RequestOccurrenceAdd {
 		subjectType, link, prefix = "add_request", "add-requests", "add"
 		kind = addNoticeKind(kind)
 	}
-	return notify.Send(tx, notify.Msg{Kind: kind, To: active, SubjectType: subjectType, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", link, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", prefix, r.ID, key), Vars: notify.Vars{Teen: r.NeedsAdmin}})
+	_, err := notify.Send(tx, notify.Msg{Kind: kind, To: active, SubjectType: subjectType, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", link, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", prefix, r.ID, key), Vars: notify.Vars{Teen: r.NeedsAdmin}})
+	return err
 }
 func resolveContactTasks(tx *gorm.DB, r models.ContactRequest, actor *uint, outcome string) error {
 	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
@@ -525,49 +526,49 @@ func resolveContactTasks(tx *gorm.DB, r models.ContactRequest, actor *uint, outc
 	}
 	return nil
 }
-func finishContactRequest(tx *gorm.DB, r *models.ContactRequest, status, reason string, now time.Time) ([]uint, error) {
+func finishContactRequest(tx *gorm.DB, r *models.ContactRequest, status, reason string, now time.Time) error {
 	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
-		return nil, errors.New("unknown request lifecycle purpose")
+		return errors.New("unknown request lifecycle purpose")
 	}
 	r.Status, r.EndReason, r.CompletedAt = status, reason, &now
 	if err := tx.Save(r).Error; err != nil {
-		return nil, err
+		return err
 	}
 	action := audit.ContactEnded
 	if status == policy.ContactExpired {
 		action = audit.ContactExpired
 	}
 	if err := contactAudit(tx, nil, action, *r, reason, ""); err != nil {
-		return nil, err
+		return err
 	}
 	if err := resolveContactTasks(tx, *r, nil, status); err != nil {
-		return nil, err
+		return err
 	}
 	return contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, status)
 }
-func endContactGrant(tx *gorm.DB, g *models.ContactGrant, r models.ContactRequest, reason string, actor *uint, now time.Time, ip string) ([]uint, error) {
+func endContactGrant(tx *gorm.DB, g *models.ContactGrant, r models.ContactRequest, reason string, actor *uint, now time.Time, ip string) error {
 	if r.Purpose != policy.RequestContact {
-		return nil, errors.New("not a contact grant")
+		return errors.New("not a contact grant")
 	}
 	if g.EndedAt != nil {
-		return nil, nil
+		return nil
 	}
 	g.EndedAt, g.EndReason, g.EndedBy = &now, reason, actor
 	if err := tx.Save(g).Error; err != nil {
-		return nil, err
+		return err
 	}
 	action := audit.ContactEnded
 	if actor != nil {
 		action = audit.ContactRevoked
 	}
 	if err := contactAudit(tx, actor, action, r, reason, ip); err != nil {
-		return nil, err
+		return err
 	}
 	recipients := []uint{r.RequesterID, r.SubjectUserID}
 	if r.NeedsAdmin {
 		ids, err := contactGuardians(tx, r.SubjectUserID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		recipients = append(recipients, ids...)
 	}
@@ -577,7 +578,7 @@ func endContactGrant(tx *gorm.DB, g *models.ContactGrant, r models.ContactReques
 // reconcileContacts is idempotent: only pending requests and unended grants
 // are candidates. History stays granted after its grant ends. Scoped mutation
 // hooks include group events so leadership loss cannot be undone by rejoining.
-func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange) ([]uint, error) {
+func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange) error {
 	q := tx.Where("purpose IN ?", []string{policy.RequestContact, policy.RequestGroupAdd, policy.RequestOccurrenceAdd}).Where("status = ? OR id IN (SELECT request_id FROM contact_grants WHERE ended_at IS NULL)", policy.ContactPending)
 	switch {
 	case change.UserID != 0:
@@ -589,25 +590,20 @@ func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange
 	}
 	var rs []models.ContactRequest
 	if err := q.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Find(&rs).Error; err != nil {
-		return nil, err
+		return err
 	}
-	var mailed []uint
 	for i := range rs {
 		r := &rs[i]
 		if r.Purpose == policy.RequestOccurrenceAdd {
-			ids, err := a.reconcileOccurrenceAsk(tx, r, now)
-			if err != nil {
-				return nil, err
+			if err := a.reconcileOccurrenceAsk(tx, r, now); err != nil {
+				return err
 			}
-			mailed = append(mailed, ids...)
 			continue
 		}
 		if r.Purpose == policy.RequestGroupAdd {
-			ids, err := a.reconcileGroupAsk(tx, r, now)
-			if err != nil {
-				return nil, err
+			if err := a.reconcileGroupAsk(tx, r, now); err != nil {
+				return err
 			}
-			mailed = append(mailed, ids...)
 			continue
 		}
 		if r.Purpose != policy.RequestContact {
@@ -615,7 +611,7 @@ func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange
 		}
 		f, _, err := a.loadContactFacts(tx, contactScope(*r), now)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		reason := policy.ContactIneligibility(f, r.NeedsAdmin)
 		if r.Status == policy.ContactPending {
@@ -627,31 +623,23 @@ func (a *App) reconcileContacts(tx *gorm.DB, now time.Time, change contactChange
 				status = policy.ContactEnded
 			}
 			if status != "" {
-				ids, err := finishContactRequest(tx, r, status, reason, now)
-				if err != nil {
-					return nil, err
+				if err := finishContactRequest(tx, r, status, reason, now); err != nil {
+					return err
 				}
-				mailed = append(mailed, ids...)
 			}
 		} else if reason != "" {
 			var gs []models.ContactGrant
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id = ? AND ended_at IS NULL", r.ID).Order("id").Find(&gs).Error; err != nil {
-				return nil, err
+				return err
 			}
 			for j := range gs {
-				ids, err := endContactGrant(tx, &gs[j], *r, reason, nil, now, "")
-				if err != nil {
-					return nil, err
+				if err := endContactGrant(tx, &gs[j], *r, reason, nil, now, ""); err != nil {
+					return err
 				}
-				mailed = append(mailed, ids...)
 			}
 		}
 	}
-	ids, err := a.reconcileOccurrenceAccesses(tx, now, change)
-	if err != nil {
-		return nil, err
-	}
-	return append(mailed, ids...), nil
+	return a.reconcileOccurrenceAccesses(tx, now, change)
 }
 
 func (a *App) sweepContacts(ctx context.Context, now time.Time) error {
@@ -663,8 +651,7 @@ func (a *App) sweepContacts(ctx context.Context, now time.Time) error {
 		if !locked {
 			return nil
 		}
-		_, err := a.reconcileContacts(tx, now, contactChange{})
-		return err
+		return a.reconcileContacts(tx, now, contactChange{})
 	})
 }
 
@@ -716,13 +703,13 @@ func (a *App) loadGroupAddFacts(tx *gorm.DB, r models.ContactRequest, now time.T
 	return f, nil
 }
 
-func (a *App) reconcileGroupAsk(tx *gorm.DB, r *models.ContactRequest, now time.Time) ([]uint, error) {
+func (a *App) reconcileGroupAsk(tx *gorm.DB, r *models.ContactRequest, now time.Time) error {
 	if r.Purpose != policy.RequestGroupAdd || r.Status != policy.ContactPending {
-		return nil, nil
+		return nil
 	}
 	f, err := a.loadGroupAddFacts(tx, *r, now)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if policy.AddRequestExpired(addRequestPolicy(*r), now) {
 		return finishContactRequest(tx, r, policy.ContactExpired, "", now)
@@ -730,7 +717,7 @@ func (a *App) reconcileGroupAsk(tx *gorm.DB, r *models.ContactRequest, now time.
 	if reason := policy.AddIneligibility(addRequestPolicy(*r).AddScope, f, r.NeedsAdmin); reason != "" {
 		return finishContactRequest(tx, r, policy.ContactEnded, reason, now)
 	}
-	return nil, nil
+	return nil
 }
 
 // Only the group request finalizer constructs this fact. The membership core

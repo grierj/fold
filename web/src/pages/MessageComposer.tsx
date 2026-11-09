@@ -7,12 +7,11 @@ import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { reminderAudience, reminderDateText, reminderName } from "../lib/reminders";
-import { churchName, useChurchZoneLoad, useSite } from "../lib/useSite";
+import { useChurchZoneLoad } from "../lib/useSite";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
 import { AudiencePicker } from "../components/messages/AudiencePicker";
 import { SendProblem, useMessageHistory, WhoGotIt } from "../components/messages/MessageHistory";
-import { SmsComposer } from "../components/messages/SmsComposer";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -20,7 +19,6 @@ import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors } fr
 import { Form } from "../components/ui/Form";
 import { FormActions } from "../components/ui/FormActions";
 import { Skeleton } from "../components/ui/Skeleton";
-import { Tabs } from "../components/ui/Tabs";
 
 // TipTap is big, so the editor arrives with import() (the bundle budget, web/scripts/bundle-size.mjs).
 const RichTextEditor = lazy(() => import("../components/messages/RichTextEditor").then((m) => ({ default: m.RichTextEditor })));
@@ -57,7 +55,6 @@ export function MessageComposerPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const { user, isAdmin } = useAuth();
-  const { site } = useSite();
   // The schedule is in the church's zone: wait for it, so a saved time is
   // never read on the browser's clock first.
   const church = useChurchZoneLoad();
@@ -80,8 +77,6 @@ export function MessageComposerPage() {
   const [choice, setChoice] = useState<AudienceChoice>(emptyChoice);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
-  const [sms, setSms] = useState("");
-  const [tab, setTab] = useState<"email" | "sms">("email");
   const [when, setWhen] = useState<"now" | "later">("now");
   const [day, setDay] = useState("");
   const [time, setTime] = useState("09:00");
@@ -449,19 +444,6 @@ export function MessageComposerPage() {
     </>);
   }
 
-  const emailFields = <>
-    <Field id={ids.subject} label="Subject" hint="One line, up to 200 characters." error={errors.subject}>
-      <Input value={subject} maxLength={200} onChange={(e) => setSubject(e.target.value)} />
-    </Field>
-    <Field id={ids.body} label="Message" hint={oneEvent
-      ? "Insert field adds each person's first name, or the event's title, time and links."
-      : "Insert field adds each person's first name."} error={errors.body}>
-      <Suspense fallback={<Skeleton kind="lines" label="Loading the editor…" />}>
-        <RichTextEditor key={editorKey} value={body} onChange={setBody} onReady={onEditorReady} oneEvent={oneEvent} />
-      </Suspense>
-    </Field>
-  </>;
-
   return page(<>
     {back}
     <h1 ref={heading} tabIndex={-1} className="fold-page-header text-3xl font-bold focus:outline-none">{title}</h1>
@@ -470,8 +452,7 @@ export function MessageComposerPage() {
         <h2 id={`${ids.audience}-h`} className="text-xl font-semibold">Who gets it</h2>
         <AudiencePicker id={ids.audience} options={options} choice={choice} error={errors.audience} push={pushShown && pushAlert}
           onChange={(c) => { setChoice(c); setErrors((e) => ({ ...e, audience: undefined })); }} />
-        {/* A companion to the email, never instead of it (DEC-123). The SMS
-            tab, when it exists, has nothing to do with it. */}
+        {/* A companion to the email, never instead of it (DEC-123). */}
         {pushShown && (
           <Checkbox label="Push notification too"
             description="People who turned on notifications also get a short note: the subject and the start of the message."
@@ -481,11 +462,16 @@ export function MessageComposerPage() {
 
       <section aria-labelledby={`${ids.body}-h`} className="fold-section space-y-5">
         <h2 id={`${ids.body}-h`} className="text-xl font-semibold">What it says</h2>
-        {options.smsEnabled ? (
-          <Tabs label="Channel" value={tab} onChange={setTab} options={[{ id: "email", label: "Email" }, { id: "sms", label: "Text" }]}>
-            {tab === "email" ? emailFields : <SmsComposer church={churchName(site) || "Fold"} value={sms} onChange={setSms} />}
-          </Tabs>
-        ) : emailFields}
+        <Field id={ids.subject} label="Subject" hint="One line, up to 200 characters." error={errors.subject}>
+          <Input value={subject} maxLength={200} onChange={(e) => setSubject(e.target.value)} />
+        </Field>
+        <Field id={ids.body} label="Message" hint={oneEvent
+          ? "Insert field adds each person's first name, or the event's title, time and links."
+          : "Insert field adds each person's first name."} error={errors.body}>
+          <Suspense fallback={<Skeleton kind="lines" label="Loading the editor…" />}>
+            <RichTextEditor key={editorKey} value={body} onChange={setBody} onReady={onEditorReady} oneEvent={oneEvent} />
+          </Suspense>
+        </Field>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void run("preview")}>{busy === "preview" ? "Saving…" : "Preview"}</Button>
           <Button variant="secondary" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void run("test")}>{busy === "test" ? "Sending…" : "Send a test to me"}</Button>
