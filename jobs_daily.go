@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/models"
@@ -35,7 +35,7 @@ func (a *App) dailyKinds() []jobs.Kind {
 	return []jobs.Kind{
 		// Stored occurrences reach 18 months ahead (DEC-89).
 		daily("occurrences.extend", "Adding upcoming event dates", func(ctx context.Context, now time.Time) error {
-			return events.ExtendLocked(ctx, a.DB, now, a.afterExtend())
+			return eventdates.ExtendLocked(ctx, a.DB, now, a.afterExtend())
 		}),
 		// Contact requests expire and grants end (5.11).
 		daily("contact.sweep", "Closing expired contact requests and grants", a.sweepContacts),

@@ -1465,7 +1465,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		}
 		refuse := func(err error) error {
 			businessErr = err
-			return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": "manager_add"}})
+			return writeOccurrenceRefusal(tx, actor.ID, c.ClientIP(), operationManagerAdd)
 		}
 		if !allowed {
 			return refuse(errDateAddThrottled)

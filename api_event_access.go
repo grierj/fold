@@ -306,6 +306,12 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	a.respondEvent(c, http.StatusCreated, &ev, creator, eventFacts{view: viewOf(&ev, true)})
 }
 
+// leaderOpens reports whether setting the event to vis makes it wider than its
+// group, which marks it leader-opened (DEC-48).
+func leaderOpens(f eventFacts, vis string) bool {
+	return f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
+}
+
 // apiSetEventVisibility sets an event's own visibility (DEC-48). On a group
 // event, a value wider than the group marks it leader-opened and is audited
 // as an override with a notice to the other leaders and admins (DEC-17,
@@ -341,16 +347,10 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		fail(c, errVisibilityNotAllowed)
 		return
 	}
-	opened := f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
-	if ev.Visibility == vis && ev.LeaderOpened == opened && !body.ResetOverrides {
+	if ev.Visibility == vis && ev.LeaderOpened == leaderOpens(f, vis) && !body.ResetOverrides {
 		a.respondEvent(c, http.StatusOK, ev, me, f)
 		return
 	}
-	action := audit.VisibilityChanged
-	if opened {
-		action = audit.VisibilityOverride
-	}
-	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
@@ -364,12 +364,12 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
 			return errDateVisibility
 		}
-		opened = f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
-		action = audit.VisibilityChanged
+		opened := leaderOpens(f, vis)
+		action := audit.VisibilityChanged
 		if opened {
 			action = audit.VisibilityOverride
 		}
-		oldVis, oldOpened = locked.Visibility, locked.LeaderOpened
+		oldVis, oldOpened := locked.Visibility, locked.LeaderOpened
 		impact, err = eventImpactOfReset(tx, &locked, vis, body.ResetOverrides)
 		if err != nil {
 			return err

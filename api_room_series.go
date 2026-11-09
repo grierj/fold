@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"fold/internal/audit"
-	"fold/internal/events"
+	"fold/internal/eventdates"
 	"fold/internal/policy"
 	"fold/internal/rooms"
 	"fold/models"
@@ -532,7 +532,7 @@ func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uin
 // its notices queue their own delivery in the same transaction. While rooms
 // are off it books nothing and tells no one. A failure here is logged and
 // undone on its own, so it never stops the event's new dates being added.
-func (a *App) afterExtend() events.AfterEnsure {
+func (a *App) afterExtend() eventdates.AfterEnsure {
 	return func(tx *gorm.DB, ev *models.Event, added []string) error {
 		if ev.DefaultRoomID == nil || !a.roomsEnabled() {
 			return nil

@@ -234,9 +234,17 @@ func liveOccurrenceInvitationIn(tx *gorm.DB, row models.Registration, now time.T
 	return n == 1, err
 }
 
-func (a *App) apiDeclineOccurrence(c *gin.Context)  { a.mutateOwnOccurrence(c, "decline") }
-func (a *App) apiBlockOccurrence(c *gin.Context)    { a.mutateOwnOccurrence(c, "block") }
-func (a *App) apiRegisterOccurrence(c *gin.Context) { a.mutateOwnOccurrence(c, "registration") }
+// The three things a person does with their own exact-date invitation. The
+// names are also the operation recorded in occurrence_refused audit rows.
+const (
+	operationDecline  = "decline"
+	operationBlock    = "block"
+	operationRegister = "registration"
+)
+
+func (a *App) apiDeclineOccurrence(c *gin.Context)  { a.mutateOwnOccurrence(c, operationDecline) }
+func (a *App) apiBlockOccurrence(c *gin.Context)    { a.mutateOwnOccurrence(c, operationBlock) }
+func (a *App) apiRegisterOccurrence(c *gin.Context) { a.mutateOwnOccurrence(c, operationRegister) }
 
 func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 	eventID, parseErr := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -250,7 +258,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		ChildcareAgesNote *string `json:"childcareAgesNote"`
 	}
 	valid := parseErr == nil && eventID > 0 && dateErr == nil
-	if operation == "registration" {
+	if operation == operationRegister {
 		decoder := json.NewDecoder(c.Request.Body)
 		decoder.DisallowUnknownFields()
 		valid = valid && decoder.Decode(&input) == nil && validAnswer(input.Status)
@@ -264,7 +272,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		now := time.Now().UTC()
 		refuse := func() error {
 			refused = true
-			return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": operation}})
+			return writeOccurrenceRefusal(tx, apiUser(c).ID, c.ClientIP(), operation)
 		}
 		if !valid {
 			return refuse()
@@ -314,10 +322,10 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 			return err
 		}
 		want, reason := input.Status, ""
-		if operation == "decline" || operation == "block" || input.Status == models.RegDeclined {
+		if operation == operationDecline || operation == operationBlock || input.Status == models.RegDeclined {
 			want, reason = models.RegDeclined, policy.OccurrenceDeclined
 		}
-		if operation == "block" {
+		if operation == operationBlock {
 			if !policy.CanBlockManagerAdds(account, occurrenceAccessPolicy(reg, scope)) {
 				return refuse()
 			}
@@ -342,7 +350,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		}
 		care := childcareRequest{ChildcareCount: input.ChildcareCount, ChildcareAgesNote: input.ChildcareAgesNote}
 		count, ages := care.values(reg)
-		if reason == "" && (count < 0 || count > 20 || utf8.RuneCountInString(ages) > 200 || (input.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable)) {
+		if reason == "" && (count < 0 || count > policy.MaxAddChildcare || utf8.RuneCountInString(ages) > policy.MaxAddAgesNote || (input.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable)) {
 			return refuse()
 		}
 		change, err := prepareRegistration(reg, locked, userSubject(actor.ID), want, guests, mode, care, nil, now)
@@ -359,7 +367,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 				return err
 			}
 		}
-		if operation == "block" {
+		if operation == operationBlock {
 			change := contactChange{EventID: scope.EventID}
 			if scope.Organizer.Type == policy.ContactGroup {
 				change = contactChange{GroupID: scope.Organizer.ID}
@@ -383,15 +391,13 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		return nil
 	})
 	if err != nil {
-		auditErr := a.DB.Transaction(func(tx *gorm.DB) error {
-			if err := lockContacts(tx); err != nil {
-				return err
+		// A refusal the person is told about is audited; a database failure is
+		// only logged by fail.
+		if isAPIError(err) {
+			if auditErr := a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operation); auditErr != nil {
+				jsonError(c, 500, "could not save registration")
+				return
 			}
-			return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": operation}})
-		})
-		if auditErr != nil {
-			jsonError(c, 500, "could not save registration")
-			return
 		}
 		fail(c, err)
 		return
@@ -400,7 +406,7 @@ func (a *App) mutateOwnOccurrence(c *gin.Context, operation string) {
 		jsonError(c, 404, "event not found")
 		return
 	}
-	if operation == "registration" {
+	if operation == operationRegister {
 		c.JSON(200, gin.H{"registration": result})
 		return
 	}
@@ -642,10 +648,26 @@ func (a *App) managerDateAddRefusal(c *gin.Context, err error) {
 }
 
 func (a *App) auditManagerDateRefusal(c *gin.Context) error {
+	return a.auditOccurrenceRefusal(apiUser(c).ID, c.ClientIP(), operationManagerAdd)
+}
+
+// operationManagerAdd names a manager's add of someone to one date in the
+// occurrence_refused audit rows.
+const operationManagerAdd = "manager_add"
+
+// writeOccurrenceRefusal records a refused exact-date request in the caller's
+// transaction.
+func writeOccurrenceRefusal(tx *gorm.DB, actorID uint, ip, operation string) error {
+	return audit.Write(tx, audit.Entry{Actor: &actorID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: ip, Meta: map[string]any{"operation": operation}})
+}
+
+// auditOccurrenceRefusal records a refusal in a transaction of its own, for a
+// request whose own transaction rolled back.
+func (a *App) auditOccurrenceRefusal(actorID uint, ip, operation string) error {
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.OccurrenceRefused, TargetType: "occurrence_endpoint", IP: c.ClientIP(), Meta: map[string]any{"operation": "manager_add"}})
+		return writeOccurrenceRefusal(tx, actorID, ip, operation)
 	})
 }

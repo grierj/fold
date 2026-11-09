@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/eventdates"
 	"fold/internal/events"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -789,7 +790,7 @@ func (a *App) createEventIn(tx *gorm.DB, ev *models.Event, creator *models.User,
 			return err
 		}
 	}
-	if err := events.Ensure(tx, ev, time.Now().UTC()); err != nil {
+	if err := eventdates.Ensure(tx, ev, time.Now().UTC()); err != nil {
 		return err
 	}
 	return a.bookCreatedSeries(tx, ev, roomID, creator, ip)
@@ -901,16 +902,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	// values built from a stale copy. A validation failure is returned as its
 	// answer and rolls back (nothing is written yet).
 	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
-			return err
-		}
-		f, err := eventFactsIn(tx, me, &locked)
+		lockedEv, _, err := lockManagedEventIn(tx, me, ev.ID)
 		if err != nil {
 			return err
 		}
-		if !f.canManage(me) {
-			return errCannotChangeEvent
-		}
+		locked = *lockedEv
 		spec, whens, err := a.specFrom(body, &locked, false)
 		if err != nil {
 			return err
@@ -955,19 +951,19 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		var cancelled, moved, restored, added []uint
 		for _, act := range actions {
 			switch act.Kind {
-			case "move":
+			case events.ActionMove:
 				if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", act.ID).
 					Updates(map[string]any{"starts_at": act.When.StartsAt, "ends_at": act.When.EndsAt}).Error; err != nil {
 					return err
 				}
 				moved = append(moved, act.ID)
-			case "cancel":
+			case events.ActionCancel:
 				if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", act.ID).
 					Updates(map[string]any{"status": models.OccurrenceCancelled, "cancel_source": models.CancelSourceSeries}).Error; err != nil {
 					return err
 				}
 				cancelled = append(cancelled, act.ID)
-			case "restore":
+			case events.ActionRestore:
 				// The rule includes this date again, so the cancellation the
 				// series made is undone. Registrations were never touched by the
 				// cancellation, so there is nothing to re-create.
@@ -979,7 +975,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					return err
 				}
 				restored = append(restored, act.ID)
-			case "add":
+			case events.ActionAdd:
 				addDate, err := models.ParseCalendarDate(act.When.OriginalDate)
 				if err != nil {
 					return err
@@ -1141,12 +1137,47 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"event": j})
 }
 
+// lockManagedEventIn locks the event row and checks again, on the locked row,
+// that me may manage it: what loadManagedEvent saw before the lock may have
+// changed. The error is errCannotChangeEvent when they no longer can.
+func lockManagedEventIn(tx *gorm.DB, me *models.User, eventID uint) (*models.Event, eventFacts, error) {
+	var locked models.Event
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, eventID).Error; err != nil {
+		return nil, eventFacts{}, err
+	}
+	f, err := eventFactsIn(tx, me, &locked)
+	if err != nil {
+		return nil, eventFacts{}, err
+	}
+	if !f.canManage(me) {
+		return nil, eventFacts{}, errCannotChangeEvent
+	}
+	return &locked, f, nil
+}
+
+// answerEventWrite answers a failed write on a locked event: its own answer,
+// 404 when the event went away while the request waited, else a 500.
+func answerEventWrite(c *gin.Context, err error, failure string) {
+	switch {
+	case isAPIError(err):
+		fail(c, err)
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		jsonError(c, http.StatusNotFound, "event not found")
+	default:
+		jsonError(c, http.StatusInternalServerError, failure)
+	}
+}
+
 func (a *App) apiDeleteEvent(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
 	if !ok {
 		return
 	}
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+		ev, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID)
+		if err != nil {
+			return err
+		}
 		meta := map[string]any{"title": ev.Title, "churchWide": ev.GroupID == nil}
 		if ev.GroupID != nil {
 			meta["groupId"] = *ev.GroupID
@@ -1158,7 +1189,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 		return deleteEventRows(tx, []uint{ev.ID})
 	})
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not delete event")
+		answerEventWrite(c, err, "could not delete event")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
@@ -1235,6 +1266,9 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return
 	}
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+		if _, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID); err != nil {
+			return err
+		}
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
 			Updates(map[string]any{"status": models.OccurrenceCancelled, "cancel_source": models.CancelSourceManual})
 		if res.Error != nil || res.RowsAffected == 0 {
@@ -1256,7 +1290,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return releaseRoomBookings(tx, []uint{occ.ID})
 	})
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not cancel")
+		answerEventWrite(c, err, "could not cancel")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
