@@ -182,7 +182,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			return writeInvitationRefusal(tx, me.ID, reason, c.ClientIP())
 		}
 		if !asPerson(me).Admin {
-			allowed, err := conversionSendAllowed(tx, me.ID, email)
+			allowed, err := inviteSendAllowed(tx, me.ID, email)
 			if err != nil {
 				return err
 			}

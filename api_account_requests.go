@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,15 +106,6 @@ func toAccountRequestJSON(r *models.AccountRequest, names publicNames) accountRe
 		out.RequestedByName = names.name(*r.RequestedBy)
 	}
 	return out
-}
-
-// throttleHit counts one hit against key and reports the running count
-// inside the window. It lives in login_throttles, so it survives
-// restarts and is shared by every replica. Public forms each use their
-// own key prefix, so one form's traffic never throttles another's.
-func (a *App) throttleHit(ctx context.Context, key throttleKey, window time.Duration) (int, error) {
-	failures, _, err := countThrottleHit(a.DB.WithContext(ctx), key, window)
-	return failures, err
 }
 
 type accountRequestInput struct {

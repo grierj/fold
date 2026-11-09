@@ -50,7 +50,7 @@ func conversionMetadata(inv *models.Invitation) conversionJSON {
 
 // Ordinary and household invitations reserve the same email namespace.
 func lockInvitationEmail(tx *gorm.DB, email string) error {
-	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 7316193))", mail.NormalizeAddress(email)).Error
+	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, ?))", mail.NormalizeAddress(email), invitationEmailLockSeed).Error
 }
 
 func conversionEmailAvailable(tx *gorm.DB, email string, except uint, exceptRequest ...uint) error {
@@ -205,29 +205,6 @@ func conversionError(c *gin.Context, err error) {
 	}
 }
 
-// Conversion mail uses the invitation limit, including resends. Audits are
-// durable counters; refused ordinary invitations spend only the actor budget.
-// The actor advisory lock serializes different households and invite targets.
-func conversionSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) {
-	if err := tx.Exec("SELECT pg_advisory_xact_lock(7316194, ?)", actor).Error; err != nil {
-		return false, err
-	}
-	var byActor, byEmail int64
-	mailKinds := []string{audit.InvitationCreated, audit.InvitationResent}
-	actorKinds := []string{audit.InvitationCreated, audit.InvitationResent, audit.InvitationRefused}
-	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", actor, actorKinds).Count(&byActor).Error; err != nil {
-		return false, err
-	}
-	if byActor >= leaderInviteDailyLimit {
-		return false, nil
-	}
-	// Join the invitation instead of putting destination email in conversion audits.
-	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.at > now() - interval '24 hours'", email, mailKinds).Count(&byEmail).Error; err != nil {
-		return false, err
-	}
-	return byEmail < leaderInviteDailyLimit, nil
-}
-
 // Re-enabling an inviter requires a fresh issue or explicit resend. Delivery
 // and acceptance use the same cutoff without taking any authority locks.
 func conversionInviterDisabled(tx *gorm.DB, inv *models.Invitation) (bool, error) {
@@ -303,7 +280,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		}
 		// Household address checks use the same actor gate before looking up
 		// an address. Otherwise this sibling could bypass the ordinary limit.
-		allowed, err = conversionSendAllowed(tx, actor.ID, body.Email)
+		allowed, err = inviteSendAllowed(tx, actor.ID, body.Email)
 		if err != nil {
 			return err
 		}

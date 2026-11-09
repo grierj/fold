@@ -447,12 +447,7 @@ var errDateAddApproval = apiErr(http.StatusConflict, "date_add_approval_required
 var errDateAddThrottled = apiErr(http.StatusConflict, "date_add_throttled", "too many date additions; wait a minute before trying again")
 
 func managerDateAddAllowedIn(tx *gorm.DB, actor uint) (bool, error) {
-	var count int
-	err := tx.Raw(`INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
-ON CONFLICT (key) DO UPDATE SET
- failures = CASE WHEN login_throttles.window_start < now() - interval '1 minute' THEN 1 ELSE login_throttles.failures + 1 END,
- window_start = CASE WHEN login_throttles.window_start < now() - interval '1 minute' THEN now() ELSE login_throttles.window_start END
-RETURNING failures`, string(managerDateAddKey(actor))).Scan(&count).Error
+	count, _, err := countThrottleHit(tx, managerDateAddKey(actor), time.Minute)
 	return count <= managerDateAddLimit, err
 }
 

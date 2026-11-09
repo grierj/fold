@@ -21,9 +21,6 @@ import (
 
 const setupSessionKey = "setupAuthorization"
 
-// A separate lock serializes first-account creation across server processes.
-const setupLockID int64 = 0x466f6c6453657475
-
 var errSetupComplete = errors.New("setup already complete")
 
 func newSetupToken() (string, error) {

@@ -51,7 +51,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - `cancel_source` is `series` (a series edit dropped the date; a later edit that includes it
   schedules it again and tells registrants, DEC-91) or `manual` (a person).
 - Render any name with `User.PublicName()`, never the email. Sign-in needs `User.CanSignIn()`;
-  login throttling is in Postgres (`login_throttles`, `api_auth.go`). `Email` is the login (DEC-23).
+  login throttling is in Postgres (`login_throttles`, `throttle.go`). `Email` is the login (DEC-23).
   Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys (`account_erasure.go`); further stages are tracked in the M7.4
   inventory.
