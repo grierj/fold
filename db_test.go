@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"fold/internal/dbopen"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -31,7 +32,7 @@ func TestDatabaseLoggerKeepsContactValuesOutOfSQL(t *testing.T) {
 	capture := func(f *contactAPIFixture) *bytes.Buffer {
 		output := new(bytes.Buffer)
 		// The exact production logger configuration, changing only its writer.
-		f.app.DB = f.app.DB.Session(&gorm.Session{Logger: databaseLogger(log.New(output, "\r\n", log.LstdFlags))})
+		f.app.DB = f.app.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(output, "\r\n", log.LstdFlags))})
 		return output
 	}
 	t.Run("errored-insert", func(t *testing.T) {

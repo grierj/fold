@@ -1,15 +1,18 @@
-package main
+// Package images validates and cleans uploaded pictures for avatars and group
+// covers (ReadUpload, Normalize). It owns the size limit, the allowed types and
+// the wording of their refusals.
+package images
 
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
-	"net/http"
 	"os"
 )
 
@@ -25,39 +28,60 @@ const (
 	// maxImageSide refuses absurd widths and heights (a 1 x 20 000 000 strip
 	// stays under the pixel cap but is no avatar).
 	maxImageSide = 20_000
-	// maxGIFFrames and maxGIFPixels bound an animation: frames, and the total
+	// MaxGIFFrames and maxGIFPixels bound an animation: frames, and the total
 	// pixels of all frame rectangles (pixels x frames).
-	maxGIFFrames = 200
+	MaxGIFFrames = 200
 	maxGIFPixels = 100_000_000
 	// jpegQuality is the quality of re-encoded JPEGs.
 	jpegQuality = 85
 )
 
-// The API's answers for an image it will not take (api_errors.go).
+// allowedTypes maps sniffed MIME types to canonical extensions. The
+// client-supplied Content-Type is never trusted; uploads are sniffed.
+var allowedTypes = map[string]string{
+	"image/jpeg": ".jpg",
+	"image/png":  ".png",
+	"image/gif":  ".gif",
+}
+
+// Ext is the canonical extension for a sniffed MIME type, and whether the type
+// is allowed at all.
+func Ext(mime string) (string, bool) {
+	ext, ok := allowedTypes[mime]
+	return ext, ok
+}
+
+// The reasons an upload is refused. The package knows nothing of the API:
+// the root package maps each to its declared answer (imageRefusal), and any
+// other error from ReadUpload is a server fault.
 var (
-	errImageTooLarge   = apiErr(http.StatusBadRequest, "image_too_large", "that image is too large to process")
-	errImageUnreadable = apiErr(http.StatusBadRequest, "file_unreadable", "cannot read file")
-	errImageWebP       = apiErr(http.StatusBadRequest, "image_unsupported", "WebP images are not supported; use a JPEG or PNG")
+	ErrEmpty      = errors.New("empty upload")
+	ErrFileSize   = errors.New("upload over the size limit")
+	ErrNotAllowed = errors.New("not a JPEG, PNG or GIF")
+	ErrTooLarge   = errors.New("image dimensions over the limit")
+	ErrUnreadable = errors.New("image cannot be decoded")
+	ErrWebP       = errors.New("WebP is not supported")
 )
 
-// normalizeImage re-encodes the image in f (already sniffed as mime) and
+// Normalize re-encodes the image in f (already sniffed as mime) and
 // rewrites f in place with the clean bytes, leaving it positioned at the
 // start. It returns the extension and MIME type of what is now stored.
-func normalizeImage(f *os.File, mime string) (string, string, error) {
-	data, err := io.ReadAll(io.NewSectionReader(f, 0, maxUploadBytes+1))
+func Normalize(f *os.File, mime string) (string, string, error) {
+	ext, ok := allowedTypes[mime]
+	if !ok {
+		return "", "", ErrNotAllowed
+	}
+	data, err := io.ReadAll(io.NewSectionReader(f, 0, MaxUploadBytes+1))
 	if err != nil {
 		return "", "", err
 	}
-	if _, ok := allowedImageTypes[mime]; !ok {
-		return "", "", errImageUnreadable
-	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return "", "", errImageUnreadable
+		return "", "", ErrUnreadable
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxImageSide || cfg.Height > maxImageSide ||
 		cfg.Width*cfg.Height > maxImagePixels {
-		return "", "", errImageTooLarge
+		return "", "", ErrTooLarge
 	}
 
 	var out bytes.Buffer
@@ -84,14 +108,14 @@ func normalizeImage(f *os.File, mime string) (string, string, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", "", err
 	}
-	return allowedImageTypes[mime], mime, nil
+	return ext, mime, nil
 }
 
 func normalizeJPEG(out *bytes.Buffer, data []byte) error {
 	orientation := jpegOrientation(data)
 	img, err := jpeg.Decode(bytes.NewReader(data))
 	if err != nil {
-		return errImageUnreadable
+		return ErrUnreadable
 	}
 	img = applyOrientation(img, orientation)
 	return jpeg.Encode(out, img, &jpeg.Options{Quality: jpegQuality})
@@ -100,7 +124,7 @@ func normalizeJPEG(out *bytes.Buffer, data []byte) error {
 func normalizePNG(out *bytes.Buffer, data []byte) error {
 	img, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
-		return errImageUnreadable
+		return ErrUnreadable
 	}
 	return png.Encode(out, img)
 }
@@ -108,14 +132,14 @@ func normalizePNG(out *bytes.Buffer, data []byte) error {
 func normalizeGIF(out *bytes.Buffer, data []byte) error {
 	frames, pixels, ok := scanGIF(data)
 	if !ok {
-		return errImageUnreadable
+		return ErrUnreadable
 	}
-	if frames > maxGIFFrames || pixels > maxGIFPixels {
-		return errImageTooLarge
+	if frames > MaxGIFFrames || pixels > maxGIFPixels {
+		return ErrTooLarge
 	}
 	g, err := gif.DecodeAll(bytes.NewReader(data))
 	if err != nil {
-		return errImageUnreadable
+		return ErrUnreadable
 	}
 	// DecodeAll keeps frames, delays, disposal, loop count and the canvas;
 	// EncodeAll writes none of the comment or application extensions.
@@ -206,7 +230,7 @@ func scanGIF(b []byte) (frames, pixels int, ok bool) {
 			}
 			frames++
 			pixels += w * h
-			if frames > maxGIFFrames || pixels > maxGIFPixels {
+			if frames > MaxGIFFrames || pixels > maxGIFPixels {
 				return frames, pixels, true
 			}
 		default:

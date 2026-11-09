@@ -263,3 +263,21 @@ func (a *App) peopleSearchGroups(db *gorm.DB, actor *models.User, ids []uint) (m
 	} // group-ok: membership is roster information, so CanSeeRoster gates each label
 	return out, nil
 }
+
+// personSearchJSON is a deliberately closed name-picker projection. No contact
+// data, internal account IDs, teen images or hidden group identifiers belong here.
+type personSearchJSON struct {
+	SelectionID  string   `json:"selectionId"`
+	DisplayName  string   `json:"displayName"`
+	Teen         bool     `json:"teen"`
+	AvatarURL    string   `json:"avatarUrl,omitempty"`
+	AvatarFocalX *float64 `json:"avatarFocalX,omitempty"`
+	AvatarFocalY *float64 `json:"avatarFocalY,omitempty"`
+	SharedGroups []string `json:"sharedGroups"`
+	OtherGroups  []string `json:"otherGroups"`
+}
+
+type peopleSearchJSON struct {
+	State  string             `json:"state"` // short_query | throttled | no_results | results
+	People []personSearchJSON `json:"people"`
+}

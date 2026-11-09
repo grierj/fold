@@ -47,12 +47,7 @@ type calendarOccurrenceJSON struct {
 // when there were more (truncated), so nothing is silently dropped.
 const maxCalendarOccurrences = 500
 
-func (a *App) calendarTime() time.Time {
-	if a.calendarClock != nil {
-		return a.calendarClock().UTC()
-	}
-	return time.Now().UTC()
-}
+func (a *App) calendarTime() time.Time { return a.now().UTC() }
 
 func (a *App) apiCalendar(c *gin.Context) {
 	me := apiUser(c)

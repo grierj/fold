@@ -1,5 +1,7 @@
 package main
 
+import "fold/models"
+
 // Named shapes for JSON answers that were ad-hoc gin.H maps. Each is exactly
 // the keys its handler always sent; web/src/types.ts names the same fields
 // and TestWebTypesMatchGoJSON (tsContracts) keeps the two together.
@@ -128,4 +130,53 @@ type roomsCheckJSON struct {
 type badgeJSON struct {
 	Unread  int64 `json:"unread"`
 	Waiting int64 `json:"waiting"`
+}
+
+type userJSON struct {
+	ID           uint    `json:"id"`
+	Name         string  `json:"name"`
+	DisplayName  string  `json:"displayName"`
+	Email        string  `json:"email"`
+	Phone        string  `json:"phone"`
+	AvatarURL    string  `json:"avatarUrl"`
+	AvatarFocalX float64 `json:"avatarFocalX"`
+	AvatarFocalY float64 `json:"avatarFocalY"`
+	Role         string  `json:"role"`
+	Status       string  `json:"status"`
+	HasPassword  bool    `json:"hasPassword"`
+	AccountType  string  `json:"accountType"`
+	BirthDate    string  `json:"birthDate,omitempty"`
+	// Admin list only. Kept after age rollover so consent history is reachable.
+	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
+	// Effective preference: always true for a teen, regardless of stored value.
+	HideContactFromLeaders bool `json:"hideContactFromLeaders"`
+	// Timezone is the person's own zone for emails (DEC-58); "" means
+	// the church's, until the browser fills it in.
+	Timezone string `json:"timezone"`
+	// EmailSuppression: Fold stopped mailing this person's address (admin
+	// list only, M3.2c, DEC-113).
+	EmailSuppression *emailSuppressionJSON `json:"emailSuppression,omitempty"`
+}
+
+// toUserJSON is unrestricted: only self/session and admin account endpoints
+// may use it. Rosters and attendees use context-filtered contact presentation.
+func (a *App) toUserJSON(u *models.User) userJSON {
+	avatarURL := ""
+	if u.AvatarKey != "" {
+		avatarURL = a.Uploads.URL(u.AvatarKey)
+	}
+	accountType := u.AccountType
+	if accountType == "" {
+		accountType = models.AccountAdult
+	}
+	return userJSON{
+		ID: u.ID, Name: u.Name,
+		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
+		AvatarURL:    avatarURL,
+		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
+		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
+		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
+		Timezone:               u.Timezone,
+		HideContactFromLeaders: u.AccountType == models.AccountTeen || u.HideContactFromLeaders,
+	}
 }

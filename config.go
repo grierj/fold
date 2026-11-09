@@ -20,7 +20,7 @@ import (
 type Config struct {
 	// Env is "dev" or "prod". Defaults to "prod" — the safe choice.
 	Env string
-	// Port the HTTP server listens on. Default "8080".
+	// Port the HTTP server listens on. Default defaultPort.
 	Port string
 	// SessionSecret signs session cookies. Required in prod; a loud
 	// insecure default is used for dev only.
@@ -63,6 +63,13 @@ type Config struct {
 	// PushHosts are extra web push service hosts (FOLD_PUSH_HOSTS,
 	// optional, comma-separated), added to push.DefaultHosts (M3.13).
 	PushHosts []string
+	// EmailProvider names the mail adapter (FOLD_EMAIL_PROVIDER); empty lets
+	// mail.Choose pick by what is configured. The Postmark fields are the
+	// server token and the two message streams.
+	EmailProvider               string
+	PostmarkServerToken         string
+	PostmarkTransactionalStream string
+	PostmarkBroadcastStream     string
 }
 
 // minWebhookSecretLen is the shortest FOLD_POSTMARK_WEBHOOK_SECRET accepted.
@@ -97,6 +104,21 @@ func getEnvBool(key string, def bool) bool {
 	}
 	return b
 }
+
+// defaultPort and defaultEnv are the one place these defaults are written.
+const (
+	defaultPort = "8080"
+	defaultEnv  = "prod"
+)
+
+// envName reads APP_ENV; envPort reads PORT; envPushHosts reads FOLD_PUSH_HOSTS.
+// LoadConfig and the subcommands that load only part of the configuration (C11)
+// call these, so each variable is read in one place.
+func envName() string { return getEnv("APP_ENV", defaultEnv) }
+
+func envPort() string { return getEnv("PORT", defaultPort) }
+
+func envPushHosts() ([]string, error) { return push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS")) }
 
 // databaseURL returns DATABASE_URL or the start-the-dev-database error.
 func databaseURL() (string, error) {
@@ -151,7 +173,6 @@ const cookieSecureMessage = "COOKIE_SECURE=false is not allowed when APP_ENV is 
 	"without the Secure flag and the HSTS header would be dropped. Fix: remove COOKIE_SECURE or set it to true; " +
 	"plain-HTTP testing belongs in APP_ENV=dev"
 
-// LoadConfig reads everything `fold serve` needs.
 // shortSecretMessage is the one startup error for a short secret: what is
 // wrong (its length, never its value), how to fix it, and where to set it.
 func shortSecretMessage(n int) string {
@@ -184,8 +205,9 @@ func sessionSecret(isDev bool) (string, error) {
 	return secret, nil
 }
 
+// LoadConfig reads everything `fold serve` needs.
 func LoadConfig() (Config, error) {
-	env := getEnv("APP_ENV", "prod")
+	env := envName()
 	isDev := env == "dev"
 
 	secret, err := sessionSecret(isDev)
@@ -231,28 +253,32 @@ func LoadConfig() (Config, error) {
 	if err != nil || poll < 100*time.Millisecond || poll > time.Minute {
 		return Config{}, fmt.Errorf("FOLD_JOB_POLL must be a duration from 100ms to 1m, for example 1s")
 	}
-	pushHosts, err := push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS"))
+	pushHosts, err := envPushHosts()
 	if err != nil {
 		return Config{}, err
 	}
 
 	return Config{
-		Env:                   env,
-		Port:                  getEnv("PORT", "8080"),
-		SessionSecret:         []byte(secret),
-		SetupToken:            setupToken,
-		DatabaseURL:           dbURL,
-		CookieSecure:          cookieSecure,
-		SiteURL:               siteURL,
-		UploadDir:             getEnv("UPLOAD_DIR", "./data/uploads"),
-		TrustedProxies:        proxies,
-		SMTPURL:               os.Getenv("FOLD_SMTP_URL"),
-		SMTPAllowInsecure:     getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
-		EmailFrom:             getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
-		PostmarkWebhookSecret: os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"),
-		Workers:               workers,
-		JobPoll:               poll,
-		PushHosts:             pushHosts,
+		Env:                         env,
+		Port:                        envPort(),
+		SessionSecret:               []byte(secret),
+		SetupToken:                  setupToken,
+		DatabaseURL:                 dbURL,
+		CookieSecure:                cookieSecure,
+		SiteURL:                     siteURL,
+		UploadDir:                   getEnv("UPLOAD_DIR", "./data/uploads"),
+		TrustedProxies:              proxies,
+		SMTPURL:                     os.Getenv("FOLD_SMTP_URL"),
+		SMTPAllowInsecure:           getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
+		EmailFrom:                   getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
+		PostmarkWebhookSecret:       os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"),
+		Workers:                     workers,
+		JobPoll:                     poll,
+		PushHosts:                   pushHosts,
+		EmailProvider:               os.Getenv("FOLD_EMAIL_PROVIDER"),
+		PostmarkServerToken:         os.Getenv("FOLD_POSTMARK_SERVER_TOKEN"),
+		PostmarkTransactionalStream: os.Getenv("FOLD_POSTMARK_TRANSACTIONAL_STREAM"),
+		PostmarkBroadcastStream:     os.Getenv("FOLD_POSTMARK_BROADCAST_STREAM"),
 	}, nil
 }
 

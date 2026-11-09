@@ -5,3 +5,4 @@
 ^internal/testdb/pgproxy\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9_.$]*$
 ^internal/reasonscan/scan\.go:[0-9]+:[0-9]+: unreachable func: Batches$
 ^internal/guardkit/guardkit\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9_.$]*$
+^internal/images/imagetest/fixtures\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9_.$]*$

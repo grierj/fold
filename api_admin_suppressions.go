@@ -85,3 +85,10 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"cleared": cleared})
 }
+
+// emailSuppressionJSON is why Fold stopped mailing an address: hard_bounce
+// and manual stop all mail, complaint optional mail (DEC-112).
+type emailSuppressionJSON struct {
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
+}

@@ -506,7 +506,7 @@ func TestRestoreFenceNoFalseDetection(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		var armed atomic.Bool
 		armed.Store(true)
-		s.app.restoreAckPause = func() {
+		s.app.hooks.restoreAckPause = func() {
 			if armed.CompareAndSwap(true, false) {
 				close(entered)
 				<-release
@@ -832,7 +832,7 @@ func TestRestoreFenceDelayedAcknowledgment(t *testing.T) {
 			} else {
 				var armed atomic.Bool
 				armed.Store(true)
-				s.app.restoreAckPause = func() {
+				s.app.hooks.restoreAckPause = func() {
 					if armed.CompareAndSwap(true, false) {
 						close(entered)
 						<-release

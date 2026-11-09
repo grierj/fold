@@ -2220,7 +2220,7 @@ func (s *sealScene) laterEntry(aFree bool) func(*gorm.DB) {
 func (s *sealScene) wantSettledApplied(id string) {
 	s.t.Helper()
 	counter := &atomic.Int64{}
-	s.serve.sealAttempts = counter
+	s.serve.hooks.sealAttempts = counter
 	_, got := s.settle(s.client(), id)
 	wantSettle(s.t, got, settleApplied, nil)
 	if counter.Load() != 1 {
@@ -2288,12 +2288,12 @@ func TestActorSealVsConversion(t *testing.T) {
 			}
 			id := s.mint(s.aClient, s.b.ID)
 			counter := &atomic.Int64{}
-			s.serve.sealAttempts = counter
+			s.serve.hooks.sealAttempts = counter
 			park := newParkPoint(t)
 			park.later = s.laterEntry(true) // the conversion has committed before attempt 2
-			s.serve.deleteBeforeSeal = park.seam()
+			s.serve.hooks.deleteBeforeSeal = park.seam()
 			convDone := make(chan struct{})
-			s.serve.deleteBeforeRetry = func() { <-convDone }
+			s.serve.hooks.deleteBeforeRetry = func() { <-convDone }
 
 			del := s.startDelete(s.aClient, id)
 			dpid := park.await(t)
@@ -2337,9 +2337,9 @@ func TestActorSealVsConversion(t *testing.T) {
 		s := newSealScene(t, sealOpts{bInHousehold: true})
 		id := s.mint(s.aClient, s.b.ID)
 		counter := &atomic.Int64{}
-		s.serve.sealAttempts = counter
+		s.serve.hooks.sealAttempts = counter
 		park := newParkPoint(t)
-		s.serve.deleteBeforeSeal = park.seam()
+		s.serve.hooks.deleteBeforeSeal = park.seam()
 		del := s.startDelete(s.aClient, id)
 		dpid := park.await(t)
 		conv := s.startConversion()
@@ -2372,9 +2372,9 @@ func TestActorSealVsConversion(t *testing.T) {
 		s := newSealScene(t, sealOpts{proxied: true})
 		id := s.mint(s.aClient, s.b.ID)
 		counter := &atomic.Int64{}
-		s.serve.sealAttempts = counter
+		s.serve.hooks.sealAttempts = counter
 		convPark := newParkPoint(t)
-		s.serve.conversionAfterUserLocks = convPark.seam()
+		s.serve.hooks.conversionAfterUserLocks = convPark.seam()
 		conv := s.startConversion()
 		cpid := convPark.await(t)
 		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
@@ -2383,7 +2383,7 @@ func TestActorSealVsConversion(t *testing.T) {
 		}
 		before := erasureWaitSnapshot(t, s.app.DB)
 		entries := atomic.Int32{}
-		s.serve.deleteBeforeSeal = func(tx *gorm.DB) {
+		s.serve.hooks.deleteBeforeSeal = func(tx *gorm.DB) {
 			entries.Add(1)
 			pid := backendPID(tx)
 			if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
@@ -2418,9 +2418,9 @@ func TestActorSealVsConversion(t *testing.T) {
 
 		// SETTLE DURING THE PARK (R7-C01).
 		var fenceEntries atomic.Int32
-		s.serve.settleBeforeFence = func(*gorm.DB) { fenceEntries.Add(1) }
-		s.serve.settleAfterFence = func(*gorm.DB) { fenceEntries.Add(1) }
-		s.serve.deleteBeforeSeal = nil
+		s.serve.hooks.settleBeforeFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.hooks.settleAfterFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.hooks.deleteBeforeSeal = nil
 		sc := s.client()
 		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
 		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
@@ -2491,11 +2491,11 @@ func TestActorSealVsConversion(t *testing.T) {
 			s := newSealScene(t, sealOpts{bInHousehold: true, bFirst: true, registration: withRegistration})
 			id := s.mint(s.aClient, s.b.ID)
 			counter := &atomic.Int64{}
-			s.serve.sealAttempts = counter
+			s.serve.hooks.sealAttempts = counter
 			var entries atomic.Int32
-			s.serve.conversionAfterUserLocks = func(*gorm.DB) { entries.Add(1) }
+			s.serve.hooks.conversionAfterUserLocks = func(*gorm.DB) { entries.Add(1) }
 			park := newParkPoint(t)
-			s.serve.deleteBeforeSeal = park.seam()
+			s.serve.hooks.deleteBeforeSeal = park.seam()
 
 			del := s.startDelete(s.aClient, id)
 			dpid := park.await(t)
@@ -2565,9 +2565,9 @@ func TestActorSealVsConversion(t *testing.T) {
 		s := newSealScene(t, sealOpts{bInHousehold: true})
 		id := s.mint(s.aClient, s.b.ID)
 		counter := &atomic.Int64{}
-		s.serve.sealAttempts = counter
+		s.serve.hooks.sealAttempts = counter
 		convPark := newParkPoint(t)
-		s.serve.conversionAfterUserLocks = convPark.seam()
+		s.serve.hooks.conversionAfterUserLocks = convPark.seam()
 		conv := s.startConversion()
 		cpid := convPark.await(t)
 		for _, u := range []uint{s.a.ID, s.b.ID} {
@@ -2605,12 +2605,12 @@ func TestActorSealVsConversion(t *testing.T) {
 			}
 			id := s.mint(s.aClient, s.b.ID)
 			counter := &atomic.Int64{}
-			s.serve.sealAttempts = counter
+			s.serve.hooks.sealAttempts = counter
 			park := newParkPoint(t)
 			park.later = s.laterEntry(true)
-			s.serve.deleteBeforeSeal = park.seam()
+			s.serve.hooks.deleteBeforeSeal = park.seam()
 			convDone := make(chan struct{})
-			s.serve.deleteBeforeRetry = func() { <-convDone }
+			s.serve.hooks.deleteBeforeRetry = func() { <-convDone }
 			del := s.startDelete(s.aClient, id)
 			dpid := park.await(t)
 			conv := s.startConversion()
