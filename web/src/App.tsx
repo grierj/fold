@@ -96,7 +96,6 @@ export default function App() {
         {/* One composer for both: saving a new message moves to its address without remounting. */}
         <Route path="/messages/new" element={<MessageComposerPage />} />
         <Route path="/messages/:id" element={<MessageComposerPage />} />
-        {/* An announcement as its reader got it: where its push opens (M3.13d2). */}
         <Route path="/messages/:id/read" element={<MessageReadPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

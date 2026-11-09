@@ -50,7 +50,6 @@ export class ReasonStoreError extends Error {
   }
 }
 
-/** What a reload keeps from the walk before it. */
 export type PriorChoice = { hash: string; choice: ChoiceCode };
 
 export interface StoreCounts {
@@ -90,7 +89,6 @@ export class ReasonReviewStore {
   private listeners = new Set<() => void>();
   private ops = 0;
 
-  // --- reading ---------------------------------------------------------------
 
   get total(): number {
     return this.ids.length;
@@ -134,7 +132,6 @@ export class ReasonReviewStore {
     return this.pages[lo]?.[ordinal - this.starts[lo]];
   }
 
-  /** Items [from, to) in order; the objects keep their identity. */
   slice(from: number, to: number): ErasureReasonItem[] {
     const out: ErasureReasonItem[] = [];
     for (let i = Math.max(0, from); i < Math.min(to, this.ids.length); i++) {
@@ -176,7 +173,6 @@ export class ReasonReviewStore {
     return this.nextWhere(from, (i) => this.changed[i] === 1 && this.choices[i] === 0);
   }
 
-  // --- changing --------------------------------------------------------------
 
   private bump(): void {
     this.version++;
@@ -198,7 +194,6 @@ export class ReasonReviewStore {
     this.bump();
   }
 
-  /** The choices to carry across a reload, made once. */
   carry(): Map<string, PriorChoice> {
     const m = new Map<string, PriorChoice>();
     for (let i = 0; i < this.ids.length; i++) {
@@ -273,7 +268,6 @@ export class ReasonReviewStore {
     this.bump();
   }
 
-  /** Records one explicit choice. O(1). */
   choose(ordinal: number, choice: ChoiceCode): void {
     if (ordinal < 0 || ordinal >= this.ids.length) return;
     this.ops++;

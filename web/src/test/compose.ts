@@ -1,6 +1,5 @@
 import type { AudienceSummary, ComposeDate, ComposeEvent, ComposeGroup, ComposeOptions, Message, MessageRecipients } from "../types";
 
-// Composer fixtures (M3.4c): a leader's group and one event with two dates.
 export const bookClub: ComposeGroup = { id: 7, name: "Book club" };
 export const dates: ComposeDate[] = [
   { occurrenceId: 31, date: "2026-11-05", startsAt: "2026-11-06T02:00:00Z" },

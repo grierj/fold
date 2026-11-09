@@ -104,7 +104,6 @@ function EventDetailContent() {
     load();
   }, [load]);
 
-  // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };

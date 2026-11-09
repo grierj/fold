@@ -34,14 +34,11 @@ export function videoProblem(v: VideoValue): string | null {
   return null;
 }
 
-// isVideoError tells a form whether a server error is about the video link.
 export const isVideoError = (err: unknown) => {
   const code = errorCode(err);
   return code === "invalid_video_url" || code === "invalid_video_provider" || code === "invalid_video_reveal";
 };
 
-// videoBody is the wire form: a chosen provider sends its trimmed link, none
-// clears it.
 export function videoBody(v: VideoValue) {
   return { videoProvider: v.provider, videoUrl: v.provider === "none" ? "" : v.url.trim(), videoReveal: v.reveal };
 }

@@ -57,7 +57,6 @@ export function formatNextMeeting(iso: string, zone = browserTimeZone(), now = n
   return { soon: true, text: `${lead} · ${time}` };
 }
 
-// The month and day for a date badge, in the viewer's zone.
 export function badgeParts(iso: string, zone = browserTimeZone()): { month: string; day: string } {
   return { month: fmt(iso, zone, { month: "short" }), day: fmt(iso, zone, { day: "numeric" }) };
 }
@@ -254,7 +253,6 @@ export function historyDayBounds(from: string, until: string, zone: string): { f
   }
 }
 
-// --- The event page's "when" line (DEC-92) ---
 // Pieces for "Thursday, Nov 5 · 5:30–8:00 PM" and "Every Wednesday · … · next
 // Nov 4". repeat.ts assembles them; the formatting stays here.
 
@@ -328,7 +326,6 @@ export function formatHour(hour: number): string {
   return fmt(`2026-01-01T${String(hour % 24).padStart(2, "0")}:00:00Z`, "UTC", { hour: "numeric" });
 }
 
-// --- A wall clock in a named zone (the composer's "Pick a date and time") ---
 
 function wallKey(instant: number, zone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {

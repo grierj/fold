@@ -193,7 +193,6 @@ function FeedEmpty({ text, action }: { text?: string; action?: ReactNode }) {
   );
 }
 
-// FeedBody renders loading, error, and the rows of one feed.
 export function FeedBody({
   feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false, headingLevel = 3,
 }: {
@@ -280,7 +279,6 @@ function splitByDay(rows: Notification[]): [string, Notification[]][] {
   return out;
 }
 
-// useArchiveToast keeps the last archived row for the Undo toast.
 export function useArchiveToast(feed: Feed) {
   const [toast, setToast] = useState<Notification | null>(null);
   const close = useCallback(() => setToast(null), []);
@@ -418,8 +416,6 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
   );
 }
 
-// NotificationTab: the phone tab bar's Notifications tab (UI makeover PR 5),
-// with the same badge as the bell.
 export function NotificationTab({ badge, className }: { badge: Badge; className: (a: { isActive: boolean }) => string }) {
   const count = badgeCount(badge);
   return (

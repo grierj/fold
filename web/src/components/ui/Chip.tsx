@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes } from "react";
 
-// A toggle chip for filters and tags (ENFORCEMENT.md A). `selected` is
+// A toggle chip for filters and tags. `selected` is
 // required and drives aria-pressed, which gives the check mark, the strong
 // primary-border edge and semibold text (`.chip[aria-pressed]` in index.css).
 type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className" | "style" | "aria-pressed"> & {

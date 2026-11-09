@@ -31,8 +31,6 @@ export function seatsProblem(v: SeatsValue): string | null {
 
 export const isSeatsError = (err: unknown) => errorCode(err) === "invalid_capacity";
 
-// seatsBody is the wire form on create: the limit as a number (null is no
-// limit), the waitlist switch and the guest allowance.
 export function seatsBody(v: SeatsValue) {
   const cap = v.capacity.trim();
   return { capacity: cap === "" ? null : Number(cap), waitlistEnabled: v.waitlist, guestsAllowed: v.guests };

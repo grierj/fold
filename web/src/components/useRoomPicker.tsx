@@ -27,7 +27,6 @@ export function useRoomPicker<T>(fetch: () => Promise<T>, deps: readonly unknown
   };
 }
 
-// The loading line, or the load error with its Try again.
 export function RoomLoadStatus({ loading, error, onRetry }: { loading: boolean; error: string | null; onRetry: () => void }) {
   return <>
     {loading && <Skeleton kind="lines" count={1} label="Loading rooms…" />}

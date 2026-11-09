@@ -54,7 +54,6 @@ function PersonForm({ initial, onSave, onCancel, heading, level, careVisible = t
   const formRef = useRef<HTMLFormElement>(null);
   const set = (patch: Partial<Draft>) => setD((prev) => ({ ...prev, ...patch }));
 
-  // N5: focus First name when the form opens.
   useEffect(() => {
     formRef.current?.querySelector<HTMLInputElement>("input")?.focus();
   }, []);

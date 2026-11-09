@@ -71,7 +71,6 @@ export const AdminUsers = {
     if (typeof res?.attemptId !== "string" || !/^[0-9a-f]{80}$/.test(res.attemptId)) throw new ApiError(502, "unexpected answer to a mint", {});
     return { attemptId: res.attemptId };
   },
-  // What became of an id whose delete answer was lost or uncertain.
   settleAttempt: (attemptId: string, subjectUserId: number) =>
     api<AttemptSettleResponse>("/admin/operation-attempts/settle", {
       method: "POST",
