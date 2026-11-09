@@ -343,13 +343,14 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 	for _, pf := range parsed.Files {
 		name, f := pf.Path, pf.AST
 		// package models declares the table's struct and lists it in All(); that is
-		// the model, not a use of it, so the identifier rule skips that directory.
+		// the model, not a use of it. Only those two declarations are skipped.
 		inModels := pf.Dir() == "models"
 		inventoryTables := erasureInventoryTableLiterals(name, f)
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && allowed[name][fn.Name.Name] {
 				continue
 			}
+			modelDecl := inModels && isTypeDeclOrAll(d)
 			jobKinds := map[*ast.BasicLit]bool{}
 			ast.Inspect(d, func(n ast.Node) bool {
 				if call, ok := n.(*ast.CallExpr); ok && guardkit.Callee(call) == "daily" && len(call.Args) > 0 {
@@ -375,7 +376,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 						bad = append(bad, fset.Position(x.Pos()).String()+": login_throttles SQL outside the listed throttle helpers")
 					}
 				case *ast.Ident:
-					if x.Name == "LoginThrottle" && !inModels {
+					if x.Name == "LoginThrottle" && !modelDecl {
 						bad = append(bad, fset.Position(x.Pos()).String()+": models.LoginThrottle outside the listed throttle helpers")
 					}
 				}
@@ -754,4 +755,16 @@ func TestOwnedThrottleKeysAreExactlyThePersonsKeys(t *testing.T) {
 			t.Fatalf("unavailable address selected %v, want only %v", got, idOnly)
 		}
 	}
+}
+
+// isTypeDeclOrAll reports whether d is a type declaration or the All()
+// registry: the two places package models names LoginThrottle as the model.
+func isTypeDeclOrAll(d ast.Decl) bool {
+	switch x := d.(type) {
+	case *ast.GenDecl:
+		return x.Tok == token.TYPE
+	case *ast.FuncDecl:
+		return x.Recv == nil && x.Name.Name == "All"
+	}
+	return false
 }
