@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"fold/internal/policy"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // The ledger counts party size and childcare demand in SQL (for pools and
@@ -135,10 +138,20 @@ func TestRegistrationAuditKeysAreShared(t *testing.T) {
 	}
 }
 
-// listedRegistrations is only a pre-filter on the holder and the person: a row
-// the household rule accepts must be listed, and a listed row differs from the
-// rule only where the SQL knows less (a holder without a password, the event
-// access, the person's age).
+// listedRegistrations is only a pre-filter on the holder and the person's row
+// state, and the household rule (policy.CanRegisterHouseholdPerson) is the
+// authority. For every holder (status, account type, household relation,
+// password) and person state (live, deleted, converted) the test lists the row
+// with the SQL, then asks the policy about the same holder and person for every
+// kind, age (the 12/13/17/18 boundaries on both sides of the birthday), missing
+// or future birth date, guardian-link state (none, pending, confirmed, rejected,
+// revoked) and event access. Two things must hold:
+//   - SQL is a superset: whenever the policy accepts, the row is listed;
+//   - the SQL over-includes only where it knows less: a listed row the policy
+//     refuses is refused for the person's age, birth date or link, or because the
+//     holder cannot sign in (no password) or may not see the event. A refusal as
+//     "holder unavailable" for any other reason means the SQL lists a row it
+//     should have dropped.
 func TestListedRegistrationsPrefilterMatchesPolicy(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "Prefilter")
@@ -147,7 +160,24 @@ func TestListedRegistrationsPrefilterMatchesPolicy(t *testing.T) {
 	if err := app.DB.Where("event_id = ? AND original_date = ?", eid, date).First(&occ).Error; err != nil {
 		t.Fatal(err)
 	}
-	birth := time.Now().AddDate(-40, 0, 0)
+	now := time.Now()
+	type ageCase struct {
+		name  string
+		birth *time.Time
+	}
+	at := func(years, days int) *time.Time { b := now.AddDate(-years, 0, days); return &b }
+	var ages []ageCase
+	for _, y := range []int{5, 12, 13, 17, 18, 40} {
+		ages = append(ages,
+			ageCase{"turns " + itoa(uint(y)) + " today", at(y, 0)},
+			ageCase{"turns " + itoa(uint(y)) + " tomorrow", at(y, 1)})
+	}
+	ages = append(ages, ageCase{"no birth date", nil}, ageCase{"future birth date", at(0, 30)})
+	kinds := []string{models.HouseholdAdult, models.HouseholdTeen, models.HouseholdChild}
+	linkStates := []string{"", models.GuardianPending, models.GuardianConfirmed, models.GuardianRejected, models.GuardianRevoked}
+	ageCodes := map[string]bool{"household_birth_date_required": true, "household_age_mismatch": true,
+		"household_link_pending": true, "household_link_unconfirmed": true}
+	birth := at(40, 0)
 	n := 0
 	for _, status := range []string{models.UserActive, models.UserDisabled, models.UserGuest} {
 		for _, acctType := range []string{models.AccountAdult, models.AccountTeen} {
@@ -171,7 +201,7 @@ func TestListedRegistrationsPrefilterMatchesPolicy(t *testing.T) {
 						if relation != "" {
 							app.DB.Create(&models.HouseholdAccount{HouseholdID: h.ID, UserID: holder.ID, Relation: relation})
 						}
-						person := models.HouseholdPerson{HouseholdID: h.ID, FirstName: "P", Kind: models.HouseholdAdult, BirthDate: &birth, CreatedBy: holder.ID}
+						person := models.HouseholdPerson{HouseholdID: h.ID, FirstName: "P", Kind: models.HouseholdAdult, BirthDate: birth, CreatedBy: holder.ID}
 						if err := app.DB.Create(&person).Error; err != nil {
 							t.Fatal(err)
 						}
@@ -190,26 +220,40 @@ func TestListedRegistrationsPrefilterMatchesPolicy(t *testing.T) {
 						var listed int64
 						app.DB.Model(&models.Registration{}).Joins(listedRegistrations()).Where("registrations.id = ?", reg.ID).Count(&listed)
 
-						facts := newSubjectFacts(time.Now())
+						facts := newSubjectFacts(now)
 						if err := facts.load(app.DB, []models.Registration{reg}, nil); err != nil {
 							t.Fatal(err)
 						}
-						// A deleted person is not loaded at all, which eligible reads as unavailable.
-						p := facts.people[pid]
-						ok := p != nil
-						if ok {
-							acct, found := facts.accounts[holder.ID]
-							h2 := householdHolderOf(holder, acct, found, p, true)
-							// The person's age and link are not what the SQL knows; the policy sees a clean adult.
-							age := 40
-							pf := policy.HouseholdPerson{Kind: policy.KindAdult, AgeYears: &age, LinkStatus: policy.LinkConfirmed, Converted: personState == "converted"}
-							ok = policy.CanRegisterHouseholdPerson(h2, pf) == ""
-						}
-						if ok && listed != 1 {
-							t.Errorf("status=%s type=%s relation=%q person=%s password=%t: policy accepts the holder but the SQL pre-filter drops the row", status, acctType, relation, personState, password)
-						}
-						if !ok && listed == 1 && password {
-							t.Errorf("status=%s type=%s relation=%q person=%s: SQL lists a row the policy refuses", status, acctType, relation, personState)
+						acct, found := facts.accounts[holder.ID]
+						where := "status=" + status + " type=" + acctType + " relation=" + relation + " person=" + personState + " password=" + strconv.FormatBool(password)
+						for _, access := range []bool{true, false} {
+							for _, kind := range kinds {
+								for _, age := range ages {
+									for _, link := range linkStates {
+										// The person as the facts see it: deleted and converted people are
+										// the SQL's business, age and link are the policy's.
+										p := models.HouseholdPerson{ID: pid, HouseholdID: h.ID, Kind: kind, BirthDate: age.birth}
+										switch personState {
+										case "deleted":
+											p.DeletedAt = gorm.DeletedAt{Time: now, Valid: true}
+										case "converted":
+											conv := holder.ID
+											p.ConvertedUserID = &conv
+										}
+										var links []models.GuardianLink
+										if link != "" {
+											links = []models.GuardianLink{{PersonID: &pid, Status: link}}
+										}
+										got := policy.CanRegisterHouseholdPerson(householdHolderOf(holder, acct, found, &p, access), householdFacts(&p, links, now))
+										if got == "" && listed != 1 {
+											t.Errorf("%s kind=%s %s link=%q access=%t: the policy accepts but the SQL pre-filter drops the row", where, kind, age.name, link, access)
+										}
+										if got != "" && listed == 1 && !ageCodes[got] && password && access {
+											t.Errorf("%s kind=%s %s link=%q access=%t: SQL lists a row the policy refuses as %q", where, kind, age.name, link, access, got)
+										}
+									}
+								}
+							}
 						}
 					}
 				}
