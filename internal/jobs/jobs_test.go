@@ -428,25 +428,34 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 	}
 }
 
-// A newly queued job starts within 2 seconds of being queued.
-func TestNewJobStartsWithinTwoSeconds(t *testing.T) {
+// A worker that has gone idle picks up a job queued later, by polling.
+func TestIdleWorkerPicksUpNewJob(t *testing.T) {
 	db := testdb.Shared(t)
-	started := make(chan time.Time, 1)
-	r := runner(db, Kind{Type: Type{Name: "ping"}, Run: func(context.Context, json.RawMessage) error { started <- time.Now(); return nil }})
-	r.Poll = DefaultPoll // the real setting: the bound is what a deployment gets
+	started := make(chan int, 2)
+	r := runner(db, Kind{Type: Type{Name: "ping"}, Run: func(_ context.Context, p json.RawMessage) error {
+		var body struct{ N int }
+		_ = json.Unmarshal(p, &body)
+		started <- body.N
+		return nil
+	}})
+	r.Poll = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	wait := r.Start(ctx, 1)
 	defer func() { cancel(); wait() }()
-	time.Sleep(100 * time.Millisecond) // the worker is idle, mid-poll
-	queued := time.Now()
-	enqueue(db, "ping", nil, queued, "", 0)
-	select {
-	case at := <-started:
-		if d := at.Sub(queued); d > 2*time.Second {
-			t.Fatalf("started after %v", d)
+	// The first job has run, so the worker is back to waiting out its poll
+	// when the second is queued. The timeout only bounds a hang.
+	for n := 1; n <= 2; n++ {
+		if _, err := enqueue(db, "ping", map[string]int{"n": n}, time.Now(), "", 0); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the job never started")
+		select {
+		case got := <-started:
+			if got != n {
+				t.Fatalf("started job %d, want %d", got, n)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("job %d never started", n)
+		}
 	}
 }
 

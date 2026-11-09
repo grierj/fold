@@ -90,21 +90,13 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &tp) && tp.Code >= 500
 }
 
-// oneLine keeps a subject on one header line.
 func oneLine(s string) string { return strings.NewReplacer("\r", " ", "\n", " ").Replace(s) }
 
-// ---------------------------------------------------------------------------
-// devoutbox: the dev and test sender (5.6). Mail is stored in the database
-// and shown at /dev/outbox; tests read links from it.
-// ---------------------------------------------------------------------------
-
-// DevOutbox stores sent mail in the mail_outboxes table.
 type DevOutbox struct {
 	DB   *gorm.DB
 	From string
 }
 
-// NewDevOutbox returns a DevOutbox writing to db.
 func NewDevOutbox(db *gorm.DB, from string) *DevOutbox {
 	return &DevOutbox{DB: db, From: from}
 }
@@ -121,7 +113,6 @@ func (d *DevOutbox) SendEmail(ctx context.Context, m Message) (string, error) {
 	return fmt.Sprintf("devoutbox-%d", row.ID), nil
 }
 
-// Capabilities: devoutbox keeps everything; it has no streams or webhooks.
 func (d *DevOutbox) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "devoutbox"} }
 
 // OutboxMessage is one stored email, newest first.
@@ -139,7 +130,6 @@ type OutboxMessage struct {
 	CreatedAt       time.Time
 }
 
-// List returns the newest stored emails, for /dev/outbox and tests.
 func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -170,10 +160,6 @@ func (d *DevOutbox) LatestTo(address string) (OutboxMessage, error) {
 	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, HasHTML: r.HTMLBody != "", From: r.FromAddress, ReplyTo: r.ReplyTo, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
 }
 
-// ---------------------------------------------------------------------------
-// SMTP: the universal fallback sender (5.6, 12.1), from FOLD_SMTP_URL.
-// ---------------------------------------------------------------------------
-
 // SMTPSender sends through one SMTP server, e.g.
 // smtp://user:pass@smtp.example.org:587 (STARTTLS) or
 // smtps://user:pass@smtp.example.org:465 (implicit TLS).
@@ -201,7 +187,6 @@ func (s *SMTPSender) tlsCfg() *tls.Config {
 	return &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
 }
 
-// NewSMTP parses rawURL (a FOLD_SMTP_URL value) into a sender.
 func NewSMTP(rawURL, from string) (*SMTPSender, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -250,7 +235,6 @@ func headerSafe(v string) bool {
 	return !strings.ContainsAny(v, "\r\n")
 }
 
-// Capabilities: plain SMTP has no streams and reports no bounces.
 func (s *SMTPSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "smtp"} }
 
 // SendEmail delivers m; its id is the Message-ID header it was sent with.
@@ -385,18 +369,13 @@ func Address(from string) string {
 	return strings.TrimSpace(from)
 }
 
-// ---------------------------------------------------------------------------
-// Unconfigured: prod without FOLD_SMTP_URL fails loudly instead of
-// silently dropping password resets and invitations.
-// ---------------------------------------------------------------------------
-
-// NoSender errors on every send, telling the operator what to set.
+// NoSender errors on every send, telling the operator what to set: production
+// without FOLD_SMTP_URL fails loudly instead of silently dropping password
+// resets and invitations.
 type NoSender struct{}
 
-// SendEmail always fails.
 func (NoSender) SendEmail(context.Context, Message) (string, error) { return "", errNoSender }
 
-// Capabilities: none.
 func (NoSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "none"} }
 
 var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDER, FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL (see .env.example)")

@@ -162,13 +162,10 @@ func (a *App) decideDeadJob(c *gin.Context, action string, decide func(tx *gorm.
 	}
 }
 
-// apiAdminRetryJob queues a dead job again, from its first attempt.
 func (a *App) apiAdminRetryJob(c *gin.Context) {
 	a.decideDeadJob(c, audit.JobRetried, jobs.Retry)
 }
 
-// apiAdminDismissJob sets a dead job aside without running it; finished
-// jobs' cleanup removes it later.
 func (a *App) apiAdminDismissJob(c *gin.Context) {
 	a.decideDeadJob(c, audit.JobDismissed, jobs.Dismiss)
 }

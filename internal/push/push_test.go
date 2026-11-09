@@ -84,6 +84,7 @@ type fakeService struct {
 	auth   []byte
 	vapid  *ecdsa.PrivateKey
 	status atomic.Int64
+	small  atomic.Bool  // answer with no body, as real push services do
 	retry  atomic.Value // string Retry-After
 	mu     sync.Mutex
 	got    []received
@@ -128,7 +129,9 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", v)
 	}
 	w.WriteHeader(int(f.status.Load()))
-	_, _ = w.Write([]byte(strings.Repeat("x", 10000))) // more than Fold reads
+	if !f.small.Load() {
+		_, _ = w.Write([]byte(strings.Repeat("x", 10000))) // more than Fold reads
+	}
 }
 
 func (f *fakeService) requests() []received {
@@ -345,15 +348,25 @@ func TestAudienceLeavesOutTheDefaultPort(t *testing.T) {
 	}
 }
 
-func TestClientMakesItsTransportOnce(t *testing.T) {
-	c := &Client{}
-	off := testSub()
-	off.Endpoint = "https://push.evil.example/x" // refused before any connection
-	c.Send(context.Background(), off, []byte("{}"), Options{})
-	first, hosts := c.HTTP, c.Hosts
-	c.Send(context.Background(), off, []byte("{}"), Options{})
-	if first == nil || c.HTTP != first || c.Hosts != hosts {
-		t.Fatal("the client made a new transport or allow-list for a second send")
+// A client reuses its connection across sends.
+func TestClientReusesItsConnection(t *testing.T) {
+	f := newFakeService(t)
+	f.small.Store(true)
+	c := f.client()
+	tr := c.HTTP.Transport.(*http.Transport)
+	dial := tr.DialContext
+	var dials atomic.Int64
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dials.Add(1)
+		return dial(ctx, network, addr)
+	}
+	for range 3 {
+		if res := c.Send(context.Background(), testSub(), []byte("{}"), Options{}); res.Status != Accepted {
+			t.Fatalf("send: %+v", res)
+		}
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("three sends dialed %d times, want 1", n)
 	}
 }
 

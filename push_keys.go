@@ -47,7 +47,6 @@ func vapidCipher(secret []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// sealVAPIDKey encrypts key for the settings row.
 func sealVAPIDKey(secret []byte, key *ecdsa.PrivateKey) (string, error) {
 	crypt, err := vapidCipher(secret)
 	if err != nil {
@@ -221,7 +220,6 @@ type vapidCache struct {
 	key *ecdsa.PrivateKey
 }
 
-// vapidKey is the current VAPID private key.
 func (a *App) vapidKey(ctx context.Context) (*ecdsa.PrivateKey, error) {
 	var s models.Setting
 	if err := a.DB.WithContext(ctx).Select("value").Where("key = ?", settingVAPIDPrivate).First(&s).Error; err != nil {

@@ -39,10 +39,10 @@ const (
 )
 
 // pushJob is push.deliver's payload. NotificationID is set for a
-// notification; MessageRecipientID is reserved for announcements and
-// reminders (M3.13d, key push:mr:<id>:d:<device>). PlannedAt (Unix
-// seconds) is when the sweep planned a push reminder to go; the job gives
-// it 15 minutes' grace into quiet hours (M3.13d3).
+// notification; MessageRecipientID for an announcement or reminder row (key
+// push:mr:<id>:d:<device>). PlannedAt (Unix seconds) is when the sweep
+// planned a push reminder to go; the job gives it 15 minutes' grace into
+// quiet hours.
 type pushJob struct {
 	NotificationID     uint  `json:"notificationId,omitempty"`
 	MessageRecipientID uint  `json:"messageRecipientId,omitempty"`
@@ -50,7 +50,6 @@ type pushJob struct {
 	PlannedAt          int64 `json:"plannedAt,omitempty"`
 }
 
-// enqueuePushDelivery queues one notification for one device, once.
 func enqueuePushDelivery(tx *gorm.DB, notificationID, deviceID uint, at time.Time) error {
 	_, err := pushDeliverType.Enqueue(tx, pushJob{NotificationID: notificationID, DeviceID: deviceID}, at, pushNotificationKey(notificationID, deviceID))
 	return err
@@ -426,7 +425,6 @@ type pushTarget struct {
 	rec  pushRecorder
 }
 
-// record writes status and reason on t's row, stamped with the push clock.
 func (t pushTarget) record(a *App, status, reason string) error {
 	return t.rec(a.DB, status, reason, a.pushNow())
 }
@@ -461,7 +459,6 @@ func (a *App) pushHeld(db *gorm.DB, u *models.User, category string, required bo
 	return "", nil
 }
 
-// pushWhyCategoryOff is the reason when the person turned the category off.
 func pushWhyCategoryOff(category string) string {
 	return "push turned off for " + notify.CategoryEmailName(category)
 }
@@ -480,7 +477,6 @@ func (a *App) pushOpensAt(now time.Time, loc *time.Location) (opens time.Time, w
 	return opens, true
 }
 
-// pushSubscription is the push client's view of a stored device.
 func pushSubscription(d models.PushSubscription) push.Subscription {
 	return push.Subscription{Endpoint: d.Endpoint, P256dh: d.P256dh, Auth: d.Auth}
 }
@@ -497,7 +493,6 @@ func (a *App) sendPush(ctx context.Context, t pushTarget, body []byte, opts push
 	return a.pushOutcome(ctx, t, a.pushClient().Send(ctx, pushSubscription(t.dev), body, opts), sentWhy)
 }
 
-// pushDevicesLeft reports whether the person still has a device.
 func pushDevicesLeft(db *gorm.DB, userID uint) (bool, error) {
 	var left int64
 	err := db.Model(&models.PushSubscription{}).Where("user_id = ?", userID).Count(&left).Error

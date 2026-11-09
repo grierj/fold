@@ -12,7 +12,6 @@ import (
 // decide what an outcome means for their own ledger; how a send ended is
 // decided here once.
 
-// sendOutcome is how one send ended.
 type sendOutcome int
 
 const (

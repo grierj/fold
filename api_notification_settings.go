@@ -10,8 +10,7 @@ import (
 )
 
 // notificationSettingsJSON is the Me > Notifications payload: the email
-// switches (DEC-97, DEC-115) and the push section (M3.13b, DEC-122); M3.12
-// adds Text.
+// switches (DEC-97, DEC-115) and the push section (M3.13b, DEC-122).
 type notificationSettingsJSON struct {
 	OptionalEmailOff bool `json:"optionalEmailOff"`
 	// Kinds are the optional kinds with their email switches (DEC-115).

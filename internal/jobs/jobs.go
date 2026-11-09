@@ -36,7 +36,6 @@ type Type struct {
 	MaxAttempts int
 }
 
-// Attempts is the count a job of this type is queued with.
 func (t Type) Attempts() int {
 	if t.MaxAttempts <= 0 {
 		return DefaultMaxAttempts
@@ -44,7 +43,6 @@ func (t Type) Attempts() int {
 	return t.MaxAttempts
 }
 
-// Spec is one job of this type for EnqueueMany.
 func (t Type) Spec(payload any, runAt time.Time, uniqueKey string) Spec {
 	return Spec{Type: t, Payload: payload, RunAt: runAt, UniqueKey: uniqueKey}
 }
@@ -166,7 +164,6 @@ func Backoff(attempt int, rnd func() float64) time.Duration {
 	return time.Duration(float64(base) * jitter)
 }
 
-// Runner claims and runs jobs.
 type Runner struct {
 	DB    *gorm.DB
 	Kinds map[string]Kind
@@ -190,7 +187,6 @@ type Runner struct {
 	Rnd func() float64
 }
 
-// NewRunner registers kinds and fills the defaults.
 func NewRunner(db *gorm.DB, kinds ...Kind) *Runner {
 	host, _ := os.Hostname()
 	r := &Runner{DB: db, Kinds: map[string]Kind{}, Poll: DefaultPoll, Lease: DefaultLease,
@@ -277,7 +273,6 @@ func (r *Runner) RunOnce(ctx context.Context, worker string) (bool, error) {
 	return true, r.finish(job, worker, safeRun(context.WithValue(ctx, attemptKey{}, job.Attempts >= job.MaxAttempts), kind, json.RawMessage(job.Payload)), false)
 }
 
-// attemptKey carries whether a run is its job's last attempt.
 type attemptKey struct{}
 
 // LastAttempt reports whether the running job will not be retried if it
