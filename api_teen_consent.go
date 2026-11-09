@@ -224,7 +224,7 @@ func (a *App) apiListTeenConsents(c *gin.Context) {
 	for _, row := range rows {
 		consents = append(consents, consentJSON(row))
 	}
-	c.JSON(http.StatusOK, gin.H{"consents": consents, "administrativelyDisabled": u.AdministrativelyDisabled})
+	c.JSON(http.StatusOK, teenConsentsJSON{Consents: consents, AdministrativelyDisabled: u.AdministrativelyDisabled})
 }
 
 func (a *App) apiChangeTeenConsent(c *gin.Context) {

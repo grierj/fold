@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CalendarFeeds } from "../api";
+import { CalendarFeeds } from "../api/profile";
 import type { CalendarFeed } from "../types";
 import { errorText } from "../lib/errors";
 import { Button } from "./ui/Button";

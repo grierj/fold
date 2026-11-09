@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AccountRequests, Site } from "../api";
+import { AccountRequests } from "../api/accountRequests";
+import { Site } from "../api/site";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 
 // Self-signup (M1.3, DEC-4): the person asks for an account and an

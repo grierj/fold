@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
-import { Messages } from "../messages-api";
+import { Messages } from "../api/messages";
 import type { ComposeOptions, Message } from "../types";
 import { errorText } from "../lib/errors";
 import { audienceLabel, statusLabel } from "../lib/messages";

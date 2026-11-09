@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Contacts } from "../contact-api";
+import { Contacts } from "../api/contacts";
 import type { ContactGrant } from "../types";
 import { GuardianContactGrants } from "./GuardianContactGrants";
-vi.mock("../contact-api", () => ({ Contacts: { grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() } }));
+vi.mock("../api/contacts", () => ({ Contacts: { grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() } }));
 const grant: ContactGrant = { id: 1, requestId: 1, requesterId: 10, requesterName: "Lee", subjectUserId: 2, subjectName: "Teen Pat", contextType: "group", fields: "email", needsAdmin: true, grantedAt: "2026-10-02T12:00:00Z", endReason: "", canReveal: false, canRevoke: true };
 beforeEach(() => vi.clearAllMocks());
 it("shows only this teen's active teen-approved grants, never pending review or ended history", async () => {

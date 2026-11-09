@@ -1,4 +1,4 @@
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 
 // What people read when something goes wrong (UI makeover PR 4, DEC-61).
 // The API sends a stable code with every error; this is the only place

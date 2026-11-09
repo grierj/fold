@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AdminRooms } from "../../api";
+import { AdminRooms } from "../../api/rooms";
 import type { Room } from "../../types";
 import { errorText } from "../../lib/errors";
 import { formatEventDay } from "../../lib/when";

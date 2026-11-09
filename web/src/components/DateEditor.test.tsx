@@ -1,11 +1,16 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { DateRooms, Events, Site } from "../api";
+import { DateRooms } from "../api/rooms";
+import { Events } from "../api/events";
+import { Site } from "../api/site";
 import { occurrence } from "../test/occurrence";
 import { DateEditor } from "./DateEditor";
 
-vi.mock("../api", () => ({ ApiError: class extends Error {}, Events: { updateOccurrence: vi.fn(), dateVisibilityImpact: vi.fn() }, Site: { get: vi.fn() }, DateRooms: { list: vi.fn(), set: vi.fn() } }));
+vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
+vi.mock("../api/events", () => ({ Events: { updateOccurrence: vi.fn(), dateVisibilityImpact: vi.fn() } }));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn() } }));
+vi.mock("../api/rooms", () => ({ DateRooms: { list: vi.fn(), set: vi.fn() } }));
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true }); vi.mocked(Events.dateVisibilityImpact).mockResolvedValue({ visibility: "public", tightened: [], leaderOpened: [] }); vi.mocked(Events.updateOccurrence).mockResolvedValue({ occurrence: occurrence({}) }); });
 
 it("opens one date through the shared visibility field without changing the series", async () => {

@@ -3,9 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { Join } from "./Join";
 
-vi.mock("../api", () => ({
-  Site: { get: vi.fn().mockResolvedValue({ name: "Grace", selfSignup: "off" }) },
-}));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ name: "Grace", selfSignup: "off" }) } }));
 
 it("keeps the login link phone-sized without enlarging the surrounding prose", async () => {
   render(<MemoryRouter><Join /></MemoryRouter>);

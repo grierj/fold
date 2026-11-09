@@ -2,31 +2,33 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Admin, AdminAccountRequests, AdminGroups, AdminJobs, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
+import { Admin, AdminGroups, AdminJobs } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
+import { AdminRooms, RoomRequests } from "../api/rooms";
+import { AdminUsers } from "../api/adminUsers";
+import { Groups } from "../api/groups";
+import { Invitations } from "../api/invitations";
+import { People } from "../api/people";
+import { Site } from "../api/site";
+import { ApiError } from "../api/core";
 import { ERROR_COPY, errorText } from "../lib/errors";
-import { ContactHistory } from "../contact-history-api";
+import { ContactHistory } from "../api/contactHistory";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
 import { AdminPage } from "./Admin";
 
 // One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
 const auth = vi.hoisted(() => ({ user: { id: 1 }, loading: false, isAdmin: true }));
 vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
-vi.mock("../api", async (actual) => ({
-  ...(await actual<typeof import("../api")>()),
-  People: { search: vi.fn() },
-  Invitations: { create: vi.fn() },
-  Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
-  AdminGroups: { list: vi.fn(), addMember: vi.fn() },
-  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() },
-  AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() },
-  AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
-  AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
-  RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
-  AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) },
-}));
+vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
+vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
+vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() } }));
+vi.mock("../api/admin", async (actual) => ({ ...(await actual<typeof import("../api/admin")>()), AdminGroups: { list: vi.fn(), addMember: vi.fn() }, Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() }, AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
+vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() } }));
+vi.mock("../api/guardians", async (actual) => ({ ...(await actual<typeof import("../api/guardians")>()), AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) } }));
+vi.mock("../api/accountRequests", async (actual) => ({ ...(await actual<typeof import("../api/accountRequests")>()), AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() } }));
+vi.mock("../api/rooms", async (actual) => ({ ...(await actual<typeof import("../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() }, RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
+vi.mock("../api/site", async (actual) => ({ ...(await actual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) } }));
 
 function HistoryDestination() {
   const { id } = useParams();

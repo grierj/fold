@@ -67,7 +67,7 @@ export const INIT_SCRIPT = `(() => {
   // digest path that actually ran is observed, not inferred. The wrappers add one timestamp pair around the call and change no argument or result.
   qc.pages = []; qc.last = null;
   qc.digest = { calls: 0, bytes: 0, ms: 0 };
-  // The product reads a review page as Response.text() and then JSON.parse(text) (web/src/api.ts): the text() read of each page response and the
+  // The product reads a review page as Response.text() and then JSON.parse(text) (web/src/api/core.ts): the text() read of each page response and the
   // JSON.parse of that same string are timed, in the page, and kept in arrival order.
   try {
     const text = Response.prototype.text;

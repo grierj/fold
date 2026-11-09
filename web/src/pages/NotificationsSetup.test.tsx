@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { fakeSub, installBrowser, uninstallBrowser, type BrowserOptions } from "../test/push";
 
 const site = vi.fn();
-vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), Site: { get: () => site() } }));
+vi.mock("../api/site", async (orig) => ({ ...(await orig<typeof import("../api/site")>()), Site: { get: () => site() } }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: null }) }));
 
 import { NotificationsSetupPage } from "./NotificationsSetup";

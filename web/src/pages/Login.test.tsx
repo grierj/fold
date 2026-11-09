@@ -2,15 +2,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
+import { ApiError } from "../api/core";
 import { Login } from "./Login";
 
 const login = vi.fn();
 vi.mock("../auth", () => ({ useAuth: () => ({ login, user: null }) }));
-vi.mock("../api", async (original) => ({
-  ...(await original<typeof import("../api")>()),
-  Site: { get: vi.fn().mockResolvedValue({ name: "Grace Community Church" }) },
-}));
+vi.mock("../api/site", async (original) => ({ ...(await original<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace Community Church" }) } }));
 
 function renderLogin() {
   return render(
@@ -90,7 +87,7 @@ describe("Login", () => {
 
   it("shows one message for any bad email or password", async () => {
     login.mockImplementation(async () => {
-      throw new ApiError(401, "invalid credentials");
+      throw new ApiError(401, "invalid email or password", { code: "bad_credentials" });
     });
     renderLogin();
     await userEvent.type(screen.getByLabelText("Email"), "nobody@example.com");

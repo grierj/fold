@@ -2,12 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Invitations } from "../api";
+import { Invitations } from "../api/invitations";
 import { Invite } from "./Invite";
 
 const refresh = vi.hoisted(() => vi.fn());
 vi.mock("../auth", () => ({ useAuth: () => ({ refresh }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Invitations: { get: vi.fn(), accept: vi.fn() } }));
+vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { get: vi.fn(), accept: vi.fn() } }));
 
 beforeEach(() => { vi.resetAllMocks(); });
 it("accepts a teen conversion into approval waiting without moving household sign-ups", async () => {

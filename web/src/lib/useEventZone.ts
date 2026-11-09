@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Site } from "../api";
+import { Site } from "../api/site";
 
 // The church's time zone from /site, or null until it loads.
 export function useChurchZone(): string | null {

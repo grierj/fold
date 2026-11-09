@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
-import { ApiError, Events } from "../api";
-import { Dates } from "../date-api";
+import { ApiError } from "../api/core";
+import { Dates, Events } from "../api/events";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { EventIntro } from "../components/EventIntro";
 import { useAuth } from "../auth";

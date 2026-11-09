@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Site } from "../api";
+import { Site } from "../api/site";
 
 export function useSiteName() {
   const [name, setName] = useState<string | undefined>(undefined);

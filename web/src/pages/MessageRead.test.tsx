@@ -1,12 +1,12 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
-import { Messages } from "../messages-api";
+import { ApiError } from "../api/core";
+import { Messages } from "../api/messages";
 import { polyfillEditorLayout } from "../test/editor";
 import { MessageReadPage } from "./MessageRead";
 
-vi.mock("../messages-api", () => ({ Messages: { read: vi.fn() } }));
+vi.mock("../api/messages", () => ({ Messages: { read: vi.fn() } }));
 const viewer = vi.hoisted(() => ({ isAdmin: false, canCompose: false }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 3, name: "Sam" }, loading: false, ...viewer }) }));
 

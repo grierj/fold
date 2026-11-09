@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Site } from "../api";
+import { Site } from "../api/site";
 import { emptyChildcare } from "./ChildcareField";
 import { EventOptions, optionsSummary } from "./EventOptions";
 import { emptyRemote } from "./RemoteField";
@@ -10,7 +10,8 @@ import { emptySeats } from "./SeatsField";
 import { emptyVideo } from "./VideoField";
 import { forgetPushEnabled } from "../lib/usePushEnabled";
 
-vi.mock("../api", () => ({ Events: { generateJitsi: vi.fn() }, Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
+vi.mock("../api/events", () => ({ Events: { generateJitsi: vi.fn() } }));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
 
 const base = { seats: emptySeats, video: emptyVideo, remote: emptyRemote, childcare: emptyChildcare };
 

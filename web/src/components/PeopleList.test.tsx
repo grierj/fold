@@ -4,9 +4,9 @@ import { expect, it, vi } from "vitest";
 import { PeopleList } from "./PeopleList";
 import { MemoryRouter } from "react-router-dom";
 import { RequestContactButton } from "./RequestContactButton";
-import { Contacts } from "../contact-api";
-import { ApiError } from "../api";
-vi.mock("../contact-api", () => ({ Contacts: { create: vi.fn() } }));
+import { Contacts } from "../api/contacts";
+import { ApiError } from "../api/core";
+vi.mock("../api/contacts", () => ({ Contacts: { create: vi.fn() } }));
 
 const people = Array.from({ length: 60 }, (_, i) => ({ name: `Member ${String(i + 1).padStart(2, "0")}`, leader: i >= 55 }));
 const view = (rows = people) => <PeopleList rows={rows} noun="members" filters={[{ value: "leader", label: "Leaders", matches: (p) => p.leader }]}>{(p) => <li key={p.name}>{p.name}</li>}</PeopleList>;

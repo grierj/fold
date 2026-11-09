@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Profile as ProfileApi } from "../api";
+import { Profile as ProfileApi } from "../api/profile";
 import { useAuth } from "../auth";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Button, ButtonLink } from "../components/ui/Button";

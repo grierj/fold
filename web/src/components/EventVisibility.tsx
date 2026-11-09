@@ -1,6 +1,7 @@
 import { Form } from "./ui/Form";
 import { useEffect, useState } from "react";
-import { ApiError, Events } from "../api";
+import { ApiError } from "../api/core";
+import { Events } from "../api/events";
 import type { Visibility, VisibilityImpact } from "../types";
 import { GroupVisibilityReview } from "./GroupVisibilityReview";
 import { openedEventWarning } from "./EventIntro";

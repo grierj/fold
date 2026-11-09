@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { EmailSettingsLink } from "../api";
-import type { EmailSettingsChange } from "../api";
+import { EmailSettingsLink } from "../api/notifications";
+import type { EmailSettingsChange } from "../api/notifications";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { EmailSettings } from "../components/EmailSettings";
 import { EmptyState } from "../components/ui/EmptyState";

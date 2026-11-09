@@ -1,6 +1,6 @@
 import { Form } from "./ui/Form";
 import { useState } from "react";
-import { Contacts } from "../contact-api";
+import { Contacts } from "../api/contacts";
 import type { ContactRequest } from "../types";
 import { ERROR_COPY, errorText } from "../lib/errors";
 import { Button, ButtonLink } from "./ui/Button";

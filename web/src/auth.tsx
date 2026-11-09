@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
+import { Auth as AuthApi } from "./api/auth";
+import { Profile } from "./api/profile";
+import { ensureCsrf } from "./api/core";
 import { errorCode } from "./lib/errors";
 import { browserTimeZone } from "./lib/when";
 import { leaveWithoutAsking } from "./lib/unsavedChanges";
@@ -50,10 +52,30 @@ async function withZone(user: User): Promise<User> {
   }
 }
 
+// dropSession is how a 401 outside Log out (the session expired, or ended in
+// another tab) clears the signed-in person, so pages and Log in stop treating
+// them as signed in. The provider registers it; before it mounts there is no
+// one to clear.
+let dropSession = () => {};
+
+export function endSession() {
+  dropSession();
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [canCompose, setCanCompose] = useState(false);
+
+  useEffect(() => {
+    dropSession = () => {
+      setCanCompose(false);
+      setUser(null);
+    };
+    return () => {
+      dropSession = () => {};
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {

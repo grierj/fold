@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { GroupCover, Groups } from "../api";
+import { GroupCover, Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
 import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
 import { useAuth } from "../auth";

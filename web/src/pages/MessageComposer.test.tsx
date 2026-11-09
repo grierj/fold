@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, Site } from "../api";
-import { Messages } from "../messages-api";
+import { ApiError } from "../api/core";
+import { Site } from "../api/site";
+import { Messages } from "../api/messages";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { ERROR_COPY } from "../lib/errors";
 import { polyfillEditorLayout } from "../test/editor";
@@ -16,17 +17,11 @@ const soonDay = () => wallClock(new Date(Date.now() + 2 * 864e5).toISOString(), 
 
 const viewer = vi.hoisted(() => ({ isAdmin: false }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: viewer.isAdmin, canCompose: true }) }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) },
-}));
-vi.mock("../messages-api", () => ({
-  previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`,
-  Messages: {
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) } }));
+vi.mock("../api/messages", () => ({ previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`, Messages: {
     options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(),
     schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(),
-  },
-}));
+  } }));
 
 beforeAll(polyfillEditorLayout);
 
@@ -47,7 +42,7 @@ beforeEach(() => {
   vi.mocked(Messages.options).mockResolvedValue(composeOptions());
   vi.mocked(Messages.audiencePreview).mockResolvedValue({ summary: summary() });
   vi.mocked(Messages.get).mockResolvedValue({ message: message() });
-  vi.mocked(Messages.update).mockImplementation(async (id, d) => ({ message: message({ id, subject: d.subject, bodyHtml: d.bodyHtml, audience: d.audience }) }));
+  vi.mocked(Messages.update).mockImplementation(async (id, d) => ({ message: message({ id: Number(id), subject: d.subject, bodyHtml: d.bodyHtml, audience: d.audience }) }));
   vi.mocked(Messages.create).mockImplementation(async (d) => ({ message: message({ id: 9, subject: d.subject, bodyHtml: d.bodyHtml, audience: d.audience }) }));
   vi.mocked(Messages.preview).mockResolvedValue({ preview: { subject: "Bring a friend", text: "Hi Lee\n\nYou're getting messages from leaders" } });
   vi.mocked(Messages.test).mockResolvedValue({ ok: true });
@@ -148,7 +143,7 @@ describe("MessageComposerPage", () => {
 
   it("schedules for a picked time after confirming the count", async () => {
     const user = userEvent.setup();
-    vi.mocked(Messages.schedule).mockImplementation(async (id, at) => ({ message: message({ id, status: "scheduled", scheduledAt: at ?? null }), summary: summary() }));
+    vi.mocked(Messages.schedule).mockImplementation(async (id, at) => ({ message: message({ id: Number(id), status: "scheduled", scheduledAt: at ?? null }), summary: summary() }));
     open("/messages/5");
     await editorReady();
     await user.click(screen.getByRole("radio", { name: "Pick a date and time" }));

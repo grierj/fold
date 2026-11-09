@@ -1,14 +1,12 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminTeenConsents, ApiError } from "../api";
+import { AdminTeenConsents } from "../api/adminUsers";
+import { ApiError } from "../api/core";
 import type { TeenConsent, User } from "../types";
 import TeenConsentPanel from "./TeenConsentPanel";
 
-vi.mock("../api", async (actual) => ({
-  ...(await actual<typeof import("../api")>()),
-  AdminTeenConsents: { list: vi.fn(), change: vi.fn() },
-}));
+vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminTeenConsents: { list: vi.fn(), change: vi.fn() } }));
 
 const teen: User = {
   id: 7, name: "Casey Teen", displayName: "Casey", email: "casey@example.com", phone: "",

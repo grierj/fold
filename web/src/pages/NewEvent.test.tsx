@@ -2,22 +2,21 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Groups, SeriesRooms, Site } from "../api";
+import { Groups } from "../api/groups";
+import { SeriesRooms } from "../api/rooms";
+import { Site } from "../api/site";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { forgetPushEnabled } from "../lib/usePushEnabled";
 import { NewEvent } from "./NewEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Groups: {
+vi.mock("../api/groups", async (importActual) => ({ ...(await importActual<typeof import("../api/groups")>()), Groups: {
     get: vi.fn(),
     createEvent: vi.fn(),
-  },
-  SeriesRooms: { check: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) },
-  Events: { generateJitsi: vi.fn() },
-}));
+  } }));
+vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { check: vi.fn() } }));
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
+vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { generateJitsi: vi.fn() } }));
 
 function renderForm() {
   const router = createMemoryRouter(

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Admin } from "../../api";
+import { Admin } from "../../api/admin";
 import { errorText } from "../../lib/errors";
 import { useUnsavedChanges } from "../../lib/unsavedChanges";
 import { Form } from "../ui/Form";

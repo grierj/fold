@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NotificationSettings as SettingsApi, Push } from "../api";
+import { NotificationSettings as SettingsApi, Push } from "../api/notifications";
 import type { EmailKind, NotificationSettings, PushDevice, PushSettings, PushSubscribeResponse } from "../types";
 import { errorText } from "../lib/errors";
 import { useAuth } from "../auth";

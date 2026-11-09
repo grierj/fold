@@ -290,7 +290,7 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"guardianLinks": out, "nominations": nominations})
+	c.JSON(http.StatusOK, guardianLinksResponseJSON{GuardianLinks: out, Nominations: nominations})
 }
 
 func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }

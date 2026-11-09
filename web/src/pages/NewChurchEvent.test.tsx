@@ -2,17 +2,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Events, SeriesRooms, Site } from "../api";
+import { Events } from "../api/events";
+import { SeriesRooms } from "../api/rooms";
+import { Site } from "../api/site";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewChurchEvent } from "./NewChurchEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Events: { createChurch: vi.fn(), generateJitsi: vi.fn() },
-  SeriesRooms: { check: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) },
-}));
+vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { createChurch: vi.fn(), generateJitsi: vi.fn() } }));
+vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { check: vi.fn() } }));
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
 
 function renderForm() {
   const router = createMemoryRouter(

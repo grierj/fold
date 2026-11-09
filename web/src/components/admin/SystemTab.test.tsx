@@ -2,15 +2,13 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminJobs, ApiError } from "../../api";
+import { AdminJobs } from "../../api/admin";
+import { ApiError } from "../../api/core";
 import { ERROR_COPY } from "../../lib/errors";
 import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { SystemTab } from "./SystemTab";
 
-vi.mock("../../api", async (actual) => ({
-  ...(await actual<typeof import("../../api")>()),
-  AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() },
-}));
+vi.mock("../../api/admin", async (actual) => ({ ...(await actual<typeof import("../../api/admin")>()), AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
 
 const job = (id: number, extra: Partial<AdminJob> = {}): AdminJob => ({
   id, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5,
