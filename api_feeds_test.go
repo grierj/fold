@@ -1660,3 +1660,37 @@ func TestCalendarScopeChangeRaces(t *testing.T) {
 		}
 	})
 }
+
+// A host row on a GROUP event grants nothing (DEC-7): in the personal feed such
+// a host, who is not in the group, gets the date but no video link, while an
+// unanswered member of the group does.
+func TestPersonalFeedHostRowOnGroupEventRevealsNoVideoLink(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Host row feed")
+	// Inside the 30-day window an outsider's feed uses for unanswered dates.
+	soon := time.Now().UTC().AddDate(0, 0, 5).Truncate(24 * time.Hour).Add(19 * time.Hour)
+	ev, _ := createVideoEvent(t, admin, gid, map[string]any{"startsLocal": soon.Format("2006-01-02T15:04"), "remoteAvailable": true, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
+	var group models.Group
+	if err := app.DB.First(&group, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, member := mkUser(t, app, &group, "feed group member")
+	outsider := newTestUser(t, app, "feed host row", "password1234", models.RoleMember)
+	if err := app.DB.Create(&models.EventHost{EventID: ev.ID, UserID: outsider.ID, AddedBy: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	host := loginAPI(t, app, "feed host row", "password1234")
+	anon := newAPIClient(t, app)
+
+	memberFeed := fetchFeed(t, anon, createFeedLink(t, member, models.CalendarFeedAll)).Body.String()
+	if !strings.Contains(memberFeed, videoLink) {
+		t.Fatalf("control: an unanswered group member should get the link: %s", memberFeed)
+	}
+	hostFeed := fetchFeed(t, anon, createFeedLink(t, host, models.CalendarFeedAll)).Body.String()
+	if !strings.Contains(hostFeed, ev.Title) {
+		t.Fatalf("the public date should be in the host's feed: %s", hostFeed)
+	}
+	if strings.Contains(hostFeed, videoLink) {
+		t.Fatalf("a host row on a group event revealed the video link: %s", hostFeed)
+	}
+}

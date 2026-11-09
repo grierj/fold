@@ -12,6 +12,7 @@ import (
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -2035,4 +2036,80 @@ func TestOccurrenceCancelledNoticeSerializesWithRealAdminDelete(t *testing.T) {
 			},
 		}
 	})
+}
+
+// A viewer who can see only one date of a hidden series must get none of the
+// series: the seven "omit" keys are absent from the JSON, the blanked fields are
+// empty. The tag names are pinned here so a typo in a `series:` tag cannot
+// silently stop hiding a field.
+func TestHiddenSeriesDateHidesEverySeriesField(t *testing.T) {
+	omit := []string{"recurrenceRule", "rruleUntil", "seriesStartsLocal", "seriesTitle", "seriesLocation", "seriesDurationMinutes", "seriesVisibility"}
+	blank := []string{"description", "childcareNotes", "childcareCapacity", "childcareAges"}
+
+	// The tags name exactly these fields.
+	gotOmit, gotBlank := []string{}, []string{}
+	typ := reflect.TypeOf(occurrenceJSON{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]
+		switch typ.Field(i).Tag.Get("series") {
+		case "omit":
+			gotOmit = append(gotOmit, name)
+		case "blank":
+			gotBlank = append(gotBlank, name)
+		case "":
+		default:
+			t.Fatalf("field %s has an unknown series tag %q", typ.Field(i).Name, typ.Field(i).Tag.Get("series"))
+		}
+	}
+	sort.Strings(omit)
+	sort.Strings(gotOmit)
+	sort.Strings(blank)
+	sort.Strings(gotBlank)
+	if !reflect.DeepEqual(omit, gotOmit) || !reflect.DeepEqual(blank, gotBlank) {
+		t.Fatalf("series tags: omit %v blank %v, want omit %v blank %v", gotOmit, gotBlank, omit, blank)
+	}
+
+	cap := 3
+	inst := occurrenceJSON{
+		ID: 1, EventID: 2, Date: "2030-01-01", Title: "The date", Location: "Hall",
+		Description: "series description", RecurrenceRule: "FREQ=WEEKLY", RRuleUntil: "2031-01-01",
+		SeriesStartsLocal: "2030-01-01T19:00", SeriesTitle: "The series", SeriesLocation: "Series hall",
+		SeriesDurationMinutes: 60, SeriesVisibility: "invite_only",
+		ChildcareNotes: "notes", ChildcareCapacity: &cap, ChildcareAges: "2-5",
+	}
+	inst.hideSeriesDetails("/events/2/dates/2030-01-01")
+	body, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range omit {
+		if _, present := fields[key]; present {
+			t.Errorf("hidden-series date still carries %q: %s", key, body)
+		}
+	}
+	for _, key := range blank {
+		switch v := fields[key].(type) {
+		case nil:
+		case string:
+			if v != "" {
+				t.Errorf("hidden-series date carries %q = %q", key, v)
+			}
+		default:
+			t.Errorf("hidden-series date carries %q = %v", key, v)
+		}
+	}
+	if fields["dateUrl"] != "/events/2/dates/2030-01-01" || fields["title"] != "The date" {
+		t.Errorf("the date's own fields must stay: %s", body)
+	}
+	// A viewer who can see the series still gets every key.
+	full, _ := json.Marshal(occurrenceJSON{SeriesTitle: "The series"})
+	for _, key := range omit {
+		if !strings.Contains(string(full), `"`+key+`"`) && key != "rruleUntil" && key != "seriesVisibility" {
+			t.Errorf("authorized JSON lost %q: %s", key, full)
+		}
+	}
 }
