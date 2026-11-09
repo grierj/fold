@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/grouptags"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -41,17 +42,10 @@ func (a *App) apiListGroups(c *gin.Context) {
 	}
 	// Repeated tag params are OR-ed: a group matches if it has any of them.
 	// Matching is exact per tag and case-insensitive ("men" never matches
-	// "women"). Blank values are ignored.
-	// Tags are stored comma-joined, so no tag contains a comma; a comma in
-	// a query value is treated as a separator too.
-	var tags []string
-	for _, tag := range strings.Split(strings.Join(c.QueryArray("tag"), ","), ",") {
-		if tag = strings.ToLower(strings.TrimSpace(tag)); tag != "" {
-			tags = append(tags, tag)
-		}
-	}
-	if len(tags) > 0 {
-		query = query.Where(`regexp_split_to_array(lower(tags), '\s*,\s*') && string_to_array(?, ',')`, strings.Join(tags, ","))
+	// "women"); blank values are ignored and a comma in a query value is a
+	// separator too (internal/grouptags is the one rule).
+	if tags := grouptags.Parse(strings.Join(c.QueryArray("tag"), ",")); len(tags) > 0 {
+		query = query.Where(grouptags.MatchAnySQL, grouptags.Array(tags))
 	}
 	if err := query.Order("name").Find(&groups).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")

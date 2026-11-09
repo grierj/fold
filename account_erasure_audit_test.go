@@ -922,11 +922,10 @@ var auditWriterCensus = map[string]string{
 	"api_room_locations.go:apiAdminMatchLocation":                 "41d378115f2b99224020e0f4111a0680c603e43c79cdba3de188db6e3b9bc649",
 	"api_room_requests.go:apiConfirmRoomRequest":                  "62159e14c4f4f61d298da229012e101b0610513eb562705d5093ee2893d9acd7",
 	"api_room_requests.go:apiRejectRoomRequest":                   "c456ce9c686358af5eb186fb835d3892975779cc85ba6bc59ab0fe2e77418228",
-	"api_room_requests.go:apiSetRoomApproval":                     "89b78efc5767a2233bfef9b1bc4904070032b9a37d15dc97672c14da95cadece",
 	"api_room_series.go:bookWholeSeries":                          "6a35ca593ce32d5d8a02f816bdbda89d2f18f38ad7cdaf242007480e7f6c6dc2",
 	"api_rooms.go:apiAdminCreateRoom":                             "00c14cd2b3e4d506f59158cf6a676fe89be5a8183760e27310b12b9e183b8f15",
 	"api_rooms.go:apiAdminUpdateRoom":                             "408c699d62a155af44bde0954c969b70965c0c9c583ded3ffc5a0464ffa5a30d",
-	"api_rooms.go:apiSetRoomsEnabled":                             "62a0585d873b48fbea49ece1118cfcff60cac9aecbd7bc6494e95bf0603c0cf4",
+	"api_rooms.go:setRoomSwitch":                                  "a09e15ddbb19ba2435d0b35ce0e05fb57c75d2ffc0b55ac150bb25c937c9bd39",
 	"api_teen_consent.go:changeTeenConsent":                       "f7124d9ee26a3b16b8f67a5fa0fadb7867bcd7b5d9e213e83f3efa8556d9449b",
 	"api_teen_guardians.go:apiClaimTeenGuardian":                  "059457aa963c16581146d2802d7bff428783101588e5a44a0cd3041cd868f55a",
 	"api_teen_guardians.go:nominateTeenGuardian":                  "c1ef0fab390bdda6d4522037a4a396e79108b8121784f33c9ac6c20058244672",
@@ -1203,8 +1202,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 117 {
-		t.Fatalf("audit.Write sites = %d, expected 117; review every changed site", len(c.Sites))
+	if len(c.Sites) != 116 {
+		t.Fatalf("audit.Write sites = %d, expected 116; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)

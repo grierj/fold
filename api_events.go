@@ -366,6 +366,12 @@ func effectiveOccurrenceDuration(ev *models.Event, o *models.EventOccurrence) in
 	return ev.DurationMinutes
 }
 
+// effectiveOccurrencePlace is the date's own place, else its event's, else
+// groupPlace (events.EffectivePlace; "" when the viewer may not see the group).
+func effectiveOccurrencePlace(ev *models.Event, o *models.EventOccurrence, groupPlace string) string {
+	return events.EffectivePlace(ev.Location, o.LocationOverride, groupPlace)
+}
+
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
 	loc := eventZone(ev.TZID)
@@ -373,12 +379,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 	start := o.StartsAt.In(loc)
 	end := start.Add(time.Duration(dur) * time.Minute)
 	title := effectiveOccurrenceTitle(ev, o)
-	location := ev.Location
-	if o.LocationOverride != nil {
-		location = *o.LocationOverride
-	} else if location == "" {
-		location = groupLoc
-	}
+	location := effectiveOccurrencePlace(ev, o, groupLoc)
 	until := ""
 	if ev.RRuleUntil != nil {
 		until = models.FormatCalendarDate(*ev.RRuleUntil)

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/grouptags"
 	"fold/internal/policy"
 	"fold/internal/rooms"
 	"fold/models"
@@ -58,11 +59,11 @@ func (a *App) roomSuggestions(s suggestFor, offered map[uint]bool) roomSuggestio
 		IncludeRestricted: policy.CanBookRoom(s.person, true, true), Windows: s.windows, Now: time.Now().UTC(),
 	}
 	if s.tags != nil {
-		subject.Tags = strings.Split(*s.tags, ",")
+		subject.Tags = grouptags.Parse(*s.tags)
 	} else if s.groupID != nil {
 		var g models.Group
 		if err := a.DB.Select("tags").First(&g, *s.groupID).Error; err == nil {
-			subject.Tags = strings.Split(g.Tags, ",")
+			subject.Tags = grouptags.Parse(g.Tags)
 		}
 	}
 	res, err := rooms.Suggest(a.DB, subject)

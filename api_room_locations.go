@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"fold/internal/audit"
+	"fold/internal/events"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -26,7 +27,7 @@ import (
 
 // effectiveLocationSQL is a date's place as the pages show it: the date's
 // own (even an explicitly empty one), else the event's, else the group's.
-const effectiveLocationSQL = `btrim(COALESCE(o.location_override, NULLIF(e.location, ''), g.location, ''))`
+var effectiveLocationSQL = `btrim(` + events.EffectivePlaceSQL("o.location_override", "e.location", "g.location") + `)`
 
 // unbookedDatesSQL is the scheduled upcoming dates with no booking at all.
 const unbookedDatesSQL = `FROM event_occurrences o
@@ -37,8 +38,8 @@ const unbookedDatesSQL = `FROM event_occurrences o
 
 // seriesMatchSQL picks live series with upcoming dates and no series room
 // whose own place (the event's, else the group's) matches the ? location.
-const seriesMatchSQL = `e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
-	AND lower(btrim(COALESCE(NULLIF(e.location, ''), (SELECT g.location FROM groups g WHERE g.id = e.group_id), ''))) = lower(btrim(?))
+var seriesMatchSQL = `e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
+	AND lower(btrim(` + events.SeriesPlaceSQL("e.location", "(SELECT g.location FROM groups g WHERE g.id = e.group_id)") + `)) = lower(btrim(?))
 	AND EXISTS (SELECT 1 FROM event_occurrences u WHERE u.event_id = e.id AND u.status = 'scheduled' AND u.starts_at > now())`
 
 // typedLocationJSON is one typed place and how many upcoming dates without
