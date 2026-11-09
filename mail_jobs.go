@@ -471,27 +471,29 @@ func (a *App) prepareAndSend(ctx context.Context, kind string, subjectID uint, p
 }
 
 // sendDirect uses the configured suppression-aware sender for required account
-// mail. Permanent outcomes finish quietly; the runner retries transient errors
-// and cancellation, and alerts admins if all attempts fail.
+// mail. A suppressed address or a permanent refusal finishes quietly. With no
+// email service set up, or on a transient error or cancellation, the runner
+// retries and alerts admins if all attempts fail.
 func (a *App) sendDirect(ctx context.Context, kind string, subjectID uint, msg mail.Message) error {
-	if a.Mailer == nil {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	msg.Optional = false
-	err := a.Mailer.Send(ctx, msg)
-	if err == nil {
+	res := sendTracked(ctx, a.mailSender(), msg, nil)
+	if res.outcome == sendSent {
 		return nil
 	}
-	log.Printf("mail: %s #%d: %s", kind, subjectID, jobs.CleanError(err))
-	if mail.NotConfigured(err) || mail.IsSuppressed(err) || mail.IsPermanent(err) {
+	log.Printf("mail: %s #%d: %s", kind, subjectID, jobs.CleanError(res.err))
+	switch res.outcome {
+	case sendSuppressed, sendPermanent:
 		return nil
 	}
-	return err
+	// Not configured or transient: the job retries, and after its last
+	// attempt it is dead on the System page, so required mail never
+	// vanishes without someone being told.
+	return res.err
 }
 
 func (a *App) preparePasswordReset(tx *gorm.DB, userID uint) (mail.Message, bool, error) {

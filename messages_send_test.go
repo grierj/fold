@@ -228,11 +228,6 @@ func TestMessagePipelineGuardianCopies(t *testing.T) {
 // failingSender stands in for a provider that is down, or that refuses.
 type failingSender struct{ permanent bool }
 
-func (s failingSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s failingSender) SendEmail(context.Context, mail.Message) (string, error) {
 	return "", &providers.SendError{Provider: "fake", Code: 503, Message: "service unavailable", Permanent: s.permanent}
 }
@@ -321,11 +316,6 @@ type pickySender struct {
 	next mail.Sender
 	bad  string
 	code int
-}
-
-func (s pickySender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
 }
 
 func (s pickySender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
@@ -468,11 +458,6 @@ func TestMessagePipelineSnapshotSkipsHashedAndLegacySuppressions(t *testing.T) {
 type failSetSender struct {
 	next mail.Sender
 	bad  map[string]bool
-}
-
-func (s failSetSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
 }
 
 func (s failSetSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
@@ -659,21 +644,25 @@ func newErasureTestBlockingSender(t *testing.T, keys ...string) *erasureTestBloc
 	return s
 }
 
-func (s *erasureTestBlockingSender) Send(ctx context.Context, m mail.Message) error {
+func (s *erasureTestBlockingSender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
 	k := s.keys[erasureTestSendKey(m.To, m.Subject)]
 	if k == nil {
 		s.mu.Lock()
 		s.others = append(s.others, m)
 		s.mu.Unlock()
-		return nil
+		return "", nil
 	}
 	k.reachedOnce.Do(func() { close(k.reached) })
 	select {
 	case <-k.release:
-		return nil
+		return "", nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	}
+}
+
+func (s *erasureTestBlockingSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "erasure-blocking"}
 }
 
 // Reached closes when a message with the key is inside Send.

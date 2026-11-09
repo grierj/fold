@@ -534,7 +534,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	footer := footerFacts{site: a.siteName(), address: a.churchAddress()}
 	from := a.messageFromName(db, &m, footer.site)
 	replyTo := a.replyToAddress()
-	sender := mail.Unwrap(a.Mailer)
+	sender := mail.Unwrap(a.mailSender())
 	optOut := categoryScope(messageCategory(&m))
 	last := jobs.LastAttempt(ctx)
 	for _, row := range rows {
@@ -568,31 +568,23 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 				return err
 			}
 			msg.FromName, msg.ReplyTo = from, replyTo
-			var providerID string
-			err = mail.Blocked(blocked[mail.NormalizeAddress(row.Address)], msg)
-			if err == nil {
-				if tracked, ok := sender.(providers.EmailSender); ok {
-					providerID, err = tracked.SendEmail(ctx, msg)
-				} else {
-					err = sender.Send(ctx, msg)
-				}
-			}
+			res := sendTracked(ctx, sender, msg, blocked[mail.NormalizeAddress(row.Address)])
 			switch {
-			case err == nil:
-				return markRecipient(tx, row.ID, models.RecipientSent, "", providerID, "")
-			case mail.IsSuppressed(err):
+			case res.outcome == sendSent:
+				return markRecipient(tx, row.ID, models.RecipientSent, "", res.providerID, "")
+			case res.outcome == sendSuppressed:
 				// The same words the snapshot uses for these people.
 				why := skipNotWorking
-				if s := (*mail.ErrSuppressed)(nil); errors.As(err, &s) && s.Reason == models.SuppressComplaint {
+				if s := (*mail.ErrSuppressed)(nil); errors.As(res.err, &s) && s.Reason == models.SuppressComplaint {
 					why = skipComplained
 				}
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, why, "", "")
-			case mail.NotConfigured(err):
+			case res.outcome == sendNotConfigured:
 				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", whyNoSender)
-			case mail.IsPermanent(err), last:
-				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(err))
+			case res.outcome == sendPermanent, last:
+				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(res.err))
 			default:
-				return errors.Join(errStopBatch, err)
+				return errors.Join(errStopBatch, res.err)
 			}
 		})
 		if err != nil {

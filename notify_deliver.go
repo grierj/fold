@@ -11,7 +11,6 @@ import (
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
-	"fold/internal/providers"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -329,15 +328,18 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 	msg := a.notificationEmailMessage(&n, u, k, footer)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
-	providerID, sendErr := a.dispatchNotificationEmail(sendCtx, msg, suppressions)
+	res := sendTracked(sendCtx, mail.Unwrap(a.mailSender()), msg, suppressions)
+	switch res.outcome {
+	case sendSent:
+		return nil, updateEmailDelivery(tx, id, models.DeliverySent, "", res.providerID)
+	case sendSuppressed:
+		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, strings.TrimPrefix(res.err.Error(), "mail: "), "")
+	case sendPermanent, sendNotConfigured:
+		return nil, updateEmailDelivery(tx, id, models.DeliveryFailed, jobs.CleanError(res.err), "")
+	}
+	sendErr := res.err
 	switch {
-	case sendErr == nil:
-		return nil, updateEmailDelivery(tx, id, models.DeliverySent, "", providerID)
-	case mail.IsSuppressed(sendErr):
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, strings.TrimPrefix(sendErr.Error(), "mail: "), "")
-	case mail.IsPermanent(sendErr), mail.NotConfigured(sendErr):
-		return nil, updateEmailDelivery(tx, id, models.DeliveryFailed, jobs.CleanError(sendErr), "")
-	case sendErr != nil && ctx.Err() != nil:
+	case ctx.Err() != nil:
 		if err := updateEmailDelivery(tx, id, "", jobs.CleanError(sendErr), ""); err != nil {
 			return nil, err
 		}
@@ -401,21 +403,4 @@ func updateEmailDelivery(tx *gorm.DB, notificationID uint, status, reason, provi
 		Where("notification_id = ? AND channel = ? AND status IN ?", notificationID, models.DeliveryEmail,
 			[]string{models.DeliveryQueued, models.DeliveryDeferred}).
 		Updates(updates).Error
-}
-
-// dispatchNotificationEmail applies the suppression list already read with
-// the recipient, then sends. A nil mailer is the unconfigured sender: the
-// caller records that as failed and does not retry.
-func (a *App) dispatchNotificationEmail(ctx context.Context, msg mail.Message, suppressions []string) (string, error) {
-	if err := mail.Blocked(suppressions, msg); err != nil {
-		return "", err
-	}
-	if a.Mailer == nil {
-		return mail.NoSender{}.SendEmail(ctx, msg)
-	}
-	sender := mail.Unwrap(a.Mailer)
-	if tracked, ok := sender.(providers.EmailSender); ok {
-		return tracked.SendEmail(ctx, msg)
-	}
-	return "", sender.Send(ctx, msg)
 }

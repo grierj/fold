@@ -29,27 +29,16 @@ func (e *ErrSuppressed) Error() string {
 // complaint stops optional and broadcast mail while account mail still goes.
 // Every send pays one indexed read.
 type Suppressing struct {
-	inner Adapter
+	inner Sender
 	db    *gorm.DB
 }
 
-// Adapter is what every email adapter is: a Sender that also reports ids.
-type Adapter interface {
-	Sender
-	providers.EmailSender
-}
-
 // WithSuppressions wraps inner with the suppression check.
-func WithSuppressions(db *gorm.DB, inner Adapter) *Suppressing {
+func WithSuppressions(db *gorm.DB, inner Sender) *Suppressing {
 	return &Suppressing{inner: inner, db: db}
 }
 
 func (s *Suppressing) Capabilities() providers.EmailCaps { return s.inner.Capabilities() }
-
-func (s *Suppressing) Send(ctx context.Context, m Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
 
 func (s *Suppressing) SendEmail(ctx context.Context, m Message) (string, error) {
 	// One read per send (OpenSuppressionReasons with a single address).

@@ -157,7 +157,7 @@ func TestAdminSeesAndClearsSuppressions(t *testing.T) {
 	if kept != 2 {
 		t.Fatal("cleared suppressions stay as history")
 	}
-	if err := app.Mailer.Send(t.Context(), mail.Message{To: sam.Email, Subject: "Hello", Text: "again"}); err != nil {
+	if _, err := app.Mailer.SendEmail(t.Context(), mail.Message{To: sam.Email, Subject: "Hello", Text: "again"}); err != nil {
 		t.Fatalf("a cleared address should get mail: %v", err)
 	}
 }

@@ -177,10 +177,6 @@ func TestSuppressingMatchesHashedAndLegacyRows(t *testing.T) {
 type countingAdapter struct{ sent []string }
 
 func (c *countingAdapter) Capabilities() providers.EmailCaps { return providers.EmailCaps{} }
-func (c *countingAdapter) Send(ctx context.Context, m Message) error {
-	_, err := c.SendEmail(ctx, m)
-	return err
-}
 func (c *countingAdapter) SendEmail(_ context.Context, m Message) (string, error) {
 	c.sent = append(c.sent, m.To)
 	return "id", nil

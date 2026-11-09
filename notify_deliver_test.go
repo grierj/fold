@@ -32,11 +32,6 @@ type notifyFailSender struct {
 	onSend func()
 }
 
-func (s *notifyFailSender) Send(ctx context.Context, m mail.Message) error {
-	_, err := s.SendEmail(ctx, m)
-	return err
-}
-
 func (s *notifyFailSender) SendEmail(context.Context, mail.Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,7 +55,11 @@ func (s *notifyFailSender) n() int {
 // notifyPlainSender sends mail and reports no provider id.
 type notifyPlainSender struct{}
 
-func (notifyPlainSender) Send(context.Context, mail.Message) error { return nil }
+func (notifyPlainSender) SendEmail(context.Context, mail.Message) (string, error) { return "", nil }
+
+func (notifyPlainSender) Capabilities() providers.EmailCaps {
+	return providers.EmailCaps{Name: "notify-plain"}
+}
 
 // seedNotifyDeliver writes a notice, a queued email row, and a job whose
 // key is the literal notify.deliver:<id>.

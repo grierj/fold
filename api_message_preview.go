@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -254,14 +253,14 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	defer cancel()
 	// Synchronous by design: the person at the composer waits for this one
 	// test message, so it is not a notice and does not go through notify.Send.
-	err = a.Mailer.Send(ctx, mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
-		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()})
-	var suppressed *mail.ErrSuppressed
-	if errors.As(err, &suppressed) {
+	res := sendTracked(ctx, a.mailSender(), mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
+		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()}, nil)
+	switch res.outcome {
+	case sendSent:
+	case sendSuppressed:
 		fail(c, errMessageTestEmail)
 		return
-	}
-	if err != nil {
+	default:
 		fail(c, errMessageTestFail)
 		return
 	}

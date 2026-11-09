@@ -272,7 +272,7 @@ func (a *App) sendEmailChangeNotice(to, newEmail, cancelRaw string) error {
 	link := a.emailBaseURL() + "/cancel-email-change?token=" + cancelRaw
 	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
 	defer cancel()
-	return a.Mailer.Send(ctx, mail.Message{
+	return sendTracked(ctx, a.mailSender(), mail.Message{
 		To:      to,
 		Subject: "Your Fold sign-in email is changing",
 		Text: fmt.Sprintf(`The sign-in email for your Fold account at %s is being changed to %s.
@@ -284,7 +284,7 @@ If this wasn't you, cancel the pending change and end every current sign-in here
 
 Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in 24 hours.`,
 			a.siteName(), newEmail, link),
-	})
+	}, nil).err
 }
 
 // apiVerifyEmailChange redeems an email verification token: the new address

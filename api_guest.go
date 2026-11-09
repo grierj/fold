@@ -798,12 +798,12 @@ func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), syncMailTimeout)
 	defer cancel()
-	return a.Mailer.Send(ctx, foldmail.Message{
+	return sendTracked(ctx, a.mailSender(), foldmail.Message{
 		To:      to,
 		Subject: headline,
 		Text: intro + fmt.Sprintf(`
 
 Can't come after all? Cancel your registration here:
 %s`, link),
-	})
+	}, nil).err
 }

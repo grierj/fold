@@ -28,7 +28,6 @@ import (
 
 type directMailSenderFunc func(context.Context, mail.Message) error
 
-func (f directMailSenderFunc) Send(ctx context.Context, msg mail.Message) error { return f(ctx, msg) }
 func (f directMailSenderFunc) SendEmail(ctx context.Context, msg mail.Message) (string, error) {
 	return "", f(ctx, msg)
 }
@@ -420,7 +419,9 @@ func TestDirectMailOutcomes(t *testing.T) {
 			}
 			runResetMail(t, app)
 			want, wantCalls := models.JobDone, 1
-			if outcome == "transient" {
+			// No email service is a failure the admins hear about, not a quiet
+			// finish: the job retries and, out of attempts, is dead on System.
+			if outcome == "transient" || outcome == "nil" || outcome == "unconfigured" {
 				want = models.JobFailed
 			}
 			if outcome == "nil" || outcome == "unconfigured" || outcome == "hard bounce" {
@@ -2522,12 +2523,12 @@ func TestGuardianConsentMailPreparationErrorsRetryWithoutReplacingToken(t *testi
 	}
 }
 
-func TestGuardianConsentMailWithoutSenderFinishesQuietly(t *testing.T) {
+func TestGuardianConsentMailWithoutSenderFailsAndRetries(t *testing.T) {
 	app, guardian, _, _, job := queueHeldGuardianConsentMail(t)
 	app.Mailer = nil
 	runResetMail(t, app)
-	if got := reloadJob(t, app, job.ID); got.Status != models.JobDone || got.LastError != "" || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 1 || mailCount(t, app, "") != 0 {
-		t.Fatalf("nil sender must finish quietly: %+v", got)
+	if got := reloadJob(t, app, job.ID); got.Status != models.JobFailed || got.LastError == "" || len(accountTokens(t, app, guardian.ID, models.TokenTeenConsent)) != 1 || mailCount(t, app, "") != 0 {
+		t.Fatalf("a missing sender must fail the job so it retries and shows up: %+v", got)
 	}
 }
 
@@ -2541,7 +2542,8 @@ func TestGuardianConsentMailAndAuthorityChangesLockOrders(t *testing.T) {
 				sender := app.Mailer
 				app.Mailer = directMailSenderFunc(func(ctx context.Context, msg mail.Message) error {
 					delivered = msg.Text
-					return sender.Send(ctx, msg)
+					_, err := sender.SendEmail(ctx, msg)
+					return err
 				})
 				work := func(operation string) func(*gorm.DB) error {
 					return func(db *gorm.DB) error {
