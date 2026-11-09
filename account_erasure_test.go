@@ -768,7 +768,7 @@ func TestErasedPersonRendersAsMember(t *testing.T) {
 	if err := db.First(&ra, add.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	reads, err := loadContactPageReads(db, op, []models.ContactRequest{rc}, false)
+	reads, err := loadContactPageReads(db, op.actor.ID, []models.ContactRequest{rc}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4220,13 +4220,13 @@ const (
 func erasureSeedRequestTasks(t *testing.T, db *gorm.DB, r models.ContactRequest, admin uint) {
 	t.Helper()
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
+		if err := contactNotice(tx, r, roleSubjectReview, []uint{r.SubjectUserID}, "subject-review"); err != nil {
 			return err
 		}
 		if !r.NeedsAdmin {
 			return nil
 		}
-		err := contactNotice(tx, r, notify.ContactAdminReview, []uint{admin}, "admin-review")
+		err := contactNotice(tx, r, roleAdminReview, []uint{admin}, "admin-review")
 		return err
 	})
 	if err != nil {

@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fold/internal/audit"
-	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 	"github.com/gin-gonic/gin"
@@ -80,17 +79,17 @@ type contactOperation struct {
 
 // Rejected domain operations COMMIT their refusal audit, rather than returning
 // an error from the transaction and accidentally rolling that audit back.
-func (a *App) contactOperation(c *gin.Context, fn func(*gorm.DB, *contactOperation) error) {
-	a.runContactOperation(c, lockContacts, fn)
+func (a *App) contactOperation(c *gin.Context, k *requestKind, fn func(*gorm.DB, *contactOperation) error) {
+	a.runContactOperation(c, k, lockContacts, fn)
 }
 
 // contactRead is contactOperation for GET handlers that only read. It takes the
 // shared gate, so readers do not queue behind each other.
-func (a *App) contactRead(c *gin.Context, fn func(*gorm.DB, *contactOperation) error) {
-	a.runContactOperation(c, lockContactsShared, fn)
+func (a *App) contactRead(c *gin.Context, k *requestKind, fn func(*gorm.DB, *contactOperation) error) {
+	a.runContactOperation(c, k, lockContactsShared, fn)
 }
 
-func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn func(*gorm.DB, *contactOperation) error) {
+func (a *App) runContactOperation(c *gin.Context, k *requestKind, lock func(*gorm.DB) error, fn func(*gorm.DB, *contactOperation) error) {
 	op := contactOperation{}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lock(tx); err != nil {
@@ -108,10 +107,7 @@ func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn 
 		}
 		if !sessionCurrent(op.actor, apiUser(c)) {
 			op.actor = &models.User{ID: apiUser(c).ID}
-			if strings.HasPrefix(c.FullPath(), "/api/v1/add-requests") {
-				return refuseAdd(tx, &op, models.ContactRequest{}, "stale_session", c.ClientIP())
-			}
-			return refuseContact(tx, &op, models.ContactRequest{}, "stale_session", c.ClientIP())
+			return k.refuse(tx, &op, models.ContactRequest{}, "stale_session", c.ClientIP())
 		}
 		return fn(tx, &op)
 	})
@@ -135,58 +131,6 @@ func contactID(c *gin.Context) uint {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	return uint(id)
 }
-func (a *App) contactContextVisible(tx *gorm.DB, u *models.User, r models.ContactRequest) (*uint, error) {
-	var g models.Group
-	groupID := r.ContextID
-	if r.ContextType == policy.ContactEvent {
-		var ev models.Event
-		err := tx.First(&ev, r.ContextID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		f := eventFactsIn(tx, u, &ev)
-		group := policy.Group{}
-		if f.group != nil {
-			group = asGroup(f.group)
-		}
-		if !policy.CanSeeEvent(asPerson(u), f.view, group, f.rel) {
-			return nil, nil
-		}
-		id := r.ContextID
-		return &id, nil
-	}
-	err := tx.First(&g, groupID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if a.groupShownTo(u, &g, relIn(tx, u.ID, g.ID)) == nil {
-		return nil, nil
-	}
-	return &groupID, nil
-}
-func (a *App) presentContactRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (contactRequestJSON, error) {
-	if r.Purpose != policy.RequestContact {
-		return contactRequestJSON{}, errors.New("not a contact request")
-	}
-	f, _, err := a.loadContactFacts(tx, contactScope(r), op.now)
-	if err != nil {
-		return contactRequestJSON{}, err
-	}
-	actor := contactAccount(op.actor, op.now, op.zone)
-	p := contactRequestPolicy(r)
-	contextID, err := a.contactContextVisible(tx, op.actor, r)
-	if err != nil {
-		return contactRequestJSON{}, err
-	}
-	return contactRequestJSON{ID: r.ID, RequesterID: r.RequesterID, RequesterName: nameIn(tx, r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: nameIn(tx, r.SubjectUserID), ContextType: r.ContextType, ContextID: contextID, Fields: r.Fields, Reason: r.Reason, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, SubjectDecidedBy: r.SubjectDecidedBy, SubjectDecidedAt: r.SubjectDecidedAt, AdminDecision: r.AdminDecision, AdminDecidedBy: r.AdminDecidedBy, AdminDecidedAt: r.AdminDecidedAt, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
-		CanSubjectDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactSubject, policy.ContactApproved, p, f) != "", CanAdminDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactAdmin, policy.ContactApproved, p, f) != "", CanWithdraw: policy.CanWithdrawContactRequest(actor, p, op.now)}, nil
-}
 func (a *App) apiCreateContactRequest(c *gin.Context) {
 	var body struct {
 		SubjectUserID uint   `json:"subjectUserId"`
@@ -199,7 +143,7 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 	// untrusted reason (which may itself contain private contact information).
 	valid := c.ShouldBindJSON(&body) == nil && utf8.RuneCountInString(body.Reason) <= policy.ContactReasonLimit
 	var out contactRequestJSON
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactOperation(c, contactKind, func(tx *gorm.DB, op *contactOperation) error {
 		r := models.ContactRequest{Purpose: policy.RequestContact, RequesterID: op.actor.ID, SubjectUserID: body.SubjectUserID, ContextType: body.ContextType, ContextID: body.ContextID, Fields: body.Fields, Reason: strings.TrimSpace(body.Reason)}
 		if !valid {
 			if utf8.RuneCountInString(body.Reason) > policy.ContactReasonLimit {
@@ -225,31 +169,8 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 			}
 			return refuseContact(tx, op, r, "create", c.ClientIP())
 		}
-		r.NeedsAdmin = f.Subject.Person.Teen
-		r.AdminDecision = policy.ContactNotNeeded
-		if r.NeedsAdmin {
-			r.AdminDecision = policy.ContactPending
-		}
-		r.SubjectDecision, r.Status, r.CreatedAt, r.ExpiresAt = policy.ContactPending, policy.ContactPending, op.now, op.now.Add(policy.ContactRequestLifetime)
-		if err = tx.Create(&r).Error; err != nil {
+		if err = openRequest(tx, op, &r, f.Subject.Person.Teen, c.ClientIP()); err != nil {
 			return err
-		}
-		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
-			return err
-		}
-		err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
-		if err != nil {
-			return err
-		}
-		if r.NeedsAdmin {
-			admins, err := activeAdminIDs(tx)
-			if err != nil {
-				return err
-			}
-			err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
-			if err != nil {
-				return err
-			}
 		}
 		out, err = a.presentContactRequest(tx, op, r)
 		return err
@@ -259,44 +180,11 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 	}
 }
 
-func (a *App) apiListContactRequests(c *gin.Context) { a.readContactRequests(c, false) }
-func (a *App) apiGetContactRequest(c *gin.Context)   { a.readContactRequests(c, true) }
-func (a *App) readContactRequests(c *gin.Context, single bool) {
-	out := []contactRequestJSON{}
-	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
-		actor := contactAccount(op.actor, op.now, op.zone)
-		q := tx.Where("purpose = ?", policy.RequestContact).Order("id DESC").Limit(100)
-		if single {
-			q = q.Where("id = ?", contactID(c))
-		} else {
-			before, _ := strconv.ParseUint(c.Query("before"), 10, 64)
-			if before > 0 {
-				q = q.Where("id < ?", before)
-			}
-		}
-		if !policy.IsAdmin(actor.Person) {
-			q = q.Where("requester_id = ? OR subject_user_id = ?", op.actor.ID, op.actor.ID)
-		}
-		var rs []models.ContactRequest
-		if err := q.Find(&rs).Error; err != nil {
-			return err
-		}
-		var err error
-		out, err = a.presentContactRequests(tx, op, rs)
-		return err
-	})
-	if c.Writer.Written() {
-		return
-	}
-	if single {
-		if len(out) == 0 {
-			jsonError(c, http.StatusNotFound, "not found")
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"request": out[0]})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"requests": out})
+func (a *App) apiListContactRequests(c *gin.Context) {
+	readRequests(a, c, contactKind, false, a.presentContactRequests)
+}
+func (a *App) apiGetContactRequest(c *gin.Context) {
+	readRequests(a, c, contactKind, true, a.presentContactRequests)
 }
 func (a *App) apiDecideContactRequest(c *gin.Context) {
 	var body struct {
@@ -305,20 +193,9 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 	}
 	valid := c.ShouldBindJSON(&body) == nil
 	var out contactRequestJSON
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
-		var r models.ContactRequest
-		err := tx.Where("purpose = ?", policy.RequestContact).First(&r, contactID(c)).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return refuseContact(tx, op, models.ContactRequest{ID: contactID(c)}, "decision", c.ClientIP())
-		}
-		if err != nil {
-			return err
-		}
-		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
-		if err != nil {
-			return err
-		}
-		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
+	a.contactOperation(c, contactKind, func(tx *gorm.DB, op *contactOperation) error {
+		r, found, err := a.lockRequest(tx, op, contactKind, contactID(c), "decision", c.ClientIP())
+		if err != nil || !found {
 			return err
 		}
 		f, _, err := a.loadContactFacts(tx, contactScope(r), op.now)
@@ -329,28 +206,8 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 		if !valid || status == "" {
 			return refuseContact(tx, op, r, "decision", c.ClientIP())
 		}
-		setRequestDecision(&r, op.actor.ID, op.now, body.Party, body.Decision)
-		r.Status = status
-		if status != policy.ContactPending {
-			r.CompletedAt = &op.now
-		}
-		if err = tx.Save(&r).Error; err != nil {
+		if err = recordDecision(tx, op, contactKind, &r, body.Party, body.Decision, status, c.ClientIP()); err != nil {
 			return err
-		}
-		if err = contactAudit(tx, &op.actor.ID, audit.ContactDecision, r, body.Party+":"+body.Decision, c.ClientIP()); err != nil {
-			return err
-		}
-		kind := notify.ContactSubjectReview
-		if body.Party == policy.ContactAdmin {
-			kind = notify.ContactAdminReview
-		}
-		if _, err = notify.Resolve(tx, kind, r.ID, &op.actor.ID, body.Decision); err != nil {
-			return err
-		}
-		if status != policy.ContactPending {
-			if err = resolveContactTasks(tx, r, &op.actor.ID, status); err != nil {
-				return err
-			}
 		}
 		if status == policy.ContactGranted {
 			g := models.ContactGrant{RequestID: r.ID, LeaderID: r.RequesterID, SubjectUserID: r.SubjectUserID, ContextType: r.ContextType, ContextID: r.ContextID, Fields: r.Fields, GrantedAt: op.now}
@@ -369,7 +226,7 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 			}
 			recipients = append(recipients, guardians...)
 		}
-		err = contactNotice(tx, r, notify.ContactUpdated, recipients, "decision:"+body.Party)
+		err = contactNotice(tx, r, roleUpdated, recipients, "decision:"+body.Party)
 		if err != nil {
 			return err
 		}
@@ -381,37 +238,15 @@ func (a *App) apiDecideContactRequest(c *gin.Context) {
 	}
 }
 func (a *App) apiWithdrawContactRequest(c *gin.Context) {
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
-		var r models.ContactRequest
-		err := tx.Where("purpose = ?", policy.RequestContact).First(&r, contactID(c)).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return refuseContact(tx, op, models.ContactRequest{ID: contactID(c)}, "withdraw", c.ClientIP())
-		}
-		if err != nil {
-			return err
-		}
-		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
-		if err != nil {
-			return err
-		}
-		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
+	a.contactOperation(c, contactKind, func(tx *gorm.DB, op *contactOperation) error {
+		r, found, err := a.lockRequest(tx, op, contactKind, contactID(c), "withdraw", c.ClientIP())
+		if err != nil || !found {
 			return err
 		}
 		if !policy.CanWithdrawContactRequest(contactAccount(op.actor, op.now, op.zone), contactRequestPolicy(r), op.now) {
 			return refuseContact(tx, op, r, "withdraw", c.ClientIP())
 		}
-		r.Status, r.CompletedAt, r.WithdrawnByID = policy.ContactWithdrawn, &op.now, &op.actor.ID
-		if err = tx.Save(&r).Error; err != nil {
-			return err
-		}
-		if err = contactAudit(tx, &op.actor.ID, audit.ContactWithdrawn, r, "", c.ClientIP()); err != nil {
-			return err
-		}
-		if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
-			return err
-		}
-		err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
-		return err
+		return withdrawRequest(tx, op, &r, c.ClientIP())
 	})
 	if !c.Writer.Written() {
 		c.JSON(http.StatusOK, gin.H{})
@@ -420,7 +255,7 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 
 func (a *App) apiListContactGrants(c *gin.Context) {
 	out := []contactGrantJSON{}
-	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactRead(c, contactKind, func(tx *gorm.DB, op *contactOperation) error {
 		actor := contactAccount(op.actor, op.now, op.zone)
 		var gs []models.ContactGrant
 		q := tx.Where("request_id IN (SELECT id FROM contact_requests WHERE purpose = ?)", policy.RequestContact).Order("id DESC").Limit(100)
@@ -456,7 +291,7 @@ func (a *App) useContactGrant(c *gin.Context, reveal bool) {
 		valid = c.ShouldBindJSON(&body) == nil
 	}
 	out := contactRevealJSON{}
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactOperation(c, contactKind, func(tx *gorm.DB, op *contactOperation) error {
 		var discovered models.ContactGrant
 		err := tx.Where("request_id IN (SELECT id FROM contact_requests WHERE purpose = ?)", policy.RequestContact).First(&discovered, contactID(c)).Error
 		operation := "revoke"
@@ -591,34 +426,6 @@ type addRequestJSON struct {
 	CanComplete       bool       `json:"canComplete"`
 }
 
-func addAuditAction(action string) string {
-	switch action {
-	case audit.ContactRequested:
-		return audit.AddRequested
-	case audit.ContactDecision:
-		return audit.AddDecision
-	case audit.ContactWithdrawn:
-		return audit.AddWithdrawn
-	case audit.ContactExpired:
-		return audit.AddExpired
-	case audit.ContactGranted:
-		return audit.AddCompleted
-	case audit.ContactEnded:
-		return audit.AddEnded
-	default:
-		return audit.AddRefused
-	}
-}
-func addNoticeKind(kind string) string {
-	switch kind {
-	case notify.ContactSubjectReview:
-		return notify.AddSubjectReview
-	case notify.ContactAdminReview:
-		return notify.AddAdminReview
-	default:
-		return notify.AddUpdated
-	}
-}
 func setRequestDecision(r *models.ContactRequest, actor uint, now time.Time, party, decision string) {
 	if party == policy.ContactSubject {
 		r.SubjectDecision, r.SubjectDecidedBy, r.SubjectDecidedAt = decision, &actor, &now
@@ -627,56 +434,15 @@ func setRequestDecision(r *models.ContactRequest, actor uint, now time.Time, par
 	}
 }
 
-func (a *App) presentAddRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (addRequestJSON, error) {
-	f, err := a.loadAddFacts(tx, r, op.now)
-	if err != nil {
-		return addRequestJSON{}, err
-	}
-	p, actor := addRequestPolicy(r), contactAccount(op.actor, op.now, op.zone)
-	out := addRequestJSON{ID: r.ID, Purpose: r.Purpose, Reason: r.Reason, OverLimit: r.AddOverLimit, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, AdminDecision: r.AdminDecision, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
-		CanSubjectDecide: policy.AddRequestStatusAfterDecision(actor, policy.ContactSubject, policy.ContactApproved, p, f) != "", CanAdminDecide: policy.AddRequestStatusAfterDecision(actor, policy.ContactAdmin, policy.ContactApproved, p, f) != "", CanWithdraw: policy.CanWithdrawAddRequest(actor, p, op.now), CanComplete: policy.CanViewAddRequest(actor, p) && policy.CanFinalizeAddRequest(p, f)}
-	if r.Purpose == policy.RequestOccurrenceAdd {
-		out.Reason = ""
-		out.CompletionProblem = op.completionProblem
-		var ev models.Event
-		var occ models.EventOccurrence
-		if err := tx.Where("id = ?", r.ContextID).Limit(1).Find(&ev).Error; err != nil {
-			return out, err
-		}
-		if err := tx.Where("id = ? AND event_id = ?", r.OccurrenceID, r.ContextID).Limit(1).Find(&occ).Error; err != nil {
-			return out, err
-		}
-		if ev.ID != 0 && occ.ID != 0 {
-			out.EventTitle = ev.Title
-			if occ.TitleOverride != nil {
-				out.EventTitle = *occ.TitleOverride
-			}
-			out.Date, out.StartsAt, out.EndsAt, out.TZID = models.FormatCalendarDate(occ.OriginalDate), &occ.StartsAt, &occ.EndsAt, ev.TZID
-		}
-		return out, nil
-	}
-	out.ContextID, err = a.contactContextVisible(tx, op.actor, r)
-	if err != nil {
-		return out, err
-	}
-	if out.ContextID != nil {
-		var g models.Group
-		if err = tx.First(&g, *out.ContextID).Error; err != nil {
-			return out, err
-		}
-		shown := a.groupShownTo(op.actor, &g, relIn(tx, op.actor.ID, g.ID))
-		if shown != nil {
-			out.GroupName = shown.Name
-		} // group-ok: groupShownTo applies current viewer visibility
-		out.RequesterName, out.SubjectName = nameIn(tx, r.RequesterID), nameIn(tx, r.SubjectUserID)
-	}
-	return out, nil
-}
+// refuseAdd refuses an operation on an add request. A message the caller
+// already chose (a long reason, the open limit) is kept.
 func refuseAdd(tx *gorm.DB, op *contactOperation, r models.ContactRequest, operation, ip string) error {
 	if r.Purpose != policy.RequestOccurrenceAdd {
 		r.Purpose = policy.RequestGroupAdd
 	}
-	op.refusal = errAddRequestUnavailable
+	if op.refusal == nil {
+		op.refusal = errAddRequestUnavailable
+	}
 	return refuseContact(tx, op, r, operation, ip)
 }
 func (a *App) apiCreateAddRequest(c *gin.Context) {
@@ -695,15 +461,14 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 	}
 	valid := c.ShouldBindJSON(&body) == nil && utf8.RuneCountInString(body.Reason) <= policy.ContactReasonLimit
 	var out addRequestJSON
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactOperation(c, addKind, func(tx *gorm.DB, op *contactOperation) error {
 		r := models.ContactRequest{Purpose: policy.RequestGroupAdd, RequesterID: op.actor.ID, ContextType: body.ContextType, ContextID: body.ContextID, Reason: strings.TrimSpace(body.Reason), AddOverLimit: body.OverLimit}
 		if body.ContextType == policy.ContactEvent {
 			r.Purpose = policy.RequestOccurrenceAdd
 		}
 		if !valid || (body.ContextType != policy.ContactGroup && body.ContextType != policy.ContactEvent) {
 			if utf8.RuneCountInString(body.Reason) > policy.ContactReasonLimit {
-				op.refused, op.refusal = true, errAddReasonLong
-				return contactAudit(tx, &op.actor.ID, audit.ContactRefused, r, "invalid_request", c.ClientIP())
+				op.refusal = errAddReasonLong
 			}
 			return refuseAdd(tx, op, r, "invalid_request", c.ClientIP())
 		}
@@ -762,38 +527,13 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		}
 		if !policy.CanCreateAddRequest(addRequestPolicy(r).AddScope, f, int(count)) {
 			if count >= policy.ContactOpenLimit && policy.CanCreateAddRequest(addRequestPolicy(r).AddScope, f, 0) {
-				op.refused = true
 				op.refusal = errRequestOpenLimit
-				return contactAudit(tx, &op.actor.ID, audit.ContactRefused, r, "open_limit", c.ClientIP())
+				return refuseAdd(tx, op, r, "open_limit", c.ClientIP())
 			}
 			return refuseAdd(tx, op, r, "create", c.ClientIP())
 		}
-		r.NeedsAdmin = f.Subject.Person.Teen
-		r.SubjectDecision = policy.ContactPending
-		r.AdminDecision = policy.ContactNotNeeded
-		if r.NeedsAdmin {
-			r.AdminDecision = policy.ContactPending
-		}
-		r.Status, r.CreatedAt, r.ExpiresAt = policy.ContactPending, op.now, op.now.Add(policy.ContactRequestLifetime)
-		if err = tx.Create(&r).Error; err != nil {
+		if err = openRequest(tx, op, &r, f.Subject.Person.Teen, c.ClientIP()); err != nil {
 			return err
-		}
-		if err = contactAudit(tx, &op.actor.ID, audit.ContactRequested, r, "", c.ClientIP()); err != nil {
-			return err
-		}
-		err = contactNotice(tx, r, notify.ContactSubjectReview, []uint{r.SubjectUserID}, "subject-review")
-		if err != nil {
-			return err
-		}
-		if r.NeedsAdmin {
-			admins, err := activeAdminIDs(tx)
-			if err != nil {
-				return err
-			}
-			err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
-			if err != nil {
-				return err
-			}
 		}
 		out, err = a.presentAddRequest(tx, op, r)
 		return err
@@ -802,50 +542,11 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		c.JSON(http.StatusCreated, gin.H{"request": out})
 	}
 }
-func (a *App) apiListAddRequests(c *gin.Context) { a.readAddRequests(c, false) }
-func (a *App) apiGetAddRequest(c *gin.Context)   { a.readAddRequests(c, true) }
-func (a *App) readAddRequests(c *gin.Context, single bool) {
-	out := []addRequestJSON{}
-	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
-		actor := contactAccount(op.actor, op.now, op.zone)
-		q := tx.Where("purpose IN ?", []string{policy.RequestGroupAdd, policy.RequestOccurrenceAdd}).Order("id DESC").Limit(100)
-		if single {
-			q = q.Where("id = ?", contactID(c))
-		} else if before, _ := strconv.ParseUint(c.Query("before"), 10, 64); before > 0 {
-			q = q.Where("id < ?", before)
-		}
-		if !policy.IsAdmin(actor.Person) {
-			q = q.Where("requester_id = ? OR subject_user_id = ?", op.actor.ID, op.actor.ID)
-		}
-		var rs []models.ContactRequest
-		if err := q.Find(&rs).Error; err != nil {
-			return err
-		}
-		visible := make([]models.ContactRequest, 0, len(rs))
-		for _, r := range rs {
-			if policy.CanViewAddRequest(actor, addRequestPolicy(r)) {
-				visible = append(visible, r)
-			}
-		}
-		var err error
-		out, err = a.presentAddRequests(tx, op, visible)
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	if c.Writer.Written() {
-		return
-	}
-	if single {
-		if len(out) == 0 {
-			jsonError(c, 404, "not found")
-			return
-		}
-		c.JSON(200, gin.H{"request": out[0]})
-		return
-	}
-	c.JSON(200, gin.H{"requests": out})
+func (a *App) apiListAddRequests(c *gin.Context) {
+	readRequests(a, c, addKind, false, a.presentAddRequests)
+}
+func (a *App) apiGetAddRequest(c *gin.Context) {
+	readRequests(a, c, addKind, true, a.presentAddRequests)
 }
 
 // completeGroupAsk changes membership and records success in the SAME outer
@@ -903,7 +604,7 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 		}
 		recipients = append(recipients, guardians...)
 	}
-	err = contactNotice(tx, *r, notify.ContactUpdated, recipients, "completed")
+	err = contactNotice(tx, *r, roleUpdated, recipients, "completed")
 	return err
 }
 func (a *App) apiDecideAddRequest(c *gin.Context)   { a.mutateAddRequest(c, "decision") }
@@ -916,22 +617,11 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 	}
 	valid := operation != "decision" || c.ShouldBindJSON(&body) == nil
 	var out addRequestJSON
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactOperation(c, addKind, func(tx *gorm.DB, op *contactOperation) error {
 		// Gate serializes discovery/reconciliation. Reconcile locks request rows
 		// in ID order before the selected request is updated.
-		var r models.ContactRequest
-		err := tx.Where("purpose IN ?", []string{policy.RequestGroupAdd, policy.RequestOccurrenceAdd}).First(&r, contactID(c)).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return refuseAdd(tx, op, models.ContactRequest{ID: contactID(c)}, operation, c.ClientIP())
-		}
-		if err != nil {
-			return err
-		}
-		err = a.reconcileContacts(tx, op.now, contactChange{UserID: r.RequesterID})
-		if err != nil {
-			return err
-		}
-		if err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, r.ID).Error; err != nil {
+		r, found, err := a.lockRequest(tx, op, addKind, contactID(c), operation, c.ClientIP())
+		if err != nil || !found {
 			return err
 		}
 		p, actor := addRequestPolicy(r), contactAccount(op.actor, op.now, op.zone)
@@ -948,30 +638,10 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 			if !valid || status == "" {
 				return refuseAdd(tx, op, r, operation, c.ClientIP())
 			}
-			setRequestDecision(&r, op.actor.ID, op.now, body.Party, body.Decision)
-			r.Status = status
-			if status != policy.ContactPending {
-				r.CompletedAt = &op.now
-			}
-			if err = tx.Save(&r).Error; err != nil {
+			if err = recordDecision(tx, op, addKind, &r, body.Party, body.Decision, status, c.ClientIP()); err != nil {
 				return err
 			}
-			if err = contactAudit(tx, &op.actor.ID, audit.ContactDecision, r, body.Party+":"+body.Decision, c.ClientIP()); err != nil {
-				return err
-			}
-			kind := notify.AddSubjectReview
-			if body.Party == policy.ContactAdmin {
-				kind = notify.AddAdminReview
-			}
-			if _, err = notify.Resolve(tx, kind, r.ID, &op.actor.ID, body.Decision); err != nil {
-				return err
-			}
-			if r.Status != policy.ContactPending {
-				if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
-					return err
-				}
-			}
-			err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
+			err = contactNotice(tx, r, roleUpdated, []uint{r.RequesterID, r.SubjectUserID}, "decision:"+body.Party)
 			if err != nil {
 				return err
 			}
@@ -982,18 +652,7 @@ func (a *App) mutateAddRequest(c *gin.Context, operation string) {
 			if !policy.CanWithdrawAddRequest(actor, p, op.now) {
 				return refuseAdd(tx, op, r, operation, c.ClientIP())
 			}
-			r.Status, r.CompletedAt, r.WithdrawnByID = policy.ContactWithdrawn, &op.now, &op.actor.ID
-			if err = tx.Save(&r).Error; err != nil {
-				return err
-			}
-			if err = contactAudit(tx, &op.actor.ID, audit.ContactWithdrawn, r, "", c.ClientIP()); err != nil {
-				return err
-			}
-			if err = resolveContactTasks(tx, r, &op.actor.ID, r.Status); err != nil {
-				return err
-			}
-			err = contactNotice(tx, r, notify.ContactUpdated, []uint{r.SubjectUserID}, "withdrawn")
-			if err != nil {
+			if err = withdrawRequest(tx, op, &r, c.ClientIP()); err != nil {
 				return err
 			}
 		case "complete":

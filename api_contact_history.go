@@ -89,15 +89,43 @@ func contactHistoryDTO(e contactHistoryEntry) contactHistoryEntryJSON {
 	}
 }
 
-// Each action has exactly one known target shape. Never search arbitrary JSON
-// for a person ID (or accept submitted IDs on a deliberately generic refusal).
-var contactHistoryTargets = map[string]string{
-	audit.ContactRequested: "contact_request", audit.ContactDecision: "contact_request", audit.ContactWithdrawn: "contact_request", audit.ContactExpired: "contact_request", audit.ContactGranted: "contact_request", audit.ContactReveal: "contact_request", audit.ContactRefused: "contact_request", audit.ContactRevoked: "contact_request", audit.ContactEnded: "contact_request",
-	audit.AddRequested: "add_request", audit.AddDecision: "add_request", audit.AddWithdrawn: "add_request", audit.AddExpired: "add_request", audit.AddCompleted: "add_request", audit.AddRefused: "add_request", audit.AddEnded: "add_request",
-	audit.OccurrenceAccessAdded: accessTargetType, audit.OccurrenceAccessEnded: accessTargetType, audit.OccurrenceBlocked: accessTargetType,
-	audit.MemberAdded: "group", audit.MemberRemoved: "group", audit.AddedOverLimit: "group",
-	audit.RegistrationAdded: "event", audit.RegistrationAddedOverCapacity: "event", audit.RegistrationRemoved: "event",
-}
+// historyAction is what the history shows for one audit action: the target
+// type its row has and the outcome it reads as. Each action has exactly one
+// known target shape. Never search arbitrary JSON for a person ID (or accept
+// submitted IDs on a deliberately generic refusal). A decision's outcome is
+// refined from its recorded reason.
+type historyAction struct{ target, outcome string }
+
+var contactHistoryActions = func() map[string]historyAction {
+	m := map[string]historyAction{}
+	for action, outcome := range map[string]string{
+		audit.ContactRequested: "requested", audit.ContactDecision: "decision", audit.ContactWithdrawn: "withdrawn",
+		audit.ContactExpired: "expired", audit.ContactGranted: "granted", audit.ContactReveal: "revealed",
+		audit.ContactRefused: "refused", audit.ContactRevoked: "revoked", audit.ContactEnded: "ended",
+	} {
+		m[action] = historyAction{contactKind.target, outcome}
+	}
+	// A completed ask to add is an add.
+	for contactAction, outcome := range map[string]string{
+		audit.ContactRequested: "requested", audit.ContactDecision: "decision", audit.ContactWithdrawn: "withdrawn",
+		audit.ContactExpired: "expired", audit.ContactGranted: "added", audit.ContactRefused: "refused", audit.ContactEnded: "ended",
+	} {
+		m[addKind.action(contactAction)] = historyAction{addKind.target, outcome}
+	}
+	for action, outcome := range map[string]string{
+		audit.OccurrenceAccessAdded: "added", audit.OccurrenceAccessEnded: "ended", audit.OccurrenceBlocked: "blocked",
+	} {
+		m[action] = historyAction{accessTargetType, outcome}
+	}
+	for action, outcome := range map[string]string{audit.MemberAdded: "added", audit.MemberRemoved: "removed", audit.AddedOverLimit: "added"} {
+		m[action] = historyAction{"group", outcome}
+	}
+	for action, outcome := range map[string]string{audit.RegistrationAdded: "added", audit.RegistrationAddedOverCapacity: "added", audit.RegistrationRemoved: "removed"} {
+		m[action] = historyAction{"event", outcome}
+	}
+	m[audit.OccurrenceRefused] = historyAction{"occurrence_endpoint", "refused"}
+	return m
+}()
 
 type contactHistoryFilter struct {
 	PersonID                     uint
@@ -159,7 +187,7 @@ func parseContactHistoryFilter(c *gin.Context, export bool) (contactHistoryFilte
 			}
 			f.Purpose = v
 		case "action":
-			if _, exists := contactHistoryTargets[v]; !exists && v != audit.OccurrenceRefused {
+			if _, exists := contactHistoryActions[v]; !exists {
 				return f, false
 			}
 			f.Action = v
@@ -208,13 +236,13 @@ func contactHistoryQuery(tx *gorm.DB, f contactHistoryFilter) *gorm.DB {
 	pairs := tx.Where("1=0")
 	// Sorted, so the SQL text is the same on every request and pgx reuses the
 	// prepared statement.
-	actions := make([]string, 0, len(contactHistoryTargets))
-	for action := range contactHistoryTargets {
+	actions := make([]string, 0, len(contactHistoryActions))
+	for action := range contactHistoryActions {
 		actions = append(actions, action)
 	}
 	sort.Strings(actions)
 	for _, action := range actions {
-		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, contactHistoryTargets[action])
+		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, contactHistoryActions[action].target)
 	}
 	pairs = pairs.Or("l.action = ? AND l.target_type = ?", audit.ContactRefused, "contact_endpoint").Or("l.action = ? AND l.target_type = ?", audit.AddRefused, "add_endpoint").Or("l.action = ? AND l.target_type = ?", audit.OccurrenceRefused, "occurrence_endpoint")
 	// Exact-date access rows are the three action-scoped registration snapshots
@@ -222,7 +250,7 @@ func contactHistoryQuery(tx *gorm.DB, f contactHistoryFilter) *gorm.DB {
 	// event, date and the registration ID shown as accessId. A malformed field
 	// is omitted, never cast, and never read as authority.
 	inner := tx.Table("audit_logs l").Select(`l.id, l.at, l.action, l.actor_id,
- CASE WHEN l.meta_json->>'reason' IN ('subject:approved','subject:denied','admin:approved','admin:denied') THEN l.meta_json->>'reason' END AS decision_reason,
+ CASE WHEN l.meta_json->>'reason' IN (` + decisionReasonsSQL + `) THEN l.meta_json->>'reason' END AS decision_reason,
  COALESCE(r.requester_id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("issuerId") + ` END) AS requester_id,
  COALESCE(r.subject_user_id, CASE WHEN l.target_type = '` + accessTargetType + `' THEN ` + historyMetaID("subjectUserId") + ` END, CASE WHEN l.target_type IN ('group','event') THEN ` + historyMetaID("userId") + ` END) AS subject_user_id,
  CASE WHEN r.id IS NOT NULL THEN r.purpose WHEN l.target_type IN ('` + accessTargetType + `','event') THEN 'occurrence_add' WHEN l.target_type = 'group' THEN 'group_add' END AS purpose,
@@ -270,37 +298,16 @@ func presentContactHistory(row contactHistoryRow) contactHistoryEntry {
 	out := row.Entry
 	// No raw metadata leaves this function. Even a corrupt audit action's
 	// decision text cannot become user content or a CSV formula.
-	switch out.Action {
-	case audit.ContactRequested, audit.AddRequested:
-		out.Outcome = "requested"
-	case audit.ContactDecision, audit.AddDecision:
-		out.Outcome = "decision"
-		switch row.DecisionReason {
-		case "subject:approved", "subject:denied", "admin:approved", "admin:denied":
-			parts := strings.Split(row.DecisionReason, ":")
-			out.Party, out.Decision = parts[0], parts[1]
-			out.Outcome = parts[1]
-		}
-	case audit.ContactWithdrawn, audit.AddWithdrawn:
-		out.Outcome = "withdrawn"
-	case audit.ContactExpired, audit.AddExpired:
-		out.Outcome = "expired"
-	case audit.ContactGranted:
-		out.Outcome = "granted"
-	case audit.ContactReveal:
-		out.Outcome = "revealed"
-	case audit.ContactRefused, audit.AddRefused, audit.OccurrenceRefused:
-		out.Outcome = "refused"
-	case audit.ContactRevoked:
-		out.Outcome = "revoked"
-	case audit.ContactEnded, audit.AddEnded, audit.OccurrenceAccessEnded:
-		out.Outcome = "ended"
-	case audit.MemberRemoved, audit.RegistrationRemoved:
-		out.Outcome = "removed"
-	case audit.OccurrenceBlocked:
-		out.Outcome = "blocked"
-	default:
+	action, known := contactHistoryActions[out.Action]
+	out.Outcome = action.outcome
+	if !known {
 		out.Outcome = "added"
+	}
+	if out.Outcome == "decision" {
+		if party, decision, ok := parseDecisionReason(row.DecisionReason); ok {
+			out.Party, out.Decision = party, decision
+			out.Outcome = decision
+		}
 	}
 	if !policy.ValidContactFields(out.Fields) {
 		out.Fields = ""
@@ -384,13 +391,7 @@ func contactHistoryCSVCell(value string) string {
 	return value
 }
 func historyCSVRecord(e contactHistoryEntry) []string {
-	id := func(n *uint) string {
-		if n == nil {
-			return ""
-		}
-		return strconv.FormatUint(uint64(*n), 10)
-	}
-	cells := []string{strconv.FormatUint(uint64(e.ID), 10), e.At.UTC().Format(time.RFC3339Nano), e.Action, id(e.ActorID), id(e.RequesterID), id(e.SubjectUserID), e.Purpose, id(e.RequestID), id(e.AccessID), e.ContextType, id(e.ContextID), id(e.OccurrenceID), e.Fields, e.Outcome, e.Party, e.Decision}
+	cells := []string{historyID(e.ID), e.At.UTC().Format(time.RFC3339Nano), e.Action, historyOptionalID(e.ActorID), historyOptionalID(e.RequesterID), historyOptionalID(e.SubjectUserID), e.Purpose, historyOptionalID(e.RequestID), historyOptionalID(e.AccessID), e.ContextType, historyOptionalID(e.ContextID), historyOptionalID(e.OccurrenceID), e.Fields, e.Outcome, e.Party, e.Decision}
 	for i := range cells {
 		cells[i] = contactHistoryCSVCell(cells[i])
 	}

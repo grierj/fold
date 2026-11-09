@@ -858,7 +858,6 @@ var auditWriterCensus = map[string]string{
 	"api_auth.go:apiChangePassword":                               "09345a72be2ea9e67394b3ee2bec5e8c127451fb3fd6e21978d7498994fffc18",
 	"api_auth.go:apiConfirmPasswordReset":                         "ca2949268c280855e19fb399c0a1a707a9d9a827fcfcf552b0e6bd255de50fc2",
 	"api_auth.go:apiRequestPasswordReset":                         "dc3a3d5d37afce904a46dd6dd87342be9b49ea3b9379a2d2556f0f889158683e",
-	"api_contact.go:addAuditAction":                               "ea9a9c1e495429e447216252cea05dc7ac323e24fa12a30a4191429f7de7aaf8",
 	"api_contact.go:auditContactRejection":                        "8f4a0a44cefad81ea6960135662ecc6fbb1b0d752c5aa267b7a39118034f3673",
 	"api_contact_history.go:apiExportContactHistory":              "5df09267b49abc795ee0f42a03f5d376bd233f87e77455d53e529b8068a97a24",
 	"api_departure.go:applyDeparture":                             "835354a095c0a480e8499c4ecb04f74092dfd2bce845699898fb141b9b9ab9a2",
@@ -936,7 +935,7 @@ var auditWriterCensus = map[string]string{
 	"api_teen_guardians.go:apiClaimTeenGuardian":                  "059457aa963c16581146d2802d7bff428783101588e5a44a0cd3041cd868f55a",
 	"api_teen_guardians.go:nominateTeenGuardian":                  "c1ef0fab390bdda6d4522037a4a396e79108b8121784f33c9ac6c20058244672",
 	"api_teen_guardians.go:requestTeenGuardian":                   "0dae6b14daea71f5b6b03337a3c51bf2d6c01fc043d48addc835eaed49e25597",
-	"contact_lifecycle.go:contactAudit":                           "20ffcca62a0ddd77d99d37eb8b6f073b0d306926150da38db7cc55f6d3ad54cf",
+	"contact_lifecycle.go:contactAudit":                           "49b052659553931264b71744294d2145031f442425531d164462d7fc57850178",
 	"internal/audit/audit.go:Write":                               "79ad063a312631bd946658228d06e4514b85d95cad77c3ac226e7b665717a4fa",
 	"messages_send.go:refuseMessage":                              "51b149eb634bdc1277ecb6f96ff24904257859070f3f32b0512ae982e502419a",
 	"messages_send.go:settleMessage":                              "d062aef9c6cbfb58aa679300d726b57bcd6096f3d250c39ec23c80ebdfc12332",
@@ -944,6 +943,7 @@ var auditWriterCensus = map[string]string{
 	"push_keys.go:rotateVAPIDKeys":                                "6bb369832f0c2b9c52667a519cedfa210088ac3f2503af03d8effc56c21b4ce7",
 	"registration_access.go:accessSnapshotMeta":                   "f9a7ba0c51c85fb68d838a607612b697752b99e01ffd896593e72465702a7ab0",
 	"registration_access.go:writeAccessSnapshot":                  "a47511c490d32cfc8c87792af6da140156e8ce79a2b567c3c1df594991c09714",
+	"request_kinds.go:addAuditAction":                             "ea9a9c1e495429e447216252cea05dc7ac323e24fa12a30a4191429f7de7aaf8",
 }
 
 type auditSourceCensus struct {

@@ -359,112 +359,47 @@ func contactUser(tx *gorm.DB, id uint) (*models.User, error) {
 }
 
 // loadContactFacts must run under the contact gate, after lock acquisition's
-// clock. Every query error fails closed rather than becoming an eligibility fact.
+// clock. It is the page loader with one scope, so a list and a single request
+// are decided from the same facts. Every query error fails closed rather than
+// becoming an eligibility fact.
 func (a *App) loadContactFacts(tx *gorm.DB, s policy.ContactScope, now time.Time) (policy.ContactAccessFacts, *models.User, error) {
 	f := policy.ContactAccessFacts{Now: now, Context: policy.ContactContext{Type: s.ContextType, ID: s.ContextID}}
-	requester, err := contactUser(tx, s.RequesterID)
-	if err != nil {
-		return f, nil, err
-	}
-	subject, err := contactUser(tx, s.SubjectUserID)
-	if err != nil {
-		return f, nil, err
-	}
 	zone, err := churchZoneIn(tx)
 	if err != nil {
 		return f, nil, err
 	}
-	f.Requester, f.Subject = contactAccount(requester, now, zone), contactAccount(subject, now, zone)
-	switch s.ContextType {
-	case policy.ContactGroup:
-		var g models.Group
-		err = tx.First(&g, s.ContextID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, subject, nil
-		}
-		if err != nil {
-			return f, nil, err
-		}
-		f.Context.Active = g.Status == models.GroupActive
-		var ms []models.Membership
-		if err = tx.Where("group_id = ? AND user_id IN ?", g.ID, []uint{s.RequesterID, s.SubjectUserID}).Find(&ms).Error; err != nil {
-			return f, nil, err
-		}
-		for _, m := range ms {
-			rel := membershipRel(m)
-			if m.UserID == s.RequesterID {
-				f.Context.GroupLeader = rel.Leader
-			}
-			if m.UserID == s.SubjectUserID {
-				f.Context.GroupMember = rel.Member
-			}
-		}
-	case policy.ContactEvent:
-		var ev models.Event
-		err = tx.First(&ev, s.ContextID).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return f, subject, nil
-		}
-		if err != nil {
-			return f, nil, err
-		}
-		f.Context.Active = true
-		rel := policy.Rel{}
-		if ev.GroupID != nil {
-			var g models.Group
-			err = tx.First(&g, *ev.GroupID).Error
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				f.Context.Active = false
-			} else if err != nil {
-				return f, nil, err
-			} else {
-				f.Context.Active = g.Status == models.GroupActive
-			}
-			var m models.Membership
-			if err = tx.Where("group_id = ? AND user_id = ?", *ev.GroupID, s.RequesterID).Limit(1).Find(&m).Error; err != nil {
-				return f, nil, err
-			}
-			rel = membershipRel(m)
-		}
-		var hosts int64
-		if err = tx.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, s.RequesterID).Count(&hosts).Error; err != nil {
-			return f, nil, err
-		}
-		f.Context.EventManager = policy.CanManageEvent(asPerson(requester), viewOf(&ev, hosts > 0), rel)
-		var count int64
-		if err = tx.Model(&models.Registration{}).Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").Where("event_occurrences.event_id = ? AND registrations.user_id = ? AND registrations.status NOT IN ?", ev.ID, s.SubjectUserID, []string{models.RegRemoved, models.RegCancelled}).Count(&count).Error; err != nil {
-			return f, nil, err
-		}
-		f.Context.EventRegistrant = count > 0
-		var end struct{ Last *time.Time }
-		if err = tx.Model(&models.EventOccurrence{}).Select("max(ends_at) AS last").Where("event_id = ?", ev.ID).Scan(&end).Error; err != nil {
-			return f, nil, err
-		}
-		f.Context.LastOccurrenceEnd = end.Last
+	r := models.ContactRequest{Purpose: policy.RequestContact, RequesterID: s.RequesterID, SubjectUserID: s.SubjectUserID, ContextType: s.ContextType, ContextID: s.ContextID}
+	page, err := loadContactPageReads(tx, s.RequesterID, []models.ContactRequest{r}, false)
+	if err != nil {
+		return f, nil, err
 	}
-	return f, subject, nil
+	return page.facts(now, zone, r), page.users[s.SubjectUserID], nil
 }
 
 func contactAudit(tx *gorm.DB, actor *uint, action string, r models.ContactRequest, reason, ip string) error {
 	if r.ContextType != policy.ContactGroup && r.ContextType != policy.ContactEvent {
 		r.ContextType = ""
 	}
-	if r.Purpose == policy.RequestGroupAdd || r.Purpose == policy.RequestOccurrenceAdd {
+	k := requestKindOf(r.Purpose)
+	// Empty purpose is reserved for malformed/not-found contact refusals.
+	if k == nil && r.Purpose == "" {
+		k = contactKind
+	}
+	if k == nil {
+		return errors.New("unknown request audit purpose")
+	}
+	if k == addKind {
 		meta := map[string]any{"purpose": r.Purpose, "requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID, "contextType": r.ContextType, "contextId": r.ContextID, "needsAdmin": r.NeedsAdmin, "outcome": r.Status, "reason": reason}
 		if r.Purpose == policy.RequestOccurrenceAdd {
 			meta["occurrenceId"] = r.OccurrenceID
 		}
-		return audit.Write(tx, audit.Entry{Actor: actor, Action: addAuditAction(action), TargetType: "add_request", TargetID: r.ID, IP: ip, Meta: meta})
-	}
-	// Empty purpose is reserved for malformed/not-found contact refusals.
-	if r.Purpose != policy.RequestContact && r.Purpose != "" {
-		return errors.New("unknown request audit purpose")
+		return audit.Write(tx, audit.Entry{Actor: actor, Action: k.action(action), TargetType: k.target, TargetID: r.ID, IP: ip, Meta: meta})
 	}
 	// A refused malformed input must not smuggle arbitrary text into audit.
 	if !policy.ValidContactFields(r.Fields) {
 		r.Fields = ""
 	}
-	return audit.Write(tx, audit.Entry{Actor: actor, Action: action, TargetType: "contact_request", TargetID: r.ID, IP: ip, Meta: map[string]any{"requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID, "contextType": r.ContextType, "contextId": r.ContextID, "fields": r.Fields, "needsAdmin": r.NeedsAdmin, "outcome": r.Status, "reason": reason}})
+	return audit.Write(tx, audit.Entry{Actor: actor, Action: k.action(action), TargetType: k.target, TargetID: r.ID, IP: ip, Meta: map[string]any{"requesterId": r.RequesterID, "subjectUserId": r.SubjectUserID, "contextType": r.ContextType, "contextId": r.ContextID, "fields": r.Fields, "needsAdmin": r.NeedsAdmin, "outcome": r.Status, "reason": reason}})
 }
 func contactGuardians(tx *gorm.DB, teen uint) ([]uint, error) {
 	var ids []uint
@@ -476,8 +411,9 @@ func contactConfirmedGuardian(tx *gorm.DB, actor, teen uint) (bool, error) {
 	return links[teen], err
 }
 
-func contactNotice(tx *gorm.DB, r models.ContactRequest, kind string, recipients []uint, key string) error {
-	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
+func contactNotice(tx *gorm.DB, r models.ContactRequest, role noticeRole, recipients []uint, key string) error {
+	k := requestKindOf(r.Purpose)
+	if k == nil {
 		return errors.New("unknown request notice purpose")
 	}
 	// Deleted/disabled parties retain history but receive no new feed/email.
@@ -488,31 +424,23 @@ func contactNotice(tx *gorm.DB, r models.ContactRequest, kind string, recipients
 	if err := tx.Model(&models.User{}).Where("id IN ? AND status = ? AND password_hash IS NOT NULL", recipients, models.UserActive).Order("id").Pluck("id", &active).Error; err != nil {
 		return err
 	}
-	subjectType, link, prefix := "contact_request", "contact-requests", "contact"
-	if r.Purpose == policy.RequestGroupAdd || r.Purpose == policy.RequestOccurrenceAdd {
-		subjectType, link, prefix = "add_request", "add-requests", "add"
-		kind = addNoticeKind(kind)
-	}
-	_, err := notify.Send(tx, notify.Msg{Kind: kind, To: active, SubjectType: subjectType, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", link, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", prefix, r.ID, key), Vars: notify.Vars{Teen: r.NeedsAdmin}})
+	_, err := notify.Send(tx, notify.Msg{Kind: k.notice(role), To: active, SubjectType: k.target, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", k.route, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", k.dedupe, r.ID, key), Vars: notify.Vars{Teen: r.NeedsAdmin}})
 	return err
 }
 func resolveContactTasks(tx *gorm.DB, r models.ContactRequest, actor *uint, outcome string) error {
-	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
+	k := requestKindOf(r.Purpose)
+	if k == nil {
 		return errors.New("unknown request task purpose")
 	}
-	kinds := []string{notify.ContactSubjectReview, notify.ContactAdminReview}
-	if r.Purpose == policy.RequestGroupAdd || r.Purpose == policy.RequestOccurrenceAdd {
-		kinds = []string{notify.AddSubjectReview, notify.AddAdminReview}
-	}
-	for _, kind := range kinds {
-		if _, err := notify.Resolve(tx, kind, r.ID, actor, outcome); err != nil {
+	for _, role := range []noticeRole{roleSubjectReview, roleAdminReview} {
+		if _, err := notify.Resolve(tx, k.notice(role), r.ID, actor, outcome); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 func finishContactRequest(tx *gorm.DB, r *models.ContactRequest, status, reason string, now time.Time) error {
-	if r.Purpose != policy.RequestContact && r.Purpose != policy.RequestGroupAdd && r.Purpose != policy.RequestOccurrenceAdd {
+	if requestKindOf(r.Purpose) == nil {
 		return errors.New("unknown request lifecycle purpose")
 	}
 	r.Status, r.EndReason, r.CompletedAt = status, reason, &now
@@ -529,7 +457,7 @@ func finishContactRequest(tx *gorm.DB, r *models.ContactRequest, status, reason 
 	if err := resolveContactTasks(tx, *r, nil, status); err != nil {
 		return err
 	}
-	return contactNotice(tx, *r, notify.ContactUpdated, []uint{r.RequesterID, r.SubjectUserID}, status)
+	return contactNotice(tx, *r, roleUpdated, []uint{r.RequesterID, r.SubjectUserID}, status)
 }
 func endContactGrant(tx *gorm.DB, g *models.ContactGrant, r models.ContactRequest, reason string, actor *uint, now time.Time, ip string) error {
 	if r.Purpose != policy.RequestContact {
@@ -557,7 +485,7 @@ func endContactGrant(tx *gorm.DB, g *models.ContactGrant, r models.ContactReques
 		}
 		recipients = append(recipients, ids...)
 	}
-	return contactNotice(tx, r, notify.ContactUpdated, recipients, "grant-ended")
+	return contactNotice(tx, r, roleUpdated, recipients, "grant-ended")
 }
 
 // reconcileContacts is idempotent: only pending requests and unended grants
@@ -650,6 +578,23 @@ func addRequestPolicy(r models.ContactRequest) policy.AddRequest {
 	return policy.AddRequest{AddScope: policy.AddScope{Purpose: r.Purpose, RequesterID: r.RequesterID, SubjectUserID: r.SubjectUserID, ContextType: r.ContextType, ContextID: r.ContextID, OccurrenceID: occ, Options: policy.AddOptions{OverLimit: r.AddOverLimit, OverCapacity: r.AddOverCapacity, AttendanceMode: r.AddAttendanceMode, GuestCount: r.AddGuestCount, ChildcareCount: r.AddChildcareCount, ChildcareAgesNote: r.AddChildcareAgesNote}}, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, AdminDecision: r.AdminDecision, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt}
 }
 
+// groupAddFacts are the facts of one group ask from rows already loaded: the
+// single-request loader and the list page both build them here. g is nil when
+// the group is gone.
+func groupAddFacts(r models.ContactRequest, now time.Time, zone *time.Location, requester, subject *models.User, g *models.Group, requesterRel policy.Rel) policy.AddFacts {
+	f := policy.AddFacts{Now: now, ContextType: r.ContextType, ContextID: r.ContextID}
+	f.Requester, f.Subject = contactAccount(requester, now, zone), contactAccount(subject, now, zone)
+	if g == nil {
+		return f
+	}
+	f.ContextActive = g.Status == models.GroupActive
+	f.Manager = policy.CanManageGroup(asPerson(requester), requesterRel)
+	// Ordinary manager group additions allow active adults; teens alone need
+	// this request contract. Hidden contact does not restrict membership.
+	f.OrdinaryEligible = subject != nil && !policy.TeenAddNeedsApproval(asPerson(subject))
+	return f
+}
+
 func (a *App) loadGroupAddFacts(tx *gorm.DB, r models.ContactRequest, now time.Time) (policy.AddFacts, error) {
 	f := policy.AddFacts{Now: now, ContextType: r.ContextType, ContextID: r.ContextID}
 	if r.Purpose != policy.RequestGroupAdd || r.ContextType != policy.ContactGroup {
@@ -667,25 +612,19 @@ func (a *App) loadGroupAddFacts(tx *gorm.DB, r models.ContactRequest, now time.T
 	if err != nil {
 		return f, err
 	}
-	f.Requester, f.Subject = contactAccount(requester, now, zone), contactAccount(subject, now, zone)
 	var g models.Group
 	err = tx.First(&g, r.ContextID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return f, nil
+		return groupAddFacts(r, now, zone, requester, subject, nil, policy.Rel{}), nil
 	}
 	if err != nil {
 		return f, err
 	}
-	f.ContextActive = g.Status == models.GroupActive
 	var m models.Membership
 	if err = tx.Where("group_id = ? AND user_id = ?", g.ID, r.RequesterID).Limit(1).Find(&m).Error; err != nil {
 		return f, err
 	}
-	f.Manager = policy.CanManageGroup(asPerson(requester), membershipRel(m))
-	// Ordinary manager group additions allow active adults; teens alone need
-	// this request contract. Hidden contact does not restrict membership.
-	f.OrdinaryEligible = subject != nil && !policy.TeenAddNeedsApproval(asPerson(subject))
-	return f, nil
+	return groupAddFacts(r, now, zone, requester, subject, &g, membershipRel(m)), nil
 }
 
 func (a *App) reconcileGroupAsk(tx *gorm.DB, r *models.ContactRequest, now time.Time) error {
