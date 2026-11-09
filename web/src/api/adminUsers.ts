@@ -2,13 +2,16 @@ import type {
   AgeBand,
   AttemptMintResponse,
   AttemptSettleResponse,
+  CalendarFeedRevokedResponse,
+  EmailSuppressionClearedResponse,
   ErasureReasonPage,
+  ReasonReviewBody,
   SoleHostedEventsResponse,
-  SoleLedGroup,
+  SoleLedGroupsResponse,
   TeenConsent,
   TeenConsentsResponse,
-  User,
-  ReasonReviewBody,
+  UserResponse,
+  UsersResponse,
 } from "../types";
 import { isErasureReport } from "../lib/erasure";
 import { ApiError, api, path, type Id } from "./core";
@@ -27,12 +30,12 @@ export interface AdminUserInput {
 }
 
 export const AdminUsers = {
-  list: () => api<{ users: User[] }>("/admin/users"),
-  create: (data: AdminUserInput) => api<{ user: User }>("/admin/users", { method: "POST", body: data }),
+  list: () => api<UsersResponse>("/admin/users"),
+  create: (data: AdminUserInput) => api<UserResponse>("/admin/users", { method: "POST", body: data }),
   update: (id: Id, data: ProfileUpdate & { role?: string; status?: "active" | "disabled"; successors?: Record<string, number> }) =>
-    api<{ user: User }>(path`/admin/users/${id}`, { method: "PUT", body: data }),
+    api<UserResponse>(path`/admin/users/${id}`, { method: "PUT", body: data }),
   // Groups this person leads alone, with who may take over (DEC-36).
-  soleLeaderGroups: (id: Id) => api<{ groups: SoleLedGroup[] }>(path`/admin/users/${id}/sole-leader-groups`),
+  soleLeaderGroups: (id: Id) => api<SoleLedGroupsResponse>(path`/admin/users/${id}/sole-leader-groups`),
   // Church-wide events this person hosts alone, with who may host them next (M7.4, R4-H).
   soleHostEvents: (id: Id) => api<SoleHostedEventsResponse>(path`/admin/users/${id}/sole-host-events`),
   // One audited page of the contact-request reasons deleting this person would
@@ -78,9 +81,9 @@ export const AdminUsers = {
     }),
   resetPassword: (id: Id, password: string) =>
     api<Record<string, never>>(path`/admin/users/${id}/password`, { method: "POST", body: { password } }),
-  revokeCalendarFeed: (id: Id) => api<{ hadLink: boolean }>(path`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
+  revokeCalendarFeed: (id: Id) => api<CalendarFeedRevokedResponse>(path`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
   // Let Fold email a suppressed address again (M3.2c, DEC-113).
-  clearEmailSuppression: (id: Id) => api<{ cleared: number }>(path`/admin/users/${id}/email-suppression/clear`, { method: "POST" }),
+  clearEmailSuppression: (id: Id) => api<EmailSuppressionClearedResponse>(path`/admin/users/${id}/email-suppression/clear`, { method: "POST" }),
 };
 
 export const AdminTeenConsents = {

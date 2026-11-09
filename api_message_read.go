@@ -94,7 +94,7 @@ func (a *App) apiReadMessage(c *gin.Context) {
 	// The stored body is sanitized; it is sanitized again once the
 	// reader's values are in, so the page gets only the composer's
 	// formatting (no script, style, image or frame).
-	c.JSON(http.StatusOK, gin.H{"message": messageReadJSON{
+	c.JSON(http.StatusOK, messageReadResponseJSON{Message: messageReadJSON{
 		ID:       m.ID,
 		Subject:  strings.TrimSpace(content.Merge(m.Subject, vals, false)),
 		From:     from,

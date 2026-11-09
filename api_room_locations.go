@@ -65,7 +65,7 @@ func (a *App) apiAdminTypedLocations(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list locations")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"locations": out})
+	c.JSON(http.StatusOK, roomLocationsResponseJSON{Locations: out})
 }
 
 // apiAdminMatchLocation books a room for every free upcoming date whose

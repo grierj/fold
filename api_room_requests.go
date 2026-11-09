@@ -39,7 +39,7 @@ func roomApprovalOn(db *gorm.DB) bool {
 // off (DEC-102). Turning it off leaves open requests for admins to decide.
 func (a *App) apiSetRoomApproval(c *gin.Context) {
 	if enabled, ok := a.setRoomSwitch(c, settingRoomApproval, audit.RoomApprovalChanged); ok {
-		c.JSON(http.StatusOK, gin.H{"needApproval": enabled})
+		c.JSON(http.StatusOK, roomApprovalResponseJSON{NeedApproval: enabled})
 	}
 }
 
@@ -161,7 +161,7 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 			RequestedBy: names.actorName(r.RequestedByID), Dates: r.Dates, BusyDates: r.BusyDates,
 			FirstDate: r.FirstDate, FirstStartsAt: r.FirstStartsAt, CreatedAt: r.CreatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{"requests": out})
+	c.JSON(http.StatusOK, roomRequestsResponseJSON{Requests: out})
 }
 
 var errRequestDecided = errors.New("request decided")

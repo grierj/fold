@@ -35,7 +35,7 @@ const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default
 const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m) => ({ default: m.ContactRequestsPage })));
 const AddRequestsPage = lazy(() => import("./pages/AddRequests").then((m) => ({ default: m.AddRequestsPage })));
 const EventDatePage = lazy(() => import("./pages/EventDate").then((m) => ({ default: m.EventDatePage })));
-const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
+const WaitingForConsentPage = lazy(() => import("./pages/WaitingForConsent").then((m) => ({ default: m.WaitingForConsentPage })));
 const NotificationsSetupPage = lazy(() => import("./pages/NotificationsSetup").then((m) => ({ default: m.NotificationsSetupPage })));
 const MessagesPage = lazy(() => import("./pages/Messages").then((m) => ({ default: m.MessagesPage })));
 const MessageComposerPage = lazy(() => import("./pages/MessageComposer").then((m) => ({ default: m.MessageComposerPage })));
@@ -61,7 +61,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={homeScreenSignIn ? <Navigate to="/login" replace /> : <Home />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/waiting-for-consent" element={<WaitingForConsent />} />
+        <Route path="/waiting-for-consent" element={<WaitingForConsentPage />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/invite" element={<Invite />} />

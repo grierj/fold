@@ -131,7 +131,7 @@ func (a *App) notificationToggle(set func(db *gorm.DB, userID, id uint, on bool)
 		if n.ResolvedAt != nil && n.ResolvedByID != nil {
 			ids = append(ids, *n.ResolvedByID)
 		}
-		c.JSON(http.StatusOK, gin.H{"notification": toNotificationJSON(&n, me, publicNamesIn(a.DB, ids))})
+		c.JSON(http.StatusOK, notificationResponseJSON{Notification: toNotificationJSON(&n, me, publicNamesIn(a.DB, ids))})
 	}
 }
 

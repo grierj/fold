@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { digestPreimage, encodeChoices } from "../src/lib/reasonSetDigest";
+import { parseRoomLabel } from "../src/lib/roomLabels";
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 export const PASSWORD = "password1234";
@@ -149,12 +151,13 @@ export async function soon<L extends Locator>(locator: L, timeout = 5_000): Prom
 }
 
 // Picks the one enabled room option whose room is `name`. An option reads
-// "Fellowship Hall · Main (80 seats)", then notes after " — " (busy, size, and
-// why it is suggested, M2.3) that depend on what other specs on the same server
-// booked first, so only the part before the first " — " is compared: exactly,
-// with or without its " (N seats)". "Hall" never matches "Hall B". No match, or
-// more than one, fails with the options it saw.
+// "Fellowship Hall · Main (80 seats)", then notes (busy, size, and why it is
+// suggested, M2.3) that depend on what other specs on the same server booked
+// first, so only the room is compared (lib/roomLabels.ts parseRoomLabel): exactly,
+// and its seats too when `name` gives them. "Hall" never matches "Hall B". No
+// match, or more than one, fails with the options it saw.
 export async function pickRoom(select: Locator, name: string) {
+  const wanted = parseRoomLabel(name);
   // The rooms may still be loading, so it waits until exactly one matches.
   let seen: string[] = [];
   let values: string[] = [];
@@ -167,8 +170,8 @@ export async function pickRoom(select: Locator, name: string) {
       values = options
         .filter((o) => {
           if (o.disabled) return false;
-          const room = o.text.split(" — ")[0];
-          return room === name || room.replace(/ \(\d+ seats?\)$/, "") === name;
+          const got = parseRoomLabel(o.text);
+          return got.room === wanted.room && (wanted.seats === null || wanted.seats === got.seats);
         })
         .map((o) => o.value);
       return values.length;
@@ -182,21 +185,15 @@ export async function pickRoom(select: Locator, name: string) {
 
 // The DELETE body's reasonReview (set-v1) for items an admin read, keeping every
 // one: the count, the SHA-256 over the set in ascending signed id order, and a
-// two-bit choice per item. Built from the wire spec in lib/reasonSetDigest.ts.
+// two-bit choice per item (1 keep). The preimage and the choice packing are the
+// panel's own (lib/reasonSetDigest.ts), which the Go suite checks against the
+// same vectors, so this spells no part of the wire format.
 export function keepAllReview(items: Array<{ requestId: string; reviewHash: string }>) {
   const sorted = [...items].sort((a, b) => (BigInt(a.requestId) < BigInt(b.requestId) ? -1 : 1));
-  const head = Buffer.alloc(35);
-  head.write("fold:erasure-reason-set:v1", 0, "latin1");
-  head.writeBigUInt64BE(BigInt(sorted.length), 27);
-  const parts = [head];
-  const choices = Buffer.alloc(Math.ceil(sorted.length / 4));
-  sorted.forEach((it, i) => {
-    const id = Buffer.alloc(8);
-    id.writeBigInt64BE(BigInt(it.requestId));
-    parts.push(id, Buffer.from(it.reviewHash, "hex"));
-    choices[i >> 2] |= 1 << ((i & 3) * 2);
-  });
-  return { format: "set-v1", count: String(sorted.length), digest: createHash("sha256").update(Buffer.concat(parts)).digest("hex"), choices: choices.toString("base64") };
+  const hashes = new Uint8Array(sorted.length * 32);
+  sorted.forEach((it, i) => hashes.set(Buffer.from(it.reviewHash, "hex"), i * 32));
+  const digest = createHash("sha256").update(digestPreimage(sorted.map((it) => it.requestId), hashes, sorted.length)).digest("hex");
+  return { format: "set-v1", count: String(sorted.length), digest, choices: encodeChoices(new Uint8Array(sorted.length).fill(1), sorted.length) };
 }
 
 // Deletes an account through the API the way the panel does when its reasons

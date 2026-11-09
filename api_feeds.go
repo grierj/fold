@@ -334,7 +334,7 @@ func (a *App) apiGetMyCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(tok)})
+	c.JSON(http.StatusOK, calendarFeedResponseJSON{CalendarFeed: calendarFeedOf(tok)})
 }
 
 func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
@@ -394,7 +394,7 @@ func (a *App) apiCreateMyCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedJSON{
+	c.JSON(http.StatusOK, calendarFeedResponseJSON{CalendarFeed: calendarFeedJSON{
 		HasToken: true, Scope: scope,
 		URL: a.emailBaseURL() + "/cal/u/" + raw + ".ics",
 	}})
@@ -461,7 +461,7 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 		return
 	}
 	current.Scope = scope
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(&current)})
+	c.JSON(http.StatusOK, calendarFeedResponseJSON{CalendarFeed: calendarFeedOf(&current)})
 }
 
 func (a *App) apiDeleteMyCalendarFeed(c *gin.Context) {
@@ -470,7 +470,7 @@ func (a *App) apiDeleteMyCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not turn off the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(nil)})
+	c.JSON(http.StatusOK, calendarFeedResponseJSON{CalendarFeed: calendarFeedOf(nil)})
 }
 
 func (a *App) apiAdminRevokeCalendarFeed(c *gin.Context) {
@@ -484,7 +484,7 @@ func (a *App) apiAdminRevokeCalendarFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not revoke the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(nil), "hadLink": had})
+	c.JSON(http.StatusOK, calendarFeedRevokedResponseJSON{CalendarFeed: calendarFeedOf(nil), HadLink: had})
 }
 
 // revokeCalendarToken deletes userID's link when one exists. Revoking a

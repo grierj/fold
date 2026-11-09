@@ -180,3 +180,238 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 		HideContactFromLeaders: u.AccountType == models.AccountTeen || u.HideContactFromLeaders,
 	}
 }
+
+// One-key (and a few two-key) answers the SPA wraps in an envelope. Each is
+// exactly the keys its handlers always sent; web/src/types.ts names the same
+// fields (the *Response interfaces) and tsContracts keeps the two together.
+
+// noticeResponseJSON is a plain acknowledgement line (a request received, a mail sent).
+type noticeResponseJSON struct {
+	Message string `json:"message"`
+}
+
+// requestResponseJSON and requestsResponseJSON answer one contact or add
+// request and a page of them; T is that kind's presented request.
+type requestResponseJSON[T any] struct {
+	Request T `json:"request"`
+}
+type requestsResponseJSON[T any] struct {
+	Requests []T `json:"requests"`
+}
+
+type messageResponseJSON struct {
+	Message messageJSON `json:"message"`
+}
+
+// messageScheduledResponseJSON answers scheduling: the message and who it will reach.
+type messageScheduledResponseJSON struct {
+	Message messageJSON         `json:"message"`
+	Summary audienceSummaryJSON `json:"summary"`
+}
+
+type messageReadResponseJSON struct {
+	Message messageReadJSON `json:"message"`
+}
+
+type messagePreviewResponseJSON struct {
+	Preview renderedMessage `json:"preview"`
+}
+
+type messageTestResponseJSON struct {
+	OK bool `json:"ok"`
+}
+
+type audienceSummaryResponseJSON struct {
+	Summary audienceSummaryJSON `json:"summary"`
+}
+
+type groupListResponseJSON struct {
+	Groups []groupSummaryJSON `json:"groups"`
+}
+
+type groupResponseJSON struct {
+	Group groupSummaryJSON `json:"group"`
+}
+
+type membersResponseJSON struct {
+	Members []memberJSON `json:"members"`
+}
+
+type soleLedGroupsResponseJSON struct {
+	Groups []soleLedGroupJSON `json:"groups"`
+}
+
+type departurePreviewResponseJSON struct {
+	Departure departurePreviewJSON `json:"departure"`
+}
+
+type departureConfirmationResponseJSON struct {
+	Departure departureConfirmationJSON `json:"departure"`
+}
+
+type coverUploadResponseJSON struct {
+	ImageURL string `json:"imageUrl"`
+}
+
+type avatarUploadResponseJSON struct {
+	AvatarURL string `json:"avatarUrl"`
+}
+
+type userResponseJSON struct {
+	User userJSON `json:"user"`
+}
+
+type usersResponseJSON struct {
+	Users []userJSON `json:"users"`
+}
+
+type eventSeriesResponseJSON struct {
+	Event eventJSON `json:"event"`
+}
+
+type openEventsResponseJSON struct {
+	Events []occurrenceJSON `json:"events"`
+}
+
+type occurrenceResponseJSON struct {
+	Occurrence occurrenceJSON `json:"occurrence"`
+}
+
+type eventDateResponseJSON struct {
+	Occurrence dateOccurrenceJSON `json:"occurrence"`
+}
+
+type eventHostsResponseJSON struct {
+	Hosts []hostJSON `json:"hosts"`
+}
+
+type jitsiLinkResponseJSON struct {
+	URL string `json:"url"`
+}
+
+type timezoneResponseJSON struct {
+	Timezone string `json:"timezone"`
+}
+
+type calendarFeedResponseJSON struct {
+	CalendarFeed calendarFeedJSON `json:"calendarFeed"`
+}
+
+// calendarFeedRevokedResponseJSON: an admin turned a person's link off; HadLink
+// says whether there was one to turn off.
+type calendarFeedRevokedResponseJSON struct {
+	CalendarFeed calendarFeedJSON `json:"calendarFeed"`
+	HadLink      bool             `json:"hadLink"`
+}
+
+type settingOnResponseJSON struct {
+	On bool `json:"on"`
+}
+
+type settingAddressResponseJSON struct {
+	Address string `json:"address"`
+}
+
+type selfSignupResponseJSON struct {
+	SelfSignup string `json:"selfSignup"`
+}
+
+type adminJobStatusResponseJSON struct {
+	Status string `json:"status"`
+}
+
+type notificationResponseJSON struct {
+	Notification notificationJSON `json:"notification"`
+}
+
+type notificationSettingsResponseJSON struct {
+	Settings notificationSettingsJSON `json:"settings"`
+}
+
+type emailSettingsChangeResponseJSON struct {
+	EmailSettings emailSettingsJSON `json:"emailSettings"`
+}
+
+type pushSettingsResponseJSON struct {
+	Push pushSettingsJSON `json:"push"`
+}
+
+type emailSuppressionClearedResponseJSON struct {
+	Cleared int64 `json:"cleared"`
+}
+
+type emailChangeCancelledResponseJSON struct {
+	Cancelled bool `json:"cancelled"`
+}
+
+type roomResponseJSON struct {
+	Room roomJSON `json:"room"`
+}
+
+type roomsEnabledResponseJSON struct {
+	RoomsEnabled bool `json:"roomsEnabled"`
+}
+
+type roomApprovalResponseJSON struct {
+	NeedApproval bool `json:"needApproval"`
+}
+
+type roomLocationsResponseJSON struct {
+	Locations []typedLocationJSON `json:"locations"`
+}
+
+type roomFeedResponseJSON struct {
+	Feed roomFeedJSON `json:"feed"`
+}
+
+type roomRequestsResponseJSON struct {
+	Requests []roomRequestJSON `json:"requests"`
+}
+
+type roomBookingResponseJSON struct {
+	Booking *roomBookingJSON `json:"booking"`
+}
+
+type guardianLinkResponseJSON struct {
+	GuardianLink guardianLinkJSON `json:"guardianLink"`
+}
+
+type guardianTeensResponseJSON struct {
+	Teens []guardianTeenJSON `json:"teens"`
+}
+
+type guestRegistrationResponseJSON struct {
+	Registration guestRegistrationJSON `json:"registration"`
+}
+
+type dateRegistrationResponseJSON struct {
+	Registration registrationJSON `json:"registration"`
+}
+
+type householdResponseJSON struct {
+	Household householdJSON `json:"household"`
+}
+
+type myHouseholdResponseJSON struct {
+	Household *householdJSON `json:"household"`
+}
+
+type householdPersonResponseJSON struct {
+	Person householdPersonJSON `json:"person"`
+}
+
+type householdConversionResponseJSON struct {
+	Conversion conversionJSON `json:"conversion"`
+}
+
+type invitationResponseJSON struct {
+	Invitation invitationJSON `json:"invitation"`
+}
+
+type contactGrantsResponseJSON struct {
+	Grants []contactGrantJSON `json:"grants"`
+}
+
+type accountRequestsResponseJSON struct {
+	Requests []accountRequestJSON `json:"requests"`
+}

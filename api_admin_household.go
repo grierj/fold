@@ -228,5 +228,5 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"person": row})
+	c.JSON(http.StatusCreated, householdPersonResponseJSON{Person: row})
 }

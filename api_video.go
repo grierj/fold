@@ -223,7 +223,7 @@ func (a *App) apiGenerateJitsiLink(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not generate a video link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"url": "https://" + a.jitsiDomain() + "/" + churchSlug(a.siteName()) + "-" + room})
+	c.JSON(http.StatusOK, jitsiLinkResponseJSON{URL: "https://" + a.jitsiDomain() + "/" + churchSlug(a.siteName()) + "-" + room})
 }
 
 // jitsiDomain reads the jitsi_domain setting (PLAN 5.8), defaulting to

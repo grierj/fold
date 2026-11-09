@@ -83,7 +83,7 @@ func (a *App) apiAdminGetRoomFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the room's calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"feed": roomFeedOf(tok)})
+	c.JSON(http.StatusOK, roomFeedResponseJSON{Feed: roomFeedOf(tok)})
 }
 
 // apiAdminCreateRoomFeed makes the room's link, or a new one, which turns
@@ -125,7 +125,7 @@ func (a *App) apiAdminCreateRoomFeed(c *gin.Context) {
 	}
 	out := roomFeedOf(&tok)
 	out.URL = a.roomFeedURL(room.ID, raw)
-	c.JSON(http.StatusOK, gin.H{"feed": out})
+	c.JSON(http.StatusOK, roomFeedResponseJSON{Feed: out})
 }
 
 func (a *App) apiAdminRevokeRoomFeed(c *gin.Context) {
@@ -145,7 +145,7 @@ func (a *App) apiAdminRevokeRoomFeed(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not turn off the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"feed": roomFeedJSON{}})
+	c.JSON(http.StatusOK, roomFeedResponseJSON{Feed: roomFeedJSON{}})
 }
 
 // feedRoom serves /cal/rooms/<roomId>/<token>.ics. Every failure that

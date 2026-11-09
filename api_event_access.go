@@ -50,7 +50,7 @@ func (a *App) respondEvent(c *gin.Context, status int, ev *models.Event, me *mod
 		fail(c, err)
 		return
 	}
-	c.JSON(status, gin.H{"event": j})
+	c.JSON(status, eventSeriesResponseJSON{Event: j})
 }
 
 func (a *App) eventHosts(eventID uint) ([]hostJSON, error) {
@@ -74,7 +74,7 @@ func (a *App) respondHosts(c *gin.Context, eventID uint) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"hosts": hosts})
+	c.JSON(http.StatusOK, eventHostsResponseJSON{Hosts: hosts})
 }
 
 func (a *App) eventPermissions(me *models.User, f eventFacts) (manage, setVis bool) {
@@ -172,7 +172,7 @@ func (a *App) apiListOpenEvents(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load events")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"events": listed})
+	c.JSON(http.StatusOK, openEventsResponseJSON{Events: listed})
 }
 
 func (a *App) apiGetEvent(c *gin.Context) {

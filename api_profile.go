@@ -327,5 +327,5 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 			_ = session.Save(c.Request, c.Writer)
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
+	c.JSON(http.StatusOK, userResponseJSON{User: a.toUserJSON(&fresh)})
 }

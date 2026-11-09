@@ -242,3 +242,10 @@ export function errorText(e: unknown, fallback?: string): string {
 export function errorCode(e: unknown): ErrorCode | "" {
   return e instanceof ApiError && isCode(e.code) ? e.code : "";
 }
+
+// needsDecision is true for the group or event update the server refused
+// because the events it would change are not the ones the leader was shown:
+// it answers 409 with `needsDecision` in the body, and no code of its own.
+export function needsDecision(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 409 && e.data.needsDecision === true;
+}

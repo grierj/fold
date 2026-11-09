@@ -234,7 +234,7 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not add the room")
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"room": toRoomJSON(&room)})
+	c.JSON(http.StatusCreated, roomResponseJSON{Room: toRoomJSON(&room)})
 }
 
 func (a *App) apiAdminUpdateRoom(c *gin.Context) {
@@ -283,7 +283,7 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:
-		c.JSON(http.StatusOK, gin.H{"room": toRoomJSON(&room)})
+		c.JSON(http.StatusOK, roomResponseJSON{Room: toRoomJSON(&room)})
 	}
 }
 
@@ -291,7 +291,7 @@ func (a *App) apiAdminUpdateRoom(c *gin.Context) {
 // every room screen and endpoint; nothing is deleted.
 func (a *App) apiSetRoomsEnabled(c *gin.Context) {
 	if enabled, ok := a.setRoomSwitch(c, settingRoomsEnabled, audit.RoomsEnabledChanged); ok {
-		c.JSON(http.StatusOK, gin.H{"roomsEnabled": enabled})
+		c.JSON(http.StatusOK, roomsEnabledResponseJSON{RoomsEnabled: enabled})
 	}
 }
 
