@@ -287,17 +287,6 @@ func lockOccurrence(tx *gorm.DB, occurrenceID uint) (*models.EventOccurrence, er
 	return &o, nil
 }
 
-// hostIDs lists the hosts of a church-wide event whose accounts still exist,
-// in ascending id. A deleted account's leftover host row is not a host.
-func hostIDs(tx *gorm.DB, eventID uint) []uint {
-	var ids []uint
-	tx.Model(&models.EventHost{}).
-		Joins("JOIN users u ON u.id = event_hosts.user_id AND u.deleted_at IS NULL").
-		Where("event_hosts.event_id = ?", eventID).Order("event_hosts.user_id").
-		Pluck("event_hosts.user_id", &ids)
-	return ids
-}
-
 // noticeEnd is when a date's notices stop mattering: its end, or its start
 // when it has none.
 func noticeEnd(o *models.EventOccurrence) time.Time {
@@ -347,12 +336,17 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 
 // eventNoticeVarsIn is eventNoticeVars for a single recipient: it loads
 // that one person's facts in tx, then builds the same Vars.
-func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string) {
+func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string, error) {
 	var groupIDs []uint
 	if ev.GroupID != nil {
 		groupIDs = []uint{*ev.GroupID}
 	}
-	return eventNoticeVars(ev, o, userID, loadNoticeFacts(tx, groupIDs, []uint{userID}))
+	facts, err := loadNoticeFacts(tx, groupIDs, []uint{userID})
+	if err != nil {
+		return notify.Vars{}, "", err
+	}
+	vars, link := eventNoticeVars(ev, o, userID, facts)
+	return vars, link, nil
 }
 
 // notifyRegistrationPromoted tells one person they are in off the
@@ -368,7 +362,10 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	if invitation, ok := accesses[o.ID][userID]; ok && reg.UserID != nil && invitation.ID == reg.ID {
 		return sendOccurrenceNotice(tx, invitation, o, notify.OccurrenceChanged, "promoted:"+strconv.FormatUint(uint64(invitation.ID), 10)+":"+time.Now().UTC().Format(time.RFC3339Nano), nil)
 	}
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
@@ -397,21 +394,19 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 // inside the 2-hour cutoff, so they can promote by hand. Admins get it
 // only when they also lead or host.
 func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, actor *uint) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
-	}
-	if len(to) == 0 {
-		return nil
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil || len(to) == 0 {
+		return err
 	}
 	// Vars are per recipient: the time renders in each leader's own zone.
 	var groupIDs []uint
 	if ev.GroupID != nil {
 		groupIDs = []uint{*ev.GroupID}
 	}
-	facts := loadNoticeFacts(tx, groupIDs, to)
+	facts, err := loadNoticeFacts(tx, groupIDs, to)
+	if err != nil {
+		return err
+	}
 	end := noticeEnd(o)
 	// One bulk recipient lock for the whole fan-out (M7.4 R4-N), not one lock
 	// query per leader or host.
@@ -453,7 +448,10 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 	if ev.GroupID != nil {
 		groupIDs = []uint{*ev.GroupID}
 	}
-	facts := loadNoticeFacts(tx, groupIDs, userIDs)
+	facts, err := loadNoticeFacts(tx, groupIDs, userIDs)
+	if err != nil {
+		return err
+	}
 	accesses, err := occurrenceNoticeAccesses(tx, []uint{o.ID})
 	if err != nil {
 		return err
@@ -494,17 +492,20 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 		actorID = &actor
 	}
 	userID := registrationHolder(reg)
-	u := userIn(tx, userID)
-	if u == nil || u.Status == models.UserDisabled {
-		return nil
+	u, err := userIn(tx, userID)
+	if err != nil || u == nil || u.Status == models.UserDisabled {
+		return err
 	}
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
 	vars.Note = note
 	end := noticeEnd(o)
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: actorID,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},
@@ -517,12 +518,15 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 // registration was dropped from a full occurrence (DEC-47).
 func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) error {
 	userID := registrationHolder(reg)
-	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
+	vars, link, err := eventNoticeVarsIn(tx, ev, o, userID)
+	if err != nil {
+		return err
+	}
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
 	end := noticeEnd(o)
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": models.FormatCalendarDate(o.OriginalDate)},

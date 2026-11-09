@@ -292,7 +292,14 @@ func TestRecipientZone(t *testing.T) {
 	own := newTestUser(t, app, "own", "password1234", models.RoleMember)
 	unset := newTestUser(t, app, "unset", "password1234", models.RoleMember)
 	app.DB.Model(own).Update("timezone", "America/New_York")
-	if got := recipientZone(app.DB, unset.ID).String(); got != "UTC" {
+	zone := func(id uint) string {
+		loc, err := recipientZone(app.DB, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc.String()
+	}
+	if got := zone(unset.ID); got != "UTC" {
 		t.Fatalf("no church zone: %s, want UTC", got)
 	}
 	app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Los_Angeles"})
@@ -300,7 +307,7 @@ func TestRecipientZone(t *testing.T) {
 		id   uint
 		want string
 	}{{own.ID, "America/New_York"}, {unset.ID, "America/Los_Angeles"}, {999999, "America/Los_Angeles"}} {
-		if got := recipientZone(app.DB, tc.id).String(); got != tc.want {
+		if got := zone(tc.id); got != tc.want {
 			t.Fatalf("user %d: %s, want %s", tc.id, got, tc.want)
 		}
 	}

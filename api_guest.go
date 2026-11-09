@@ -451,8 +451,9 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		display = a.guestDisplayWith(a.siteName, &reg, occ, &ev, grp)
 		display.WaitlistPosition = waitlistPos
 		guestEmail = signup.Email
-		guestZone = recipientZone(tx, user.ID)
-		return nil
+		var zoneErr error
+		guestZone, zoneErr = recipientZone(tx, user.ID)
+		return zoneErr
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):

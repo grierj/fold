@@ -74,21 +74,29 @@ func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event,
 	if dates != 1 {
 		change = fmt.Sprintf("%s for %d dates", room.Name, dates)
 	}
-	_, err := notify.Send(tx, notify.Msg{
-		Kind: notify.RoomRequested, To: adminIDs(tx), Actor: actor,
+	admins, err := activeAdminIDs(tx)
+	if err != nil {
+		return err
+	}
+	asker, err := askerName(tx, actor)
+	if err != nil {
+		return err
+	}
+	_, err = notify.Send(tx, notify.Msg{
+		Kind: notify.RoomRequested, To: admins, Actor: actor,
 		SubjectType: "room_request", SubjectID: req.ID, Link: roomRequestsLink,
-		Vars:      notify.Vars{Actor: askerName(tx, actor), Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
+		Vars:      notify.Vars{Actor: asker, Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
 		Data:      map[string]any{"requestId": req.ID, "eventId": ev.ID},
 		DedupeKey: fmt.Sprintf("room.requested:%d", req.ID),
 	})
 	return err
 }
 
-func askerName(tx *gorm.DB, id *uint) string {
+func askerName(tx *gorm.DB, id *uint) (string, error) {
 	if id == nil {
-		return ""
+		return "", nil
 	}
-	return nameIn(tx, *id)
+	return nameOf(tx, *id)
 }
 
 // closeEmptyRoomRequests withdraws pending requests none of whose dates
@@ -444,13 +452,11 @@ func settleRoomDecision(tx *gorm.DB, ev *models.Event, requestID, actor uint, ch
 // notifyRoomDecided tells the event's leaders (or hosts) what an admin
 // decided; the admin is the actor and isn't told.
 func notifyRoomDecided(tx *gorm.DB, ev *models.Event, actor uint, change, note string) error {
-	var to []uint
-	if ev.GroupID != nil {
-		to = leaderIDs(tx, *ev.GroupID)
-	} else {
-		to = hostIDs(tx, ev.ID)
+	to, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return err
 	}
-	_, err := notify.Send(tx, notify.Msg{
+	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RoomRequestDecided, To: to, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change, Note: note}, // group-ok: the event's own leaders and hosts

@@ -838,7 +838,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	err = auditAndNotifyLeadership(tx, audit.Entry{
 		Actor: &actor.ID, Action: audit.RoleChanged,
 		TargetType: "group", TargetID: g.ID,
-		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
+		Meta: audit.RoleMeta{UserID: userID, OldRole: roleOrNone(oldRole), NewRole: roleOrNone(newRole)}.With(nil),
 		IP:   ip,
 	})
 	return err

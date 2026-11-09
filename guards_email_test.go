@@ -47,7 +47,7 @@ func emailChoiceViolations(sources map[string]string) []string {
 					case "EmailAddressOptOut":
 						flagged = path != "email_optouts.go"
 					case "ConsentEmail":
-						flagged = path != "email_optouts.go" && !(path == "email_unsubscribe.go" && owner == "setEmailConsent") && !(path == "api_notifications.go" && owner == "apiUpdateNotificationSettings")
+						flagged = path != "email_optouts.go" && !(path == "email_unsubscribe.go" && owner == "setEmailConsent") && !(path == "api_notification_settings.go" && owner == "apiUpdateNotificationSettings")
 					}
 				}
 				if flagged {
@@ -100,7 +100,7 @@ func optionalMailViolations(sources map[string]string) []string {
 	positions := parsed.Fset
 	bad := append([]string(nil), parsed.Problems...)
 	functions := map[string]*ast.FuncDecl{}
-	allowed := map[string]string{"api_notifications.go": "notificationEmailMessage", "messages_send.go": "messageEmail", "api_message_preview.go": "apiTestMessage"}
+	allowed := map[string]string{"notice_email.go": "notificationEmailMessage", "messages_send.go": "messageEmail", "api_message_preview.go": "apiTestMessage"}
 	for _, pf := range parsed.Files {
 		path, tree := pf.Path, pf.AST
 		if pf.Dir() != "." && (!strings.HasPrefix(path, "internal/") || strings.HasPrefix(path, "internal/mail/") || strings.HasPrefix(path, "internal/providers/")) {
@@ -189,8 +189,8 @@ func optionalMailViolations(sources map[string]string) []string {
 		return found
 	}
 	for _, edge := range [][3]string{
-		{"api_notifications.go:readEmailRecipients", "readEmailOff", "effective recipient choices"},
-		{"api_notifications.go:readEmailRecipient", "readEmailRecipients", "effective recipient read"},
+		{"notice_email.go:readEmailRecipients", "readEmailOff", "effective recipient choices"},
+		{"notice_email.go:readEmailRecipient", "readEmailRecipients", "effective recipient read"},
 		{"notify_deliver.go:sendHeldNotification", "readEmailRecipient", "notification boundary"},
 	} {
 		if f := functions[edge[0]]; f == nil || !hasCall(f, edge[1]) {
@@ -298,7 +298,7 @@ func TestOptionalMailChecksTheEffectiveChoice(t *testing.T) {
 
 func cleanOptionalMailSources() map[string]string {
 	return map[string]string{
-		"api_notifications.go": `package main
+		"notice_email.go": `package main
 func readEmailRecipients() { readEmailOff() }
 func readEmailRecipient() { readEmailRecipients() }
 func (a *App) notificationEmailMessage() {}`,

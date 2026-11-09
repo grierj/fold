@@ -171,8 +171,8 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		}
 		err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: g.ID,
-			Meta: map[string]any{"userId": sid, "oldRole": oldRole, "newRole": models.MembershipLeader,
-				"reason": reason, "departingUserId": leaving},
+			Meta: audit.RoleMeta{UserID: sid, OldRole: oldRole, NewRole: models.MembershipLeader}.With(map[string]any{
+				"reason": reason, "departingUserId": leaving}),
 			IP: c.ClientIP(),
 		})
 		if err != nil {
@@ -219,9 +219,8 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 		}
 		err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
-			Meta: map[string]any{"userId": userID, "oldRole": models.MembershipLeader,
-				"newRole": models.MembershipMember, "reason": reason},
-			IP: c.ClientIP(),
+			Meta: audit.RoleMeta{UserID: userID, OldRole: models.MembershipLeader, NewRole: models.MembershipMember}.With(map[string]any{"reason": reason}),
+			IP:   c.ClientIP(),
 		})
 		if err != nil {
 			return err
