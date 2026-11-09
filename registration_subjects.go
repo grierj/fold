@@ -639,3 +639,22 @@ func householdSubjectFrom(person *models.HouseholdPerson, acct models.HouseholdA
 	id := person.ID
 	return registrationSubject{personID: &id, holderID: acct.UserID}, nil
 }
+
+type attendeeJSON struct {
+	AddedByLeader      *bool                  `json:"addedByLeader,omitempty"`
+	Email              *string                `json:"email,omitempty"`
+	Phone              *string                `json:"phone,omitempty"`
+	AccountType        string                 `json:"accountType,omitempty"`
+	RegistrationID     uint                   `json:"registrationId"`
+	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`
+	ChildcareRequested *bool                  `json:"childcareRequested,omitempty"`
+	UserID             *uint                  `json:"userId,omitempty"`
+	Name               string                 `json:"name"`
+	Status             string                 `json:"status"`
+	// GuestCount is the extra unnamed guests this party brings (M1.5).
+	GuestCount int `json:"guestCount"`
+	// AttendanceMode is in_person or remote (M1.8 slice 2).
+	AttendanceMode    string  `json:"attendanceMode"`
+	ChildcareCount    *int    `json:"childcareCount,omitempty"`
+	ChildcareAgesNote *string `json:"childcareAgesNote,omitempty"`
+}

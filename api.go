@@ -2,349 +2,20 @@ package main
 
 import (
 	"net/http"
-	"strings"
-	"time"
 
 	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/sessions"
 	"gorm.io/gorm"
 )
-
-// Text caps keep a single request from storing an unbounded row.
-// Profile name/display name stay at 100 (see api_profile.go).
-const (
-	maxGroupNameLen   = 200
-	maxLocationLen    = 300
-	maxDescriptionLen = 5000
-	maxTagsLen        = 500
-	maxRecurrenceLen  = 300
-)
-
-// ---------------------------------------------------------------------------
-// JSON shapes
-// ---------------------------------------------------------------------------
-
-// personSearchJSON is a deliberately closed name-picker projection. No contact
-// data, internal account IDs, teen images or hidden group identifiers belong here.
-type personSearchJSON struct {
-	SelectionID  string   `json:"selectionId"`
-	DisplayName  string   `json:"displayName"`
-	Teen         bool     `json:"teen"`
-	AvatarURL    string   `json:"avatarUrl,omitempty"`
-	AvatarFocalX *float64 `json:"avatarFocalX,omitempty"`
-	AvatarFocalY *float64 `json:"avatarFocalY,omitempty"`
-	SharedGroups []string `json:"sharedGroups"`
-	OtherGroups  []string `json:"otherGroups"`
-}
-
-type peopleSearchJSON struct {
-	State  string             `json:"state"` // short_query | throttled | no_results | results
-	People []personSearchJSON `json:"people"`
-}
-
-type userJSON struct {
-	ID           uint    `json:"id"`
-	Name         string  `json:"name"`
-	DisplayName  string  `json:"displayName"`
-	Email        string  `json:"email"`
-	Phone        string  `json:"phone"`
-	AvatarURL    string  `json:"avatarUrl"`
-	AvatarFocalX float64 `json:"avatarFocalX"`
-	AvatarFocalY float64 `json:"avatarFocalY"`
-	Role         string  `json:"role"`
-	Status       string  `json:"status"`
-	HasPassword  bool    `json:"hasPassword"`
-	AccountType  string  `json:"accountType"`
-	BirthDate    string  `json:"birthDate,omitempty"`
-	// Admin list only. Kept after age rollover so consent history is reachable.
-	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
-	// Effective preference: always true for a teen, regardless of stored value.
-	HideContactFromLeaders bool `json:"hideContactFromLeaders"`
-	// Timezone is the person's own zone for emails (DEC-58); "" means
-	// the church's, until the browser fills it in.
-	Timezone string `json:"timezone"`
-	// EmailSuppression: Fold stopped mailing this person's address (admin
-	// list only, M3.2c, DEC-113).
-	EmailSuppression *emailSuppressionJSON `json:"emailSuppression,omitempty"`
-}
-
-// emailSuppressionJSON is why Fold stopped mailing an address: hard_bounce
-// and manual stop all mail, complaint optional mail (DEC-112).
-type emailSuppressionJSON struct {
-	Reason string    `json:"reason"`
-	Since  time.Time `json:"since"`
-}
-
-// toUserJSON is unrestricted: only self/session and admin account endpoints
-// may use it. Rosters and attendees use context-filtered contact presentation.
-func (a *App) toUserJSON(u *models.User) userJSON {
-	avatarURL := ""
-	if u.AvatarKey != "" {
-		avatarURL = a.Uploads.URL(u.AvatarKey)
-	}
-	accountType := u.AccountType
-	if accountType == "" {
-		accountType = models.AccountAdult
-	}
-	return userJSON{
-		ID: u.ID, Name: u.Name,
-		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
-		AvatarURL:    avatarURL,
-		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
-		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
-		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
-		Timezone:               u.Timezone,
-		HideContactFromLeaders: u.AccountType == models.AccountTeen || u.HideContactFromLeaders,
-	}
-}
-
-type groupSummaryJSON struct {
-	ID                uint       `json:"id"`
-	Name              string     `json:"name"`
-	Description       string     `json:"description"`
-	Tags              []string   `json:"tags"`
-	ImageURL          string     `json:"imageUrl"`
-	CoverFocalX       float64    `json:"coverFocalX"`
-	CoverFocalY       float64    `json:"coverFocalY"`
-	Location          string     `json:"location"`
-	LeaderName        string     `json:"leaderName"`
-	MemberCount       int64      `json:"memberCount"`
-	NextEventAt       *time.Time `json:"nextEventAt"`
-	Status            string     `json:"status"`
-	LeaderID          uint       `json:"leaderId"`
-	Visibility        string     `json:"visibility"` // public | private | invite_only
-	DeletionRequested bool       `json:"deletionRequested"`
-	// MemberLimit caps active members (DEC-39); null means unlimited.
-	MemberLimit *int `json:"memberLimit"`
-	// MyRole is the viewer's own active role, "leader" or "member", on the
-	// directory and My groups lists only (DEC-94); absent otherwise.
-	MyRole string `json:"myRole,omitempty"`
-}
-
-type memberJSON struct {
-	Email        *string `json:"email,omitempty"`
-	Phone        *string `json:"phone,omitempty"`
-	AccountType  string  `json:"accountType,omitempty"`
-	ID           uint    `json:"id"`
-	Name         string  `json:"name"`
-	AvatarURL    string  `json:"avatarUrl"`
-	AvatarFocalX float64 `json:"avatarFocalX"`
-	AvatarFocalY float64 `json:"avatarFocalY"`
-	Role         string  `json:"role"`
-	JoinedAt     string  `json:"joinedAt"`
-	// Admin marks church admins so leaders see the label and no Remove button
-	// (DEC-38); the server refuses such removals anyway (DEC-35).
-	Admin bool `json:"admin"`
-}
-
-// toMemberJSON renders a membership's user for the roster.
-func (a *App) toMemberJSON(m *models.Membership) memberJSON {
-	avatarURL := ""
-	if m.User.AvatarKey != "" && m.User.AccountType != models.AccountTeen {
-		avatarURL = a.Uploads.URL(m.User.AvatarKey)
-	}
-	return memberJSON{
-		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
-		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
-		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
-		Admin: asPerson(&m.User).Admin, AccountType: m.User.AccountType,
-	}
-}
-
-// occurrenceJSON is one date of an event. startsAt/endsAt are UTC;
-// startsLocal/endsLocal are the wall clock in tzid (C2). date is the series
-// date and stays put when a per-date override moves the clock.
-type occurrenceJSON struct {
-	hideSeries            bool             `json:"-"`
-	ID                    uint             `json:"id"`
-	EventID               uint             `json:"eventId"`
-	Date                  string           `json:"date"`
-	DateURL               string           `json:"dateUrl,omitempty"`
-	VisibilityOverride    *string          `json:"visibilityOverride,omitempty"`
-	SeriesVisibility      string           `json:"seriesVisibility,omitempty"`
-	GroupVisibility       string           `json:"groupVisibility,omitempty"`
-	StartsAt              time.Time        `json:"startsAt"`
-	EndsAt                time.Time        `json:"endsAt"`
-	StartsLocal           string           `json:"startsLocal"`
-	EndsLocal             string           `json:"endsLocal"`
-	TZID                  string           `json:"tzid"`
-	DurationMinutes       int              `json:"durationMinutes"`
-	Location              string           `json:"location"`
-	Title                 string           `json:"title"`
-	Description           string           `json:"description"`
-	RecurrenceRule        string           `json:"recurrenceRule"`
-	RRuleUntil            string           `json:"rruleUntil,omitempty"`
-	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
-	SeriesTitle           string           `json:"seriesTitle"`
-	SeriesLocation        string           `json:"seriesLocation"`
-	SeriesDurationMinutes int              `json:"seriesDurationMinutes"`
-	Overridden            bool             `json:"overridden"`
-	Registrations         map[string]int64 `json:"registrations"`
-	MyRegistration        *string          `json:"myRegistration"`
-	Visibility            string           `json:"visibility"`
-	LeaderOpened          bool             `json:"leaderOpened"`
-	ChurchWide            bool             `json:"churchWide"`
-	GroupID               *uint            `json:"groupId,omitempty"`
-	GroupName             string           `json:"groupName,omitempty"`
-	HostedBy              string           `json:"hostedBy,omitempty"`
-	// Room is the date's confirmed room, shown as its place (9.2, M2.1b).
-	Room *occurrenceRoomJSON `json:"room,omitempty"`
-	// AttendeesVisible is false when the caller gets a count only. An empty
-	// allowed list is omitted; the bool is what says names were allowed.
-	AttendeesVisible         bool                          `json:"attendeesVisible"`
-	Attendees                []attendeeJSON                `json:"attendees,omitempty"`
-	MyHouseholdRegistrations []myHouseholdRegistrationJSON `json:"myHouseholdRegistrations"`
-	RemovedRegistrations     []attendeeJSON                `json:"removedRegistrations,omitempty"`
-	// Capacity, waitlist, and guests (M1.5). Capacity is the effective
-	// cap for this date (per-date override wins); null means unlimited.
-	// SpotsLeft is null when unlimited and never below 0. SeatsUsed
-	// counts seats (1 + guest_count per going party of a listed
-	// account); the Registrations map counts rows.
-	Capacity        *int `json:"capacity"`
-	SeatsUsed       int  `json:"seatsUsed"`
-	SpotsLeft       *int `json:"spotsLeft"`
-	WaitlistEnabled bool `json:"waitlistEnabled"`
-	GuestsAllowed   int  `json:"guestsAllowed"`
-	// ReminderEmailMinutes is the series' reminder time (M3.6), for its
-	// Edit series form; 0 is off. ReminderPush is its 2-hour push
-	// reminder switch (M3.13d3).
-	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
-	ReminderPush         bool `json:"reminderPush"`
-	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
-	// fields mirror the in-person ones; remoteCapacity is the effective
-	// cap for this date (per-date override wins), null is unlimited.
-	RemoteAvailable     bool    `json:"remoteAvailable"`
-	ChildcareAvailable  bool    `json:"childcareAvailable"`
-	ChildcareFull       bool    `json:"childcareFull"`
-	ChildcareNotes      string  `json:"childcareNotes"`
-	ChildcareCapacity   *int    `json:"childcareCapacity"`
-	ChildcareAges       string  `json:"childcareAges"`
-	RemoteCapacity      *int    `json:"remoteCapacity"`
-	RemoteSeatsUsed     int     `json:"remoteSeatsUsed"`
-	ChildcareUsed       *int    `json:"childcareUsed,omitempty"`
-	ChildcareSpotsLeft  *int    `json:"childcareSpotsLeft,omitempty"`
-	MyChildcareCount    *int    `json:"myChildcareCount,omitempty"`
-	MyChildcareAgesNote *string `json:"myChildcareAgesNote,omitempty"`
-	RemoteSpotsLeft     *int    `json:"remoteSpotsLeft"`
-	// MyGuestCount and MyWaitlistPosition describe the signed-in
-	// viewer's own registration; both are absent without one. Position
-	// is set only when the viewer is waitlisted.
-	MyGuestCount       *int `json:"myGuestCount,omitempty"`
-	MyWaitlistPosition *int `json:"myWaitlistPosition,omitempty"`
-	// MyAttendanceMode is the viewer's own pool (in_person or remote);
-	// absent without a registration.
-	MyAttendanceMode *string `json:"myAttendanceMode,omitempty"`
-	// Video link (5.8, M1.8). VideoURL is present only when this viewer
-	// may see it for this date (policy.CanSeeVideoLink); VideoHidden says
-	// a link exists but is being withheld, so the UI can say "Register
-	// to get the link".
-	VideoProvider string `json:"videoProvider"`
-	VideoURL      string `json:"videoUrl,omitempty"`
-	VideoReveal   string `json:"videoReveal"`
-	VideoHidden   bool   `json:"videoHidden,omitempty"`
-}
-
-type attendeeJSON struct {
-	AddedByLeader      *bool                  `json:"addedByLeader,omitempty"`
-	Email              *string                `json:"email,omitempty"`
-	Phone              *string                `json:"phone,omitempty"`
-	AccountType        string                 `json:"accountType,omitempty"`
-	RegistrationID     uint                   `json:"registrationId"`
-	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`
-	ChildcareRequested *bool                  `json:"childcareRequested,omitempty"`
-	UserID             *uint                  `json:"userId,omitempty"`
-	Name               string                 `json:"name"`
-	Status             string                 `json:"status"`
-	// GuestCount is the extra unnamed guests this party brings (M1.5).
-	GuestCount int `json:"guestCount"`
-	// AttendanceMode is in_person or remote (M1.8 slice 2).
-	AttendanceMode    string  `json:"attendanceMode"`
-	ChildcareCount    *int    `json:"childcareCount,omitempty"`
-	ChildcareAgesNote *string `json:"childcareAgesNote,omitempty"`
-}
-
-type hostJSON struct {
-	UserID uint   `json:"userId"`
-	Name   string `json:"name"`
-	Email  string `json:"email"`
-}
-
-type eventJSON struct {
-	ID              uint       `json:"id"`
-	GroupID         *uint      `json:"groupId,omitempty"`
-	GroupName       string     `json:"groupName,omitempty"`
-	GroupVisibility string     `json:"groupVisibility,omitempty"`
-	HostedBy        string     `json:"hostedBy,omitempty"`
-	Title           string     `json:"title"`
-	Description     string     `json:"description"`
-	StartsLocal     string     `json:"startsLocal"`
-	DurationMinutes int        `json:"durationMinutes"`
-	TZID            string     `json:"tzid"`
-	StartsAt        time.Time  `json:"startsAt"`
-	EndsAt          time.Time  `json:"endsAt"`
-	Location        string     `json:"location"`
-	RecurrenceRule  string     `json:"recurrenceRule"`
-	RRuleUntil      string     `json:"rruleUntil,omitempty"`
-	Visibility      string     `json:"visibility"`
-	LeaderOpened    bool       `json:"leaderOpened"`
-	ChurchWide      bool       `json:"churchWide"`
-	Hosts           []hostJSON `json:"hosts,omitempty"`
-	// Capacity, waitlist, and guests (M1.5). Capacity null means
-	// unlimited.
-	Capacity        *int `json:"capacity"`
-	WaitlistEnabled bool `json:"waitlistEnabled"`
-	GuestsAllowed   int  `json:"guestsAllowed"`
-	// ReminderEmailMinutes: when each date's email reminder goes (M3.6,
-	// DEC-133); 0 is off. ReminderPush: each date's 2-hour push reminder
-	// (M3.13d3).
-	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
-	ReminderPush         bool `json:"reminderPush"`
-	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
-	// unlimited remote seats.
-	RemoteAvailable    bool   `json:"remoteAvailable"`
-	ChildcareAvailable bool   `json:"childcareAvailable"`
-	ChildcareNotes     string `json:"childcareNotes"`
-	ChildcareCapacity  *int   `json:"childcareCapacity"`
-	ChildcareAges      string `json:"childcareAges"`
-	RemoteCapacity     *int   `json:"remoteCapacity"`
-	// Video link (5.8, M1.8). At series level the link shows under
-	// "always" and to the event's managers; a person going to one date
-	// gets it on that date's occurrence row instead.
-	VideoProvider string `json:"videoProvider"`
-	VideoURL      string `json:"videoUrl,omitempty"`
-	VideoReveal   string `json:"videoReveal"`
-	VideoHidden   bool   `json:"videoHidden,omitempty"`
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-// sessionVersion reads the password generation stored at login.
-// A cookie issued before this field existed has no value and counts as 0.
-func sessionVersion(s *sessions.Session) int { return sessionInt(s, sessionVersionKey) }
-
-// logoutVersion reads the logout generation stored at login (M7.2); an
-// older cookie has none and counts as 0, the column's default.
-func logoutVersion(s *sessions.Session) int { return sessionInt(s, sessionLogoutKey) }
-
-func sessionInt(s *sessions.Session, key string) int {
-	switch v := s.Values[key].(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case uint:
-		return int(v)
-	default:
-		return 0
-	}
-}
-
-// userFromSession loads the logged-in user when the cookie is still current.
+// authenticatedSessionUser loads the user the session cookie names, once per
+// request, when the cookie is still current (sessionCurrent).
 func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if value, cached := c.Get("sessionUser"); cached {
 		user, ok := value.(*models.User)
@@ -370,6 +41,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	return &user, true
 }
 
+// userFromSession is authenticatedSessionUser for an active account.
 func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
 	user, ok := a.authenticatedSessionUser(c)
 	return user, ok && user.Status == models.UserActive
@@ -394,7 +66,6 @@ func (a *App) apiAuth() gin.HandlerFunc {
 	}
 }
 
-// apiAdmin requires an admin user.
 func (a *App) apiAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u, ok := c.Get("apiUser")
@@ -444,14 +115,6 @@ func asGroup(g *models.Group) policy.Group {
 	return policy.Group{Status: g.Status, Visibility: g.Visibility}
 }
 
-// relOf loads u's active membership in a group.
-func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
-	if u == nil {
-		return policy.Rel{}
-	}
-	return relIn(a.DB, u.ID, groupID)
-}
-
 // membershipRel turns a membership row (any status) into policy facts.
 func membershipRel(m models.Membership) policy.Rel {
 	active := m.ID != 0 && m.Status == models.MembershipActive
@@ -478,61 +141,6 @@ func leaderCount(db *gorm.DB, groupID uint) int {
 			groupID, models.MembershipLeader, models.MembershipActive).
 		Count(&n)
 	return int(n)
-}
-
-func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
-	return policy.CanSeeGroup(asPerson(u), asGroup(g), a.relOf(u, g.ID))
-}
-
-// loadGroupFor loads group id for u: 404 when it doesn't exist or u can't
-// see it (invite-only groups never answer 403 to outsiders).
-func (a *App) loadGroupFor(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
-	u := apiUser(c)
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return nil, policy.Rel{}, false
-	}
-	rel := a.relOf(u, g.ID)
-	if !policy.CanSeeGroup(asPerson(u), asGroup(&g), rel) {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return nil, policy.Rel{}, false
-	}
-	return &g, rel, true
-}
-
-// loadManagedGroupID is loadGroupFor plus CanManageGroup (403 when the
-// group is visible but u doesn't lead it).
-func (a *App) loadManagedGroupID(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
-	g, rel, ok := a.loadGroupFor(c, id)
-	if !ok {
-		return nil, rel, false
-	}
-	if !policy.CanManageGroup(asPerson(apiUser(c)), rel) {
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return nil, rel, false
-	}
-	return g, rel, true
-}
-
-func splitTags(s string) []string {
-	out := []string{}
-	for _, t := range strings.Split(s, ",") {
-		if t = strings.TrimSpace(t); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func joinTags(tags []string) string {
-	var clean []string
-	for _, t := range tags {
-		if t = strings.TrimSpace(t); t != "" {
-			clean = append(clean, t)
-		}
-	}
-	return strings.Join(clean, ",")
 }
 
 // ---------------------------------------------------------------------------

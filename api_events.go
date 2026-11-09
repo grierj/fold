@@ -1520,3 +1520,146 @@ func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, oc
 	}
 	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceRestored)
 }
+
+// occurrenceJSON is one date of an event. startsAt/endsAt are UTC;
+// startsLocal/endsLocal are the wall clock in tzid (C2). date is the series
+// date and stays put when a per-date override moves the clock.
+type occurrenceJSON struct {
+	hideSeries            bool             `json:"-"`
+	ID                    uint             `json:"id"`
+	EventID               uint             `json:"eventId"`
+	Date                  string           `json:"date"`
+	DateURL               string           `json:"dateUrl,omitempty"`
+	VisibilityOverride    *string          `json:"visibilityOverride,omitempty"`
+	SeriesVisibility      string           `json:"seriesVisibility,omitempty"`
+	GroupVisibility       string           `json:"groupVisibility,omitempty"`
+	StartsAt              time.Time        `json:"startsAt"`
+	EndsAt                time.Time        `json:"endsAt"`
+	StartsLocal           string           `json:"startsLocal"`
+	EndsLocal             string           `json:"endsLocal"`
+	TZID                  string           `json:"tzid"`
+	DurationMinutes       int              `json:"durationMinutes"`
+	Location              string           `json:"location"`
+	Title                 string           `json:"title"`
+	Description           string           `json:"description"`
+	RecurrenceRule        string           `json:"recurrenceRule"`
+	RRuleUntil            string           `json:"rruleUntil,omitempty"`
+	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
+	SeriesTitle           string           `json:"seriesTitle"`
+	SeriesLocation        string           `json:"seriesLocation"`
+	SeriesDurationMinutes int              `json:"seriesDurationMinutes"`
+	Overridden            bool             `json:"overridden"`
+	Registrations         map[string]int64 `json:"registrations"`
+	MyRegistration        *string          `json:"myRegistration"`
+	Visibility            string           `json:"visibility"`
+	LeaderOpened          bool             `json:"leaderOpened"`
+	ChurchWide            bool             `json:"churchWide"`
+	GroupID               *uint            `json:"groupId,omitempty"`
+	GroupName             string           `json:"groupName,omitempty"`
+	HostedBy              string           `json:"hostedBy,omitempty"`
+	// Room is the date's confirmed room, shown as its place (9.2, M2.1b).
+	Room *occurrenceRoomJSON `json:"room,omitempty"`
+	// AttendeesVisible is false when the caller gets a count only. An empty
+	// allowed list is omitted; the bool is what says names were allowed.
+	AttendeesVisible         bool                          `json:"attendeesVisible"`
+	Attendees                []attendeeJSON                `json:"attendees,omitempty"`
+	MyHouseholdRegistrations []myHouseholdRegistrationJSON `json:"myHouseholdRegistrations"`
+	RemovedRegistrations     []attendeeJSON                `json:"removedRegistrations,omitempty"`
+	// Capacity, waitlist, and guests (M1.5). Capacity is the effective
+	// cap for this date (per-date override wins); null means unlimited.
+	// SpotsLeft is null when unlimited and never below 0. SeatsUsed
+	// counts seats (1 + guest_count per going party of a listed
+	// account); the Registrations map counts rows.
+	Capacity        *int `json:"capacity"`
+	SeatsUsed       int  `json:"seatsUsed"`
+	SpotsLeft       *int `json:"spotsLeft"`
+	WaitlistEnabled bool `json:"waitlistEnabled"`
+	GuestsAllowed   int  `json:"guestsAllowed"`
+	// ReminderEmailMinutes is the series' reminder time (M3.6), for its
+	// Edit series form; 0 is off. ReminderPush is its 2-hour push
+	// reminder switch (M3.13d3).
+	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
+	ReminderPush         bool `json:"reminderPush"`
+	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
+	// fields mirror the in-person ones; remoteCapacity is the effective
+	// cap for this date (per-date override wins), null is unlimited.
+	RemoteAvailable     bool    `json:"remoteAvailable"`
+	ChildcareAvailable  bool    `json:"childcareAvailable"`
+	ChildcareFull       bool    `json:"childcareFull"`
+	ChildcareNotes      string  `json:"childcareNotes"`
+	ChildcareCapacity   *int    `json:"childcareCapacity"`
+	ChildcareAges       string  `json:"childcareAges"`
+	RemoteCapacity      *int    `json:"remoteCapacity"`
+	RemoteSeatsUsed     int     `json:"remoteSeatsUsed"`
+	ChildcareUsed       *int    `json:"childcareUsed,omitempty"`
+	ChildcareSpotsLeft  *int    `json:"childcareSpotsLeft,omitempty"`
+	MyChildcareCount    *int    `json:"myChildcareCount,omitempty"`
+	MyChildcareAgesNote *string `json:"myChildcareAgesNote,omitempty"`
+	RemoteSpotsLeft     *int    `json:"remoteSpotsLeft"`
+	// MyGuestCount and MyWaitlistPosition describe the signed-in
+	// viewer's own registration; both are absent without one. Position
+	// is set only when the viewer is waitlisted.
+	MyGuestCount       *int `json:"myGuestCount,omitempty"`
+	MyWaitlistPosition *int `json:"myWaitlistPosition,omitempty"`
+	// MyAttendanceMode is the viewer's own pool (in_person or remote);
+	// absent without a registration.
+	MyAttendanceMode *string `json:"myAttendanceMode,omitempty"`
+	// Video link (5.8, M1.8). VideoURL is present only when this viewer
+	// may see it for this date (policy.CanSeeVideoLink); VideoHidden says
+	// a link exists but is being withheld, so the UI can say "Register
+	// to get the link".
+	VideoProvider string `json:"videoProvider"`
+	VideoURL      string `json:"videoUrl,omitempty"`
+	VideoReveal   string `json:"videoReveal"`
+	VideoHidden   bool   `json:"videoHidden,omitempty"`
+}
+
+type eventJSON struct {
+	ID              uint       `json:"id"`
+	GroupID         *uint      `json:"groupId,omitempty"`
+	GroupName       string     `json:"groupName,omitempty"`
+	GroupVisibility string     `json:"groupVisibility,omitempty"`
+	HostedBy        string     `json:"hostedBy,omitempty"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	StartsLocal     string     `json:"startsLocal"`
+	DurationMinutes int        `json:"durationMinutes"`
+	TZID            string     `json:"tzid"`
+	StartsAt        time.Time  `json:"startsAt"`
+	EndsAt          time.Time  `json:"endsAt"`
+	Location        string     `json:"location"`
+	RecurrenceRule  string     `json:"recurrenceRule"`
+	RRuleUntil      string     `json:"rruleUntil,omitempty"`
+	Visibility      string     `json:"visibility"`
+	LeaderOpened    bool       `json:"leaderOpened"`
+	ChurchWide      bool       `json:"churchWide"`
+	Hosts           []hostJSON `json:"hosts,omitempty"`
+	// Capacity, waitlist, and guests (M1.5). Capacity null means
+	// unlimited.
+	Capacity        *int `json:"capacity"`
+	WaitlistEnabled bool `json:"waitlistEnabled"`
+	GuestsAllowed   int  `json:"guestsAllowed"`
+	// ReminderEmailMinutes: when each date's email reminder goes (M3.6,
+	// DEC-133); 0 is off. ReminderPush: each date's 2-hour push reminder
+	// (M3.13d3).
+	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
+	ReminderPush         bool `json:"reminderPush"`
+	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
+	// unlimited remote seats.
+	RemoteAvailable    bool   `json:"remoteAvailable"`
+	ChildcareAvailable bool   `json:"childcareAvailable"`
+	ChildcareNotes     string `json:"childcareNotes"`
+	ChildcareCapacity  *int   `json:"childcareCapacity"`
+	ChildcareAges      string `json:"childcareAges"`
+	RemoteCapacity     *int   `json:"remoteCapacity"`
+	// Video link (5.8, M1.8). At series level the link shows under
+	// "always" and to the event's managers; a person going to one date
+	// gets it on that date's occurrence row instead.
+	VideoProvider string `json:"videoProvider"`
+	VideoURL      string `json:"videoUrl,omitempty"`
+	VideoReveal   string `json:"videoReveal"`
+	VideoHidden   bool   `json:"videoHidden,omitempty"`
+}
+
+// maxRecurrenceLen caps an RRULE a request may store.
+const maxRecurrenceLen = 300
