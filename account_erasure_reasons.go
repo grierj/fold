@@ -564,18 +564,16 @@ func (a *App) reasonPageAttempt(ctx context.Context, me, target *models.User, af
 		}
 		var pred func(*models.User) bool
 		if len(unit.Requests) > 0 {
-			now := time.Now().UTC()
-			zone, err := churchZoneIn(tx)
+			rule, err := reasonReviewRuleIn(tx, target, admins)
 			if err != nil {
 				return err
 			}
-			targetPerson := *asPerson(target)
-			if !policy.CanReviewErasureReasons(contactAccount(&actor, now, zone), &targetPerson, admins) {
+			if !rule.allows(&actor) {
 				step.predFailed = true
 				return errReasonReviewForbidden
 			}
 			pred = func(u *models.User) bool {
-				ok := policy.CanReviewErasureReasons(contactAccount(u, now, zone), &targetPerson, admins)
+				ok := rule.allows(u)
 				step.predFailed = !ok
 				return ok
 			}
@@ -793,6 +791,9 @@ type reasonPlan struct {
 	Decisions []reasonDecision
 	ActorID   uint
 	IP        string
+	// mayReview is what the deletion's seal decides again on the locked actor
+	// row (reasonReviewRule.allows); nil when the account has no reasons.
+	mayReview func(*models.User) bool
 }
 
 func (p reasonPlan) counts() (kept, removed int) {
@@ -893,33 +894,33 @@ func reasonSetExistsIn(tx *gorm.DB, target uint) (bool, error) {
 //     Go keeps a compact record per row, never more than the claim (the server
 //     has read and locked the whole set by then, which the exclusive gate needs).
 //
-// The returned predicate is what the deletion's seal re-decides on the locked
+// The plan's mayReview is what the deletion's seal re-decides on the locked
 // actor row. actor is the deletion's re-read actor row; target is the locked
 // account.
-func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env reasonEnvelope, ip string) (reasonPlan, func(*models.User) bool, error) {
+func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env reasonEnvelope, ip string) (reasonPlan, error) {
 	plan := reasonPlan{ActorID: actor.ID, IP: ip}
 	if env.kind != reasonEnvelopeNew {
 		has, err := reasonSetExistsIn(tx, target.ID)
 		if err != nil {
-			return plan, nil, err
+			return plan, err
 		}
 		switch {
 		case !has:
-			return plan, nil, nil
+			return plan, nil
 		case env.kind == reasonEnvelopeLegacy:
-			return plan, nil, errReasonReviewOutdated
+			return plan, errReasonReviewOutdated
 		default:
-			return plan, nil, errNeedsReasonReview
+			return plan, errNeedsReasonReview
 		}
 	}
 	key, err := reasonHashKey(a.Config.SessionSecret)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	rows, err := tx.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE reason <> '' AND (requester_id = ? OR subject_user_id = ?) ORDER BY contact_requests.id FOR UPDATE",
 		target.ID, target.ID).Rows()
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	hasher := newReasonSetHasher(env.count)
 	// Never sized from the claim: it grows from real rows.
@@ -952,48 +953,67 @@ func (a *App) planReasonReviewIn(tx *gorm.DB, actor, target *models.User, env re
 		return nil
 	})
 	if err != nil && !errors.Is(err, errReasonStreamStop) {
-		return plan, nil, err
+		return plan, err
 	}
 	if seen == 0 {
-		return plan, nil, nil
+		return plan, nil
 	}
 	if err := reasonWriteGuard(tx); err != nil {
-		return plan, nil, err
+		return plan, err
 	}
 	admins, err := adminCountIn(tx)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
-	zone, err := churchZoneIn(tx)
+	rule, err := reasonReviewRuleIn(tx, target, admins)
 	if err != nil {
-		return plan, nil, err
+		return plan, err
 	}
-	now := time.Now().UTC()
-	targetPerson := *asPerson(target)
-	if !policy.CanReviewErasureReasons(contactAccount(actor, now, zone), &targetPerson, admins) {
-		return plan, nil, errReasonReviewForbidden
-	}
-	pred := func(u *models.User) bool {
-		return policy.CanReviewErasureReasons(contactAccount(u, now, zone), &targetPerson, admins)
+	if !rule.allows(actor) {
+		return plan, errReasonReviewForbidden
 	}
 	if over || seen != env.count {
-		return plan, nil, errReasonReviewChanged
+		return plan, errReasonReviewChanged
 	}
 	sum := hasher.sum()
 	if !hmac.Equal(sum[:], env.digest[:]) {
-		return plan, nil, errReasonReviewChanged
+		return plan, errReasonReviewChanged
 	}
 	for i := range decisions {
 		decisions[i].Remove = env.choiceAt(i) == reasonCodeRemove
 	}
 	plan.Decisions = decisions
-	return plan, pred, nil
+	plan.mayReview = rule.allows
+	return plan, nil
+}
+
+// reasonReviewRule is policy.CanReviewErasureReasons fixed for one target, on
+// one transaction's clock, church zone and admin count: the page and the
+// deletion decide the actor with it, and their seals decide the locked actor
+// row with it again.
+type reasonReviewRule struct {
+	now    time.Time
+	zone   *time.Location
+	target policy.Person
+	admins int
+}
+
+func reasonReviewRuleIn(tx *gorm.DB, target *models.User, admins int) (reasonReviewRule, error) {
+	zone, err := churchZoneIn(tx)
+	if err != nil {
+		return reasonReviewRule{}, err
+	}
+	return reasonReviewRule{now: time.Now().UTC(), zone: zone, target: *asPerson(target), admins: admins}, nil
+}
+
+func (r reasonReviewRule) allows(u *models.User) bool {
+	return policy.CanReviewErasureReasons(contactAccount(u, r.now, r.zone), &r.target, r.admins)
 }
 
 // eraseContactRequestReasonsIn writes the decisions and blanks the removed
 // reasons. It is the only writer of contact_requests.reason (the guard in
 // guards_contact_text_test.go allows its one UPDATE literal here and its one call in
-// apiAdminDeleteUser's callback, directly after eraseContactRequestTextIn).
+// eraseAccountIn, directly after eraseContactRequestTextIn).
 // Decisions go in batches of reasonBlankBatch inside the same transaction: for
 // each batch the signed audit rows are written first, then that batch's removes
 // are blanked in one UPDATE whose RowsAffected must equal the batch's remove

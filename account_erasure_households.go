@@ -29,11 +29,12 @@ import (
 // Lock census (rechecked by TestErasureHouseholdLockCensus, which reads the
 // production source):
 //
-//   - The deletion callback in apiAdminDeleteUser takes, in order: the contact
-//     gate (contactMutationCtx); the hosted events FOR KEY SHARE and the
-//     account FOR UPDATE (deletionHostPlan); the actor row, a plain read; the
-//     households of the account's seat and of PERS, NOWAIT, ascending
-//     (lockErasureHouseholdsIn); then, in the order the callback runs them,
+//   - The admin deletion takes, in order: the contact gate
+//     (contactMutationCtx); the hosted events FOR KEY SHARE and the account FOR
+//     UPDATE (deletionHostPlan); the actor row, a plain read; then, in
+//     eraseAccountIn, the households of the account's seat and of PERS,
+//     NOWAIT, ascending (lockErasureHouseholdsIn); then, in the order
+//     eraseAccountIn runs them,
 //     the groups of handOffLeadership, the events of handOffHosting, the
 //     request, notification and occurrence rows of eraseAccountRequestsIn,
 //     promoteOnDisable and eraseDependentRecordsIn. None of those helpers
@@ -304,8 +305,8 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 }
 
 // eraseHouseholdRecordsIn is the household step of an account erasure (T12,
-// T14-T16, T28, T36, inventory 9.6; R4-3b-2). It runs once, right after
-// eraseContactRequestTextIn (so the account is already soft-deleted) and before
+// T14-T16, T28, T36, inventory 9.6; R4-3b-2). It runs once, in eraseAccountIn, after
+// the reason scrub (so the account is already soft-deleted) and before
 // promoteOnDisable, and touches only the households lockErasureHouseholdsIn
 // already locked. In order:
 //
@@ -323,12 +324,8 @@ func validatePersIn(tx *gorm.DB, s erasureSubject) error {
 //     resolved; check_note and finished rows untouched (O-4);
 //  5. unused teen_consent tokens that name the account as the teen;
 //  6. each locked household scrubbed when householdErasedOwnerIn says so.
-func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households []uint, actorID uint, ip string) (householdErasureCounts, error) {
+func (a *App) eraseHouseholdRecordsIn(tx *gorm.DB, s erasureSubject, households []uint, actor *uint, ip string) (householdErasureCounts, error) {
 	var counts householdErasureCounts
-	var actor *uint
-	if actorID != 0 {
-		actor = &actorID
-	}
 	locked := make(map[uint]bool, len(households))
 	for _, h := range households {
 		locked[h] = true

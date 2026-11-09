@@ -832,9 +832,11 @@ var auditWriterCensus = map[string]string{
 	// System maintenance: no actor or IP, fixed host-removal metadata and a
 	// version/count-only sweep marker. The two existing erasure writers now
 	// accept a nil system actor, preserving their nonzero admin attribution.
-	"account_erasure_tombstones.go:eraseTombstoneOnce":      "330d5e241aaacac7e1006fac835afd5b17c2a60b3a98b20dc872f94801529504",
-	"account_erasure.go:eraseMessagesIn":                    "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
-	"account_erasure_households.go:eraseHouseholdRecordsIn": "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
+	"account_erasure_tombstones.go:eraseTombstoneOnce":        "275b68295526163c3a5a0f45ca6cc5f1ac1a1c262e8ed8ebd8524be1bdd33a04",
+	"account_erasure_tombstones.go:removeTombstoneHostRowsIn": "40b6c0bf6a68765eadbd9aa7900dc65200b58e586d69bec34cd651c6e3312eb8",
+	"account_erasure.go:eraseAccountIn":                       "1b081dbae07a9d40b613a3c0df8b072777f7e3653d98cb2d8dc28b06c4266d57",
+	"account_erasure.go:eraseMessagesIn":                      "74a2cf34c5b654969f31847517ec142532eeed3759e3d9592f2b3b31bb862f2d",
+	"account_erasure_households.go:eraseHouseholdRecordsIn":   "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
 	// T07B-2b: the page-view row of the reason review (no IP, actor the admin;
 	// meta keys count and source). Decision rows go through audit.WriteAll.
 	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
@@ -846,7 +848,6 @@ var auditWriterCensus = map[string]string{
 	"api_account_requests.go:expirePendingRequests":               "b30d60d413fdc04420d5ef85fed5141945bbad23cd3c882a19a4e160d067446f",
 	"api_account_requests.go:storeAccountRequest":                 "a2a12aeb0ea4183b87c6773c1b5ba0f75b74d9bc2296be8c6edf2c4070aef3ec",
 	"api_admin.go:apiAdminCreateUser":                             "6d94b5f538e0ac21ef2812e65b5bf9dd6da4434ebf5635c0fbeb6e8df06ec1c4",
-	"api_admin.go:apiAdminDeleteUser":                             "beda70946e599d9df50effed52b98044534ae7c33f90272ec47c9c3b7d371db2",
 	"api_admin.go:apiAdminResetPassword":                          "a5986e9dbf1710c87fec4483407977aa9f587bc64c8619363aef2f26d72c514f",
 	"api_admin.go:apiAdminUpdateUser":                             "393506599017bf070142cef9cf59a88b9bd08cb73a34937d8257c64da2abffc2",
 	"api_admin.go:decideGroup":                                    "faa6da1ee041b4d39f734458a51662ca5be8359d0ebc31c4a8e811ac897c1f2f",

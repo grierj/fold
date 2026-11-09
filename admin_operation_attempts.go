@@ -440,10 +440,9 @@ func currentAdminIn(tx *gorm.DB, me *models.User, pred func(*models.User) bool) 
 
 // deletionSeal is the seal of the admin account deletion: the actor is decided
 // on the locked row as the last locking statement before COMMIT. pred is the
-// caller's variable, read when the seal runs: set when the account has
-// contact-request reasons (the locked actor must be allowed to review them),
-// nil otherwise.
-func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *contactSeal {
+// attempt's reason plan's predicate: set when the account has contact-request
+// reasons (the locked actor must be allowed to review them), nil otherwise.
+func (a *App) deletionSeal(me *models.User, pred func(*models.User) bool) *contactSeal {
 	return &contactSeal{run: func(tx *gorm.DB) error {
 		if a.hooks.sealAttempts != nil {
 			a.hooks.sealAttempts.Add(1)
@@ -451,7 +450,7 @@ func (a *App) deletionSeal(me *models.User, pred *func(*models.User) bool) *cont
 		if a.hooks.deleteBeforeSeal != nil {
 			a.hooks.deleteBeforeSeal(tx)
 		}
-		return currentAdminIn(tx, me, *pred)
+		return currentAdminIn(tx, me, pred)
 	}}
 }
 

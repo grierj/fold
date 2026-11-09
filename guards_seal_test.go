@@ -238,6 +238,21 @@ func sealProblems(sources map[string]string) []string {
 		return true
 	})
 
+	// deletionSeal takes the reason plan's predicate as a value: the seal
+	// decides on what the attempt handed it, never on a variable the
+	// callback can still reassign.
+	if ds := guardkit.FindFunc(attempts, "deletionSeal"); ds == nil {
+		bad = append(bad, "admin_operation_attempts.go: deletionSeal is gone")
+	} else {
+		for _, p := range ds.Type.Params.List {
+			if _, ok := p.Type.(*ast.StarExpr); ok {
+				if _, fn := p.Type.(*ast.StarExpr).X.(*ast.FuncType); fn {
+					bad = append(bad, "deletionSeal takes a pointer to a predicate; pass the predicate value")
+				}
+			}
+		}
+	}
+
 	// contactMutationOn: reconcileContacts, the seal, then the reserve check,
 	// with nothing between.
 	lc := guardkit.FindFunc(trees["contact_lifecycle.go"], "contactMutationOn")
@@ -362,7 +377,8 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a hand-written sign-in check", with(aops, "!sessionCurrent(&actor, me)", "!actor.CanSignIn()")},
 		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
 		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
-		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, *pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, *pred)\n\t}}")},
+		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)\n\t}}")},
+		{"a seal predicate shared through a pointer", with(aops, "pred func(*models.User) bool) *contactSeal", "pred *func(*models.User) bool) *contactSeal")},
 		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
 		{"a locked mode on deletionHostPlan's actor read", with("api_host_handoff.go", "lockAdminIn(tx, me, actorRead)", "lockAdminIn(tx, me, actorShare)")},
 	}

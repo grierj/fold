@@ -28,12 +28,6 @@ type tombstoneReport struct {
 	MembershipsKept     int64
 }
 
-// tombstoneErasureSubject deliberately has no address. The old handler lost
-// it, and neither audit text nor a later holder proves ownership (O-17).
-func tombstoneErasureSubject(id uint) erasureSubject {
-	return erasureSubject{ID: id}
-}
-
 // lockTombstoneIn is L0, after the contact gate. Raw SQL is unscoped. An
 // arbitrary soft-deleted user or a lookalike placeholder is never selected.
 func lockTombstoneIn(tx *gorm.DB, id uint) (bool, error) {
@@ -106,93 +100,15 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 		if marked {
 			return errTombstoneNoop
 		}
-		// L1: only retained id links, validated before locks or writes.
-		s := tombstoneErasureSubject(id)
-		if err := captureErasureSetsIn(tx, &s); err != nil {
-			return err
-		}
-		if err := validatePersIn(tx, s); err != nil {
-			return err
-		}
-		homes, err := lockErasureHouseholdsIn(tx, s)
-		if err != nil {
-			return err // NOWAIT 55P03 rolls back whole; the job retries later.
-		}
-		// L2 before L3 prevents the users trigger from queuing device notices.
-		if err := eraseAccountCredentialsIn(tx, s); err != nil {
-			return err
-		}
-		if err := scrubTombstoneRowIn(tx, id); err != nil {
-			return err
-		}
-		// L4 is named maintenance even when avatar_key is empty: only the
-		// storage scan can find leftover blobs. At most one queued job.
-		if err := queueAvatarCleanup(tx, id); err != nil {
-			return err
-		}
-		// L5-L8. System actor; reasons remain under the separate T07B gate.
-		if err := eraseAccountRequestsIn(tx, s, 0); err != nil {
-			return err
-		}
-		if err := tx.Where("user_id = ?", id).Delete(&models.Notification{}).Error; err != nil {
-			return err
-		}
-		if err := eraseConsentEvidenceIn(tx, s); err != nil {
-			return err
-		}
-		if err := eraseContactRequestTextIn(tx, s); err != nil {
-			return err
-		}
-		// L9 re-evaluates every locked household, even when its other erased
-		// owner already has a sweep marker. Markers never authorize ownership.
-		hh, err := a.eraseHouseholdRecordsIn(tx, s, homes, 0, "")
+		// L1-L14, with a system actor and no address: the old handler lost it,
+		// and neither audit text nor a later holder proves ownership (O-17).
+		// A NOWAIT 55P03 on a household rolls back whole; the job retries later.
+		counts, err := a.eraseAccountIn(tx, erasureSubject{ID: id}, erasureOptions{})
 		if err != nil {
 			return err
 		}
-		report.HouseholdsKept = hh.HouseholdsKept
-		// L10-L11 skip all address arms; each UPDATE selects unfinished work.
-		if err := a.promoteOnDisable(tx, id, false); err != nil {
-			return err
-		}
-		if err := eraseDependentRecordsIn(tx, s, 0, ""); err != nil {
-			return err
-		}
-		// L12: hostIDs and EventKeepsHost already ignore tombstones. There
-		// can be no successor choice here, so remove each stale host row with
-		// R4-H's audit, without changing the event or inventing a handoff.
-		// Lock-order review: handOffHosting (including removeDeletedHostRows),
-		// apiRemoveEventHost, apiDeleteEvent and deleteGroup all hold the same
-		// exclusive contact gate as this sweep, so their multi-row deletes
-		// cannot interleave here. The ungated apiAddEventHost cleanup holds
-		// live users FOR SHARE and one event FOR KEY SHARE, then deletes only
-		// that event's stale seats. It holds no tombstone user lock and cannot
-		// hold another event's seat while waiting for this user's seat. There
-		// is at most one (event_id, user_id) row. Creation inserts live hosts
-		// only. No event lock is added after the sweep's user lock: doing so
-		// would reverse deletionHostPlan's event-before-user order. This does
-		// not claim the whole erasure is deadlock-free (throttle limit D2);
-		// any 40P01 still returns unchanged for the job runner to retry.
-		var hosts []uint
-		if err := tx.Raw(`DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id`, id).Scan(&hosts).Error; err != nil {
-			return err
-		}
-		sort.Slice(hosts, func(i, j int) bool { return hosts[i] < hosts[j] })
-		for _, eventID := range hosts {
-			if err := audit.Write(tx, audit.Entry{Action: audit.EventHostRemoved,
-				TargetType: "event", TargetID: eventID,
-				Meta: map[string]any{"userId": id, "reason": "deleted_host_cleanup"}}); err != nil {
-				return err
-			}
-		}
-		// L13-L14 preserve every audit/IP retention gate and delete id keys only.
-		ac, err := eraseAuditDetailsIn(tx, s)
-		if err != nil {
-			return err
-		}
-		report.ActivityEntriesKept = newErasureReport(hh, ac).ActivityEntriesKept
-		if err := eraseOwnedThrottleKeysIn(tx, s); err != nil {
-			return err
-		}
+		report.HouseholdsKept = counts.Households.HouseholdsKept
+		report.ActivityEntriesKept = newErasureReport(counts.Households, counts.Audit).ActivityEntriesKept
 		// Old deletion hard-deleted memberships. Unexpected rows are reported,
 		// never transferred or deleted by a sweep that cannot choose a leader.
 		if err := tx.Model(&models.Membership{}).Where("user_id = ?", id).Count(&report.MembershipsKept).Error; err != nil {
@@ -212,6 +128,36 @@ func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tom
 		return tombstoneReport{}, err
 	}
 	return report, nil
+}
+
+// removeTombstoneHostRowsIn is L12: hostIDs and EventKeepsHost already ignore
+// tombstones. There can be no successor choice here, so each stale host row is
+// removed with R4-H's audit, without changing the event or inventing a
+// handoff. Lock-order review: handOffHosting (including removeDeletedHostRows),
+// apiRemoveEventHost, apiDeleteEvent and deleteGroup all hold the same
+// exclusive contact gate as this sweep, so their multi-row deletes cannot
+// interleave here. The ungated apiAddEventHost cleanup holds live users FOR
+// SHARE and one event FOR KEY SHARE, then deletes only that event's stale
+// seats. It holds no tombstone user lock and cannot hold another event's seat
+// while waiting for this user's seat. There is at most one (event_id, user_id)
+// row. Creation inserts live hosts only. No event lock is added after the
+// sweep's user lock: doing so would reverse deletionHostPlan's event-before-user
+// order. This does not claim the whole erasure is deadlock-free (throttle limit
+// D2); any 40P01 still returns unchanged for the job runner to retry.
+func removeTombstoneHostRowsIn(tx *gorm.DB, id uint) error {
+	var hosts []uint
+	if err := tx.Raw(`DELETE FROM event_hosts WHERE user_id = ? RETURNING event_id`, id).Scan(&hosts).Error; err != nil {
+		return err
+	}
+	sort.Slice(hosts, func(i, j int) bool { return hosts[i] < hosts[j] })
+	for _, eventID := range hosts {
+		if err := audit.Write(tx, audit.Entry{Action: audit.EventHostRemoved,
+			TargetType: "event", TargetID: eventID,
+			Meta: map[string]any{"userId": id, "reason": "deleted_host_cleanup"}}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Bump the version only when a reviewed erasure slice adds work. Markers,

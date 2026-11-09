@@ -3495,7 +3495,7 @@ func TestReasonConsumeMemoryDoesNotScaleWithClaim(t *testing.T) {
 			err := s.app.DB.Transaction(func(tx *gorm.DB) error {
 				env := reasonEnvelope{kind: reasonEnvelopeNew, count: claim, choices: choices}
 				var err error
-				used = allocated(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+				used = allocated(func() { _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
 				if !errors.Is(err, errReasonReviewChanged) {
 					t.Fatalf("claim of %d: %v, want errReasonReviewChanged", claim, err)
 				}
@@ -3602,7 +3602,7 @@ func TestReasonConsumePeakMemoryOnLargeSets(t *testing.T) {
 		env := reasonEnvelope{kind: reasonEnvelopeNew, count: uint64(n), choices: make([]byte, (n+3)/4)}
 		err := s.app.DB.Transaction(func(tx *gorm.DB) error {
 			var err error
-			p.consume = peakHeapGrowth(func() { _, _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
+			p.consume = peakHeapGrowth(func() { _, err = s.app.planReasonReviewIn(tx, &actor, &target, env, "") })
 			if !errors.Is(err, errReasonReviewChanged) {
 				t.Fatalf("consume of %d: %v, want errReasonReviewChanged", n, err)
 			}

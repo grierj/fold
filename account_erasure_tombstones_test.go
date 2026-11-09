@@ -401,7 +401,7 @@ func TestTombstoneUnavailableAddressNeverBindsAnAddress(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Callback().Row().Remove(name) })
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		subject := tombstoneErasureSubject(u.ID)
+		subject := erasureSubject{ID: u.ID}
 		// Poison the unavailable value to catch a helper that ignores ok.
 		subject.Address.value = "poison@x.test"
 		if err := captureErasureSetsIn(tx, &subject); err != nil {
@@ -410,10 +410,10 @@ func TestTombstoneUnavailableAddressNeverBindsAnAddress(t *testing.T) {
 		if len(subject.Requests) != 0 || len(subject.Invitations) != 0 {
 			t.Errorf("address-only rows selected: %+v", subject)
 		}
-		if err := eraseAccountRequestsIn(tx, subject, 0); err != nil {
+		if err := eraseAccountRequestsIn(tx, subject, nil); err != nil {
 			return err
 		}
-		if err := eraseDependentRecordsIn(tx, subject, 0, ""); err != nil {
+		if err := eraseDependentRecordsIn(tx, subject, nil, ""); err != nil {
 			return err
 		}
 		if err := eraseConsentEvidenceIn(tx, subject); err != nil {
@@ -795,7 +795,7 @@ func TestTombstoneScrubRowHasNoTriggerEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.app.DB.Transaction(func(tx *gorm.DB) error {
-		if err := eraseAccountCredentialsIn(tx, tombstoneErasureSubject(u.ID)); err != nil {
+		if err := eraseAccountCredentialsIn(tx, erasureSubject{ID: u.ID}); err != nil {
 			return err
 		}
 		before := tombstoneDatabase(t, tx)
