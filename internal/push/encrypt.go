@@ -50,8 +50,6 @@ func ValidKeys(p256dh, auth string) error {
 	return nil
 }
 
-// Encrypt encrypts plaintext for the subscription's keys with a fresh
-// sender key and salt, returning the request body.
 func Encrypt(plaintext []byte, p256dh, auth string) ([]byte, error) {
 	sender, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {

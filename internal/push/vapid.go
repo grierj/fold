@@ -20,7 +20,6 @@ import (
 // hours; push services reject tokens near that limit when clocks drift.
 const tokenLifetime = 12 * time.Hour
 
-// GenerateKey makes a new VAPID key pair (P-256).
 func GenerateKey() (*ecdsa.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
@@ -39,7 +38,6 @@ func PublicKey(key *ecdsa.PrivateKey) (string, error) {
 // encrypted. ParsePrivateKey reads it back.
 func MarshalPrivateKey(key *ecdsa.PrivateKey) ([]byte, error) { return key.Bytes() }
 
-// ParsePrivateKey reads a key MarshalPrivateKey wrote.
 func ParsePrivateKey(raw []byte) (*ecdsa.PrivateKey, error) {
 	return ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
 }
@@ -76,7 +74,6 @@ func vapidHeader(key *ecdsa.PrivateKey, endpoint, subject string, now time.Time)
 	return "vapid t=" + token + ", k=" + pub, nil
 }
 
-// signToken is the compact ES256 JWT {aud, exp, sub}.
 func signToken(key *ecdsa.PrivateKey, aud, sub string, exp time.Time) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"JWT","alg":"ES256"}`))
 	claims, err := json.Marshal(struct {

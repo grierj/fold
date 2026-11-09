@@ -38,7 +38,6 @@ func visWord(v string) string {
 // variant, which names nobody.
 // ---------------------------------------------------------------------------
 
-// clipRunes keeps at most n runes of s (a request header we store).
 func clipRunes(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n])

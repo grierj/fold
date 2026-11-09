@@ -52,7 +52,6 @@ var (
 // reminder row, which the reaper reads in SQL.
 const pushJobRecipientField = "messageRecipientId"
 
-// pushNotificationKey queues one notification for one device, once.
 func pushNotificationKey(notificationID, deviceID uint) string {
 	return "push:n:" + idString(notificationID) + ":d:" + idString(deviceID)
 }

@@ -41,14 +41,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// Name is the GORM plugin name.
 const Name = "txguard"
 
 // ErrNotInstalled: the database handle was opened without Plugin, so rollbacks
 // are not watched and a Span would prove nothing.
 var ErrNotInstalled = errors.New("txguard: this database handle was opened without txguard.Plugin")
 
-// ErrNoTransaction: a Span is about one transaction.
 var ErrNoTransaction = errors.New("txguard: not in a transaction")
 
 // Plugin installs the statement watcher. Pass it to db.Use on every gorm.DB
@@ -71,7 +69,6 @@ func (Plugin) Initialize(db *gorm.DB) error {
 	return cb.Query().Before("gorm:query").Register(Name+":query", observeUnconfirmed)
 }
 
-// Installed reports whether db was opened with Plugin.
 func Installed(db *gorm.DB) bool {
 	if db == nil || db.Config == nil {
 		return false
@@ -346,7 +343,6 @@ func savepointName(sql string) (string, bool) {
 	return "", false
 }
 
-// created records a savepoint PostgreSQL has made since Begin.
 func (s *Span) created(name string) {
 	s.mu.Lock()
 	s.stack = append(s.stack, name)

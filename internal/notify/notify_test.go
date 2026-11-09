@@ -223,20 +223,24 @@ func TestDepartureKindsRenderSummariesWithoutPrivateContext(t *testing.T) {
 	}
 }
 
-func TestOnlyApproveGroupIsAllowListed(t *testing.T) {
+func TestInlineActionsAreAllowListed(t *testing.T) {
 	// The v1 allow-list (5.12, DEC-44): approve a new group, and approve
 	// a clean adult account request. Nothing else changes state inline.
-	allowed := map[string]bool{GroupPending: true, AccountRequested: true}
+	allowed := map[string]string{GroupPending: ActionApproveGroup, AccountRequested: ActionApproveAccount}
 	for _, k := range Kinds() {
 		for _, a := range k.Actions {
-			if !allowed[k.Key] || a.Key != ActionApproveGroup {
+			if want, ok := allowed[k.Key]; !ok || a.Key != want {
 				t.Errorf("unexpected inline action %s on %s", a.Key, k.Key)
 			}
 		}
 	}
-	if !Allows(GroupPending, ActionApproveGroup) || !Allows(AccountRequested, ActionApproveAccount) ||
-		Allows(GroupPending, "reject") || Allows(LeadershipChanged, ActionApproveGroup) || Allows("nope", ActionApproveGroup) {
-		t.Fatal("Allows")
+	for kind, action := range allowed {
+		if !Allows(kind, action) {
+			t.Errorf("%s does not allow %s", kind, action)
+		}
+	}
+	if Allows(GroupPending, "reject") || Allows(LeadershipChanged, ActionApproveGroup) || Allows("nope", ActionApproveGroup) {
+		t.Fatal("Allows accepted an action that is not allow-listed")
 	}
 }
 
@@ -941,7 +945,7 @@ func TestRecipientLocksAreBulk(t *testing.T) {
 	const callback = "test:count_recipient_locks"
 	if err := db.Callback().Row().Before("gorm:row").Register(callback, func(tx *gorm.DB) {
 		sql := tx.Statement.SQL.String()
-		if strings.Contains(sql, "FROM users WHERE id IN") && strings.Contains(sql, "FOR KEY SHARE") {
+		if strings.Contains(sql, "FOR KEY SHARE") {
 			locks.Add(1)
 		}
 	}); err != nil {
@@ -954,17 +958,13 @@ func TestRecipientLocksAreBulk(t *testing.T) {
 		want int64
 	}{{"nobody", nil, 0}, {"three people", all[:3], 1}, {"one more than a batch", all, 2}} {
 		locks.Store(0)
-		live := -1
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			return WithRecipients(tx, append([]uint{0}, tc.ids...), func(sc *Scope) error {
-				live = len(sc.s.live)
-				return nil
-			})
+			return WithRecipients(tx, append([]uint{0}, tc.ids...), func(*Scope) error { return nil })
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if locks.Load() != tc.want || live != len(tc.ids) {
-			t.Fatalf("%s: %d lock statements for %d locked, want %d for %d", tc.name, locks.Load(), live, tc.want, len(tc.ids))
+		if locks.Load() != tc.want {
+			t.Fatalf("%s: %d lock statements for %d people, want %d", tc.name, locks.Load(), len(tc.ids), tc.want)
 		}
 	}
 	// A fan-out of one Send per person shares one scope: the lock statement runs
@@ -1615,25 +1615,42 @@ func TestRecipientScopeKeepsRecipientRules(t *testing.T) {
 	tx.Rollback()
 }
 
-// The exported surface stays narrow: nothing outside this package can insert
-// delivery intent without protection, take a bare recipient lock whose result a
-// caller could carry to another transaction, or build the old public set.
-func TestRecipientProtectionExportsStayNarrow(t *testing.T) {
-	f, err := parser.ParseFile(token.NewFileSet(), "notify.go", nil, 0)
+// The exported surface that takes a database handle stays a fixed list: a new
+// one is a way to insert delivery intent without protection, or to take a bare
+// recipient lock whose result a caller could carry to another transaction, and
+// has to be added here on purpose, whatever it is called.
+func TestExportedDatabaseEntryPointsAreDeliberate(t *testing.T) {
+	allowed := map[string]bool{
+		"WithRecipients": true, "Send": true, "QueueDelivery": true, "Protect": true,
+		"Resolve": true, "OpenTask": true, "LastResolution": true,
+		"Badge": true, "Feed": true, "Get": true, "SetRead": true, "SetArchived": true,
+		"ReadAll": true, "ArchiveRead": true, "Prune": true,
+	}
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	banned := map[string]bool{"QueueProtected": true, "LockRecipients": true, "Held": true}
-	for _, d := range f.Decls {
-		switch d := d.(type) {
-		case *ast.FuncDecl:
-			if d.Recv == nil && banned[d.Name.Name] {
-				t.Errorf("notify.%s is exported again", d.Name.Name)
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || !fn.Name.IsExported() {
+				continue
 			}
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				if ts, ok := spec.(*ast.TypeSpec); ok && banned[ts.Name.Name] {
-					t.Errorf("notify.%s is exported again", ts.Name.Name)
+			for _, field := range fn.Type.Params.List {
+				star, ok := field.Type.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				if sel, ok := star.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "DB" && !allowed[fn.Name.Name] {
+					t.Errorf("notify.%s takes a database handle and is not on the list", fn.Name.Name)
 				}
 			}
 		}

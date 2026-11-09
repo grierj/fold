@@ -100,7 +100,6 @@ func (a *App) reminderKinds() []jobs.Kind {
 		}}}
 }
 
-// hourlyKinds are queued once an hour (jobs_daily.go).
 func (a *App) hourlyKinds() []jobs.Kind {
 	return []jobs.Kind{{Type: jobs.Type{Name: kindReminderSweep}, Hourly: true, Label: "Lining up event reminders",
 		Run: func(ctx context.Context, _ json.RawMessage) error { return a.sweepReminders(ctx, time.Now()) }},
@@ -265,7 +264,6 @@ func reminderText(kind, place string, minutes int) (string, string) {
 			"<p>Can't make it? Change your RSVP, so someone else can have your spot.</p>"
 }
 
-// reminderStatus is the registration status a reminder kind is for.
 func reminderStatus(kind string) string {
 	if kind == reminderWaitlist {
 		return models.RegWaitlisted

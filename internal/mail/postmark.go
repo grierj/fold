@@ -38,7 +38,6 @@ const (
 	defaultPostmarkBroadcast     = "broadcast"
 )
 
-// NewPostmark builds the adapter. Empty stream ids take the defaults.
 func NewPostmark(token, from, transactional, broadcast string) (*Postmark, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("mail: Postmark needs FOLD_POSTMARK_SERVER_TOKEN (the server's API token)")

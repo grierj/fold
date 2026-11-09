@@ -20,7 +20,6 @@ import (
 // processes may queue it; the key keeps it to one run, and a restart later
 // the same day doesn't run it again.
 
-// doneJobsKept is how long finished jobs stay in the table.
 const doneJobsKept = 30 * 24 * time.Hour
 
 // kindOccurrencesExtend also runs once at every start (startJobs).
@@ -229,7 +228,6 @@ func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
 	}
 }
 
-// backgroundKinds are the job kinds queued by events, not by the day.
 func (a *App) backgroundKinds() []jobs.Kind {
 	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds(), a.notifyKinds(), a.mailKinds(), a.avatarKinds(), a.erasureKinds())
 }
