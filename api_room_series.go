@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -71,89 +70,11 @@ type seriesBookingJSON struct {
 	Pending int `json:"pending"`
 }
 
-// timeWindow is one date's unpadded time.
-type timeWindow struct{ start, end time.Time }
-
-// busyDates counts, per room, how many of the dates another confirmed
-// booking holds the room on, padded by the room's own setup and teardown
-// (DEC-101). One read fetches the confirmed bookings near the dates, then a
-// sweep: a room's bookings sorted by start, with the latest end so far, make
-// each date one binary search. Bookings of eventID's own dates don't count.
-func busyDates(db *gorm.DB, rooms []models.Room, windows []timeWindow, eventID uint) (map[uint]int, error) {
-	out := map[uint]int{}
-	if len(windows) == 0 || len(rooms) == 0 {
-		return out, nil
-	}
-	first, last := windows[0].start, windows[0].end
-	for _, w := range windows {
-		if w.start.Before(first) {
-			first = w.start
-		}
-		if w.end.After(last) {
-			last = w.end
-		}
-	}
-	// Both sides' padding is at most maxRoomPadding, so nothing further out
-	// can overlap.
-	slack := 2 * time.Duration(maxRoomPadding) * time.Minute
-	var rows []struct {
-		RoomID uint
-		Lo, Hi time.Time
-	}
-	if err := db.Raw(`SELECT b.room_id, lower(b.padded_range) AS lo, upper(b.padded_range) AS hi FROM room_bookings b
-		WHERE b.status = ? AND b.starts_at < ? AND b.ends_at > ?
-		AND NOT EXISTS (SELECT 1 FROM event_occurrences o WHERE o.id = b.occurrence_id AND o.event_id = ?)
-		ORDER BY b.room_id, lower(b.padded_range)`,
-		models.BookingConfirmed, last.Add(slack), first.Add(-slack), eventID).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	type held struct {
-		starts []time.Time
-		latest []time.Time // latest[i]: the latest end among bookings 0..i
-	}
-	byRoom := map[uint]*held{}
-	for _, r := range rows {
-		h := byRoom[r.RoomID]
-		if h == nil {
-			h = &held{}
-			byRoom[r.RoomID] = h
-		}
-		latest := r.Hi
-		if n := len(h.latest); n > 0 && h.latest[n-1].After(latest) {
-			latest = h.latest[n-1]
-		}
-		h.starts = append(h.starts, r.Lo)
-		h.latest = append(h.latest, latest)
-	}
-	for _, room := range rooms {
-		h := byRoom[room.ID]
-		if h == nil {
-			continue
-		}
-		setup := time.Duration(room.DefaultSetupMinutes) * time.Minute
-		teardown := time.Duration(room.DefaultTeardownMinutes) * time.Minute
-		for _, w := range windows {
-			from, to := w.start.Add(-setup), w.end.Add(teardown)
-			// Bookings starting before this date's padded end overlap it if
-			// any of them ends after its padded start (ranges are [lo, hi)).
-			n := sort.Search(len(h.starts), func(i int) bool { return !h.starts[i].Before(to) })
-			if n > 0 && h.latest[n-1].After(from) {
-				out[room.ID]++
-			}
-		}
-	}
-	return out, nil
-}
-
 // roomChoices lists the active rooms p may book for the given dates, with
 // how many of them each room is busy on. Bookings of eventID's own dates
 // don't count: re-picking a series' room never finds it busy with itself.
-func roomChoices(db *gorm.DB, p *policy.Person, windows []timeWindow, eventID uint, capacity *int) ([]seriesRoomJSON, error) {
-	var rooms []models.Room
-	if err := db.Where("active").Order("lower(building), lower(name)").Find(&rooms).Error; err != nil {
-		return nil, err
-	}
-	busy, err := busyDates(db, rooms, windows, eventID)
+func roomChoices(db *gorm.DB, p *policy.Person, windows []rooms.Window, eventID uint, capacity *int) ([]seriesRoomJSON, error) {
+	list, busy, err := activeRoomsBusy(db, windows, eventID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +83,7 @@ func roomChoices(db *gorm.DB, p *policy.Person, windows []timeWindow, eventID ui
 		want = *capacity
 	}
 	out := []seriesRoomJSON{}
-	for _, r := range rooms {
+	for _, r := range list {
 		if !policy.CanBookRoom(p, true, r.Restricted) {
 			continue
 		}
@@ -185,11 +106,11 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	windows := make([]timeWindow, len(occs))
+	windows := make([]rooms.Window, len(occs))
 	for i, o := range occs {
-		windows[i] = timeWindow{o.StartsAt, o.EndsAt}
+		windows[i] = rooms.Window{Start: o.StartsAt, End: o.EndsAt}
 	}
-	rooms, err := roomChoices(a.DB, asPerson(apiUser(c)), windows, ev.ID, ev.Capacity)
+	choices, err := roomChoices(a.DB, asPerson(apiUser(c)), windows, ev.ID, ev.Capacity)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
@@ -216,8 +137,8 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 		}
 	}
 	suggestions := a.roomSuggestions(suggestFor{person: asPerson(apiUser(c)), eventID: ev.ID, groupID: ev.GroupID,
-		visibility: ev.Visibility, capacity: ev.Capacity, windows: windowsOf(occs)}, offeredRooms(rooms))
-	c.JSON(http.StatusOK, seriesRoomsJSON{Rooms: rooms, Dates: len(occs), DefaultRoom: a.seriesRoom(ev), NeedsRoom: needs, Pending: pending, Suggestions: suggestions})
+		visibility: ev.Visibility, capacity: ev.Capacity, windows: windowsOf(occs)}, offeredRooms(choices))
+	c.JSON(http.StatusOK, seriesRoomsJSON{Rooms: choices, Dates: len(occs), DefaultRoom: a.seriesRoom(ev), NeedsRoom: needs, Pending: pending, Suggestions: suggestions})
 }
 
 // seriesRoom is the event's series room, or nil.
@@ -250,7 +171,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(body.OverlapReason)
 	if utf8.RuneCountInString(reason) > maxOverlapReason {
-		fail(c, errReasonTooLong500)
+		fail(c, errOverlapReasonTooLong)
 		return
 	}
 	user := apiUser(c)
@@ -587,10 +508,9 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	windows, upcoming := []timeWindow{}, []rooms.Window{}
+	upcoming := []rooms.Window{}
 	for _, w := range whens {
 		if w.StartsAt.After(now) {
-			windows = append(windows, timeWindow{w.StartsAt, w.EndsAt})
 			upcoming = append(upcoming, rooms.Window{Start: w.StartsAt, End: w.EndsAt})
 		}
 	}
@@ -599,7 +519,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	list, err := roomChoices(a.DB, asPerson(me), windows, 0, ed.cap)
+	list, err := roomChoices(a.DB, asPerson(me), upcoming, 0, ed.cap)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
@@ -608,7 +528,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 	// picked on the form (DEC-110).
 	suggestions := a.roomSuggestions(suggestFor{person: asPerson(me), groupID: body.GroupID,
 		visibility: createVisibility(body.Visibility, group), capacity: ed.cap, windows: upcoming, tags: groupTags(group)}, offeredRooms(list))
-	c.JSON(http.StatusOK, roomsCheckJSON{Rooms: list, Dates: len(windows), Suggestions: suggestions})
+	c.JSON(http.StatusOK, roomsCheckJSON{Rooms: list, Dates: len(upcoming), Suggestions: suggestions})
 }
 
 // bookCreatedSeries books the room picked on a create form for every date

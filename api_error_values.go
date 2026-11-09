@@ -9,6 +9,7 @@ import (
 
 	"fold/internal/events"
 	"fold/internal/policy"
+	"fold/internal/rooms"
 )
 
 // Coded API errors whose message has no other home (api_errors.go says how
@@ -58,7 +59,7 @@ var (
 	errHouseholdRegistrationHolderUnavailable = apiErr(http.StatusConflict, "household_registration_holder_unavailable", "the responsible account cannot register this person; ask your church office to check their account and household")
 	errHouseholdRemoteChildcare               = apiErr(http.StatusConflict, "household_remote_childcare", "remote attendees cannot request childcare; clear the childcare choice first")
 	errInvalidRoomCapacity                    = apiErr(http.StatusBadRequest, "invalid", "room capacity must be a whole number from 1 to 100000")
-	errInvalidSetupMinutes                    = apiErr(http.StatusBadRequest, "invalid", "setup and cleanup minutes must be from 0 to 240")
+	errInvalidSetupMinutes                    = apiErr(http.StatusBadRequest, "invalid", fmt.Sprintf("setup and cleanup minutes must be from 0 to %d", rooms.MaxPaddingMinutes))
 	errInvalidAttendanceMode                  = apiErr(http.StatusBadRequest, "invalid_attendance_mode", "attendanceMode must be in_person or remote")
 	errInvalidBirthDate                       = apiErr(http.StatusBadRequest, "invalid_birth_date", "birth date must be a real date (YYYY-MM-DD)")
 	errInvalidCapacity                        = apiErr(http.StatusBadRequest, "invalid_capacity", "capacity must be a positive whole number, or empty for no limit")
@@ -147,7 +148,7 @@ var (
 	errReasonTooLong                          = apiErr(http.StatusBadRequest, "too_long", "reason is too long")
 	errRecurrenceRuleTooLong                  = apiErr(http.StatusBadRequest, "too_long", "recurrence rule is too long")
 	errTagsTooLong                            = apiErr(http.StatusBadRequest, "too_long", "tags are too long")
-	errReasonTooLong500                       = apiErr(http.StatusBadRequest, "too_long", "the reason must be 500 characters or fewer")
+	errOverlapReasonTooLong                   = apiErr(http.StatusBadRequest, "too_long", fmt.Sprintf("the reason must be %d characters or fewer", maxOverlapReason))
 	errTitleTooLong                           = apiErr(http.StatusBadRequest, "too_long", "title is too long")
 	errVideoLinkTooLong                       = apiErr(http.StatusBadRequest, "too_long", "video link is too long")
 	errUnder13                                = apiErr(http.StatusBadRequest, "under_13", "Fold accounts start at 13. A parent or guardian can add a younger child to their household and sign them up for events.")

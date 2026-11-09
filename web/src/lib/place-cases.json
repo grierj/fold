@@ -1,0 +1,11 @@
+[
+  { "name": "no room, typed place", "room": null, "location": "Room 201", "want": "Room 201" },
+  { "name": "no room, no place", "room": null, "location": "", "want": "" },
+  { "name": "room with building", "room": { "name": "Fellowship Hall", "building": "Main" }, "location": "", "want": "Fellowship Hall · Main" },
+  { "name": "room without building", "room": { "name": "Fellowship Hall", "building": "" }, "location": "", "want": "Fellowship Hall" },
+  { "name": "typed detail follows the room", "room": { "name": "Fellowship Hall", "building": "Main" }, "location": "north door", "want": "Fellowship Hall · Main · north door" },
+  { "name": "typed detail follows a room with no building", "room": { "name": "Fellowship Hall", "building": "" }, "location": "north door", "want": "Fellowship Hall · north door" },
+  { "name": "typed place that is the room name is not repeated", "room": { "name": "Fellowship Hall", "building": "Main" }, "location": " fellowship hall ", "want": "Fellowship Hall · Main" },
+  { "name": "typed place that is the whole line is not repeated", "room": { "name": "Fellowship Hall", "building": "Main" }, "location": "Fellowship Hall · Main", "want": "Fellowship Hall · Main" },
+  { "name": "typed place that only starts like the room is kept", "room": { "name": "Fellowship Hall", "building": "Main" }, "location": "Fellowship Hall annex", "want": "Fellowship Hall · Main · Fellowship Hall annex" }
+]
