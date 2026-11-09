@@ -61,13 +61,27 @@ export function badgeParts(iso: string, zone = browserTimeZone()): { month: stri
   return { month: fmt(iso, zone, { month: "short" }), day: fmt(iso, zone, { day: "numeric" }) };
 }
 
+// Building an Intl.DateTimeFormat is the slow part and formatting with one is
+// cheap. The zone picker names every IANA zone (about 420) each time it mounts,
+// so it reuses one formatter per zone instead of making a few hundred each time.
+const zoneNameFormats = new Map<string, Intl.DateTimeFormat>();
+function zoneNameFormat(locale: string | undefined, tz: string, style: "longGeneric" | "long" | "shortOffset"): Intl.DateTimeFormat {
+  const key = `${locale ?? ""}|${tz}|${style}`;
+  let f = zoneNameFormats.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style });
+    zoneNameFormats.set(key, f);
+  }
+  return f;
+}
+
 // The zone's generic name in the reader's language ("Pacific Time"), the
 // same in summer and winter, so it matches "the clock stays put". Falls back
 // to the long name, then to nothing, if the browser can't name it.
 export function zoneGenericName(tz: string, locale?: string): string {
   for (const style of ["longGeneric", "long"] as const) {
     try {
-      const part = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style })
+      const part = zoneNameFormat(locale, tz, style)
         .formatToParts(new Date())
         .find((p) => p.type === "timeZoneName");
       if (part?.value) return part.value;
@@ -134,7 +148,7 @@ export function zoneNote(tzid: string): string {
 // show and search time zones by offset.
 export function zoneOffset(tz: string, at: Date = new Date()): string {
   try {
-    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+    const part = zoneNameFormat("en-US", tz, "shortOffset")
       .formatToParts(at)
       .find((p) => p.type === "timeZoneName");
     const v = part?.value ?? "";
