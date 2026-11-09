@@ -1938,6 +1938,7 @@ var reasonCensusPinned = map[string][]string{
 	},
 	"auditReaders": {
 		"account_erasure.go:captureErasureSetsIn",
+		"account_erasure_audit.go:auditRetentionReportSQL",
 		"account_erasure_audit.go:discoverAuditConversionsIn",
 		"account_erasure_audit.go:eraseAuditDetailsIn",
 		"account_erasure_tombstones.go:eraseTombstoneOnce",

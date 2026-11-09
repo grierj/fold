@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KEEP, REMOVE, ReasonReviewStore } from "../lib/reasonReviewStore";
 import type { ErasureReasonItem } from "../types";
+import { QC1_WEB } from "../test/qc1Facts";
 import { ReasonProgress, ReasonReviewSection, ReasonSummary } from "./ReasonReviewSection";
 
 // Reasons shown per page.
@@ -207,5 +208,79 @@ describe("ReasonProgress and ReasonSummary", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The QC-1 harness drives the deletion panel in a real browser by the selectors, labels and copy in
+// deploy/digitalocean/qc1/app-facts.json ("web"). These tests hold that file equal to what the components
+// render. The users list and the panel's own copy are held by Admin.test.tsx and DeleteUserPanel.test.tsx.
+const F = QC1_WEB;
+
+const showWithProgress = (store: ReasonReviewStore, loading = false) =>
+  render(
+    <>
+      <ReasonReviewSection store={store} disabled={false} loading={loading} jump={null} />
+      <ReasonProgress store={store} done={!loading} />
+    </>,
+  );
+
+describe("what the QC-1 harness drives in the reason review", () => {
+  it("renders the reason rows the harness counts, each with its id and heading", () => {
+    show(filled(120));
+    const rows = document.querySelectorAll(F.reasonRows);
+    expect(rows).toHaveLength(F.displayPage);
+    expect(rows[0].getAttribute(F.reasonIdAttr)).toBe("1");
+    expect(rows[0].querySelector(`[${F.reasonHeadingAttr}="0"]`)).not.toBeNull();
+    // Nothing is preselected, and every row says so in the words the harness waits to disappear.
+    for (const row of rows) expect(row.textContent).toContain(F.copy.notChosen);
+  });
+
+  it("renders the changed notice the harness waits on", () => {
+    const store = filled(60);
+    store.reset(store.carry());
+    store.appendPage(Array.from({ length: 60 }, (_, i) => item(i + 1)));
+    show(store);
+    const rows = document.querySelectorAll(F.reasonRows);
+    expect(rows[0].textContent).toContain(F.copy.changed);
+  });
+
+  it("renders the pager line, its loading form, and the controls the harness presses", () => {
+    const { unmount } = showWithProgress(filled(120));
+    expect(document.querySelector(F.reasonsNav)?.textContent).toBe(`Reasons 1 to ${F.displayPage} ${F.navOfDone}120`);
+    expect(screen.getByRole("button", { name: `Next ${F.displayPage}` })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `Previous ${F.displayPage}` })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: F.labels.nextUnchosen })).toBeInTheDocument();
+    expect(screen.getByLabelText(F.labels.goToReason)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: new RegExp(`^${F.labels.goButton}$`) })).toBeInTheDocument();
+    unmount();
+    showWithProgress(filled(120), true);
+    expect(document.querySelector(F.reasonsNav)?.textContent).toBe(`Reasons 1 to ${F.displayPage} ${F.navOfLoading}120`);
+  });
+
+  it("offers the changed-reason control by its label once one is open", () => {
+    const store = filled(60);
+    store.reset(store.carry());
+    store.appendPage(Array.from({ length: 60 }, (_, i) => item(i + 1)));
+    show(store);
+    expect(screen.getByRole("button", { name: F.labels.nextChanged })).toBeInTheDocument();
+  });
+
+  it("gives every row the Keep and Blank radios the harness checks, and a remove value it can click", () => {
+    show(filled(120));
+    const row = document.querySelector(F.reasonRows) as HTMLElement;
+    expect(within(row).getByRole("radio", { name: F.labels.keepText })).toBeInTheDocument();
+    expect(within(row).getByRole("radio", { name: F.labels.blankText })).toBeInTheDocument();
+    expect(row.querySelector(`input[type="radio"][value="${F.radioRemoveValue}"]`)).not.toBeNull();
+  });
+
+  it("shows the progress line where the harness looks for it, in the forms it recognizes", () => {
+    const pattern = new RegExp(F.progressPattern);
+    const store = filled(120);
+    const { unmount } = showWithProgress(store, true);
+    const progress = () => [...document.querySelectorAll(F.progressSelector)].map((p) => p.textContent ?? "").find((t) => pattern.test(t));
+    expect(progress()).toMatch(/chosen of 120 so far\./);
+    unmount();
+    show(store);
+    expect(progress()).toContain(`${F.progressChoose} 120 more reasons.`);
   });
 });

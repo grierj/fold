@@ -513,9 +513,9 @@ done
 # Going offline before the mint is not a way to retain an attempt: the item says so and never asks for it.
 if grep -qiE 'set devtools to offline|go offline before|press delete once with .*offline' <<<"$item_text"; then echo 'first-church item asks for the offline switch' >&2; exit 1; fi
 # The words the panel shows are the ones the item quotes, and the buttons it names exist.
-history_copy="$(sed -n 's/^const HISTORY_COPY = "\(.*\)";$/\1/p' "$ROOT/web/src/components/DeleteUserPanel.tsx")"
+# The panel's copy and buttons come from the application facts (DeleteUserPanel.test.tsx holds them equal to what the panel shows and calls).
+history_copy="$(jq -r '.web.copy.historyUnavailable' "$ROOT/deploy/digitalocean/qc1/app-facts.json")"
 [[ -n "$history_copy" ]] && grep -qF -- "$history_copy" <<<"$item_text"
-grep -qF 'Check again' "$ROOT/web/src/components/DeleteUserPanel.tsx"; grep -qF 'AdminUsers.mintAttempt(target.id)' "$ROOT/web/src/components/DeleteUserPanel.tsx"
 # The item says the drill is protocol only.
 grep -qi 'only checks the server protocol with curl' <<<"$item_text"
 

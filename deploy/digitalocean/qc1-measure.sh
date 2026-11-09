@@ -118,7 +118,7 @@ REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 SOURCES="$(qc1_source_hashes "$ROOT")" || { echo 'qc1: a measurement source differs from HEAD' >&2; exit 1; }
 # The body builder is held to the shared vectors before anything is measured with it (its SHA-256 and base64 are independent of the product's).
 SETV1_SELFTEST="$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" || { echo 'qc1: the set-v1 builder disagrees with the shared vectors' >&2; exit 1; }
-MAX_REQUEST_BYTES="$(qc1_max_request_bytes "$ROOT")"
+MAX_REQUEST_BYTES="$(qc1_max_request_bytes)"
 # The browser the item-10 measurement drives: found, launchable and exercised before
 # a stack is built (browser-preflight.mjs, with the same launch the measurement
 # makes). Without it the run would spend hours and still be incomplete, so it stops
@@ -941,7 +941,7 @@ planner_settings() {
 # session (one initial statement and seven continuations at controlled cursor positions, taken as table offsets 0, 10, 25, 40, 55, 70 and 85 per cent), in the
 # application's plan_cache_mode (auto: the sixth and later executions of a prepared statement may switch to a generic plan) and forced generic. Read-only.
 # Production reads a scanner unit in batches (internal/reasonscan: reasonScanBatchFirst, doubling, clipped to reasonUnitRows), so the LIMITs are the ones production sends:
-# the FIRST batch, which almost every page is, and the LARGEST batch of the schedule (both read out of the Go source by qc1_scan_schedule, not typed here). Each (mode, LIMIT)
+# the FIRST batch, which almost every page is, and the LARGEST batch of the schedule (both read from the application facts by qc1_scan_schedule, not typed here). Each (mode, LIMIT)
 # is its own eight executions; every execution says which LIMIT it ran. The probe does not run one 50,000-row statement, because production does not send one.
 # Run while the scenario rows are still in the table. `schema` is where contact_requests is found first: "public" for the table exactly as the matrix left it
 # ("bloated": autovacuum is off and every scenario was loaded and dropped), "qc1_clean" for a VACUUM (ANALYZE)d copy of the same rows. Each execution says which
@@ -949,10 +949,10 @@ planner_settings() {
 scanner_probe() { # schema
   local schema="$1" unit="$QC1_SCANNER_UNIT_ROWS" total pct off id mode meta script out parsed all="[]" sql_init sql_cont limit
   local -a pcts=(0 10 25 40 55 70 85) afters=() sched=() limits=()
-  sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
-  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
-  mapfile -t sched < <(qc1_scan_schedule "$ROOT")
-  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the Go source' >&2; exit 1; }
+  sql_init="$(qc1_scanner_sql initial)"; sql_cont="$(qc1_scanner_sql continuation)"
+  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in the application facts' >&2; exit 1; }
+  mapfile -t sched < <(qc1_scan_schedule)
+  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the application facts' >&2; exit 1; }
   limits=("${sched[0]}"); if (( ${#sched[@]} > 1 )); then limits+=("${sched[${#sched[@]}-1]}"); fi
   total="$(psql_db -q -c "SET search_path = $schema, public" -c 'SELECT count(*) FROM contact_requests')"
   for pct in "${pcts[@]}"; do
@@ -1037,16 +1037,16 @@ capture_plans() { # n
     { printf '=== %s (size %s)\n' "$which" "$n"; qc1_extract_plans "$WORK/pglog-$n.txt" "$which"; } >>"$out"
   done
   counts="$(qc1_plan_counts "$WORK/pglog-$n.txt")"
-  # The generic plans are of the REAL statements: the text is read out of account_erasure_reasons.go (qc1_go_sql), with its real projection, not typed here.
-  sql_init="$(qc1_go_sql "$ROOT" reasonScanInitialSQL)"; sql_cont="$(qc1_go_sql "$ROOT" reasonScanContinuationSQL)"
-  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in account_erasure_reasons.go' >&2; exit 1; }
+  # The generic plans are of the REAL statements: the text is the application facts' (qc1_scanner_sql; TestQC1AppFacts holds it equal to the code), with its real projection, not typed here.
+  sql_init="$(qc1_scanner_sql initial)"; sql_cont="$(qc1_scanner_sql continuation)"
+  [[ -n "$sql_init" && -n "$sql_cont" ]] || { echo 'qc1: the scanner statements are not in the application facts' >&2; exit 1; }
   # The scanner the application runs reads a unit in batches: the schedule is read from the Go source (the same function the probe uses), recorded in the row, and every
   # logged execution's LIMIT is held to it by the judge. Nothing here expects one 50,000-row statement.
-  mapfile -t sched < <(qc1_scan_schedule "$ROOT")
-  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the Go source' >&2; exit 1; }
-  bsched="$(jq -nc --argjson u "$(qc1_go_int "$ROOT" account_erasure_reasons.go reasonUnitRows)" --argjson f "$(qc1_go_int "$ROOT" account_erasure_reasons_scan.go reasonScanBatchFirst)" \
-    --argjson g "$(qc1_go_int "$ROOT" account_erasure_reasons_scan.go reasonScanBatchGrowth)" --argjson l "$(printf '%s\n' "${sched[@]}" | jq -sc 'map(tonumber)')" \
-    '{unitRows:$u, first:$f, growth:$g, limits:$l, source:"reasonUnitRows (account_erasure_reasons.go) and reasonScanBatchFirst, reasonScanBatchGrowth (account_erasure_reasons_scan.go): a unit is read in statements of these LIMITs; a page stops earlier, after the batch that holds its 100th request"}')"
+  mapfile -t sched < <(qc1_scan_schedule)
+  (( ${#sched[@]} >= 1 )) || { echo 'qc1: the scanner batch schedule is not readable from the application facts' >&2; exit 1; }
+  bsched="$(jq -nc --argjson u "$(qc1_fact .go.reasonUnitRows)" --argjson f "$(qc1_fact .go.reasonScanBatchFirst)" \
+    --argjson g "$(qc1_fact .go.reasonScanBatchGrowth)" --argjson l "$(printf '%s\n' "${sched[@]}" | jq -sc 'map(tonumber)')" \
+    '{unitRows:$u, first:$f, growth:$g, limits:$l, source:"reasonUnitRows, reasonScanBatchFirst and reasonScanBatchGrowth from qc1/app-facts.json (TestQC1AppFacts holds them equal to the code): a unit is read in statements of these LIMITs; a page stops earlier, after the batch that holds its 100th request"}')"
   gen_cont="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_cont" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
   gen_init="$(psql_db -c "EXPLAIN (GENERIC_PLAN) $sql_init" 2>&1 | tr '\n' ' ' | sed 's/  */ /g' || true)"
   # The continuation must be bounded by an Index Cond on id, in the application's own logged plan and in the generic plan of the same text; the first unit
@@ -1070,7 +1070,7 @@ capture_plans() { # n
   record 8 plans "$n" "$(jq -nc --argjson c "$counts" --argjson need "$need" --arg gc "$gen_cont" --arg gi "$gen_init" --arg sc "$sql_cont" --arg si "$sql_init" --argjson idx "$idx" --argjson initidx "$initidx" --argjson logged "$cont_logged" --argjson ex "$exec_json" --argjson bsched "$bsched" --argjson probe "$probe_bloated" --argjson probec "$probe_clean" --argjson statsb "$stats_bloated" --argjson statsc "$stats_clean" --argjson copy "$CLEAN_COPY_JSON" --argjson lcont "$logged_cont" --argjson linit "$logged_init" --argjson actual "$actual_rows" --argjson bg "$n" \
     '{batchSchedule:$bsched, plans:$c, required:$need, table:{backgroundRows:$bg, actualRows:$actual, note:"the rows contact_requests held while the statements ran: background plus the scenario rows (n + k)"}, file:"explain-log", continuationPlanIndexCond:$logged, executions:$ex, scannerProbe:$probe, scannerProbeClean:$probec, tables:{bloated:$statsb, clean:($statsc + $copy)}, loggedShapes:{initial:$linit, continuation:$lcont},
       generic:{source:"go-source", scannerContinuation:{sql:$sc, text:$gc, indexCondOnId:$idx}, scannerInitial:{sql:$si, text:$gi, idIndexScan:$initidx}},
-      note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text read from account_erasure_reasons.go; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
+      note:"the plans counted are the application'"'"'s own logged statements; generic is EXPLAIN (GENERIC_PLAN) of the SAME statement text from qc1/app-facts.json; the continuation unit exists only when the table holds more rows than one scanner unit (judged on table.actualRows)"}')"
   unset RECORD_STATUS
 }
 
@@ -1222,7 +1222,7 @@ explained_order_control_delete() { # n which
   verify_outcome "$t" "$WORK/items-order-delete.json" 0 0 "$audit_mark"
   outcome="$OUTCOME_JSON"
   expect="$(jq -nc '{items:0, kept:0, removed:0}')"
-  ev="$(qc1_audit_report_evidence "$log" "$ROOT" "$t" true)" || ev='{"statementBlocks":0}'
+  ev="$(qc1_audit_report_evidence "$log" "$t" true)" || ev='{"statementBlocks":0}'
   { printf '=== audit-report (size %s, %s)\n' "$n" "$which"; qc1_extract_plans "$log" audit-report; } >"$WORK/explain-audit-$which-$n.log"
   record 6 "order-control-delete-$which-explained" "$n" "$(jq -nc --arg st "$DEL_STATUS" --argjson ms "$(( ms1 - ms0 ))" --argjson reqms "$DEL_MS" --argjson kept "$kept" --argjson removed "$removed" --argjson bytes "$body_bytes" \
       --argjson expect "$expect" --argjson outcome "$outcome" --argjson ev "$ev" --argjson ar0 "$ar0" --argjson ab0 "$ab0" --argjson tr0 "${tr0:-null}" --arg which "$which" --argjson tid "$t" \

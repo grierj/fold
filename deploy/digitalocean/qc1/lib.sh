@@ -11,6 +11,11 @@
 # shellcheck disable=SC2034,SC2016
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from qc1-measure.sh only' >&2; exit 1; fi
 
+# What the harness takes from the application is app-facts.json, beside this file; it never reads application source. TestQC1AppFacts (guards_deploy_facts_test.go) and
+# web/src/components/ReasonReviewSection.test.tsx hold that file equal to the code.
+QC1_FACTS="${QC1_FACTS:-$(dirname "${BASH_SOURCE[0]}")/app-facts.json}"
+qc1_fact() { local f="$1"; shift; jq -er "$@" "$f" "$QC1_FACTS"; } # jq-filter [jq options] -> the raw value; fails when it is absent
+
 QC1_SIZES_DEFAULT=10000,100000,1000000
 QC1_COUNTS_DEFAULT=0,10,100,1000,10000
 QC1_DELETE_COUNTS=0,10,100,1000,10000
@@ -23,7 +28,7 @@ QC1_MODES=(keep remove mixed)
 QC1_UNIT_BUDGET_MS=10000
 QC1_DELETE_BUDGET_MS=40000
 QC1_TRAVERSAL_BUDGET_MS=120000
-QC1_SCANNER_UNIT_ROWS=50000   # rows one page attempt reads at most (reasonUnitRows), now in batches; tableRows above it is the "belowUnit" fact; a continuation exists only when the table holds more
+QC1_SCANNER_UNIT_ROWS="$(qc1_fact .go.reasonUnitRows)"   # rows one page attempt reads at most (reasonUnitRows), now in batches; tableRows above it is the "belowUnit" fact; a continuation exists only when the table holds more
 # The rendered panel's budgets. These three are ENGINEERING PROPOSALS of the scaling design (F7, R5), not owner decisions, and are judged as hard
 # failures exactly like the three above: a miss is a recorded failure for a reviewed disposition, never a cap, never waived. The browser's 120 s is
 # QC1_TRAVERSAL_BUDGET_MS applied to the panel's readiness (the existing "full traversal above 2 minutes" line). No heap or DOM ceiling is set here:
@@ -35,15 +40,16 @@ QC1_NAV_BUDGET_MS=300
 QC1_CLICKS_PER_CASE=30
 # Dense targets of the scaling design (R5): 100,000 reasons at the tables that can hold them (judged against the SAME budgets; a miss is a failure, not a cap).
 QC1_DENSE_COUNTS_DEFAULT=100000
-# contactLockID (contact_lifecycle.go): the gate pg_advisory_xact_lock takes.
-QC1_GATE_LOCK_ID=0x464f4c44434f4e
+# contactLockID: the gate pg_advisory_xact_lock takes.
+QC1_GATE_LOCK_ID="$(qc1_fact .go.contactLockID)"
 # Items the harness cannot measure at this tree, with the reason it records.
 QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are not in this tree'
 QC1_PENDING_5='the legacy PUT body is T07B-3a; its route is not in this tree'
 # Files whose bytes decide what is measured; each must equal HEAD's blob.
 QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/scenario.sql
   deploy/digitalocean/qc1/top-statements.sql deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
-  deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json)
+  deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json
+  deploy/digitalocean/qc1/app-facts.json)
 # The statements whose plans must be present for every size.
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
 
@@ -66,15 +72,11 @@ qc1_gate_key() {
   printf '%d %d' "$((id >> 32))" "$((id & 0xffffffff))"
 }
 
-# Go's maxRequestBytes from the source: MaxUploadBytes (a << b) plus (c << d).
-# Go binds << tighter than +, which bash arithmetic does not.
-qc1_max_request_bytes() { # repo-root
-  local root="$1" up req a b c d
-  up="$(sed -n 's/^const MaxUploadBytes = \([0-9][0-9]*\) << \([0-9][0-9]*\).*/\1 \2/p' "$root/internal/images/upload.go")"
-  req="$(sed -n 's/^const maxRequestBytes = images.MaxUploadBytes + \([0-9][0-9]*\)<<\([0-9][0-9]*\).*/\1 \2/p' "$root/main.go")"
-  [[ -n "$up" && -n "$req" ]] || { echo 'qc1: cannot read MaxUploadBytes or maxRequestBytes' >&2; return 1; }
-  read -r a b <<<"$up"; read -r c d <<<"$req"
-  printf '%d' "$(( (a << b) + (c << d) ))"
+# Go's maxRequestBytes (one image upload plus 1 MiB of other fields), as the facts file states it.
+qc1_max_request_bytes() {
+  local v
+  v="$(qc1_fact .go.maxRequestBytes 2>/dev/null)" && [[ "$v" =~ ^[0-9]+$ ]] || { echo 'qc1: cannot read maxRequestBytes from the application facts' >&2; return 1; }
+  printf '%d' "$v"
 }
 
 # What a traversal cost, from the wall clock around the whole client loop
@@ -914,24 +916,11 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
 # The statements whose plans QC-1 records. Plans come from auto_explain's log
 # of the application's own statements (never from SQL the harness types), found
 # by a fixed substring of the logged "Query Text", which keeps $n placeholders
-# and literals. qc1_source_marker is the same substring in the Go source, where
-# the placeholders are ?; qc1-fixtures.sh proves both are still in
-# account_erasure_reasons.go. The marker lookup is T07B-3a's and is not here.
+# and literals. The markers are in app-facts.json; TestQC1PlanMarkersAreWhatTheApplicationSends
+# proves the application still sends each of them. The marker lookup is T07B-3a's and is not here.
 qc1_plan_marker() { # which
-  case "$1" in
-    delete-set) printf '%s' "reason <> '' AND (requester_id = \$1 OR subject_user_id = \$2) ORDER BY contact_requests.id FOR UPDATE" ;;
-    scanner-initial) printf '%s' 'FROM contact_requests ORDER BY id LIMIT $1' ;;
-    scanner-continuation) printf '%s' 'FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2' ;;
-    page-items) printf '%s' "WHERE id = ANY(\$1::bigint[]) AND reason <> '' AND (requester_id = \$2 OR subject_user_id = \$3) ORDER BY contact_requests.id" ;;
-    audit-report) printf '%s' 'SELECT class, action, count(*) FROM (SELECT action, ' ;;
-    blank-batch) printf '%s' "UPDATE contact_requests SET reason = '' WHERE id = ANY(\$1::bigint[]) AND reason <> '' AND (requester_id = \$2 OR subject_user_id = \$3)" ;;
-    *) return 1 ;;
-  esac
+  qc1_fact '.go.planMarkers[$k] // empty' --arg k "$1" 2>/dev/null || return 1
 }
-qc1_source_marker() { # which
-  qc1_plan_marker "$1" | sed -E 's/\$[0-9]+/?/g'
-}
-
 # Plans from a Postgres log whose Query Text contains the marker for `which`.
 # A plan is the lines after "duration: ... plan:" up to the next log-prefixed line.
 qc1_extract_plans() { # log which
@@ -959,7 +948,7 @@ qc1_plan_counts() { # log
 }
 
 
-# The scanner probe: the REAL scanner statements (qc1_go_sql) prepared and executed several times in ONE session at controlled cursor positions, each under
+# The scanner probe: the REAL scanner statements (qc1_scanner_sql) prepared and executed several times in ONE session at controlled cursor positions, each under
 # EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON), in plan_cache_mode auto (the mode the application runs in: the sixth and later executions may use a generic plan) and
 # force_generic_plan. This reads each execution's child scan: node type, index, index condition, filter, actual rows, loops and shared blocks, and whether any Sort
 # is in the plan. Input: one EXPLAIN JSON document per execution, in order; $1 is the matching JSON array of {mode, kind, percent, afterId}.
@@ -1052,13 +1041,8 @@ qc1_plan_shapes() { # log which
 # statement, in order, around three non-empty variable parts; its parameters are the deleted account's id; it ran in the backend of the erasure's own audit statements, after the UPDATEs that blank
 # addresses and before the diagnostic count that follows it. Nothing is substituted, re-run or reconstructed by the harness.
 
-# The four fixed pieces of the statement, one per line, read out of the Go source.
-qc1_go_audit_pieces() { # repo-root
-  awk '/tx\.Raw\("SELECT class, action, count\(\*\) FROM \(SELECT action, "\+classification\+"/ {
-    s = $0; sub(/^.*tx\.Raw\("/, "", s); sub(/", args\.\.\.\)\.Scan\(&kept\).*$/, "", s)
-    n = split(s, p, /"\+[A-Za-z]+\+"/)
-    for (i = 1; i <= n; i++) print p[i] }' "$1/account_erasure_audit.go"
-}
+# The four fixed pieces of the statement, one per line, from the facts file (TestQC1AppFacts holds them equal to auditRetentionReportSQL).
+qc1_audit_pieces() { qc1_fact '.go.auditReport.pieces[]'; }
 
 # Every auto_explain block in a log as one TSV line: log line, backend pid, duration in ms, the first 90 characters of its query text.
 qc1_log_blocks() { # log
@@ -1133,19 +1117,12 @@ qc1_plan_nodes() {
       printf "}\n" }'
 }
 
-# The body of a Go raw-string constant (`...`) in account_erasure_audit.go, byte for byte (newlines included), nothing when it is not there.
-qc1_go_raw_const() { # repo-root const-name
-  awk -v name="$2" '
-    !on && $0 ~ ("^[ \t]*const " name " = `") { s = $0; sub(/^[^`]*`/, "", s); on = 1
-      if (s ~ /`/) { sub(/`.*$/, "", s); printf "%s", s; exit } printf "%s\n", s; next }
-    on { if ($0 ~ /`/) { s = $0; sub(/`.*$/, "", s); printf "%s", s; exit } printf "%s\n", $0 }' "$1/account_erasure_audit.go"
-}
-# What the Go source says the report statement is made of beyond its four fixed pieces: the subject-mention and malformed-link texts with each named argument (@uid, @people) numbered $1, $2 ...
+# What the facts file says the report statement is made of beyond its four fixed pieces: the subject-mention and malformed-link texts with each named argument (@uid, @people) numbered $1, $2 ...
 # in order of appearance (what GORM sends), and the kind of argument at each position. One JSON object {mention, link, kinds}; kinds is empty when a constant is missing.
-qc1_audit_expected() { # repo-root
+qc1_audit_expected() {
   local mention link
-  mention="$(qc1_go_raw_const "$1" subjectMention; printf x)"; mention="${mention%x}"
-  link="$(qc1_go_raw_const "$1" auditMalformedConversionLink; printf x)"; link="${link%x}"
+  mention="$(qc1_fact .go.auditReport.subjectMention -j; printf x)"; mention="${mention%x}"
+  link="$(qc1_fact .go.auditReport.malformedConversionLink -j; printf x)"; link="${link%x}"
   jq -nc --arg mention "$mention" --arg link "$link" '
     def toks: [ match("@[a-z]+"; "g").string | ltrimstr("@") ];
     def number($start): . as $t | reduce (match("@[a-z]+"; "g")) as $m ({out: "", pos: 0, n: $start}; .out += $t[.pos:$m.offset] + "$" + (.n | tostring) | .pos = ($m.offset + $m.length) | .n += 1) | .out + $t[.pos:];
@@ -1154,10 +1131,10 @@ qc1_audit_expected() { # repo-root
     | if ($mention | length) == 0 or ($link | length) == 0 or (.kinds | length) == 0 then . + {kinds: []} else . end'
 }
 
-# The audit-retention report statement in an auto_explain log, proven to be the application own and no other, with its plan. Arguments: the log, the repo root (for the Go source), the id of the
+# The audit-retention report statement in an auto_explain log, proven to be the application own and no other, with its plan. Arguments: the log, the id of the
 # account the deletion deleted, whether log_lock_waits was on while the log was written. Prints one JSON object; statementBlocks is 0 when the log holds none (the caller marks that INVALID).
-qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(true|false)
-  local q log="$1" root="$2" target="$3" lw="$4" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt
+qc1_audit_report_evidence() { # log target-user-id lockwaits-logged(true|false)
+  local q log="$1" target="$2" lw="$3" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt
   local -a pieces=()
   local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 after=0 parts_ok=false lockw samples bytes
   blocks="$(qc1_extract_plans "$log" audit-report)" || return 2
@@ -1165,10 +1142,10 @@ qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(tr
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   if (( n == 0 )); then printf '%s\n' '{"statementBlocks":0}'; return 0; fi
   block1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$blocks")"
-  mapfile -t pieces < <(qc1_go_audit_pieces "$root")
+  mapfile -t pieces < <(qc1_audit_pieces)
   qtext="$(awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }' <<<"$block1")"
   params="$(awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }' <<<"$block1")"
-  expected="$(qc1_audit_expected "$root")"
+  expected="$(qc1_audit_expected)"
   kinds_json="$(jq -c '.kinds' <<<"$expected")"
   if (( ${#pieces[@]} == 4 )); then
     [[ "$qtext" == "${pieces[0]}"* ]] && prefix_ok=true
@@ -1222,29 +1199,25 @@ qc1_audit_report_evidence() { # log repo-root target-user-id lockwaits-logged(tr
       lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }'
 }
 
-# The text of a Go string constant in account_erasure_reasons.go with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a
-# generic plan is of the REAL statement, with its real projection, and not of a statement the harness wrote. Prints nothing when the constant is gone.
-qc1_go_sql() { # repo-root const-name
-  awk -v name="$2" '$1 == name && $2 == "=" {
-    s = $0; sub(/^[^"]*"/, "", s); sub(/"[[:space:]]*$/, "", s)
-    out = ""; n = 0
+# The scanner statement (initial | continuation) with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a generic plan is of the REAL
+# statement, with its real projection, and not of a statement the harness wrote. Prints nothing when the facts file has none.
+qc1_scanner_sql() { # initial|continuation
+  local text
+  text="$(qc1_fact '.go.scannerSQL[$k] // empty' --arg k "$1" 2>/dev/null)" || return 0
+  awk '{
+    s = $0; out = ""; n = 0
     while ((i = index(s, "?")) > 0) { n++; out = out substr(s, 1, i - 1) "$" n; s = substr(s, i + 1) }
     print out s
-  }' "$1/account_erasure_reasons.go"
+  }' <<<"$text"
 }
 
-# An integer package variable of a Go source file ("name = 123", any spacing); nothing when it is not there.
-qc1_go_int() { # repo-root file name
-  awk -v n="$3" '$1 == n && $2 == "=" && $3 ~ /^[0-9]+$/ { print $3; exit }' "$1/$2"
-}
 # The LIMIT of each statement of a scanner unit read to its end, one number per line: reasonScanBatchFirst, then reasonScanBatchGrowth times as many, the last clipped so the
-# sum is reasonUnitRows (account_erasure_reasons_scan.go, account_erasure_reasons.go; internal/reasonscan.Batches is the same rule). A page that fills earlier sends a prefix.
-# Fails when the Go source does not state the three numbers, so the harness never falls back to a schedule it made up.
-qc1_scan_schedule() { # repo-root
+# sum is reasonUnitRows (internal/reasonscan.Batches is the same rule). A page that fills earlier sends a prefix.
+# Fails when the facts file does not state the three numbers, so the harness never falls back to a schedule it made up.
+qc1_scan_schedule() {
   local unit first growth
-  unit="$(qc1_go_int "$1" account_erasure_reasons.go reasonUnitRows)"; first="$(qc1_go_int "$1" account_erasure_reasons_scan.go reasonScanBatchFirst)"
-  growth="$(qc1_go_int "$1" account_erasure_reasons_scan.go reasonScanBatchGrowth)"
-  [[ -n "$unit" && -n "$first" && -n "$growth" ]] && (( unit >= 1 && first >= 1 && growth >= 1 )) || return 1
+  unit="$(qc1_fact .go.reasonUnitRows 2>/dev/null || true)"; first="$(qc1_fact .go.reasonScanBatchFirst 2>/dev/null || true)"; growth="$(qc1_fact .go.reasonScanBatchGrowth 2>/dev/null || true)"
+  [[ "$unit" =~ ^[0-9]+$ && "$first" =~ ^[0-9]+$ && "$growth" =~ ^[0-9]+$ ]] && (( unit >= 1 && first >= 1 && growth >= 1 )) || return 1
   awk -v u="$unit" -v f="$first" -v g="$growth" 'BEGIN { b = f; while (u > 0) { n = (b > u ? u : b); print n; u -= n; b *= g } }'
 }
 
