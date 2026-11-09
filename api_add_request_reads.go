@@ -93,7 +93,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 	hosts := map[userContext]bool{}
 	if len(eventIDs) > 0 && len(userIDs) > 0 {
 		var rows []models.EventHost
-		if err := tx.Where("event_id IN ? AND user_id IN ?", eventIDs, userIDs).Find(&rows).Error; err != nil {
+		if err := tx.Where("event_id IN ? AND user_id IN ?", eventIDs, append(userIDs, op.actor.ID)).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, h := range rows {

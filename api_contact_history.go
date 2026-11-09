@@ -244,7 +244,7 @@ func contactHistoryQuery(tx *gorm.DB, f contactHistoryFilter) *gorm.DB {
 	for _, action := range actions {
 		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, contactHistoryActions[action].target)
 	}
-	pairs = pairs.Or("l.action = ? AND l.target_type = ?", audit.ContactRefused, "contact_endpoint").Or("l.action = ? AND l.target_type = ?", audit.AddRefused, "add_endpoint").Or("l.action = ? AND l.target_type = ?", audit.OccurrenceRefused, "occurrence_endpoint")
+	pairs = pairs.Or("l.action = ? AND l.target_type = ?", audit.ContactRefused, "contact_endpoint").Or("l.action = ? AND l.target_type = ?", audit.AddRefused, "add_endpoint")
 	// Exact-date access rows are the three action-scoped registration snapshots
 	// (R9 S4): their own validated metadata supplies issuer, subject, request,
 	// event, date and the registration ID shown as accessId. A malformed field
