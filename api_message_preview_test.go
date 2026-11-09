@@ -212,7 +212,7 @@ func TestTestSendRejectsAddressChangeAfterAuthentication(t *testing.T) {
 	f := newComposeFixture(t)
 	f.admin.holdNotices, f.leader.holdNotices = true, true
 	path := f.draft(t, f.leader, "Stale session", "<p>Hi</p>", groupAudience(f))
-	reached, release := erasureTestPause(t, f.app.DB, erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "SELECT id, email, status, session_version, logout_version, deleted_at FROM users", VarAt: map[int]any{0: f.leaderUser.ID}})
+	reached, release := erasureTestPause(t, f.app.DB, erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "SELECT id, email, status, password_hash, session_version, logout_version, deleted_at FROM users", VarAt: map[int]any{0: f.leaderUser.ID}})
 	result := bgDo(f.leader, "POST", path+"/test", nil)
 	awaitDBSignal(t, reached)
 	// Authentication has completed; the real admin change commits before the lock.

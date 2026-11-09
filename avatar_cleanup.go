@@ -131,7 +131,7 @@ type avatarRow struct {
 	AvatarKey      string
 	Deleted        bool
 	Status         string
-	HasPassword    bool
+	PasswordHash   *string
 	SessionVersion int
 	LogoutVersion  int
 	AccountType    string
@@ -147,15 +147,16 @@ func lockAvatarRow(tx *gorm.DB, id uint) (avatarRow, error) {
 	}
 	var row avatarRow
 	err := tx.Raw(`SELECT id, COALESCE(avatar_key,'') AS avatar_key, deleted_at IS NOT NULL AS deleted, status,
-		password_hash IS NOT NULL AS has_password, session_version, logout_version, account_type
+		password_hash, session_version, logout_version, account_type
 		FROM users WHERE id = ? FOR NO KEY UPDATE`, id).Scan(&row).Error
 	return row, err
 }
 
 // checkAvatarSession compares the locked row with the request's snapshot.
 func checkAvatarSession(row avatarRow, snap *models.User) error {
-	if row.ID == 0 || row.Deleted || row.Status != models.UserActive || !row.HasPassword ||
-		row.SessionVersion != snap.SessionVersion || row.LogoutVersion != snap.LogoutVersion {
+	current := models.User{ID: row.ID, Status: row.Status, PasswordHash: row.PasswordHash,
+		SessionVersion: row.SessionVersion, LogoutVersion: row.LogoutVersion}
+	if row.Deleted || !sessionCurrent(&current, snap) {
 		return errSecuritySession
 	}
 	return nil

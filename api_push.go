@@ -215,11 +215,10 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		// soft-deleted account is refused here, before any count, insert,
 		// refused-device audit or consent write.
 		var fresh models.User
-		if err := tx.Raw("SELECT id, status, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
+		if err := tx.Raw("SELECT id, status, password_hash, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
 			return err
 		}
-		if fresh.ID != me.ID || fresh.DeletedAt.Valid || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion ||
-			fresh.LogoutVersion != me.LogoutVersion {
+		if !sessionCurrent(&fresh, me) {
 			return errSecuritySession
 		}
 		var saves int64
@@ -287,7 +286,7 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		return
 	}
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return
 	}
 	if err != nil {
@@ -341,7 +340,7 @@ func (a *App) apiPushTurnOff(c *gin.Context) {
 		return tx.Where("user_id = ?", me.ID).Delete(&models.PushSubscription{}).Error
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return
 	}
 	if err != nil {
@@ -491,7 +490,7 @@ func (a *App) applyPushSettings(c *gin.Context, u *models.User, category string,
 		return err
 	})
 	if errors.Is(err, errSecuritySession) || errors.Is(err, errConsentSubjectGone) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return false
 	}
 	if err != nil {

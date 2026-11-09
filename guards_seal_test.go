@@ -15,7 +15,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// R5-C01 and R6-C01: the actor seal is NOWAIT, loads what CanSignIn needs and
+// R5-C01 and R6-C01: the actor seal is NOWAIT, loads what sessionCurrent needs and
 // is the last locking statement of the transactions that run it.
 // ---------------------------------------------------------------------------
 
@@ -98,7 +98,7 @@ func sealProblems(sources map[string]string) []string {
 		bad = append(bad, "currentAdminIn must take exactly tx, me and pred")
 	}
 	literals := 0
-	var actorDeclared, scanned, canSignIn bool
+	var actorDeclared, scanned, decided bool
 	ast.Inspect(cur.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.BasicLit:
@@ -128,10 +128,19 @@ func sealProblems(sources map[string]string) []string {
 					}
 				}
 			}
-			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSignIn" {
-				if id, ok := sel.X.(*ast.Ident); ok && id.Name == "actor" {
-					canSignIn = true
+			// The decision is the shared predicate, applied to the scanned row
+			// and the session's user: sessionCurrent(&actor, me).
+			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "sessionCurrent" && len(x.Args) == 2 {
+				if u, ok := x.Args[0].(*ast.UnaryExpr); ok && u.Op == token.AND {
+					a0, ok0 := u.X.(*ast.Ident)
+					a1, ok1 := x.Args[1].(*ast.Ident)
+					if ok0 && ok1 && a0.Name == "actor" && a1.Name == "me" {
+						decided = true
+					}
 				}
+			}
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSignIn" {
+				bad = append(bad, "currentAdminIn decides sign-in itself; it must use sessionCurrent(&actor, me)")
 			}
 		case *ast.AssignStmt:
 			for _, l := range x.Lhs {
@@ -152,8 +161,8 @@ func sealProblems(sources map[string]string) []string {
 	if !actorDeclared || !scanned {
 		bad = append(bad, "currentAdminIn must scan into a models.User declared inside it")
 	}
-	if !canSignIn {
-		bad = append(bad, "currentAdminIn must decide sign-in with actor.CanSignIn()")
+	if !decided {
+		bad = append(bad, "currentAdminIn must decide the session with sessionCurrent(&actor, me)")
 	}
 
 	// Every call of currentAdminIn sits in a contactSeal run literal; seal
@@ -279,7 +288,8 @@ func sealProblems(sources map[string]string) []string {
 		}
 	}
 
-	// deletionHostPlan's actor read takes no lock.
+	// deletionHostPlan's actor read takes no lock: it is exactly one
+	// lockAdminIn call in the plain mode actorRead.
 	dp := guardkit.FindFunc(trees["api_host_handoff.go"], "deletionHostPlan")
 	if dp == nil {
 		bad = append(bad, "api_host_handoff.go: deletionHostPlan is gone")
@@ -287,27 +297,22 @@ func sealProblems(sources map[string]string) []string {
 		reads := 0
 		ast.Inspect(dp.Body, func(m ast.Node) bool {
 			c, ok := m.(*ast.CallExpr)
-			if !ok || guardkit.Callee(c) != "First" || len(c.Args) < 1 {
-				return true
-			}
-			u, ok := c.Args[0].(*ast.UnaryExpr)
 			if !ok {
 				return true
 			}
-			if id, ok := u.X.(*ast.Ident); !ok || id.Name != "actor" {
-				return true
-			}
-			reads++
-			ast.Inspect(c.Fun, func(k ast.Node) bool {
-				if kc, ok := k.(*ast.CallExpr); ok && (guardkit.Callee(kc) == "Clauses") {
+			switch guardkit.Callee(c) {
+			case "lockAdminIn", "lockActorIn":
+				reads++
+				if len(c.Args) != 3 {
+					bad = append(bad, "deletionHostPlan's actor read must be lockAdminIn(tx, me, actorRead)")
+				} else if id, ok := c.Args[2].(*ast.Ident); !ok || id.Name != "actorRead" {
 					bad = append(bad, "deletionHostPlan's actor read takes a lock")
 				}
-				return true
-			})
+			}
 			return true
 		})
 		if reads != 1 {
-			bad = append(bad, fmt.Sprintf("deletionHostPlan must read the actor once with tx.First(&actor, ...), found %d", reads))
+			bad = append(bad, fmt.Sprintf("deletionHostPlan must read the actor once with lockAdminIn(tx, me, actorRead), found %d", reads))
 		}
 	}
 	sort.Strings(bad)
@@ -353,12 +358,13 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a password_hash IS NOT NULL projection", with(aops, "birth_date, password_hash, session_version", "birth_date, (password_hash IS NOT NULL) AS password_hash, session_version")},
 		{"a deleted_at IS NULL filter", with(aops, "FROM users WHERE id = ? FOR SHARE NOWAIT\"", "FROM users WHERE id = ? AND deleted_at IS NULL FOR SHARE NOWAIT\"")},
 		{"a PasswordHash copied from another value", with(aops, "\tvar actor models.User\n\terr := tx.Raw(", "\tvar actor models.User\n\tactor.PasswordHash = me.PasswordHash\n\terr := tx.Raw(")},
-		{"a sign-in check other than CanSignIn", with(aops, "!actor.CanSignIn()", "actor.Status != models.UserActive")},
+		{"a session decision other than sessionCurrent", with(aops, "!sessionCurrent(&actor, me)", "actor.Status != models.UserActive")},
+		{"a hand-written sign-in check", with(aops, "!sessionCurrent(&actor, me)", "!actor.CanSignIn()")},
 		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
 		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {", "\t_ = tx\n\tif ctx.Err() != nil || (bounded && time.Until(deadline) < contactCommitReserve) {")},
 		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, *pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, *pred)\n\t}}")},
 		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
-		{"a Locking clause on deletionHostPlan's actor read", with("api_host_handoff.go", "tx.First(&actor, me.ID)", "tx.Clauses(clause.Locking{Strength: \"SHARE\"}).First(&actor, me.ID)")},
+		{"a locked mode on deletionHostPlan's actor read", with("api_host_handoff.go", "lockAdminIn(tx, me, actorRead)", "lockAdminIn(tx, me, actorShare)")},
 	}
 	for _, tc := range cases {
 		if bad := sealProblems(tc.sources); len(bad) == 0 {

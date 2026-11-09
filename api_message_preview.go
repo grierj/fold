@@ -222,10 +222,10 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	// test send. Every later request rechecks; no user lock spans provider I/O.
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var fresh models.User
-		if err := tx.Raw("SELECT id, email, status, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
+		if err := tx.Raw("SELECT id, email, status, password_hash, session_version, logout_version, deleted_at FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
 			return err
 		}
-		if fresh.ID == 0 || fresh.DeletedAt.Valid || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion || fresh.LogoutVersion != me.LogoutVersion || mail.NormalizeAddress(fresh.Email) != mail.NormalizeAddress(me.Email) {
+		if !sessionCurrent(&fresh, me) || mail.NormalizeAddress(fresh.Email) != mail.NormalizeAddress(me.Email) {
 			return errSecuritySession
 		}
 		off, err := readEmailOff(tx, []emailDest{{UserID: me.ID, Address: fresh.Email}})
@@ -245,8 +245,7 @@ func (a *App) apiTestMessage(c *gin.Context) {
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageTestSent, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()})
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if errors.Is(err, errOptedOut) {

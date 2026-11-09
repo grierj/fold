@@ -170,7 +170,7 @@ func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn 
 		if err != nil {
 			return err
 		}
-		if op.actor == nil || !op.actor.CanSignIn() || op.actor.SessionVersion != apiUser(c).SessionVersion {
+		if !sessionCurrent(op.actor, apiUser(c)) {
 			op.actor = &models.User{ID: apiUser(c).ID}
 			if strings.HasPrefix(c.FullPath(), "/api/v1/add-requests") {
 				return refuseAdd(tx, &op, models.ContactRequest{}, "stale_session", c.ClientIP())

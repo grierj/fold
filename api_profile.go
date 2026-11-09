@@ -182,8 +182,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		validated, err = lockCurrentCredentials(tx, u)
 		return err
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {
@@ -247,8 +246,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		_, err = jobs.Enqueue(tx, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "", directMailAttempts)
 		return err
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {
@@ -331,13 +329,7 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 			return errEmailTaken
 		}
 		oldEmail := u.Email
-		if err := tx.Model(u).Updates(map[string]any{
-			"email":           payload.NewEmail,
-			"session_version": gorm.Expr("session_version + 1"),
-		}).Error; err != nil {
-			return err
-		}
-		if err := revokeAccountTokens(tx, u.ID); err != nil {
+		if err := endAllSessionsIn(tx, u, map[string]any{"email": payload.NewEmail}); err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChanged,
@@ -361,8 +353,8 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 	}
 	// This browser stays logged in; every other session ends.
 	if session, serr := a.Store.Get(c.Request, sessionName); serr == nil {
-		if uid, ok := session.Values["userID"].(uint); ok && uid == fresh.ID {
-			session.Values["sessionVersion"] = fresh.SessionVersion
+		if uid, ok := session.Values[sessionUserKey].(uint); ok && uid == fresh.ID {
+			session.Values[sessionVersionKey] = fresh.SessionVersion
 			_ = session.Save(c.Request, c.Writer)
 		}
 	}
@@ -479,7 +471,7 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 	avatarURL, err := a.storeAvatar(c.Request.Context(), u, tmp, st.Size(), mime, avatarTxDeadline(start, time.Now()))
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return
 	case errors.Is(err, errTeenAvatar):
 		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
@@ -498,7 +490,7 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	err := a.removeAvatar(c.Request.Context(), u, avatarTxDeadline(start, start))
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not remove avatar")
@@ -703,33 +695,16 @@ var (
 	errHouseholdPersonGone = errors.New("household person not found")
 )
 
-// lockHouseholdActor is the first lock of every household self-service
-// writer: the acting user row FOR NO KEY UPDATE, taken before lockHousehold
-// (user, then household, as the erasure, lockConversionParticipants and
-// lockAdminHouseholdParticipants do). It takes no contact gate; a writer that
-// takes one takes it before this. A row that is soft-deleted, cannot sign in,
-// or whose session_version or logout_version differ from the request's user
-// answers errSecuritySession and the caller writes nothing. The caller uses
-// the returned row, never the preloaded one, for every later fact.
-func lockHouseholdActor(tx *gorm.DB, me *models.User) (*models.User, error) {
-	var fresh models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, me.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errSecuritySession
-		}
-		return nil, err
-	}
-	if !fresh.CanSignIn() || fresh.SessionVersion != me.SessionVersion || fresh.LogoutVersion != me.LogoutVersion {
-		return nil, errSecuritySession
-	}
-	return &fresh, nil
-}
-
-// lockHouseholdSeat is lockHouseholdActor plus the seat and the policy
-// check, both read under the lock. noSeat is the error for an account with no
+// lockHouseholdSeat is the first lock of every household self-service writer:
+// the acting user row FOR NO KEY UPDATE (lockActorIn), taken before
+// lockHousehold (user, then household, as the erasure,
+// lockConversionParticipants and lockAdminHouseholdParticipants do), plus the
+// seat and the policy check, both read under the lock. It takes no contact
+// gate; a writer that takes one takes it before this. The caller uses the
+// returned row, never the preloaded one, for every later fact. noSeat is the error for an account with no
 // seat: forbidden for the household routes, not found for the person routes.
 func lockHouseholdSeat(tx *gorm.DB, me *models.User, noSeat error) (*models.User, models.HouseholdAccount, error) {
-	fresh, err := lockHouseholdActor(tx, me)
+	fresh, err := lockActorIn(tx, me, actorNoKeyUpdate)
 	if err != nil {
 		return nil, models.HouseholdAccount{}, err
 	}
@@ -750,7 +725,7 @@ func lockHouseholdSeat(tx *gorm.DB, me *models.User, noSeat error) (*models.User
 func answerHouseholdWriterError(c *gin.Context, err error) bool {
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 	case errors.Is(err, errHouseholdForbidden):
 		jsonError(c, http.StatusForbidden, "forbidden")
 	case errors.Is(err, errHouseholdPersonGone):
@@ -782,7 +757,7 @@ func (a *App) ensureHousehold(c *gin.Context, u *models.User) (*models.Household
 		// The user lock comes first. Under it the account is still live, a
 		// concurrent first use has either committed its seat (returned here)
 		// or waits for this one, and the name comes from the locked row.
-		fresh, err := lockHouseholdActor(tx, u)
+		fresh, err := lockActorIn(tx, u, actorNoKeyUpdate)
 		if err != nil {
 			return err
 		}

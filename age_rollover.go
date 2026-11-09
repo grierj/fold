@@ -176,7 +176,7 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 	if status != oldStatus {
 		updates := map[string]any{"status": status}
 		if oldStatus == models.UserDisabled {
-			updates["session_version"] = gorm.Expr("session_version + 1")
+			updates["session_version"] = sessionVersionBump()
 		}
 		if err := tx.Model(user).Updates(updates).Error; err != nil {
 			return false, err
