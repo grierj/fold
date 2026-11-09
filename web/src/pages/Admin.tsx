@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { Form } from "../components/ui/Form";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
@@ -570,7 +571,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
                 <option value="">Select…</option>
                 {candidates.map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.displayName || u.name}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
+                    {publicName(u)}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
                   </option>
                 ))}
               </Select>
@@ -927,12 +928,12 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }, [feedStatus]);
 
   async function revokeCalendarLink(u: User) {
-    if (!confirm(`Revoke ${u.displayName || u.name}'s calendar link? It will stop working right away.`)) return;
+    if (!confirm(`Revoke ${publicName(u)}'s calendar link? It will stop working right away.`)) return;
     setBusy(true);
     setError(null);
     setFeedStatus("");
     try {
-      const who = u.displayName || u.name;
+      const who = publicName(u);
       const r = await AdminUsers.revokeCalendarFeed(u.id);
       setFeedStatus(r.hadLink ? `Calendar link revoked for ${who}.` : `${who} didn't have a calendar link.`);
     } catch (e) {
@@ -943,7 +944,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }
 
   async function setStatus(u: User, status: "active" | "disabled") {
-    if (status === "disabled" && !confirm(`Disable ${u.displayName || u.name}? They will be signed out and can't sign in.`)) return;
+    if (status === "disabled" && !confirm(`Disable ${publicName(u)}? They will be signed out and can't sign in.`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -1003,7 +1004,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   // Let Fold email someone again after a bounce or complaint (M3.2c, DEC-113).
   async function clearSuppression(u: User) {
-    const who = u.displayName || u.name;
+    const who = publicName(u);
     // Clearing a complaint restarts optional mail to someone who marked it as spam.
     const ask = u.emailSuppression?.reason === "complaint"
       ? `${who} marked Fold's email as spam. Only do this if they asked for email again. Let Fold email ${who} again?`
@@ -1086,14 +1087,14 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   <div className="flex items-center gap-2">
                     <Avatar
                       url={u.avatarUrl || undefined}
-                      name={u.displayName || u.name}
+                      name={publicName(u)}
                       focalX={u.avatarFocalX}
                       focalY={u.avatarFocalY}
                       size="w-8 h-8"
                       textSize="text-xs"
                     />
                     <div>
-                      <div className="font-medium">{u.displayName || u.name}</div>
+                      <div className="font-medium">{publicName(u)}</div>
                       <div className="text-xs text-text-muted">{u.email}</div>
                     </div>
                   </div>
@@ -1145,7 +1146,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   {/* Your own row has no Disable or Delete: the server refuses both. */}
                   <Menu
                     tone="quiet"
-                    label={`More for ${u.displayName || u.name}`}
+                    label={`More for ${publicName(u)}`}
                     items={[
                       { label: "Edit", onSelect: () => { setEditingId(u.id); setResetId(null); setCreating(false); } },
                       { label: "Contact access history", onSelect: () => void openContactHistory(u), disabled: busy },

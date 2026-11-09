@@ -6,6 +6,7 @@ import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
+import { canDemoteLeader, canMakeLeader, canAskForContact, canRegisterAsGuest, canRemoveMember, isActiveAdult } from "../lib/can";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -133,7 +134,7 @@ function EventRow({
               mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           </div>
         )}
-        {!loggedIn && instance.visibility === "public" && (
+        {canRegisterAsGuest(loggedIn, instance.visibility) && (
           <div className="mt-2">
             <GuestRegistrationForm instance={instance} />
           </div>
@@ -1009,7 +1010,7 @@ function GroupDetailContent() {
                     {memberError && <FormError layout="mb-3">{memberError}</FormError>}
                     {canManage && <div className="mb-4"><AddPeople
                       groupId={group.id} groupName={group.name} memberCount={group.memberCount} memberLimit={group.memberLimit}
-                      canSearch={user?.status === "active" && user.accountType === "adult"} onAdded={() => load({ quiet: true })}
+                      canSearch={isActiveAdult(user)} onAdded={() => load({ quiet: true })}
                     /></div>}
                     <PeopleList rows={members ?? []} noun="members" filters={[
                       { value: "leader", label: "Leaders", matches: (m) => m.role === "leader" },
@@ -1041,20 +1042,20 @@ function GroupDetailContent() {
                                   tone="quiet"
                                   label={`More for ${m.name}`}
                                   items={[
-                                    ...(m.role !== "leader" && m.accountType !== "teen"
+                                    ...(canMakeLeader(m)
                                       ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
                                       : []),
-                                    ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
+                                    ...(canDemoteLeader(m, leaderCount, isAdmin)
                                       ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
                                       : []),
-                                    ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
+                                    ...(canRemoveMember(user, m, leaderCount, isAdmin)
                                       ? [{ label: "Remove from group", onSelect: () => removeMember(m.id), danger: true, disabled: memberBusy || !!departureTarget }]
                                       : []),
                                   ]}
                                 />
                               )}
                             </div>
-                            {canManage && isLeader && group.status === "active" && user?.status === "active" && user.accountType === "adult" && m.id !== user.id && m.email === undefined && m.phone === undefined && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
+                            {canManage && isLeader && group.status === "active" && canAskForContact(user, m) && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
                           </li>
                         )}
                     </PeopleList>

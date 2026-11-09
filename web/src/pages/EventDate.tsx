@@ -1,3 +1,4 @@
+import { canRegisterAsGuest } from "../lib/can";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
@@ -118,7 +119,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
         <DateActions eventId={occurrence.eventId} date={occurrence.date} sharePath={occurrence.dateUrl} title={occurrence.title} when={when} />
       </div>
       <div className="space-y-4 border-t border-border pt-6 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-6">
-        {!user && occurrence.visibility === "public" && <GuestRegistrationForm instance={occurrence} />}
+        {canRegisterAsGuest(!!user, occurrence.visibility) && <GuestRegistrationForm instance={occurrence} />}
         {/* Only a real exact-date invitation (DEC-75): canDecline is true for those reads alone. */}
         {occurrence.canDecline && <p className="text-text-muted">You're invited to this date.</p>}
         {occurrence.myAttendanceMode && <p>Attending: {occurrence.myAttendanceMode === "remote" ? "Remote" : "In person"}{occurrence.myGuestCount !== undefined && <span className="block">Guests: {occurrence.myGuestCount}</span>}</p>}

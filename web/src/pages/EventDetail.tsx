@@ -1,3 +1,4 @@
+import { canRegisterAsGuest } from "../lib/can";
 import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
@@ -385,7 +386,7 @@ function DateRow({
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} headingLevel={single ? 3 : 4} onChange={onRsvp} seriesFeedback={seriesFeedback}
               mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
-          ) : instance.visibility === "public" ? (
+          ) : canRegisterAsGuest(loggedIn, instance.visibility) ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
               <p className="text-sm text-text-muted">Already have an account?</p>
