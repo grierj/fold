@@ -36,10 +36,31 @@ const (
 	KeepUnread = 180 * 24 * time.Hour
 )
 
-// DeliverKind is the job that sends one stored notice by email and to the
-// recipient's devices. The handler lives in the server; this package only
-// names the kind.
+// DeliverJob is the job that sends one stored notice by email and to the
+// recipient's devices. The handler lives in the server; this package owns the
+// type, its payload and its key. Eight attempts on jobs.Backoff span about an
+// hour, the same as the message batch.
+var DeliverJob = jobs.Type{Name: DeliverKind, MaxAttempts: 8}
+
+// DeliverKind is the name of DeliverJob.
 const DeliverKind = "notify.deliver"
+
+// DeliverPayload is notify.deliver's payload: the notice id and nothing else.
+type DeliverPayload struct {
+	NotificationID uint `json:"notificationId"`
+}
+
+// DeliverKeyPrefix is what a notice's delivery job key starts with; SQL that
+// looks a job up by key appends the notice id to it.
+const DeliverKeyPrefix = DeliverKind + ":"
+
+// DeliverKey identifies a notice's delivery job in any status.
+func DeliverKey(id uint) string { return DeliverKeyPrefix + strconv.FormatUint(uint64(id), 10) }
+
+// DeliverSpec is the delivery job for notice id, to run at at.
+func DeliverSpec(id uint, at time.Time) jobs.Spec {
+	return DeliverJob.Spec(DeliverPayload{NotificationID: id}, at, DeliverKey(id))
+}
 
 // Msg is one notification to write, for every recipient in To.
 type Msg struct {
@@ -357,9 +378,6 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	return ids, nil
 }
 
-// DeliverKey identifies a notice's delivery job in any status.
-func DeliverKey(id uint) string { return fmt.Sprintf("%s:%d", DeliverKind, id) }
-
 // QueueDelivery is the repair entry point. It queues channel intent and jobs
 // for notices selected earlier, possibly in another transaction: deliver rows
 // get their email ledger row and a delivery job, bellOnly rows only the
@@ -471,12 +489,7 @@ func queueProtected(tx *gorm.DB, bellOnly bool, rows ...models.Notification) err
 			args = append(args, row.ID, models.DeliveryEmail, row.UserID, status, reason)
 		}
 		if !bellOnly && (k.AllowEmail || k.AllowPush) {
-			specs = append(specs, jobs.Spec{
-				Kind: DeliverKind, Payload: struct {
-					NotificationID uint `json:"notificationId"`
-				}{row.ID},
-				RunAt: now, UniqueKey: DeliverKey(row.ID), MaxAttempts: 8,
-			})
+			specs = append(specs, DeliverSpec(row.ID, now))
 		}
 	}
 	for len(values) > 0 {

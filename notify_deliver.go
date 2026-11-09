@@ -17,15 +17,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// One notice, emailed and pushed. Eight attempts on jobs.Backoff span
-// about an hour, the same as the message batch, and at most about 76
-// minutes with jitter. The send itself is bounded so a run stays inside
-// the job lease.
+// One notice, emailed and pushed (notify.DeliverJob). The send itself is
+// bounded so a run stays inside the job lease.
 const (
-	notifyDeliverAttempts = 8
-	deliverSendTimeout    = 60 * time.Second
-	kindNotifyReconcile   = "notify.reconcile"
-	notifyReconcileBatch  = 500
+	deliverSendTimeout   = 60 * time.Second
+	kindNotifyReconcile  = "notify.reconcile"
+	notifyReconcileBatch = 500
 	// emailKindStopped is the ledger reason when a kind no longer emails.
 	emailKindStopped = "this kind of notice no longer sends email"
 	// emailKindUnknown is the ledger reason when this version of Fold
@@ -39,19 +36,20 @@ const (
 	notifyUnknownGrace = 7 * 24 * time.Hour
 )
 
-// notifyDeliverJob is notify.deliver's payload: the notice id and nothing
-// else. The key in the jobs table is notify.deliver:<id>.
-type notifyDeliverJob struct {
-	NotificationID uint `json:"notificationId"`
-}
-
 // notifyKinds registers the delivery jobs queued by notify.Send.
 func (a *App) notifyKinds() []jobs.Kind {
 	return []jobs.Kind{{
-		Name: notify.DeliverKind, MaxAttempts: notifyDeliverAttempts,
-		Label: "Sending a notice by email and to devices",
+		Type: notify.DeliverJob, Label: "Sending a notice by email and to devices",
+		// Dismissing a dead delivery settles the notice's email row.
+		OnDismiss: func(tx *gorm.DB, payload json.RawMessage) error {
+			var p notify.DeliverPayload
+			if json.Unmarshal(payload, &p) != nil || p.NotificationID == 0 {
+				return nil
+			}
+			return updateEmailDelivery(tx, p.NotificationID, models.DeliverySuppressed, emailDismissed, "")
+		},
 		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p notifyDeliverJob
+			var p notify.DeliverPayload
 			if err := json.Unmarshal(payload, &p); err != nil {
 				return err
 			}
@@ -80,7 +78,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 				WHERE j.unique_key = ? || nd.notification_id)
 			ORDER BY nd.created_at, nd.id LIMIT ?`,
 			models.DeliveryEmail, models.DeliveryQueued, now.Add(-10*time.Minute), afterAt, afterID,
-			notify.DeliverKind+":", notifyReconcileBatch).
+			notify.DeliverKeyPrefix, notifyReconcileBatch).
 			Scan(&rows).Error; err != nil {
 			return err
 		}
@@ -107,7 +105,7 @@ func (a *App) reconcileNotifications(ctx context.Context, now time.Time) error {
 				WHERE nd.notification_id = n.id AND nd.channel = ?)
 			  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.unique_key = ? || n.id)
 			ORDER BY n.created_at, n.id LIMIT ?`,
-			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKind+":", notifyReconcileBatch).
+			now.Add(-24*time.Hour), afterAt, afterID, models.DeliveryEmail, notify.DeliverKeyPrefix, notifyReconcileBatch).
 			Scan(&rows).Error; err != nil {
 			return err
 		}
@@ -138,8 +136,7 @@ func requeueLostDeliveries(tx *gorm.DB, rows []models.NotificationDelivery, now 
 	}
 	specs := make([]jobs.Spec, 0, len(kept))
 	for _, row := range kept {
-		specs = append(specs, jobs.Spec{Kind: notify.DeliverKind, Payload: notifyDeliverJob{NotificationID: row.ID},
-			RunAt: now, UniqueKey: notify.DeliverKey(row.ID), MaxAttempts: notifyDeliverAttempts})
+		specs = append(specs, notify.DeliverSpec(row.ID, now))
 	}
 	_, err = jobs.EnqueueMany(tx, specs)
 	return err

@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -36,10 +35,6 @@ const (
 	kindMessageSend  = "message.send"
 	kindMessageBatch = "message.deliver_batch"
 	messageBatchSize = 50
-	// Attempts: a batch rides out a provider outage of about an hour (30 seconds doubling, the
-	// jobs backoff) before its rows are marked failed.
-	messageSendAttempts  = 5
-	messageBatchAttempts = 8
 )
 
 type messageSendJob struct {
@@ -53,7 +48,7 @@ type messageBatchJob struct {
 
 func (a *App) messageKinds() []jobs.Kind {
 	return []jobs.Kind{
-		{Name: kindMessageSend, Label: "Getting an announcement ready to send", MaxAttempts: messageSendAttempts,
+		{Type: messageSendType, Label: "Getting an announcement ready to send",
 			Run: func(ctx context.Context, payload json.RawMessage) error {
 				var p messageSendJob
 				if err := json.Unmarshal(payload, &p); err != nil {
@@ -61,7 +56,7 @@ func (a *App) messageKinds() []jobs.Kind {
 				}
 				return a.prepareMessage(ctx, p.MessageID)
 			}},
-		{Name: kindMessageBatch, Label: "Sending an announcement", MaxAttempts: messageBatchAttempts,
+		{Type: messageBatchType, Label: "Sending an announcement",
 			Run: func(ctx context.Context, payload json.RawMessage) error {
 				var p messageBatchJob
 				if err := json.Unmarshal(payload, &p); err != nil {
@@ -78,11 +73,9 @@ func (a *App) backgroundKinds() []jobs.Kind {
 }
 
 // enqueueMessageSend queues message.send for a message scheduled at when.
-// The key carries the time, so rescheduling queues a new job and the old
-// one finds the message not yet due and does nothing.
+// The key carries the time (messageSendKey).
 func enqueueMessageSend(tx *gorm.DB, id uint, when time.Time) error {
-	_, err := jobs.Enqueue(tx, kindMessageSend, messageSendJob{MessageID: id}, when,
-		"message.send:"+historyID(id)+":"+strconv.FormatInt(when.Unix(), 10), messageSendAttempts)
+	_, err := messageSendType.Enqueue(tx, messageSendJob{MessageID: id}, when, messageSendKey(id, when))
 	return err
 }
 
@@ -345,16 +338,13 @@ func revalidateSnapshotRows(rows []models.MessageRecipient, live map[uint]bool) 
 }
 
 // enqueueBatches queues message.deliver_batch jobs of 50 for ids. gen is
-// "" for the first send and a fresh value for each "Try again", so a
-// retry's keys never collide with the jobs already done.
+// "" for the first send and a fresh value for each "Try again"
+// (messageBatchKeyPrefix).
 func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
-	prefix := "message.batch:" + historyID(messageID) + ":"
-	if gen != "" {
-		prefix += gen + ":"
-	}
+	prefix := messageBatchKeyPrefix(messageID, gen)
 	return eachChunk(ids, messageBatchSize, func(batch []uint) error {
-		_, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
-			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts)
+		_, err := messageBatchType.Enqueue(tx, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
+			prefix+idString(batch[0])+":"+idString(batch[len(batch)-1]))
 		return err
 	})
 }
@@ -749,7 +739,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 			title = *occ.TitleOverride
 		}
 	}
-	link := a.emailLink("/events/" + historyID(ev.ID))
+	link := a.emailLink("/events/" + idString(ev.ID))
 	for id := range out {
 		out[id][content.FieldEventTitle], out[id][content.FieldEventLink], out[id][content.FieldManageLink] = title, link, link
 	}
@@ -779,7 +769,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 	db := a.DB.WithContext(ctx)
 	live := func(kind string) string {
 		return `NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = '` + kind + `' AND j.status IN ('queued', 'running', 'failed')
-			AND (j.payload->>'messageId')::bigint = messages.id)`
+			AND (j.payload->>'` + messageJobIDField + `')::bigint = messages.id)`
 	}
 	var stuck []models.Message
 	if err := db.Select("id, author_id").Where("status = ? AND category <> ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, models.MessageCategoryReminder, now.Add(-time.Hour)).
@@ -868,7 +858,7 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 // group ("g<id>", including its events) or a church-wide event ("e<id>").
 func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 	if au.Type == policy.AudienceGroup {
-		return []string{"g" + historyID(au.GroupID)}, nil
+		return []string{"g" + idString(au.GroupID)}, nil
 	}
 	ids, err := a.audienceEventIDs(a.DB, au)
 	if err != nil || len(ids) == 0 {
@@ -881,9 +871,9 @@ func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 	out := []string{}
 	seen := map[string]bool{}
 	for _, ev := range evs {
-		k := "e" + historyID(ev.ID)
+		k := "e" + idString(ev.ID)
 		if ev.GroupID != nil {
-			k = "g" + historyID(*ev.GroupID)
+			k = "g" + idString(*ev.GroupID)
 		}
 		if !seen[k] {
 			seen[k] = true

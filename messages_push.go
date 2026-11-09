@@ -135,8 +135,8 @@ func enqueueMessagePushes(tx *gorm.DB, messageID uint) error {
 	now := time.Now()
 	specs := make([]jobs.Spec, 0, len(pairs))
 	for _, p := range pairs {
-		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, RunAt: now,
-			UniqueKey: "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID), MaxAttempts: pushDeliverAttempts})
+		specs = append(specs, pushDeliverType.Spec(pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, now,
+			pushRecipientKey(p.RecipientID, p.DeviceID)))
 	}
 	if _, err := jobs.EnqueueMany(tx, specs); err != nil {
 		return err
@@ -267,7 +267,7 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 	title, text := messagePushText(&m, vals)
 	what := fmt.Sprintf("message %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
-		Title: title, Body: text, Navigate: a.emailLink(messageReadPath(m.ID)), Tag: "m" + historyID(m.ID),
+		Title: title, Body: text, Navigate: a.emailLink(messageReadPath(m.ID)), Tag: "m" + idString(m.ID),
 	}))
 	if err != nil {
 		log.Printf("push: %s is too large to push: a bug in its push text", what)
@@ -299,7 +299,7 @@ func (a *App) pushValues(db *gorm.DB, m *models.Message, u *models.User) (map[st
 }
 
 // messageReadPath is where a recipient reads an announcement in Fold.
-func messageReadPath(id uint) string { return "/messages/" + historyID(id) + "/read" }
+func messageReadPath(id uint) string { return "/messages/" + idString(id) + "/read" }
 
 var (
 	// A link's address after its text in the plain-text part, as
@@ -406,7 +406,7 @@ func reapMessagePushes(db *gorm.DB, now time.Time) (int64, error) {
 	res := db.Exec(`UPDATE message_recipients r SET status = ?, reason = ?, updated_at = ?
 		WHERE r.channel = 'push' AND r.status = 'queued' AND r.updated_at < ?
 		AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = ? AND j.status IN ('queued', 'running', 'failed')
-			AND (j.payload->>'messageRecipientId')::bigint = r.id)`,
-		models.RecipientSuppressed, pushWhyStopped, now, now.Add(-time.Hour), kindPushDeliver)
+			AND (j.payload->>?)::bigint = r.id)`,
+		models.RecipientSuppressed, pushWhyStopped, now, now.Add(-time.Hour), kindPushDeliver, pushJobRecipientField)
 	return res.RowsAffected, res.Error
 }

@@ -63,6 +63,8 @@ const (
 	reminderWaitlist = "waitlist"
 )
 
+var reminderSendType = jobs.Type{Name: kindReminderSend}
+
 type reminderJob struct {
 	OccurrenceID uint  `json:"occurrenceId"`
 	StartsAt     int64 `json:"startsAt"`
@@ -70,7 +72,7 @@ type reminderJob struct {
 }
 
 func (a *App) reminderKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindReminderSend, Label: "Sending an event reminder", MaxAttempts: jobs.DefaultMaxAttempts,
+	return []jobs.Kind{{Type: reminderSendType, Label: "Sending an event reminder",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
 			var p reminderJob
 			if err := json.Unmarshal(payload, &p); err != nil {
@@ -82,9 +84,9 @@ func (a *App) reminderKinds() []jobs.Kind {
 
 // hourlyKinds are queued once an hour (jobs_daily.go).
 func (a *App) hourlyKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindReminderSweep, Label: "Lining up event reminders", MaxAttempts: jobs.DefaultMaxAttempts,
+	return []jobs.Kind{{Type: jobs.Type{Name: kindReminderSweep}, Hourly: true, Label: "Lining up event reminders",
 		Run: func(ctx context.Context, _ json.RawMessage) error { return a.sweepReminders(ctx, time.Now()) }},
-		{Name: kindNotifyReconcile, Label: "Checking for notices that still need sending", MaxAttempts: jobs.DefaultMaxAttempts,
+		{Type: jobs.Type{Name: kindNotifyReconcile}, Hourly: true, Label: "Checking for notices that still need sending",
 			Run: func(ctx context.Context, _ json.RawMessage) error { return a.reconcileNotifications(ctx, time.Now()) }}}
 }
 
@@ -116,9 +118,8 @@ func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 		if at.Before(now) {
 			at = now
 		}
-		key := kindReminderSend + ":" + historyID(r.ID) + ":" + strconv.FormatInt(r.StartsAt.Unix(), 10) + ":" + strconv.Itoa(r.Minutes)
-		if _, err := jobs.Enqueue(a.DB.WithContext(ctx), kindReminderSend, reminderJob{OccurrenceID: r.ID, StartsAt: r.StartsAt.Unix(), Minutes: r.Minutes},
-			at, key, jobs.DefaultMaxAttempts); err != nil {
+		key := kindReminderSend + ":" + idString(r.ID) + ":" + strconv.FormatInt(r.StartsAt.Unix(), 10) + ":" + strconv.Itoa(r.Minutes)
+		if _, err := reminderSendType.Enqueue(a.DB.WithContext(ctx), reminderJob{OccurrenceID: r.ID, StartsAt: r.StartsAt.Unix(), Minutes: r.Minutes}, at, key); err != nil {
 			return err
 		}
 	}
@@ -188,7 +189,7 @@ func (a *App) sendReminder(ctx context.Context, p reminderJob, now time.Time) er
 // writeReminder writes one reminder message, or finds the one already
 // written, and returns its id if it still needs preparing (0 if not).
 func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence, p reminderJob, kind string, now time.Time) (uint, error) {
-	key := kind + ":" + historyID(occ.ID) + ":" + strconv.FormatInt(p.StartsAt, 10) + ":" + strconv.Itoa(p.Minutes)
+	key := kind + ":" + idString(occ.ID) + ":" + strconv.FormatInt(p.StartsAt, 10) + ":" + strconv.Itoa(p.Minutes)
 	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{reminderStatus(kind)}})
 	subject, body := reminderText(kind, occurrencePlace(ev, occ), p.Minutes)
 	clean := content.SanitizeHTML(body)

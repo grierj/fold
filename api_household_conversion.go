@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -355,7 +354,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID, "householdId": person.HouseholdID}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		_, err = jobs.Enqueue(tx, kindInvitationMail, invitationMailJob{InvitationID: inv.ID}, time.Now(), "", directMailAttempts)
+		_, err = invitationMailType.Enqueue(tx, invitationMailJob{InvitationID: inv.ID}, time.Now(), "")
 		return err
 	})
 	if err != nil {

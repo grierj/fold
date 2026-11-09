@@ -83,7 +83,7 @@ func (a *App) sampleValues(m *models.Message, me *models.User) map[string]string
 	} else {
 		q = q.Where("status = ? AND starts_at >= ?", models.OccurrenceScheduled, time.Now()).Order("starts_at")
 	}
-	link := a.emailLink("/events/" + historyID(ev.ID))
+	link := a.emailLink("/events/" + idString(ev.ID))
 	vals[content.FieldEventTitle], vals[content.FieldEventLink], vals[content.FieldManageLink] = ev.Title, link, link
 	found := q.First(&occ).Error == nil
 	if !found && au.Type == policy.AudienceEventSeries {

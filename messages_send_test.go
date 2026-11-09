@@ -115,7 +115,7 @@ func TestMessagePipelineSendsAndRecordsWhoWasSkipped(t *testing.T) {
 	// Running again sends nothing twice.
 	var before int64
 	f.app.DB.Model(&models.MailOutbox{}).Count(&before)
-	if _, err := jobs.Enqueue(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
+	if _, err := enqueueJob(f.app.DB, kindMessageSend, messageSendJob{MessageID: id}, time.Now(), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	runMessageJobs(t, f.app)
@@ -253,7 +253,7 @@ func TestMessagePipelineShowsAProviderOutage(t *testing.T) {
 	}
 	var attempts int
 	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindMessageBatch).Pluck("attempts", &attempts)
-	if attempts != messageBatchAttempts {
+	if attempts != messageBatchType.MaxAttempts {
 		t.Fatalf("batch attempts: %d", attempts)
 	}
 	if rows := recipientsOf(t, f.app, id); rows[f.teen.Email].Status != models.RecipientFailed || rows[f.teen.Email].Error == "" {

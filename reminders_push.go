@@ -61,7 +61,7 @@ const (
 // moved date gets a new reminder (and the old one's rows send nothing);
 // 120 keeps the key in the email reminders' four-part shape.
 func pushReminderKey(occID uint, start time.Time) string {
-	return reminderPushKind + ":" + historyID(occID) + ":" + strconv.FormatInt(start.Unix(), 10) + ":" + strconv.Itoa(int(pushReminderLead/time.Minute))
+	return reminderPushKind + ":" + idString(occID) + ":" + strconv.FormatInt(start.Unix(), 10) + ":" + strconv.Itoa(int(pushReminderLead/time.Minute))
 }
 
 // pushReminderStart is the start a push reminder key names.
@@ -260,8 +260,8 @@ func enqueuePushReminderJobs(tx *gorm.DB, messageID uint, at map[uint]time.Time)
 	}
 	specs := make([]jobs.Spec, 0, len(pairs))
 	for _, p := range pairs {
-		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID, PlannedAt: at[p.UserID].Unix()}, RunAt: at[p.UserID],
-			UniqueKey: "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID), MaxAttempts: pushDeliverAttempts})
+		specs = append(specs, pushDeliverType.Spec(pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID, PlannedAt: at[p.UserID].Unix()}, at[p.UserID],
+			pushRecipientKey(p.RecipientID, p.DeviceID)))
 	}
 	if _, err := jobs.EnqueueMany(tx, specs); err != nil {
 		return err
@@ -365,7 +365,7 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 	head, text := reminderPushText(title, occ.StartsAt, loc, now)
 	what := fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
-		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + historyID(occ.ID),
+		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))), Tag: "r" + idString(occ.ID),
 	}))
 	if err != nil {
 		return record(models.RecipientFailed, pushWhyTooLarge)

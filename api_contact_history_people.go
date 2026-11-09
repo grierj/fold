@@ -65,7 +65,7 @@ func (a *App) apiContactHistoryPeople(c *gin.Context) {
 	}
 	for i := range users {
 		u := &users[i]
-		out.People = append(out.People, contactHistoryPersonJSON{ID: historyID(u.ID), Name: u.PublicName(), Email: u.Email})
+		out.People = append(out.People, contactHistoryPersonJSON{ID: idString(u.ID), Name: u.PublicName(), Email: u.Email})
 	}
 	c.JSON(http.StatusOK, out)
 }

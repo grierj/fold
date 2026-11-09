@@ -1304,3 +1304,9 @@ func noticeIDsAfter(t *testing.T, db *gorm.DB, after uint) []uint {
 	}
 	return ids
 }
+
+// enqueueJob queues one job of a throwaway type with the given attempts, for
+// tests that seed the table with a kind of their own.
+func enqueueJob(db *gorm.DB, kind string, payload any, at time.Time, key string, attempts int) (bool, error) {
+	return jobs.Type{Name: kind, MaxAttempts: attempts}.Enqueue(db, payload, at, key)
+}

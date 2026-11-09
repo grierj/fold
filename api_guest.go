@@ -194,7 +194,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 			// the account has then. A failed write is the same failure as a
 			// failed stored registration. No request context: a disconnect
 			// cannot abort the durable write, as in the stored path.
-			if _, err := jobs.Enqueue(a.DB, kindAccountExistsMail, userMailJob{UserID: existing.ID}, time.Now(), "", directMailAttempts); err != nil {
+			if _, err := accountExistsMailType.Enqueue(a.DB, userMailJob{UserID: existing.ID}, time.Now(), ""); err != nil {
 				log.Printf("account-exists hint: %s", jobs.CleanError(err))
 				jsonError(c, http.StatusInternalServerError, "could not save your registration")
 				return
@@ -230,7 +230,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		if err := tx.Create(&signup).Error; err != nil {
 			return err
 		}
-		_, err := jobs.Enqueue(tx, kindGuestVerifyMail, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "", directMailAttempts)
+		_, err := guestVerifyMailType.Enqueue(tx, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "")
 		return err
 	}); err != nil {
 		log.Printf("guest registration: %s", jobs.CleanError(err))

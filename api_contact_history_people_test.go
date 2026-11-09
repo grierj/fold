@@ -27,7 +27,7 @@ func getContactHistoryPeople(t *testing.T, client *apiClient, query string) cont
 }
 
 func contactHistoryPeopleHasID(people []contactHistoryPersonJSON, id uint) bool {
-	want := historyID(id)
+	want := idString(id)
 	for _, person := range people {
 		if person.ID == want {
 			return true
@@ -154,7 +154,7 @@ func TestContactHistoryPeopleCapsResultsAndKeepsExactClosedDTO(t *testing.T) {
 		"?id=abc&q=exact-picker",
 		"?id=9223372036854775808",
 		"?id=9007199254740992",
-		"?id=" + historyID(deleted.ID),
+		"?id=" + idString(deleted.ID),
 		"?email=unknown%40example.com&q=exact-picker",
 		"?email=" + url.QueryEscape(strings.Repeat("x", 255)),
 		"?q=%00",

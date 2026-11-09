@@ -25,8 +25,7 @@ import (
 // records the push channel, whatever the device count.
 
 const (
-	kindPushDeliver     = "push.deliver"
-	pushDeliverAttempts = jobs.DefaultMaxAttempts
+	kindPushDeliver = "push.deliver"
 	// How long a push service keeps an undelivered message (research 2.4):
 	// a change to a date in the next 24 hours, an ordinary notice, and an
 	// admin task. The bell and email are the record, so an expired push is
@@ -53,13 +52,12 @@ type pushJob struct {
 
 // enqueuePushDelivery queues one notification for one device, once.
 func enqueuePushDelivery(tx *gorm.DB, notificationID, deviceID uint, at time.Time) error {
-	key := "push:n:" + strconv.FormatUint(uint64(notificationID), 10) + ":d:" + strconv.FormatUint(uint64(deviceID), 10)
-	_, err := jobs.Enqueue(tx, kindPushDeliver, pushJob{NotificationID: notificationID, DeviceID: deviceID}, at, key, pushDeliverAttempts)
+	_, err := pushDeliverType.Enqueue(tx, pushJob{NotificationID: notificationID, DeviceID: deviceID}, at, pushNotificationKey(notificationID, deviceID))
 	return err
 }
 
 func (a *App) pushKinds() []jobs.Kind {
-	return []jobs.Kind{{Name: kindPushDeliver, Label: "Sending a notification to a device", MaxAttempts: pushDeliverAttempts,
+	return []jobs.Kind{{Type: pushDeliverType, Label: "Sending a notification to a device",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
 			var p pushJob
 			if err := json.Unmarshal(payload, &p); err != nil {
@@ -67,7 +65,7 @@ func (a *App) pushKinds() []jobs.Kind {
 			}
 			return a.deliverPush(ctx, p)
 		}},
-		{Name: kindPushDevicesOff, Label: "Telling someone their devices' notifications were turned off",
+		{Type: pushDevicesOffType, Label: "Telling someone their devices' notifications were turned off",
 			Run: func(ctx context.Context, payload json.RawMessage) error {
 				var p devicesOffJob
 				if err := json.Unmarshal(payload, &p); err != nil {

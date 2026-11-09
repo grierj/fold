@@ -184,7 +184,7 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 		log.Printf("guardian consent email limited: actor=%d err=%s", me.ID, jobs.CleanError(err))
 	} else if !allowed {
 		log.Printf("guardian consent email limited: actor=%d", me.ID)
-	} else if _, err := jobs.Enqueue(a.DB, kindGuardianConsentMail, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), "", directMailAttempts); err != nil {
+	} else if _, err := guardianConsentMailType.Enqueue(a.DB, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), ""); err != nil {
 		log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in 24 hours."})

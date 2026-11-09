@@ -27,7 +27,23 @@ const (
 	kindEmailVerifyMail     = "account.email_verify_mail"
 	kindGuardianConsentMail = "guardian.consent_mail"
 	kindGuestVerifyMail     = "guest.verify_mail"
-	directMailAttempts      = 8
+)
+
+// directMailAttempts is the attempts of every direct-mail job: eight on
+// jobs.Backoff span about an hour.
+const directMailAttempts = 8
+
+func directMail(kind string) jobs.Type { return jobs.Type{Name: kind, MaxAttempts: directMailAttempts} }
+
+// The direct-mail job types, queued with <type>.Enqueue(tx, <payload>, now, "").
+var (
+	passwordResetMailType   = directMail(kindPasswordResetMail)
+	accountRequestMailType  = directMail(kindAccountRequestMail)
+	accountExistsMailType   = directMail(kindAccountExistsMail)
+	invitationMailType      = directMail(kindInvitationMail)
+	emailVerifyMailType     = directMail(kindEmailVerifyMail)
+	guardianConsentMailType = directMail(kindGuardianConsentMail)
+	guestVerifyMailType     = directMail(kindGuestVerifyMail)
 )
 
 // Account-request mail cases. The case is the only non-ID payload value: it
@@ -71,85 +87,58 @@ type guestVerifyMailJob struct {
 	GuestSignupID uint `json:"guestSignupId"`
 }
 
+// idMailKind registers one direct-mail kind whose payload P names a stored
+// row by id. prep renders from the row as it is now, or reports false when
+// nothing should be sent.
+func idMailKind[P any](a *App, t jobs.Type, label string, id func(P) uint, prep func(tx *gorm.DB, p P) (mail.Message, bool, error)) jobs.Kind {
+	return jobs.Kind{Type: t, Label: label,
+		Run: func(ctx context.Context, payload json.RawMessage) error {
+			var p P
+			if err := json.Unmarshal(payload, &p); err != nil {
+				return err
+			}
+			return a.prepareAndSend(ctx, t.Name, id(p), func(tx *gorm.DB) (mail.Message, bool, error) { return prep(tx, p) })
+		}}
+}
+
 func (a *App) mailKinds() []jobs.Kind {
-	return []jobs.Kind{{
-		Name: kindPasswordResetMail, Label: "Sending a password reset link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p userMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindPasswordResetMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
+	return []jobs.Kind{
+		idMailKind(a, passwordResetMailType, "Sending a password reset link",
+			func(p userMailJob) uint { return p.UserID },
+			func(tx *gorm.DB, p userMailJob) (mail.Message, bool, error) {
 				return a.preparePasswordReset(tx, p.UserID)
-			})
-		},
-	}, {
-		Name: kindAccountRequestMail, Label: "Sending an account request email", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p requestMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindAccountRequestMail, p.RequestID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, accountRequestMailType, "Sending an account request email",
+			func(p requestMailJob) uint { return p.RequestID },
+			func(tx *gorm.DB, p requestMailJob) (mail.Message, bool, error) {
 				return a.prepareAccountRequestMail(tx, p.RequestID, p.Case)
-			})
-		},
-	}, {
-		Name: kindAccountExistsMail, Label: "Sending an already-have-an-account email", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p userMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindAccountExistsMail, p.UserID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, accountExistsMailType, "Sending an already-have-an-account email",
+			func(p userMailJob) uint { return p.UserID },
+			func(tx *gorm.DB, p userMailJob) (mail.Message, bool, error) {
 				return a.prepareExistingAccountHint(tx, p.UserID)
-			})
-		},
-	}, {
-		Name: kindInvitationMail, Label: "Sending an account invitation", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p invitationMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindInvitationMail, p.InvitationID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, invitationMailType, "Sending an account invitation",
+			func(p invitationMailJob) uint { return p.InvitationID },
+			func(tx *gorm.DB, p invitationMailJob) (mail.Message, bool, error) {
 				return a.prepareInvitationMail(tx, p.InvitationID)
-			})
-		},
-	}, {
-		Name: kindEmailVerifyMail, Label: "Sending an email change verification link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p accountTokenMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindEmailVerifyMail, p.AccountTokenID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, emailVerifyMailType, "Sending an email change verification link",
+			func(p accountTokenMailJob) uint { return p.AccountTokenID },
+			func(tx *gorm.DB, p accountTokenMailJob) (mail.Message, bool, error) {
 				return a.prepareEmailVerification(tx, p.AccountTokenID)
-			})
-		},
-	}, {
-		Name: kindGuardianConsentMail, Label: "Sending a guardian consent link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p guardianConsentMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindGuardianConsentMail, p.GuardianLinkID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, guardianConsentMailType, "Sending a guardian consent link",
+			func(p guardianConsentMailJob) uint { return p.GuardianLinkID },
+			func(tx *gorm.DB, p guardianConsentMailJob) (mail.Message, bool, error) {
 				return a.prepareGuardianConsentMail(tx, p.GuardianLinkID)
-			})
-		},
-	}, {
-		Name: kindGuestVerifyMail, Label: "Sending a guest registration confirmation link", MaxAttempts: directMailAttempts,
-		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var p guestVerifyMailJob
-			if err := json.Unmarshal(payload, &p); err != nil {
-				return err
-			}
-			return a.prepareAndSend(ctx, kindGuestVerifyMail, p.GuestSignupID, func(tx *gorm.DB) (mail.Message, bool, error) {
+			}),
+		idMailKind(a, guestVerifyMailType, "Sending a guest registration confirmation link",
+			func(p guestVerifyMailJob) uint { return p.GuestSignupID },
+			func(tx *gorm.DB, p guestVerifyMailJob) (mail.Message, bool, error) {
 				return a.prepareGuestVerification(tx, p.GuestSignupID)
-			})
-		},
-	}}
+			}),
+	}
 }
 
 // prepareGuestVerification rotates the hash of one pending guest signup and

@@ -243,7 +243,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		_, err = jobs.Enqueue(tx, kindEmailVerifyMail, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "", directMailAttempts)
+		_, err = emailVerifyMailType.Enqueue(tx, accountTokenMailJob{AccountTokenID: verifyID}, time.Now(), "")
 		return err
 	})
 	if answerStaleSession(c, err) {

@@ -360,7 +360,7 @@ func parsedMailViolations(file string, positions *token.FileSet, tree *ast.File,
 				bad = append(bad, at+" (write the notice with notify.Send; delivery is automatic (R6))")
 			}
 			if id.Name == "runInBackground" {
-				bad = append(bad, at+" (queue durable work with jobs.Enqueue; untracked background mail is forbidden)")
+				bad = append(bad, at+" (queue durable work with a jobs.Type's Enqueue; untracked background mail is forbidden)")
 			}
 		}
 		if sel, ok := node.(*ast.SelectorExpr); ok && checkMailer {
