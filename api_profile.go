@@ -235,7 +235,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		if err != nil {
 			return err
 		}
-		cancelRaw, err = createAccountToken(tx, models.TokenEmailChangeCancel, u.ID, nil, tokenTTL)
+		cancelRaw, _, err = issueAccountToken(tx, models.TokenEmailChangeCancel, u.ID, nil, tokenTTL)
 		if err != nil {
 			return err
 		}
