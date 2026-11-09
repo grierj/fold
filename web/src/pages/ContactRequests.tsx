@@ -8,14 +8,11 @@ import { ContactContextLink, ContactGrantCard, contactFieldsLabel } from "../com
 import { Button, ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { FormError } from "../components/ui/Field";
-import { Decision, decisionLabels } from "../components/Decision";
+import { Decision } from "../components/Decision";
+import { contactRequestStatusLabel, decisionLabel } from "../lib/status";
 import { errorText } from "../lib/errors";
 import { useCursorList } from "../lib/useCursorList";
 import { formatWhen } from "../lib/when";
-
-const statusLabels: Record<ContactRequest["status"], string> = {
-  pending: "Waiting for a decision", granted: "Approved", denied: "Denied", withdrawn: "Withdrawn", expired: "Expired", ended: "Ended",
-};
 
 export function ContactRequestsPage() {
   const { user } = useAuth();
@@ -43,8 +40,8 @@ function ContactRequestLists() {
         {!requests.items.length && <EmptyState title="No contact requests yet" body="Requests you send or can review will appear here. To ask for contact details, open the person's card in a group or event you manage." />}
         <ul className="fold-list">{requests.items.map((r) => <li key={r.id} className="fold-list-row wrap-anywhere">
           <p className="font-semibold">{r.requesterName} → {r.subjectName}</p>
-          <p>{contactFieldsLabel(r.fields)} · {statusLabels[r.status]}</p>
-          {r.needsAdmin && <p className="text-sm">Person: {decisionLabels[r.subjectDecision]} · Admin: {decisionLabels[r.adminDecision]}</p>}
+          <p>{contactFieldsLabel(r.fields)} · {contactRequestStatusLabel(r.status)}</p>
+          {r.needsAdmin && <p className="text-sm">Person: {decisionLabel(r.subjectDecision)} · Admin: {decisionLabel(r.adminDecision)}</p>}
           <ButtonLink variant="link" to={`/contact-requests/${r.id}`}>Review request #{r.id}</ButtonLink>
         </li>)}</ul>
         {requests.more && <Button variant="secondary" disabled={busy} onClick={() => void requests.older()}>Load older requests</Button>}
@@ -113,7 +110,7 @@ function ContactRequestDetail({ id }: { id: number }) {
     {loaded && !request && !grants.length && <EmptyState title="Contact access is not available" body="This request or grant may have ended, or may not be yours to review. Open your contact history to see what is available to you." />}
     {loaded && request && <section aria-label="Contact request review" className="fold-section space-y-3 wrap-anywhere">
       <h2 className="text-xl font-bold">{request.requesterName} → {request.subjectName}</h2>
-      <p>{contactFieldsLabel(request.fields)} · {statusLabels[request.status]}</p>
+      <p>{contactFieldsLabel(request.fields)} · {contactRequestStatusLabel(request.status)}</p>
       <ContactContextLink {...request} />
       <p className="text-sm text-text-muted">Sent {formatWhen(request.createdAt)} · Expires {formatWhen(request.expiresAt)}</p>
       {request.reason ? <div><h3 className="font-semibold">Reason</h3><p className="whitespace-pre-wrap">{request.reason}</p></div> : <p>No reason was added.</p>}

@@ -40,9 +40,10 @@ export const isVideoError = (err: unknown) => {
   return code === "invalid_video_url" || code === "invalid_video_provider" || code === "invalid_video_reveal";
 };
 
-// focusVideoUrl moves focus to the link input after an error.
-export function focusVideoUrl(idPrefix: string) {
-  setTimeout(() => document.getElementById(`video-url-${idPrefix}`)?.focus(), 0);
+// videoBody is the wire form: a chosen provider sends its trimmed link, none
+// clears it.
+export function videoBody(v: VideoValue) {
+  return { videoProvider: v.provider, videoUrl: v.provider === "none" ? "" : v.url.trim(), videoReveal: v.reveal };
 }
 
 export function VideoField({

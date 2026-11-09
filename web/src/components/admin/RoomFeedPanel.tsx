@@ -1,102 +1,29 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { AdminRooms } from "../../api/rooms";
 import type { Room } from "../../types";
-import { errorText } from "../../lib/errors";
-import { useLoad } from "../../lib/useLoad";
-import { formatEventDay } from "../../lib/when";
 import { Button } from "../ui/Button";
-import { Field, FormError, Input } from "../ui/Field";
-import { Skeleton } from "../ui/Skeleton";
-import { ErrorNotice } from "../ErrorNotice";
+import { SecretFeedLink, useSecretFeed } from "../SecretFeedLink";
 
 // A room's calendar feed (M2.2b, 8.2): an admin makes a secret link the
 // office or a calendar app can subscribe to. It behaves like the personal
-// CalendarFeedCard: the link shows once, a new link stops the old one, and
-// a failed load never looks like "no link yet".
+// CalendarFeedCard (both are SecretFeedLink).
 export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => void }) {
-  const feed = useLoad(() => AdminRooms.getFeed(room.id), [room.id]);
-  const loaded = feed.data !== undefined;
-  const loadError = feed.error ? errorText(feed.error, "We couldn't load this room's calendar link.") : null;
-  const [hasToken, setHasToken] = useState(false);
-  const [createdAt, setCreatedAt] = useState<string | null>(null);
-  const [link, setLink] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
-  const linkRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-
-  // Each answer fills the state in the render that first sees it.
-  const [applied, setApplied] = useState(feed.data);
-  if (feed.data && feed.data !== applied) {
-    setApplied(feed.data);
-    setHasToken(feed.data.feed.hasToken);
-    setCreatedAt(feed.data.feed.createdAt);
-  }
+  const feed = useSecretFeed({
+    load: async () => (await AdminRooms.getFeed(room.id)).feed,
+    deps: [room.id],
+    create: async () => (await AdminRooms.makeFeed(room.id)).feed,
+    revoke: () => AdminRooms.revokeFeed(room.id).then(() => undefined),
+    failed: {
+      load: "We couldn't load this room's calendar link.",
+      create: "We couldn't make the calendar link.",
+      revoke: "We couldn't turn off the calendar link.",
+    },
+    // The button that was pressed is gone; keep keyboard users in the panel.
+    onRevoked: () => headingRef.current?.focus(),
+  });
   // The button that opened the panel is gone, so focus starts on its heading.
   useEffect(() => { headingRef.current?.focus(); }, [room.id]);
-
-  async function create() {
-    setBusy(true);
-    setError(null);
-    setStatus("");
-    try {
-      const r = await AdminRooms.makeFeed(room.id);
-      setHasToken(true);
-      setCreatedAt(r.feed.createdAt);
-      setLink(r.feed.url ?? null);
-    } catch (err) {
-      setError(errorText(err, "We couldn't make the calendar link."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // A new link appears in the box: put focus there so it can be copied.
-  useEffect(() => {
-    if (link) linkRef.current?.focus();
-  }, [link]);
-
-  async function remake() {
-    if (!confirm(`Make a new calendar link for ${room.name}? The old link will stop working.`)) return;
-    await create();
-  }
-
-  async function turnOff() {
-    if (!confirm(`Turn off the calendar link for ${room.name}? Calendar apps using it will stop updating.`)) return;
-    setBusy(true);
-    setError(null);
-    setStatus("");
-    try {
-      await AdminRooms.revokeFeed(room.id);
-      setHasToken(false);
-      setCreatedAt(null);
-      setLink(null);
-      setStatus("Calendar link turned off.");
-      // The button that was pressed is gone; keep keyboard users in the panel.
-      headingRef.current?.focus();
-    } catch (err) {
-      setError(errorText(err, "We couldn't turn off the calendar link."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function copyLink() {
-    if (!link) return;
-    setError(null);
-    if (navigator.clipboard) {
-      try {
-        await navigator.clipboard.writeText(link);
-        setStatus("Link copied.");
-        return;
-      } catch {
-        // Fall through to selecting the text by hand.
-      }
-    }
-    linkRef.current?.select();
-    setStatus("The link is selected. Copy it from the box above.");
-  }
 
   return (
     <section aria-labelledby={`room-feed-${room.id}`} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
@@ -108,56 +35,21 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
         with the link sees each booking&rsquo;s title, time and link; invite-only dates show only as
         Reserved. In a calendar app, choose Add calendar &rarr; From URL (or Subscribe) and paste the link.
       </p>
-      {loadError ? (
-        <ErrorNotice message={loadError} onRetry={feed.retry} />
-      ) : !loaded ? (
-        <Skeleton kind="lines" count={2} label="Loading the room's calendar link…" />
-      ) : (
-        <>
-          {error && <FormError>{error}</FormError>}
-          {link ? (
-            <Field
-              id={`room-feed-link-${room.id}`}
-              label="Calendar link"
-              hint="Save this link now; we won't show it again. Making a new link stops the old one."
-            >
-              <Input ref={linkRef} value={link} readOnly layout="font-mono text-sm" onFocus={(e) => e.currentTarget.select()} />
-            </Field>
-          ) : hasToken ? (
-            <p className="text-sm text-text-muted">
-              A calendar link is on{createdAt ? `, made ${formatEventDay(createdAt)}` : ""}. We can&rsquo;t show it
-              again, so make a new one if you need to set it up somewhere else.
-            </p>
-          ) : (
-            <p className="text-sm text-text-muted">This room doesn&rsquo;t have a calendar link yet.</p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {hasToken ? (
-              <>
-                {link && (
-                  <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void copyLink()}>
-                    Copy link
-                  </Button>
-                )}
-                <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => void remake()} disabled={busy}>
-                  {busy ? "Saving…" : "Make a new link"}
-                </Button>
-                <Button variant="danger-outline" layout="w-full sm:w-auto" onClick={() => void turnOff()} disabled={busy}>
-                  Turn off calendar link
-                </Button>
-              </>
-            ) : (
-              <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void create()} disabled={busy}>
-                {busy ? "Saving…" : "Create calendar link"}
-              </Button>
-            )}
-          </div>
-        </>
-      )}
-      <Button variant="ghost" layout="w-full sm:w-auto" onClick={onClose}>
-        Done
-      </Button>
-      <p role="status" className="text-success text-sm empty:hidden">{status}</p>
+      <SecretFeedLink
+        feed={feed}
+        id={`room-feed-link-${room.id}`}
+        loadingLabel="Loading the room's calendar link…"
+        linkLabel="Calendar link"
+        linkHint="Save this link now; we won't show it again. Making a new link stops the old one."
+        setUp={(madeOn) => <>
+          A calendar link is on{madeOn ? `, made ${madeOn}` : ""}. We can&rsquo;t show it
+          again, so make a new one if you need to set it up somewhere else.
+        </>}
+        none={<>This room doesn&rsquo;t have a calendar link yet.</>}
+        confirmRemake={`Make a new calendar link for ${room.name}? The old link will stop working.`}
+        confirmOff={`Turn off the calendar link for ${room.name}? Calendar apps using it will stop updating.`}
+        after={<Button variant="ghost" layout="w-full sm:w-auto" onClick={onClose}>Done</Button>}
+      />
     </section>
   );
 }

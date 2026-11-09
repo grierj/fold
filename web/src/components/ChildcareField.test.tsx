@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { ChildcareField, childcareBody, childcareFrom, childcareProblem, emptyChildcare, focusChildcareCapacity } from "./ChildcareField";
+import { ChildcareField, childcareBody, childcareFrom, childcareProblem, emptyChildcare } from "./ChildcareField";
 
 describe("ChildcareField", () => {
   it("shows optional parent information only when childcare is offered", async () => {
@@ -19,7 +19,7 @@ describe("ChildcareField", () => {
     expect(screen.getByLabelText(/^Notes for parents/)).toHaveAttribute("maxlength", "500");
   });
 
-  it.each(["0", "-1", "1.5", "1e", "100001"])("keeps invalid text %s and focuses the field with its error", async (capacity) => {
+  it.each(["0", "-1", "1.5", "1e", "100001"])("keeps invalid text %s and wires its error", (capacity) => {
     const value = { ...emptyChildcare, available: true, capacity };
     const error = childcareProblem(value);
     expect(error).not.toBeNull();
@@ -29,8 +29,6 @@ describe("ChildcareField", () => {
     expect(input).toHaveAttribute("inputmode", "numeric");
     expect(input).toHaveAttribute("aria-invalid", "true");
     expect(input).toHaveAccessibleDescription(expect.stringContaining(error ?? ""));
-    focusChildcareCapacity("bad");
-    await waitFor(() => expect(input).toHaveFocus());
   });
 
   it("allows an empty limit, maps the fields and ignores the off limit", () => {

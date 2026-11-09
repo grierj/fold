@@ -4,6 +4,8 @@ import { ApiError } from "../../api/core";
 import { RoomRequests } from "../../api/rooms";
 import { errorText } from "../../lib/errors";
 import { roomName } from "../../lib/place";
+import { count } from "../../lib/plural";
+import { OVERLAP_REASON_MAX } from "../../lib/roomLabels";
 import { dayOf, formatDayLong, formatTime, formatWhen } from "../../lib/when";
 import type { RoomRequest } from "../../types";
 import { ErrorNotice } from "../ErrorNotice";
@@ -13,10 +15,9 @@ import { Field, FormError, Textarea } from "../ui/Field";
 import { Skeleton } from "../ui/Skeleton";
 import { AlertCircleIcon } from "../icons";
 
-const REASON_MAX = 500;
 const WHO = "the people running it";
 
-const dateCount = (n: number) => `${n} ${n === 1 ? "date" : "dates"}`;
+const dateCount = (n: number) => count(n, "date");
 
 // "Tuesday, November 10 at 7:00 PM" or "Every date from Tuesday, November 10 at 7:00 PM (40 dates)",
 // in the viewer's zone.
@@ -137,8 +138,8 @@ function RequestRow({ request: r, onDone, onStale }: {
           <p className="text-sm text-warning-on-subtle">
             <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{busyLine(r)} Without a reason, {r.busyDates === 1 ? "it goes" : "they go"} back to {WHO} to pick another room. Give a reason to book {r.busyDates === 1 ? "it" : "them"} anyway.
           </p>
-          <Field id={`${idBase}-reason`} label="Double-book reason" optional hint={`Up to ${REASON_MAX} characters. It goes in the admin record.`}>
-            <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Field id={`${idBase}-reason`} label="Double-book reason" optional hint={`Up to ${OVERLAP_REASON_MAX} characters. It goes in the admin record.`}>
+            <Textarea rows={2} maxLength={OVERLAP_REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <div className="flex flex-wrap gap-3">
             <Button variant="primary" disabled={busy} onClick={() => void approve()}>{busy ? "Approving…" : <>Approve{forTitle}</>}</Button>
@@ -148,8 +149,8 @@ function RequestRow({ request: r, onDone, onStale }: {
       )}
       {mode === "reject" && (
         <div data-panel className="space-y-3">
-          <Field id={`${idBase}-why`} label="Tell them why" optional hint={`Up to ${REASON_MAX} characters.`}>
-            <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Field id={`${idBase}-why`} label="Tell them why" optional hint={`Up to ${OVERLAP_REASON_MAX} characters.`}>
+            <Textarea rows={2} maxLength={OVERLAP_REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <div className="flex flex-wrap gap-3">
             <Button variant="danger-outline" disabled={busy} onClick={() => void reject()}>{busy ? "Sending…" : <>Reject and tell them{forTitle}</>}</Button>

@@ -1667,9 +1667,9 @@ grep -qF 'data-reason-heading={ordinal}' "$ROOT/web/src/components/ReasonReviewL
 grep -qF 'aria-label="Contact-request reasons"' "$ROOT/web/src/components/ReasonReviewList.tsx"
 grep -qF 'label="Keep text"' "$ROOT/web/src/components/ReasonReviewList.tsx"; grep -qF 'label="Blank text"' "$ROOT/web/src/components/ReasonReviewList.tsx"
 grep -qF 'const NOT_CHOSEN_COPY = "Not chosen yet";' "$ROOT/web/src/components/ReasonReviewList.tsx"
-grep -qF 'export const CHANGED_COPY = "Changed since you looked: choose again";' "$ROOT/web/src/components/ReasonReviewList.tsx"
+grep -qF 'const CHANGED_COPY = "Changed since you looked: choose again";' "$ROOT/web/src/components/ReasonReviewList.tsx"
 grep -qF 'nav aria-label="Reasons pages"' "$ROOT/web/src/components/ReasonReviewSection.tsx"
-grep -qF 'export const DISPLAY_PAGE = 50;' "$ROOT/web/src/components/ReasonReviewSection.tsx"
+grep -qF 'const DISPLAY_PAGE = 50;' "$ROOT/web/src/components/ReasonReviewSection.tsx"
 for label in 'Next reason without a choice' 'Next changed reason' 'Go to reason number'; do grep -qF -- "$label" "$ROOT/web/src/components/ReasonReviewSection.tsx"; done
 grep -qF 'Previous {DISPLAY_PAGE}' "$ROOT/web/src/components/ReasonReviewSection.tsx"; grep -qF 'Next {DISPLAY_PAGE}' "$ROOT/web/src/components/ReasonReviewSection.tsx"
 grep -qF 'const unsure = loading ? "of at least " : "of ";' "$ROOT/web/src/components/ReasonReviewSection.tsx"

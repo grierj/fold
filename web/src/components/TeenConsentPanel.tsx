@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminTeenConsents } from "../api/adminUsers";
 import type { TeenConsent, User } from "../types";
@@ -37,8 +38,8 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
       return;
     }
     if (status === "revoked" && !confirm(scope === "account"
-      ? `Revoke account consent for ${user.displayName || user.name}? They will be signed out and can't sign in.`
-      : `Revoke ${scope === "sms" ? "SMS" : "photo"} consent for ${user.displayName || user.name}?`)) return;
+      ? `Revoke account consent for ${publicName(user)}? They will be signed out and can't sign in.`
+      : `Revoke ${scope === "sms" ? "SMS" : "photo"} consent for ${publicName(user)}?`)) return;
     setBusy(true);
     setError(null);
     setEvidenceError(null);
@@ -55,7 +56,7 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
   }
 
   return (
-    <div ref={ref} className="mt-4 border-t border-border pt-4 space-y-4 whitespace-normal" aria-label={`Consent for ${user.displayName || user.name}`}>
+    <div ref={ref} className="mt-4 border-t border-border pt-4 space-y-4 whitespace-normal" aria-label={`Consent for ${publicName(user)}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-semibold">Teen consent</h3>
         <Button variant="ghost" onClick={onClose}>Close consent</Button>
