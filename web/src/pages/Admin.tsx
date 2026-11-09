@@ -21,6 +21,7 @@ import { Invitations } from "../api/invitations";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
+import { SavedStatus, SettingSwitch, useSavedSetting } from "../components/admin/SettingSwitch";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
@@ -1324,32 +1325,13 @@ function InviteTab() {
 // choice, so it saves when changed and goes back if saving fails (DEC-98).
 function SelfSignupSetting() {
   const { site, error: siteError, loading, retry } = useSite();
-  // The choice shown while a save is in flight; null means show the saved one.
-  const [pending, setPending] = useState<"request" | "off" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const setting = useSavedSetting<"request" | "off">();
   // An unreadable setting is not shown as On or Off.
-  const mode = pending ?? site?.selfSignup;
-
-  async function change(next: "request" | "off") {
-    // The options are disabled while a save is in flight, so changes are one
-    // at a time and a failure goes back to the value from before this save.
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminAccountRequests.setSelfSignup(next);
-      invalidateSite({ selfSignup: r.selfSignup });
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
+  const mode = setting.pending ?? site?.selfSignup;
+  const change = (next: "request" | "off") => setting.change(next, async () => {
+    const r = await AdminAccountRequests.setSelfSignup(next);
+    invalidateSite({ selfSignup: r.selfSignup });
+  });
 
   if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the self-signup setting.")} onRetry={retry} /></div>;
   if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
@@ -1361,7 +1343,7 @@ function SelfSignupSetting() {
           label="On"
           description="Requests wait for an admin's approval."
           checked={mode === "request"}
-          disabled={saving}
+          disabled={setting.saving}
           onChange={() => void change("request")}
         />
         <Radio
@@ -1369,12 +1351,11 @@ function SelfSignupSetting() {
           label="Off"
           description="The church office creates accounts."
           checked={mode === "off"}
-          disabled={saving}
+          disabled={setting.saving}
           onChange={() => void change("off")}
         />
       </Choices>
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
+      <SavedStatus ok={setting.ok} error={setting.error} />
     </div>
   );
 }
@@ -1384,41 +1365,16 @@ function SelfSignupSetting() {
 // shows the Rooms tab at once; turning it off hides rooms and deletes nothing.
 // `enabled` is what AdminPage already read from /site (null until it answers).
 function RoomsSetting({ enabled }: { enabled: boolean | null }) {
-  // The choice shown while a save is in flight; null means show `enabled`.
-  const [pending, setPending] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  async function change(next: boolean) {
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminRooms.setEnabled(next);
-      invalidateSite({ roomsEnabled: r.roomsEnabled });
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
-
   return (
-    <div className="mb-6 max-w-xl space-y-2">
-      <Checkbox
-        label="Use rooms"
-        description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
-        checked={pending ?? enabled === true}
-        disabled={saving || enabled === null}
-        onChange={(e) => void change(e.target.checked)}
-      />
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
-    </div>
+    <SettingSwitch
+      label="Use rooms"
+      description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
+      value={enabled}
+      save={async (next) => {
+        const r = await AdminRooms.setEnabled(next);
+        invalidateSite({ roomsEnabled: r.roomsEnabled });
+      }}
+    />
   );
 }
 
@@ -1426,40 +1382,16 @@ function RoomsSetting({ enabled }: { enabled: boolean | null }) {
 // switch it saves when changed and goes back if saving fails (DEC-98). It
 // appears only while rooms are on; `enabled` is null until the rooms list answers.
 function RoomApprovalSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
-  const [pending, setPending] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ok, setOk] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  async function change(next: boolean) {
-    setSaving(true);
-    setPending(next);
-    setError(null);
-    setOk(false);
-    try {
-      const r = await AdminRooms.setApproval(next);
-      onChanged(r.needApproval);
-      setOk(true);
-    } catch (err) {
-      setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  }
-
   return (
-    <div className="mb-6 max-w-xl space-y-2">
-      <Checkbox
-        label="Room bookings need an admin's approval"
-        description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide."
-        checked={pending ?? enabled === true}
-        disabled={saving || enabled === null}
-        onChange={(e) => void change(e.target.checked)}
-      />
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
-      {error && <FormError>{error}</FormError>}
-    </div>
+    <SettingSwitch
+      label="Room bookings need an admin's approval"
+      description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide."
+      value={enabled}
+      save={async (next) => {
+        const r = await AdminRooms.setApproval(next);
+        onChanged(r.needApproval);
+      }}
+    />
   );
 }
 
