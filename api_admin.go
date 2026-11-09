@@ -1172,8 +1172,8 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if again, err = retry.after(err); !again {
 			break
 		}
-		if a.deleteBeforeRetry != nil {
-			a.deleteBeforeRetry()
+		if a.hooks.deleteBeforeRetry != nil {
+			a.hooks.deleteBeforeRetry()
 		}
 	}
 	// The id's final state is recorded before any response is sent: applied

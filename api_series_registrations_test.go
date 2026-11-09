@@ -68,7 +68,7 @@ func (c *seriesTestClock) Advance(d time.Duration) {
 
 func useSeriesTestClock(app *App, now time.Time) *seriesTestClock {
 	clock := &seriesTestClock{now: now.UTC()}
-	app.seriesClock = clock.Time
+	app.clock = clock.Time
 	return clock
 }
 

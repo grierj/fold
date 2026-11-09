@@ -896,7 +896,7 @@ func TestReasonReviewSealOnPages(t *testing.T) {
 	s := newReasonScene(t)
 	s.request(t, s.other, 1)
 	var seals atomic.Int64
-	s.app.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
 
 	hold, _ := beginOwnedTx(t, s.app.DB)
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
@@ -917,7 +917,7 @@ func TestReasonReviewSealOnPages(t *testing.T) {
 	// Demoted at the seam: another connection commits the demotion after the
 	// early read. The second admin keeps the system valid.
 	seals.Store(0)
-	s.app.readBeforeSeal = func(*gorm.DB) {
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) {
 		if seals.Add(1) == 1 {
 			if err := s.app.DB.Exec("UPDATE users SET role = 'member' WHERE id = ?", s.admin.ID).Error; err != nil {
 				t.Error(err)
@@ -1537,7 +1537,7 @@ func TestReasonReviewPageVersusDeletingTheReadingAdmin(t *testing.T) {
 		logs := captureServerLog(t)
 		s, rc, reader := setup(t)
 		park := newParkPoint(t)
-		s.app.readBeforeSeal = park.seam()
+		s.app.hooks.readBeforeSeal = park.seam()
 		done := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
 			done <- rc.do("POST", "/api/v1/admin/users/"+itoa(s.target.ID)+"/erasure-reasons/page", map[string]any{"after": nil}, true)
@@ -1563,9 +1563,9 @@ func TestReasonReviewPageVersusDeletingTheReadingAdmin(t *testing.T) {
 		logs := captureServerLog(t)
 		s, rc, reader := setup(t)
 		var seals atomic.Int64
-		s.app.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
+		s.app.hooks.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
 		park := newParkPoint(t)
-		s.app.deleteBeforeSeal = park.seam()
+		s.app.hooks.deleteBeforeSeal = park.seam()
 		done := make(chan *httptest.ResponseRecorder, 1)
 		go func() { done <- s.ac.do("DELETE", "/api/v1/admin/users/"+itoa(reader.ID), nil, true) }()
 		pid := park.await(t)
@@ -1607,12 +1607,12 @@ func TestReasonReviewCurrentAdminFacts(t *testing.T) {
 		s := newReasonScene(t)
 		s.request(t, s.other, 1)
 		var seals atomic.Int64
-		s.app.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
+		s.app.hooks.readBeforeSeal = func(*gorm.DB) { seals.Add(1) }
 		if code, page, body := pageOf(t, s.ac, s.target.ID, nil); code != http.StatusOK || len(page.Items) != 1 || seals.Load() != 1 {
 			t.Fatalf("a password-bearing admin: %d %s after %d seals, want 200 and one", code, body, seals.Load())
 		}
 		before := countAudit(t, s.app.DB, audit.UserErasureReasonsViewed)
-		s.app.readBeforeSeal = func(*gorm.DB) { nullHash(t, s) }
+		s.app.hooks.readBeforeSeal = func(*gorm.DB) { nullHash(t, s) }
 		code, _, body := pageOf(t, s.ac, s.target.ID, nil)
 		if code != http.StatusUnauthorized || strings.Contains(body, "identifying reason") {
 			t.Fatalf("a hash set NULL at the seam: %d %s, want 401 and no text", code, body)
@@ -1625,8 +1625,8 @@ func TestReasonReviewCurrentAdminFacts(t *testing.T) {
 		s := newReasonScene(t)
 		r := s.request(t, s.other, 1)
 		review := reviewOf(allPages(t, s.ac, s.target.ID), func(reasonItemJSON) string { return "remove" })
-		s.app.sealAttempts = &atomic.Int64{}
-		s.app.deleteBeforeSeal = func(*gorm.DB) { nullHash(t, s) }
+		s.app.hooks.sealAttempts = &atomic.Int64{}
+		s.app.hooks.deleteBeforeSeal = func(*gorm.DB) { nullHash(t, s) }
 		res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review})
 		if res.code != http.StatusUnauthorized {
 			t.Fatalf("a hash set NULL at the seam: %d %s, want 401", res.code, res.body)
@@ -1643,11 +1643,11 @@ func TestReasonReviewCurrentAdminFacts(t *testing.T) {
 		s := newReasonScene(t)
 		s.request(t, s.other, 1)
 		review := reviewOf(allPages(t, s.ac, s.target.ID), func(reasonItemJSON) string { return "keep" })
-		s.app.sealAttempts = &atomic.Int64{}
+		s.app.hooks.sealAttempts = &atomic.Int64{}
 		if res := deleteAccount(s.ac, s.target.ID, map[string]any{"reasonReview": review}); res.code != http.StatusOK {
 			t.Fatalf("delete: %d %s", res.code, res.body)
 		}
-		if n := s.app.sealAttempts.Load(); n != 1 {
+		if n := s.app.hooks.sealAttempts.Load(); n != 1 {
 			t.Errorf("%d sealed attempts, want 1", n)
 		}
 	})
@@ -1983,7 +1983,7 @@ func TestReasonReviewBusyWindowClosesAfterBackoff(t *testing.T) {
 	target, other := s.target("window-target"), s.target("window-other")
 	erasureMakeRequest(t, s.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, other.ID, target.ID, 1, 0, 0, 1, "")
 	var attempts atomic.Int64
-	s.app.readBeforeSeal = func(*gorm.DB) { attempts.Add(1) }
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) { attempts.Add(1) }
 	hold, _ := beginOwnedTx(t, s.direct)
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)

@@ -119,8 +119,8 @@ func (a *App) noticeDevicesOff(ctx context.Context, p devicesOffJob) error {
 // is about (DEC-134 B). False for a row that doesn't push.
 func (a *App) lockScreen(n *models.Notification) (push.Notification, bool) {
 	render := renderPush
-	if a.pushRender != nil {
-		render = a.pushRender
+	if a.hooks.pushRender != nil {
+		render = a.hooks.pushRender
 	}
 	note, ok := render(n)
 	if ok && notify.IsSafePush(note.Title, note.Body) {
@@ -259,19 +259,14 @@ const (
 // (DEC-126); past it they are suppressed and the bell still has them.
 const pushHourlyLimit = 20
 
-func (a *App) pushNow() time.Time {
-	if a.pushClock != nil {
-		return a.pushClock()
-	}
-	return time.Now()
-}
+func (a *App) pushNow() time.Time { return a.now() }
 
 // pushQuietHours is the window optional pushes wait for (DEC-126):
 // push.DefaultWindow, 8 AM to 8 PM in the recipient's zone, until M3.8
 // brings the shared, configurable one.
 func (a *App) pushQuietHours() push.Window {
-	if a.pushWindow != nil {
-		return *a.pushWindow
+	if a.hooks.pushWindow != nil {
+		return *a.hooks.pushWindow
 	}
 	return push.DefaultWindow
 }

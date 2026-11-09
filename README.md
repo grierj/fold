@@ -177,7 +177,7 @@ guide to verify delivery before relying on invitations or password resets.
 
 ## Layout
 
-- `main.go` — wiring, setup wizard, embedded-SPA serving
+- `main.go` — wiring, setup wizard; `internal/httpx` — SPA serving, security headers, access log, manifest
 - `api.go`, `api_*.go` — JSON API v1 wiring and handlers
 - `csrf.go` — hand-rolled synchronizer CSRF tokens
 - `config.go` — environment-based configuration

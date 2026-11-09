@@ -120,7 +120,7 @@ func testApp(t *testing.T) *App {
 	gin.SetMode(gin.TestMode)
 	db := testdb.Shared(t)
 	store := newSessionStore([]byte("test-secret"), false)
-	uploads, err := storage.NewLocalStore(t.TempDir(), "/uploads")
+	uploads, err := storage.NewLocalStore(t.TempDir(), uploadsURLPrefix)
 	if err != nil {
 		t.Fatalf("upload store: %v", err)
 	}
@@ -1319,4 +1319,15 @@ func settingText(t *testing.T, app *App, key string) string {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// useAttemptClock makes the App's clock read elapsed time since its attempt
+// state started: the process's monotonic time, advanced by hand.
+func (a *App) useAttemptClock(elapsed func() time.Duration) {
+	a.clock = func() time.Time {
+		if err := a.attempts.init(); err != nil {
+			panic(err)
+		}
+		return a.attempts.start.Add(elapsed())
+	}
 }
