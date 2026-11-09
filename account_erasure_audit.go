@@ -248,6 +248,24 @@ type auditConversionGroupCounts struct {
 	Reason                   string
 }
 
+// Mentioning a subject is sufficient for a retention report, never for an
+// IP update. Match malformed string IDs too, without casting untrusted JSON.
+// Bind the uint as bigint before converting it to text; pgx cannot encode a
+// uint directly for a parameter PostgreSQL infers to be text.
+const auditSubjectMention = `actor_id = @uid OR (target_type = 'user' AND target_id = @uid)
+ OR meta_json->'userId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'userId' = CAST(CAST(@uid AS bigint) AS text)
+ OR meta_json->'teenUserId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'teenUserId' = CAST(CAST(@uid AS bigint) AS text)
+ OR EXISTS (SELECT 1 FROM unnest(CAST(@people AS bigint[])) p(id)
+ WHERE meta_json->'personId' = to_jsonb(p.id) OR meta_json->>'personId' = p.id::text)`
+
+// auditRetentionReportSQL is the statement the erasure runs to report the
+// audit rows whose IP it keeps. The QC-1 harness finds it in the server log by
+// its text and checks what it found against deploy/digitalocean/qc1/app-facts.json,
+// which TestQC1AppFacts holds equal to this function's output.
+func auditRetentionReportSQL(classification string) string {
+	return "SELECT class, action, count(*) FROM (SELECT action, " + classification + " AS class FROM audit_logs WHERE ip <> '' AND ((" + auditSubjectMention + ") OR (" + auditMalformedConversionLink + "))) classified WHERE class IN ('RETAIN_ESSENTIAL', 'RETAIN_UNATTRIBUTED') GROUP BY class, action"
+}
+
 // eraseAuditDetailsIn runs within account deletion, after dependent records and
 // before the owned throttle keys (which stay last, detected limit D2).
 // Its caller supplies the transaction and the sets captured before any scrub.
@@ -305,16 +323,7 @@ func eraseAuditDetailsIn(tx *gorm.DB, s erasureSubject) (auditErasureCounts, err
 		Action string
 		Count  int64
 	}
-	// Mentioning a subject is sufficient for a retention report, never for an
-	// IP update. Match malformed string IDs too, without casting untrusted JSON.
-	// Bind the uint as bigint before converting it to text; pgx cannot encode a
-	// uint directly for a parameter PostgreSQL infers to be text.
-	const subjectMention = `actor_id = @uid OR (target_type = 'user' AND target_id = @uid)
- OR meta_json->'userId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'userId' = CAST(CAST(@uid AS bigint) AS text)
- OR meta_json->'teenUserId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'teenUserId' = CAST(CAST(@uid AS bigint) AS text)
- OR EXISTS (SELECT 1 FROM unnest(CAST(@people AS bigint[])) p(id)
- WHERE meta_json->'personId' = to_jsonb(p.id) OR meta_json->>'personId' = p.id::text)`
-	if err := tx.Raw("SELECT class, action, count(*) FROM (SELECT action, "+classification+" AS class FROM audit_logs WHERE ip <> '' AND (("+subjectMention+") OR ("+auditMalformedConversionLink+"))) classified WHERE class IN ('RETAIN_ESSENTIAL', 'RETAIN_UNATTRIBUTED') GROUP BY class, action", args...).Scan(&kept).Error; err != nil {
+	if err := tx.Raw(auditRetentionReportSQL(classification), args...).Scan(&kept).Error; err != nil {
 		return auditErasureCounts{}, err
 	}
 	for _, row := range kept {

@@ -29,7 +29,7 @@
   "name": "fold-web",
   "private": true,
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit -p tsconfig.build.json && vite build",
     "dev": "vite",
     "preview": "vite preview",
     "test": "TZ=America/Boise NODE_OPTIONS=--no-experimental-webstorage vitest run",

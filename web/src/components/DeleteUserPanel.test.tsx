@@ -9,6 +9,7 @@ import { ERROR_COPY } from "../lib/errors";
 import type { AttemptSettleResponse, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
 import { REMOVE, type ReasonReviewStore } from "../lib/reasonReviewStore";
 import { DigestUnavailableError, lastDigestPath, reasonReviewBody, resetDigestChoice } from "../lib/reasonSetDigest";
+import { QC1_WEB } from "../test/qc1Facts";
 import { DeleteUserPanel } from "./DeleteUserPanel";
 
 // useAuth is read once per render of the panel's body, so its call count is the panel's render count.
@@ -62,7 +63,8 @@ function openClosable() {
 }
 
 const eventSelect = (title: string) => screen.getByRole("combobox", { name: `New host for ${title}` });
-const deleteButton = () => screen.getByRole("button", { name: "Delete account" });
+// The words the QC-1 harness presses and waits on are the ones in deploy/digitalocean/qc1/app-facts.json.
+const deleteButton = () => screen.getByRole("button", { name: QC1_WEB.labels.deleteAccount });
 const staleError = (data: Record<string, unknown>, code: string) => new ApiError(400, "stale", { code, ...data });
 
 const noErasure: ErasureReport = { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0, reasonsKept: 0, reasonsRemoved: 0 };
@@ -270,7 +272,7 @@ describe("DeleteUserPanel disable", () => {
 
 const NOTHING = "Nothing was deleted by this attempt.";
 const ALREADY = "The account is already deleted; this attempt did not delete it.";
-const HISTORY = "Fold can't tell whether an earlier delete finished. Reload this person's page to check.";
+const HISTORY = QC1_WEB.copy.historyUnavailable;
 const CHECKING = "Checking what happened to this delete request…";
 const NOT_DELETED = /nothing was deleted|not deleted|wasn't deleted|was not deleted/i;
 
@@ -372,7 +374,7 @@ describe("DeleteUserPanel uncertain answers settle the same id", () => {
     expect(document.body).not.toHaveTextContent(NOT_DELETED);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: QC1_WEB.labels.checkAgain })).not.toBeInTheDocument();
     settle.answer(settleResult("not_applied"));
     expect(await screen.findByText(NOTHING)).toBeInTheDocument();
     expect(deleteButton()).toBeEnabled();
@@ -462,7 +464,7 @@ describe("DeleteUserPanel settle answers", () => {
     expect(deleteButton()).toBeDisabled();
     expect(document.body).not.toHaveTextContent(NOT_DELETED);
     await waitFor(() => expect(screen.getByRole("status")).toHaveFocus());
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await userEvent.click(screen.getByRole("button", { name: QC1_WEB.labels.checkAgain }));
     expect(await screen.findByText("The account was deleted.")).toBeInTheDocument();
     expect(AdminUsers.settleAttempt).toHaveBeenNthCalledWith(1, "attempt-1", 9);
     expect(AdminUsers.settleAttempt).toHaveBeenNthCalledWith(2, "attempt-1", 9);
@@ -479,7 +481,7 @@ describe("DeleteUserPanel settle answers", () => {
     await press();
     expect(await screen.findByText(/^Still checking\./)).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await userEvent.click(screen.getByRole("button", { name: QC1_WEB.labels.checkAgain }));
     expect(await screen.findByText(NOTHING)).toBeInTheDocument();
     expect(AdminUsers.settleAttempt).toHaveBeenNthCalledWith(2, "attempt-1", 9);
   });
@@ -503,7 +505,7 @@ describe("DeleteUserPanel settle answers", () => {
     await press();
     expect(await screen.findByRole("alert")).toHaveTextContent(copy);
     expect(deleteButton()).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: QC1_WEB.labels.checkAgain })).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(NOT_DELETED);
   });
 
@@ -516,7 +518,7 @@ describe("DeleteUserPanel settle answers", () => {
     await press();
     expect(await screen.findByText(ERROR_COPY.restore_detected)).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await userEvent.click(screen.getByRole("button", { name: QC1_WEB.labels.checkAgain }));
     expect(await screen.findByText(HISTORY)).toBeInTheDocument();
     expect(AdminUsers.settleAttempt).toHaveBeenNthCalledWith(2, "attempt-1", 9);
   });
@@ -571,7 +573,7 @@ describe("DeleteUserPanel definitive answers", () => {
     await press();
     expect(await screen.findByRole("alert")).toHaveTextContent(copy);
     expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: QC1_WEB.labels.checkAgain })).not.toBeInTheDocument();
     if (enabled) {
       expect(deleteButton()).toBeEnabled();
       await press();
@@ -1172,7 +1174,7 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
     const second = reopen();
     await press();
     await screen.findByText(RESTORE);
-    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: QC1_WEB.labels.checkAgain })).toBeEnabled();
     second.unmount();
     reopen();
     expect(await screen.findByRole("alert")).toHaveTextContent(RESTORE);
@@ -1230,7 +1232,7 @@ describe("DeleteUserPanel reason review", () => {
   it("says it is checking, with a Stop control, and keeps Delete off while the first page loads", async () => {
     vi.mocked(AdminUsers.erasureReasonsPage).mockReturnValue(new Promise<ErasureReasonPage>(() => undefined));
     open();
-    expect(screen.getByText("Checking their contact-request reasons…")).toBeInTheDocument();
+    expect(screen.getByText(QC1_WEB.copy.checking)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
     expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();

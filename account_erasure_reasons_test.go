@@ -1918,7 +1918,7 @@ func TestReasonReviewCensus(t *testing.T) {
 // previouslyRegisteredPerson, loadAccessHistory and appendRecoverableRegistrations
 // filter to other actions or target types; conversionInviterDisabled,
 // inviteSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
-// count; eraseAuditDetailsIn updates and aggregates in SQL (the five new actions
+// count; eraseAuditDetailsIn updates in SQL and auditRetentionReportSQL aggregates (the five new actions
 // are classified in auditIPAttribution); contactHistoryQuery selects only the
 // actions in contactHistoryActions, which has no decision action.
 //
@@ -1940,8 +1940,8 @@ var reasonCensusPinned = map[string][]string{
 	},
 	"auditReaders": {
 		"account_erasure.go:captureErasureSetsIn",
+		"account_erasure_audit.go:auditRetentionReportSQL",
 		"account_erasure_audit.go:discoverAuditConversionsIn",
-		"account_erasure_audit.go:eraseAuditDetailsIn",
 		"account_erasure_tombstones.go:tombstoneSweptSQL",
 		"age_rollover.go:flagHouseholdChild13",
 		"age_rollover.go:rolloverAges",

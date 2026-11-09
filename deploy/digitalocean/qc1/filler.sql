@@ -5,7 +5,7 @@
 --   reasons    'all' (every row has a reason), 'half' (even i) or 'none'
 -- Parties are ids far above any real account (1000000+ and 2000000+), distinct
 -- from each other, so the check requester_id <> subject_user_id holds. Rows are
--- denied group_add requests, the shape migrations/reason_review_test.go proves
+-- denied group_add requests, the shape TestQC1LoaderColumnsFitTheSchema (guards_deploy_facts_test.go) checks
 -- against the schema. The deferred add_request_completed trigger is skipped
 -- with session_replication_role = replica, the way internal/testdb loads data
 -- (CHECK constraints still apply). Superuser only: a disposable database.
