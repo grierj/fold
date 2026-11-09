@@ -3,12 +3,13 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,15 +21,15 @@ import (
 // called once, as the return of the reasonPageTx callback in reasonPageAttempt,
 // right after the readBeforeSeal seam, so nothing locks after it.
 func reasonPageSealProblems(src string) []string {
-	fset := token.NewFileSet()
-	tree, err := parser.ParseFile(fset, "account_erasure_reasons.go", src, 0)
-	if err != nil {
-		return []string{"account_erasure_reasons.go: cannot parse: " + err.Error()}
+	parsed := guardkit.Sources{"account_erasure_reasons.go": src}.Parse(0)
+	if len(parsed.Problems) > 0 {
+		return parsed.Problems
 	}
+	tree := parsed.Files[0].AST
 	var bad []string
 	calls := 0
 	ast.Inspect(tree, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "currentAdminIn" {
+		if c, ok := n.(*ast.CallExpr); ok && guardkit.Callee(c) == "currentAdminIn" {
 			calls++
 		}
 		return true
@@ -36,13 +37,13 @@ func reasonPageSealProblems(src string) []string {
 	if calls != 1 {
 		bad = append(bad, fmt.Sprintf("account_erasure_reasons.go: currentAdminIn must be called exactly once, found %d", calls))
 	}
-	fd := sealFuncDecl(tree, "reasonPageAttempt")
+	fd := guardkit.FindFunc(tree, "reasonPageAttempt")
 	if fd == nil {
 		return append(bad, "account_erasure_reasons.go: reasonPageAttempt is gone")
 	}
 	var lit *ast.FuncLit
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "reasonPageTx" && len(c.Args) == 2 {
+		if c, ok := n.(*ast.CallExpr); ok && guardkit.Callee(c) == "reasonPageTx" && len(c.Args) == 2 {
 			lit, _ = c.Args[1].(*ast.FuncLit)
 		}
 		return true
@@ -55,14 +56,14 @@ func reasonPageSealProblems(src string) []string {
 	if !ok || len(ret.Results) != 1 {
 		return append(bad, "account_erasure_reasons.go: the page transaction must end with return currentAdminIn(tx, me, pred)")
 	}
-	if c, ok := ret.Results[0].(*ast.CallExpr); !ok || sealCallName(c) != "currentAdminIn" || len(c.Args) != 3 {
+	if c, ok := ret.Results[0].(*ast.CallExpr); !ok || guardkit.Callee(c) != "currentAdminIn" || len(c.Args) != 3 {
 		bad = append(bad, "account_erasure_reasons.go: the page transaction's last statement must be return currentAdminIn(tx, me, pred)")
 	}
 	seam, ok := lit.Body.List[len(lit.Body.List)-2].(*ast.IfStmt)
 	seamCalled := false
 	if ok {
 		ast.Inspect(seam, func(n ast.Node) bool {
-			if c, ok := n.(*ast.CallExpr); ok && sealCallName(c) == "readBeforeSeal" {
+			if c, ok := n.(*ast.CallExpr); ok && guardkit.Callee(c) == "readBeforeSeal" {
 				seamCalled = true
 			}
 			return true
@@ -118,11 +119,11 @@ func TestReasonPageSealIsLast(t *testing.T) {
 // a statement assembled from variables, a constant in another file or SQL sent
 // around GORM.
 func reasonSQLOrderProblems(path, src string) []string {
-	fset := token.NewFileSet()
-	tree, err := parser.ParseFile(fset, path, src, 0)
-	if err != nil {
-		return []string{path + ": cannot parse: " + err.Error()}
+	parsed := guardkit.Sources{path: src}.Parse(0)
+	if len(parsed.Problems) > 0 {
+		return parsed.Problems
 	}
+	fset, tree := parsed.Fset, parsed.Files[0].AST
 	var bad []string
 	inner := map[ast.Node]bool{}
 	ast.Inspect(tree, func(n ast.Node) bool {
@@ -174,24 +175,14 @@ func reasonSQLOrderProblems(path, src string) []string {
 }
 
 func TestReasonSQLOrderGuard(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
 	var found int
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(b), "reasonSelect") || strings.Contains(string(b), "reasonProjection") {
+	production := guardkit.Production(t)
+	for _, name := range production.Names() {
+		src := production[name]
+		if strings.Contains(src, "reasonSelect") || strings.Contains(src, "reasonProjection") {
 			found++
 		}
-		for _, v := range reasonSQLOrderProblems(name, string(b)) {
+		for _, v := range reasonSQLOrderProblems(name, src) {
 			t.Error(v)
 		}
 	}

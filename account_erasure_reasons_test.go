@@ -31,6 +31,8 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/guardkit"
+
 	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/internal/testdb"
@@ -1743,22 +1745,15 @@ func TestReasonCounterpartBusyKeepsTheRetryRules(t *testing.T) {
 // function's result.
 func reasonCensus(sources map[string]string) map[string][]string {
 	out := map[string]map[string]bool{"rowLockers": {}, "requestWriters": {}, "auditReaders": {}, "gatedFenced": {}}
-	fset := token.NewFileSet()
 	writeRe := regexp.MustCompile(`(?i)\b(insert into|update|delete from)\s+(public\.)?contact_requests\b`)
 	lockRe := regexp.MustCompile(`(?i)\bfor (no key update|update|share|key share)\b`)
 	readAuditRe := regexp.MustCompile(`(?i)\bfrom\s+(public\.)?audit_logs\b|join\s+audit_logs\b`)
-	paths := make([]string, 0, len(sources))
-	for p := range sources {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
+	// A file that does not parse is skipped here (guardkit reports it in Problems); the
+	// real tree compiles, and a fixture that does not parse shows up as a missing site.
+	for _, pf := range guardkit.Sources(sources).Parse(0).Files {
+		path, file := pf.Path, pf.AST
 		if path == "internal/audit/audit.go" {
 			continue // the writers; they read nothing
-		}
-		file, err := parser.ParseFile(fset, path, sources[path], 0)
-		if err != nil {
-			continue
 		}
 		for _, d := range file.Decls {
 			fd, ok := d.(*ast.FuncDecl)
@@ -1776,7 +1771,7 @@ func reasonCensus(sources map[string]string) map[string][]string {
 					if err != nil {
 						return true
 					}
-					flat := strings.Join(strings.Fields(lit), " ")
+					flat := guardkit.Squash(lit)
 					low := strings.ToLower(flat)
 					if strings.Contains(low, "contact_requests") && lockRe.MatchString(low) && !strings.HasPrefix(low, "update") {
 						out["rowLockers"][site] = true
@@ -1871,13 +1866,7 @@ func mentionsModel(n ast.Node, name string) bool {
 }
 
 func TestReasonReviewCensus(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	got := reasonCensus(sources)
 	for _, kind := range []string{"rowLockers", "requestWriters", "auditReaders", "gatedFenced"} {
 		want := reasonCensusPinned[kind]

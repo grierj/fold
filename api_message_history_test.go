@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"fold/internal/guardkit"
 
 	"fold/internal/audit"
 	"fold/internal/mail"
@@ -265,21 +265,14 @@ func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 // package) is listed in ownMessageErrors, so a copy change can't quietly
 // turn one into "a provider's words" for leaders.
 func TestOwnMessageErrorsListEveryWhy(t *testing.T) {
-	fset := token.NewFileSet()
 	consts := map[string]string{}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	parsed := guardkit.Production(t).Parse(0)
+	for _, problem := range parsed.Problems {
+		t.Error(problem)
 	}
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, file, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
+	// why* constants are a package main convention (the messaging failure texts).
+	for _, pf := range parsed.Package("main") {
+		ast.Inspect(pf.AST, func(n ast.Node) bool {
 			spec, ok := n.(*ast.ValueSpec)
 			if !ok {
 				return true

@@ -10,12 +10,13 @@ import (
 	"go/token"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fold/internal/guardkit"
 
 	"fold/internal/audit"
 	"fold/internal/notify"
@@ -178,20 +179,12 @@ func TestErasureHouseholdLockCensus(t *testing.T) {
 	}
 	got := map[string]bool{}
 	var calls = map[string][]token.Pos{}
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
+	parsed := guardkit.Production(t).Parse(parser.SkipObjectResolution)
+	for _, problem := range parsed.Problems {
+		t.Error(problem)
 	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, pf := range parsed.Files {
+		name, f := pf.Path, pf.AST
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
 			if !ok || fd.Body == nil {

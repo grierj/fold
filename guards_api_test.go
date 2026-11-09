@@ -2,11 +2,9 @@ package main
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
-	"path/filepath"
-	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // DEC-52: rate limits and account checks never reach a user on a public
@@ -19,18 +17,17 @@ func TestOnlyLoginAndInvitesAnswer429(t *testing.T) {
 		"api_auth.go":        {"apiLogin": true, "reauthenticate": true},
 		"api_invitations.go": {"apiCreateInvitation": true},
 	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	parsed := guardkit.Production(t).Parse(0)
+	for _, problem := range parsed.Problems {
+		t.Error(problem)
 	}
-	for _, f := range files {
+	// Package main only: the handlers live there. Other packages use the status
+	// constant for other reasons (internal/push reads a push service's 429).
+	for _, pf := range parsed.Package("main") {
+		f, file := pf.Path, pf.AST
 		// api_errors.go only names the code for a 429; it sends none itself.
-		if strings.HasSuffix(f, "_test.go") || f == "api_errors.go" {
+		if f == "api_errors.go" {
 			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
-		if err != nil {
-			t.Fatal(err)
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)

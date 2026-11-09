@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"os"
 	"regexp"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,27 +36,6 @@ var sealForbiddenCalls = map[string]bool{
 var sealAfterTransition = map[string]bool{
 	"Raw": true, "Scan": true, "Error": true, "settleAfterFence": true,
 	"receipt": true, "subjectDeleted": true, "state": true,
-}
-
-func sealNormalize(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-func sealCallName(c *ast.CallExpr) string {
-	switch f := c.Fun.(type) {
-	case *ast.SelectorExpr:
-		return f.Sel.Name
-	case *ast.Ident:
-		return f.Name
-	}
-	return ""
-}
-
-func sealFuncDecl(tree *ast.File, name string) *ast.FuncDecl {
-	for _, d := range tree.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == name {
-			return fd
-		}
-	}
-	return nil
 }
 
 // sealRunLiteral reports whether lit is the value of the run field of a
@@ -83,20 +63,20 @@ func sealRunLiteral(parents []ast.Node, lit *ast.FuncLit) bool {
 // contact_lifecycle.go and api_host_handoff.go.
 func sealProblems(sources map[string]string) []string {
 	var bad []string
-	fset := token.NewFileSet()
-	trees := map[string]*ast.File{}
+	named := guardkit.Sources{}
 	for _, name := range []string{"admin_operation_attempts.go", "contact_lifecycle.go", "api_host_handoff.go"} {
-		src, ok := sources[name]
-		if !ok {
+		if src, ok := sources[name]; ok {
+			named[name] = src
+		} else {
 			bad = append(bad, name+": missing")
-			continue
 		}
-		tree, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			bad = append(bad, name+": cannot parse: "+err.Error())
-			continue
-		}
-		trees[name] = tree
+	}
+	parsed := named.Parse(0)
+	bad = append(bad, parsed.Problems...)
+	fset := parsed.Fset
+	trees := map[string]*ast.File{}
+	for _, pf := range parsed.Files {
+		trees[pf.Path] = pf.AST
 	}
 	if len(bad) > 0 {
 		return bad
@@ -104,7 +84,7 @@ func sealProblems(sources map[string]string) []string {
 
 	// currentAdminIn itself.
 	attempts := trees["admin_operation_attempts.go"]
-	cur := sealFuncDecl(attempts, "currentAdminIn")
+	cur := guardkit.FindFunc(attempts, "currentAdminIn")
 	if cur == nil {
 		return append(bad, "admin_operation_attempts.go: currentAdminIn is gone")
 	}
@@ -125,8 +105,8 @@ func sealProblems(sources map[string]string) []string {
 			if x.Kind == token.STRING {
 				if s, err := strconv.Unquote(x.Value); err == nil && strings.HasPrefix(s, "SELECT") {
 					literals++
-					if sealNormalize(s) != sealSQL {
-						bad = append(bad, "currentAdminIn's SQL is not the sealed statement: "+sealNormalize(s))
+					if guardkit.Squash(s) != sealSQL {
+						bad = append(bad, "currentAdminIn's SQL is not the sealed statement: "+guardkit.Squash(s))
 					}
 				}
 			}
@@ -141,7 +121,7 @@ func sealProblems(sources map[string]string) []string {
 				}
 			}
 		case *ast.CallExpr:
-			if sealCallName(x) == "Scan" && len(x.Args) == 1 {
+			if guardkit.Callee(x) == "Scan" && len(x.Args) == 1 {
 				if u, ok := x.Args[0].(*ast.UnaryExpr); ok && u.Op == token.AND {
 					if id, ok := u.X.(*ast.Ident); ok && id.Name == "actor" {
 						scanned = true
@@ -178,13 +158,7 @@ func sealProblems(sources map[string]string) []string {
 
 	// Every call of currentAdminIn sits in a contactSeal run literal; seal
 	// bodies hold no write, lock or notice.
-	var stack []ast.Node
-	ast.Inspect(attempts, func(n ast.Node) bool {
-		if n == nil {
-			stack = stack[:len(stack)-1]
-			return true
-		}
-		stack = append(stack, n)
+	guardkit.InspectStack(attempts, func(n ast.Node, stack []ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -207,13 +181,7 @@ func sealProblems(sources map[string]string) []string {
 		}
 		return true
 	})
-	stack = nil
-	ast.Inspect(attempts, func(n ast.Node) bool {
-		if n == nil {
-			stack = stack[:len(stack)-1]
-			return true
-		}
-		stack = append(stack, n)
+	guardkit.InspectStack(attempts, func(n ast.Node, stack []ast.Node) bool {
 		lit, ok := n.(*ast.FuncLit)
 		if !ok || !sealRunLiteral(stack[:len(stack)-1], lit) {
 			return true
@@ -223,10 +191,10 @@ func sealProblems(sources map[string]string) []string {
 			ast.Inspect(s, func(m ast.Node) bool {
 				switch x := m.(type) {
 				case *ast.CallExpr:
-					if sealForbiddenCalls[sealCallName(x)] {
-						bad = append(bad, "a seal body calls "+sealCallName(x))
+					if sealForbiddenCalls[guardkit.Callee(x)] {
+						bad = append(bad, "a seal body calls "+guardkit.Callee(x))
 					}
-					if sealCallName(x) == "settleTransition" && transition < 0 {
+					if guardkit.Callee(x) == "settleTransition" && transition < 0 {
 						transition = i
 					}
 				case *ast.BasicLit:
@@ -263,7 +231,7 @@ func sealProblems(sources map[string]string) []string {
 
 	// contactMutationOn: reconcileContacts, the seal, then the reserve check,
 	// with nothing between.
-	lc := sealFuncDecl(trees["contact_lifecycle.go"], "contactMutationOn")
+	lc := guardkit.FindFunc(trees["contact_lifecycle.go"], "contactMutationOn")
 	if lc == nil {
 		bad = append(bad, "contact_lifecycle.go: contactMutationOn is gone")
 	} else {
@@ -275,7 +243,7 @@ func sealProblems(sources map[string]string) []string {
 			}
 			found := false
 			ast.Inspect(is.Init, func(m ast.Node) bool {
-				if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "reconcileContacts" {
+				if c, ok := m.(*ast.CallExpr); ok && guardkit.Callee(c) == "reconcileContacts" {
 					found = true
 				}
 				return true
@@ -292,7 +260,7 @@ func sealProblems(sources map[string]string) []string {
 			if okShape {
 				hasSeal, hasReserve := false, false
 				ast.Inspect(seal, func(m ast.Node) bool {
-					if c, ok := m.(*ast.CallExpr); ok && sealCallName(c) == "run" {
+					if c, ok := m.(*ast.CallExpr); ok && guardkit.Callee(c) == "run" {
 						hasSeal = true
 					}
 					return true
@@ -312,14 +280,14 @@ func sealProblems(sources map[string]string) []string {
 	}
 
 	// deletionHostPlan's actor read takes no lock.
-	dp := sealFuncDecl(trees["api_host_handoff.go"], "deletionHostPlan")
+	dp := guardkit.FindFunc(trees["api_host_handoff.go"], "deletionHostPlan")
 	if dp == nil {
 		bad = append(bad, "api_host_handoff.go: deletionHostPlan is gone")
 	} else {
 		reads := 0
 		ast.Inspect(dp.Body, func(m ast.Node) bool {
 			c, ok := m.(*ast.CallExpr)
-			if !ok || sealCallName(c) != "First" || len(c.Args) < 1 {
+			if !ok || guardkit.Callee(c) != "First" || len(c.Args) < 1 {
 				return true
 			}
 			u, ok := c.Args[0].(*ast.UnaryExpr)
@@ -331,7 +299,7 @@ func sealProblems(sources map[string]string) []string {
 			}
 			reads++
 			ast.Inspect(c.Fun, func(k ast.Node) bool {
-				if kc, ok := k.(*ast.CallExpr); ok && (sealCallName(kc) == "Clauses") {
+				if kc, ok := k.(*ast.CallExpr); ok && (guardkit.Callee(kc) == "Clauses") {
 					bad = append(bad, "deletionHostPlan's actor read takes a lock")
 				}
 				return true

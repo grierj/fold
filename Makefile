@@ -49,8 +49,9 @@ lint-go:
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
-# Production reachability gate (tests excluded). Allow only the test database
-# package and the two registry inspection seams used by tests and tooling.
+# Production reachability gate (tests excluded). Allow only the test-only packages
+# (the test database, the source-guard toolkit) and the two registry inspection
+# seams used by tests and tooling.
 deadcode:
 	@report=$$(mktemp); trap 'rm -f "$$report"' EXIT; \
 	go run golang.org/x/tools/cmd/deadcode@v0.52.0 ./... > "$$report" || exit $$?; \

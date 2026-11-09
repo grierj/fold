@@ -3,13 +3,14 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // R4-S4: suppression SQL lives in four places. The suppressions table holds
@@ -167,34 +168,15 @@ func TestSQLGuardsScopeErasureInventoryMetadata(t *testing.T) {
 // in SQL, and an allowance that no longer matches any source.
 func suppressionSQLViolations(sources map[string]string, allowed map[string][]string) []string {
 	const hint = " (read open suppressions with mail.OpenSuppressionReasons; hash first, then the address of a NULL-hash row)"
-	positions := token.NewFileSet()
-	var bad []string
+	parsed := guardkit.Sources(sources).Parse(0)
+	positions := parsed.Fset
+	bad := append([]string(nil), parsed.Problems...)
 	seen := map[string]bool{}
-	paths := make([]string, 0, len(sources))
-	for path := range sources {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		src := sources[path]
-		tree, err := parser.ParseFile(positions, path, src, 0)
-		if err != nil {
-			bad = append(bad, path+": cannot parse: "+err.Error())
-			continue
-		}
+	for _, pf := range parsed.Files {
+		path, tree, src := pf.Path, pf.AST, pf.Src
 		inventoryTables := erasureInventoryTableLiterals(path, tree)
 		inModels := strings.HasPrefix(path, "models/")
-		modelNames := map[string]bool{}
-		for _, imp := range tree.Imports {
-			if p, err := strconv.Unquote(imp.Path.Value); err != nil || p != "fold/models" {
-				continue
-			}
-			name := "models"
-			if imp.Name != nil {
-				name = imp.Name.Name
-			}
-			modelNames[name] = true
-		}
+		modelNames := guardkit.ImportNames(tree, "fold/models")
 		inspect := func(owner string, node ast.Node) {
 			isAllowed := false
 			for _, name := range allowed[path] {
@@ -215,7 +197,7 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 					if err != nil {
 						return true
 					}
-					text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+					text = strings.ToLower(guardkit.Squash(text))
 					if suppressionTableRe.MatchString(text) || text == "suppressions" || text == "public.suppressions" {
 						flagged = append(flagged, at()+": SQL on the suppressions table in "+owner)
 						if isAllowed && (strings.Contains(text, "lower(") || strings.Contains(text, "btrim(")) {
@@ -278,13 +260,7 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 }
 
 func TestSuppressionSQLStaysInItsHelpers(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	for _, v := range suppressionSQLViolations(sources, suppressionSQLAllowed) {
 		t.Error(v)
 	}

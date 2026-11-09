@@ -1,18 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // R6 (M7.5): notify.Send writes a durable delivery intent in the caller's
@@ -127,17 +125,7 @@ func mailSources(trees ...*ast.File) func(ast.Expr) mailSource {
 		return 0
 	}
 	for _, tree := range trees {
-		imports := map[string]bool{}
-		for _, imp := range tree.Imports {
-			path, err := strconv.Unquote(imp.Path.Value)
-			if err == nil && path == "fold/internal/mail" {
-				name := "mail"
-				if imp.Name != nil {
-					name = imp.Name.Name
-				}
-				imports[name] = true
-			}
-		}
+		imports := guardkit.ImportNames(tree, "fold/internal/mail")
 		ast.Inspect(tree, func(node ast.Node) bool {
 			if id, ok := node.(*ast.Ident); ok && id.Obj == nil {
 				mailNames[id] = imports[id.Name]
@@ -355,24 +343,17 @@ func mailSources(trees ...*ast.File) func(ast.Expr) mailSource {
 // packages. Only internal/mail owns sender implementations. Parsing ignores
 // comments and quoted examples.
 func noticeDeliveryViolations(file, src string, checkMailer bool) []string {
-	positions := token.NewFileSet()
-	tree, err := parser.ParseFile(positions, file, src, 0)
-	if err != nil {
-		return []string{fmt.Sprintf("%s: parse production source: %v", file, err)}
+	parsed := guardkit.Sources{file: src}.Parse(0)
+	if len(parsed.Problems) > 0 {
+		return parsed.Problems
 	}
-	source := mailSources(tree)
-	return parsedMailViolations(file, positions, tree, source, checkMailer)
+	tree := parsed.Files[0].AST
+	return parsedMailViolations(file, parsed.Fset, tree, mailSources(tree), checkMailer)
 }
 
 func parsedMailViolations(file string, positions *token.FileSet, tree *ast.File, source func(ast.Expr) mailSource, checkMailer bool) []string {
 	var bad []string
-	var parents []ast.Node
-	ast.Inspect(tree, func(node ast.Node) bool {
-		if node == nil {
-			parents = parents[:len(parents)-1]
-			return true
-		}
-		parents = append(parents, node)
+	guardkit.InspectStack(tree, func(node ast.Node, parents []ast.Node) bool {
 		at := positions.Position(node.Pos()).String()
 		if id, ok := node.(*ast.Ident); ok {
 			if legacyNoticeDeliveryNames[id.Name] {
@@ -399,54 +380,24 @@ func parsedMailViolations(file string, positions *token.FileSet, tree *ast.File,
 	return bad
 }
 
-// Scan every production Go directory, regardless of nesting. Test fixtures,
-// frontend dependencies, vendored code and repository metadata are not shipped
-// Go application source. Keep this file discovery shared by every guard that
-// reads production source (the mail guards and the suppression SQL guard).
-func walkProductionGo(root string, visit func(path string, src []byte) error) error {
-	return fs.WalkDir(os.DirFS(root), ".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != "." && (strings.HasPrefix(entry.Name(), ".") || path == "web" || entry.Name() == "vendor" || entry.Name() == "testdata" || entry.Name() == "node_modules") {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-		if err != nil {
-			return err
-		}
-		return visit(path, src)
-	})
-}
-
+// productionMailViolations scans every production Go directory under root,
+// regardless of nesting (guardkit.ReadProduction owns the skip rules).
 func productionMailViolations(root string, checkMailer bool) ([]string, error) {
-	positions := token.NewFileSet()
-	packages := map[string][]*ast.File{}
-	err := walkProductionGo(root, func(path string, src []byte) error {
-		tree, err := parser.ParseFile(positions, path, src, 0)
-		if err != nil {
-			return err
-		}
-		key := filepath.Dir(path) + ":" + tree.Name.Name
-		packages[key] = append(packages[key], tree)
-		return nil
-	})
+	sources, err := guardkit.ReadProduction(root)
 	if err != nil {
 		return nil, err
 	}
-	var bad []string
-	for _, trees := range packages {
+	parsed := sources.Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
+	for _, pkg := range parsed.Packages() {
+		trees := make([]*ast.File, len(pkg.Files))
+		for i, f := range pkg.Files {
+			trees[i] = f.AST
+		}
 		source := mailSources(trees...)
-		for _, tree := range trees {
-			file := positions.Position(tree.Pos()).Filename
-			mailer := checkMailer && filepath.Dir(file) != "internal/mail"
-			bad = append(bad, parsedMailViolations(file, positions, tree, source, mailer)...)
+		for _, f := range pkg.Files {
+			mailer := checkMailer && f.Dir() != "internal/mail"
+			bad = append(bad, parsedMailViolations(f.Path, parsed.Fset, f.AST, source, mailer)...)
 		}
 	}
 	sort.Strings(bad)
@@ -571,7 +522,7 @@ func TestMailGuardCatchesBypasses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := "package main\n" + tc.imports + "\nfunc (a *App) example() { " + tc.body + " }\n"
 			bad := noticeDeliveryViolations("api_example.go", src, true)
-			if len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+			if len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 				t.Fatalf("guard must reject the send or background identifier: %v", bad)
 			}
 		})
@@ -591,7 +542,7 @@ func TestMailGuardFollowsConcreteSendersAndConstructors(t *testing.T) {
 				"type holder struct { sender " + ptr + "delivery." + senderType + " }; func example(h holder) { h.sender.Send(ctx, msg) }",
 			} {
 				src := "package main\nimport delivery \"fold/internal/mail\"\n" + declaration
-				if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+				if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 					t.Fatalf("guard missed typed sender in %s: %v", declaration, bad)
 				}
 			}
@@ -615,7 +566,7 @@ func TestMailGuardFollowsConcreteSendersAndConstructors(t *testing.T) {
 		"s := unknown.(*delivery.Postmark); s.Send(ctx, msg)",
 	} {
 		src := "package main\nimport delivery \"fold/internal/mail\"\nfunc example() { " + body + " }\n"
-		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 			t.Fatalf("guard missed concrete sender or constructor in %s: %v", body, bad)
 		}
 	}
@@ -627,7 +578,7 @@ func TestMailGuardFollowsConcreteSendersAndConstructors(t *testing.T) {
 		"WithSuppressions(db, inner).Send(ctx, msg)",
 	} {
 		src := "package main\nimport . \"fold/internal/mail\"\nfunc example() { " + body + " }\n"
-		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 			t.Fatalf("guard missed dot-imported sender in %s: %v", body, bad)
 		}
 	}
@@ -645,7 +596,7 @@ func TestMailGuardFollowsMultipleResultPositions(t *testing.T) {
 		{"func mailer() (delivery.Sender, error) { return nil, nil }", "var s, err = (mailer)(); s.Send(ctx, msg)"},
 	} {
 		src := "package main\nimport delivery \"fold/internal/mail\"\n" + tc.declaration + "\nfunc example() { " + tc.body + " }\n"
-		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+		if bad := noticeDeliveryViolations("api_example.go", src, true); len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 			t.Fatalf("guard missed sender result in %s with %s: %v", tc.declaration, tc.body, bad)
 		}
 	}
@@ -743,7 +694,7 @@ func TestMailGuardScopesSynchronousExceptions(t *testing.T) {
 				"consume(a.Mailer.Send)",
 			} {
 				src := "package main\nimport delivery \"fold/internal/mail\"\nfunc (a *App) " + exception.method + "() { " + body + " }\n"
-				if bad := noticeDeliveryViolations(file, src, true); len(bad) != 1 || strings.Contains(bad[0], "parse production source") {
+				if bad := noticeDeliveryViolations(file, src, true); len(bad) != 1 || strings.Contains(bad[0], "does not parse") {
 					t.Fatalf("guard granted the synchronous exception to %s: %v", body, bad)
 				}
 			}

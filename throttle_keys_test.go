@@ -5,18 +5,19 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
-// The throttle guards are parse-only analysis (go/parser and go/ast over the
-// root package's non-test .go files), not a type checker. Their limits, stated
+// The throttle guards are parse-only analysis (go/parser and go/ast, through
+// guardkit), not a type checker. The key-position rules read package main, where
+// throttleKey lives; the login_throttles SQL rule reads the whole production tree. Their limits, stated
 // here, in the T19 note and in the AGENTS.md row:
 //
 //   - Identifiers match by name, so shadowing and same-named locals are
@@ -25,9 +26,8 @@ import (
 //     helper's rules.
 //   - They do not see a key assembled inside the SQL text of a listed helper,
 //     SQL sent around GORM (Fold sends none), reflection, a generic parameter
-//     instantiated over string, or code outside the root package. No other
-//     package writes login_throttles today; models only declares the table's
-//     struct.
+//     instantiated over string, or key-position mistakes in code outside package
+//     main (throttleKey is unexported, so no other package can build one).
 //   - They prove which source shapes reach a key position, not that a builder
 //     was given the right argument. The exact-output tables below pin the
 //     arguments each builder takes.
@@ -55,24 +55,12 @@ var loginThrottlesTable = regexp.MustCompile(`(?i)(?:^|[^\w])login_throttles\b`)
 // exempt only as the first argument of a daily(...) call.
 const throttleJobKind = "cleanup.login_throttles"
 
-// rootProductionSources reads the root package's non-test Go files.
-func rootProductionSources(t *testing.T) map[string]string {
+// throttleProductionSources reads the whole production tree, so a throttle key or
+// login_throttles statement moved into a subpackage is still checked. It fails
+// if throttle_keys.go is missing.
+func throttleProductionSources(t *testing.T) guardkit.Sources {
 	t.Helper()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := map[string]string{}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out[f] = string(src)
-	}
+	out := guardkit.Production(t)
 	if _, ok := out[throttleKeysFile]; !ok {
 		t.Fatalf("%s is missing", throttleKeysFile)
 	}
@@ -110,45 +98,20 @@ func throttleBuilders(file *ast.File) map[string]*ast.FuncDecl {
 	return out
 }
 
-func unparen(e ast.Expr) ast.Expr {
-	for {
-		p, ok := e.(*ast.ParenExpr)
-		if !ok {
-			return e
-		}
-		e = p.X
-	}
-}
-
-func calleeName(call *ast.CallExpr) string {
-	switch f := unparen(call.Fun).(type) {
-	case *ast.Ident:
-		return f.Name
-	case *ast.SelectorExpr:
-		return f.Sel.Name
-	}
-	return ""
-}
-
 // throttleKeyViolations applies the key-position guards (a) to (d) to the
 // given sources, keyed by file name. Comments are not literals and are never
 // read.
 func throttleKeyViolations(sources map[string]string) []string {
-	fset := token.NewFileSet()
+	parsed := guardkit.Sources(sources).Parse(0)
+	fset := parsed.Fset
+	bad := append([]string(nil), parsed.Problems...)
 	files := map[string]*ast.File{}
 	var names []string
-	for name := range sources {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var bad []string
-	for _, name := range names {
-		f, err := parser.ParseFile(fset, name, sources[name], 0)
-		if err != nil {
-			bad = append(bad, name+": does not parse: "+err.Error())
-			continue
-		}
-		files[name] = f
+	// throttleKey is unexported, so only package main can build or pass one;
+	// the key-position rules read that package alone (names come out sorted).
+	for _, pf := range parsed.Package("main") {
+		names = append(names, pf.Path)
+		files[pf.Path] = pf.AST
 	}
 	keysFile, ok := files[throttleKeysFile]
 	if !ok {
@@ -227,23 +190,23 @@ func throttleKeyViolations(sources map[string]string) []string {
 	}
 
 	isBuilderCall := func(e ast.Expr) bool {
-		call, ok := unparen(e).(*ast.CallExpr)
+		call, ok := guardkit.Unparen(e).(*ast.CallExpr)
 		if !ok {
 			return false
 		}
-		id, ok := unparen(call.Fun).(*ast.Ident)
+		id, ok := guardkit.Unparen(call.Fun).(*ast.Ident)
 		return ok && builders[id.Name] != nil
 	}
 	okKeyArg := func(e ast.Expr) bool {
-		switch x := unparen(e).(type) {
+		switch x := guardkit.Unparen(e).(type) {
 		case *ast.CallExpr:
 			return isBuilderCall(x)
 		case *ast.IndexExpr:
-			call, ok := unparen(x.X).(*ast.CallExpr)
+			call, ok := guardkit.Unparen(x.X).(*ast.CallExpr)
 			if !ok {
 				return false
 			}
-			sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
+			sel, ok := guardkit.Unparen(call.Fun).(*ast.SelectorExpr)
 			return ok && sel.Sel.Name == "targeted"
 		case *ast.CompositeLit:
 			return throttleKeyElt(x.Type) != nil // its elements are checked by (a)
@@ -333,13 +296,13 @@ func throttleKeyViolations(sources map[string]string) []string {
 			if !ok {
 				return true
 			}
-			positions := helpers[calleeName(call)]
+			positions := helpers[guardkit.Callee(call)]
 			for pos := range positions {
 				if pos >= len(call.Args) {
 					continue
 				}
 				if !okKeyArg(call.Args[pos]) {
-					bad = append(bad, at(call.Args[pos])+fmt.Sprintf(": argument %d of %s is not a builder call, an index of .targeted() or a name no const declares", pos, calleeName(call)))
+					bad = append(bad, at(call.Args[pos])+fmt.Sprintf(": argument %d of %s is not a builder call, an index of .targeted() or a name no const declares", pos, guardkit.Callee(call)))
 				}
 			}
 			return true
@@ -349,20 +312,15 @@ func throttleKeyViolations(sources map[string]string) []string {
 		callFuns := map[ast.Node]bool{}
 		ast.Inspect(f, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				callFuns[unparen(call.Fun)] = true
+				callFuns[guardkit.Unparen(call.Fun)] = true
 			}
 			return true
 		})
-		var stack []ast.Node
-		ast.Inspect(f, func(n ast.Node) bool {
-			if n == nil {
-				stack = stack[:len(stack)-1]
-				return true
-			}
+		guardkit.InspectStack(f, func(n ast.Node, stack []ast.Node) bool {
 			if id, ok := n.(*ast.Ident); ok && watched[id.Name] && !declNames[id] {
 				inCall := callFuns[id]
-				if len(stack) > 0 {
-					if sel, ok := stack[len(stack)-1].(*ast.SelectorExpr); ok && sel.Sel == id {
+				if len(stack) > 1 {
+					if sel, ok := stack[len(stack)-2].(*ast.SelectorExpr); ok && sel.Sel == id {
 						inCall = callFuns[sel]
 					}
 				}
@@ -370,7 +328,6 @@ func throttleKeyViolations(sources map[string]string) []string {
 					bad = append(bad, at(id)+": "+id.Name+" is used as a value; call it directly so its key arguments are checked")
 				}
 			}
-			stack = append(stack, n)
 			return true
 		})
 	}
@@ -380,19 +337,14 @@ func throttleKeyViolations(sources map[string]string) []string {
 // throttleSQLViolations rejects login_throttles SQL and models.LoginThrottle
 // outside the listed functions, apart from literal erasure inventory metadata.
 func throttleSQLViolations(sources map[string]string, allowed map[string]map[string]bool) []string {
-	fset := token.NewFileSet()
-	var names []string
-	for name := range sources {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var bad []string
-	for _, name := range names {
-		f, err := parser.ParseFile(fset, name, sources[name], 0)
-		if err != nil {
-			bad = append(bad, name+": does not parse: "+err.Error())
-			continue
-		}
+	parsed := guardkit.Sources(sources).Parse(0)
+	fset := parsed.Fset
+	bad := append([]string(nil), parsed.Problems...)
+	for _, pf := range parsed.Files {
+		name, f := pf.Path, pf.AST
+		// package models declares the table's struct and lists it in All(); that is
+		// the model, not a use of it, so the identifier rule skips that directory.
+		inModels := pf.Dir() == "models"
 		inventoryTables := erasureInventoryTableLiterals(name, f)
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && allowed[name][fn.Name.Name] {
@@ -400,8 +352,8 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 			}
 			jobKinds := map[*ast.BasicLit]bool{}
 			ast.Inspect(d, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == "daily" && len(call.Args) > 0 {
-					if lit, ok := unparen(call.Args[0]).(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				if call, ok := n.(*ast.CallExpr); ok && guardkit.Callee(call) == "daily" && len(call.Args) > 0 {
+					if lit, ok := guardkit.Unparen(call.Args[0]).(*ast.BasicLit); ok && lit.Kind == token.STRING {
 						if v, err := strconv.Unquote(lit.Value); err == nil && v == throttleJobKind {
 							jobKinds[lit] = true
 						}
@@ -423,7 +375,7 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 						bad = append(bad, fset.Position(x.Pos()).String()+": login_throttles SQL outside the listed throttle helpers")
 					}
 				case *ast.Ident:
-					if x.Name == "LoginThrottle" {
+					if x.Name == "LoginThrottle" && !inModels {
 						bad = append(bad, fset.Position(x.Pos()).String()+": models.LoginThrottle outside the listed throttle helpers")
 					}
 				}
@@ -437,11 +389,11 @@ func throttleSQLViolations(sources map[string]string, allowed map[string]map[str
 // throttleCoverageViolations checks the owned/shared lines against
 // ownedThrottleKeys in the source of throttle_keys.go.
 func throttleCoverageViolations(src string) []string {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, throttleKeysFile, src, parser.ParseComments)
-	if err != nil {
-		return []string{throttleKeysFile + ": does not parse: " + err.Error()}
+	parsed := guardkit.Sources{throttleKeysFile: src}.Parse(parser.ParseComments)
+	if len(parsed.Problems) > 0 {
+		return parsed.Problems
 	}
+	f := parsed.Files[0].AST
 	builders := throttleBuilders(f)
 	var owner *ast.FuncDecl
 	for _, d := range f.Decls {
@@ -481,7 +433,7 @@ func throttleCoverageViolations(src string) []string {
 	insideAddressArm := map[string]bool{}
 	ast.Inspect(owner.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if id, ok := unparen(call.Fun).(*ast.Ident); ok && builders[id.Name] != nil {
+			if id, ok := guardkit.Unparen(call.Fun).(*ast.Ident); ok && builders[id.Name] != nil {
 				called[id.Name] = true
 				if addressArm[call] {
 					insideAddressArm[id.Name] = true
@@ -529,13 +481,13 @@ func throttleCoverageViolations(src string) []string {
 }
 
 func TestThrottleKeysComeFromBuilders(t *testing.T) {
-	for _, v := range throttleKeyViolations(rootProductionSources(t)) {
+	for _, v := range throttleKeyViolations(throttleProductionSources(t)) {
 		t.Error(v)
 	}
 }
 
 func TestThrottleSQLStaysInItsHelpers(t *testing.T) {
-	sources := rootProductionSources(t)
+	sources := throttleProductionSources(t)
 	for _, v := range throttleSQLViolations(sources, throttleSQLAllowed) {
 		t.Error(v)
 	}
@@ -567,7 +519,7 @@ func TestThrottleSQLStaysInItsHelpers(t *testing.T) {
 }
 
 func TestOwnedThrottleKeysCoverEveryOwnedBuilder(t *testing.T) {
-	for _, v := range throttleCoverageViolations(rootProductionSources(t)[throttleKeysFile]) {
+	for _, v := range throttleCoverageViolations(throttleProductionSources(t)[throttleKeysFile]) {
 		t.Error(v)
 	}
 }
@@ -586,7 +538,7 @@ func (a *App) reserveLoginAttempt(ctx context.Context, keys []throttleKey) (bool
 `
 
 func TestThrottleGuardsCatchMistakes(t *testing.T) {
-	keysSrc := rootProductionSources(t)[throttleKeysFile]
+	keysSrc := throttleProductionSources(t)[throttleKeysFile]
 	withFixture := func(src string) map[string]string {
 		return map[string]string{throttleKeysFile: keysSrc, "api_stubs.go": throttleStubs, "api_fixture.go": src}
 	}

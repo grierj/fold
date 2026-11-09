@@ -3,13 +3,14 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -121,18 +122,8 @@ func ctgDeclaredBy(id *ast.Ident, decl ast.Node) bool {
 	return id.Obj != nil && id.Obj.Decl == decl
 }
 
-func ctgUnparen(e ast.Expr) ast.Expr {
-	for {
-		p, ok := e.(*ast.ParenExpr)
-		if !ok {
-			return e
-		}
-		e = p.X
-	}
-}
-
 func ctgNormalize(s string) string {
-	return strings.Join(strings.Fields(ctgUnquoteIdents(strings.ToLower(s))), " ")
+	return guardkit.Squash(ctgUnquoteIdents(strings.ToLower(s)))
 }
 
 // ctgEscapeString reports whether the single quote at s[i] opens an E-string,
@@ -274,15 +265,7 @@ func newCtgFile(path string, fset *token.FileSet, tree *ast.File) *ctgFile {
 		single:   map[*ctgObject]ast.Expr{},
 		consts:   map[*ctgObject]string{},
 	}
-	for _, imp := range tree.Imports {
-		p, err := strconv.Unquote(imp.Path.Value)
-		if err != nil || p != "fold/models" {
-			continue
-		}
-		name := "models"
-		if imp.Name != nil {
-			name = imp.Name.Name
-		}
+	for name := range guardkit.ImportNames(tree, "fold/models") {
 		switch name {
 		case ".":
 			f.dot = true
@@ -598,7 +581,7 @@ func (f *ctgFile) singleAssigned(decl ast.Node) {
 	value := map[*ctgObject]ast.Expr{}
 	declared := map[*ctgObject]bool{}
 	heavy := func(e ast.Expr) {
-		if obj := ctgObj(ctgIdent(ctgUnparen(e))); obj != nil {
+		if obj := ctgObj(ctgIdent(guardkit.Unparen(e))); obj != nil {
 			count[obj] += 2
 		}
 	}
@@ -606,7 +589,7 @@ func (f *ctgFile) singleAssigned(decl ast.Node) {
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			for i, lhs := range x.Lhs {
-				id := ctgIdent(ctgUnparen(lhs))
+				id := ctgIdent(guardkit.Unparen(lhs))
 				obj := ctgObj(id)
 				if obj == nil {
 					continue
@@ -885,13 +868,7 @@ func (run *ctgRun) file(f *ctgFile) {
 }
 
 func (run *ctgRun) walk(f *ctgFile, root ast.Node) {
-	var parents []ast.Node
-	ast.Inspect(root, func(n ast.Node) bool {
-		if n == nil {
-			parents = parents[:len(parents)-1]
-			return true
-		}
-		parents = append(parents, n)
+	guardkit.InspectStack(root, func(n ast.Node, parents []ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			run.assign(f, x, parents)
@@ -920,7 +897,7 @@ func (run *ctgRun) walk(f *ctgFile, root ast.Node) {
 func (run *ctgRun) assign(f *ctgFile, a *ast.AssignStmt, parents []ast.Node) {
 	decl, _ := ctgEnclosing(parents)
 	for i, lhs := range a.Lhs {
-		if sel, ok := ctgUnparen(lhs).(*ast.SelectorExpr); ok && (sel.Sel.Name == "Reason" || sel.Sel.Name == "AddChildcareAgesNote") && f.bound(sel.X) {
+		if sel, ok := guardkit.Unparen(lhs).(*ast.SelectorExpr); ok && (sel.Sel.Name == "Reason" || sel.Sel.Name == "AddChildcareAgesNote") && f.bound(sel.X) {
 			if !ctgCreationSite(f.path, decl, sel.Sel.Name, false) {
 				run.add(f, "R-1", a, parents, "assignment to %s on a models.ContactRequest value outside its allowed site", sel.Sel.Name)
 			}
@@ -1494,14 +1471,14 @@ func ctgIsAppReceiver(decl *ast.FuncDecl, x ast.Expr) bool {
 		return false
 	}
 	fld := decl.Recv.List[0]
-	t := ctgUnparen(fld.Type)
+	t := guardkit.Unparen(fld.Type)
 	if star, ok := t.(*ast.StarExpr); ok {
-		t = ctgUnparen(star.X)
+		t = guardkit.Unparen(star.X)
 	}
 	if id, ok := t.(*ast.Ident); !ok || id.Name != "App" {
 		return false
 	}
-	recv, use := ctgObj(fld.Names[0]), ctgObj(ctgIdent(ctgUnparen(x)))
+	recv, use := ctgObj(fld.Names[0]), ctgObj(ctgIdent(guardkit.Unparen(x)))
 	return recv != nil && use == recv
 }
 
@@ -1513,24 +1490,19 @@ func ctgFirstArg(call *ast.CallExpr) ast.Expr {
 }
 
 // ctgViolations checks production sources keyed by slash path from the module
-// root. Test files are skipped, as walkProductionGo skips them.
+// root. Test files are skipped, as guardkit.ReadProduction skips them.
 func ctgViolations(sources map[string]string) []string {
 	run := &ctgRun{}
-	fset := token.NewFileSet()
-	paths := make([]string, 0, len(sources))
-	for path := range sources {
+	production := guardkit.Sources{}
+	for path, src := range sources {
 		if !strings.HasSuffix(path, "_test.go") {
-			paths = append(paths, path)
+			production[path] = src
 		}
 	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		tree, err := parser.ParseFile(fset, path, sources[path], 0)
-		if err != nil {
-			run.bad = append(run.bad, path+": cannot parse: "+err.Error())
-			continue
-		}
-		f := newCtgFile(path, fset, tree)
+	parsed := production.Parse(0)
+	run.bad = append(run.bad, parsed.Problems...)
+	for _, pf := range parsed.Files {
+		f := newCtgFile(pf.Path, parsed.Fset, pf.AST)
 		run.imports(f)
 		run.file(f)
 	}
@@ -1545,13 +1517,7 @@ func ctgViolations(sources map[string]string) []string {
 }
 
 func TestContactRequestTextChangesStayInTheirHelpers(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	bad := ctgViolations(sources)
 	for _, v := range bad {
 		t.Error(v)
@@ -1602,6 +1568,7 @@ func ctgErasureFile(loop string) string {
 	return `package main
 
 import (
+	"fold/internal/guardkit"
 	"fmt"
 
 	"gorm.io/gorm"
@@ -1638,6 +1605,7 @@ func ctgAdminFileShape(head, tail, before, after string) string {
 	return `package main
 
 import (
+	"fold/internal/guardkit"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -1691,6 +1659,7 @@ func ctgTestdbFile(extra string) string {
 	return `package testdb
 
 import (
+	"fold/internal/guardkit"
 	"strings"
 
 	"gorm.io/gorm"
@@ -1710,6 +1679,7 @@ func resetStatements(db *gorm.DB) (string, string, error) {
 const ctgContactFile = `package main
 
 import (
+	"fold/internal/guardkit"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -1856,7 +1826,7 @@ func ctgRunCase(t *testing.T, tc ctgCase, covered map[string]bool) {
 	}
 	bad := ctgViolations(sources)
 	for _, v := range bad {
-		if strings.Contains(v, "cannot parse") {
+		if strings.Contains(v, "does not parse") {
 			t.Errorf("%s: the fixture does not parse: %s", tc.name, v)
 			return
 		}
@@ -2513,21 +2483,15 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 // The scan must reach the files the real allowances and the import check are
 // about. A tree that stops holding them would let the guard pass on nothing.
 func TestContactRequestTextGuardReadsTheRealTree(t *testing.T) {
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error {
-		sources[path] = string(src)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	sources := guardkit.Production(t)
 	for _, path := range []string{"account_erasure.go", "account_erasure_tombstones.go", "api_admin.go", "api_contact.go", "internal/testdb/testdb.go"} {
 		if _, ok := sources[path]; !ok {
-			t.Errorf("walkProductionGo no longer reads %s, which the contact-request text guard binds its allowances to", path)
+			t.Errorf("guardkit.ReadProduction no longer reads %s, which the contact-request text guard binds its allowances to", path)
 		}
 	}
 	for path := range sources {
 		if strings.HasSuffix(path, "_test.go") {
-			t.Errorf("walkProductionGo returned the test file %s", path)
+			t.Errorf("guardkit.ReadProduction returned the test file %s", path)
 		}
 	}
 }

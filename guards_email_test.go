@@ -2,12 +2,12 @@ package main
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // emailChoiceViolations is parse-only. It cannot see SQL assembled from
@@ -15,18 +15,15 @@ import (
 // fold/models, or cross-package helpers. Inventory Table literals are data,
 // not queries, and use the same narrowly parsed exception as suppression SQL.
 func emailChoiceViolations(sources map[string]string) []string {
-	var bad []string
-	positions := token.NewFileSet()
-	for path, src := range sources {
-		if filepath.Dir(path) != "." && !strings.HasPrefix(path, "internal/") {
+	parsed := guardkit.Sources(sources).Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
+	positions := parsed.Fset
+	for _, pf := range parsed.Files {
+		path, tree := pf.Path, pf.AST
+		if pf.Dir() != "." && !strings.HasPrefix(path, "internal/") {
 			continue
 		}
-		tree, err := parser.ParseFile(positions, path, src, 0)
-		if err != nil {
-			bad = append(bad, err.Error())
-			continue
-		}
-		names := emailGuardImports(tree)
+		models := guardkit.ImportNames(tree, "fold/models")
 		inventory := erasureInventoryTableLiterals(path, tree)
 		for _, decl := range tree.Decls {
 			owner := ""
@@ -43,7 +40,7 @@ func emailChoiceViolations(sources map[string]string) []string {
 					}
 				case *ast.SelectorExpr:
 					id, ok := n.X.(*ast.Ident)
-					if !ok || names[id.Name] != "fold/models" {
+					if !ok || !models[id.Name] {
 						break
 					}
 					switch n.Sel.Name {
@@ -63,30 +60,8 @@ func emailChoiceViolations(sources map[string]string) []string {
 	return bad
 }
 
-func emailGuardImports(tree *ast.File) map[string]string {
-	out := map[string]string{}
-	for _, imp := range tree.Imports {
-		path, _ := strconv.Unquote(imp.Path.Value)
-		name := filepath.Base(path)
-		if imp.Name != nil {
-			name = imp.Name.Name
-		}
-		out[name] = path
-	}
-	return out
-}
-
-func emailGuardSources(t *testing.T) map[string]string {
-	t.Helper()
-	sources := map[string]string{}
-	if err := walkProductionGo(".", func(path string, src []byte) error { sources[path] = string(src); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	return sources
-}
-
 func TestEmailChoiceSQLStaysInOneHelper(t *testing.T) {
-	for _, bad := range emailChoiceViolations(emailGuardSources(t)) {
+	for _, bad := range emailChoiceViolations(guardkit.Production(t)) {
 		t.Error(bad)
 	}
 }
@@ -121,21 +96,18 @@ func TestEmailChoiceGuardCatchesBypasses(t *testing.T) {
 // Lexical order does not prove execution order, that the SQL literal claims a
 // row, or that the choice result controls sending; behavioral tests cover those.
 func optionalMailViolations(sources map[string]string) []string {
-	positions := token.NewFileSet()
-	var bad []string
+	parsed := guardkit.Sources(sources).Parse(0)
+	positions := parsed.Fset
+	bad := append([]string(nil), parsed.Problems...)
 	functions := map[string]*ast.FuncDecl{}
 	allowed := map[string]string{"api_notifications.go": "notificationEmailMessage", "messages_send.go": "messageEmail", "api_message_preview.go": "apiTestMessage"}
-	for path, src := range sources {
-		dir := filepath.Dir(path)
-		if dir != "." && (!strings.HasPrefix(path, "internal/") || strings.HasPrefix(path, "internal/mail/") || strings.HasPrefix(path, "internal/providers/")) {
+	for _, pf := range parsed.Files {
+		path, tree := pf.Path, pf.AST
+		if pf.Dir() != "." && (!strings.HasPrefix(path, "internal/") || strings.HasPrefix(path, "internal/mail/") || strings.HasPrefix(path, "internal/providers/")) {
 			continue
 		}
-		tree, err := parser.ParseFile(positions, path, src, 0)
-		if err != nil {
-			bad = append(bad, err.Error())
-			continue
-		}
-		names := emailGuardImports(tree)
+		providers := guardkit.ImportNames(tree, "fold/internal/providers")
+		mailPkg := guardkit.ImportNames(tree, "fold/internal/mail")
 		isFalse := func(e ast.Expr) bool { id, ok := e.(*ast.Ident); return ok && id.Name == "false" }
 		isBroadcast := func(e ast.Expr) bool {
 			s, ok := e.(*ast.SelectorExpr)
@@ -143,7 +115,7 @@ func optionalMailViolations(sources map[string]string) []string {
 				return false
 			}
 			id, ok := s.X.(*ast.Ident)
-			return ok && names[id.Name] == "fold/internal/providers" && s.Sel.Name == "StreamBroadcast"
+			return ok && providers[id.Name] && s.Sel.Name == "StreamBroadcast"
 		}
 		inspect := func(node ast.Node, owner string, appMethod bool) {
 			ast.Inspect(node, func(n ast.Node) bool {
@@ -155,7 +127,7 @@ func optionalMailViolations(sources map[string]string) []string {
 						break
 					}
 					id, ok := sel.X.(*ast.Ident)
-					if !ok || names[id.Name] != "fold/internal/mail" || sel.Sel.Name != "Message" {
+					if !ok || !mailPkg[id.Name] || sel.Sel.Name != "Message" {
 						break
 					}
 					for _, elt := range n.Elts {
@@ -245,14 +217,8 @@ func optionalMailViolations(sources map[string]string) []string {
 			bad = append(bad, key+": missing send boundary")
 			continue
 		}
-		var stack []ast.Node
 		inside, outside := 0, 0
-		ast.Inspect(f, func(n ast.Node) bool {
-			if n == nil {
-				stack = stack[:len(stack)-1]
-				return true
-			}
-			stack = append(stack, n)
+		guardkit.InspectStack(f, func(n ast.Node, stack []ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
@@ -325,7 +291,7 @@ func optionalMailViolations(sources map[string]string) []string {
 }
 
 func TestOptionalMailChecksTheEffectiveChoice(t *testing.T) {
-	for _, bad := range optionalMailViolations(emailGuardSources(t)) {
+	for _, bad := range optionalMailViolations(guardkit.Production(t)) {
 		t.Error(bad)
 	}
 }

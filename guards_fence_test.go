@@ -3,12 +3,13 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"os"
 	"sort"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,19 +55,17 @@ func fenceCallOf(s ast.Stmt) (*ast.CallExpr, bool) {
 
 // fenceProblems checks every a.contactMutationCtx call of the named functions.
 func fenceProblems(sources map[string]string) []string {
-	var bad []string
-	fset := token.NewFileSet()
+	parsed := guardkit.Sources(sources).Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
 	for _, n := range fenceNamed {
-		src, ok := sources[n.file]
-		if !ok {
-			bad = append(bad, n.file+": the file is gone; update fenceNamed")
-			continue
+		file := parsed.File(n.file)
+		if file == nil {
+			if _, ok := sources[n.file]; !ok {
+				bad = append(bad, n.file+": the file is gone; update fenceNamed")
+			}
+			continue // a file that does not parse is already in Problems
 		}
-		tree, err := parser.ParseFile(fset, n.file, src, 0)
-		if err != nil {
-			bad = append(bad, n.file+": cannot parse: "+err.Error())
-			continue
-		}
+		tree := file.AST
 		var decl *ast.FuncDecl
 		for _, d := range tree.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && fd.Name.Name == n.fn {
@@ -78,13 +77,7 @@ func fenceProblems(sources map[string]string) []string {
 			continue
 		}
 		calls := 0
-		var stack []ast.Node
-		ast.Inspect(decl.Body, func(node ast.Node) bool {
-			if node == nil {
-				stack = stack[:len(stack)-1]
-				return true
-			}
-			stack = append(stack, node)
+		guardkit.InspectStack(decl.Body, func(node ast.Node, stack []ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true

@@ -2,13 +2,12 @@ package main
 
 import (
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 // Repo guards from the /correct pass (Oct 2026). Each one fails on a real
@@ -60,16 +59,13 @@ func TestGroupDetailGuardCatchesPR41Leak(t *testing.T) {
 // Both paths skip missing groups; policy loops elsewhere duplicate the filter.
 
 func TestOneEventVisibilityFilter(t *testing.T) {
-	files, _ := filepath.Glob("*.go")
-	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+	parsed := guardkit.Production(t).Parse(0)
+	for _, problem := range parsed.Problems {
+		t.Error(problem)
+	}
+	fset := parsed.Fset
+	for _, pf := range parsed.Files {
+		f := pf.AST
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Body == nil || fn.Name.Name == "eventCandidates" {
@@ -102,19 +98,8 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 // Registration subjects must pass through the mixed holder scope; membership
 // joins remain account-only.
 func TestRegistrationQueriesUseSubjectScope(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(src), `listedUsers("registrations")`) {
+	for file, src := range guardkit.Production(t) {
+		if strings.Contains(src, `listedUsers("registrations")`) {
 			t.Errorf("%s uses the account-only registration join", file)
 		}
 	}

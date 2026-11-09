@@ -198,6 +198,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   server's major version, because a newer client sends settings an older server rejects: `FOLD_PG_BIN` (a directory of
   tools), else a matching one on `PATH`, else `scripts/pg-client.sh` (Docker, `postgres:<major>`). A mismatched client fails
   the test, it never skips; with no client and no Docker the test skips locally and fails under `CI`.
+  Source guards (the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`, `restore_fence_test.go` and
+  the erasure censuses) read Go through `internal/guardkit`, a test-only package that `.deadcode-allow` lists like
+  `internal/testdb`. `guardkit.Production(t)` walks the whole tree once with one skip rule set (no tests, `testdata`, `web/`,
+  `node_modules`, `vendor`, hidden directories), so code moved into a subpackage is still checked; `Sources.Parse` parses it
+  (fixtures too), `InspectStack` is the one parent-stack walker, and `Unparen`, `Callee`, `ImportNames` and `Squash` replace
+  the per-guard copies. A guard whose subject is one package filters with `Parsed.Package("main")`, never a directory glob.
+  Repo-wide guard files are named `guards_<concern>_test.go` (the layout guard allows that pattern at the root only).
 - Frontend tests: `cd web && npm test` (Vitest). `make e2e` runs Playwright against the real
   binary (first run: `cd web && npx playwright install chromium`). `web/e2e/run.sh` splits specs
   across shards (`E2E_SHARDS`), each with its own server, database and seed; never rely on another
@@ -570,6 +577,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed`; `web/e2e/friendly-errors.spec.ts` |
 | Main pages (including event, scheduling, Join and My groups) have no moderate, serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`; setup page in `web/e2e/seed.setup.ts` |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (its error names the file to move to) |
+| Source guards read the whole production tree, not a directory glob | `guardkit.ReadProduction` and its skip rules (`internal/guardkit/guardkit_test.go`: `TestReadProductionSkipRules`, `TestParseReportsUnparsableFilesAndKeepsGoing`), `TestContactRequestTextGuardReadsTheRealTree`; a guard about one package says so with `Parsed.Package` |
 | Schema changes are new goose files; GORM models match them | `migrations/migrations_test.go` drift check |
 | A contract migration's expand shipped in an earlier tagged, published release (PLAN 14.1) | Tag and file half: `scripts/contract-gate.sh` in the test job (`-- contracts: NNNNN_name.sql` header; a `v*` tag merged into HEAD holds the expand and not the contract; the expand unchanged since; full-history checkout), kept in place by `TestCIRunsTheContractGate` and proved by `TestContractGateScript`. Publication half is review only: a `release.yml` run of shape N or F, the finalize step summary, GHCR digest, release section and attestation naming one digest; a tag alone does not satisfy it |
 | `go vet` and `gofmt` are clean | `make lint` in CI |
