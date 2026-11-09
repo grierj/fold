@@ -467,7 +467,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				return err
 			}
 			actor := conversionLocked[me.ID]
-			if actor == nil || !policy.IsAdmin(asPerson(actor)) || actor.Status != models.UserActive || actor.SessionVersion != me.SessionVersion {
+			if !adminCurrent(actor, me) {
 				return errConsentForbidden
 			}
 		}
@@ -499,7 +499,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 					return err
 				}
 			}
-			if !policy.IsAdmin(asPerson(consentActor)) || consentActor.SessionVersion != me.SessionVersion {
+			if !adminCurrent(consentActor, me) {
 				return errConsentForbidden
 			}
 		}

@@ -212,12 +212,12 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		var actor models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actorAtRequest.ID).Error; err != nil {
-			return err
-		}
-		if !actor.CanSignIn() || actor.SessionVersion != actorAtRequest.SessionVersion {
+		actor, err := lockActorIn(tx, actorAtRequest, actorNoKeyUpdate)
+		if errors.Is(err, errSecuritySession) {
 			return errSeriesUnavailable
+		}
+		if err != nil {
+			return err
 		}
 		var candidateEvent models.Event
 		if err := tx.First(&candidateEvent, eventID).Error; err != nil {
@@ -244,7 +244,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			return errSeriesUnavailable
 		}
 		// Seeing one opened or explicitly invited date is not series authority.
-		if !policy.CanRegisterEvent(asPerson(&actor), viewOf(&ev, false), gp, rel) {
+		if !policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {
 			return errSeriesUnavailable
 		}
 
@@ -311,7 +311,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			// A hidden per-date override is omitted rather than returned as a
 			// refusal, because even its date is not authorized result data.
 			dateView := viewOf(dateEvent(&ev, o), false)
-			if !policy.CanRegisterEvent(asPerson(&actor), dateView, gp, rel) {
+			if !policy.CanRegisterEvent(asPerson(actor), dateView, gp, rel) {
 				continue
 			}
 			old := prior[o.ID]
@@ -486,8 +486,8 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
-		var actor models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actorAtRequest.ID).Error; err != nil || !actor.CanSignIn() || actor.SessionVersion != actorAtRequest.SessionVersion {
+		actor, err := lockActorIn(tx, actorAtRequest, actorNoKeyUpdate)
+		if err != nil {
 			return errSeriesUndoAuthority
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", receipt.ID).First(&receipt).Error; err != nil {
@@ -513,7 +513,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			gp, rel = asGroup(&group), relIn(tx, actor.ID, group.ID)
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, receipt.EventID).Error; err != nil ||
-			!policy.CanRegisterEvent(asPerson(&actor), viewOf(&ev, false), gp, rel) {
+			!policy.CanRegisterEvent(asPerson(actor), viewOf(&ev, false), gp, rel) {
 			return errSeriesUndoAuthority
 		}
 
@@ -543,7 +543,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		for i := range locked {
 			o := &locked[i]
 			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(undoNow) ||
-				!policy.CanRegisterEvent(asPerson(&actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
+				!policy.CanRegisterEvent(asPerson(actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
 				return errSeriesUndoEnded
 			}
 		}

@@ -250,16 +250,14 @@ func leaderCountIn(tx *gorm.DB, groupID uint) (int, error) {
 // the route; authorization always goes through the pure departure policy.
 func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjectID uint, now time.Time) (departureFacts, error) {
 	facts := departureFacts{Version: departureSnapshotVersion, GroupID: groupID, Dates: []departureDateFact{}}
-	var actor models.User
-	if err := tx.First(&actor, authenticated.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return facts, errDepartureForbidden
-		}
-		return facts, err
-	}
-	if actor.Status != models.UserActive || actor.SessionVersion != authenticated.SessionVersion {
+	current, err := lockActorIn(tx, authenticated, actorRead)
+	if errors.Is(err, errSecuritySession) {
 		return facts, errDepartureForbidden
 	}
+	if err != nil {
+		return facts, err
+	}
+	actor := *current
 	var group models.Group
 	if err := tx.First(&group, groupID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

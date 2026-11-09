@@ -21,7 +21,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const contactHistoryPageSize = 100
@@ -461,15 +460,18 @@ func (a *App) apiExportContactHistory(c *gin.Context) {
 		// FOR SHARE blocks all actor updates/deletion until audit commit; it is
 		// deliberately acquired only after the lengthy materialization.
 		actor := apiUser(c)
-		var current models.User
-		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&current, actor.ID).Error; err != nil {
+		current, err := lockActorIn(tx, actor, actorShare)
+		if errors.Is(err, errSecuritySession) {
+			return errors.New("contact history export authority changed")
+		}
+		if err != nil {
 			return err
 		}
 		zone, err := churchZoneIn(tx)
 		if err != nil {
 			return err
 		}
-		if current.SessionVersion != actor.SessionVersion || !policy.CanViewContactHistory(contactAccount(&current, time.Now().UTC(), zone)) {
+		if !policy.CanViewContactHistory(contactAccount(current, time.Now().UTC(), zone)) {
 			return errors.New("contact history export authority changed")
 		}
 		// Authorization linearizes at this checked row lock, held through

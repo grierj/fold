@@ -27,10 +27,7 @@ func (a *App) apiCancelEmailChange(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(user).Update("session_version", gorm.Expr("session_version + 1")).Error; err != nil {
-			return err
-		}
-		if err := revokeAccountTokens(tx, user.ID); err != nil {
+		if err := endAllSessionsIn(tx, user, nil); err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.EmailChangeCancelled,

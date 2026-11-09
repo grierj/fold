@@ -1075,7 +1075,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		// A gated retry may have waited behind an invitation ending or a
 		// visibility/session change. Never fall back to preflight authority.
-		if gated && (!holder.CanSignIn() || holder.SessionVersion != u.SessionVersion) {
+		if gated && !sessionCurrent(&holder, u) {
 			return errOccurrenceNotFound
 		}
 		var today time.Time
@@ -1227,8 +1227,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		gated = true
 		err = a.DB.Transaction(mutate)
 	}
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if err != nil {

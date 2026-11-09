@@ -17,39 +17,26 @@ var errSecuritySession = errors.New("account credentials changed")
 // expensive bcrypt work outside the global contact gate. Equality of the hash
 // and session epoch makes that proof valid for this exact locked credential.
 func lockCurrentCredentials(tx *gorm.DB, expected *models.User) (*models.User, error) {
-	if err := lockContacts(tx); err != nil {
-		return nil, err
-	}
-	var fresh models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, expected.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errSecuritySession
-		}
-		return nil, err
-	}
-	if !fresh.CanSignIn() || fresh.SessionVersion != expected.SessionVersion ||
-		fresh.PasswordHash == nil || expected.PasswordHash == nil || *fresh.PasswordHash != *expected.PasswordHash {
-		return nil, errSecuritySession
-	}
-	return &fresh, nil
-}
-
-// lockSessionCredentials is lockCurrentCredentials for a credential writer
-// that holds no fresh password proof, only a session. After the same gate,
-// user lock and checks, it also requires the locked row's logout_version to
-// match the session's, so the row agrees with every value
-// authenticatedSessionUser checks (api.go:371), as checkAvatarSession does.
-// A session loaded before an erasure, a disable, a credential change or a
-// logout therefore answers errSecuritySession and the caller saves nothing.
-func lockSessionCredentials(tx *gorm.DB, me *models.User) (*models.User, error) {
-	fresh, err := lockCurrentCredentials(tx, me)
+	fresh, err := lockSessionCredentials(tx, expected)
 	if err != nil {
 		return nil, err
 	}
-	if fresh.LogoutVersion != me.LogoutVersion {
+	if fresh.PasswordHash == nil || expected.PasswordHash == nil || *fresh.PasswordHash != *expected.PasswordHash {
 		return nil, errSecuritySession
 	}
 	return fresh, nil
+}
+
+// lockSessionCredentials is the gate and the user lock of a credential writer
+// that holds a session: the actor's row FOR NO KEY UPDATE, current for the
+// session by sessionCurrent (the same decision authenticatedSessionUser makes).
+// A session loaded before an erasure, a disable, a credential change or a
+// logout therefore answers errSecuritySession and the caller saves nothing.
+func lockSessionCredentials(tx *gorm.DB, me *models.User) (*models.User, error) {
+	if err := lockContacts(tx); err != nil {
+		return nil, err
+	}
+	return lockActorIn(tx, me, actorNoKeyUpdate)
 }
 
 // lockAccountTokenUser always obtains the contact gate, then the user, before
@@ -145,14 +132,10 @@ func revokeAccountTokens(tx *gorm.DB, userID uint) error {
 }
 
 func replacePasswordIn(tx *gorm.DB, user *models.User, hash string) error {
-	if err := tx.Model(user).Updates(map[string]any{
-		"password_hash":   hash,
-		"status":          gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
-		"session_version": gorm.Expr("session_version + 1"),
-	}).Error; err != nil {
-		return err
-	}
-	if err := revokeAccountTokens(tx, user.ID); err != nil {
+	if err := endAllSessionsIn(tx, user, map[string]any{
+		"password_hash": hash,
+		"status":        gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
+	}); err != nil {
 		return err
 	}
 	// Keep the exact epoch written by this transaction. Reloading after

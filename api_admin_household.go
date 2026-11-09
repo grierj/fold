@@ -24,7 +24,7 @@ var (
 func (a *App) adminHouseholdError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, errSecuritySession):
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		jsonError(c, http.StatusNotFound, "user not found")
 	case errors.Is(err, errHouseholdHolder), errors.Is(err, errHouseholdExists), errors.Is(err, errHouseholdRequired), errors.Is(err, errHouseholdGuardian):
@@ -54,7 +54,7 @@ func lockAdminHouseholdParticipants(tx *gorm.DB, session *models.User, holderID,
 		return nil, nil, nil, err
 	}
 	actor, holder, guardian := byID[session.ID], byID[holderID], byID[guardianID]
-	if actor == nil || !actor.CanSignIn() || actor.SessionVersion != session.SessionVersion || !policy.IsAdmin(asPerson(actor)) {
+	if !adminCurrent(actor, session) {
 		return nil, nil, nil, errSecuritySession
 	}
 	if holder == nil {
