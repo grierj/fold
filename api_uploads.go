@@ -17,7 +17,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// clampFocal keeps a focal-point percentage in the 0-100 range.
 func clampFocal(v float64) float64 {
 	if v < 0 {
 		return 0
@@ -56,7 +55,6 @@ func imageRefusal(err error) error {
 	return errUploadFailed
 }
 
-// readImageUpload reads the multipart image in field through images.ReadUpload.
 func readImageUpload(c *gin.Context, field string) (*os.File, string, string, error) {
 	fh, err := c.FormFile(field)
 	if err != nil {
@@ -115,7 +113,6 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"avatarUrl": avatarURL})
 }
 
-// apiDeleteAvatar removes the current user's avatar.
 func (a *App) apiDeleteAvatar(c *gin.Context) {
 	start := requestStart(c)
 	u := apiUser(c)
@@ -149,7 +146,6 @@ func uploadKeyFromURL(raw string) (string, bool) {
 	return key, true
 }
 
-// apiUploadGroupCover replaces a group's cover image. Leader or admin only.
 func (a *App) apiUploadGroupCover(c *gin.Context) {
 	g, ok := a.loadManagedGroup(c)
 	if !ok {
@@ -192,7 +188,6 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"imageUrl": g.ImageURL})
 }
 
-// apiDeleteGroupCover removes a group's uploaded cover image.
 func (a *App) apiDeleteGroupCover(c *gin.Context) {
 	g, ok := a.loadManagedGroup(c)
 	if !ok {

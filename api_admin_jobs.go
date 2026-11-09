@@ -21,7 +21,6 @@ import (
 // attempts, for an admin to retry or set aside. It never shows a job's
 // payload, which can name people.
 
-// adminJobJSON is one dead job as the System page shows it.
 type adminJobJSON struct {
 	ID   uint   `json:"id"`
 	Kind string `json:"kind"`

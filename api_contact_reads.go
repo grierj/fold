@@ -93,7 +93,6 @@ func loadContactPageReads(tx *gorm.DB, actor uint, rs []models.ContactRequest, g
 	return p, nil
 }
 
-// facts are the eligibility facts of one request at now, in the church zone.
 func (p *contactPageReads) facts(now time.Time, zone *time.Location, r models.ContactRequest) policy.ContactAccessFacts {
 	f := policy.ContactAccessFacts{Now: now,
 		Requester: contactAccount(p.users[r.RequesterID], now, zone),
@@ -131,7 +130,6 @@ func (p *contactPageReads) name(id uint) string {
 	return unknownPersonName
 }
 
-// contextID is the request's group or event id when the viewer may see it.
 func (p *contactPageReads) contextID(a *App, viewer *models.User, r models.ContactRequest) *uint {
 	if _, ok := p.shown(a, viewer, contextRef{r.ContextType, r.ContextID}); !ok {
 		return nil
@@ -161,7 +159,6 @@ func (a *App) presentContactRequests(tx *gorm.DB, op *contactOperation, rs []mod
 	return out, nil
 }
 
-// presentContactRequest is the page of one request.
 func (a *App) presentContactRequest(tx *gorm.DB, op *contactOperation, r models.ContactRequest) (contactRequestJSON, error) {
 	rows, err := a.presentContactRequests(tx, op, []models.ContactRequest{r})
 	if err != nil {

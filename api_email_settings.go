@@ -22,7 +22,6 @@ import (
 // opens (/email-settings/:token) and on Me → Notifications. Account and
 // safety email can't be turned off. Every change appends a consent row.
 
-// emailKindJSON is one optional kind of email and whether it is off.
 type emailKindJSON struct {
 	Category string `json:"category"`
 	Off      bool   `json:"off"`
@@ -36,7 +35,6 @@ type emailSettingsJSON struct {
 	OptionalEmailOff bool `json:"optionalEmailOff"`
 }
 
-// emailKindsFor are the optional categories a person's settings list.
 func emailKindsFor(u *models.User) []string {
 	out := []string{}
 	for _, c := range notify.OptionalEmailCategories() {
@@ -182,7 +180,6 @@ func (a *App) apiTokenUpdateEmailSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"emailSettings": s})
 }
 
-// maxChurchAddress and maxChurchAddressLines bound the footer address.
 const (
 	maxChurchAddress      = 300
 	maxChurchAddressLines = 6

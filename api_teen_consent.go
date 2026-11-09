@@ -49,7 +49,6 @@ func latestTeenConsent(tx *gorm.DB, teenID uint, scope string) (models.TeenConse
 	return row, res.RowsAffected == 1, res.Error
 }
 
-// latestTeenConsentIn reports whether the newest consent for scope is a grant.
 func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
 	row, found, err := latestTeenConsent(tx, teenID, scope)
 	return found && row.Status == models.ConsentGranted, err
@@ -62,7 +61,6 @@ func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
 	return row.ID, err
 }
 
-// latestTeenConsents is the newest row of every scope for each of the teens.
 func latestTeenConsents(db *gorm.DB, teenIDs []uint) ([]models.TeenConsent, error) {
 	var latest []models.TeenConsent
 	err := db.Raw("SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ? ORDER BY teen_user_id, scope, at DESC, id DESC", teenIDs).Scan(&latest).Error

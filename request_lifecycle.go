@@ -74,7 +74,6 @@ func openRequest(tx *gorm.DB, op *contactOperation, r *models.ContactRequest, ne
 // contactHistoryQuery and presentContactHistory read exactly these back.
 func decisionReason(party, decision string) string { return party + ":" + decision }
 
-// decisionReasons are the four reasons a decision can be recorded under.
 var decisionReasons = []string{
 	decisionReason(policy.ContactSubject, policy.ContactApproved), decisionReason(policy.ContactSubject, policy.ContactDenied),
 	decisionReason(policy.ContactAdmin, policy.ContactApproved), decisionReason(policy.ContactAdmin, policy.ContactDenied),

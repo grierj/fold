@@ -755,10 +755,6 @@ func TestExhaustedEmailChangeActorDoesNotSpendFreshTargetLimit(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// My household (M1.9 slice 1)
-// ---------------------------------------------------------------------------
-
 func getMyHousehold(t *testing.T, c *apiClient) householdJSON {
 	t.Helper()
 	w := c.do("GET", "/api/v1/me/household", nil, false)
@@ -1949,7 +1945,6 @@ func TestAvatarCleanupWaitsForBlockedUploadAndKeepsTheNewPhoto(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Household self-service writers revalidate the acting account (M7.4 R4-3a-1,
 // inventory 9.6 requirements 1 to 4, F-10 writer side). Every writer takes
 // the acting user row FOR NO KEY UPDATE before the household lock, so an
@@ -1957,7 +1952,6 @@ func TestAvatarCleanupWaitsForBlockedUploadAndKeepsTheNewPhoto(t *testing.T) {
 // nothing to save, and one that waits for the writer finds a finished write.
 // Rows the writer committed before an erasure stay until R4-3b scrubs
 // households (a stated R4-3b limit, not asserted here).
-// ---------------------------------------------------------------------------
 
 const hwPW = erasurePW
 

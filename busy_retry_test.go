@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// A window the first backoff is far inside of and the second is past: a retry
+// loop that rechecks the window after its backoff runs exactly two attempts,
+// and one that does not runs three.
+const busyWindowTestWindow = 600 * time.Millisecond
+
+var busyWindowTestBackoff = [busyRetryTries - 1]time.Duration{time.Millisecond, 900 * time.Millisecond}
+
 func setBusyRetry(t *testing.T, window time.Duration, backoff [busyRetryTries - 1]time.Duration) {
 	t.Helper()
 	oldWindow, oldBackoff := busyRetryWindow, busyRetryBackoff

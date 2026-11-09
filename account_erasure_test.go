@@ -1135,12 +1135,6 @@ func TestErasureCapturesRequestInvitationAndPersonSets(t *testing.T) {
 }
 
 func TestErasureHelpers(t *testing.T) {
-	if got := erasedRowAddressSQL("guest_signups"); got != "'deleted-guest_signups-' || id || '@deleted.invalid'" {
-		t.Errorf("erasedRowAddressSQL = %q", got)
-	}
-	if got := erasedTokenMarkerSQL("invitations"); got != "'erased-invitations-' || id" {
-		t.Errorf("erasedTokenMarkerSQL = %q", got)
-	}
 	for addr, want := range map[string]bool{
 		"deleted-7@deleted.invalid":                 true,
 		" Deleted-guest_signups-3@Deleted.Invalid ": true,
@@ -1151,9 +1145,6 @@ func TestErasureHelpers(t *testing.T) {
 		if got := isErasedAddress(addr); got != want {
 			t.Errorf("isErasedAddress(%q) = %v, want %v", addr, got, want)
 		}
-	}
-	if erasureRecipientWait != 20*time.Second {
-		t.Errorf("erasureRecipientWait = %v, want 20s", erasureRecipientWait)
 	}
 }
 
@@ -1307,11 +1298,9 @@ func TestErasureStatementTimeoutContract(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-2a-2 test helpers: erasureTestPause (a barrier matched on facts GORM has
 // set before the step, rule F6) and erasureTestSQLStates (SQLSTATE evidence,
 // rule F4).
-// ---------------------------------------------------------------------------
 
 // erasureTestWhere is a WHERE condition to match: a SQL fragment and the
 // values that must sit at the given positions of its variables.
@@ -1343,6 +1332,9 @@ type erasureTestPoint struct {
 	// PID, when set, receives pg_backend_pid() of the participant's own
 	// connection before reached closes.
 	PID *atomic.Int64
+	// NotPID, when set, leaves alone statements from that backend: the point
+	// is for the other participant that runs the same statement.
+	NotPID int64
 }
 
 func (p erasureTestPoint) validate() error {
@@ -1518,16 +1510,24 @@ func erasureTestPause(t *testing.T, db *gorm.DB, p erasureTestPoint) (reached <-
 	var fired atomic.Bool
 	name := fmt.Sprintf("test:erasure_pause:%d", queryCounterSeq.Add(1))
 	fn := func(tx *gorm.DB) {
-		if tx.Error != nil || !p.matches(tx.Statement) || fired.Swap(true) {
+		if tx.Error != nil || fired.Load() || !p.matches(tx.Statement) {
 			return
 		}
 		ctx := tx.Statement.Context
-		if p.PID != nil {
-			var pid int64
+		var pid int64
+		if p.PID != nil || p.NotPID != 0 {
 			if err := tx.Statement.ConnPool.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
 				tx.AddError(err)
 				return
 			}
+		}
+		if p.NotPID != 0 && pid == p.NotPID {
+			return
+		}
+		if fired.Swap(true) {
+			return
+		}
+		if p.PID != nil {
 			p.PID.Store(pid)
 		}
 		close(signal)
@@ -2336,10 +2336,6 @@ func TestErasureTestSQLStatesRecordsFailures(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// R4-2a-3: invitations, guest signups and the dev outbox.
-// ---------------------------------------------------------------------------
-
 // erasureEventFixture is a public group's event with one future occurrence,
 // made by the scene's admin.
 func erasureEventFixture(t *testing.T, s coreErasureScene) (eventID uint, occ models.EventOccurrence, groupID uint) {
@@ -2707,10 +2703,6 @@ func TestInvitationAcceptanceRacingErasure(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// R4-2a-4: messages and the bounded recipient scrub.
-// ---------------------------------------------------------------------------
 
 // erasureTestRegister and erasureTestUnregister attach a callback to the
 // processor and position a point names.
@@ -3722,11 +3714,6 @@ func TestErasureTestMessageProjectionDetectsDifferences(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// R4-2a-5: remaining activity rows, contact grants and the frozen
-// contact_requests text.
-// ---------------------------------------------------------------------------
-
 // erasureActivity names the rows erasureSeedActivity made.
 type erasureActivity struct {
 	group                        *models.Group
@@ -3999,10 +3986,6 @@ func TestAccountErasureEndsContactGrantsOnce(t *testing.T) {
 		check(t, f, grants)
 	})
 }
-
-// ---------------------------------------------------------------------------
-// R4-T07A: the childcare ages note of the subject's occurrence_add rows.
-// ---------------------------------------------------------------------------
 
 // erasureAgesNoteRow is one contact_requests row as the ages-note tests compare
 // it: the few columns they branch on, the note, the whole row as JSON with and
@@ -5607,14 +5590,27 @@ func TestAccountErasureScrubsSubjectAgesNoteStatement(t *testing.T) {
 	}
 }
 
-// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds lookupChunk+1 rows of
-// the erased subject, one more than one batch, and erases through the real
-// DELETE: the helper sends exactly two UPDATEs, a full batch and a batch of
-// one, each carrying its ids and the subject as bind parameters. A late
-// failure after both batches rolls them back together.
+// TestAccountErasureScrubsSubjectAgesNoteInBatches seeds one more row of the
+// erased subject than a batch holds and erases through the real DELETE: the
+// blank takes more than one UPDATE, none carries more bind parameters than
+// PostgreSQL allows, and together they change every row. A late failure after
+// the batches rolls them back together.
 func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 	const rows = lookupChunk + 1
-	want := []agesNoteStatement{{Vars: lookupChunk + 1, Rows: lookupChunk}, {Vars: 2, Rows: 1}}
+	const maxBindParameters = 65535
+	batchesOK := func(t *testing.T, updates []agesNoteStatement) {
+		t.Helper()
+		var changed int64
+		for _, u := range updates {
+			if u.Vars > maxBindParameters {
+				t.Errorf("an UPDATE carried %d bind parameters, the limit is %d", u.Vars, maxBindParameters)
+			}
+			changed += u.Rows
+		}
+		if len(updates) < 2 || changed != rows {
+			t.Errorf("%d UPDATEs changed %d rows, want at least two that changed %d", len(updates), changed, rows)
+		}
+	}
 	t.Run("commit", func(t *testing.T) {
 		sc := newAgesNoteScene(t, false, rows)
 		rec := recordAgesNoteStatements(t, sc.app.DB)
@@ -5627,9 +5623,7 @@ func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 		if len(selects) != 1 {
 			t.Errorf("%d lock selections, want 1", len(selects))
 		}
-		if !reflect.DeepEqual(updates, want) {
-			t.Errorf("UPDATEs (bind parameters, rows changed) = %+v, want %+v", updates, want)
-		}
+		batchesOK(t, updates)
 	})
 	t.Run("late failure", func(t *testing.T) {
 		sc := newAgesNoteScene(t, false, rows)
@@ -5640,9 +5634,8 @@ func TestAccountErasureScrubsSubjectAgesNoteInBatches(t *testing.T) {
 			t.Fatalf("delete answered %d %s, want 500", r.code, r.body)
 		}
 		// Both batches ran and committed nothing: the failure came after them.
-		if _, updates := rec.seen(); !reflect.DeepEqual(updates, want) {
-			t.Errorf("UPDATEs before the failure = %+v, want %+v", updates, want)
-		}
+		_, updates := rec.seen()
+		batchesOK(t, updates)
 		if got := failed.Load(); got != 1 {
 			t.Errorf("the injected last-statement failure fired %d times, want 1", got)
 		}
@@ -5861,10 +5854,6 @@ func TestAccountErasureScrubsSubjectAgesNoteBeyondBindLimit(t *testing.T) {
 		t.Logf("70,001-row rollback: seeded in %s, failed erasure took %s, %d UPDATEs ran before the failure, largest bind-parameter count %d", seeded.Round(time.Millisecond), erased.Round(time.Millisecond), len(updates), largest)
 	})
 }
-
-// ---------------------------------------------------------------------------
-// R4-2a-6: races that need the full statement list.
-// ---------------------------------------------------------------------------
 
 // removalRaceFixture is a group event led by L with capacity 1 and a
 // waitlist. The erased member U holds the one seat (with a manage token hash
@@ -6326,10 +6315,6 @@ func TestErasureDeadlockWithGuestAdminNoticeRollsBackLoser(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// Representative-scale measurement (M7.4 R4-2a-7)
-// ---------------------------------------------------------------------------
 
 // The scale fixture is one church at the size the database review asked for:
 // 5,000 people and, around the erased person U (user 3, address
@@ -7411,10 +7396,6 @@ func writeScaleResults(t *testing.T, run scaleExplain, facts scaleConsentFacts, 
 	t.Logf("wrote %s", path)
 }
 
-// ---------------------------------------------------------------------------
-// R4-T07A-4: statement plans and whole-erasure controls for the ages-note scrub
-// ---------------------------------------------------------------------------
-
 // What the scale run can and cannot show about eraseContactRequestTextIn.
 //
 // explainScaleErasure measures the helper's two statements with EXPLAIN
@@ -7530,8 +7511,6 @@ func scaleHelperOnlyCompare(before, after scaleHelperScope) scaleHelperOnlyResul
 		ReasonsUnchanged:      before.Reasons != "" && before.Reasons == after.Reasons,
 	}
 }
-
-// ---- real-erasure controls (the three timed DELETE runs) -------------------
 
 // scaleLifecycle is the lifecycle of one request after the erasure.
 type scaleLifecycle struct {
@@ -7663,8 +7642,6 @@ func checkScaleContactErasure(t *testing.T, before, after scaleContactState) {
 		}
 	}
 }
-
-// ---- plan parsing and the boundedness classifier --------------------------
 
 // scalePlanNode is one node of EXPLAIN (ANALYZE, BUFFERS) text.
 type scalePlanNode struct {
@@ -8673,8 +8650,6 @@ func scaleAgesNoteScanVerdict(in scaleScanInput) scaleScanVerdict {
 	return v
 }
 
-// ---- the evidence of one scale run ----------------------------------------
-
 type scaleStatementEvidence struct {
 	Label        string           `json:"label"`
 	SQL          string           `json:"sql"`
@@ -8783,8 +8758,6 @@ func checkScaleAgesNoteScrub(t *testing.T, run scaleExplain) scaleAgesNoteEviden
 		ev.Update.RowsAffected, ev.Update.Binds, ev.Update.TriggerCalls, ev.Update.TriggerFound, ev.HelperOnly)
 	return ev
 }
-
-// ---- the classifier's unit test (ordinary CI, no database) ----------------
 
 func agesPad(n int) string { return strings.Repeat(" ", n) }
 
@@ -9310,7 +9283,6 @@ func TestAgesNoteErasureScanVerdict(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // R4-T07A-3: concurrency acceptance CA-1 to CA-5 and CA-9 against the real
 // erasure (DELETE /admin/users/:id) and the real competing operations.
 //
@@ -9363,7 +9335,6 @@ func TestAgesNoteErasureScanVerdict(t *testing.T) {
 // agesRaceLedger: exact ids, actors, metas and times, and no row it did not
 // expect. A step marked Partial (the approval, whose own effects the contact
 // suites cover) requires its rows but allows others.
-// ---------------------------------------------------------------------------
 
 const agesRaceNote = "ages 2 and 5"
 

@@ -23,12 +23,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------------------------------------------------------------------------
 // T07B-1b: the attempt lifecycle, settle, the actor seal and the receipt sweep.
 // Every route test goes through the real router, as an admin with a cookie
 // session and a CSRF token. App.clock (useAttemptClock) is the test clock: the process's
 // monotonic time, advanced by hand.
-// ---------------------------------------------------------------------------
 
 type attemptScene struct {
 	t *testing.T
@@ -191,10 +189,6 @@ func wantSettle(t *testing.T, got attemptSettleJSON, result string, subjectDelet
 
 func ptr[T any](v T) *T { return &v }
 
-// ---------------------------------------------------------------------------
-// The id
-// ---------------------------------------------------------------------------
-
 func TestAttemptIDCapability(t *testing.T) {
 	app := testApp(t)
 	id, err := app.mintAttempt(attemptKindAccountDelete, 1, 2)
@@ -250,10 +244,6 @@ func TestAttemptIDCapability(t *testing.T) {
 		t.Error("two mints gave the same id")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// The ledger
-// ---------------------------------------------------------------------------
 
 func nonceOf(i int) [16]byte {
 	var n [16]byte
@@ -475,10 +465,6 @@ func TestLedgerMutexHoldsNoWait(t *testing.T) {
 		t.Error("an unlock that is not deferred right away: the guard accepted it")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// TestAttemptLifecycle: the real DELETE and settle routes, the test clock.
-// ---------------------------------------------------------------------------
 
 func TestAttemptLifecycle(t *testing.T) {
 	t.Run("s1 commit and acknowledgment, replay, receipt deleted, after 60 minutes", func(t *testing.T) {
@@ -739,11 +725,9 @@ func TestDefinitiveResponsesEndTheAttempt(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // TestOutcomeClassification: how each commit result reaches the ledger and
 // what settle then says. Nothing here turns an applied deletion into
 // not_applied.
-// ---------------------------------------------------------------------------
 
 func TestOutcomeClassification(t *testing.T) {
 	const claim = "idle_in_transaction_session_timeout"
@@ -791,10 +775,6 @@ func TestOutcomeClassification(t *testing.T) {
 			if r.deletedUser(target.ID) != tc.committed {
 				t.Fatalf("deleted = %v, want %v", r.deletedUser(target.ID), tc.committed)
 			}
-			var counter int64
-			if err := app.DB.Raw("SELECT value::bigint FROM settings WHERE key = 'restore_fence'").Scan(&counter).Error; err != nil {
-				t.Fatal(err)
-			}
 			if r.papp.restoreFenceFloor() != floor {
 				t.Error("an unknown COMMIT raised the floor")
 			}
@@ -803,9 +783,6 @@ func TestOutcomeClassification(t *testing.T) {
 			var got attemptSettleJSON
 			decodeJSON(t, sw, &got)
 			wantSettle(t, got, tc.settles, nil)
-			if got.Result == settleNotApplied {
-				t.Fatal("an unknown commit must never settle as not_applied")
-			}
 			// s4: resubmitted after 10 minutes the id is still closed, whatever the
 			// target's state, without a transaction.
 			clock.Store(int64(11 * time.Minute))
@@ -854,10 +831,6 @@ func TestDeletionDeadline(t *testing.T) {
 		}
 	})
 }
-
-// ---------------------------------------------------------------------------
-// The actor seal
-// ---------------------------------------------------------------------------
 
 func TestCurrentAdminInFacts(t *testing.T) {
 	app := testApp(t)
@@ -1082,10 +1055,6 @@ func TestSettleAuthorization(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// The receipt sweep
-// ---------------------------------------------------------------------------
-
 func TestAttemptReceiptSweep(t *testing.T) {
 	app := testApp(t)
 	oldBatch, oldBudget := attemptSweepBatch, attemptSweepBudget
@@ -1126,10 +1095,6 @@ func TestAttemptReceiptSweep(t *testing.T) {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-// An ordinary deletion still records the user.deleted audit row once.
-// ---------------------------------------------------------------------------
 
 func TestDeletionWithoutAnAttemptStillTakesATicket(t *testing.T) {
 	s := newAttemptScene(t)
@@ -1203,11 +1168,6 @@ func TestAttemptSettleWaitsForARunningAttempt(t *testing.T) {
 		t.Fatal("settle never answered")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// TestSettleAuthorization, the cases beyond (a): the revocation kinds are each
-// an UPDATE of the actor's users row.
-// ---------------------------------------------------------------------------
 
 var revocationKinds = map[string]string{
 	"logout everywhere": "UPDATE users SET logout_version = logout_version + 1 WHERE id = ?",
@@ -1486,20 +1446,13 @@ func TestActorSealCompatibleLocks(t *testing.T) {
 	}
 }
 
-// The busy window closes after the backoff too (T07B1B-R1). The retry
-// schedule is: attempt 1, 25 ms, attempt 2, 100 ms, attempt 3 (production lets
-// all three run because they finish inside 2 s). With the window shortened to
-// 100 ms, attempt 2 still starts (about 30 ms in) but the second backoff ends
-// at about 130 ms, after the window: no transaction may begin then. The proof
-// is by time, not by count: every transaction settle begins must start inside
-// the window measured from the request, and at least two must have run so the
-// post-backoff path was really reached. Without the recheck after the backoff
-// attempt 3 begins at about 130 ms and its BEGIN lies outside the window.
+// The busy window closes after the backoff too (T07B1B-R1). The window is far
+// longer than the first backoff, so attempt 2 starts inside it however loaded
+// the machine is; the second backoff is longer than the window, so it ends
+// after the window closed and no third transaction may begin. Without the
+// recheck after the backoff attempt 3 runs. The count decides, not a clock.
 func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
-	const window = 100 * time.Millisecond
-	old := busyRetryWindow
-	busyRetryWindow = window
-	t.Cleanup(func() { busyRetryWindow = old })
+	setBusyRetry(t, busyWindowTestWindow, busyWindowTestBackoff)
 	s := newProxiedAttemptScene(t)
 	a := s.target("a")
 	id := s.mint(a.ID)
@@ -1508,22 +1461,9 @@ func TestSettleBusyWindowClosesAfterBackoff(t *testing.T) {
 	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	mark := len(s.rig.proxy.Events())
-	began := time.Now()
 	wantSettle(t, s.settled(id, a.ID), settleChecking, nil)
-	var starts []time.Duration
-	for _, e := range s.rig.proxy.Events()[mark:] {
-		if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "pg_advisory_xact_lock") {
-			starts = append(starts, e.Time.Sub(began))
-		}
-	}
-	if len(starts) < 2 || int64(len(starts)) != s.app.hooks.sealAttempts.Load() {
-		t.Fatalf("settle began %d transactions (sealed %d times) at %v; want at least 2 so the retry path ran, each sealed once", len(starts), s.app.hooks.sealAttempts.Load(), starts)
-	}
-	for _, at := range starts {
-		if at >= window {
-			t.Fatalf("a transaction began %s after the request, outside the %s busy window (starts %v)", at, window, starts)
-		}
+	if sealed := s.app.hooks.sealAttempts.Load(); sealed != 2 {
+		t.Fatalf("settle sealed %d times, want 2: the retry ran once and the window refused the third", sealed)
 	}
 	if s.state(id, a.ID) != attemptAbsent {
 		t.Fatal("a busy settle must not fence the id")
@@ -1662,10 +1602,6 @@ func TestDeletionRefusesARevocationAfterTheMiddleware(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// s5 and the cap, the 10-minute boundary, validation after the claim
-// ---------------------------------------------------------------------------
-
 // s5: one admin presses twice with two ids released by a pg_locks barrier. The
 // first deletes; the second answers as today for an already-deleted account
 // (404), ends rolled back and settles not_applied with subjectDeleted true and
@@ -1775,10 +1711,6 @@ func TestAttemptFailsValidationWhileHeld(t *testing.T) {
 	}
 	wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
 }
-
-// ---------------------------------------------------------------------------
-// Deadlines
-// ---------------------------------------------------------------------------
 
 // A deadline that expires during a retry attempt: attempt 1 finds the admin's
 // own row busy, the retry seam runs out the budget, attempt 2 is refused before

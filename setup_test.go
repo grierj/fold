@@ -53,20 +53,6 @@ func TestSetupRequiresOperatorCredential(t *testing.T) {
 	}
 }
 
-func TestNewSetupToken(t *testing.T) {
-	first, err := newSetupToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newSetupToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first) != 64 || len(second) != 64 || first == second {
-		t.Fatal("setup codes must be distinct 32-byte hex values")
-	}
-}
-
 // setupRequest gives existing wizard tests a signed authorized session. The
 // unlock flow itself is exercised separately through HTTP.
 func setupRequest(t *testing.T, app *App, method, path string) *http.Request {

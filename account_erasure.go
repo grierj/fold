@@ -37,8 +37,7 @@ type erasureSubject struct {
 	// Requests is REQ: account_requests of the person, by the retained
 	// approved_user_id link or, with no link, by the held address.
 	Requests []uint
-	// People is PERS: the household people who are this individual. Read-only
-	// in R4-2a; R4-3 uses it.
+	// People is PERS: the household people who are this individual.
 	People []uint
 	// Invitations is INV: the invitations of the person, by retained id links
 	// or, for one nobody accepted, by the held address.
@@ -124,8 +123,6 @@ func captureErasureSetsIn(tx *gorm.DB, s *erasureSubject) error {
 	return nil
 }
 
-// erasedDomain is the reserved domain of every erased row's placeholder
-// address.
 const erasedDomain = "deleted.invalid"
 
 // tombstoneEmail is the address an erased account's users row keeps,
@@ -155,8 +152,6 @@ func erasedTokenMarkerSQL(table string) string {
 	return "'erased-" + table + "-' || id"
 }
 
-// isErasedAddress reports whether addr is a placeholder address of the erased
-// domain.
 func isErasedAddress(addr string) bool {
 	return strings.HasSuffix(mail.NormalizeAddress(addr), "@"+erasedDomain)
 }
@@ -325,7 +320,7 @@ func eraseDependentRecordsIn(tx *gorm.DB, s erasureSubject, actor *uint, ip stri
 // (13) their notification delivery rows are deleted, which catches anything
 // the notifications cascade missed. contact_requests is deliberately not
 // touched here: the childcare ages note of the person's occurrence-add rows is
-// blanked by eraseContactRequestTextIn (reason stays under R4-T07B), and
+// blanked by eraseContactRequestTextIn (reason is eraseContactRequestReasonsIn's), and
 // contact_grants have no new ending path, since reconcileContacts already ends
 // them. It returns the first error unwrapped and issues no later statement.
 func eraseActivityRowsIn(tx *gorm.DB, s erasureSubject) error {
@@ -456,8 +451,8 @@ func eraseConsentEvidenceIn(tx *gorm.DB, s erasureSubject) error {
 // eraseContactRequestTextIn blanks add_childcare_ages_note on the erased
 // person's occurrence_add rows, whatever their status, and nothing else
 // (R4-T07A). The person is the subject of those rows; rows where they only
-// asked stay as written, and reason is not touched here (it waits for
-// R4-T07B).
+// asked stay as written, and reason is not touched here
+// (eraseContactRequestReasonsIn does it).
 //
 // It must run after the soft delete in the same transaction: the
 // add_request_identity trigger (migration 00004) licenses this one blank only
@@ -562,7 +557,6 @@ type liveErasure struct {
 	Reasons      reasonPlan
 }
 
-// erasureCounts is what the household and audit steps did, for the reports.
 type erasureCounts struct {
 	Households householdErasureCounts
 	Audit      auditErasureCounts
