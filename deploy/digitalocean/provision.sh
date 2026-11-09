@@ -11,6 +11,7 @@
 #
 # --dry-run prints every action and changes nothing.
 set -euo pipefail
+TOOL=provision.sh
 
 DRY_RUN=0
 ALLOW_BUILD=0
@@ -38,11 +39,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/digitalocean/checks.sh
 source "$SCRIPT_DIR/checks.sh"
 keys=()
-
-die() {
-  printf 'provision.sh: %s\n' "$1" >&2
-  exit "${2:-1}"
-}
 
 # True when a value would break a double-quoted .env line.
 env_value_unsafe() {
@@ -129,10 +125,6 @@ to pull: use a 2 GB droplet and --allow-onbox-build.
 EOF
 }
 
-need_value() {
-  [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 needs a value"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
@@ -144,7 +136,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --pin-only) PIN_ONLY=1; shift ;;
-    --recovery-nonce) need_value "$@"; RECOVERY_NONCE="$2"; shift 2 ;;
+    --recovery-nonce) take_value RECOVERY_NONCE "$@"; shift "$OPT_SHIFT" ;;
     --allow-onbox-build)
       ALLOW_BUILD=1
       shift
@@ -161,96 +153,16 @@ while [[ $# -gt 0 ]]; do
       SKIP_DEPLOY=1
       shift
       ;;
-    --domain)
-      need_value "$@"
-      DOMAIN="$2"
-      shift 2
-      ;;
-    --domain=*)
-      DOMAIN="${1#*=}"
-      shift
-      ;;
-    --admin-user)
-      need_value "$@"
-      ADMIN_USER="$2"
-      shift 2
-      ;;
-    --admin-user=*)
-      ADMIN_USER="${1#*=}"
-      shift
-      ;;
-    --ssh-pubkey-file)
-      need_value "$@"
-      SSH_PUBKEY_FILE="$2"
-      shift 2
-      ;;
-    --ssh-pubkey-file=*)
-      SSH_PUBKEY_FILE="${1#*=}"
-      shift
-      ;;
-    --deploy-dir)
-      need_value "$@"
-      DEPLOY_DIR="$2"
-      shift 2
-      ;;
-    --deploy-dir=*)
-      DEPLOY_DIR="${1#*=}"
-      shift
-      ;;
-    --source-dir)
-      need_value "$@"
-      SOURCE_DIR="$2"
-      shift 2
-      ;;
-    --source-dir=*)
-      SOURCE_DIR="${1#*=}"
-      shift
-      ;;
-    --image)
-      need_value "$@"
-      IMAGE="$2"
-      shift 2
-      ;;
-    --image=*)
-      IMAGE="${1#*=}"
-      shift
-      ;;
-    --timezone)
-      need_value "$@"
-      TIMEZONE="$2"
-      shift 2
-      ;;
-    --timezone=*)
-      TIMEZONE="${1#*=}"
-      shift
-      ;;
-    --swap-mb)
-      need_value "$@"
-      SWAP_MB="$2"
-      shift 2
-      ;;
-    --swap-mb=*)
-      SWAP_MB="${1#*=}"
-      shift
-      ;;
-    --smtp-url)
-      need_value "$@"
-      SMTP_URL="$2"
-      shift 2
-      ;;
-    --smtp-url=*)
-      SMTP_URL="${1#*=}"
-      shift
-      ;;
-    --email-from)
-      need_value "$@"
-      EMAIL_FROM="$2"
-      shift 2
-      ;;
-    --email-from=*)
-      EMAIL_FROM="${1#*=}"
-      shift
-      ;;
+    --domain|--domain=*) take_value DOMAIN "$@"; shift "$OPT_SHIFT" ;;
+    --admin-user|--admin-user=*) take_value ADMIN_USER "$@"; shift "$OPT_SHIFT" ;;
+    --ssh-pubkey-file|--ssh-pubkey-file=*) take_value SSH_PUBKEY_FILE "$@"; shift "$OPT_SHIFT" ;;
+    --deploy-dir|--deploy-dir=*) take_value DEPLOY_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --source-dir|--source-dir=*) take_value SOURCE_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --image|--image=*) take_value IMAGE "$@"; shift "$OPT_SHIFT" ;;
+    --timezone|--timezone=*) take_value TIMEZONE "$@"; shift "$OPT_SHIFT" ;;
+    --swap-mb|--swap-mb=*) take_value SWAP_MB "$@"; shift "$OPT_SHIFT" ;;
+    --smtp-url|--smtp-url=*) take_value SMTP_URL "$@"; shift "$OPT_SHIFT" ;;
+    --email-from|--email-from=*) take_value EMAIL_FROM "$@"; shift "$OPT_SHIFT" ;;
     *)
       die "unknown option: $1 (try --help)"
       ;;
@@ -978,7 +890,7 @@ save_release_pin() {
   done
   if (( PIN_ONLY )); then
     local ref id
-    ref="$(docker compose --project-directory "$DEPLOY_DIR" config --format json | jq -er .services.app.image)" || die 'cannot read the current image reference; repair the Compose pin and retry'
+    ref="$(compose_in "$DEPLOY_DIR" config --format json | jq -er .services.app.image)" || die 'cannot read the current image reference; repair the Compose pin and retry'
     id="$(docker image inspect --format '{{.Id}}' "$ref")" || die "current image $ref is missing locally; pull or build the pinned image and retry"
     [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'cannot save the current image id before pinning'
     printf '%s\n' "$ref" >"$PIN_SAVE/image-ref"

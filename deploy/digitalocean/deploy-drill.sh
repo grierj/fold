@@ -23,8 +23,8 @@ snapshot_state() {
     [[ -n "$id" ]] || continue
     docker inspect --format '{{.Id}}|{{.Image}}|{{.State.Status}}|{{.State.Running}}|{{.State.Paused}}|{{.State.Restarting}}|{{.State.Dead}}|{{.State.ExitCode}}|{{json .HostConfig.RestartPolicy}}|{{json .Config.Labels}}' "$id"
   done <<<"$ids"
-  docker compose --project-directory "$dir" images -q | sort -u
-  docker compose --project-directory "$dir" exec -T db psql -X -U church -d fold -At -v ON_ERROR_STOP=1 \
+  compose_in "$dir" images -q | sort -u
+  compose_in "$dir" exec -T db psql -X -U church -d fold -At -v ON_ERROR_STOP=1 \
     -c 'SELECT datname,oid,datallowconn FROM pg_database ORDER BY datname' \
     -c 'SELECT * FROM drill_sentinel ORDER BY id' \
     -c 'SELECT id,version_id,is_applied FROM goose_db_version ORDER BY id'
@@ -104,7 +104,7 @@ drill_pin_aux_ports() {
 }
 assert_drill_push_runtime() {
   local dir="$1" project="$2" id
-  id="$(docker compose --project-directory "$dir" ps -q push-sink)" || return 1
+  id="$(compose_in "$dir" ps -q push-sink)" || return 1
   [[ -n "$id" && "$id" != *$'\n'* ]] || return 1
   docker network inspect "${project}_push" | jq -e 'length==1 and .[0].Internal==true' >/dev/null || {
     echo 'push sink bridge is not internal; stopping the drill' >&2; return 1;
@@ -116,7 +116,7 @@ assert_drill_push_runtime() {
   }
   # Validate that nginx can read the TLS key/config, with no host publication
   # or certificate-verification bypass. The real app proves delivery later.
-  docker compose --project-directory "$dir" exec -T push-sink nginx -t
+  compose_in "$dir" exec -T push-sink nginx -t
 }
 drill_push_tls_assets() {
   local dir="$1" work="$2"
@@ -165,13 +165,15 @@ drill_legacy_revision() {
   printf '%s\n' "$revision"
 }
 
+# The helpers above call checks.sh functions (env_value, compose_in), so a
+# sourcing caller gets them too.
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$DRILL_ROOT/deploy/digitalocean/checks.sh"
 # Sourcing this file is an explicit library interface, not a second runner.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
-# shellcheck source=deploy/digitalocean/checks.sh
-source "$DRILL_ROOT/deploy/digitalocean/checks.sh"
 KEEP=0
 PREPARE_ONLY=0
 BASE_IMAGE=""
@@ -225,7 +227,7 @@ cleanup() {
   [[ -z "$holder" ]] || kill -KILL "$holder" 2>/dev/null || true
   [[ -z "$descendant" ]] || kill -KILL "$descendant" 2>/dev/null || true
   if (( ! KEEP && started )); then
-    docker compose --project-directory "$DIR" -f "$SOURCE/docker-compose.yml" down -v --remove-orphans || rc=1
+    compose_in "$DIR" -f "$SOURCE/docker-compose.yml" down -v --remove-orphans || rc=1
   fi
   echo "drill result=$rc artifacts=$WORK retained_stack=$KEEP"
   exit "$rc"
@@ -251,7 +253,7 @@ case "${RESTORE_DRILL_FAULT:-}" in
     IFS= read -r -t 180 token <&8 && [[ "$token" == continue ]] || exit 1 ;;
 esac
 [[ ! -e "$dir/drill-smoke-fail" ]] || exit 1
-port="$(docker compose --project-directory "$dir" port caddy 80)"
+port="$(compose_in "$dir" port caddy 80)"
 for ((i=0; i<90; i++)); do
   if curl -fsS --max-time 2 "http://$port/healthz" >/dev/null; then exit 0; fi
   sleep 1
@@ -318,16 +320,16 @@ cp "$SOURCE/docker-compose.yml" "$DIR/docker-compose.yml"
 cp "$SOURCE/drill-nginx.conf" "$DIR/drill-nginx.conf"
 # Bootstrap only auxiliary services, no application or database yet.
 started=1
-docker compose --project-directory "$DIR" up -d --no-deps registry smtp push-sink caddy
-registry_port="$(docker compose --project-directory "$DIR" port registry 5000)"
+compose_in "$DIR" up -d --no-deps registry smtp push-sink caddy
+registry_port="$(compose_in "$DIR" port registry 5000)"
 for ((i=0; i<60; i++)); do
   if curl -fsS --max-time 2 "http://$registry_port/v2/" >/dev/null; then break; fi
   sleep 1
 done
 curl -fsS --max-time 2 "http://$registry_port/v2/" >/dev/null || { echo 'drill registry is not ready' >&2; exit 1; }
 REGISTRY="$registry_port"
-CADDY_PORT="$(docker compose --project-directory "$DIR" port caddy 80)"
-SMTP_PORT="$(docker compose --project-directory "$DIR" port smtp 8025)"
+CADDY_PORT="$(compose_in "$DIR" port caddy 80)"
+SMTP_PORT="$(compose_in "$DIR" port smtp 8025)"
 assert_drill_push_runtime "$DIR" "$PROJECT"
 if [[ -z "$BASE_IMAGE" ]]; then
   BASE_IMAGE="fold-deploy-drill-base:$PROJECT"
@@ -384,10 +386,10 @@ assert_drill_compose_isolation "$WORK/fixed-registry.json"
 docker compose -f "$WORK/fixed-registry.json" config --no-interpolate >"$WORK/fixed-registry.yml"
 # shellcheck disable=SC2016 # Preserve the pin expression through YAML rendering.
 sed -i 's|^    image: .*ghcr.io/grierj/fold:.*|    image: ghcr.io/grierj/fold:${FOLD_VERSION}|' "$WORK/fixed-registry.yml"
-docker compose --project-directory "$DIR" down
+compose_in "$DIR" down
 mv "$WORK/fixed-registry.yml" "$SOURCE/docker-compose.yml"
 cp "$SOURCE/docker-compose.yml" "$DIR/docker-compose.yml"
-docker compose --project-directory "$DIR" up -d --no-deps registry smtp push-sink caddy
+compose_in "$DIR" up -d --no-deps registry smtp push-sink caddy
 assert_drill_push_runtime "$DIR" "$PROJECT"
 for ((i=0; i<60; i++)); do
   if curl -fsS --max-time 2 "http://$REGISTRY/v2/" >/dev/null; then break; fi
@@ -420,7 +422,7 @@ rc=0
 [[ "$rc" != 0 && ! -e "$DIR/recovery-policy-floor" ]]
 rm "$DIR/drill-smoke-fail"
 "${provision[@]}" --image "$REGISTRY/fold:1"
-docker compose --project-directory "$DIR" exec -T db psql -X -U church -d fold -v ON_ERROR_STOP=1 \
+compose_in "$DIR" exec -T db psql -X -U church -d fold -v ON_ERROR_STOP=1 \
   -c 'CREATE TABLE drill_sentinel(id integer PRIMARY KEY, value text); INSERT INTO drill_sentinel VALUES (1, '\''original'\'')'
 # Seed the enforcing copy before refusal snapshots. Content and metadata of
 # this set remain part of each later snapshot.

@@ -10,6 +10,7 @@
 #
 # Exit status is non-zero on any failed check.
 set -euo pipefail
+TOOL=smoke
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/digitalocean/checks.sh
@@ -19,11 +20,6 @@ DOMAIN=""
 DEPLOY_DIR="/opt/fold"
 SOURCE_DIR=""
 TIMEOUT=180
-
-die() {
-  printf 'smoke: %s\n' "$1" >&2
-  exit "${2:-1}"
-}
 
 usage() {
   cat <<'EOF'
@@ -35,52 +31,16 @@ wait for healthy containers and https://DOMAIN/healthz (15 to 600).
 EOF
 }
 
-need_value() {
-  [[ $# -ge 2 && -n "${2:-}" ]] || die "$1 needs a value"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
       usage
       exit 0
       ;;
-    --domain)
-      need_value "$@"
-      DOMAIN="$2"
-      shift 2
-      ;;
-    --domain=*)
-      DOMAIN="${1#*=}"
-      shift
-      ;;
-    --deploy-dir)
-      need_value "$@"
-      DEPLOY_DIR="$2"
-      shift 2
-      ;;
-    --deploy-dir=*)
-      DEPLOY_DIR="${1#*=}"
-      shift
-      ;;
-    --source-dir)
-      need_value "$@"
-      SOURCE_DIR="$2"
-      shift 2
-      ;;
-    --source-dir=*)
-      SOURCE_DIR="${1#*=}"
-      shift
-      ;;
-    --timeout)
-      need_value "$@"
-      TIMEOUT="$2"
-      shift 2
-      ;;
-    --timeout=*)
-      TIMEOUT="${1#*=}"
-      shift
-      ;;
+    --domain|--domain=*) take_value DOMAIN "$@"; shift "$OPT_SHIFT" ;;
+    --deploy-dir|--deploy-dir=*) take_value DEPLOY_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --source-dir|--source-dir=*) take_value SOURCE_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --timeout|--timeout=*) take_value TIMEOUT "$@"; shift "$OPT_SHIFT" ;;
     *)
       die "unknown option: $1 (try --help)"
       ;;
@@ -116,7 +76,7 @@ host_checks() {
 }
 
 compose_ps() {
-  docker compose --project-directory "$DEPLOY_DIR" ps --format '{{.Service}}|{{.Status}}|{{.Publishers}}'
+  compose_in "$DEPLOY_DIR" ps --format '{{.Service}}|{{.Status}}|{{.Publishers}}'
 }
 
 containers_ready() {
@@ -216,7 +176,7 @@ assert_published_ports "$DEPLOY_DIR" || exit 1
 # Web push (M3.13): can the app reach each browser push service on 443? A
 # blocked one stops notifications only to the browsers that use it, so this
 # warns instead of failing the deploy.
-if docker compose --project-directory "$DEPLOY_DIR" exec -T app /fold push check; then
+if compose_in "$DEPLOY_DIR" exec -T app /fold push check; then
   echo "smoke: push services reachable"
 else
   echo "smoke: warning: the app can't reach every push service (see above); allow outbound https to them" >&2

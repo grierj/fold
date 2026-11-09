@@ -84,9 +84,6 @@ DOCKER
 chmod 755 "$WORK/bin/docker"
 export PATH="$WORK/bin:$PATH" RESET_FIXTURE="$WORK" DEPLOY_DRILL=1
 unset DEPLOY_DRILL_PAUSE
-dc() { docker compose --project-directory "$DIR" "$@"; }
-pg() { dc exec -T db psql -X -U church -d "$1" -At -v ON_ERROR_STOP=1 "${@:2}"; }
-recovery_ids() { docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=recovery; }
 seed() {
   jq -n --arg r "$R" --arg p "$P" --arg extra "$EXTRA" '{dbs:["fold",$r,$p,$extra,"postgres","template0","template1","owner_shadow","fold_restore_test"],queries:0,tables:{audit_logs:2,groups:3,users:5}}' >"$WORK/model.json"
   : >"$WORK/calls"; : >"$WORK/drops"; : >"$WORK/dumps"

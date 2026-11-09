@@ -11,6 +11,14 @@
 #
 # --dry-run prints the plan and does not dump, encrypt, upload, or delete.
 set -euo pipefail
+TOOL=backup.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+[[ -f "$SCRIPT_DIR/checks.sh" ]] || {
+  echo "backup.sh: missing checks.sh; run the current provision.sh to install the complete tool set" >&2
+  exit 1
+}
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$SCRIPT_DIR/checks.sh"
 
 DRY_RUN=0
 RESTORE_TEST=0
@@ -29,11 +37,6 @@ FOLD_BACKUP_KEEP_DAYS="14"
 # Matches docker-compose.yml (POSTGRES_USER / POSTGRES_DB).
 PG_USER="church"
 PG_DB="fold"
-
-die() {
-  printf 'backup.sh: %s\n' "$1" >&2
-  exit "${2:-1}"
-}
 
 usage() {
   cat <<'EOF'
@@ -72,33 +75,9 @@ while [[ $# -gt 0 ]]; do
       RESTORE_TEST=1
       shift
       ;;
-    --deploy-dir)
-      [[ $# -ge 2 && -n "${2:-}" ]] || die "--deploy-dir needs a value"
-      DEPLOY_DIR="$2"
-      shift 2
-      ;;
-    --deploy-dir=*)
-      DEPLOY_DIR="${1#*=}"
-      shift
-      ;;
-    --backup-dir)
-      [[ $# -ge 2 && -n "${2:-}" ]] || die "--backup-dir needs a value"
-      BACKUP_DIR="$2"
-      shift 2
-      ;;
-    --backup-dir=*)
-      BACKUP_DIR="${1#*=}"
-      shift
-      ;;
-    --env-file)
-      [[ $# -ge 2 && -n "${2:-}" ]] || die "--env-file needs a value"
-      ENV_FILE="$2"
-      shift 2
-      ;;
-    --env-file=*)
-      ENV_FILE="${1#*=}"
-      shift
-      ;;
+    --deploy-dir|--deploy-dir=*) take_value DEPLOY_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --backup-dir|--backup-dir=*) take_value BACKUP_DIR "$@"; shift "$OPT_SHIFT" ;;
+    --env-file|--env-file=*) take_value ENV_FILE "$@"; shift "$OPT_SHIFT" ;;
     *)
       die "unknown option: $1"
       ;;
@@ -124,10 +103,6 @@ backup_recovery_guard() {
 }
 backup_recovery_guard
 if (( ! DRY_RUN )); then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  [[ -f "$SCRIPT_DIR/checks.sh" ]] || die "missing checks.sh; run the current provision.sh to install the complete tool set"
-  # shellcheck source=deploy/digitalocean/checks.sh
-  source "$SCRIPT_DIR/checks.sh"
   declare -F backup_coord_acquire >/dev/null || die "checks.sh lacks backup coordination; run the current provision.sh to install the complete tool set"
   backup_coord_acquire "$DEPLOY_DIR" 0 backup || exit $?
   backup_recovery_guard
@@ -196,7 +171,7 @@ if [[ -n "$any_offsite" ]]; then
 fi
 
 compose() {
-  docker compose --project-directory "$DEPLOY_DIR" "$@"
+  compose_in "$DEPLOY_DIR" "$@"
 }
 
 ensure_backup_dir() {
