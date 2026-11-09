@@ -35,7 +35,7 @@ export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: 
       if (got) {
         etag.current = got.etag;
         setBadge({ ...got.badge, loaded: true });
-        syncAppBadge(got.badge.unread + got.badge.waiting);
+        syncAppBadge(badgeCount(got.badge));
       }
     } catch {
       // Keep the last value; the bell never breaks the header.
@@ -74,9 +74,19 @@ export function badgeLabel(b: Badge): string {
   return parts.length ? `Alerts, ${parts.join(", ")}` : "Alerts";
 }
 
+// Unread plus waiting: what the bell, the tab and the app icon count (DEC-44).
+export function badgeCount(b: Pick<Badge, "unread" | "waiting">): number {
+  return b.unread + b.waiting;
+}
+
 export function badgeText(b: Badge): string {
-  const n = b.unread + b.waiting;
+  const n = badgeCount(b);
   return n > 9 ? "9+" : String(n);
+}
+
+// The accessible name of the bell and the tab: the count first, then what it is made of.
+export function badgeAriaLabel(b: Badge): string {
+  return `${badgeCount(b) > 0 ? `${badgeText(b)} ` : ""}${badgeLabel(b)}`;
 }
 
 export interface Feed {

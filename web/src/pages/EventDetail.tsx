@@ -28,7 +28,8 @@ import { dateLine, whenLine } from "../lib/repeat";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { Missing } from "./NotFound";
+import { Missing } from "../components/Missing";
+
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";

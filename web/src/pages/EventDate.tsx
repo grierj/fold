@@ -16,7 +16,7 @@ import { heldIn } from "../lib/when";
 import { dateLine } from "../lib/repeat";
 import { placeLine } from "../lib/place";
 import { DateBadge } from "../components/DateBadge";
-import { answerLine } from "../components/RsvpButtons";
+import { answerLine } from "../components/AnswerLine";
 import { DateActions } from "../components/DateActions";
 import { composePath, EMAIL_GOING, useCanEmailEvent } from "../components/messages/composeLinks";
 import { DateReminderLines } from "../components/DateReminders";

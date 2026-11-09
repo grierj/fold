@@ -7,7 +7,7 @@ import { GroupDetail } from "./pages/GroupDetail";
 import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { Skeleton } from "./components/ui/Skeleton";
-import { NotFound } from "./pages/NotFound";
+import { NotFound } from "./components/Missing";
 import { RequireUser } from "./components/RequireUser";
 import { useAuth } from "./auth";
 import { UnsavedChangesBlocker } from "./lib/unsavedChanges";

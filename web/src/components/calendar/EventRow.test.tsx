@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CalendarOccurrence } from "../../types";
-import { DaySection, EventChip, EventRow, StatusBadge } from "./EventRow";
+import { DaySection, EventChip, EventRow } from "./EventRow";
+import { StatusBadge } from "./StatusBadge";
 
 const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   eventId: 7,

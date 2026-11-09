@@ -1,49 +1,11 @@
 import { Link } from "react-router-dom";
 import type { CalendarOccurrence } from "../../types";
 import { formatTime } from "../../lib/when";
-import { registrationStatusLabel } from "../../lib/status";
-import { CheckIcon, ClockIcon } from "../icons";
+import { calendarState, calendarStateLabel, ghosted, occurrenceLink } from "../../lib/calendarState";
+import { CheckIcon } from "../icons";
+import { StatusBadge } from "./StatusBadge";
 import { RemoteBadge } from "../RemoteBadge";
 import { ChildcareBadge } from "../ChildcareBadge";
-
-export type CalendarState = "going" | "maybe" | "waitlisted" | "declined" | "not_answered" | null;
-
-// Where a calendar row leads: its exact-date page when the server scopes it to
-// one date (invitation or kept date), else the event page.
-export function occurrenceLink(occ: CalendarOccurrence): string {
-  return occ.dateUrl || `/events/${occ.eventId}`;
-}
-
-export function calendarState(occ: CalendarOccurrence): CalendarState {
-  if (occ.myStatus) return occ.myStatus;
-  return occ.ownScope ? "not_answered" : null;
-}
-
-export function calendarStateLabel(occ: CalendarOccurrence): string | null {
-  const state = calendarState(occ);
-  return state ? registrationStatusLabel(state) : null;
-}
-
-function ghosted(state: CalendarState) {
-  return state === "maybe" || state === "waitlisted" || state === "not_answered";
-}
-
-// The viewer's answer as quiet text, not a pill (DEC-99; DEC-71 keeps the
-// words, and the dashed card shape on ghosted rows carries the state too, so
-// it is never color alone). Going is the one answer with a check and the
-// success tone. Going cards use a quiet tint, never a solid primary fill.
-export function StatusBadge({ state }: { state: CalendarState }) {
-  if (!state) return null;
-  const label = registrationStatusLabel(state);
-  const tone = state === "going" ? "text-success-on-subtle" : "text-text-muted";
-  return (
-    <span className={`inline-flex items-center gap-1 text-xs font-semibold ${tone}`} aria-label={label}>
-      {state === "going" && <CheckIcon className="h-3 w-3" />}
-      {state === "waitlisted" && <ClockIcon className="h-3 w-3" />}
-      {label}
-    </span>
-  );
-}
 
 // One occurrence as a full-width link (Agenda, Week on phones, day panel).
 // Own-scope state is communicated by border/fill and by an explicit label;

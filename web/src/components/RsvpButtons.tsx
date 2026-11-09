@@ -1,5 +1,4 @@
 import { Form } from "./ui/Form";
-import { CheckIcon } from "./icons";
 import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
@@ -11,6 +10,7 @@ import { Checkbox, Choices, Field, focusFirstInvalid, FormError, Input, Radio, S
 import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
 import { SegmentButton } from "./ui/SegmentButton";
 import { formatCalendarDay } from "../lib/when";
+import { answerLine } from "./AnswerLine";
 import { registrationStatusLabel } from "../lib/status";
 import { offersRemote, poolFull, registerBody, savedAnswer, savedAnswerFromState, type AnswerStatus, type RsvpAnswer, type SavedAnswer } from "../lib/registration";
 import { actorResultFromRegistration, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
@@ -164,16 +164,6 @@ function SeriesFeedback({ series, fallback }: { series: SeriesController; fallba
     </div>
     {series.error && <FormError layout="mt-1">{series.error}</FormError>}
   </>;
-}
-
-// Standing confirmation under the control (DEC-92). Waitlisted, full and
-// remote-pool states keep their own copy above the control. The date page
-// shares it (EventDate.tsx).
-export function answerLine(status: string | null | undefined): ReactNode {
-  if (status === "going") return <><CheckIcon className="inline h-4 w-4 mr-1 align-text-bottom text-success-on-subtle" />You&apos;re going. See you there!</>;
-  if (status === "maybe") return "You said maybe. Change it anytime.";
-  if (status === "declined") return "Got it. Only the leaders see this.";
-  return null;
 }
 
 // "Childcare for 2 (ages 3 and 7)": one child reads "1 child".
