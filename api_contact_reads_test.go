@@ -177,14 +177,14 @@ func (a *App) scalarContextVisible(tx *gorm.DB, u *models.User, r models.Contact
 		if err != nil {
 			return nil, err
 		}
-		f := eventFactsIn(tx, u, &ev)
-		group := policy.Group{}
-		if f.group != nil {
-			group = asGroup(f.group)
-		} else if ev.GroupID != nil {
+		f, err := eventFactsIn(tx, u, &ev)
+		if err != nil {
+			return nil, err
+		}
+		if f.group == nil && ev.GroupID != nil {
 			return nil, nil
 		}
-		if !policy.CanSeeEvent(asPerson(u), f.view, group, f.rel) {
+		if !f.canSee(u) {
 			return nil, nil
 		}
 		return &id, nil

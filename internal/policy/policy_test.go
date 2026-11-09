@@ -222,6 +222,10 @@ func TestCanBeSuccessor(t *testing.T) {
 	if CanBeSuccessor(adult, none) || CanBeSuccessor(teen, member) || CanBeSuccessor(guest, none) {
 		t.Error("outsiders, teens and nobody can't")
 	}
+	disabled := &Person{ID: 9, Inactive: true}
+	if CanBeSuccessor(disabled, member) || CanBeSuccessor(&Person{ID: 9, Admin: true, Inactive: true}, none) {
+		t.Error("an account that is not active can't take over")
+	}
 }
 
 func TestLeavingAndDeletion(t *testing.T) {
@@ -505,6 +509,29 @@ func TestCanAssignHost(t *testing.T) {
 	}
 	if CanAssignHost(admin, teen) || CanAssignHost(adult, adult) || CanAssignHost(admin, nil) || CanAssignHost(nil, adult) {
 		t.Error("only an admin assigns an adult")
+	}
+	if CanAssignHost(admin, &Person{ID: 9, Inactive: true}) {
+		t.Error("an account that is not active can't host")
+	}
+}
+
+func TestCanGenerateVideoLink(t *testing.T) {
+	cases := []struct {
+		name                   string
+		p                      *Person
+		leadsApproved, hosting bool
+		want                   bool
+	}{
+		{"admin", admin, false, false, true},
+		{"leader of an approved group", adult, true, false, true},
+		{"host of a church-wide event", adult, false, true, true},
+		{"member, leader of nothing", adult, false, false, false},
+		{"signed out", nil, true, true, false},
+	}
+	for _, c := range cases {
+		if got := CanGenerateVideoLink(c.p, c.leadsApproved, c.hosting); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

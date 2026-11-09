@@ -20,15 +20,6 @@ func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
 	return ids, err
 }
 
-// leaderIDs lists a group's active leaders. A failed read is an error: a
-// notice must not silently skip the people it is for.
-func leaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
-	var ids []uint
-	err := tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = ?", groupID, models.MembershipLeader, models.MembershipActive).
-		Order("user_id").Pluck("user_id", &ids).Error
-	return ids, err
-}
-
 // unknownPersonName stands for a person with no row at all. A nameless person
 // shows as "Member" (User.PublicName); an erased one is shown by the surface
 // that says so.
@@ -131,16 +122,16 @@ func userCanSeeGroupIn(tx *gorm.DB, userID uint, g *models.Group) (bool, error) 
 	if err != nil || u == nil || g == nil {
 		return false, err
 	}
-	var m models.Membership
-	if err := tx.Where("user_id = ? AND group_id = ?", u.ID, g.ID).Limit(1).Find(&m).Error; err != nil {
+	rel, err := groupRel(tx, u.ID, g.ID)
+	if err != nil {
 		return false, err
 	}
-	return policy.CanSeeGroup(asPerson(u), asGroup(g), membershipRel(m)), nil
+	return policy.CanSeeGroup(asPerson(u), asGroup(g), rel), nil
 }
 
 // noticeFacts is everything eventNoticeVars needs for a batch of
-// recipients, loaded once with IN queries (issue #76, the relsFor
-// pattern in api_event_access.go) instead of re-read per person.
+// recipients, loaded once with IN queries (issue #76, the batched loaders in
+// policy_facts.go) instead of re-read per person.
 // viewers holds each recipient as a signed-in viewer: a
 // guest, pending-consent or missing account is never a signed-in viewer,
 // so a private group's name, place or link cannot be granted by its presence
@@ -165,14 +156,9 @@ func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) (*noticeFacts, error
 		zones:   map[uint]*time.Location{},
 		church:  time.UTC,
 	}
-	if len(groupIDs) > 0 {
-		var gs []models.Group
-		if err := tx.Where("id IN ?", groupIDs).Find(&gs).Error; err != nil {
-			return nil, err
-		}
-		for i := range gs {
-			f.groups[gs[i].ID] = &gs[i]
-		}
+	var err error
+	if f.groups, err = groupsByID(tx, groupIDs, false); err != nil {
+		return nil, err
 	}
 	var users []models.User
 	if len(userIDs) > 0 {
@@ -200,7 +186,7 @@ func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) (*noticeFacts, error
 }
 
 // canSeeGroup is userCanSeeGroupIn against the preloaded facts: the same
-// policy call, with the membership relIn would have loaded.
+// policy call, with the membership groupRel would have loaded.
 func (f *noticeFacts) canSeeGroup(userID uint, g *models.Group) bool {
 	u := f.viewers[userID]
 	if u == nil || g == nil {

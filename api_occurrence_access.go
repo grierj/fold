@@ -77,12 +77,7 @@ func occurrenceInvitationReadsIn(tx *gorm.DB, grants []models.Registration, now 
 			continue
 		}
 		scope := accessScopeOf(&ev)
-		live := true
-		if ev.GroupID != nil {
-			g := facts.groups[*ev.GroupID]
-			live = g.ID != 0 && g.Status == models.GroupActive
-		}
-		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: scope.Organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt}
+		f := occurrenceFactsOf(&occ, &ev, facts.group(&ev))
 		access := occurrenceAccessPolicy(row, scope)
 		if policy.CanSeeOccurrence(actor, false, access, f, now) {
 			out[row.ID] = &occurrenceRead{Event: ev, Occurrence: occ, Registration: row, Account: actor, Access: access, Facts: f}
@@ -91,12 +86,24 @@ func occurrenceInvitationReadsIn(tx *gorm.DB, grants []models.Registration, now 
 	return out, nil
 }
 
+// occurrenceFactsOf is the one builder of the lifecycle facts policy judges an
+// exact date by, from rows already loaded: the date, its event, and the
+// event's group (nil for a church-wide event, and for a group that is gone).
+func occurrenceFactsOf(occ *models.EventOccurrence, ev *models.Event, group *models.Group) policy.OccurrenceFacts {
+	f := accessScopeOf(ev)
+	live := ev.GroupID == nil || (group != nil && group.Status == models.GroupActive)
+	return policy.OccurrenceFacts{
+		ID: occ.ID, EventID: ev.ID, Organizer: f.Organizer, ContextActive: live,
+		Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt,
+	}
+}
+
 type occurrenceInvitationFacts struct {
 	users       map[uint]*models.User
 	accounts    map[uint]policy.ContactAccount
 	occurrences map[uint]models.EventOccurrence
 	events      map[uint]models.Event
-	groups      map[uint]models.Group
+	groups      map[uint]*models.Group
 }
 
 func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, now time.Time) (*occurrenceInvitationFacts, error) {
@@ -133,17 +140,19 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, grants []models.Registration, no
 			groupIDs = append(groupIDs, *row.GroupID)
 		}
 	}
-	var groups []models.Group
-	if len(groupIDs) > 0 {
-		if err := tx.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
-			return nil, err
-		}
-	}
-	groupByID := map[uint]models.Group{}
-	for _, row := range groups {
-		groupByID[row.ID] = row
+	groupByID, err := groupsByID(tx, groupIDs, false)
+	if err != nil {
+		return nil, err
 	}
 	return &occurrenceInvitationFacts{users, accounts, occByID, evByID, groupByID}, nil
+}
+
+// group is the loaded group of ev, nil for a church-wide event or a missing group.
+func (f *occurrenceInvitationFacts) group(ev *models.Event) *models.Group {
+	if ev.GroupID == nil {
+		return nil
+	}
+	return f.groups[*ev.GroupID]
 }
 
 // endReason preserves the scalar lifecycle precedence, including retained past
@@ -170,16 +179,15 @@ func (f *occurrenceInvitationFacts) endReason(row models.Registration, now time.
 	if ev.ID == 0 {
 		return policy.OccurrenceEventDeleted
 	}
-	if ev.GroupID != nil {
-		g := f.groups[*ev.GroupID]
-		if g.ID == 0 {
-			return policy.OccurrenceGroupDeleted
-		}
-		if g.Status != models.GroupActive {
-			return policy.OccurrenceContextChanged
-		}
+	group := f.group(&ev)
+	if ev.GroupID != nil && group == nil {
+		return policy.OccurrenceGroupDeleted
 	}
-	if occ.Status != models.OccurrenceScheduled {
+	lifecycle := occurrenceFactsOf(&occ, &ev, group)
+	if !lifecycle.ContextActive {
+		return policy.OccurrenceContextChanged
+	}
+	if !lifecycle.Scheduled {
 		return policy.OccurrenceCancelled
 	}
 	if row.AccessOrigin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
@@ -276,13 +284,7 @@ func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupL
 		out.MyAttendanceMode = &mode
 		out.MyGuestCount = &reg.GuestCount
 	}
-	if link := videoLinkOf(ev); link != "" {
-		if canVideo {
-			out.VideoURL = link
-		} else {
-			out.VideoHidden = true
-		}
-	}
+	out.VideoURL, out.VideoHidden = videoWhen(ev, canVideo)
 	return out
 }
 
@@ -304,12 +306,7 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 	}
 	status := ""
 	if out.MyRegistration != nil {
-		switch *out.MyRegistration {
-		case models.RegGoing:
-			status = "CONFIRMED"
-		case models.RegMaybe, models.RegWaitlisted:
-			status = "TENTATIVE"
-		}
+		status = calendarStatus(*out.MyRegistration, false)
 	}
 	body := events.RenderFeed(events.Feed{
 		Host:        a.feedHost(),
@@ -368,14 +365,14 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 		if shownGroup != nil {
 			groupLocation = shownGroup.Location
 		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		manager = policy.CanManageEvent(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), rel)
-		attendees = policy.CanSeeAttendeeNames(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), gp, rel)
+		facts := vs.of(ev)
+		manager = facts.canManage(me)
+		attendees = policy.CanSeeAttendeeNames(asPerson(me), facts.view, asGroup(grp), rel)
 		if me != nil {
-			a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Find(&reg)
+			if err := a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Limit(1).Find(&reg).Error; err != nil {
+				jsonError(c, http.StatusInternalServerError, "could not load this date")
+				return dateOccurrenceJSON{}, false
+			}
 		}
 	} else {
 		ev = &invited.Event

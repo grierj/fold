@@ -238,13 +238,6 @@ func loadMembership(tx *gorm.DB, userID, groupID uint) (models.Membership, error
 	return m, err
 }
 
-func leaderCountIn(tx *gorm.DB, groupID uint) (int, error) {
-	var n int64
-	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?", groupID, models.MembershipLeader, models.MembershipActive).Count(&n).Error
-	return int(n), err
-}
-
 // loadDepartureFacts reads one repeatable snapshot for either self-leave or
 // removal. The caller supplies the authenticated actor and the subject named by
 // the route; authorization always goes through the pure departure policy.
@@ -287,7 +280,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 	if err != nil {
 		return facts, err
 	}
-	leaders, err := leaderCountIn(tx, group.ID)
+	leaders, err := leaderCount(tx, group.ID)
 	if err != nil {
 		return facts, err
 	}
@@ -328,10 +321,7 @@ func loadDepartureFacts(tx *gorm.DB, authenticated *models.User, groupID, subjec
 		if !decision.Affected {
 			continue
 		}
-		title := ev.Title
-		if o.TitleOverride != nil {
-			title = *o.TitleOverride
-		}
+		title := effectiveOccurrenceTitle(ev, o)
 		facts.Dates = append(facts.Dates, departureDateFact{
 			OccurrenceID: o.ID, EventID: ev.ID, OriginalDate: models.FormatCalendarDate(o.OriginalDate), Title: title,
 			StartsAt: o.StartsAt.UTC().UnixNano(), EndsAt: o.EndsAt.UTC().UnixNano(), OccurrenceStatus: o.Status,
@@ -437,11 +427,16 @@ func departureSnapshotMatches(snapshot departureSnapshotToken, current departure
 	return err == nil && subtle.ConstantTimeCompare(want, got[:]) == 1
 }
 
-func departurePreviewFromFacts(facts departureFacts, snapshot string) departurePreviewJSON {
-	action := "remove"
-	if facts.Actor.ID == facts.Subject.ID {
-		action = "leave"
+// action is "leave" when the subject goes by their own choice, else "remove".
+func (f departureFacts) action() string {
+	if f.Origin == policy.OccurrenceOriginDepartureSelf {
+		return "leave"
 	}
+	return "remove"
+}
+
+func departurePreviewFromFacts(facts departureFacts, snapshot string) departurePreviewJSON {
+	action := facts.action()
 	out := departurePreviewJSON{
 		Action: action, GroupID: facts.GroupID, GroupName: facts.GroupName,
 		SubjectID: facts.Subject.ID, SubjectName: facts.SubjectName, Dates: []departureKeepableDateJSON{}, Snapshot: snapshot,
@@ -578,17 +573,9 @@ func recordDepartureOccurrenceAccess(tx *gorm.DB, facts departureFacts, d depart
 	return err
 }
 
-func departureLeaderIDs(tx *gorm.DB, groupID uint) ([]uint, error) {
-	var ids []uint
-	err := tx.Model(&models.Membership{}).Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.role = ?", groupID, models.MembershipActive, models.MembershipLeader).
-		Order("memberships.user_id").Pluck("memberships.user_id", &ids).Error
-	return ids, err
-}
-
 func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) error {
 	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
-		leaders, err := departureLeaderIDs(tx, facts.GroupID)
+		leaders, err := leaderIDs(tx, facts.GroupID)
 		if err != nil {
 			return err
 		}
@@ -635,7 +622,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		if err := tx.Where("id = ? AND occurrence_id = ? AND user_id = ?", d.Registration.ID, d.OccurrenceID, facts.Subject.ID).First(&reg).Error; err != nil {
 			return departureConfirmationJSON{}, errDepartureStale
 		}
-		scope := accessScope{EventID: d.EventID, Organizer: policy.OrganizerScope{Type: policy.ContactGroup, ID: facts.GroupID}}
+		scope := groupAccessScope(d.EventID, facts.GroupID)
 		if keep[d.OccurrenceID] {
 			// A manager grant on a kept date is superseded in two updates under
 			// the locks already held: end it as departure_superseded (no
@@ -727,7 +714,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		}
 	} else {
 		entry := audit.Entry{Actor: &facts.Actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: facts.GroupID,
-			Meta: map[string]any{"userId": facts.Subject.ID, "oldRole": oldRole, "newRole": "none", "keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}, IP: ip}
+			Meta: map[string]any{"userId": facts.Subject.ID, "oldRole": oldRole, "newRole": roleNone, "keptCount": len(keep), "endedCount": len(facts.Dates) - len(keep)}, IP: ip}
 		if err := audit.Write(tx, entry); err != nil {
 			return departureConfirmationJSON{}, err
 		}
@@ -740,21 +727,16 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 	if err := notifyDeparture(tx, facts, len(keep), len(facts.Dates)-len(keep)); err != nil {
 		return departureConfirmationJSON{}, err
 	}
-	action := "remove"
-	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
-		action = "leave"
-	}
-	return departureConfirmationJSON{Action: action, GroupID: facts.GroupID, SubjectID: facts.Subject.ID,
+	return departureConfirmationJSON{Action: facts.action(), GroupID: facts.GroupID, SubjectID: facts.Subject.ID,
 		KeptCount: len(keep), EndedCount: len(facts.Dates) - len(keep)}, nil
 }
 
 func asPersonFact(f departureUserFact) *policy.Person {
-	return &policy.Person{ID: f.ID, Admin: f.Role == models.RoleAdmin && f.Status == models.UserActive, Teen: f.AccountType == models.AccountTeen}
+	return personOf(f.ID, f.Role, f.Status, f.AccountType)
 }
 
 func membershipFactRel(f departureMembershipFact) policy.Rel {
-	active := f.ID != 0 && f.Status == models.MembershipActive
-	return policy.Rel{Member: active, Leader: active && f.Role == models.MembershipLeader, Removed: f.ID != 0 && f.Status == models.MembershipRemoved}
+	return relOfStatus(f.ID != 0, f.Status, f.Role)
 }
 
 func (a *App) departureConfirm(c *gin.Context, subjectID uint) {

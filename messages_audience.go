@@ -146,7 +146,8 @@ func (a *App) audienceTargets(db *gorm.DB, me *models.User, au audienceJSON) ([]
 		if err := db.First(&g, au.GroupID).Error; err != nil {
 			return nil, errAudienceGone
 		}
-		return []policy.MessageTarget{{Group: asGroup(&g), Rel: relIn(db, me.ID, g.ID)}}, nil
+		rel, err := groupRel(db, me.ID, g.ID)
+		return []policy.MessageTarget{{Group: asGroup(&g), Rel: rel}}, err
 	}
 	ids, err := a.audienceEventIDs(db, au)
 	if err != nil || len(ids) == 0 {
@@ -159,35 +160,17 @@ func (a *App) audienceTargets(db *gorm.DB, me *models.User, au audienceJSON) ([]
 	if len(evs) != len(dedupeIDs(ids)) {
 		return nil, errAudienceGone
 	}
-	gset := map[uint]struct{}{}
-	for _, ev := range evs {
-		if ev.GroupID != nil {
-			gset[*ev.GroupID] = struct{}{}
-		}
-	}
-	groups, err := a.groupsByID(gset)
-	if err != nil {
-		return nil, err
-	}
-	rels, err := a.relsFor(me, gset)
-	if err != nil {
-		return nil, err
-	}
-	hosted, err := a.hostedEventIDs(me, ids)
+	facts, err := loadFactSet(db, me, evs, false)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]policy.MessageTarget, 0, len(evs))
-	for _, ev := range evs {
-		t := policy.MessageTarget{IsEvent: true, Event: policy.EventView{ChurchWide: ev.GroupID == nil, Host: hosted[ev.ID]}}
-		if ev.GroupID != nil {
-			g := groups[*ev.GroupID]
-			if g == nil {
-				return nil, errAudienceGone
-			}
-			t.Group, t.Rel = asGroup(g), rels[g.ID]
+	for i := range evs {
+		f := facts.of(&evs[i])
+		if evs[i].GroupID != nil && f.group == nil {
+			return nil, errAudienceGone
 		}
-		out = append(out, t)
+		out = append(out, policy.MessageTarget{IsEvent: true, Event: f.view, Group: asGroup(f.group), Rel: f.rel})
 	}
 	return out, nil
 }
