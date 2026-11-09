@@ -114,13 +114,13 @@ func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 			res = deliveries.Where("status = ?", models.DeliverySent).Update("status", models.DeliveryDelivered)
 			mres = recipients.Where("status = ?", models.RecipientSent).Updates(map[string]any{"status": models.RecipientDelivered, "updated_at": time.Now()})
 		case providers.EventBounced, providers.EventComplained:
-			reason := "soft bounce"
+			reason := models.BounceSoft
 			status := models.RecipientBounced
 			switch {
 			case e.Kind == providers.EventComplained:
-				reason, status = "marked as spam", models.RecipientComplained
+				reason, status = models.BounceComplaint, models.RecipientComplained
 			case e.Permanent:
-				reason = "hard bounce"
+				reason = models.BounceHard
 			}
 			res = deliveries.Where("status IN ?", []string{models.DeliverySent, models.DeliveryDelivered}).
 				Updates(map[string]any{"status": models.DeliveryBounced, "reason": reason})

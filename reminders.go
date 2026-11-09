@@ -6,10 +6,13 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"fold/internal/content"
+	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -37,15 +40,31 @@ const (
 	// reminder time, still goes as soon as it can (before the date starts).
 	reminderLookahead = 2 * time.Hour
 	reminderLookback  = 6 * time.Hour
-	// longestReminder bounds the sweep's scan to dates it could reach.
-	longestReminder = 10080 * time.Minute
 )
+
+// longestReminder bounds the sweep's scan to dates it could reach: the
+// longest of the choices below.
+var longestReminder = time.Duration(slices.Max(reminderChoices)) * time.Minute
 
 // Reminder times a leader can choose (DEC-133), in minutes before the
 // date; 0 is off.
 var reminderChoices = []int{0, 120, 1440, 2880, 10080}
 
-var errReminderTime = apiErr(http.StatusBadRequest, "event_reminder_time", "reminderEmailMinutes must be 0 (off), 120, 1440, 2880 or 10080")
+var errReminderTime = apiErr(http.StatusBadRequest, "event_reminder_time", reminderChoicesText())
+
+// reminderChoicesText names the choices: "reminderEmailMinutes must be 0
+// (off), 120, 1440, 2880 or 10080".
+func reminderChoicesText() string {
+	var words []string
+	for _, c := range reminderChoices {
+		if c == 0 {
+			words = append(words, "0 (off)")
+		} else {
+			words = append(words, strconv.Itoa(c))
+		}
+	}
+	return "reminderEmailMinutes must be " + strings.Join(words[:len(words)-1], ", ") + " or " + words[len(words)-1]
+}
 
 func validReminderMinutes(m int) bool {
 	for _, c := range reminderChoices {
@@ -236,7 +255,7 @@ func reminderText(kind, place string, minutes int) (string, string) {
 		// Inside the last two hours the waitlist no longer moves on its own
 		// (DEC-80), so the note doesn't promise a spot by email.
 		promise := "If a spot opens, we'll let you know."
-		if minutes <= 120 {
+		if time.Duration(minutes)*time.Minute <= events.CutoffWindow {
 			promise = "The organizers can still add you if a spot opens."
 		}
 		return "Still on the waitlist: {{event_title}} on {{event_time}}",

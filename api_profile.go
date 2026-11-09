@@ -282,8 +282,8 @@ The change takes effect only after the new address is verified.
 If this wasn't you, cancel the pending change and end every current sign-in here:
 %s
 
-Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in 24 hours.`,
-			a.siteName(), newEmail, link),
+Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in %s.`,
+			a.siteName(), newEmail, link, tokenLifetime),
 	}, nil).err
 }
 

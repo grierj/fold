@@ -228,11 +228,11 @@ func (a *App) guestVerificationMessage(signup *models.GuestSignup, raw, site str
 
 Someone used this email address to register as a guest for %s%s at %s, on %s.
 
-Confirm your registration here (the link works once and expires within 24 hours):
+Confirm your registration here (the link works once and expires within %s):
 %s
 
 If that wasn't you, ignore this email and nothing will be registered.`,
-			signup.Name, d.Title, guestWithLine(d), site, formatWhen(d.StartsAt, loc), link),
+			signup.Name, d.Title, guestWithLine(d), site, formatWhen(d.StartsAt, loc), tokenLifetime, link),
 	}
 }
 
@@ -269,7 +269,7 @@ func (a *App) prepareGuardianConsentMail(tx *gorm.DB, linkID uint) (mail.Message
 	// Safeguarding mail names nobody. GET only previews the signed action;
 	// the existing explicit POST is still the only way to give consent.
 	return mail.Message{To: guardian.Email, Subject: "Review teen account consent in Fold",
-		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in 24 hours and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."}, true, nil
+		Text: "An admin confirmed your guardian link. Review the teen account and choose whether to give account consent:\n\n" + a.emailBaseURL() + "/guardian-consent?token=" + url.QueryEscape(raw) + "\n\nThis link expires in " + tokenLifetime + " and can be used once. Opening it does not give consent. You can also manage consent from your Fold profile."}, true, nil
 }
 
 // prepareEmailVerification rotates the hash of one stored verification token
@@ -327,11 +327,11 @@ func (a *App) emailVerificationMessage(to, raw, site string) mail.Message {
 		Subject: "Verify your new Fold email",
 		Text: fmt.Sprintf(`Someone asked to change the sign-in email for an account at %s to this address.
 
-Verify it here (the link works once and expires within 24 hours):
+Verify it here (the link works once and expires within %s):
 %s
 
 The change takes effect only after you use the link. If that wasn't you, you can ignore this email.`,
-			site, link),
+			site, tokenLifetime, link),
 	}
 }
 
@@ -432,7 +432,7 @@ func (a *App) invitationMessage(inv *models.Invitation, inviter *models.User, ra
 			timing = "Your account needs admin approval, consent, and a fresh check of your guardian link. Your household keeps managing your event sign-ups until all three are complete."
 		}
 		return mail.Message{To: inv.Email, Subject: "Create your own account at " + site,
-			Text: fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s\n\nThis link expires within 24 hours. If this invitation is not for you, ignore it.", inviter.PublicName(), inv.Name, timing, link)}
+			Text: fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s\n\nThis link expires within %s. If this invitation is not for you, ignore it.", inviter.PublicName(), inv.Name, timing, link, tokenLifetime)}
 	}
 	groupPart := ""
 	if inv.Group.ID != 0 {
@@ -441,10 +441,10 @@ func (a *App) invitationMessage(inv *models.Invitation, inviter *models.User, ra
 	return mail.Message{To: inv.Email, Subject: fmt.Sprintf("You've been invited to %s", site),
 		Text: fmt.Sprintf(`%s invited you to join %s%s.
 
-Set your password here (the link works once and expires within 24 hours):
+Set your password here (the link works once and expires within %s):
 %s
 
-If you weren't expecting this, you can ignore it.`, inviter.PublicName(), site, groupPart, link)}
+If you weren't expecting this, you can ignore it.`, inviter.PublicName(), site, groupPart, tokenLifetime, link)}
 }
 
 // prepareAndSend commits the capability before contacting the provider. No
@@ -528,11 +528,11 @@ func (a *App) passwordResetMessage(to, raw, site string) mail.Message {
 		Subject: "Reset your Fold password",
 		Text: fmt.Sprintf(`Someone asked to reset the password for this email address at %s.
 
-Reset it here (the link works once and expires in 24 hours):
+Reset it here (the link works once and expires in %s):
 %s
 
 If that wasn't you, you can ignore this email — your password won't change.`,
-			site, link),
+			site, tokenLifetime, link),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,7 +102,8 @@ var (
 	errReminderRetryRefused = apiErr(http.StatusForbidden, "reminder_retry_refused", "this date has started or was cancelled, or its event's reminders are off, so its reminder can't be sent again")
 )
 
-// Composer limits, matching the CHECKs in migration 00054.
+// Composer limits, matching the CHECKs on messages (subject_check,
+// body_html_check, body_text_check); the errors below quote them.
 const (
 	maxMessageSubject = 200
 	maxMessageHTML    = 100000
@@ -111,8 +113,8 @@ const (
 )
 
 var (
-	errMessageSubject  = apiErr(http.StatusBadRequest, "message_subject", "add a subject on one line, up to 200 characters")
-	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about 50,000 characters")
+	errMessageSubject  = apiErr(http.StatusBadRequest, "message_subject", fmt.Sprintf("add a subject on one line, up to %d characters", maxMessageSubject))
+	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about "+thousands(maxMessageText)+" characters")
 	errMessageNobody   = apiErr(http.StatusBadRequest, "message_nobody", "no one would get this message; choose people who can get email")
 	errMessageLocked   = apiErr(http.StatusConflict, "message_locked", "this message is already sending or sent, so it can't change")
 	errMessageWhen     = apiErr(http.StatusBadRequest, "message_when", "pick a time from now to a year ahead")

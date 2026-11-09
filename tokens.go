@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"fold/models"
@@ -25,6 +26,10 @@ func jsonString(v any) string {
 // tokenTTL: password reset and invite tokens are single use, hashed, and
 // valid 24 hours (10.1).
 const tokenTTL = 24 * time.Hour
+
+// tokenLifetime is tokenTTL as the emails and answers that mention it say it
+// ("24 hours"), so the words follow the number.
+var tokenLifetime = strconv.Itoa(int(tokenTTL/time.Hour)) + " hours"
 
 // sqlStillLive is the deadline test for a token or invitation. now() is fixed
 // when the transaction begins, so a request that waited for a lock could pass

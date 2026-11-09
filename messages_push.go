@@ -35,7 +35,8 @@ import (
 const (
 	// pushWaitPrefix starts a waiting push row's reason; the rest is when
 	// quiet hours end, on the recipient's clock: "outside quiet hours ·
-	// sending at 8:00 AM" (research 2.6). The history counts by it.
+	// sending at 8:00 AM" (research 2.6). Use pushWaitReason and
+	// pushWaitUntil, which write and read it.
 	pushWaitPrefix = "outside quiet hours · sending at "
 	// pushWhyStopped: the daily reaper found a push row still queued with
 	// no job left to send it.
@@ -228,7 +229,7 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 		// The row stays queued and says when it goes, on the
 		// recipient's clock, for the history.
 		if err := db.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", row.ID, models.RecipientQueued).
-			Updates(map[string]any{"reason": pushWaitPrefix + opens.In(loc).Format("3:04 PM"), "updated_at": time.Now()}).Error; err != nil {
+			Updates(map[string]any{"reason": pushWaitReason(opens, loc), "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
 		return jobs.Later(opens)
@@ -274,6 +275,15 @@ func (a *App) pushValues(db *gorm.DB, m *models.Message, u *models.User) (map[st
 	values, err := a.recipientValues(db, m, au, map[uint]*models.User{u.ID: u})
 	return values[u.ID], err
 }
+
+// pushWaitReason is a waiting push row's reason: when quiet hours end on the
+// recipient's clock.
+func pushWaitReason(opens time.Time, loc *time.Location) string {
+	return pushWaitPrefix + opens.In(loc).Format("3:04 PM")
+}
+
+// pushWaitUntil is the time a waiting row's reason names, as the history shows it.
+func pushWaitUntil(reason string) string { return strings.TrimPrefix(reason, pushWaitPrefix) }
 
 // messageReadPath is where a recipient reads an announcement in Fold.
 func messageReadPath(id uint) string { return "/messages/" + idString(id) + "/read" }

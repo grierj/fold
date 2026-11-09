@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"log"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"fold/internal/mail"
 	"fold/internal/policy"
 	"fold/internal/providers"
+	"fold/internal/userlock"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -277,10 +279,9 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 }
 
 // lockSnapshotUsers locks every user a snapshot names (each row's recipient
-// and, for a guardian copy, the teen it is about) FOR KEY SHARE, ascending id,
-// 500 to a query, and returns the ones that still exist and are not deleted.
-// The read has no soft-delete scope: a deleted row is still locked, and
-// reported as gone.
+// and, for a guardian copy, the teen it is about) as notify.Send locks its
+// recipients (userlock.KeyShareLive) and returns the ones that still exist
+// and are not deleted.
 func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bool, error) {
 	var ids []uint
 	for _, r := range rows {
@@ -289,30 +290,7 @@ func lockSnapshotUsers(tx *gorm.DB, rows []models.MessageRecipient) (map[uint]bo
 			ids = append(ids, *r.CopyOfUserID)
 		}
 	}
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	type snapshotUser struct {
-		ID        uint
-		DeletedAt *time.Time
-	}
-	live := map[uint]bool{}
-	err := eachChunk(ids, 500, func(chunk []uint) error {
-		var got []snapshotUser
-		if err := tx.Table("users").Select("id, deleted_at").Where("id IN ?", chunk).Order("id").
-			Clauses(clause.Locking{Strength: "KEY SHARE"}).Find(&got).Error; err != nil {
-			return err
-		}
-		for _, u := range got {
-			if u.DeletedAt == nil {
-				live[u.ID] = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return live, nil
+	return userlock.KeyShareLive(tx, ids)
 }
 
 // revalidateSnapshotRows applies what lockSnapshotUsers found: an email row
@@ -824,7 +802,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 // in the church's day. Admins have no limit; their sends are audited.
 const dailyMessagesPerGroup = 5
 
-var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", "you've sent 5 messages to these people today")
+var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", fmt.Sprintf("you've sent %d messages to these people today", dailyMessagesPerGroup))
 
 // dailyLimitReached reports whether scheduling message id for when would
 // pass the limit for any group or church-wide event its audience reaches.

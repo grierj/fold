@@ -694,8 +694,15 @@ func snapshotCtx() context.Context {
 // snapshotPoint is the snapshot's locking read of users: facts GORM sets
 // before gorm:query (the table, the FOR clause and the operation), so a Before
 // barrier matches it (F6).
-func snapshotPoint(after bool) erasureTestPoint {
-	return erasureTestPoint{Processor: "query", Step: "gorm:query", After: after, Table: "users", Locking: true, Operation: "snapshot-prepare"}
+// snapshotPoint stops the snapshot before it locks its users.
+func snapshotPoint() erasureTestPoint {
+	return erasureTestPoint{Processor: "row", Step: "gorm:row", SQLContains: "FOR KEY SHARE", Operation: "snapshot-prepare"}
+}
+
+// snapshotClaimPoint stops the snapshot after it locked its users and before
+// it claims the message.
+func snapshotClaimPoint() erasureTestPoint {
+	return erasureTestPoint{Processor: "update", Step: "gorm:update", Table: "messages", Operation: "snapshot-prepare"}
 }
 
 func snapshotRowsOf(t *testing.T, app *App, messageID, userID uint) []models.MessageRecipient {
@@ -711,7 +718,7 @@ func snapshotRowsOf(t *testing.T, app *App, messageID, userID uint) []models.Mes
 // users, erases the person, and lets the snapshot go on.
 func snapshotSendsAfterErasure(t *testing.T, f composeFixture, id, erased uint) {
 	t.Helper()
-	reached, release := erasureTestPause(t, f.app.DB, snapshotPoint(false))
+	reached, release := erasureTestPause(t, f.app.DB, snapshotPoint())
 	done := make(chan error, 1)
 	go func() { done <- f.app.prepareMessageOnce(snapshotCtx(), id) }()
 	awaitDBSignal(t, reached)
@@ -833,7 +840,7 @@ func TestMessageSnapshotRevalidatesRecipientsUnderLock(t *testing.T) {
 		address := strings.ToLower(u.Email)
 		id := f.scheduleNow(t, f.leader, "Snapshot D", "<p>Hi</p>", groupAudience(f))
 		var prepPID atomic.Int64
-		p := snapshotPoint(true)
+		p := snapshotClaimPoint()
 		p.PID = &prepPID
 		reached, release := erasureTestPause(t, f.app.DB, p)
 		done := make(chan error, 1)

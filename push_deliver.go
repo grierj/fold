@@ -230,10 +230,14 @@ func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notificat
 	return first.Valid && first.Time.Before(now.Add(24*time.Hour)), allOver.Valid && allOver.Bool, nil
 }
 
+// reasonRecipientNotActive is the delivery reason, on a notice's email row
+// and its push row alike, when the recipient's account isn't active.
+const reasonRecipientNotActive = "recipient not active"
+
 // Delivery reasons a push row can carry (notification_deliveries.reason).
 const (
 	pushWhyChurchOff  = "push turned off by the church"
-	pushWhyInactive   = "recipient not active"
+	pushWhyInactive   = reasonRecipientNotActive
 	pushWhyNotOn      = "push not turned on"
 	pushWhyGone       = "device gone"
 	pushWhyTooLarge   = "the notification was too large to push"

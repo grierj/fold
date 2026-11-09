@@ -793,10 +793,10 @@ func (a *App) accountApprovedMessage(to, raw, site string, needsConsent bool) fo
 		Subject: fmt.Sprintf("Your %s account is approved", site),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
-Set your password here (the link works once and expires in 24 hours):
+Set your password here (the link works once and expires in %s):
 %s%s
 
-After that you can sign in with this email address.`, site, link, extra),
+After that you can sign in with this email address.`, site, tokenLifetime, link, extra),
 	}
 }
 

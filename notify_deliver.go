@@ -323,7 +323,7 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, "optional email turned off", "")
 	}
 	if u == nil || (u.Status != models.UserActive && u.Status != models.UserGuest) {
-		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, "recipient not active", "")
+		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, reasonRecipientNotActive, "")
 	}
 	msg := a.notificationEmailMessage(&n, u, k, footer)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverSendTimeout)

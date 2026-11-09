@@ -187,5 +187,5 @@ func (a *App) apiResendGuardianConsentEmail(c *gin.Context) {
 	} else if _, err := guardianConsentMailType.Enqueue(a.DB, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), ""); err != nil {
 		log.Printf("guardian consent email enqueue: link=%d err=%s", link.ID, jobs.CleanError(err))
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in 24 hours."})
+	c.JSON(http.StatusOK, gin.H{"message": "Check your email for a consent link. It expires in " + tokenLifetime + "."})
 }

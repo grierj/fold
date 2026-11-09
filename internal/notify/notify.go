@@ -23,6 +23,7 @@ import (
 
 	"fold/internal/jobs"
 	"fold/internal/txguard"
+	"fold/internal/userlock"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -110,7 +111,7 @@ type scopeState struct {
 
 // recipientLockBatch bounds one recipient lock statement. IDs are sorted
 // before batching, so the whole set is still locked in ascending ID order.
-const recipientLockBatch = 500
+const recipientLockBatch = userlock.Batch
 
 // ErrBadScope: a Msg.Scope that is not valid for this Send (see Msg.Scope).
 var ErrBadScope = errors.New("notify: recipient scope is not valid here")
@@ -235,28 +236,7 @@ func (sc *Scope) check(tx *gorm.DB, ids []uint) error {
 // on the non-deleted users among ids, ascending, in batches of 500. It returns
 // the ids it locked. Run on a plain handle, the locks end with the statement.
 func lockRecipients(tx *gorm.DB, ids []uint) (map[uint]bool, error) {
-	sorted := make([]uint, 0, len(ids))
-	for _, id := range ids {
-		if id != 0 {
-			sorted = append(sorted, id)
-		}
-	}
-	slices.Sort(sorted)
-	sorted = slices.Compact(sorted)
-	held := make(map[uint]bool, len(sorted))
-	for len(sorted) > 0 {
-		n := min(len(sorted), recipientLockBatch)
-		var got []uint
-		if err := tx.Raw(`SELECT id FROM users WHERE id IN ? AND deleted_at IS NULL ORDER BY id FOR KEY SHARE`,
-			sorted[:n]).Scan(&got).Error; err != nil {
-			return nil, err
-		}
-		for _, id := range got {
-			held[id] = true
-		}
-		sorted = sorted[n:]
-	}
-	return held, nil
+	return userlock.KeyShareLive(tx, ids)
 }
 
 // Send writes (or merges) one row per recipient, skipping the actor. It
