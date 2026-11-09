@@ -187,17 +187,7 @@ func TestReasonEnvelopeStrict(t *testing.T) {
 
 		{"legacy empty items", `{"items":[]}`, reasonEnvelopeLegacy, true},
 		{"legacy with an item", `{"items":[` + legacyItem("-5", envHash, "remove") + `]}`, reasonEnvelopeLegacy, true},
-		{"legacy duplicate id", `{"items":[` + legacyItem("1", envHash, "keep") + `,` + legacyItem("1", envHash, "keep") + `]}`, 0, false},
-		{"legacy non-canonical id", `{"items":[` + legacyItem("01", envHash, "keep") + `]}`, 0, false},
-		{"legacy upper-case hash", `{"items":[` + legacyItem("1", strings.ToUpper(envHash), "keep") + `]}`, 0, false},
-		{"legacy short hash", `{"items":[` + legacyItem("1", envHash[:62], "keep") + `]}`, 0, false},
-		{"legacy bad choice", `{"items":[` + legacyItem("1", envHash, "blank") + `]}`, 0, false},
-		{"legacy empty choice", `{"items":[` + legacyItem("1", envHash, "") + `]}`, 0, false},
-		{"legacy extra key", `{"items":[{"requestId":"1","reviewHash":"` + envHash + `","choice":"keep","x":"y"}]}`, 0, false},
-		{"legacy missing key", `{"items":[{"requestId":"1","choice":"keep"}]}`, 0, false},
-		{"legacy case variant entry key", `{"items":[{"RequestId":"1","reviewHash":"` + envHash + `","choice":"keep"}]}`, 0, false},
-		{"legacy duplicate entry key", `{"items":[{"requestId":"1","requestId":"1","reviewHash":"` + envHash + `","choice":"keep"}]}`, 0, false},
-		{"legacy number id", `{"items":[{"requestId":1,"reviewHash":"` + envHash + `","choice":"keep"}]}`, 0, false},
+		{"legacy entries are not read", `{"items":[{"anything":1},"x",null]}`, reasonEnvelopeLegacy, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -351,12 +341,10 @@ func escapedEnvelopeCases() []struct {
 		{"digest plain, then escaped", body(f, c, `"digest":"`+d+`","dig#u0065st":"`+d+`"`, ch), 0, false},
 		{"choices plain, then escaped", body(f, c, g, `"choices":"AQ==","choi#u0063es":"AQ=="`), 0, false},
 		{"items plain, then escaped", `{"items":[],"#u0069tems":[]}`, 0, false},
-		{"entry requestId plain, then escaped", `{"items":[{"requestId":"1","request#u0049d":"1","reviewHash":"` + h + `","choice":"keep"}]}`, 0, false},
 
 		// refused: an escape that spells another case
 		{"Count by an escaped capital", body(f, `"#u0043ount":"1"`, g, ch), 0, false},
 		{"Items by an escaped capital", `{"#u0049tems":[]}`, 0, false},
-		{"entry RequestId by an escaped capital", `{"items":[{"#u0052equestId":"1","reviewHash":"` + h + `","choice":"keep"}]}`, 0, false},
 
 		// refused: an escaped key that is not one of the keys, or not valid JSON
 		{"an escaped unknown key", body(f, c, g, ch+`,"ext#u0072a":"x"`), 0, false},

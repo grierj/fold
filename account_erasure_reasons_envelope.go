@@ -22,9 +22,10 @@ package main
 // keep, 2 is remove; 0 (unchosen) and 3 are refused, so the vector never
 // stands in for a choice nobody made.
 //
-// The old envelope {"items":[{requestId, reviewHash, choice}...]} is read only
-// to be told apart from the new one and checked for shape; its entries are
-// never applied (reason_review_outdated).
+// The old envelope {"items":[...]} is only recognized by its version, a
+// single "items" key holding an array; its entries are never read or applied
+// (reason_review_outdated). Fold has no deployed church and the one client is
+// the SPA built into the same binary, so nothing sends it but a stale tab.
 
 import (
 	"bytes"
@@ -44,7 +45,7 @@ const (
 	reasonEnvelopeAbsent reasonEnvelopeKind = iota
 	// reasonEnvelopeNew: a well-formed set-v1 envelope.
 	reasonEnvelopeNew
-	// reasonEnvelopeLegacy: a well-formed old items envelope, never applied.
+	// reasonEnvelopeLegacy: the old items envelope, never applied.
 	reasonEnvelopeLegacy
 )
 
@@ -93,7 +94,8 @@ func parseReasonEnvelope(raw json.RawMessage, ambiguous bool) (reasonEnvelope, b
 		seen[key] = true
 		switch key {
 		case "items":
-			if !readLegacyItems(dec) {
+			var items json.RawMessage
+			if err := dec.Decode(&items); err != nil || !bytes.HasPrefix(items, []byte("[")) {
 				return reasonEnvelope{}, false
 			}
 		case "format", "count", "digest", "choices":
@@ -120,59 +122,6 @@ func parseReasonEnvelope(raw json.RawMessage, ambiguous bool) (reasonEnvelope, b
 		return reasonEnvelope{}, false
 	}
 	return buildNewEnvelope(strs["format"], strs["count"], strs["digest"], strs["choices"])
-}
-
-// readLegacyItems checks the old envelope's array: every entry exactly
-// requestId, reviewHash and choice as strings, a canonical id, a 64-character
-// lowercase hash, a choice of keep or remove, and no id twice. An empty array
-// is allowed, as the old reader allowed it. It reads the array's tokens and
-// leaves the decoder after the closing bracket.
-func readLegacyItems(dec *json.Decoder) bool {
-	if t, err := dec.Token(); err != nil || t != json.Delim('[') {
-		return false
-	}
-	ids := map[int64]struct{}{}
-	for dec.More() {
-		if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-			return false
-		}
-		fields := map[string]string{}
-		for dec.More() {
-			kt, err := dec.Token()
-			key, isString := kt.(string)
-			if err != nil || !isString {
-				return false
-			}
-			if key != "requestId" && key != "reviewHash" && key != "choice" {
-				return false
-			}
-			if _, dup := fields[key]; dup {
-				return false
-			}
-			vt, err := dec.Token()
-			v, isString := vt.(string)
-			if err != nil || !isString {
-				return false
-			}
-			fields[key] = v
-		}
-		if t, err := dec.Token(); err != nil || t != json.Delim('}') {
-			return false
-		}
-		if len(fields) != 3 {
-			return false
-		}
-		id, ok := parseRequestID(fields["requestId"])
-		if !ok || !validReviewHash(fields["reviewHash"]) || (fields["choice"] != "keep" && fields["choice"] != "remove") {
-			return false
-		}
-		if _, dup := ids[id]; dup {
-			return false
-		}
-		ids[id] = struct{}{}
-	}
-	t, err := dec.Token()
-	return err == nil && t == json.Delim(']')
 }
 
 func buildNewEnvelope(format, count, digest, choices string) (reasonEnvelope, bool) {
