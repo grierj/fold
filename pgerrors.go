@@ -14,7 +14,6 @@ const (
 	pgExclusionViolation = "23P01"
 )
 
-// pgError is the PostgreSQL error inside err, or nil.
 func pgError(err error) *pgconn.PgError {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -23,7 +22,6 @@ func pgError(err error) *pgconn.PgError {
 	return nil
 }
 
-// pgCode is err's SQLSTATE, or "" when err holds no PostgreSQL error.
 func pgCode(err error) string {
 	if pgErr := pgError(err); pgErr != nil {
 		return pgErr.Code

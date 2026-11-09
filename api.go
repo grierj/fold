@@ -9,10 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 // authenticatedSessionUser loads the user the session cookie names, once per
 // request, when the cookie is still current (sessionCurrent).
 func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
@@ -40,13 +36,11 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	return &user, true
 }
 
-// userFromSession is authenticatedSessionUser for an active account.
 func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
 	user, ok := a.authenticatedSessionUser(c)
 	return user, ok && user.Status == models.UserActive
 }
 
-// apiAuth requires a logged-in user; 401 JSON otherwise.
 func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, ok := a.userFromSession(c)
@@ -84,7 +78,6 @@ func apiUser(c *gin.Context) *models.User {
 	return nil
 }
 
-// optionalUser loads the user when logged in but never rejects.
 func (a *App) optionalUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if user, ok := a.userFromSession(c); ok {
@@ -93,14 +86,6 @@ func (a *App) optionalUser() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Policy glue: load the facts, then ask internal/policy (C12)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Route registration
-// ---------------------------------------------------------------------------
 
 func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1 := r.Group("/api/v1")
@@ -141,7 +126,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	contactRoutes(http.MethodPost, "/contact-grants/:id/revoke", a.apiAuth(), a.apiRevokeContactGrant)
 	contactRoutes(http.MethodPost, "/contact-grants/:id/reveal", a.apiAuth(), a.apiRevealContactGrant)
 
-	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
 	v1.POST("/me/password", a.apiAuth(), a.apiChangePassword)
 	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
@@ -172,9 +156,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/push/subscriptions", a.apiAuth(), a.apiPushUnsubscribe)
 	v1.POST("/push/turn-off", a.apiAuth(), a.apiPushTurnOff)
 	v1.POST("/push/test", a.apiAuth(), a.apiPushTest)
-	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/notification-settings", a.apiAuth(), a.apiGetNotificationSettings)
 	v1.PUT("/me/notification-settings", a.apiAuth(), a.apiUpdateNotificationSettings)
+	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/calendar-feed", a.apiAuth(), a.apiGetMyCalendarFeed)
 	v1.POST("/me/calendar-feed", a.apiAuth(), a.apiCreateMyCalendarFeed)
 	v1.PUT("/me/calendar-feed", a.apiAuth(), a.apiUpdateMyCalendarFeed)
@@ -236,7 +220,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/email-settings/:token", a.apiTokenEmailSettings)
 	v1.PUT("/email-settings/:token", a.apiTokenUpdateEmailSettings)
 
-	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)
 	v1.GET("/me/groups", a.apiAuth(), a.apiMyGroups)
 	v1.POST("/groups", a.apiAuth(), a.apiCreateGroup)
@@ -258,10 +241,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/groups/:id/cover", a.apiAuth(), a.apiUploadGroupCover)
 	v1.DELETE("/groups/:id/cover", a.apiAuth(), a.apiDeleteGroupCover)
 
-	// Events. A series edit (PUT) moves future dates; a per-date edit leaves
-	// that date alone the next time the series changes (M1.1a). Church-wide
-	// events have no group (M1.1b). GET /events is the home list of events
-	// the viewer can see without seeing their group.
 	v1.GET("/site", a.apiSite)
 	v1.PUT("/admin/timezone", a.apiAuth(), a.apiAdmin(), a.apiSetTimezone)
 	// Rooms (M2.1a): every room route is 404 while rooms are off (9.1).
@@ -291,12 +270,14 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/rooms/:id/feed", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminGetRoomFeed)
 	v1.POST("/admin/rooms/:id/feed", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminCreateRoomFeed)
 	v1.DELETE("/admin/rooms/:id/feed", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminRevokeRoomFeed)
+	// The home list: events the viewer can see without seeing their group.
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.
 	v1.GET("/calendar", a.optionalUser(), a.apiCalendar)
 	// The by-room view (M2.2a): signed-in adults, 404 while rooms are off.
 	v1.GET("/calendar/rooms", a.roomsOn(), a.apiAuth(), a.apiRoomCalendar)
+	// Church-wide events have no group (M1.1b).
 	v1.POST("/events", a.apiAuth(), a.apiAdmin(), a.apiCreateChurchEvent)
 	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
@@ -307,6 +288,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	occurrenceRoutes(http.MethodPost, "/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
 	occurrenceRoutes(http.MethodPost, "/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
 	occurrenceRoutes(http.MethodPut, "/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)
+	// A series edit moves future dates; a per-date edit leaves that date alone
+	// the next time the series changes (M1.1a).
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)
@@ -336,7 +319,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/guest-registrations/manage/:token", a.apiGetGuestRegistration)
 	v1.POST("/guest-registrations/manage/:token/cancel", a.apiCancelGuestRegistration)
 
-	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
 	v1.GET("/admin/deletions", a.apiAuth(), a.apiAdmin(), a.apiDeletionRequests)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
@@ -364,7 +346,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/admin/operation-attempts/settle", a.apiAuth(), a.apiAdmin(), a.apiAdminSettleOperationAttempt)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 
-	// Notifications (5.12).
 	a.registerNotificationRoutes(v1)
 
 	// Browser-test routes: nil outside -tags e2eclock (e2e_hooks.go).

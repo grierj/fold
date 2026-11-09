@@ -139,7 +139,6 @@ func fail(c *gin.Context, err error) {
 	jsonError(c, http.StatusInternalServerError, jobs.CleanError(err))
 }
 
-// statusCodes name the general code for a status with no specific code.
 var statusCodes = map[int]string{
 	http.StatusBadRequest:            "invalid",
 	http.StatusUnauthorized:          "signed_out",
@@ -150,7 +149,6 @@ var statusCodes = map[int]string{
 	http.StatusTooManyRequests:       "rate_limited",
 }
 
-// statusCode is the general code for status.
 func statusCode(status int) string {
 	if code, ok := statusCodes[status]; ok {
 		return code
