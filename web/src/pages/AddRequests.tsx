@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useLocation, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { Adds } from "../api/adds";
 import { useAuth } from "../auth";
@@ -29,9 +29,8 @@ function Preview({ request: r }: { request: AddRequest }) {
 
 export function AddRequestsPage() {
   const { user } = useAuth();
-  const location = useLocation();
   const { id } = useParams();
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return null;
   return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Add requests</h1>
     <p className="text-text-muted">Requests to add someone to a group or event date. Contact details stay private.</p>

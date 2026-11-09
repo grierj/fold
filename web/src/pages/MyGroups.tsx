@@ -51,20 +51,6 @@ export function MyGroups() {
   const matching = groups.filter((g) => `${g.name} ${g.description}`.toLowerCase().includes(query.trim().toLowerCase()));
   const paging = usePage(matching, query, 12, { page: Number(params.get("page")) || 1, onChange: (page) => setParams((old) => { const next = new URLSearchParams(old); next.set("page", String(page)); return next; }) });
 
-  if (!authLoading && !user) {
-    return (
-      <div className="fold-page-narrow">
-        <h1 className="fold-page-header text-3xl font-bold">My groups</h1>
-        <p className="text-text-muted">
-          <Link to="/login" className="text-primary font-semibold">
-            Log in
-          </Link>{" "}
-          to see your groups.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="fold-page-narrow">
       <h1 className="fold-page-header text-3xl font-bold">My groups</h1>

@@ -42,9 +42,8 @@ type Selection = { personId: string; filters: ContactHistoryFilters; days: { fro
 export function ContactHistoryPage() {
   const { user, loading, isAdmin } = useAuth();
   const { id = "" } = useParams();
-  const location = useLocation();
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return null;
   if (!isAdmin || user.status !== "active" || user.accountType === "teen") return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This page is for church admins only.</p></div>;
   return <HistoryView key={`${user.id}:${user.status}:${user.role}:${user.accountType}:${user.birthDate}:${id}`} initialId={id} />;
 }

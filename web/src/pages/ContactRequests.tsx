@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, useLocation, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { ApiError } from "../api/core";
 import { useAuth } from "../auth";
 import { Contacts } from "../api/contacts";
@@ -19,9 +19,8 @@ const statusLabels: Record<ContactRequest["status"], string> = {
 
 export function ContactRequestsPage() {
   const { user } = useAuth();
-  const location = useLocation();
   const { id } = useParams();
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return null;
   return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Direct contact</h1>
     <p className="text-text-muted">Review requests and manage shared contact access. Contact details stay private.</p>
