@@ -188,6 +188,17 @@ func (u *User) PublicName() string {
 	return UnnamedMember
 }
 
+// PublicNameSQL is PublicName as a SQL expression over the users columns of
+// the table alias (empty for an unqualified query): same fallbacks, same
+// order. Every query that shows or sorts by a person's name uses it.
+func PublicNameSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return "COALESCE(NULLIF(" + prefix + "display_name, ''), NULLIF(" + prefix + "name, ''), '" + UnnamedMember + "')"
+}
+
 // PasswordCost is the bcrypt cost of new password hashes. Tests lower it to
 // bcrypt.MinCost; production never changes it.
 var PasswordCost = bcrypt.DefaultCost

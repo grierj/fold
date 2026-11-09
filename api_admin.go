@@ -8,454 +8,19 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fold/internal/audit"
 	"fold/internal/jobs"
 	"fold/internal/mail"
-	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
-
-// ---------------------------------------------------------------------------
-// Admin endpoints
-// ---------------------------------------------------------------------------
-
-func (a *App) apiPendingGroups(c *gin.Context) {
-	var groups []models.Group
-	if err := a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not list groups")
-		return
-	}
-	a.respondGroups(c, groups)
-}
-
-// respondGroups answers with the groups' summaries, or a 500 when one cannot
-// be built.
-func (a *App) respondGroups(c *gin.Context, groups []models.Group) {
-	out, err := a.groupSummaries(groups)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not list groups")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
-}
-
-// apiApproveGroup and apiRejectGroup decide a pending group. Both are
-// conditional on the group still being pending, and resolve every admin's
-// task in the same transaction (5.12). A request from the bell names its
-// notification (fromNotification); only Approve is allow-listed (6.6).
-func (a *App) apiApproveGroup(c *gin.Context) {
-	var body struct {
-		Tags             []string `json:"tags"`
-		FromNotification *uint    `json:"fromNotification"`
-	}
-	_ = c.ShouldBindJSON(&body)
-	// Tags are the admin's to change only when they sent some; otherwise the
-	// leader's own edits stay as they are.
-	var tags *string
-	if body.Tags != nil {
-		joined := joinTags(body.Tags)
-		if err := tagsField.check(joined); err != nil {
-			fail(c, err)
-			return
-		}
-		tags = &joined
-	}
-	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags, "")
-}
-
-// maxRejectMessage bounds the optional message to a rejected group's leaders.
-const maxRejectMessage = 500
-
-// Notification text never carries contact details (5.12), so free text that
-// becomes one is checked for an email address or a phone-shaped number: a run
-// of ten or more digits (with the usual separators), or a local number like
-// 555-0143. Dates such as 2026-11-05 or a 2026-2027 season are not phones.
-var (
-	digitRun    = regexp.MustCompile(`\+?\d[\d\s().-]{6,}\d`)
-	localNumber = regexp.MustCompile(`\b\d{3}[-.\s]\d{4}\b`)
-)
-
-func hasContactDetails(s string) bool {
-	if strings.Contains(s, "@") || localNumber.MatchString(s) {
-		return true
-	}
-	for _, run := range digitRun.FindAllString(s, -1) {
-		digits := 0
-		for _, r := range run {
-			if r >= '0' && r <= '9' {
-				digits++
-			}
-		}
-		if digits >= 10 {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *App) apiRejectGroup(c *gin.Context) {
-	var body struct {
-		FromNotification *uint  `json:"fromNotification"`
-		Message          string `json:"message"`
-	}
-	_ = c.ShouldBindJSON(&body)
-	// An optional message to the leaders, carried on their notice (DEC-96).
-	message := strings.TrimSpace(body.Message)
-	if utf8.RuneCountInString(message) > maxRejectMessage {
-		fail(c, errMessageTooLong500)
-		return
-	}
-	if hasContactDetails(message) {
-		fail(c, errMessageHasContact)
-		return
-	}
-	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil, message)
-}
-
-func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string, note string) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if !a.fromNotification(c, fromNotification, action, g.ID) {
-		return
-	}
-	me := apiUser(c)
-	outcome, auditAction := "approved", audit.GroupApproved
-	if action != notify.ActionApproveGroup {
-		outcome, auditAction = "rejected", audit.GroupRejected
-	}
-	errHandled := errors.New("already handled")
-	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
-		set := map[string]any{"status": status}
-		if tags != nil {
-			set["tags"] = *tags
-		}
-		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).Updates(set)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errHandled
-		}
-		// Answer with the row as stored, not the unlocked read from above.
-		if err := tx.First(&g, g.ID).Error; err != nil {
-			return err
-		}
-		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
-			return err
-		}
-		if err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note); err != nil {
-			return err
-		}
-		var meta map[string]any
-		if note != "" {
-			meta = map[string]any{"message": note}
-		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP()})
-	})
-	if errors.Is(err, errHandled) {
-		a.alreadyHandled(c, notify.GroupPending, g.ID)
-		return
-	}
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
-		return
-	}
-	if action == notify.ActionApproveGroup {
-		summary, err := a.groupSummary(&g)
-		if err != nil {
-			jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"group": summary})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
-}
-
-// ---------------------------------------------------------------------------
-// Admin: guardian links (M1.9 slice 1, DEC-32). A child or teen added to
-// a household waits here; only an admin confirms it, with a note on how
-// it was checked. There is no auto-confirm path.
-// ---------------------------------------------------------------------------
-
-type guardianLinkJSON struct {
-	ID             uint       `json:"id"`
-	GuardianUserID uint       `json:"guardianUserId"`
-	GuardianName   string     `json:"guardianName"`
-	TeenUserID     *uint      `json:"teenUserId,omitempty"`
-	PersonID       *uint      `json:"personId,omitempty"`
-	PersonName     string     `json:"personName"`
-	PersonKind     string     `json:"personKind"` // child | teen
-	BirthDate      string     `json:"birthDate,omitempty"`
-	HouseholdID    uint       `json:"householdId,omitempty"`
-	HouseholdName  string     `json:"householdName,omitempty"`
-	Status         string     `json:"status"` // pending | confirmed | rejected | revoked
-	CheckNote      string     `json:"checkNote"`
-	ConfirmedBy    *uint      `json:"confirmedBy,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	DecidedAt      *time.Time `json:"decidedAt,omitempty"`
-}
-
-func (a *App) toGuardianLinkJSON(link *models.GuardianLink) guardianLinkJSON {
-	return a.guardianLinksJSON([]models.GuardianLink{*link})[0]
-}
-
-func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON {
-	out := make([]guardianLinkJSON, 0, len(links))
-	if len(links) == 0 {
-		return out
-	}
-	var userIDs, personIDs []uint
-	for _, link := range links {
-		userIDs = append(userIDs, link.GuardianUserID)
-		if link.TeenUserID != nil {
-			userIDs = append(userIDs, *link.TeenUserID)
-		}
-		if link.PersonID != nil {
-			personIDs = append(personIDs, *link.PersonID)
-		}
-	}
-	var users []models.User
-	a.DB.Unscoped().Where("id IN ?", userIDs).Find(&users)
-	userByID := make(map[uint]models.User, len(users))
-	for _, user := range users {
-		userByID[user.ID] = user
-	}
-	var people []models.HouseholdPerson
-	if len(personIDs) > 0 {
-		a.DB.Unscoped().Where("id IN ?", personIDs).Find(&people)
-	}
-	personByID := make(map[uint]models.HouseholdPerson, len(people))
-	var householdIDs []uint
-	for _, person := range people {
-		personByID[person.ID] = person
-		householdIDs = append(householdIDs, person.HouseholdID)
-	}
-	var households []models.Household
-	if len(householdIDs) > 0 {
-		a.DB.Where("id IN ?", householdIDs).Find(&households)
-	}
-	householdByID := make(map[uint]models.Household, len(households))
-	for _, household := range households {
-		householdByID[household.ID] = household
-	}
-	for _, link := range links {
-		out = append(out, presentGuardianLink(link, userByID, personByID, householdByID))
-	}
-	return out
-}
-
-func presentGuardianLink(link models.GuardianLink, users map[uint]models.User, people map[uint]models.HouseholdPerson, households map[uint]models.Household) guardianLinkJSON {
-	name := func(id uint) string {
-		if user, ok := users[id]; ok {
-			return user.PublicName()
-		}
-		return unknownPersonName
-	}
-	out := guardianLinkJSON{
-		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: name(link.GuardianUserID),
-		TeenUserID: link.TeenUserID, PersonID: link.PersonID, Status: link.Status,
-		CheckNote: link.CheckNote, ConfirmedBy: link.ConfirmedBy,
-		CreatedAt: link.CreatedAt, DecidedAt: link.DecidedAt,
-	}
-	if link.PersonID != nil {
-		if person, ok := people[*link.PersonID]; ok {
-			out.PersonName, out.PersonKind = person.FullName(), person.Kind
-			out.BirthDate, out.HouseholdID = formatBirthDate(person.BirthDate), person.HouseholdID
-			out.HouseholdName = households[person.HouseholdID].Name
-		}
-	} else if link.TeenUserID != nil {
-		out.PersonName, out.PersonKind = name(*link.TeenUserID), models.HouseholdTeen
-		out.BirthDate = formatBirthDate(users[*link.TeenUserID].BirthDate)
-	}
-	return out
-}
-
-func (a *App) apiListGuardianLinks(c *gin.Context) {
-	status := c.DefaultQuery("status", models.GuardianPending)
-	q := a.DB.Order("created_at, id")
-	switch status {
-	case models.GuardianPending, models.GuardianConfirmed, models.GuardianRejected, models.GuardianRevoked:
-		q = q.Where("status = ?", status)
-	case "all":
-	default:
-		jsonError(c, http.StatusBadRequest, "unknown status")
-		return
-	}
-	var rows []models.GuardianLink
-	q.Find(&rows)
-	out := a.guardianLinksJSON(rows)
-	nominations, err := unresolvedGuardianNominations(a.DB)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
-		return
-	}
-	c.JSON(http.StatusOK, guardianLinksResponseJSON{GuardianLinks: out, Nominations: nominations})
-}
-
-func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }
-func (a *App) apiRejectGuardianLink(c *gin.Context)  { a.decideGuardianLink(c, false) }
-
-// decideGuardianLink confirms or rejects a pending guardian link,
-// conditional on it still being pending, and resolves every admin's task
-// in the same transaction (5.12). Confirming requires a check note
-// saying how the admin checked (DEC-32); "note" is accepted for the same
-// field, like the other approval endpoints.
-func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var link models.GuardianLink
-	if err := a.DB.First(&link, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "guardian link not found")
-		return
-	}
-	me := apiUser(c)
-	if !policy.CanConfirmGuardianLink(asPerson(me)) {
-		jsonError(c, http.StatusForbidden, "forbidden")
-		return
-	}
-	var body struct {
-		CheckNote string `json:"checkNote"`
-		Note      string `json:"note"`
-	}
-	_ = c.ShouldBindJSON(&body)
-	note := strings.TrimSpace(body.CheckNote)
-	if note == "" {
-		note = strings.TrimSpace(body.Note)
-	}
-	if confirm && note == "" {
-		fail(c, errCheckNoteRequired)
-		return
-	}
-	if len(note) > 500 {
-		fail(c, errCheckNoteTooLong)
-		return
-	}
-	// DEC-79: an admin cannot confirm their own guardian link while another
-	// active admin exists; a sole admin may, and the audit marks it.
-	selfConfirm := confirm && link.GuardianUserID == me.ID
-	status, outcome, auditAction := models.GuardianRejected, "rejected", audit.GuardianLinkRejected
-	if confirm {
-		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
-	}
-	errHandled := errors.New("already handled")
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if link.TeenUserID != nil {
-			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
-			if err != nil {
-				return err
-			}
-			var validAdmin, validGuardian, validTeen bool
-			for _, u := range users {
-				if u.ID == me.ID {
-					validAdmin = sessionCurrent(u, me) && policy.CanConfirmGuardianLink(asPerson(u))
-				}
-				if u.ID == link.GuardianUserID {
-					validGuardian = u.Status == models.UserActive && policy.CanRequestGuardianLink(asPerson(u))
-				}
-				if u.ID == *link.TeenUserID {
-					validTeen = u.AccountType == models.AccountTeen
-				}
-			}
-			if !validAdmin || (confirm && (!validGuardian || !validTeen)) {
-				return errConsentForbidden
-			}
-		}
-		if link.PersonID != nil {
-			var person models.HouseholdPerson
-			if err := tx.First(&person, *link.PersonID).Error; err != nil {
-				return err
-			}
-			if err := lockHousehold(tx, person.HouseholdID); err != nil {
-				return err
-			}
-			if err := tx.First(&person, *link.PersonID).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&link, link.ID).Error; err != nil {
-			return err
-		}
-		if selfConfirm {
-			var otherAdmins int64
-			if err := tx.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).Count(&otherAdmins).Error; err != nil {
-				return err
-			}
-			if otherAdmins > 0 {
-				return errSelfConfirmBlocked
-			}
-		}
-		now := time.Now().UTC()
-		updates := map[string]any{"status": status, "decided_at": now, "check_note": note}
-		if confirm {
-			updates["confirmed_by"] = me.ID
-		}
-		res := tx.Model(&models.GuardianLink{}).Where("id = ? AND status = ?", link.ID, models.GuardianPending).
-			Updates(updates)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errHandled
-		}
-		if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, &me.ID, outcome); err != nil {
-			return err
-		}
-		meta := map[string]any{"guardianUserId": link.GuardianUserID, "checkNote": note}
-		if selfConfirm {
-			meta["selfConfirm"] = true
-		}
-		if link.PersonID != nil {
-			meta["personId"] = *link.PersonID
-		}
-		if link.TeenUserID != nil {
-			meta["teenUserId"] = *link.TeenUserID
-		}
-		if confirm && link.TeenUserID != nil {
-			var teen models.User
-			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
-				return err
-			}
-			today, err := churchClockIn(tx, time.Now().UTC())
-			if err != nil {
-				return err
-			}
-			if err := a.completeTeenConversionIfReady(tx, &teen, today, c.ClientIP()); err != nil {
-				return err
-			}
-			if _, err := guardianConsentMailType.Enqueue(tx, guardianConsentMailJob{GuardianLinkID: link.ID}, time.Now(), ""); err != nil {
-				return err
-			}
-		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
-			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: c.ClientIP()})
-	})
-	if errors.Is(err, errHandled) {
-		a.alreadyHandled(c, notify.HouseholdLinkPending, link.ID)
-		return
-	}
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	var fresh models.GuardianLink
-	a.DB.First(&fresh, link.ID)
-	c.JSON(http.StatusOK, gin.H{"guardianLink": a.toGuardianLinkJSON(&fresh)})
-}
 
 // ---------------------------------------------------------------------------
 // Admin: user management
@@ -463,7 +28,10 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
-	a.DB.Order("lower(name), email").Find(&users)
+	if err := a.DB.Order("lower(name), email").Find(&users).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list users")
+		return
+	}
 	var historyIDs []uint
 	if err := a.DB.Model(&models.TeenConsent{}).Distinct().Pluck("teen_user_id", &historyIDs).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list users")
@@ -514,9 +82,9 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		fail(c, errValidEmailRequired)
 		return
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" || len(name) > 100 {
-		fail(c, errNameRequired100)
+	name, err := requiredName(body.Name)
+	if err != nil {
+		fail(c, err)
 		return
 	}
 	if body.Password != "" && !checkNewPassword(c, body.Password) {
@@ -535,7 +103,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		return
 	}
 	u := models.User{
-		Email: email, Role: role, Status: models.UserInvited, AccountType: kind, BirthDate: birth,
+		Email: email, Role: role, AccountType: kind, BirthDate: birth,
 		Name: name, DisplayName: strings.TrimSpace(body.DisplayName), Phone: strings.TrimSpace(body.Phone),
 	}
 	if body.Password != "" {
@@ -543,13 +111,10 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not create user")
 			return
 		}
-		u.Status = models.UserActive
 	}
-	if kind == models.AccountTeen {
-		u.Status = models.UserPendingConsent
-	}
+	u.Status = newAccountStatus(kind, body.Password != "")
 	me := apiUser(c)
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {
 			return err
 		}
@@ -593,18 +158,25 @@ func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
 	return &u, true
 }
 
-// adminCount counts admin accounts.
-func (a *App) adminCount() int {
-	var n int64
-	a.DB.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n)
-	return int(n)
+// activeAdmins scopes tx to the active admin accounts: the set the last-admin
+// rule counts and the admins who are told about account changes.
+func activeAdmins(tx *gorm.DB) *gorm.DB {
+	return tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive)
 }
 
-// adminCountIn is adminCount on a transaction, so the in-gate decision counts
-// with the same connection that holds the locks.
+// adminCount is adminCountIn for the early, ungated check. The gated decision
+// (keepsAnAdminIn) is the authority; a failed read here counts as none, which
+// only ever refuses.
+func (a *App) adminCount() int {
+	n, _ := adminCountIn(a.DB)
+	return n
+}
+
+// adminCountIn counts the active admins on the connection that holds the
+// locks, so the in-gate decision sees the same rows.
 func adminCountIn(tx *gorm.DB) (int, error) {
 	var n int64
-	if err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n).Error; err != nil {
+	if err := activeAdmins(tx).Count(&n).Error; err != nil {
 		return 0, err
 	}
 	return int(n), nil
@@ -712,18 +284,20 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	updates := map[string]interface{}{}
 	bump := false
 	if body.Name != nil {
-		if len(*body.Name) > 100 {
-			fail(c, errNameTooLong100)
+		name, err := optionalName(*body.Name)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["name"] = strings.TrimSpace(*body.Name)
+		updates["name"] = name
 	}
 	if body.DisplayName != nil {
-		if len(*body.DisplayName) > 100 {
-			fail(c, errDisplayNameTooLong)
+		dn, err := displayName(*body.DisplayName)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
+		updates["display_name"] = dn
 	}
 	if body.Email != nil {
 		email := mail.NormalizeAddress(*body.Email)
@@ -737,11 +311,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		}
 	}
 	if body.Phone != nil {
-		if len(*body.Phone) > 30 {
-			fail(c, errPhoneTooLong)
+		phone, err := phoneNumber(*body.Phone)
+		if err != nil {
+			fail(c, err)
 			return
 		}
-		updates["phone"] = strings.TrimSpace(*body.Phone)
+		updates["phone"] = phone
 	}
 	if body.Role != nil {
 		role := strings.TrimSpace(*body.Role)
@@ -851,56 +426,33 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			if bump {
 				updates["session_version"] = sessionVersionBump()
 			}
-			if updates["status"] == models.UserDisabled {
-				if err := revokeAccountTokens(tx, u.ID); err != nil {
-					return err
-				}
-				if u.Status == models.UserDisabled {
-					if err := tx.Model(u).Updates(updates).Error; err != nil {
-						return err
-					}
-					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled, TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-				}
-				err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
-				if err != nil {
-					return err
-				}
-				// Flip the status before the seat work: the rest of this
-				// transaction (seat counts, the waitlist) must see the
-				// account as disabled, since disabled accounts use no
-				// seats (DEC-38). The handoff above must see it active:
-				// leaderCount counts listed users.
+			status, statusSet := updates["status"].(string)
+			if !statusSet {
 				if err := tx.Model(u).Updates(updates).Error; err != nil {
 					return err
 				}
-				// Disabling keeps registration rows but frees every seat
-				// the account held on future dates, promoting into them.
-				err = a.promoteOnDisable(tx, u.ID, true)
-				if err != nil {
+			} else {
+				wasDisabled := u.Status == models.UserDisabled
+				if status == models.UserDisabled && !wasDisabled {
+					// The handoff must see the account listed (leaderCount
+					// counts listed users), so it runs before the status flips.
+					if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled"); err != nil {
+						return err
+					}
+				}
+				if err := a.setAccountStatusIn(tx, u, updates, me.ID, c.ClientIP()); err != nil {
 					return err
 				}
-				return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
-					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-			}
-			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
-				if err != nil {
-					return err
+				switch {
+				case status == models.UserDisabled:
+					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
+						TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
+				case wasDisabled:
+					if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
+						TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+						return err
+					}
 				}
-				// Registrations come back as they were when they fit;
-				// a row that would overfill is dropped and the person
-				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				err = a.restoreRegistrations(tx, u.ID, s, &me.ID, c.ClientIP(), time.Now().UTC())
-				if err != nil {
-					return err
-				}
-				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
-					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
-					return err
-				}
-			}
-			if err := tx.Model(u).Updates(updates).Error; err != nil {
-				return err
 			}
 			today, err := churchClockIn(tx, time.Now().UTC())
 			if err != nil {
@@ -1324,117 +876,6 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
-}
-
-// ---------------------------------------------------------------------------
-// Admin: group + membership management
-// ---------------------------------------------------------------------------
-
-func (a *App) apiAdminListGroups(c *gin.Context) {
-	var groups []models.Group
-	if err := a.DB.Order("name").Find(&groups).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not list groups")
-		return
-	}
-	a.respondGroups(c, groups)
-}
-
-func (a *App) apiAdminAddMember(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	var body struct {
-		UserID      uint   `json:"userId"`
-		SelectionID string `json:"selectionId"`
-		Role        string `json:"role"`
-		// OverLimit: add even though the group is full (DEC-39); audited.
-		OverLimit bool `json:"overLimit"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || (body.UserID == 0) == (body.SelectionID == "") {
-		jsonError(c, 400, "choose one person by selection or userId")
-		return
-	}
-	var u models.User
-	if body.SelectionID != "" {
-		selected, ok := a.resolvePeopleSelection(c, body.SelectionID)
-		if !ok {
-			return
-		}
-		u = *selected
-	} else if err := a.DB.First(&u, body.UserID).Error; err != nil {
-		jsonError(c, 404, "user not found")
-		return
-	}
-	if policy.TeenAddNeedsApproval(asPerson(&u)) {
-		fail(c, errTeenAddApproval)
-		return
-	}
-	role := body.Role
-	if role == "" {
-		role = models.MembershipMember
-	}
-	if role != models.MembershipLeader && role != models.MembershipMember {
-		jsonError(c, http.StatusBadRequest, "role must be leader or member")
-		return
-	}
-	err := a.changeRole(c, &g, u.ID, role, body.OverLimit, &memberAddOptions{}, func(me, target *models.User, actor, t policy.Rel, leaders int) bool {
-		// Admins may add someone straight in with either role.
-		return policy.IsAdmin(asPerson(me)) && policy.CanChangeRole(asPerson(me), actor, asPerson(target),
-			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
-	})
-	switch err {
-	case nil:
-	case errRoleRefused: // here the refusal is the leader rule
-		fail(c, errLeaderRuleAdults)
-		return
-	default:
-		fail(c, err)
-		return
-	}
-	a.membershipAdded(c, &g, u.ID)
-}
-
-func (a *App) apiDeletionRequests(c *gin.Context) {
-	var groups []models.Group
-	if err := a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not list groups")
-		return
-	}
-	a.respondGroups(c, groups)
-}
-
-// apiRejectDeletion keeps the group and clears the leader's request.
-func (a *App) apiRejectDeletion(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if err := a.clearDeletionRequest(g.ID, &apiUser(c).ID, "kept"); err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reject deletion")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
-}
-
-// apiAdminDeleteGroup removes any group. Unlike a leader's request, this
-// does not wait for a membership check.
-func (a *App) apiAdminDeleteGroup(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if err := a.deleteGroup(c.Request.Context(), &g, &apiUser(c).ID); err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not delete group")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

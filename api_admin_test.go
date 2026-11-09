@@ -2642,3 +2642,19 @@ func TestAdminDeleteHouseholdBusyBoundedAttempt(t *testing.T) {
 		t.Error("a timed-out deletion changed the database")
 	}
 }
+
+// A body that is not JSON is refused, not read as an empty one; an empty body
+// still decides (every field is optional).
+func TestAdminDecisionBodiesAreNotSilentlyEmpty(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAs(t, app, "admin", "password1234")
+	w := admin.do("POST", "/api/v1/admin/groups/999/approve", rawJSON("{not json"), true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: %d %s, want 400", w.Code, w.Body.String())
+	}
+	w = admin.do("POST", "/api/v1/admin/groups/999/approve", nil, true)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("empty body: %d %s, want 404 (no such group)", w.Code, w.Body.String())
+	}
+}

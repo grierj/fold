@@ -853,7 +853,7 @@ func TestHouseholdManageTokenCancelsOnlyItsSubject(t *testing.T) {
 	eventID, date := seedCappedEvent(t, app, admin, gid, nil, true)
 	_, c, spouse, child := householdFamily(t, app, admin, "tokenholder")
 	result := batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
-	raw, hash, err := createInvitationToken()
+	raw, hash, err := newTokenAndHash()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1235,7 +1235,7 @@ func TestGuestManageFailsClosedOnMembershipRead(t *testing.T) {
 
 func TestGuestManageMemberExactDateAccess(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
-	raw, hash, err := createInvitationToken()
+	raw, hash, err := newTokenAndHash()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1366,7 +1366,7 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 					seedThrottle("guestreg:hint:"+email+":h", guestVerifyPerHour)
 				} else {
 					for range guestVerifyPerHour {
-						_, hash, err := createInvitationToken()
+						_, hash, err := newTokenAndHash()
 						if err != nil {
 							t.Fatal(err)
 						}

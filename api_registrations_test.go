@@ -1331,7 +1331,7 @@ func TestChildcareFreedPromotesOnlyWithSeat(t *testing.T) {
 				case "disable":
 					apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(parent.ID), map[string]any{"status": "disabled"}, http.StatusOK)
 				case "manage cancel":
-					raw, hash, err := createInvitationToken()
+					raw, hash, err := newTokenAndHash()
 					if err != nil {
 						t.Fatal(err)
 					}

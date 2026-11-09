@@ -53,7 +53,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 - `cancel_source` is `series` (a series edit dropped the date; a later edit that includes it
   schedules it again and tells registrants, DEC-91) or `manual` (a person).
 - Render any name with `User.PublicName()`, never the email. Sign-in needs `User.CanSignIn()`;
-  login throttling is in Postgres (`login_throttles`, `api_auth.go`). `Email` is the login (DEC-23).
+  login throttling is in Postgres (`login_throttles`, `throttle.go`). `Email` is the login (DEC-23).
   Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys (`account_erasure.go`); further stages are tracked in the M7.4
   inventory.
@@ -134,7 +134,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   every person in `PERS`, soft-deleted included); any other household is another family's record, retained
   and counted in the `erasure` report the delete answers (`householdsKept`, `householdsScrubbed`,
   `peopleAnonymized`, `guardianLinksRevoked`; counts only). Households are locked only by
-  `lockErasureHouseholdsIn`; `TestErasureHouseholdLockCensus` pins the names of the 15 `lockHousehold` callers and fails on
+  `lockErasureHouseholdsIn`; `TestErasureHouseholdLockCensus` pins the names of the 14 `lockHousehold` callers (the public conversion accept reaches it through `lockConversionParticipants`) and fails on
   a new one; their classifications and lock orders are inventory 9.6.1 and are kept by review, not by the test.
 - Focal points (`AvatarFocalX/Y`, `CoverFocalX/Y`) are stored 0-100 and rendered as CSS
   `object-position`. `AvatarKey` is a blob-store key, not a URL.
@@ -189,6 +189,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   5xx on purpose, answered with `fail(c, ...)`, and need an `ERROR_COPY` line. Return is not release: after a client
   deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
   `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
+- Accounts (A1): capabilities live in `tokens.go` only (find, `claimAccountToken`, rotate, revoke; lock order contact gate →
+  user → token) and every rate limit in `throttle.go` (`countThrottleHit`, plus the audit-counted `inviteSendAllowed`);
+  advisory lock ids are the one block in `advisory_locks.go`. An existing account's status changes only through
+  `setAccountStatusIn` (`account_status.go`, which documents the order) and a new one starts in `newAccountStatus`. Profile
+  fields are validated by `fields.go` (trimmed, counted in characters). A pending item is decided with `decidePendingIn`.
 - Sessions (`session_state.go`): "this request's session is still current" is decided in one place,
   `sessionCurrent(fresh, session)` (a live row that `CanSignIn()` and carries both the session's
   `SessionVersion` and `LogoutVersion`), by the middleware, the actor seal and every locked recheck. A

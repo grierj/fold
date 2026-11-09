@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	netmail "net/mail"
@@ -73,11 +71,17 @@ func (a *App) apiLogin(c *gin.Context) {
 		fail(c, errBadCredentials)
 		return
 	}
-	// A success isn't a failure: give the IP back its attempt.
-	a.DB.Exec(`UPDATE login_throttles SET failures = GREATEST(failures - 1, 0) WHERE key = ?`, string(keys[1]))
-	// Success clears the email's counter. The IP counter stays, so one
-	// working account can't be used to reset it.
-	a.DB.Where("key = ?", string(keys[0])).Delete(&models.LoginThrottle{})
+	// A success isn't a failure: give the IP back its attempt, and clear the
+	// email's counter. The IP counter otherwise stays, so one working account
+	// can't be used to reset it.
+	if err := a.refundLoginAttempts(ctx, []throttleKey{loginIPKey(c.ClientIP())}); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not sign in")
+		return
+	}
+	if err := a.clearLoginKey(ctx, loginEmailKey(email)); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not sign in")
+		return
+	}
 	if err := a.signInSession(c, user); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
@@ -98,97 +102,6 @@ func validEmail(s string) bool {
 	}
 	addr, err := netmail.ParseAddress(s)
 	return err == nil && addr.Address == s
-}
-
-// Login throttling (10.1): ten failures for one email lock that email for
-// 15 minutes from any IP; fifty failures from one IP lock that IP.
-const (
-	emailFailureLimit = 10
-	ipFailureLimit    = 50
-	loginWindow       = 15 * time.Minute
-)
-
-func failureLimit(key throttleKey) int {
-	if key.isIP() {
-		return ipFailureLimit
-	}
-	return emailFailureLimit
-}
-
-// reserveLoginAttempt counts one attempt for each key before the password
-// is checked, and reports whether every key is still allowed. Each key's
-// row is incremented with one upsert, so parallel requests serialize on it
-// and at most the limit pass. A locked key, or one already past its limit,
-// is refused; a key that goes past its limit is locked for 15 minutes.
-func (a *App) reserveLoginAttempt(ctx context.Context, keys []throttleKey) (bool, error) {
-	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
-	allowed := true
-	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, key := range keys {
-			failures, locked, err := countThrottleHit(tx, key, loginWindow)
-			if err != nil {
-				return err
-			}
-			switch {
-			case locked:
-				allowed = false
-			case failures > failureLimit(key):
-				allowed = false
-				if err := tx.Exec(`UPDATE login_throttles
-SET locked_until = now() + ?::interval, failures = 0, window_start = now()
-WHERE key = ?`, window, string(key)).Error; err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-	return allowed, err
-}
-
-// countThrottleHit is the one upsert behind every throttle: it counts one
-// hit for key, starting over when the key's window has passed, and reports
-// the running count and whether the key is locked. Callers that do not use
-// lockouts ignore locked.
-func countThrottleHit(tx *gorm.DB, key throttleKey, window time.Duration) (failures int, locked bool, err error) {
-	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
-	var row struct {
-		Failures int
-		Locked   bool
-	}
-	err = tx.Raw(`
-INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
-ON CONFLICT (key) DO UPDATE SET
-  failures = CASE WHEN login_throttles.window_start < now() - ?::interval
-                  THEN 1 ELSE login_throttles.failures + 1 END,
-  window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
-                      THEN now() ELSE login_throttles.window_start END
-RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
-		string(key), windowArg, windowArg).Scan(&row).Error
-	return row.Failures, row.Locked, err
-}
-
-// pruneLoginThrottles drops rows that carry no information. The daily
-// cleanup.login_throttles job runs it; hits no longer pay for the cleanup.
-func (a *App) pruneLoginThrottles(ctx context.Context) error {
-	return a.DB.WithContext(ctx).Exec(`DELETE FROM login_throttles
-WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error
-}
-
-// lockLoginKeysAtLimit runs after a failed attempt (already counted by
-// reserveLoginAttempt): a key that has reached its limit within the window
-// is locked for 15 minutes and starts over.
-func (a *App) lockLoginKeysAtLimit(ctx context.Context, keys []throttleKey) error {
-	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
-	for _, key := range keys {
-		err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
-SET locked_until = now() + ?::interval, failures = 0, window_start = now()
-WHERE key = ? AND failures >= ?`, window, string(key), failureLimit(key)).Error
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // reauthenticate shares one per-user budget across authenticated password
@@ -215,8 +128,7 @@ func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bo
 		fail(c, errWrongPassword)
 		return false
 	}
-	if err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
-SET failures = GREATEST(failures - 1, 0) WHERE key IN ?`, throttleKeyStrings(keys)).Error; err != nil {
+	if err := a.refundLoginAttempts(ctx, keys); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not verify password")
 		return false
 	}
@@ -387,34 +299,6 @@ const (
 	resetWindow  = time.Hour
 )
 
-// throttleAllow counts one hit for key and reports whether it stays under
-// limit within window. It shares the login_throttles table under its own
-// key prefix; the login lockout never reads these keys.
-func (a *App) throttleAllow(ctx context.Context, key throttleKey, limit int, window time.Duration) (bool, error) {
-	failures, err := a.throttleHit(ctx, key, window)
-	return failures <= limit, err
-}
-
-// Per-target email limits (PLAN 10.6 defaults, as for guest verification
-// emails): a door that mails an address someone else typed sends it at most
-// 3 per hour and 10 per day, whoever asks and from wherever (#91, #92).
-const (
-	targetHourLimit = 3
-	targetDayLimit  = 10
-)
-
-// targetAllow counts one send to key (a builder's key for an address or user id)
-// in both the hourly and the daily window and reports whether both stay
-// under their limits.
-func (a *App) targetAllow(ctx context.Context, key throttleKey) (bool, error) {
-	hourOK, err := a.throttleAllow(ctx, key.targeted()[0], targetHourLimit, time.Hour)
-	if err != nil {
-		return false, err
-	}
-	dayOK, err := a.throttleAllow(ctx, key.targeted()[1], targetDayLimit, 24*time.Hour)
-	return hourOK && dayOK, err
-}
-
 // apiRequestPasswordReset starts a password reset. It always answers 200
 // with the uniform message. A known address queues a single-use link valid
 // for 24 hours from delivery preparation. Inside the IP/address budget, both
@@ -483,33 +367,38 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 }
 
-// apiConfirmPasswordReset redeems a reset token and sets the new password.
-// Unknown, expired, or already-used tokens all get the same answer, and a
-// successful reset signs the person in.
-func (a *App) apiConfirmPasswordReset(c *gin.Context) {
+// redeemPasswordLink is the one redemption of an emailed set-password link
+// (reset or first setup): it reads the token and the new password, pays for
+// bcrypt before the gate, then claims the token, replaces the password and
+// records auditAction in one transaction, and signs the person in. Unknown,
+// expired or used tokens all get the same answer. It answers the request
+// itself when it fails (ok is false); otherwise the caller writes the success
+// body. pendingConsent reports a teen still waiting for consent when they set
+// the password.
+func (a *App) redeemPasswordLink(c *gin.Context, kind, auditAction, failMsg string) (fresh models.User, pendingConsent, ok bool) {
 	var body struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" || body.Password == "" {
 		jsonError(c, http.StatusBadRequest, "token and password are required")
-		return
+		return fresh, false, false
 	}
 	if !checkNewPassword(c, body.Password) {
-		return
+		return fresh, false, false
 	}
-	var fresh models.User
-	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenPasswordReset, body.Token, body.Password)
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), kind, body.Token, body.Password)
 	if err == nil {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, _, err := lockAndConsumeAccountToken(tx, models.TokenPasswordReset, body.Token)
+			u, _, err := lockAndConsumeAccountToken(tx, kind, body.Token)
 			if err != nil {
 				return err
 			}
+			pendingConsent = u.Status == models.UserPendingConsent
 			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
 				return err
 			}
-			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: auditAction,
 				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
 				return err
 			}
@@ -519,14 +408,24 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	}
 	if errors.Is(err, errTokenInvalid) {
 		fail(c, errLinkExpired)
-		return
+		return fresh, false, false
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reset password")
-		return
+		jsonError(c, http.StatusInternalServerError, failMsg)
+		return fresh, false, false
 	}
 	if err := a.signInSession(c, &fresh); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
+		return fresh, false, false
+	}
+	return fresh, pendingConsent, true
+}
+
+// apiConfirmPasswordReset redeems a reset token and sets the new password. A
+// successful reset signs the person in.
+func (a *App) apiConfirmPasswordReset(c *gin.Context) {
+	fresh, _, ok := a.redeemPasswordLink(c, models.TokenPasswordReset, audit.PasswordResetCompleted, "could not reset password")
+	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})

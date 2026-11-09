@@ -1915,7 +1915,7 @@ func TestReasonReviewCensus(t *testing.T) {
 // eraseTombstoneOnce, flagHouseholdChild13, rolloverAges,
 // previouslyRegisteredPerson, loadAccessHistory and appendRecoverableRegistrations
 // filter to other actions or target types; conversionInviterDisabled,
-// conversionSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
+// inviteSendAllowed, apiTestMessage, apiPushSubscribe and apiPushTest only
 // count; eraseAuditDetailsIn updates and aggregates in SQL (the five new actions
 // are classified in auditIPAttribution); contactHistoryQuery selects only the
 // actions in contactHistoryActions, which has no decision action.
@@ -1946,13 +1946,13 @@ var reasonCensusPinned = map[string][]string{
 		"age_rollover.go:rolloverAges",
 		"api_contact_history.go:contactHistoryQuery",
 		"api_household_conversion.go:conversionInviterDisabled",
-		"api_household_conversion.go:conversionSendAllowed",
 		"api_message_preview.go:apiTestMessage",
 		"api_push.go:apiPushSubscribe",
 		"api_push.go:apiPushTest",
 		"api_registrations.go:previouslyRegisteredPerson",
 		"registration_access.go:loadAccessHistory",
 		"registration_subjects.go:appendRecoverableRegistrations",
+		"throttle.go:inviteSendAllowed",
 	},
 	"gatedFenced": {
 		"account_erasure_tombstones.go:eraseTombstoneOnce",
