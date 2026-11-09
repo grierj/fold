@@ -400,15 +400,9 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		// Contact gate -> actor -> group -> membership, before domain writes.
-		var actor models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, u.ID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errSecuritySession
-			}
+		actor, err := lockActorIn(tx, u, actorNoKeyUpdate)
+		if err != nil {
 			return err
-		}
-		if !actor.CanSignIn() || actor.SessionVersion != u.SessionVersion {
-			return errSecuritySession
 		}
 		var locked models.Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, g.ID).Error; err != nil {
@@ -422,15 +416,15 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			return err
 		}
 		rel := membershipRel(membership)
-		if !policy.CanSeeGroup(asPerson(&actor), asGroup(&locked), rel) {
+		if !policy.CanSeeGroup(asPerson(actor), asGroup(&locked), rel) {
 			return errHidden
 		}
-		if !policy.CanManageGroup(asPerson(&actor), rel) ||
-			(body.Status != nil && !policy.CanSetGroupStatus(asPerson(&actor), rel, *body.Status)) {
+		if !policy.CanManageGroup(asPerson(actor), rel) ||
+			(body.Status != nil && !policy.CanSetGroupStatus(asPerson(actor), rel, *body.Status)) {
 			return errForbidden
 		}
 		// Downstream visibility/audit helpers use the same fresh actor.
-		*u = actor
+		*u = *actor
 		// Start with current state; omitted columns are never written.
 		*g = locked
 		if body.Name != nil {
@@ -489,8 +483,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		return tx.Model(g).Select(columns).Updates(g).Error
 	})
-	if errors.Is(err, errSecuritySession) {
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+	if answerStaleSession(c, err) {
 		return
 	}
 	if errors.Is(err, errHidden) {
@@ -551,7 +544,7 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 			groupFull(c)
 			return
 		case errSecuritySession:
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
+			jsonStaleSession(c)
 			return
 		case errRoleRefused:
 			jsonError(c, http.StatusForbidden, "you can't join this group")
@@ -694,7 +687,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 	switch err {
 	case nil:
 	case errSecuritySession:
-		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		jsonStaleSession(c)
 		return
 	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,
@@ -756,17 +749,14 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	if actor == nil {
 		return sessionErr
 	}
-	var fresh models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, actor.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return sessionErr
-		}
-		return err
-	}
-	if !fresh.CanSignIn() || fresh.SessionVersion != actor.SessionVersion {
+	fresh, err := lockActorIn(tx, actor, actorNoKeyUpdate)
+	if errors.Is(err, errSecuritySession) {
 		return sessionErr
 	}
-	actor = &fresh
+	if err != nil {
+		return err
+	}
+	actor = fresh
 	target := actor
 	if userID != actor.ID {
 		target = &models.User{}
@@ -858,7 +848,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		}
 		return nil
 	}
-	err := auditAndNotifyLeadership(tx, audit.Entry{
+	err = auditAndNotifyLeadership(tx, audit.Entry{
 		Actor: &actor.ID, Action: audit.RoleChanged,
 		TargetType: "group", TargetID: g.ID,
 		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
