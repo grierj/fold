@@ -40,13 +40,29 @@ func consentJSON(row models.TeenConsent) teenConsentJSON {
 		GrantedBy: row.GrantedBy, GranterRole: row.GranterRole, EvidenceText: row.EvidenceText, At: row.At}
 }
 
+// latestConsentIn is the newest consent row for each of teenIDs and each
+// scope (all three when scopes is empty). It is the one reading of "latest";
+// the helpers below project from it. Read it after the teen user lock when
+// deciding status: the user row serializes appends even when no consent exists
+// yet.
+func latestConsentIn(db *gorm.DB, teenIDs []uint, scopes ...string) ([]models.TeenConsent, error) {
+	q := db.Model(&models.TeenConsent{}).Select("DISTINCT ON (teen_user_id, scope) *").Where("teen_user_id IN ?", teenIDs)
+	if len(scopes) > 0 {
+		q = q.Where("scope IN ?", scopes)
+	}
+	var latest []models.TeenConsent
+	err := q.Order("teen_user_id, scope, at DESC, id DESC").Find(&latest).Error
+	return latest, err
+}
+
 // latestTeenConsent is the newest consent row for one teen and scope, and
-// whether there is one. Read it after the teen user lock when deciding status:
-// the user row serializes appends even when no consent exists yet.
+// whether there is one.
 func latestTeenConsent(tx *gorm.DB, teenID uint, scope string) (models.TeenConsent, bool, error) {
-	var row models.TeenConsent
-	res := tx.Where("teen_user_id = ? AND scope = ?", teenID, scope).Order("at DESC, id DESC").Limit(1).Find(&row)
-	return row, res.RowsAffected == 1, res.Error
+	rows, err := latestConsentIn(tx, []uint{teenID}, scope)
+	if err != nil || len(rows) == 0 {
+		return models.TeenConsent{}, false, err
+	}
+	return rows[0], true, nil
 }
 
 func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
@@ -59,12 +75,6 @@ func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
 func latestAccountConsentID(tx *gorm.DB, teenID uint) (uint, error) {
 	row, _, err := latestTeenConsent(tx, teenID, models.TeenConsentAccount)
 	return row.ID, err
-}
-
-func latestTeenConsents(db *gorm.DB, teenIDs []uint) ([]models.TeenConsent, error) {
-	var latest []models.TeenConsent
-	err := db.Raw("SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ? ORDER BY teen_user_id, scope, at DESC, id DESC", teenIDs).Scan(&latest).Error
-	return latest, err
 }
 
 // lockConsentUsers follows the registration/conversion lifecycle lock order:

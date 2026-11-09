@@ -1,8 +1,6 @@
 package main
 
 import (
-	"time"
-
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -51,7 +49,7 @@ func (a *App) setAccountStatusIn(tx *gorm.DB, u *models.User, updates map[string
 		if err := restoreMemberships(tx, u.ID, actor, ip); err != nil {
 			return err
 		}
-		if err := a.restoreRegistrations(tx, u.ID, status, &actor, ip, time.Now().UTC()); err != nil {
+		if err := a.restoreRegistrations(tx, u.ID, status, &actor, ip, a.now().UTC()); err != nil {
 			return err
 		}
 	}
