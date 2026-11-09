@@ -22,6 +22,7 @@ import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
 import { SavedStatus, SettingSwitch, useSavedSetting } from "../components/admin/SettingSwitch";
+import { NewPasswordField } from "../components/NewPasswordField";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
@@ -879,9 +880,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   return (
     <Form noValidate onSubmit={reset} className="mt-2 max-w-xl space-y-4">
       {error && <FormError>{error}</FormError>}
-      <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
-        <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-      </Field>
+      <NewPasswordField id="admin-new-password-for" label={`New password for ${user.email}`} value={password} onChange={setPassword} />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set password"}

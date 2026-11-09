@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { passwordLengthProblem } from "./password";
+import { passwordLengthProblem, passwordProblem } from "./password";
 
 describe("passwordLengthProblem", () => {
   it("counts characters for the minimum, as the server does", () => {
@@ -15,5 +15,13 @@ describe("passwordLengthProblem", () => {
     expect(passwordLengthProblem("a".repeat(73))).toBe("long");
     expect(passwordLengthProblem("😀".repeat(18))).toBeNull();
     expect(passwordLengthProblem("😀".repeat(19))).toBe("long");
+  });
+});
+
+describe("passwordProblem", () => {
+  it("says what is wrong in a sentence, or nothing", () => {
+    expect(passwordProblem("short")).toBe("Password must be at least 10 characters.");
+    expect(passwordProblem("a".repeat(73))).toMatch(/too long/);
+    expect(passwordProblem("a long enough one")).toBeNull();
   });
 });
