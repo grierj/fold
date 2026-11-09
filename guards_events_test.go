@@ -31,7 +31,41 @@ func groupDetailViolations(src string) []string {
 	return bad
 }
 
+// rawGroupRe matches the raw sources of a group in the date projector: the
+// unfiltered group of the viewer's facts and the loaded groups map. Neither may
+// reach output; only a.groupShownTo's result may.
+var rawGroupRe = regexp.MustCompile(`\bf\.group\b|\.Groups\[`)
+
+// projectorFiles hold the one place a date's group is decided, so a raw group
+// read there is checked line by line, not only by the field names above.
+var projectorFiles = []string{"date_projector.go"}
+
+// rawGroupViolations flags a raw group source on a line that neither passes it
+// to groupShownTo (the filter) or asGroup (a policy input) nor says why it may
+// be read with `// group-ok:`.
+func rawGroupViolations(src string) []string {
+	var bad []string
+	for i, line := range strings.Split(src, "\n") {
+		if !rawGroupRe.MatchString(line) || strings.Contains(line, "// group-ok:") ||
+			strings.Contains(line, "groupShownTo(") || strings.Contains(line, "asGroup(") {
+			continue
+		}
+		bad = append(bad, strings.TrimSpace(line)+" (line "+itoa(uint(i+1))+")")
+	}
+	return bad
+}
+
 func TestGroupDetailsGoThroughGroupShownTo(t *testing.T) {
+	for _, f := range projectorFiles {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range rawGroupViolations(string(src)) {
+			t.Errorf("%s: %s\n  a date's group is p.Group, set from a.groupShownTo only; "+
+				"or end the line with `// group-ok: <why this viewer may see the group>`", f, v)
+		}
+	}
 	for _, f := range eventOutputFiles {
 		src, err := os.ReadFile(f)
 		if err != nil {
@@ -49,6 +83,20 @@ func TestGroupDetailGuardCatchesPR41Leak(t *testing.T) {
 	before := "\t\tif g != nil {\n\t\t\tloc = g.Location\n\t\t}\n"
 	if len(groupDetailViolations(before)) != 1 {
 		t.Fatal("guard missed the pre-#41 code")
+	}
+}
+
+// The projector guard catches a group taken from the facts without the filter.
+func TestRawGroupGuardCatchesUnfilteredGroup(t *testing.T) {
+	for _, bad := range []string{"\tp.Group = f.group\n", "\tp.Group = vs.Groups[*ev.GroupID]\n"} {
+		if len(rawGroupViolations(bad)) != 1 {
+			t.Fatalf("guard missed %q", bad)
+		}
+	}
+	for _, ok := range []string{"\tp.Group = a.groupShownTo(viewer, f.group, f.rel)\n", "\tasGroup(f.group)\n", "\tg := f.group // group-ok: manager only\n"} {
+		if len(rawGroupViolations(ok)) != 0 {
+			t.Fatalf("guard flagged %q", ok)
+		}
 	}
 }
 
