@@ -1,8 +1,10 @@
+import type { View } from "../../lib/calendar";
 import { useRoomsEnabled } from "../../lib/useSite";
 import { useAuth } from "../../auth";
+import { isNotTeen } from "../../lib/can";
 import { ViewSwitch } from "../ui/ViewSwitch";
 
-export type CalendarViewName = "agenda" | "week" | "month" | "rooms";
+type CalendarViewName = View | "rooms";
 
 const LABELS: Record<CalendarViewName, string> = { agenda: "Agenda", week: "Week", month: "Month", rooms: "Rooms" };
 
@@ -11,8 +13,7 @@ const LABELS: Record<CalendarViewName, string> = { agenda: "Agenda", week: "Week
 // answers, so the Rooms item never flashes in and out.
 export function useRoomCalendarShown(): boolean {
   const { user } = useAuth();
-  const eligible = !!user && user.accountType !== "teen";
-  return useRoomsEnabled() === true && eligible;
+  return useRoomsEnabled() === true && isNotTeen(user);
 }
 
 // The calendar's one view switch (Agenda | Week | Month, and Rooms when it

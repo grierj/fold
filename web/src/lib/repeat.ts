@@ -1,3 +1,5 @@
+import { weekdayIndex } from "./days";
+import { parseRule, WEEKDAY_CODES } from "./rrule";
 import { browserTimeZone, dayOf, formatEventDay, formatShortDay, formatTimeRange, weekdayLongName } from "./when";
 
 // The event page's "when" line (DEC-92), built from the series rule and the
@@ -5,7 +7,6 @@ import { browserTimeZone, dayOf, formatEventDay, formatShortDay, formatTimeRange
 // the rule only ever needs daily, weekly and monthly wording; anything more
 // exotic reads "Repeats" rather than saying something wrong.
 
-const CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 // Weekdays read Monday first ("Tuesday and Thursday").
 const READING_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const ORDINALS: Record<number, string> = { 1: "First", 2: "Second", 3: "Third", 4: "Fourth" };
@@ -16,19 +17,6 @@ export interface RepeatDate {
   // The date's own calendar day (YYYY-MM-DD), in the event's zone.
   date: string;
   startsAt: string;
-}
-
-function parseRule(rule: string): Map<string, string> {
-  const parts = new Map<string, string>();
-  for (const part of rule.replace(/^RRULE:/i, "").split(";")) {
-    const [key, value] = part.split("=");
-    if (key && value !== undefined) parts.set(key.toUpperCase(), value);
-  }
-  return parts;
-}
-
-function weekdayOf(day: string): number {
-  return new Date(`${day}T12:00:00Z`).getUTCDay();
 }
 
 function joinNames(names: string[]): string {
@@ -48,7 +36,7 @@ function ordinalDay(n: number): string {
 function weekdayShift(dates: RepeatDate[], zone: string): number {
   const counts = new Map<number, number>();
   for (const d of dates) {
-    const shift = (weekdayOf(dayOf(d.startsAt, zone)) - weekdayOf(d.date) + 7) % 7;
+    const shift = (weekdayIndex(dayOf(d.startsAt, zone)) - weekdayIndex(d.date) + 7) % 7;
     counts.set(shift, (counts.get(shift) ?? 0) + 1);
   }
   let best = 0;
@@ -61,6 +49,7 @@ function weekdayShift(dates: RepeatDate[], zone: string): number {
 
 // "Every Wednesday", "First Saturday of each month", … or "Repeats". Null for
 // a rule that is empty (a single date).
+/** @public tested directly: the wording table. */
 export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserTimeZone()): string | null {
   if (!rule.trim()) return null;
   const parts = parseRule(rule);
@@ -73,8 +62,8 @@ export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserT
 
   if (freq === "WEEKLY" && interval <= 2 && !parts.has("BYMONTHDAY") && !parts.has("BYSETPOS")) {
     const wall = byday.length > 0
-      ? byday.map((d) => CODES.indexOf(d.slice(-2)))
-      : [weekdayOf(first.date)];
+      ? byday.map((d) => WEEKDAY_CODES.indexOf(d.slice(-2)))
+      : [weekdayIndex(first.date)];
     if (wall.some((i) => i < 0)) return "Repeats";
     const shift = weekdayShift(dates, zone);
     const days = new Set(wall.map((i) => (i + shift) % 7));
@@ -93,11 +82,11 @@ export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserT
       // "1SA" / "-1FR", or a bare weekday with BYSETPOS.
       const m = byday[0].match(/^([+-]?\d+)?([A-Z]{2})$/);
       const n = Number(m?.[1] ?? parts.get("BYSETPOS") ?? NaN);
-      if (!m || CODES.indexOf(m[2]) < 0 || !Number.isInteger(n) || n < -1 || n === 0 || n > 4) return "Repeats";
+      if (!m || WEEKDAY_CODES.indexOf(m[2]) < 0 || !Number.isInteger(n) || n < -1 || n === 0 || n > 4) return "Repeats";
       // A zone that moves the evening onto the next weekday makes "first
       // Saturday" a moving "first or second Sunday", so say less, not wrong.
-      if (weekdayOf(zoneDay) !== CODES.indexOf(m[2])) return "Repeats";
-      return `${n === -1 ? "Last" : ORDINALS[n]} ${weekdayLongName(CODES.indexOf(m[2]))} of each month`;
+      if (weekdayIndex(zoneDay) !== WEEKDAY_CODES.indexOf(m[2])) return "Repeats";
+      return `${n === -1 ? "Last" : ORDINALS[n]} ${weekdayLongName(WEEKDAY_CODES.indexOf(m[2]))} of each month`;
     }
     if (byday.length > 1 || parts.has("BYSETPOS")) return "Repeats";
     const monthDays = (parts.get("BYMONTHDAY") ?? "").split(",").filter(Boolean);

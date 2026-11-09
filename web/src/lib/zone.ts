@@ -1,29 +1,8 @@
-export const WEEKDAYS = [
-  { label: "Mon", value: "MO" },
-  { label: "Tue", value: "TU" },
-  { label: "Wed", value: "WE" },
-  { label: "Thu", value: "TH" },
-  { label: "Fri", value: "FR" },
-  { label: "Sat", value: "SA" },
-  { label: "Sun", value: "SU" },
-];
+// Time zone names and the zone picker's options: how a zone reads to a person
+// ("Pacific Time", "Los Angeles (Pacific)") and how typing filters them. Stable
+// display helpers; the names themselves come from lib/when.
 
-const CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
-
-// Weekday of a YYYY-MM-DD calendar date, in that date's own zone (no UTC shift).
-export function weekdayCode(date: string): string {
-  const [y, m, d] = date.split("-").map(Number);
-  return CODES[new Date(y, (m || 1) - 1, d || 1).getDay()];
-}
-
-export function isSimpleWeekly(rule: string): boolean {
-  return rule === "" || /^FREQ=WEEKLY(;BYDAY=[A-Z,]+)?$/.test(rule);
-}
-
-export function bydays(rule: string): string[] {
-  const m = rule.match(/BYDAY=([A-Z,]+)/);
-  return m ? m[1].split(",").filter(Boolean) : [];
-}
+import { shortZoneName, zoneGenericName } from "./when";
 
 function allZones(): string[] {
   try {
@@ -34,39 +13,11 @@ function allZones(): string[] {
   }
 }
 
-// The zone's generic name in the reader's language ("Pacific Time"), the
-// same in summer and winter, so it matches "the clock stays put". Falls back
-// to the long name, then to nothing, if the browser can't name it.
-export function zoneGenericName(tz: string, locale?: string): string {
-  for (const style of ["longGeneric", "long"] as const) {
-    try {
-      const part = new Intl.DateTimeFormat(locale, { timeZone: tz, timeZoneName: style })
-        .formatToParts(new Date())
-        .find((p) => p.type === "timeZoneName");
-      if (part?.value) return part.value;
-    } catch {
-      // unsupported style or unknown zone: try the next one
-    }
-  }
-  return "";
-}
-
-// The generic name without its trailing "Time": "Pacific Time" -> "Pacific",
-// "Hawaii-Aleutian Standard Time" -> "Hawaii-Aleutian". A zone that skips
-// daylight saving inside a US region keeps "Standard" ("Mountain Standard"
-// for Phoenix), so it doesn't read as the same clock as Denver.
-const DST_REGIONS = new Set(["Pacific", "Mountain", "Central", "Eastern", "Alaska", "Atlantic"]);
-export function shortZoneName(name: string): string {
-  const std = name.match(/^(.+) Standard Time$/);
-  if (std) return DST_REGIONS.has(std[1]) ? `${std[1]} Standard` : std[1];
-  const t = name.match(/^(.+) Time$/);
-  return t ? t[1] : name;
-}
-
 // A short, readable label for an IANA zone: "Los Angeles (Pacific)",
 // "Knox, Indiana (Central)". Display only; the option value stays the IANA
 // id. Zones with no place in the id (UTC, Etc/GMT+5) show the id, since a
 // bare "GMT-05:00" would hide that Etc/GMT+5 is that zone.
+/** @public tested directly: the label table. */
 export function zoneLabel(tz: string, locale?: string): string {
   if (tz === "UTC" || tz === "Etc/UTC") return "UTC";
   const parts = tz.split("/");
@@ -81,6 +32,7 @@ export function zoneLabel(tz: string, locale?: string): string {
 
 // The six US zones, listed right after "Yours" and "Church" in the time
 // zone picker (DEC-65).
+/** @public tested directly: the picker's lead zones. */
 export const US_ZONES = [
   "America/New_York",
   "America/Chicago",

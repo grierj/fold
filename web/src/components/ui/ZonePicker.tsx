@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { filterZones, zonePickerOptions, type ZonePick } from "../../lib/eventForm";
+import { filterZones, zonePickerOptions, type ZonePick } from "../../lib/zone";
 import { useChurchZone } from "../../lib/useSite";
 import { browserTimeZone, zoneOffset } from "../../lib/when";
 import { ChevronDownIcon } from "../icons";

@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeftIcon } from "../components/icons";
@@ -420,7 +421,7 @@ export function MessageComposerPage() {
         <dl className="grid gap-1 text-sm sm:grid-cols-[8rem_1fr]">
           <dt className="font-medium text-text-muted">To</dt>
           <dd>{reminder ? reminderAudience(message.reminder) : audienceLabel(message.audience, options)}</dd>
-          {!reminder && message.authorName && message.authorName !== (user?.displayName || user?.name) && <>
+          {!reminder && message.authorName && message.authorName !== (user ? publicName(user) : undefined) && <>
             <dt className="font-medium text-text-muted">Written by</dt>
             <dd>{message.authorName}</dd>
           </>}

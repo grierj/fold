@@ -1,3 +1,4 @@
+import { NewPasswordField } from "../components/NewPasswordField";
 import { Form } from "../components/ui/Form";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -135,15 +136,7 @@ export function Invite() {
           <Input type="email" value={invitation?.email ?? ""} readOnly />
         </Field>
         {!invitation?.conversion && <AccountAgeFields id="invite" ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />}
-        <Field id="inv-password" label="Choose a password" hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
-          <Input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-        </Field>
+        <NewPasswordField id="inv-password" label="Choose a password" value={password} onChange={setPassword} />
         <Button variant="primary" layout="w-full" type="submit" disabled={busy || (!invitation?.conversion && ageBand === "under13")}>
           {busy ? "Creating account…" : "Create my account"}
         </Button>

@@ -10,7 +10,7 @@ import { Chip } from "../ui/Chip";
 import { Field, Select } from "../ui/Field";
 
 // How long the picker waits after a change before counting again.
-export const COUNT_DELAY_MS = 300;
+const COUNT_DELAY_MS = 300;
 // GET /messages/compose lists each event's next 10 dates (maxComposeDates).
 const LISTED_DATES = 10;
 

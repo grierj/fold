@@ -3,16 +3,16 @@ import { SeriesRooms } from "../api/rooms";
 import { useRoomsEnabled } from "../lib/useSite";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
+import { busyDatesNote, NO_ROOM, seriesRoomLabel } from "../lib/roomLabels";
 import type { WhenState } from "../lib/useWhenState";
 import type { RoomSuggestions, SeriesRoom } from "../types";
 import { seatsBody, seatsProblem, type SeatsValue } from "./SeatsField";
-import { seriesRoomLabel } from "./SeriesRoomField";
-import { Field, FormError, Select } from "./ui/Field";
-import { Button } from "./ui/Button";
+import { Field, Select } from "./ui/Field";
 import { RoomOptions } from "./RoomOptions";
+import { RoomLoadStatus } from "./useRoomPicker";
+import { weeklyRule } from "../lib/rrule";
 import { AlertCircleIcon } from "./icons";
 
-const NONE = "none";
 const DEBOUNCE_MS = 400;
 
 // The date fields a create form sends, and the Room field asks about before
@@ -30,7 +30,7 @@ export function scheduleFields(when: Pick<WhenState, "date" | "time" | "duration
     startsLocal: `${when.date}T${when.time}`,
     durationMinutes: when.duration,
     tzid: tzid.trim(),
-    recurrenceRule: when.recurring ? `FREQ=WEEKLY;BYDAY=${when.days.join(",")}` : "",
+    recurrenceRule: when.recurring ? weeklyRule(when.days) : "",
     capacity: seatsBody(seats).capacity,
   };
 }
@@ -42,19 +42,8 @@ export function scheduleReady(when: Pick<WhenState, "date" | "recurring" | "days
 
 // The busy and size notes for the chosen room, in words.
 function notes(room: SeriesRoom, dates: number): string[] {
-  const out: string[] = [];
-  const name = roomName(room);
-  if (room.busyDates > 0) {
-    if (dates <= 1) {
-      out.push(`${name} is in use at this time, so the event will start without a room. The event page will ask you to pick one.`);
-    } else if (room.busyDates >= dates) {
-      out.push(`${name} is in use on all ${dates} dates, so none can be booked yet. The event page will list them under “Dates that need a room”.`);
-    } else {
-      out.push(`${name} is in use on ${room.busyDates} of ${dates} dates. It will be booked on the other ${dates - room.busyDates}, and the event page will list the busy dates under “Dates that need a room”.`);
-    }
-  }
-  if (room.tooSmall) out.push("This room may seat fewer people than the seat limit allows.");
-  return out;
+  const busy = busyDatesNote(room, dates, "create");
+  return [...(busy ? [busy] : []), ...(room.tooSmall ? ["This room may seat fewer people than the seat limit allows."] : [])];
 }
 
 // The Room control of both create forms (M2.1c, DEC-95: beside Location, not
@@ -149,7 +138,7 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
   const chosen = rooms.find((r) => r.id === roomId) ?? null;
   // Rooms that can't be listed right now (dates unfinished, or a failed check) don't reset the choice.
   const shown = !chosen && roomId !== null && kept?.id === roomId ? kept : null;
-  const value = chosen ? String(chosen.id) : shown ? String(shown.id) : NONE;
+  const value = chosen ? String(chosen.id) : shown ? String(shown.id) : NO_ROOM;
   const recurring = !!schedule && schedule.recurrenceRule !== "";
   const hint = !schedule
     ? "Finish the date, time and seat limit first to see which rooms are free."
@@ -167,7 +156,7 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
     <div className="space-y-2">
       <Field id={id} label="Room" optional hint={hint}>
         <Select value={value} disabled={!schedule} aria-busy={checking || undefined} onChange={(e) => choose(e.target.value)}>
-          <option value={NONE}>No room</option>
+          <option value={NO_ROOM}>No room</option>
           {shown && <option value={String(shown.id)}>{roomName(shown)}</option>}
           <RoomOptions rooms={rooms} suggestions={suggestions} label={(r, reason) => seriesRoomLabel(r, dates, reason)} />
         </Select>
@@ -179,12 +168,7 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
           <p key={n} className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{n}</p>
         ))}
       </div>
-      {error && (
-        <div className="space-y-2">
-          <FormError>{error}</FormError>
-          <Button variant="secondary" onClick={() => setRetry((n) => n + 1)}>Try again</Button>
-        </div>
-      )}
+      <RoomLoadStatus loading={false} error={error} onRetry={() => setRetry((n) => n + 1)} />
     </div>
   );
 }

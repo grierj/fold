@@ -9,6 +9,7 @@ import { deviceForLogout, forgetDevice } from "./lib/push";
 import type { User } from "./types";
 
 // clearClientData removes everything the SPA keeps in browser storage.
+/** @public tested directly: what logout wipes. */
 export function clearClientData() {
   try {
     localStorage.clear();

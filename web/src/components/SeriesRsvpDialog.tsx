@@ -5,7 +5,7 @@ import { Button } from "./ui/Button";
 export type SeriesRsvpScope = "just_this_date" | "this_and_following" | "all_future";
 
 export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel }: {
-  answer: "Going" | "Maybe" | "Can't go";
+  answer: string;
   disabled?: boolean;
   onChoose: (scope: SeriesRsvpScope) => void;
   onCancel: () => void;

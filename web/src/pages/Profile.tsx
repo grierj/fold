@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { lazy, Suspense, useState } from "react";
 import { Link, Navigate, NavLink, useParams, useSearchParams } from "react-router-dom";
 import { AccountRequests } from "../api/accountRequests";
@@ -56,7 +57,7 @@ export function ProfilePage() {
     .filter((group) => group.items.length > 0);
   const selected = groups.flatMap((group) => group.items).find((item) => item.id === section);
   if (section && !selected) return <Navigate to="/profile" replace />;
-  const publicName = user.displayName || user.name || "Member";
+  const shownName = publicName(user);
   // The hub shows headings and descriptions; the desktop sidebar keeps the
   // headings but not the descriptions, so it stays short.
   const menu = (hub: boolean) => <nav aria-label="Profile settings" className="space-y-5">
@@ -83,8 +84,8 @@ export function ProfilePage() {
   if (!selected) return <div className="fold-page fold-page-narrow space-y-8 wrap-anywhere">
     <h1 className="fold-page-header text-3xl font-bold">Your profile</h1>
     <div className="flex items-center gap-4">
-      <Avatar url={user.avatarUrl || undefined} name={publicName} focalX={user.avatarFocalX} focalY={user.avatarFocalY} size="w-16 h-16" textSize="text-2xl" />
-      <div><p className="text-xl font-semibold">{publicName}</p><p className="text-text-muted">Choose what you want to update.</p></div>
+      <Avatar url={user.avatarUrl || undefined} name={shownName} focalX={user.avatarFocalX} focalY={user.avatarFocalY} size="w-16 h-16" textSize="text-2xl" />
+      <div><p className="text-xl font-semibold">{shownName}</p><p className="text-text-muted">Choose what you want to update.</p></div>
     </div>
     {canCompose && <Link to="/messages" className={`lg:hidden flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium`}><MailIcon />Messages</Link>}
     {isAdmin && <Link to="/admin" className="sm:hidden flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium"><AdminIcon />Admin</Link>}
@@ -199,7 +200,7 @@ function ProfileDetails() {
   }
   return <div className="space-y-6">
     {user.accountType !== "teen" && <div className="space-y-4">
-      <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" placeholderName={user.displayName || user.name || "Member"} onFile={savePictureFile} onFocal={saveFocal} />
+      <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" placeholderName={publicName(user)} onFile={savePictureFile} onFocal={saveFocal} />
       <p className="text-xs text-text-muted mt-3">A new picture is saved as soon as you choose it.</p>
       {pictureStatus && <p role="status" className="text-success text-sm mt-3">{pictureStatus}</p>}
       {pictureError && <FormError layout="mt-3">{pictureError}</FormError>}

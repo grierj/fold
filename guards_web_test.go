@@ -459,7 +459,7 @@ var uiRules = []uiRule{
 		fix:  "format dates and times with lib/when.ts so they show in the viewer's zone",
 		re:   regexp.MustCompile(`\.toLocale(Date|Time)?String\(|Intl\.DateTimeFormat`),
 		skip: func(path, _ string) bool {
-			return strings.HasSuffix(path, "lib/when.ts") || strings.HasSuffix(path, "lib/wall.ts")
+			return strings.HasSuffix(path, "lib/when.ts")
 		},
 	},
 }

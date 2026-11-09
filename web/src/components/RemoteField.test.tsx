@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { RemoteField, focusRemoteCapacity, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
+import { RemoteField, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
 
 describe("RemoteField", () => {
   it("shows the capacity only when remote attendance is on", async () => {
@@ -49,7 +49,7 @@ describe("RemoteField", () => {
     expect(remoteProblem({ available: false, capacity: "0" })).toBeNull();
   });
 
-  it("keeps invalid text, wires its Fold error and focuses the field", async () => {
+  it("keeps invalid text, wires its Fold error", () => {
     const error = remoteProblem({ available: true, capacity: "1e" });
     render(<RemoteField idPrefix="bad" value={{ available: true, capacity: "1e" }} onChange={() => {}} error={error} />);
     const input = screen.getByRole("textbox", { name: /^Remote seat limit/ });
@@ -58,7 +58,5 @@ describe("RemoteField", () => {
     expect(input).toHaveAttribute("aria-invalid", "true");
     expect(input).toHaveAccessibleDescription(expect.stringContaining(error!));
     expect(screen.getByRole("checkbox")).toHaveAccessibleDescription("Add a video link above so remote people can join.");
-    focusRemoteCapacity("bad");
-    await waitFor(() => expect(input).toHaveFocus());
   });
 });

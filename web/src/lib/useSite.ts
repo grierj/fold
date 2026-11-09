@@ -57,6 +57,7 @@ export function invalidateSite(saved?: Partial<SiteInfo>) {
 }
 
 // forgetSite drops the shared answer without asking again, for tests.
+/** @public test seam: drops the shared /site answer. */
 export function forgetSite() {
   generation++;
   set({ site: null, error: null, loading: false });

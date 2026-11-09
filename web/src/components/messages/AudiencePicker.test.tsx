@@ -5,7 +5,10 @@ import { Messages } from "../../api/messages";
 import type { AudienceSummary } from "../../types";
 import { composeOptions, summary } from "../../test/compose";
 import { emptyChoice, type AudienceChoice } from "../../lib/messages";
-import { AudiencePicker, COUNT_DELAY_MS } from "./AudiencePicker";
+import { AudiencePicker } from "./AudiencePicker";
+
+// The picker waits this long after a change before asking for the count.
+const COUNT_DELAY_MS = 300;
 
 vi.mock("../../api/messages", () => ({ Messages: { audiencePreview: vi.fn() } }));
 

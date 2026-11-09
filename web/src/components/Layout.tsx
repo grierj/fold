@@ -1,3 +1,4 @@
+import { publicName } from "../lib/can";
 import { useLayoutEffect, useRef } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { churchName, useSite } from "../lib/useSite";
@@ -102,13 +103,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <Link to="/profile" className="flex items-center gap-2 min-h-11 px-1 text-text-muted hover:text-primary" title="Your profile">
                     <Avatar
                       url={user.avatarUrl || undefined}
-                      name={user.displayName || user.name}
+                      name={publicName(user)}
                       focalX={user.avatarFocalX}
                       focalY={user.avatarFocalY}
                       size="w-8 h-8"
                       textSize="text-sm"
                     />
-                    <span className="hidden md:inline">{user.displayName || user.name}</span>
+                    <span className="hidden md:inline">{publicName(user)}</span>
                   </Link>
                   <button onClick={logout} className="inline-flex items-center min-h-11 px-2 text-text-muted hover:text-primary">
                     Log out
