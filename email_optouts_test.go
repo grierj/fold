@@ -295,15 +295,23 @@ func TestReadEmailOffBindsHashesOnly(t *testing.T) {
 	name := fmt.Sprintf("test:email_choice_binds:%d", queryCounterSeq.Add(1))
 	var binds []any
 	var statement string
-	if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+	// Whichever way the read is sent, Row or Query, it is seen.
+	watch := func(tx *gorm.DB) {
 		if strings.Contains(tx.Statement.SQL.String(), "email_address_optouts") {
 			statement = tx.Statement.SQL.String()
 			binds = append([]any(nil), tx.Statement.Vars...)
 		}
-	}); err != nil {
+	}
+	if err := app.DB.Callback().Row().Before("gorm:row").Register(name, watch); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.DB.Callback().Row().Remove(name) })
+	if err := app.DB.Callback().Query().After("gorm:query").Register(name, watch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = app.DB.Callback().Row().Remove(name)
+		_ = app.DB.Callback().Query().Remove(name)
+	})
 	if _, err := readEmailOff(app.DB, []emailDest{{UserID: u.ID, Address: u.Email}}); err != nil {
 		t.Fatal(err)
 	}

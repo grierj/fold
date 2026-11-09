@@ -106,7 +106,6 @@ func (f *fenceState) turnChan() chan struct{} {
 	return f.turn
 }
 
-// raise moves the floor up to v, never down.
 func (f *fenceState) raise(v int64) {
 	for {
 		cur := f.floor.Load()
@@ -116,7 +115,6 @@ func (f *fenceState) raise(v int64) {
 	}
 }
 
-// restoreDetected reports whether this process has seen a restore.
 func (a *App) restoreDetected() bool { return a.fence.detected.Load() }
 
 // noteRestoreDetected marks the restore and asks the process to restart once.

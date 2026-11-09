@@ -2280,13 +2280,11 @@ func TestEraseAdminKeepsRole(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-CTX: what the DELETE route says when the deletion's time runs out or its
 // COMMIT goes unanswered. These tests pass unchanged at every later landing
 // head from R4-3b-V on: only the commit-phase classification may answer
 // delete_outcome_unknown, and nothing here may ever say "nothing was deleted"
 // for a COMMIT that was sent.
-// ---------------------------------------------------------------------------
 
 func setAdminDeleteBounds(t *testing.T, budget, reserve time.Duration) {
 	t.Helper()
@@ -2401,14 +2399,12 @@ func TestAdminDeleteGateWaitAnswersTimedOut(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // R4-3b-1: what the DELETE route does when a household row is busy. The
 // erasure takes its households NOWAIT and runs the whole transaction again, at
 // most three attempts inside busyRetryWindow, sharing the request budget.
 // Every test goes through the proxy so the statements the server really saw
 // (BEGIN, the NOWAIT lock, ROLLBACK) are the evidence. The both-order barriers
 // with real household writers are in account_erasure_households_test.go.
-// ---------------------------------------------------------------------------
 
 // hlRig is the household scene served through the proxy: the admin's client
 // talks to r.papp, the scene and every observer to the server directly.

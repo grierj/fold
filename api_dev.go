@@ -9,10 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ---------------------------------------------------------------------------
-// Dev tooling (M1.2)
-// ---------------------------------------------------------------------------
-
 // devOutbox renders what the devoutbox sender stored (5.6). It is
 // unreachable unless APP_ENV=dev: anything else gets a 404, so no email
 // contents ever leak in production.

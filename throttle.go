@@ -112,7 +112,7 @@ RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
 }
 
 // pruneLoginThrottles drops rows that carry no information. The daily
-// cleanup.login_throttles job runs it; hits no longer pay for the cleanup.
+// cleanup.login_throttles job runs it.
 func (a *App) pruneLoginThrottles(ctx context.Context) error {
 	return a.DB.WithContext(ctx).Exec(`DELETE FROM login_throttles
 WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error

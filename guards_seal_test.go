@@ -375,7 +375,7 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a PasswordHash copied from another value", with(aops, "\tvar actor models.User\n\terr := tx.Raw(", "\tvar actor models.User\n\tactor.PasswordHash = me.PasswordHash\n\terr := tx.Raw(")},
 		{"a session decision other than sessionCurrent", with(aops, "!sessionCurrent(&actor, me)", "actor.Status != models.UserActive")},
 		{"a hand-written sign-in check", with(aops, "!sessionCurrent(&actor, me)", "!actor.CanSignIn()")},
-		{"a currentAdminIn call outside a seal", with(aops, "// --- mint and settle routes", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n// --- mint and settle routes")},
+		{"a currentAdminIn call outside a seal", with(aops, "func (a *App) apiAdminMintOperationAttempt(", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\nfunc (a *App) apiAdminMintOperationAttempt(")},
 		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {", "\t_ = tx\n\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {")},
 		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)\n\t}}")},
 		{"a seal predicate shared through a pointer", with(aops, "pred func(*models.User) bool) *contactSeal", "pred *func(*models.User) bool) *contactSeal")},

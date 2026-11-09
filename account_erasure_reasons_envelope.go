@@ -48,7 +48,6 @@ const (
 	reasonEnvelopeLegacy
 )
 
-// The two-bit choice codes.
 const (
 	reasonCodeKeep   = 1
 	reasonCodeRemove = 2
@@ -56,7 +55,6 @@ const (
 	reasonSetFormat = "set-v1"
 )
 
-// reasonEnvelope is a well-formed review envelope.
 type reasonEnvelope struct {
 	kind   reasonEnvelopeKind
 	count  uint64
@@ -65,7 +63,6 @@ type reasonEnvelope struct {
 	choices []byte
 }
 
-// choiceAt returns the two-bit code of item i.
 func (e reasonEnvelope) choiceAt(i int) byte {
 	return (e.choices[i/4] >> (2 * uint(i%4))) & 3
 }
@@ -178,7 +175,6 @@ func readLegacyItems(dec *json.Decoder) bool {
 	return err == nil && t == json.Delim(']')
 }
 
-// buildNewEnvelope checks the four strings of a set-v1 envelope.
 func buildNewEnvelope(format, count, digest, choices string) (reasonEnvelope, bool) {
 	if format != reasonSetFormat {
 		return reasonEnvelope{}, false

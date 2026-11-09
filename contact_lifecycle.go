@@ -46,7 +46,7 @@ type contactChange struct {
 	// commit-reserve check (T07B-1b, R5-C01). It is a pointer so contactChange
 	// stays comparable; reconcileContacts reads only the three ids above. Only
 	// fencedContactMutation sets it (from its callback's result); a nil Seal
-	// sends exactly the statements a call sent before.
+	// sends no extra statement.
 	Seal *contactSeal
 }
 
@@ -193,8 +193,7 @@ func (a *App) contactMutation(change contactChange, fn func(*gorm.DB) error) err
 // the cancel and the socket fare. Since that session setting must never reach
 // another caller, the connection is always discarded when the call ends
 // (database/sql closes it), never returned to the pool. Nothing here assumes
-// that returning means the server let go. Without a deadline nothing is set
-// and the statements are the same as before.
+// that returning means the server let go. Without a deadline nothing is set.
 //
 // Errors: before COMMIT (the gate, the callback, either reconcile, the reserve
 // check) the transaction is rolled back and the error returned as it came.

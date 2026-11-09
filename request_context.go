@@ -7,10 +7,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// userContext keys a fact about one person in one group or event.
 type userContext struct{ user, context uint }
 
-// contextRef names the group or event one request was made in.
 type contextRef struct {
 	typ string
 	id  uint
@@ -28,8 +26,6 @@ type requestContexts struct {
 	hosts  map[userContext]bool
 }
 
-// loadRequestContexts loads the contexts in refs, and the membership and
-// hosting rows of userIDs in them. An event's own group is loaded too.
 func loadRequestContexts(tx *gorm.DB, refs []contextRef, userIDs []uint) (*requestContexts, error) {
 	c := &requestContexts{
 		groups: map[uint]*models.Group{}, events: map[uint]models.Event{},

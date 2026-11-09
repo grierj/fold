@@ -37,8 +37,8 @@ type App struct {
 	DB      *gorm.DB
 	Store   *sessions.CookieStore
 	Config  Config
-	Uploads storage.Store // blob store for avatars and group covers
-	Mailer  mail.Sender   // transactional email (C6, M1.2)
+	Uploads storage.Store
+	Mailer  mail.Sender
 
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
@@ -166,7 +166,6 @@ func serve(stderr io.Writer) int {
 	}
 	r := app.setupRouter()
 
-	// Background work runs from the jobs table (M3.1, PLAN 5.5).
 	waitJobs := app.startJobs(ctx)
 	defer waitJobs()
 
@@ -335,30 +334,26 @@ func (a *App) setupRouter() *gin.Engine {
 	// authority, so mail clients can POST with no cookie or CSRF token.
 	r.POST("/u/unsubscribe/:token", a.oneClickUnsubscribe)
 
-	// First-run setup wizard takes precedence over everything else.
 	r.Use(a.setupRequired())
 	r.Use(a.csrfMiddleware())
 
-	// Setup wizard (only reachable when no users exist; server-rendered).
 	r.GET(pathSetup, a.showSetup)
 	r.POST(pathSetup, a.handleSetup)
 	r.POST(pathSetupUnlock, a.unlockSetup)
 
-	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
+	// The handlers 404 unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
 	r.GET("/dev/outbox/:id/html", a.devOutboxHTML)
 
-	// JSON API.
 	a.registerAPIRoutes(r)
 
-	// ICS calendar feeds (M1.7). GETs ride the setup and CSRF
-	// middleware like everything else; safe methods need no token.
+	// GETs ride the setup and CSRF middleware like everything else; safe
+	// methods need no token.
 	a.registerCalendarFeeds(r)
 
 	// The Home Screen app's manifest carries the church's name (M3.13c1).
 	r.GET("/manifest.webmanifest", httpx.Manifest(a.siteName, defaultSiteName))
 
-	// Embedded SPA for everything else, including the service worker.
 	r.NoRoute(httpx.ServeSPA(distSub(), a.emailBaseURL(), jsonError))
 
 	return r
@@ -373,12 +368,17 @@ var templatesFS embed.FS
 // pageTemplates parses the server-rendered pages (setup wizard, dev outbox)
 // from the binary once; every router shares the result.
 var pageTemplates = sync.OnceValues(func() (*template.Template, error) {
-	css := httpx.Stylesheet(distSub())
+	return parsePageTemplates(httpx.Stylesheet(distSub()))
+})
+
+// parsePageTemplates parses the pages with css, the SPA bundle's stylesheet
+// path (empty when the bundle is not built), as the page's one stylesheet link.
+func parsePageTemplates(css string) (*template.Template, error) {
 	return template.New("").Funcs(template.FuncMap{
 		"split":      strings.Split,
 		"stylesheet": func() string { return css },
 	}).ParseFS(templatesFS, "templates/*.html")
-})
+}
 
 //go:embed docs/MEMBERS.md
 var memberHelp []byte
@@ -419,14 +419,12 @@ func (a *App) setupComplete() (bool, error) {
 	return false, nil
 }
 
-// markSetupDone records that an account exists, for the life of the process.
 func (a *App) markSetupDone() {
 	a.setupMu.Lock()
 	a.setupDone = true
 	a.setupMu.Unlock()
 }
 
-// html renders a template, injecting the CSRF field and site name.
 func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 	if data == nil {
 		data = gin.H{}
@@ -444,8 +442,6 @@ const (
 	pathHealthz     = "/healthz"
 )
 
-// setupRequired redirects everything to the setup wizard until an admin
-// account exists. This replaces the old hardcoded seed users.
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
@@ -467,8 +463,6 @@ func (a *App) setupRequired() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
-// --- Setup wizard ---
 
 func (a *App) showSetup(c *gin.Context) {
 	ready, err := a.setupComplete()

@@ -18,7 +18,6 @@ func eachChunk[T any](items []T, size int, fn func([]T) error) error {
 	return nil
 }
 
-// eachIDChunk is eachChunk over ids, lookupChunk at a time.
 func eachIDChunk(ids []uint, fn func([]uint) error) error {
 	return eachChunk(ids, lookupChunk, fn)
 }

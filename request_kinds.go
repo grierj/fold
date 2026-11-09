@@ -42,7 +42,6 @@ const (
 	roleUpdated
 )
 
-// reviewRole is the review task for the deciding party.
 func reviewRole(party string) noticeRole {
 	if party == policy.ContactAdmin {
 		return roleAdminReview
@@ -50,7 +49,6 @@ func reviewRole(party string) noticeRole {
 	return roleSubjectReview
 }
 
-// notice is this kind's notify kind for role.
 func (k *requestKind) notice(role noticeRole) string {
 	switch role {
 	case roleSubjectReview:
@@ -96,7 +94,6 @@ func requestKindOf(purpose string) *requestKind {
 	return nil
 }
 
-// addRequestPurposes are the purposes the add kind covers.
 var addRequestPurposes = []string{policy.RequestGroupAdd, policy.RequestOccurrenceAdd}
 
 // addAuditAction maps a lifecycle action, spelled as the contact action, to

@@ -79,23 +79,7 @@ func loginAPIExpectFail(t *testing.T, app *App, name, password string) bool {
 	return w.Code == http.StatusOK
 }
 
-func itoa2(i uint) string {
-	return uintToStringTest(i)
-}
-
-func uintToStringTest(u uint) string {
-	if u == 0 {
-		return "0"
-	}
-	var b [32]byte
-	i := len(b)
-	for u > 0 {
-		i--
-		b[i] = byte('0' + u%10)
-		u /= 10
-	}
-	return string(b[i:])
-}
+func itoa2(i uint) string { return itoa(i) }
 
 // TestMain gives this package one migrated Postgres database and drops it
 // afterwards (internal/testdb). Password hashes use the cheapest bcrypt cost;
@@ -180,10 +164,9 @@ func countDBReads(t *testing.T, db *gorm.DB) *queryCounter {
 	return qc
 }
 
-// Reads is how many read callbacks ran since the counter was registered.
 func (qc *queryCounter) Reads() int64 { return qc.reads.Load() }
 
-// Stop removes the counter's callbacks. It is safe to call twice.
+// Stop is safe to call twice.
 func (qc *queryCounter) Stop() {
 	if qc.stopped.Swap(true) {
 		return
@@ -192,7 +175,6 @@ func (qc *queryCounter) Stop() {
 	_ = qc.db.Callback().Row().Remove(qc.name)
 }
 
-// testEmail turns a short test name ("alice") into an address.
 func testEmail(name string) string {
 	if strings.Contains(name, "@") {
 		return name
@@ -441,19 +423,7 @@ func loginAPI(t *testing.T, app *App, name, password string) *apiClient {
 	return c
 }
 
-func itoa(u uint) string {
-	if u < 10 {
-		return string(rune('0' + u))
-	}
-	var b [8]byte
-	i := len(b)
-	for u > 0 {
-		i--
-		b[i] = byte('0' + u%10)
-		u /= 10
-	}
-	return string(b[i:])
-}
+func itoa(u uint) string { return strconv.FormatUint(uint64(u), 10) }
 
 // newTestGroup creates a group led (through its membership, C12) by leader.
 func newTestGroup(t *testing.T, app *App, leader *models.User, name, status string) *models.Group {
@@ -538,9 +508,6 @@ func notificationTitles(t *testing.T, c *apiClient) []string {
 	return out
 }
 
-// M0.3a: log in by email (C16, DEC-23), throttling in Postgres, no account
-// enumeration, and sessions ended on password, email, role or status changes.
-
 func tryLogin(t *testing.T, app *App, ip, email, password string) (int, string) {
 	t.Helper()
 	c := newAPIClient(t, app)
@@ -549,8 +516,6 @@ func tryLogin(t *testing.T, app *App, ip, email, password string) (int, string) 
 	w := c.do("POST", "/api/v1/auth/login", map[string]string{"email": email, "password": password}, true)
 	return w.Code, w.Body.String()
 }
-
-// DEC-39: an optional group member limit.
 
 func setLimit(t *testing.T, c *apiClient, g *models.Group, limit any) {
 	t.Helper()
@@ -567,9 +532,6 @@ func boolInt(b bool) int {
 	}
 	return 0
 }
-
-// M0.3b: leaders remove members (DEC-35), sole-leader handoff (DEC-36),
-// security headers and dependency scanning (DEC-37).
 
 func departureConfirmBody(t *testing.T, c *apiClient, previewPath string) map[string]any {
 	t.Helper()
@@ -821,9 +783,6 @@ func hasVisibilityNotice(ns []notificationJSON, titlePart, reason string) bool {
 	}
 	return false
 }
-
-// DEC-48 tightening, the leader prompt, the leader-opened marker, and
-// cancel-and-notify.
 
 func register(t *testing.T, c *apiClient, eventID uint) {
 	t.Helper()
@@ -1078,28 +1037,9 @@ func awaitDBResult(t *testing.T, done <-chan error) error {
 	}
 }
 
-// waitDBBlocked observes the specific waiter and blocker, rather than counting
-// unrelated sessions or assuming that a goroutine has started after a sleep.
 func waitDBBlocked(t *testing.T, db *gorm.DB, waiter, blocker int) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
-	for {
-		var blocked bool
-		if err := db.Raw("SELECT ? = ANY(pg_blocking_pids(?))", blocker, waiter).Scan(&blocked).Error; err != nil {
-			t.Fatal(err)
-		}
-		if blocked {
-			return
-		}
-		select {
-		case <-tick.C:
-		case <-deadline.C:
-			t.Fatalf("session %d never waited on session %d", waiter, blocker)
-		}
-	}
+	testdb.WaitBlocked(t, db, waiter, blocker)
 }
 
 func devOutbox(t *testing.T, app *App) *mail.DevOutbox {
@@ -1312,7 +1252,6 @@ func enqueueJob(db *gorm.DB, kind string, payload any, at time.Time, key string,
 	return jobs.Type{Name: kind, MaxAttempts: attempts}.Enqueue(db, payload, at, key)
 }
 
-// settingText is the stored, trimmed value of key.
 func settingText(t *testing.T, app *App, key string) string {
 	t.Helper()
 	v, err := settingValueIn(app.DB, key)

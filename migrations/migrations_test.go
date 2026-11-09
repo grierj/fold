@@ -2,47 +2,13 @@ package migrations_test
 
 // Final-schema tests (R9 S2, DEC-138).
 //
-// The chain of 63 files is one generated baseline, so a test can no longer
-// walk to an intermediate version. Every test here runs against the baseline
-// and keeps what describes the final schema: its CHECKs, indexes, triggers and
-// refusals. What went away, by old test:
+// The chain is one generated baseline, so a test can no longer walk to an
+// intermediate version. Every test here runs against the baseline and keeps
+// what describes the final schema: its CHECKs, indexes, triggers and refusals.
 //
-//	TestContactRequestsConstraints             DownTo(29) tail removed; matrix kept.
-//	TestOccurrenceAccessDepartureOriginMigration DownTo(33) x2, UpTo(34) removed; matrix kept.
-//	TestDepartureOccurrenceAccessExpiryMigration UpTo(34/35), DownTo(34) x2 removed; the occurrence_ended end state is asserted directly.
-//	TestDepartureAccessSupersessionMigration   UpTo(36/37), DownTo(36) x2 removed; departure_superseded asserted directly.
-//	TestMembershipTenure* (3 tests, shared seed) UpTo(35/36), DownTo(35) x3 removed; the tenure backfill and the Down guard
-//	                                           were history; the trigger's rules are asserted on the final table.
-//	TestSeriesUndoReceiptMigrationAndRollback  DownTo(32) removed; receipt CHECKs kept.
-//	TestOccurrenceCancelSourceMigration        DownTo(42) removed; default and values kept (DEC-91).
-//	TestSimplicityMigrations                   UpTo(7/9), DownTo(8) removed; the pending_return backfill and the Down
-//	                                           mapping were history; the status and church-wide CHECKs are asserted.
-//	TestNotificationsBackfill                  UpTo(9/10), DownTo(9): a backfill-only scenario, removed.
-//	TestMigration15DownMapsStatuses            UpTo(15), DownTo(14): a Down mapping, removed; the status vocabulary kept.
-//	TestHouseholdMigration22                   UpTo(22), DownTo(19) removed; constraints kept.
-//	TestChildcareMigration23                   UpTo(23), DownTo(22) removed; defaults and CHECKs kept.
-//	TestHouseholdRegistrationMigration24       UpTo(23/24), DownTo(23) x3 removed; the identity matrix kept.
-//	TestHouseholdConversionMigration25         UpTo(25), DownTo(24) x3 removed; invitation constraints kept.
-//	TestTeenConsentMigrationAppendOnlyAndRollback UpTo(25/26), DownTo(25) x2 removed; the disabled-user backfill was
-//	                                           history; the append-only matrix kept.
-//	TestContactAddRequestsMigration            UpTo(30), DownTo(30) x2: data preservation across a version, removed;
-//	                                           the contact default is asserted instead.
-//	TestContactAddRequestsConstraints          DownTo(30) tail removed; matrix kept.
-//	TestMembershipAndRegistrationLookupPlans   DownTo(40) removed; plans kept, index existence asserted.
-//	TestPushSubscriptionsMigration             UpTo(58), DownTo(57) x4 removed; constraints, consent and the
-//	                                           session trigger (00059) kept.
-//
-// R9 S4 folded occurrence_accesses into registrations.access_*: the departure
-// origin, expiry end-state, supersession end-state and contact-add tests now
-// write a registration's own columns and keep their refusal matrices (blocked,
-// teen direct, repeat, stale, forged issuer/request/target/event/subject, wrong
-// departure actor or membership, sole leader, household rows, malformed end
-// states, identity transfer, immutable terminal fields). The DELETE, replacement,
-// snapshot, same-row ordering and trigger-shape cases are new.
-//
-// The baseline Down is new and tested below: it refuses while a user exists,
-// destroys nothing then, and on an empty database drops everything and Up
-// restores it. The same disposition for the other test files is recorded in
+// The baseline Down refuses while a user exists, destroys nothing then, and on
+// an empty database drops everything and Up restores it. The disposition of
+// the other test files is recorded in
 // docs/plan/briefs/audit-2026-11/R9-baseline-squash.md (section 9, S2).
 
 import (
@@ -50,10 +16,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,6 +39,21 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
+
+// Applying the baseline holds about a thousand locks until its transaction
+// commits, all drawn from the server's one shared lock table
+// (max_locks_per_transaction x max_connections, 6400 by default). With every
+// test parallel on a many-core machine a dozen builds at once fill it and one
+// fails with "out of shared memory". So fewer tests run at once; -parallel
+// still overrides this.
+const maxParallelBuilds = 3
+
+func TestMain(m *testing.M) {
+	if runtime.GOMAXPROCS(0) > maxParallelBuilds {
+		_ = flag.Set("test.parallel", strconv.Itoa(maxParallelBuilds))
+	}
+	os.Exit(m.Run())
+}
 
 func openSQL(t *testing.T, name string) *sql.DB {
 	t.Helper()
@@ -3087,9 +3070,10 @@ func TestConsentScrubMigrationTakesNoConsentsLock(t *testing.T) {
 	holdLock(t, name, `LOCK TABLE consents IN ACCESS EXCLUSIVE MODE`)
 	requireBlocked(t, name, "consents")
 
-	// Well inside the migration's own 5s lock_timeout, so a wait on consents
-	// fails here rather than passing by timing out later.
-	elapsed, err := timedUpTo(p, consentScrubTestConsentScrubVersion, 4*time.Second)
+	// A wait on consents would end in the migration's own 5s lock_timeout (55P03),
+	// so success means it took no lock on the table. The 30s limit is only a
+	// backstop far above that, never what decides the outcome.
+	elapsed, err := timedUpTo(p, consentScrubTestConsentScrubVersion, 30*time.Second)
 	if err != nil {
 		t.Fatalf("UpTo(%d) with consents locked ACCESS EXCLUSIVE: %v after %s; the migration waits on consents, so correct its header's lock claim", consentScrubTestConsentScrubVersion, err, elapsed)
 	}
@@ -3935,7 +3919,7 @@ func TestAgesNoteMigrationWaitsForExclusiveTableLock(t *testing.T) {
 	name, _, p := freshAt(t, agesNoteTriggerTestVersion-1)
 	holder := holdLock(t, name, `LOCK TABLE contact_requests IN ACCESS EXCLUSIVE MODE`)
 	requireBlocked(t, name, "contact_requests")
-	elapsed, err := timedUpTo(p, agesNoteTriggerTestVersion, 8*time.Second)
+	elapsed, err := timedUpTo(p, agesNoteTriggerTestVersion, 30*time.Second)
 	if pgErrorCode(err) != "55P03" {
 		t.Fatalf("UpTo(%d) with contact_requests locked ACCESS EXCLUSIVE: %v (code %q) after %s, want 55P03", agesNoteTriggerTestVersion, err, pgErrorCode(err), elapsed)
 	}
@@ -4104,7 +4088,7 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 			holder, _ := hold(t, "holder", mode)
 			defer holder.Rollback()
 			b, bPID := session(t, "blanker")
-			if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
+			if _, err := b.ExecContext(ctx, `SET lock_timeout = '10s'`); err != nil {
 				t.Fatal(err)
 			}
 			stop := agesNoteWatchLocks(ctx, a.db, bPID)
@@ -4115,8 +4099,10 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 			if pgErrorCode(err) != "55P03" {
 				t.Fatalf("blank under %s: %v (code %q), want lock_not_available 55P03", mode, err, pgErrorCode(err))
 			}
-			if elapsed > 1500*time.Millisecond {
-				t.Errorf("the blank took %s to fail, want well inside the 2s lock_timeout (it waited)", elapsed)
+			// A wait would run to the 10s lock_timeout; failing at once leaves a wide
+			// margin for a loaded machine.
+			if elapsed > 5*time.Second {
+				t.Errorf("the blank took %s to fail, want it to fail at once, not at the 10s lock_timeout (it waited)", elapsed)
 			}
 			if ungranted != 0 {
 				t.Errorf("%d of %d pg_locks samples showed an ungranted lock for the blanker", ungranted, samples)
@@ -4211,12 +4197,9 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		if _, err := b.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
+		// A wait on a lock would end in 55P03 at the 2s lock_timeout, not 23514.
 		_, err := b.ExecContext(ctx, agesNoteBlankSQL, 130)
 		wantPgError(t, "living subject", err, "23514", agesNoteIdentityMsg)
-		if time.Since(start) > 1500*time.Millisecond {
-			t.Errorf("the living-subject refusal took %s", time.Since(start))
-		}
 		deleterConn, _ := session(t, "deleter")
 		dtx, err := deleterConn.BeginTx(ctx, nil)
 		if err != nil {
@@ -4226,13 +4209,8 @@ func TestAgesNoteTriggerLockOutcomes(t *testing.T) {
 		if _, err := dtx.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = 3`); err != nil {
 			t.Fatal(err)
 		}
-		start = time.Now()
 		_, err = b.ExecContext(ctx, agesNoteBlankSQL, 130)
-		elapsed := time.Since(start)
 		wantPgError(t, "deletion not yet committed", err, "23514", agesNoteIdentityMsg)
-		if elapsed > 1500*time.Millisecond {
-			t.Errorf("the refusal under an uncommitted deletion took %s, want no wait", elapsed)
-		}
 		if got := a.noteOf(130); got == "" {
 			t.Error("request 130 was blanked although the subject was not deleted")
 		}
