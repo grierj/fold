@@ -212,7 +212,7 @@ func (a *App) contactContextVisible(tx *gorm.DB, u *models.User, r models.Contac
 		if err != nil {
 			return nil, err
 		}
-		f := a.factsForIn(tx, u, &ev)
+		f := eventFactsIn(tx, u, &ev)
 		group := policy.Group{}
 		if f.group != nil {
 			group = asGroup(f.group)

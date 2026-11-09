@@ -656,7 +656,7 @@ func (a *App) managesOccurrenceEvent(me *models.User, occID uint) (bool, error) 
 	} else if err != nil {
 		return false, err
 	}
-	f := a.factsFor(me, &ev)
+	f := eventFactsIn(a.DB, me, &ev)
 	return policy.CanManageEvent(asPerson(me), f.view, f.rel), nil
 }
 

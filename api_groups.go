@@ -657,10 +657,10 @@ func normalizeVisibility(visibility string) (string, string) {
 	return visibility, ""
 }
 
-func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, *models.User, bool) {
+func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, bool) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, _, ok := a.loadManagedGroupID(c, uint(id))
-	return g, apiUser(c), ok
+	return g, ok
 }
 
 // apiSetMemberRole makes an active member a leader, or a leader a member
@@ -668,7 +668,7 @@ func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, *models.User, boo
 // is no admin-approval gate (DEC-31), but every change is audited and shown
 // to admins as an in-app notice.
 func (a *App) apiSetMemberRole(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}
@@ -901,7 +901,7 @@ func roleOrNone(r string) string {
 // apiAddGroupMember lets a leader add someone by selection or email. Invite-only
 // groups have no public join button, so this is how they grow.
 func (a *App) apiAddGroupMember(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}

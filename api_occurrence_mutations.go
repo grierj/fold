@@ -104,7 +104,7 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	if err != nil {
 		return f, err
 	}
-	facts := a.factsForIn(tx, requester, &ev)
+	facts := eventFactsIn(tx, requester, &ev)
 	f.Manager = policy.CanManageEvent(asPerson(requester), facts.view, facts.rel)
 	f.OrdinaryEligible = a.canRegisterDateIn(tx, subject, &ev, *r.OccurrenceID)
 	var block models.ManagerAddBlock
@@ -601,7 +601,7 @@ func (a *App) loadManagedDateAddEvent(c *gin.Context) (*models.Event, bool) {
 		a.managerDateAddError(c, 404, "event not found")
 		return nil, false
 	}
-	f := a.factsFor(apiUser(c), &ev)
+	f := eventFactsIn(a.DB, apiUser(c), &ev)
 	gp := policy.Group{}
 	if f.group != nil {
 		gp = asGroup(f.group)

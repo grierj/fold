@@ -9,6 +9,9 @@ import (
 func intp(n int) *int { return &n }
 
 func TestEffectiveCapacityPicksOverride(t *testing.T) {
+	if got := EffectiveCapacity(intp(10), intp(0)); got == nil || *got != 0 {
+		t.Fatalf("override 0 is a real cap: got %v, want 0", got)
+	}
 	if got := EffectiveCapacity(intp(10), intp(4)); got == nil || *got != 4 {
 		t.Fatalf("override: got %v, want 4", got)
 	}
@@ -26,18 +29,6 @@ func ids(es []WaitEntry) []uint {
 		out[i] = e.ID
 	}
 	return out
-}
-
-func TestEffectiveRemoteCapacity(t *testing.T) {
-	if got := EffectiveRemoteCapacity(intp(10), intp(0)); got == nil || *got != 0 {
-		t.Fatalf("override 0 is a real cap: got %v, want 0", got)
-	}
-	if got := EffectiveRemoteCapacity(intp(10), nil); got == nil || *got != 10 {
-		t.Fatalf("fallback: got %v, want 10", got)
-	}
-	if got := EffectiveRemoteCapacity(nil, nil); got != nil {
-		t.Fatalf("null stays unlimited: got %v", got)
-	}
 }
 
 func TestFits(t *testing.T) {

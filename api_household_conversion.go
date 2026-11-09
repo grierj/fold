@@ -587,18 +587,6 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingApproval: true})
 }
 
-func userJSONPtr(u userJSON) *userJSON { return &u }
-
-// moveHouseholdConversion runs after user and household locks are held.
-func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, passwordHash *string, result *models.User) error {
-	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: passwordHash}
-	if err := tx.Create(&user).Error; err != nil {
-		return err
-	}
-	*result = user
-	return a.transferHouseholdConversion(tx, inv, person, locked, ids, &user, c.ClientIP())
-}
-
 func (a *App) transferHouseholdConversion(tx *gorm.DB, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, user *models.User, ip string) error {
 	var occurrenceIDs []uint
 	if err := tx.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Distinct("occurrence_id").Order("occurrence_id").Pluck("occurrence_id", &occurrenceIDs).Error; err != nil {
@@ -742,8 +730,11 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 		}
 		return user.ID, nil
 	}
-	var user models.User
-	if err := a.moveHouseholdConversion(tx, c, &inv, &person, locked, fresh, req.PasswordHash, &user); err != nil {
+	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: req.PasswordHash}
+	if err := tx.Create(&user).Error; err != nil {
+		return 0, err
+	}
+	if err := a.transferHouseholdConversion(tx, &inv, &person, locked, fresh, &user, c.ClientIP()); err != nil {
 		return 0, err
 	}
 	return user.ID, nil

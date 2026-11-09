@@ -216,7 +216,7 @@ func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) int
 	}
 	// The same in-person count capacity uses: listed accounts only, remote
 	// attendees aside. A failed count leaves just the cap; it's a warning.
-	going, _ := seatsUsed(db, occ.ID)
+	going, _ := seatsUsedForMode(db, occ.ID, models.AttendanceInPerson)
 	if going > want {
 		want = going
 	}

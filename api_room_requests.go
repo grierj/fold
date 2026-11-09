@@ -169,12 +169,19 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list room requests")
 		return
 	}
+	var askers []uint
+	for _, r := range rows {
+		if r.RequestedByID != nil {
+			askers = append(askers, *r.RequestedByID)
+		}
+	}
+	names := publicNamesIn(a.DB, askers)
 	out := make([]roomRequestJSON, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, roomRequestJSON{ID: r.ID, EventID: r.EventID, EventTitle: r.EventTitle,
 			GroupName: r.GroupName, // group-ok: admins see every group
 			RoomID:    r.RoomID, RoomName: r.RoomName, Building: r.Building, Series: r.Series,
-			RequestedBy: a.actorName(r.RequestedByID), Dates: r.Dates, BusyDates: r.BusyDates,
+			RequestedBy: names.actorName(r.RequestedByID), Dates: r.Dates, BusyDates: r.BusyDates,
 			FirstDate: r.FirstDate, FirstStartsAt: r.FirstStartsAt, CreatedAt: r.CreatedAt})
 	}
 	c.JSON(http.StatusOK, gin.H{"requests": out})

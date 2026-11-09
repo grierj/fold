@@ -185,7 +185,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	// slice 2). The counts above count rows; these count seats.
 	// A failed seat or childcare total degrades to zero rather than hiding
 	// the dates (TestOccurrenceCountErrorsKeepDates); it is logged.
-	usedMap, err := seatsUsedMap(a.DB, ids)
+	usedMap, err := seatsUsedMapForMode(a.DB, ids, models.AttendanceInPerson)
 	if err != nil {
 		log.Printf("list event dates: seats: %v", err)
 		usedMap = map[uint]int{}
@@ -403,7 +403,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		ChildcareAvailable:   ev.ChildcareAvailable, ChildcareNotes: ev.ChildcareNotes,
 		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable,
-		RemoteCapacity:  events.EffectiveRemoteCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride),
+		RemoteCapacity:  events.EffectiveCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride),
 	}
 	// Fail closed: only an "always" link shows from here. Callers that
 	// know the viewer refine it with applyVideoReveal (api_video.go).
@@ -925,7 +925,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := a.factsForIn(tx, me, &locked); !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+		if f := eventFactsIn(tx, me, &locked); !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
 			jsonError(c, http.StatusForbidden, "you can't change this event")
 			return errAnswered
 		}
@@ -1123,8 +1123,8 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					events.EffectiveCapacity(oldCap, occs[i].CapacityOverride),
 					events.EffectiveCapacity(newCap, occs[i].CapacityOverride))
 				sameRemote := intPtrEqual(
-					events.EffectiveRemoteCapacity(oldRemoteCap, occs[i].RemoteCapacityOverride),
-					events.EffectiveRemoteCapacity(newRemoteCap, occs[i].RemoteCapacityOverride))
+					events.EffectiveCapacity(oldRemoteCap, occs[i].RemoteCapacityOverride),
+					events.EffectiveCapacity(newRemoteCap, occs[i].RemoteCapacityOverride))
 				if sameIn && sameRemote && !childcareChanged {
 					continue
 				}
@@ -1359,7 +1359,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			return err
 		}
 		ev = &current
-		f := a.factsForIn(tx, me, ev)
+		f := eventFactsIn(tx, me, ev)
 		if !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
 			return errOccurrenceNotFound
 		}
@@ -1464,8 +1464,8 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			!intPtrEqual(events.EffectiveCapacity(ev.Capacity, oldOverride),
 				events.EffectiveCapacity(ev.Capacity, newOverride))
 		remoteCapMoved := remoteOverrideSet && !intPtrEqual(oldRemoteOverride, newRemoteOverride) &&
-			!intPtrEqual(events.EffectiveRemoteCapacity(ev.RemoteCapacity, oldRemoteOverride),
-				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
+			!intPtrEqual(events.EffectiveCapacity(ev.RemoteCapacity, oldRemoteOverride),
+				events.EffectiveCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
 			err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
 			if err != nil {
@@ -1478,13 +1478,13 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
-		used, err := seatsUsed(tx, o.ID)
+		used, err := seatsUsedForMode(tx, o.ID, models.AttendanceInPerson)
 		if err != nil {
 			return err
 		}
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
-		remoteUsed, err := remoteSeatsUsed(tx, o.ID)
+		remoteUsed, err := seatsUsedForMode(tx, o.ID, models.AttendanceRemote)
 		if err != nil {
 			return err
 		}

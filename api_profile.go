@@ -160,8 +160,6 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 			return
 		}
 	}
-	// Refresh the request-scoped user so later handlers see the update.
-	c.Set("apiUser", &updated)
 	if emailChange != nil {
 		a.apiRequestEmailChange(c, u, normalizeEmail(*emailChange))
 		return
@@ -490,7 +488,6 @@ func (a *App) apiUploadAvatar(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not store avatar")
 		return
 	}
-	c.Set("apiUser", u)
 	c.JSON(http.StatusOK, gin.H{"avatarUrl": avatarURL})
 }
 
@@ -507,7 +504,6 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not remove avatar")
 		return
 	}
-	c.Set("apiUser", u)
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -528,7 +524,7 @@ func uploadKeyFromURL(raw string) (string, bool) {
 
 // apiUploadGroupCover replaces a group's cover image. Leader or admin only.
 func (a *App) apiUploadGroupCover(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}
@@ -571,7 +567,7 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 
 // apiDeleteGroupCover removes a group's uploaded cover image.
 func (a *App) apiDeleteGroupCover(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
+	g, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}

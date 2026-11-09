@@ -204,8 +204,12 @@ func (a *App) fromNotification(c *gin.Context, id *uint, action string, subjectI
 // "Already approved by Pat" instead of an error (6.4).
 func (a *App) alreadyHandled(c *gin.Context, kind string, subjectID uint) {
 	by, outcome, _ := notify.LastResolution(a.DB, kind, subjectID)
+	var ids []uint
+	if by != nil {
+		ids = []uint{*by}
+	}
 	c.JSON(http.StatusConflict, gin.H{
-		"error": "This was already handled", "resolvedBy": a.actorName(by), "resolution": outcome,
+		"error": "This was already handled", "resolvedBy": publicNamesIn(a.DB, ids).actorName(by), "resolution": outcome,
 	})
 }
 
@@ -801,15 +805,6 @@ func visWord(v string) string {
 	default:
 		return "closed"
 	}
-}
-
-func (a *App) nameOf(id uint) string { return nameIn(a.DB, id) }
-
-func (a *App) actorName(id *uint) string {
-	if id == nil {
-		return "Fold"
-	}
-	return a.nameOf(*id)
 }
 
 // ---------------------------------------------------------------------------

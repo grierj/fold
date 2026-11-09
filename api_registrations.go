@@ -169,7 +169,7 @@ func attendanceModeOf(mode string) string {
 // per-date override wins, nil is unlimited.
 func capacityForMode(ev *models.Event, o *models.EventOccurrence, mode string) *int {
 	if attendanceModeOf(mode) == models.AttendanceRemote {
-		return events.EffectiveRemoteCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride)
+		return events.EffectiveCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride)
 	}
 	return events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
 }
@@ -198,17 +198,6 @@ func seatsUsedForMode(db *gorm.DB, occurrenceID uint, mode string) (int, error) 
 	return int(n), err
 }
 
-// seatsUsed counts in-person seats (the pool guests and every pre-remote
-// caller mean).
-func seatsUsed(db *gorm.DB, occurrenceID uint) (int, error) {
-	return seatsUsedForMode(db, occurrenceID, models.AttendanceInPerson)
-}
-
-// remoteSeatsUsed counts remote seats.
-func remoteSeatsUsed(db *gorm.DB, occurrenceID uint) (int, error) {
-	return seatsUsedForMode(db, occurrenceID, models.AttendanceRemote)
-}
-
 // seatsUsedMapForMode counts one pool's seats for many occurrences with
 // the same query shape as seatsUsedForMode (GROUP BY instead of one id).
 func seatsUsedMapForMode(db *gorm.DB, occurrenceIDs []uint, mode string) (map[uint]int, error) {
@@ -235,11 +224,6 @@ func seatsUsedMapForMode(db *gorm.DB, occurrenceIDs []uint, mode string) (map[ui
 		out[r.OccurrenceID] = int(r.Seats)
 	}
 	return out, nil
-}
-
-// seatsUsedMap counts in-person seats for many occurrences.
-func seatsUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
-	return seatsUsedMapForMode(db, occurrenceIDs, models.AttendanceInPerson)
 }
 
 // spotsLeftFor is capacity minus used, never below 0; nil when the pool
@@ -1330,7 +1314,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := a.factsForIn(tx, actor, ev)
+		facts := eventFactsIn(tx, actor, ev)
 		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
 			return errPeopleAddForbidden
 		}
@@ -1456,7 +1440,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
-		facts := a.factsForIn(tx, actor, ev)
+		facts := eventFactsIn(tx, actor, ev)
 		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
 			return errPeopleAddForbidden
 		}
@@ -1644,7 +1628,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return errPeopleAddForbidden
 		}
-		facts := a.factsForIn(tx, actor, ev)
+		facts := eventFactsIn(tx, actor, ev)
 		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
 			return errPeopleAddForbidden
 		}
@@ -1956,7 +1940,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		}
 		acct, found := householdAccountIn(tx, holderID)
 		links := guardianLinksForPeople(tx, []uint{personID})
-		f := a.factsForIn(tx, actor, ev)
+		f := eventFactsIn(tx, actor, ev)
 		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
 		if problem != "" {
 			return householdRegistrationError{code: problem}
@@ -2079,9 +2063,6 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	}
 	if options.guests < 0 || options.guests > ev.GuestsAllowed {
 		return models.Registration{}, errPeopleAddForbidden
-	}
-	if options.mode == models.AttendanceRemote && !ev.RemoteAvailable {
-		return models.Registration{}, errRemoteNotAvailable
 	}
 
 	var r models.Registration

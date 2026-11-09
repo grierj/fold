@@ -152,9 +152,7 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 		if _, err := consumeAccountToken(tx, models.TokenTeenConsent, body.Token); err != nil {
 			return err
 		}
-		c.Set("apiUser", guardian)
-		err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: payload.Scope, Status: payload.Status, ConfirmedGuardian: true})
-		return err
+		return a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: payload.Scope, Status: payload.Status, ConfirmedGuardian: true})
 	})
 	if err != nil {
 		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")

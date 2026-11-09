@@ -262,7 +262,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		if f := a.factsForIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
+		if f := eventFactsIn(tx, user, &locked); !policy.CanManageEvent(asPerson(user), f.view, f.rel) {
 			return errNotManager
 		}
 		var err error

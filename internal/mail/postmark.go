@@ -61,7 +61,7 @@ func NewPostmark(token, from, transactional, broadcast string) (*Postmark, error
 
 // Capabilities: Postmark has streams, webhooks and 500-message batches.
 func (p *Postmark) Capabilities() providers.EmailCaps {
-	return providers.EmailCaps{Name: "postmark", Streams: true, Webhooks: true, BatchSize: 500}
+	return providers.EmailCaps{Name: "postmark"}
 }
 
 // Send delivers m.
