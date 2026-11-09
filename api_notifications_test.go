@@ -194,7 +194,7 @@ func TestNotificationWritesNeedCSRF(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "pat", "password1234", models.RoleAdmin)
 	pat := loginAPI(t, app, "pat", "password1234")
-	for _, p := range []string{"/api/v1/notifications/read-all", "/api/v1/notifications/archive-read", "/api/v1/notifications/seen"} {
+	for _, p := range []string{"/api/v1/notifications/read-all", "/api/v1/notifications/archive-read"} {
 		if w := pat.do("POST", p, map[string]any{"ids": []uint{}}, false); w.Code != http.StatusForbidden {
 			t.Fatalf("%s without CSRF: %d", p, w.Code)
 		}

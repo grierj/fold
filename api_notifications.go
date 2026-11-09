@@ -117,21 +117,6 @@ func (a *App) apiNotifications(c *gin.Context) {
 	})
 }
 
-func (a *App) apiNotificationsSeen(c *gin.Context) {
-	var body struct {
-		IDs []uint `json:"ids"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || len(body.IDs) > 100 {
-		jsonError(c, http.StatusBadRequest, "ids is a list of up to 100 notification ids")
-		return
-	}
-	if err := notify.Seen(a.DB, apiUser(c).ID, body.IDs); err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not update notifications")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
-}
-
 // notificationToggle serves POST|DELETE /notifications/:id/read and /archive.
 func (a *App) notificationToggle(set func(db *gorm.DB, userID, id uint, on bool) (bool, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -169,7 +154,6 @@ func (a *App) registerNotificationRoutes(v1 *gin.RouterGroup) {
 	n := v1.Group("/notifications", a.apiAuth())
 	n.GET("", a.apiNotifications)
 	n.GET("/badge", a.apiNotificationBadge)
-	n.POST("/seen", a.apiNotificationsSeen)
 	n.POST("/read-all", a.notificationBulk(notify.ReadAll))
 	n.POST("/archive-read", a.notificationBulk(notify.ArchiveRead))
 	n.POST("/:id/read", a.notificationToggle(notify.SetRead))

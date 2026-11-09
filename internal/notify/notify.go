@@ -531,9 +531,17 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 // zero means someone else got there first, or there was no task.
 func Resolve(tx *gorm.DB, kind string, subjectID uint, by *uint, resolution string) (int64, error) {
 	res := tx.Model(&models.Notification{}).
-		Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", kind, subjectID).
+		Where("kind = ? AND subject_id = ? AND "+sqlTask, kind, subjectID).
 		UpdateColumns(map[string]any{"resolved_at": time.Now().UTC(), "resolved_by_id": by, "resolution": resolution})
 	return res.RowsAffected, res.Error
+}
+
+// OpenTask reports whether a task of kind about subjectID is still waiting
+// for someone, for any recipient.
+func OpenTask(tx *gorm.DB, kind string, subjectID uint) (bool, error) {
+	var n int64
+	err := tx.Model(&models.Notification{}).Where("kind = ? AND subject_id = ? AND "+sqlTask, kind, subjectID).Limit(1).Count(&n).Error
+	return n > 0, err
 }
 
 // LastResolution is the most recent resolution of a task, for the 409 an
@@ -692,16 +700,6 @@ func ArchiveRead(db *gorm.DB, userID uint) error {
 	return db.Model(&models.Notification{}).
 		Where("user_id = ? AND archived_at IS NULL AND read_at IS NOT NULL AND NOT ("+sqlTask+")", userID).
 		UpdateColumn("archived_at", gorm.Expr("now()")).Error
-}
-
-// Seen stamps seen_at on the user's rows the panel showed (kept for the
-// M1.2 "email if not seen" escalation; the badge doesn't use it).
-func Seen(db *gorm.DB, userID uint, ids []uint) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	return db.Model(&models.Notification{}).
-		Where("user_id = ? AND id IN ? AND seen_at IS NULL", userID, ids).UpdateColumn("seen_at", gorm.Expr("now()")).Error
 }
 
 // Prune is the daily retention cleanup (DEC-45). Open tasks are kept

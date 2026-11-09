@@ -138,9 +138,6 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
       setState({ waiting: f.waiting, waitingTotal: f.waitingTotal, items: f.notifications, next: f.next });
       setError(false);
       setLoadedAt(new Date());
-      if (f.notifications.length + f.waiting.length > 0) {
-        Api.seen([...f.waiting, ...f.notifications].map((n) => n.id)).catch(() => {});
-      }
     } catch {
       if (mine === rev.current) setError(true);
     } finally {

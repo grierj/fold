@@ -10,7 +10,6 @@ import (
 	"fold/internal/events"
 	"fold/internal/jobs"
 	"fold/internal/notify"
-	"fold/models"
 
 	"gorm.io/gorm"
 )
@@ -210,10 +209,7 @@ func (a *App) alertDeadJob(jobID uint, kind string, attempts int) {
 		if dead, err := jobs.LockDead(tx, jobID); err != nil || !dead {
 			return err
 		}
-		var open int64
-		if err := tx.Model(&models.Notification{}).
-			Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", notify.SystemJobDead, jobID).
-			Count(&open).Error; err != nil || open > 0 {
+		if open, err := notify.OpenTask(tx, notify.SystemJobDead, jobID); err != nil || open {
 			return err
 		}
 		admins, err := activeAdminIDs(tx)
