@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Events, Site } from "../api";
+import { Events } from "../api/events";
+import { Site } from "../api/site";
 import type { EventOccurrence } from "../types";
 import { DateBadge } from "../components/DateBadge";
 import { GroupDirectory } from "../components/GroupDirectory";

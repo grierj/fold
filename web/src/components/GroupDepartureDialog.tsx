@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ApiError, Groups } from "../api";
+import { ApiError } from "../api/core";
+import { Groups } from "../api/groups";
 import type { DepartureConfirmation, DepartureKeepableDate, DeparturePreview } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { formatWhen } from "../lib/when";

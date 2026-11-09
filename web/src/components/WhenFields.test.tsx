@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useWhenState, type WhenInit } from "../lib/useWhenState";
 import { WhenFields } from "./WhenFields";
 
-vi.mock("../api", () => ({ Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
+vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
 
 function Harness({ init = {}, customRule, until }: { init?: Partial<WhenInit>; customRule?: boolean; until?: boolean }) {
   const when = useWhenState({ date: "2026-12-02", time: "19:00", duration: 90, recurring: false, days: [], ...init });

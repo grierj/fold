@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Site } from "../../api";
+import { Site } from "../../api/site";
 import { useAuth } from "../../auth";
 import { ViewSwitch } from "../ui/ViewSwitch";
 

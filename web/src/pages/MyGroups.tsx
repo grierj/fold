@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { Groups } from "../api";
+import { Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
 import { usePage } from "../lib/usePage";
 import { PageCount, Pagination } from "../components/ui/Pagination";

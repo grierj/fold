@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SeriesRooms, Site } from "../api";
+import { SeriesRooms } from "../api/rooms";
+import { Site } from "../api/site";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";

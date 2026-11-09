@@ -2,14 +2,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Groups } from "../api";
+import { Groups } from "../api/groups";
 import type { GroupSummary } from "../types";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewGroup } from "./NewGroup";
 
 const auth = vi.hoisted(() => ({ isAdmin: false }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: auth.isAdmin }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Groups: { create: vi.fn(), update: vi.fn() } }));
+vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { create: vi.fn(), update: vi.fn() } }));
 
 const made = (status: string): { group: GroupSummary } => ({ group: { id: 9, name: "Sam's study", status } as GroupSummary });
 function open() {

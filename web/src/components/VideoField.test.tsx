@@ -5,10 +5,8 @@ import { VideoField, emptyVideo, videoProblem, type VideoValue } from "./VideoFi
 
 const generateJitsi = vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" });
 
-vi.mock("../api", () => ({
-  ApiError: class extends Error {},
-  Events: { generateJitsi: () => generateJitsi() },
-}));
+vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
+vi.mock("../api/events", () => ({ Events: { generateJitsi: () => generateJitsi() } }));
 
 function renderField(initial: VideoValue = emptyVideo) {
   let value = initial;

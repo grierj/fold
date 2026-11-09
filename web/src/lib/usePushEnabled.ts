@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Site } from "../api";
+import { Site } from "../api/site";
 
 // One /site read shared by every form that asks, for the page's life: a
 // read that fails is dropped, so the next mount asks again.

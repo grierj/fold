@@ -1,7 +1,7 @@
 import { Form } from "../components/ui/Form";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Invitations as InvitationsApi } from "../api";
+import { Invitations as InvitationsApi } from "../api/invitations";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { Field, FormError, Input } from "../components/ui/Field";

@@ -104,7 +104,7 @@ export function summarizePages(list) {
   return {
     ...summary(list),
     walks: walkNumbers.map((w) => ({ walk: w, ...summary(list.filter((p) => (p?.walk ?? 1) === w)) })),
-    parseKind: "readMs is the page's own Response.text() and parseMs its own JSON.parse of that text, per page response, as web/src/api.ts does them; nodeParseMs is JSON.parse of the decoded body alone, in Node; requestMs is Playwright's own request timing",
+    parseKind: "readMs is the page's own Response.text() and parseMs its own JSON.parse of that text, per page response, as web/src/api/core.ts does them; nodeParseMs is JSON.parse of the decoded body alone, in Node; requestMs is Playwright's own request timing",
   };
 }
 

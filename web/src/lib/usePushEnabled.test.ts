@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { forgetPushEnabled, usePushEnabled } from "./usePushEnabled";
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../api", () => ({ Site: { get } }));
+vi.mock("../api/site", () => ({ Site: { get } }));
 beforeEach(() => { get.mockReset(); forgetPushEnabled(); });
 
 it("starts off and shares one /site read across mounts", async () => {

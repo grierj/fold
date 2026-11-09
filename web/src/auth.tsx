@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
+import { Auth as AuthApi } from "./api/auth";
+import { Profile } from "./api/profile";
+import { ensureCsrf } from "./api/core";
 import { errorCode } from "./lib/errors";
 import { browserTimeZone } from "./lib/when";
 import { leaveWithoutAsking } from "./lib/unsavedChanges";

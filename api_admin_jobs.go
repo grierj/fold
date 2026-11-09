@@ -97,7 +97,7 @@ func (a *App) apiAdminDeadJobs(c *gin.Context) {
 		out = append(out, adminJobJSON{ID: j.ID, Kind: j.Kind, Label: label, RunsDaily: k.Daily,
 			Attempts: j.Attempts, LastError: j.LastError, FailedAt: j.UpdatedAt})
 	}
-	c.JSON(http.StatusOK, gin.H{"jobs": out, "more": more, "deliveries": deliveries})
+	c.JSON(http.StatusOK, adminJobsJSON{Jobs: out, More: more, Deliveries: deliveries})
 }
 
 // errJobHandled: the job is no longer dead (another admin, or a second

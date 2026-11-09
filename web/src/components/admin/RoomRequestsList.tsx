@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, RoomRequests } from "../../api";
+import { ApiError } from "../../api/core";
+import { RoomRequests } from "../../api/rooms";
 import { errorText } from "../../lib/errors";
 import { roomName } from "../../lib/place";
 import { dayOf, formatDayLong, formatTime, formatWhen } from "../../lib/when";

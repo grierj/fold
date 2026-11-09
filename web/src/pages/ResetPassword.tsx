@@ -1,7 +1,7 @@
 import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Auth as AuthApi } from "../api";
+import { Auth as AuthApi } from "../api/auth";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";

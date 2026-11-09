@@ -6,11 +6,15 @@ import type { Notification } from "../types";
 import { NotificationsPage } from "./Notifications";
 
 const api = vi.hoisted(() => ({
-  list: vi.fn(), badge: vi.fn(), seen: vi.fn(), read: vi.fn(), readAll: vi.fn(), archive: vi.fn(), approveGroup: vi.fn(),
+  list: vi.fn(), badge: vi.fn(), seen: vi.fn(), read: vi.fn(), readAll: vi.fn(), archive: vi.fn()
 }));
-vi.mock("../api", () => {
+const approve = vi.hoisted(() => vi.fn());
+vi.mock("../api/notifications", () => ({ Notifications: api }));
+vi.mock("../api/admin", () => ({ Admin: { approve } }));
+vi.mock("../api/accountRequests", () => ({ AdminAccountRequests: { approve } }));
+vi.mock("../api/core", () => {
   class ApiError extends Error {}
-  return { Notifications: api, ApiError };
+  return { ApiError };
 });
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: true }) }));
 

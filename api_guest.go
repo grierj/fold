@@ -491,7 +491,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, guestZone, askedAccount); err != nil {
 		log.Printf("guest confirmation email: %s", jobs.CleanError(err))
 	}
-	c.JSON(http.StatusOK, gin.H{"registration": display, "manageToken": manageRaw})
+	c.JSON(http.StatusOK, guestConfirmationJSON{Registration: display, ManageToken: manageRaw})
 }
 
 // claimGuestSignup marks the link used. It locks the row, then matches the hash

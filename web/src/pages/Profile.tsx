@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 import { Link, Navigate, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
-import { AccountRequests, Profile as ProfileApi } from "../api";
+import { AccountRequests } from "../api/accountRequests";
+import { Profile as ProfileApi } from "../api/profile";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { Button, ButtonLink } from "../components/ui/Button";

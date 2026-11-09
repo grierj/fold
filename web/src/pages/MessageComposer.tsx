@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent } fr
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeftIcon } from "../components/icons";
 import { useAuth } from "../auth";
-import { Messages, previewHTMLPath } from "../messages-api";
+import { Messages, previewHTMLPath } from "../api/messages";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";

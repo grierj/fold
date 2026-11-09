@@ -2,18 +2,15 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
-import { Messages } from "../messages-api";
+import { ApiError } from "../api/core";
+import { Messages } from "../api/messages";
 import { composeOptions, message, reminderMessage } from "../test/compose";
 import { MessagesPage } from "./Messages";
 
 const actor = vi.hoisted(() => ({ canCompose: true, isAdmin: false }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "" }, loading: false, isAdmin: actor.isAdmin, canCompose: actor.canCompose }) }));
-vi.mock("../messages-api", () => ({ Messages: { list: vi.fn(), options: vi.fn() } }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) },
-}));
+vi.mock("../api/messages", () => ({ Messages: { list: vi.fn(), options: vi.fn() } }));
+vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) } }));
 
 const firstPage = { limit: 25, cursor: "", search: "", status: "" };
 const open = () => render(<MemoryRouter><MessagesPage /></MemoryRouter>);

@@ -2,14 +2,11 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ContactHistory } from "../contact-history-api";
+import { ContactHistory } from "../api/contactHistory";
 import type { ContactHistoryPeopleResponse, ContactHistoryPerson } from "../types";
 import { ContactHistoryPersonPicker } from "./ContactHistoryPersonPicker";
 
-vi.mock("../contact-history-api", async (actual) => ({
-  ...await actual<typeof import("../contact-history-api")>(),
-  ContactHistory: { people: vi.fn() },
-}));
+vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn() } }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

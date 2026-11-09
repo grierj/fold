@@ -2,19 +2,20 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, DateRooms, Events, Households, SeriesRooms, Site } from "../api";
+import { ApiError } from "../api/core";
+import { DateRooms, SeriesRooms } from "../api/rooms";
+import { Events } from "../api/events";
+import { Households } from "../api/households";
+import { Site } from "../api/site";
 import type { EventDetailResponse, NeedsRoom } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
 const composer = vi.hoisted(() => ({ on: false, admin: false }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: composer.admin, canCompose: composer.on }) }));
-vi.mock("../api", async (importActual) => ({
-  ...(await importActual<typeof import("../api")>()),
-  ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
-  Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() },
-}));
+vi.mock("../api/core", async (importActual) => ({ ...(await importActual<typeof import("../api/core")>()), ApiError: (await importActual<typeof import("../api/core")>()).ApiError }));
+vi.mock("../api/households", async (importActual) => ({ ...(await importActual<typeof import("../api/households")>()), Households: { mine: vi.fn().mockResolvedValue({ household: null }) } }));
+vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() } }));
 
 const page: EventDetailResponse = {
   event: {

@@ -1,7 +1,7 @@
 import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Auth as AuthApi } from "../api";
+import { Auth as AuthApi } from "../api/auth";
 import { errorText } from "../lib/errors";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";

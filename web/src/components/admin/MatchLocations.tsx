@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AdminRooms } from "../../api";
+import { AdminRooms } from "../../api/rooms";
 import { errorText } from "../../lib/errors";
 import { roomName } from "../../lib/place";
 import { formatDayLong } from "../../lib/when";

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router-dom";
-import { ApiError } from "../api";
-import { Adds } from "../add-api";
+import { ApiError } from "../api/core";
+import { Adds } from "../api/adds";
 import { useAuth } from "../auth";
 import type { AddRequest } from "../types";
 import { Button, ButtonLink } from "../components/ui/Button";

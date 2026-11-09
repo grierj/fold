@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ApiError, Guests } from "../api";
+import { ApiError } from "../api/core";
+import { Guests } from "../api/events";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 import { errorText } from "../lib/errors";
