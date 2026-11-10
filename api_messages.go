@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // The composer's API (M3.4, PLAN 7.1–7.3). Leaders, hosts and admins write
@@ -117,6 +118,7 @@ var (
 	errMessageBody     = apiErr(http.StatusBadRequest, "message_body", "write a message of under about "+thousands(maxMessageText)+" characters")
 	errMessageNobody   = apiErr(http.StatusBadRequest, "message_nobody", "no one would get this message; choose people who can get email")
 	errMessageLocked   = apiErr(http.StatusConflict, "message_locked", "this message is already sending or sent, so it can't change")
+	errMessageChanged  = apiErr(http.StatusConflict, "message_changed", "this message was changed somewhere else; check it and try again")
 	errMessageWhen     = apiErr(http.StatusBadRequest, "message_when", "pick a time from now to a year ahead")
 	errMessageChannel  = apiErr(http.StatusBadRequest, "message_channel", "texting isn't set up yet; send this as an email")
 	errMessageNotYours = apiErr(http.StatusForbidden, "message_not_yours", "you can't send to those people")
@@ -791,23 +793,46 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 	// A scheduled message stays scheduled only while it could still go out,
 	// and its count follows the new audience.
 	scheduled := m.Status == models.MessageScheduled
+	var (
+		au audienceJSON
+		s  audienceSummaryJSON
+	)
 	if scheduled {
-		au, s, ok := a.sendable(c, me, m)
+		au, s, ok = a.sendable(c, me, m)
 		if !ok {
-			return
-		}
-		// A new audience counts against its own group's daily limit.
-		if full, err := a.dailyLimitReached(me, m.ID, au, *m.ScheduledAt); err != nil {
-			jsonError(c, http.StatusInternalServerError, "could not save the message")
-			return
-		} else if full {
-			fail(c, errMessageDailyLimit)
 			return
 		}
 		fields["recipient_count"] = s.Eligible
 	}
 	isAuthor := m.AuthorID != nil && *m.AuthorID == me.ID
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if scheduled {
+			// The author's row serializes the daily limit's count with the
+			// write (#260); the message is read again under its own lock, and
+			// the new audience counts from the date it is now scheduled for.
+			fresh, err := lockActorIn(tx, me, actorNoKeyUpdate)
+			if err != nil {
+				return err
+			}
+			var cur models.Message
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id, status, scheduled_at").First(&cur, m.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errLocked
+				}
+				return err
+			}
+			if cur.Status != m.Status || cur.ScheduledAt == nil {
+				return errLocked
+			}
+			if full, err := a.dailyLimitReached(tx, fresh, m.ID, au, *cur.ScheduledAt); err != nil {
+				return err
+			} else if full {
+				return errMessageDailyLimit
+			}
+			if a.hooks.messageLimitAfterCount != nil {
+				a.hooks.messageLimitAfterCount(tx)
+			}
+		}
 		res := tx.Model(&models.Message{}).Where("id = ? AND status = ?", m.ID, m.Status).Updates(fields)
 		if res.Error != nil {
 			return res.Error
@@ -825,6 +850,11 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 	})
 	if errors.Is(err, errLocked) {
 		fail(c, errMessageLocked)
+		return
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		fail(c, err)
 		return
 	}
 	if err != nil {
@@ -866,14 +896,35 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if full, err := a.dailyLimitReached(me, m.ID, au, when); err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not schedule the message")
-		return
-	} else if full {
-		fail(c, errMessageDailyLimit)
-		return
-	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// The author's row serializes the daily limit's count with the write
+		// (#260); no messages row is locked or written before it.
+		fresh, err := lockActorIn(tx, me, actorNoKeyUpdate)
+		if err != nil {
+			return err
+		}
+		var cur models.Message
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id, status, audience").First(&cur, m.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errLocked
+			}
+			return err
+		}
+		if cur.Status != models.MessageDraft && cur.Status != models.MessageScheduled {
+			return errLocked
+		}
+		// The count below judges the audience that was validated.
+		if cur.Audience != m.Audience {
+			return errMessageChanged
+		}
+		if full, err := a.dailyLimitReached(tx, fresh, m.ID, au, when); err != nil {
+			return err
+		} else if full {
+			return errMessageDailyLimit
+		}
+		if a.hooks.messageLimitAfterCount != nil {
+			a.hooks.messageLimitAfterCount(tx)
+		}
 		res := tx.Model(&models.Message{}).Where("id = ? AND status IN ?", m.ID, []string{models.MessageDraft, models.MessageScheduled}).
 			Updates(map[string]any{"status": models.MessageScheduled, "scheduled_at": when, "recipient_count": s.Eligible, "updated_at": now})
 		if res.Error != nil {
@@ -890,6 +941,11 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 	})
 	if errors.Is(err, errLocked) {
 		fail(c, errMessageLocked)
+		return
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		fail(c, err)
 		return
 	}
 	if err != nil {

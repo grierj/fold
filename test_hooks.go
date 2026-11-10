@@ -35,6 +35,11 @@ type testHooks struct {
 	readBeforeSeal           func(*gorm.DB)
 	conversionAfterUserLocks func(*gorm.DB)
 	sealAttempts             *atomic.Int64
+	// messageLimitAfterCount runs inside the schedule, scheduled-edit and
+	// Try again transactions, after a daily-limit count that did not refuse
+	// and before the message write or claim, given the open transaction
+	// (#260).
+	messageLimitAfterCount func(*gorm.DB)
 
 	// pushRender overrides renderPush in tests (a rendering past the payload
 	// cap); nil uses the stored push text. pushWindow fixes the quiet hours

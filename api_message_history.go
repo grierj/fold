@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // A sent message's history and "Try again" (M3.5b, PLAN 7.1, DEC-131).
@@ -513,6 +514,38 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 	me := apiUser(c)
 	now := time.Now()
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// The actor's users row first: for a non-admin announcement press it is
+		// the author's, so the daily-limit count below cannot interleave with
+		// another schedule or retry by the same author (#260).
+		freshActor, err := lockActorIn(tx, me, actorNoKeyUpdate)
+		if err != nil {
+			return err
+		}
+		var cur models.Message
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id, status, updated_at").First(&cur, m.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errLocked
+			}
+			return err
+		}
+		// The counts and the branch choice were read from this snapshot, so any
+		// change since, by another retry or by message.send, sends the press
+		// down the existing errLocked path.
+		if cur.Status != m.Status || !cur.UpdatedAt.Equal(m.UpdatedAt) {
+			return errLocked
+		}
+		if m.Category != models.MessageCategoryReminder {
+			var au audienceJSON
+			_ = json.Unmarshal([]byte(m.Audience), &au)
+			if full, err := a.dailyLimitReached(tx, freshActor, m.ID, au, now); err != nil {
+				return err
+			} else if full {
+				return errMessageRetryDailyLimit
+			}
+			if a.hooks.messageLimitAfterCount != nil {
+				a.hooks.messageLimitAfterCount(tx)
+			}
+		}
 		// The claim holds only if nobody else retried it meanwhile.
 		claim := func(fields map[string]any) error {
 			res := tx.Model(&models.Message{}).Where("id = ? AND status = ? AND updated_at = ?", m.ID, m.Status, m.UpdatedAt).Updates(fields)
@@ -533,7 +566,13 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 				return err
 			}
 		} else {
-			if err := claim(map[string]any{"status": models.MessageSending, "error": "", "updated_at": now}); err != nil {
+			// An announcement's retry is charged to the church day it goes out
+			// on, as the never-prepared branch above already does.
+			fields := map[string]any{"status": models.MessageSending, "error": "", "updated_at": now}
+			if m.Category != models.MessageCategoryReminder {
+				fields["scheduled_at"] = now
+			}
+			if err := claim(fields); err != nil {
 				return err
 			}
 			// Email only: a push is never sent again (M3.13d2).
@@ -570,6 +609,11 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 		} else {
 			fail(c, errMessageNothingToRetry)
 		}
+		return
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		fail(c, err)
 		return
 	}
 	if err != nil {
