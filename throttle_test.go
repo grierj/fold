@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/mail"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 func TestRateLimitIP(t *testing.T) {
@@ -135,4 +138,69 @@ func TestHoneypotAccountRequestsNeverSendMail(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("honeypot sent %d emails", n)
 	}
+}
+
+// The address lock key must be exact under the count's citext equality
+// (lockGuestVerifyAddress): the database is the oracle. Addresses it calls
+// equal must contend for one lock, whatever Go's ToLower does with them.
+func TestGuestVerifyLockMatchesCitextEquality(t *testing.T) {
+	app := testApp(t)
+	begin := func() *gorm.DB {
+		tx := app.DB.Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		t.Cleanup(func() { tx.Rollback() })
+		return tx
+	}
+	// contend reports the error tx2's lock gets while tx1 holds a's lock.
+	contend := func(a, b string) error {
+		tx1 := begin()
+		defer tx1.Rollback()
+		if err := lockGuestVerifyAddress(tx1, a); err != nil {
+			t.Fatal(err)
+		}
+		tx2 := begin()
+		defer tx2.Rollback()
+		if err := tx2.Exec("SET LOCAL lock_timeout = '500ms'").Error; err != nil {
+			t.Fatal(err)
+		}
+		return lockGuestVerifyAddress(tx2, b)
+	}
+	equal := func(a, b string) bool {
+		var eq bool
+		if err := app.DB.Raw("SELECT ?::citext = ?::citext", mail.NormalizeAddress(a), mail.NormalizeAddress(b)).Scan(&eq).Error; err != nil {
+			t.Fatal(err)
+		}
+		return eq
+	}
+	pairs := []struct{ name, a, b string }{
+		{"ascii case and spaces", "  Gail@EXAMPLE.com ", "gail@example.com"},
+		{"latin capital with ring", "ÅSA@EXAMPLE.COM", "åsa@example.com"},
+		{"kelvin sign", "Kim@example.com", "kim@example.com"},
+		{"titlecase digraph", "ǅa@example.com", "ǆa@example.com"},
+		{"greek final sigma", "aς@example.com", "aσ@example.com"},
+	}
+	for _, p := range pairs {
+		t.Run(p.name, func(t *testing.T) {
+			if !equal(p.a, p.b) {
+				// The database treats them as different addresses; the count
+				// does too, so they owe each other nothing.
+				t.Logf("the database calls %q and %q different", p.a, p.b)
+				return
+			}
+			err := contend(p.a, p.b)
+			if pgCode(err) != pgLockNotAvailable {
+				t.Fatalf("equal addresses %q and %q took different locks (err %v)", p.a, p.b, err)
+			}
+		})
+	}
+	t.Run("unrelated addresses do not contend", func(t *testing.T) {
+		if equal("alpha@example.com", "bravo@example.com") {
+			t.Fatal("the control pair is equal")
+		}
+		if err := contend("alpha@example.com", "bravo@example.com"); err != nil {
+			t.Fatalf("unrelated addresses contended: %v", err)
+		}
+	})
 }

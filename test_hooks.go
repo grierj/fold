@@ -40,6 +40,12 @@ type testHooks struct {
 	// and before the message write or claim, given the open transaction
 	// (#260).
 	messageLimitAfterCount func(*gorm.DB)
+	// guestVerifyAfterCount runs inside the guest registration transaction
+	// after a per-address count that did not refuse and before the signup
+	// insert, given the open transaction (#263). It mirrors
+	// messageLimitAfterCount (#260). It is nil in production and sends no
+	// statement.
+	guestVerifyAfterCount func(*gorm.DB)
 
 	// pushRender overrides renderPush in tests (a rendering past the payload
 	// cap); nil uses the stored push text. pushWindow fixes the quiet hours
