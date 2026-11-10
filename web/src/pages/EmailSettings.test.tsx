@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -23,7 +23,9 @@ const kinds = [
   { category: "events", off: false },
   { category: "messages", off: false },
 ] satisfies NotificationSettings["kinds"];
-const turnOnMessage = "This link can only turn email off. To turn email back on, sign in, or use the link in a newer email from us.";
+const lineMessage = "This link can turn email off, but not back on.";
+const refusedMessage = "We didn't turn email on. To turn it on, use your account settings or the link in a newer email from us.";
+const refusal = () => new ApiError(403, "not allowed", { code: "email_link_turn_on" });
 
 beforeEach(() => {
   signedIn = false;
@@ -46,30 +48,38 @@ it("opens without signing in: the masked address and the kind the link came from
   expect(get).toHaveBeenCalledOnce();
   expect(get).toHaveBeenCalledWith("abc");
   expect(screen.getByRole("link", { name: "Sign in to see all your settings" })).toHaveAttribute("href", "/login");
-  expect(screen.queryByText(turnOnMessage)).not.toBeInTheDocument();
+  expect(screen.queryByText(lineMessage)).not.toBeInTheDocument();
+  expect(screen.queryByText(refusedMessage)).not.toBeInTheDocument();
 });
 
 it("explains a link that can only turn email off, above the unchanged switches", async () => {
   get.mockResolvedValue({ emailSettings: { kinds, optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events", canTurnOn: false });
   open();
-  const message = await screen.findByText(turnOnMessage);
+  const message = await screen.findByText(lineMessage);
   const options = await screen.findByRole("group", { name: "Optional email" });
   expect(message.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.queryByText(refusedMessage)).not.toBeInTheDocument();
+  expect(screen.getAllByText(lineMessage)).toHaveLength(1);
   expect(screen.getByRole("checkbox", { name: /^Event updates/ })).toBeEnabled();
   expect(screen.getByRole("checkbox", { name: /^Turn off all optional email/ })).toBeEnabled();
 });
 
 it("reverts a refused turn-on and announces the error while keeping turn-off available", async () => {
   get.mockResolvedValue({ emailSettings: { kinds: kinds.map((k) => ({ ...k, off: k.category === "events" })), optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events", canTurnOn: false });
-  update.mockRejectedValueOnce(new ApiError(403, "not allowed", { code: "email_link_turn_on" }));
+  update.mockRejectedValueOnce(refusal());
   const user = userEvent.setup();
   open("old");
   const events = await screen.findByRole("checkbox", { name: /^Event updates/ });
   expect(events).not.toBeChecked();
   await user.click(events);
   expect(update).toHaveBeenCalledWith("old", { category: "events", off: false });
-  expect(await screen.findByRole("alert")).toHaveTextContent(turnOnMessage);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(refusedMessage);
+  // Two messages, two jobs: the line is not in the alert, and each shows once.
+  expect(alert).not.toHaveTextContent(lineMessage);
+  expect(screen.getAllByText(lineMessage)).toHaveLength(1);
+  expect(screen.getAllByText(refusedMessage)).toHaveLength(1);
   expect(events).not.toBeChecked();
   expect(events).toHaveFocus();
   expect(screen.getByRole("status")).toBeEmptyDOMElement();
@@ -80,6 +90,75 @@ it("reverts a refused turn-on and announces the error while keeping turn-off ava
   expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(events).not.toBeChecked();
+});
+
+it("shows the refusal alone when the address changed after the page loaded", async () => {
+  // canTurnOn is read only on load, so a refusal can arrive with no line shown.
+  get.mockResolvedValue({ emailSettings: { kinds: kinds.map((k) => ({ ...k, off: k.category === "events" })), optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events", canTurnOn: true });
+  update.mockRejectedValueOnce(refusal());
+  const user = userEvent.setup();
+  open("later");
+  const events = await screen.findByRole("checkbox", { name: /^Event updates/ });
+  expect(screen.queryByText(lineMessage)).not.toBeInTheDocument();
+  await user.click(events);
+  expect(update).toHaveBeenCalledWith("later", { category: "events", off: false });
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(refusedMessage);
+  expect(screen.queryByText(lineMessage)).not.toBeInTheDocument();
+  expect(events).not.toBeChecked();
+  expect(events).toHaveFocus();
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
+});
+
+it("reverts a refused bulk turn-on and announces the refusal once", async () => {
+  get.mockResolvedValue({
+    emailSettings: { kinds: kinds.map((k) => ({ ...k, off: true })), optionalEmailOff: true },
+    email: "s•••@example.com", fromCategory: "events", canTurnOn: false,
+  });
+  update.mockRejectedValueOnce(refusal());
+  const user = userEvent.setup();
+  open("bulk");
+  const all = await screen.findByRole("checkbox", { name: /^Turn off all optional email/ });
+  expect(all).toBeChecked();
+  await user.click(all);
+  expect(update).toHaveBeenCalledWith("bulk", { off: false });
+  const alerts = await screen.findAllByRole("alert");
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0].textContent).toBe(refusedMessage);
+  expect(all).toBeChecked();
+  expect(all).toHaveFocus();
+  expect(screen.getAllByText(lineMessage)).toHaveLength(1);
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
+});
+
+it("shows the refusal again when the same turn-on is refused twice", async () => {
+  get.mockResolvedValue({ emailSettings: { kinds: kinds.map((k) => ({ ...k, off: k.category === "events" })), optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events", canTurnOn: false });
+  update.mockRejectedValue(refusal());
+  const user = userEvent.setup();
+  open("again");
+  const events = await screen.findByRole("checkbox", { name: /^Event updates/ });
+  await user.click(events);
+  expect(await screen.findByRole("alert")).toHaveTextContent(refusedMessage);
+  await user.click(events);
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+  const alerts = await screen.findAllByRole("alert");
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0].textContent).toBe(refusedMessage);
+  expect(events).not.toBeChecked();
+  expect(events).toHaveFocus();
+});
+
+it("refuses a signed-in visitor's turn-on without telling them to sign in", async () => {
+  signedIn = true;
+  get.mockResolvedValue({ emailSettings: { kinds: kinds.map((k) => ({ ...k, off: k.category === "events" })), optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events", canTurnOn: false });
+  update.mockRejectedValueOnce(refusal());
+  const user = userEvent.setup();
+  open("in");
+  expect(await screen.findByRole("link", { name: "See all your settings" })).toHaveAttribute("href", "/profile/notifications");
+  await user.click(await screen.findByRole("checkbox", { name: /^Event updates/ }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(refusedMessage);
+  expect(alert.textContent).not.toMatch(/sign in/i);
 });
 
 it("saves through the link", async () => {
