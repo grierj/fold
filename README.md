@@ -165,8 +165,8 @@ make e2e    # Playwright browser tests in parallel shards (first run: cd web && 
 
 - [PLAN.md](docs/plan/PLAN.md): product decisions and milestone scope (source of truth).
 - [STATUS.md](STATUS.md): merged work and remaining follow-ups.
-- [Summary](docs/plan/SUMMARY.md): shipped versus planned features.
-- [Documentation review](docs/plan/DOCUMENTATION-REVIEW.md): unresolved conflicts and implementation gaps.
+- [Summary](docs/plan/provenance/SUMMARY.md): shipped versus planned features.
+- [Documentation review](docs/plan/provenance/DOCUMENTATION-REVIEW.md): unresolved conflicts and implementation gaps.
 - [API contract](docs/API.md), [member guide](docs/MEMBERS.md), and
   [DigitalOcean deployment](docs/DEPLOY-DIGITALOCEAN.md).
 - [AGENTS.md](AGENTS.md): development and review rules, with topic detail in [docs/agents/](docs/agents/).

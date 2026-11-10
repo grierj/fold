@@ -2264,7 +2264,7 @@ mail runs only after commit.
 
 Occurrence requests are enabled on the same authenticated `/add-requests`
 routes as group asks. M1.11 was accepted and merged in #122; historical evidence
-is in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
+is in [M1.11-VERIFICATION.md](plan/provenance/M1.11-VERIFICATION.md).
 
 `POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
 or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
@@ -2491,7 +2491,7 @@ mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-onc
 offsite storage and retention hardening remain deferred.
 
 Verification evidence for the broader M1.11 milestone is tracked in
-[M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
+[M1.11-VERIFICATION.md](plan/provenance/M1.11-VERIFICATION.md).
 
 ### Per-date visibility (M1.13)
 

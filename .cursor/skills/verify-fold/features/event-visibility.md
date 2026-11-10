@@ -37,7 +37,7 @@ roster, sibling dates or recurring feed rule. Clearing the override restores the
 series value; changing series visibility preserves custom dates unless the
 explicit reset is chosen. Test both group and event-page entry points. The
 regression tests and historical browser evidence are indexed in
-`docs/plan/M1.13-VERIFICATION.md`; use an isolated verify-fold instance for
+`docs/plan/provenance/M1.13-VERIFICATION.md`; use an isolated verify-fold instance for
 new proof.
 
 ## Gotchas
