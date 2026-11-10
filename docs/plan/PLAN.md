@@ -812,7 +812,7 @@ Guests are reached only through occurrence, series, or events audiences, because
 - Push notification too (default on): people who turned push on also get a short notification (subject, 120 characters, Open to read). The summary says "N also get a push notification". An announcement never goes push-only (DEC-123).
 - Preview, and "Send a test to me".
 - Schedule: send now, or pick a date and time (church time zone). Scheduled messages can be edited or cancelled until sending starts.
-- Merge fields: `{{first_name}}`, `{{event_title}}`, `{{event_time}}`, `{{event_link}}`, `{{manage_link}}`.
+- Merge fields: `{{first_name}}`, `{{event_title}}`, `{{event_time}}`, `{{event_link}}`, `{{manage_link}}`. On `/messages/:id/read` the event fields carry today's values only while, and only as far as, the reader can still see the event or date (`CanSeeEvent` and the date rules): the series gives all of them, one date seen on its own gives that date's title, time and page, and otherwise they read empty with links as their text (a series announcement to someone who can't see the series keeps the series title alone, through a date they can see that has no title of its own).
 - SMS wording check (DEC-3): the composer warns when an SMS asks for money ("give", "donate", "tithe", "offering", links to the church's giving page). Carriers and providers treat donation asks as charity traffic, which can need 501(c)(3) proof (Twilio error 30487) or a different campaign type; Telnyx lists fundraising and donations under its Charity use case. Fold assumes churches are not 501(c)(3)s, so it keeps SMS to event and group logistics. Put giving asks in email.
 
 ### 7.4 Consent, opt-out, STOP handling

@@ -691,25 +691,8 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	} else if err != nil {
 		return nil, err
 	}
-	statuses := au.Statuses
-	if len(statuses) == 0 {
-		statuses = defaultRegStatuses
-	}
-	type next struct {
-		UID          uint
-		OriginalDate time.Time
-		StartsAt     time.Time
-	}
-	var dates []next
-	q := db.Table("registrations r").Select("DISTINCT ON (COALESCE(r.user_id, r.registered_by)) COALESCE(r.user_id, r.registered_by) AS uid, o.original_date, o.starts_at").
-		Joins("JOIN event_occurrences o ON o.id = r.occurrence_id").
-		Where("o.event_id = ? AND r.status IN ? AND COALESCE(r.user_id, r.registered_by) IN ?", ev.ID, statuses, keysOf(readers))
-	if au.Type == policy.AudienceOccurrence {
-		q = q.Where("o.id = ?", au.OccurrenceID)
-	} else {
-		q = q.Where("o.status = ? AND o.starts_at >= ?", models.OccurrenceScheduled, time.Now())
-	}
-	if err := q.Order("COALESCE(r.user_id, r.registered_by), o.starts_at").Scan(&dates).Error; err != nil {
+	dates, err := audienceRegisteredDates(db, ev.ID, au, keysOf(readers), time.Now())
+	if err != nil {
 		return nil, err
 	}
 	var titleOverride *string
@@ -731,6 +714,45 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 			v[content.FieldEventTime] = facts.timeText(d.StartsAt)
 			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
 		}
+	}
+	return out, nil
+}
+
+// registeredDate is one person's registration date in an audience: the next
+// one in the audience's statuses (the audience's own date, for a one-date
+// audience), by the holder's id.
+type registeredDate struct {
+	UID                uint
+	OccurrenceID       uint
+	OriginalDate       time.Time
+	StartsAt           time.Time
+	VisibilityOverride *string
+}
+
+// audienceRegisteredDates is each reader's registration date in au for the
+// event: the reader's own registration in the audience's statuses on the one
+// date, or their next scheduled one at or after now for a series. The map is
+// keyed by the holder's id (the user, else whoever registered them).
+func audienceRegisteredDates(db *gorm.DB, eventID uint, au audienceJSON, readerIDs []uint, now time.Time) (map[uint]registeredDate, error) {
+	statuses := au.Statuses
+	if len(statuses) == 0 {
+		statuses = defaultRegStatuses
+	}
+	var dates []registeredDate
+	q := db.Table("registrations r").Select("DISTINCT ON (COALESCE(r.user_id, r.registered_by)) COALESCE(r.user_id, r.registered_by) AS uid, o.id AS occurrence_id, o.original_date, o.starts_at, o.visibility_override").
+		Joins("JOIN event_occurrences o ON o.id = r.occurrence_id").
+		Where("o.event_id = ? AND r.status IN ? AND COALESCE(r.user_id, r.registered_by) IN ?", eventID, statuses, readerIDs)
+	if au.Type == policy.AudienceOccurrence {
+		q = q.Where("o.id = ?", au.OccurrenceID)
+	} else {
+		q = q.Where("o.status = ? AND o.starts_at >= ?", models.OccurrenceScheduled, now)
+	}
+	if err := q.Order("COALESCE(r.user_id, r.registered_by), o.starts_at").Scan(&dates).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]registeredDate, len(dates))
+	for _, d := range dates {
+		out[d.UID] = d
 	}
 	return out, nil
 }
