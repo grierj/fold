@@ -309,17 +309,23 @@ var errAudienceRefused = errors.New("not allowed to message that audience")
 // errAudienceInvalid, errAudienceGone, errAudienceRefused or a database
 // error.
 func (a *App) resolveAudience(me *models.User, au *audienceJSON, now time.Time) ([]uint, error) {
+	return a.resolveAudienceIn(a.DB, me, au, now)
+}
+
+// resolveAudienceIn is resolveAudience on db, so a caller inside a
+// transaction reads the audience on its own connection.
+func (a *App) resolveAudienceIn(db *gorm.DB, me *models.User, au *audienceJSON, now time.Time) ([]uint, error) {
 	if err := au.normalize(); err != nil {
 		return nil, errAudienceInvalid
 	}
-	targets, err := a.audienceTargets(a.DB, me, *au)
+	targets, err := a.audienceTargets(db, me, *au)
 	if err != nil {
 		return nil, err
 	}
 	if !policy.CanMessageAudience(asPerson(me), au.Type, targets) {
 		return nil, errAudienceRefused
 	}
-	return a.audienceUserIDs(a.DB, *au, now)
+	return a.audienceUserIDs(db, *au, now)
 }
 
 // composeGroupJSON / composeEventJSON are what the picker offers.
