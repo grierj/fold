@@ -70,6 +70,8 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
    | group-member | member | `/groups/<id>` |
    | event | member | `/events/<id>` |
    | profile | member | `/profile` |
+   | profile-details, profile-privacy, profile-calendar, profile-household, profile-guardian, profile-invite, profile-requests | member | `/profile/<section>` |
+   | profile-security-email, profile-security-password | member | `/profile/security`, `?tab=password` |
    | notifications | member | `/notifications` |
    | group-leader | leader | `/groups/<id>` |
    | event-leader | leader | `/events/<id>` (layout.spec.ts only) |
@@ -100,7 +102,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
 ## Evidence
 
 Everything goes to `$VERIFY_EVIDENCE/ui/` (that is, `/tmp/fold-verify-proof/<RUN_ID>/ui/`):
-- `<page>-<width>.png`: a full-page screenshot for every page and width (45 files for a full run).
+- `<page>-<width>.png`: a full-page screenshot for every page and width (26 pages × 3 widths = 78 files for a full run).
 - `results.json`: the URL, the seed ids, and per page and width: failures, the screenshot name, and the under-44px list at 390.
 - `result.txt`: the feature id (`ui-checks`), the entry point, the hard-failure count, and one line per page and width.
 
@@ -110,10 +112,14 @@ Everything goes to `$VERIFY_EVIDENCE/ui/` (that is, `/tmp/fold-verify-proof/<RUN
 - When a change alters a control's state (selected chip, pressed button), capture both states. Add the step to the page's feature file rather than trusting one screenshot.
 
 **What passing means:**
-- `drive-ui.mjs` exits 0: no hard failures on any page or width. Since PR 5 (nav shell) master has none, and `web/e2e/layout.spec.ts` gates the same three checks in CI.
+- `drive-ui.mjs` exits 0: no hard failures on any page or width. Master has none; `web/e2e/layout.spec.ts` gates overflow, clipped selects, cut-off controls and targets in CI, and `web/e2e/a11y.spec.ts` gates axe.
 - `npm run contrast` exits 0.
 - The under-44px count at 390 is not higher than master's.
 - A reviewer has looked at the 390 screenshots of every page the change touched.
+
+## Screens that should not change
+
+For a change meant to leave the screens alone (a dependency or toolchain upgrade), compare whole-page screenshots. On master and then on the branch, run `npm run build` and `SCREENS_DIR=/tmp/shots/<name> npx playwright test seed screens` in `web/`, which shoots 12 pages at 390, 768 and 1280 px through the e2e server. Then `node e2e/compare-screens.mjs /tmp/shots/master /tmp/shots/branch` lists each file as identical or gives the share of pixels that differ. Explain every difference in the PR; for an intended restyle, put the before and after images side by side for the designer. `npx playwright test seed a11y` runs the axe check on the same pages, and `SCREENS_DIR=... npx playwright test seed friendly-errors` captures the main error states (`error-*.png`). This uses the e2e server, so don't run it beside another `make e2e`.
 
 ## Cleanup
 
@@ -121,7 +127,7 @@ Everything goes to `$VERIFY_EVIDENCE/ui/` (that is, `/tmp/fold-verify-proof/<RUN
 .cursor/skills/verify-fold/verify-fold down "$RUN_ID"
 ```
 
-This kills only the pid recorded for that run and drops only `fold_verify_<run>`. It keeps `/tmp/fold-verify-proof/<RUN_ID>/ui/`. Afterwards, confirm the PNGs and `results.json` are still there. If you started a throwaway Postgres for `VERIFY_PG_URL`, stop it by its own data directory (`pg_ctl -D <dir> stop -m fast`), never by process name.
+`down` is described in verify-fold's Cleanup section; it keeps `/tmp/fold-verify-proof/<RUN_ID>/ui/`. Afterwards, confirm the PNGs and `results.json` are still there. If you started a throwaway Postgres for `VERIFY_PG_URL`, stop it by its own data directory (`pg_ctl -D <dir> stop -m fast`), never by process name.
 
 ## Helpers
 
@@ -129,4 +135,4 @@ This kills only the pid recorded for that run and drops only `fold_verify_<run>`
 - `web/scripts/token-contrast.mjs` (`npm run contrast` in `web/`, also run in CI): token-pair contrast. It exits 1 on any failing pair.
 - `web/e2e/ui-measure.mjs`: the overflow, clipped-select and target measurement, shared with `web/e2e/layout.spec.ts` (the CI gate on the e2e seed).
 
-Both load Playwright and axe from `web/node_modules` via `createRequire`, so there's nothing to install.
+The scripts load Playwright and axe from `web/node_modules` via `createRequire`, so there is nothing to install.

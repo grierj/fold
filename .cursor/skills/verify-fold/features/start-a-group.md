@@ -25,14 +25,13 @@ Preconditions:
 - **Signed-out gate.** With no session, open `/groups/new`. The page says `You need to log in to start a group.` The `Group name` field is absent.
 - **Admin create.** Sign in as `verify-admin@example.com` with password `password1234`. Choose `Start a group`. Fill `Group name` with `Admin's study`. Run `page.getByLabel("Group name").fill("Admin's study")` and `page.getByRole("button", { name: "Create group" }).click()`. The heading `Group created` is visible and `Pending approval` is absent. Choose `Go to the group`. The level-1 heading reads `Admin's study`.
 - **Confirm it is listed.** Choose the `Fold` logo. A heading `Admin's study` is visible on `/`.
-- **Member create.** As the admin, open `/admin`, choose the `Users` tab (`Approvals` is the default tab), choose `New user`, fill the email input `page.locator('input[type=email]')` with `sam-member@example.com`, fill `page.locator('input[required]').last()` with `Sam Member` (the Full name field is required and its label is not tied to the input), fill the password input with `password1234`, and choose `Create user`. The table shows `Sam Member`. Log out, sign in as `sam-member@example.com`, open `/groups/new`, fill `Group name` with `Sam's new study`, and choose `Create group`. The heading `Pending approval` is visible.
+- **Member create.** As the admin, open `/admin`, choose the `Users` tab (`Approvals` is the default tab), choose `New user`, fill `page.getByLabel("Email (signs in with it)")` with `sam-member@example.com`, `page.getByLabel("Full name")` with `Sam Member` and `page.getByLabel("Password")` with `password1234` (a blank password makes an invited account that cannot sign in), and choose `Create user`. The table shows `Sam Member`. Log out, sign in as `sam-member@example.com`, open `/groups/new`, fill `Group name` with `Sam's new study`, and choose `Create group`. The heading `Pending approval` is visible.
 - **Confirm the member group is hidden.** Log out. On `/`, `Sam's new study` is not visible. Sign back in as the admin. The header `Notifications` button opens a link whose name matches `/1 group needs approval/`.
 - **Proof.** `start-a-group/admin-created.png` shows `Group created` and the name `Admin's study`. `start-a-group/member-pending.png` shows `Pending approval` and `Sam's new study`. `start-a-group/result.txt` names which entry point was used (`Start a group` or `/groups/new`).
 
 ## Gotchas
 
 - `Create group` is the submit button. `Cancel` returns to `/` and does not create a group.
-- The `Group name` label is tied to its input. The Description, Location, and Tags labels are not. Use the tags placeholder `e.g. young-adults, bible-study` when a tag is required.
+- Every group form field is labelled (`Group name`, `Description`, `Location`, `Tags`); `getByLabel` works for each.
 - The `Who can see this group` radios are wrapped by their labels. `page.getByRole("radio", { name: /^Public/ })` selects the public choice. The default is public.
 - An admin sees `Group created`. A member sees `Pending approval` for the same button. Do not treat one outcome as proof of the other.
-- The admin user form's Email, Full name, and Password labels are not tied to their inputs. Use the input types above rather than `getByLabel` for those fields.

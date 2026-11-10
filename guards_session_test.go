@@ -14,6 +14,10 @@ import (
 // "This session is still current" is decided by sessionCurrent (and the actor
 // locks built on it) alone: no other production code compares a row's
 // session_version or logout_version by hand.
+//
+// Parse-only: it flags ==/!= with a .SessionVersion or .LogoutVersion operand in
+// the root package outside sessionEpochExempt, matching by field name; it does
+// not see comparisons in other packages, through helpers, or in SQL.
 // ---------------------------------------------------------------------------
 
 // sessionEpochExempt are the files that may compare an epoch themselves, each

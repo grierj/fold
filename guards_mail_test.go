@@ -166,7 +166,7 @@ func mailSources(trees ...*ast.File) func(ast.Expr) mailSource {
 			}
 		}
 	}
-	//lint:ignore SA1019 Parse-only guard uses parser-local bindings, not type identity; unresolved flows are documented above and in AGENTS.md.
+	//lint:ignore SA1019 Parse-only guard uses parser-local bindings, not type identity; unresolved flows are documented on TestMailGoesThroughJobs.
 	bindings := map[*ast.Object]mailSource{}
 	for _, tree := range trees {
 		ast.Inspect(tree, func(node ast.Node) bool {
@@ -420,6 +420,38 @@ func TestNoticesAreDeliveredBySendNotByCallers(t *testing.T) {
 	}
 }
 
+// TestMailGoesThroughJobs recursively parses production Go directories,
+// including models, storage and migrations. Only internal/mail is exempt from
+// the send checks, because it owns the sender implementations; the legacy
+// post-commit notice helpers and runInBackground are forbidden there too.
+// Tests, testdata, frontend dependencies, vendored code and hidden directories
+// are excluded. Root delivery-file allowances do not grant permission to
+// same-named nested files.
+//
+// The guard follows mail import aliases and dot imports, mail.Unwrap, assigned
+// senders and package variables across files in one directory. It recognizes
+// mail.Sender, SMTPSender, Postmark, DevOutbox, Suppressing and NoSender in
+// typed parameters, fields, variables, assertions and literals. Same-package
+// helper signatures track each result position, including multiple results;
+// mail.New* and mail.WithSuppressions return a sender in the first position,
+// including through assigned constructor functions. Add new sender types to
+// this list and the guard together. Naming sendTracked counts as a send: only
+// the delivery files (mailerSendFiles) and the named synchronous methods may.
+//
+// Synchronous exceptions allow sends only as immediate calls in their named App
+// methods. Calls to those methods must also be immediate, never inside
+// closures, go or defer, or captured as method values, even in delivery files.
+// Transaction closures may finish before the call; the guard checks syntax, not
+// whether a transaction committed. api_dev.go may unwrap and read the outbox,
+// never send.
+//
+// Limits: this is parse-only analysis, not a type checker or call graph. Field
+// and method names match conservatively. Arbitrary helper bodies,
+// cross-package helper results, helper function values other than known mail
+// constructors and Unwrap, type aliases, embedded forwarding and senders hidden
+// in untyped interfaces or containers need review. It uses parser-local
+// bindings with a narrow SA1019 exemption; it does not resolve Go type
+// identity.
 func TestMailGoesThroughJobs(t *testing.T) {
 	bad, err := productionMailViolations(".", true)
 	if err != nil {

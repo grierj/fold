@@ -110,7 +110,7 @@ func TestTestFilesSitNextToTheirSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(bad) > 0 {
-		t.Fatalf("test layout (AGENTS.md, Tests):\n%s", strings.Join(bad, "\n"))
+		t.Fatalf("test layout (AGENTS.md, Development):\n%s", strings.Join(bad, "\n"))
 	}
 }
 
