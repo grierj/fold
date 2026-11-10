@@ -18,7 +18,7 @@ import { MERGE_FIELDS } from "../../lib/messages";
 // .rich-text instead. This module is loaded with import(), so pages that
 // don't write email never download TipTap.
 
-export const BUTTON_CLASS = "fold-button";
+const BUTTON_CLASS = "fold-button";
 const LINK_FIELDS = ["{{event_link}}", "{{manage_link}}"];
 const LINK_FIELD_RE = /^\{\{\s*(event_link|manage_link)\s*\}\}$/i;
 
@@ -46,6 +46,7 @@ const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url
 
 // normalizeHref turns what someone typed into an address the server keeps,
 // or "" when it can't be one.
+/** @public tested directly: which typed addresses are kept. */
 export function normalizeHref(typed: string): string {
   const s = typed.trim();
   if (!s) return "";

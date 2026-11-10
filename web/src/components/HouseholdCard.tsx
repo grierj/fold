@@ -28,6 +28,7 @@ type Draft = { firstName: string; lastName: string; kind: HouseholdPerson["kind"
 const emptyDraft: Draft = { firstName: "", lastName: "", kind: "child", birthDate: "", careNotes: "", photoConsent: false };
 
 // personProblems checks a draft before it is sent. today is YYYY-MM-DD.
+/** @public tested directly: draft validation rules. */
 export function personProblems(d: Draft, today: string): { firstName?: string; birthDate?: string } {
   const out: { firstName?: string; birthDate?: string } = {};
   if (!d.firstName.trim()) out.firstName = "Add a first name.";
