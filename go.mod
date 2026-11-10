@@ -8,7 +8,7 @@ require (
 	github.com/arran4/golang-ical v0.3.8
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gorilla/sessions v1.4.0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/teambition/rrule-go v1.8.2
