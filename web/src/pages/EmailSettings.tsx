@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { EmailSettingsLink } from "../api/notifications";
 import type { EmailSettingsChange } from "../api/notifications";
-import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
+import { errorCode, errorText } from "../lib/errors";
 import { EmailSettings } from "../components/EmailSettings";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
@@ -19,6 +19,11 @@ const ONE_OF: Record<string, string> = {
   messages: "a message from a leader",
   admin: "an admin notice",
 };
+
+// Shown above the switches when the link can't turn email back on. A refused
+// turn-on has its own wording (ERROR_COPY.email_link_turn_on), which stands
+// alone: it can arrive when this line was never shown.
+const TURN_OFF_ONLY = "This link can turn email off, but not back on.";
 
 // The email settings page an optional email's link opens (M3.3b, DEC-115).
 // No sign-in: the token in the address is the authority. It shows the same
@@ -70,7 +75,7 @@ export function EmailSettingsPage() {
           <p className="text-text-muted">For {who.email}</p>
           {ONE_OF[who.from] && <p className="text-text-muted">You came here from {ONE_OF[who.from]}; it's listed first.</p>}
           <div className="mt-6">
-            {who.canTurnOn === false && <p className="mb-4 text-sm text-text-muted">{ERROR_COPY.email_link_turn_on}</p>}
+            {who.canTurnOn === false && <p className="mb-4 text-sm text-text-muted">{TURN_OFF_ONLY}</p>}
             <EmailSettings load={load} save={save} first={who.from} />
           </div>
           <p className="mt-6 text-sm">{user

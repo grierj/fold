@@ -4,7 +4,8 @@ import { apiAs, email, nextFrames, PASSWORD, signIn } from "./helpers";
 // @ts-expect-error plain JS module shared with .cursor/skills/verify-ui
 import { measure } from "./ui-measure.mjs";
 
-const turnOnMessage = "This link can only turn email off. To turn email back on, sign in, or use the link in a newer email from us.";
+const lineMessage = "This link can turn email off, but not back on.";
+const refusedMessage = "We didn't turn email on. To turn it on, use your account settings or the link in a newer email from us.";
 const emailPreviewSelector = 'iframe[title="Email preview"]';
 
 async function settingsPath(request: APIRequestContext, login: string) {
@@ -83,7 +84,8 @@ test("an email's settings link works signed out and matches Me > Notifications",
   await page.goto(path);
   await expect(page.getByRole("heading", { name: "Email settings", level: 1 })).toBeVisible();
   await expect(page.getByText("You came here from a group update", { exact: false })).toBeVisible();
-  await expect(page.getByText(turnOnMessage, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(refusedMessage, { exact: true })).toHaveCount(0);
   const groups = page.getByRole("checkbox", { name: /^Group updates/ });
   await expect(groups).toBeChecked();
   await groups.uncheck();
@@ -151,37 +153,70 @@ test("a moved-address link explains turn-off-only access, refuses turn-on and st
   }
   await admin("POST", `/admin/groups/${groupID}/approve`, {});
   const path = await settingsPath(request, login);
-  await admin("PUT", `/admin/users/${userID}`, { email: email(movedLogin) });
 
+  // Open the page while the link is still bound to the address: it can turn
+  // email on, so neither message shows yet.
   await page.context().clearCookies();
   await page.goto(path);
-  await expect(page.getByText(turnOnMessage, { exact: true })).toBeVisible();
   const events = page.getByRole("checkbox", { name: /^Event updates/ });
   const groups = page.getByRole("checkbox", { name: /^Group updates/ });
   await expect(events).not.toBeChecked();
   await expect(groups).toBeChecked();
-  await checkUI(page, "email-settings-turn-off-only");
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(refusedMessage, { exact: true })).toHaveCount(0);
+
+  // The address changes after the page loaded, so the page never saw
+  // canTurnOn false. The refusal has to make sense alone.
+  await admin("PUT", `/admin/users/${userID}`, { email: email(movedLogin) });
 
   // Use the keyboard: a rejected save must keep both state and focus.
-  await events.focus();
-  const [refused] = await Promise.all([
-    page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1${path}` && response.request().method() === "PUT"),
-    page.keyboard.press("Space"),
-  ]);
-  expect(refused.status()).toBe(403);
-  expect(await refused.json()).toMatchObject({ code: "email_link_turn_on" });
-  await expect(page.getByRole("alert")).toHaveText(turnOnMessage);
+  const refuseTurnOn = async () => {
+    await events.focus();
+    const [refused] = await Promise.all([
+      page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1${path}` && response.request().method() === "PUT"),
+      page.keyboard.press("Space"),
+    ]);
+    expect(refused.status()).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: "email_link_turn_on" });
+    await expect(page.getByRole("alert")).toHaveText(refusedMessage);
+    await expect(page.getByText(refusedMessage, { exact: true })).toHaveCount(1);
+    await expect(events).not.toBeChecked();
+    await expect(events).toBeFocused();
+  };
+  await refuseTurnOn();
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(0);
+  await checkUI(page, "email-settings-turn-on-refused-after-load");
+
+  // A fresh visit reads canTurnOn false: the muted line, and no alert.
+  await page.reload();
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(events).not.toBeChecked();
-  await expect(events).toBeFocused();
+  await expect(groups).toBeChecked();
+  await checkUI(page, "email-settings-turn-off-only");
+
+  // Refuse again: the alert and the line each show once, in their own words.
+  await refuseTurnOn();
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(1);
   await checkUI(page, "email-settings-turn-on-refused");
 
   await groups.uncheck();
   await expect(page.getByRole("status").filter({ hasText: "Saved" })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
+  // Capture the existing alert position when the bottom control is focused.
+  await page.setViewportSize({ width: 390, height: 900 });
+  const allOff = page.getByRole("checkbox", { name: /^Turn off all optional email/ });
+  await expect(allOff).toBeChecked();
+  await allOff.focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("alert")).toHaveText(refusedMessage);
+  await expect(allOff).toBeChecked();
+  await expect(allOff).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath("email-settings-bulk-refusal-viewport-390.png"), animations: "disabled" });
   await page.reload();
   await expect(groups).not.toBeChecked();
   await expect(events).not.toBeChecked();
-  await expect(page.getByText(turnOnMessage, { exact: true })).toBeVisible();
+  await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(1);
 
   // The same effective state must explain a refused composer test, with
   // its existing FormError under the test control at both viewport sizes.
