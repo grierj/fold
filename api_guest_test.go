@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2018,5 +2020,444 @@ func TestGuestDoorAnswersStoreRejectionsUniformly(t *testing.T) {
 	failJobEnqueueWith(t, app.DB, kindAccountExistsMail, &pgconn.PgError{Code: "XX000", Message: "internal"})
 	if got := submit(guestBody("Visitor Name", member.Email, true), http.StatusInternalServerError); got != serverErrorBody {
 		t.Fatalf("hint outage answer: %s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The per-address verification limit under concurrency (#263)
+// ---------------------------------------------------------------------------
+
+// guestCall is one in-flight guest submission. poll receives its result at most
+// once and caches it, so the helpers and the test can both look.
+type guestCall struct {
+	ch  <-chan httpResult
+	got *httpResult
+}
+
+func (g *guestCall) poll() *httpResult {
+	if g.got == nil {
+		select {
+		case r := <-g.ch:
+			g.got = &r
+		default:
+		}
+	}
+	return g.got
+}
+
+func (g *guestCall) await(t *testing.T) httpResult {
+	t.Helper()
+	if g.got == nil {
+		r := awaitResult(t, g.ch)
+		g.got = &r
+	}
+	return *g.got
+}
+
+// guestVerifyLockWaiters counts the backends of this database waiting on a
+// guest verification address lock.
+func guestVerifyLockWaiters(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 2 AND classid::bigint = ? AND `+advisoryInThisDatabase,
+		int64(guestVerifyLockClass)).Scan(&n).Error; err != nil {
+		t.Fatalf("guest verify lock waiters: %v", err)
+	}
+	return n
+}
+
+// waitForGuestVerifyWaiters polls until n backends wait on the address lock
+// (true) or every call has already answered (false, so a test of a missing lock
+// fails with a message instead of hanging). It fails after 10 seconds.
+func waitForGuestVerifyWaiters(t *testing.T, app *App, n int, calls ...*guestCall) bool {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if guestVerifyLockWaiters(t, app.DB) >= int64(n) {
+			return true
+		}
+		finished := true
+		for _, c := range calls {
+			if c.poll() == nil {
+				finished = false
+			}
+		}
+		if finished {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%d submissions never waited on the address lock", n)
+	return false
+}
+
+// guestHold parks the first submission that passes the per-address count inside
+// its transaction, holding the address lock, until release.
+type guestHold struct {
+	t         *testing.T
+	app       *App
+	eventID   uint
+	first     atomic.Bool
+	reached   chan struct{}
+	releaseCh chan struct{}
+	relOnce   sync.Once
+	mu        sync.Mutex
+	calls     []*guestCall
+}
+
+func holdGuestVerify(t *testing.T, app *App, eventID uint) *guestHold {
+	t.Helper()
+	h := &guestHold{t: t, app: app, eventID: eventID, reached: make(chan struct{}), releaseCh: make(chan struct{})}
+	app.hooks.guestVerifyAfterCount = func(*gorm.DB) {
+		if h.first.CompareAndSwap(false, true) {
+			close(h.reached)
+			<-h.releaseCh
+		}
+	}
+	// Registered after testApp, so it runs before the database reset: a failed
+	// assertion never leaves a held transaction open across tests.
+	t.Cleanup(func() {
+		h.release()
+		h.mu.Lock()
+		calls := append([]*guestCall(nil), h.calls...)
+		h.mu.Unlock()
+		for _, c := range calls {
+			if c.got != nil {
+				continue
+			}
+			select {
+			case r := <-c.ch:
+				c.got = &r
+			case <-time.After(10 * time.Second):
+				t.Error("a held guest submission never finished")
+			}
+		}
+		app.hooks.guestVerifyAfterCount = nil
+	})
+	return h
+}
+
+func (h *guestHold) release() { h.relOnce.Do(func() { close(h.releaseCh) }) }
+
+func (h *guestHold) waitReached(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no submission reached the held count")
+	}
+}
+
+// start sends one submission on its own client and address.
+func (h *guestHold) start(ip, email string) *guestCall {
+	h.t.Helper()
+	c := anonClient(h.t, h.app, ip)
+	c.holdNotices = true
+	call := &guestCall{ch: bgDo(c, "POST", fmt.Sprintf("/api/v1/events/%d/guest-registrations", h.eventID), guestBody("Gail", email, true))}
+	h.mu.Lock()
+	h.calls = append(h.calls, call)
+	h.mu.Unlock()
+	return call
+}
+
+func guestLimitFixture(t *testing.T) (*App, eventJSON) {
+	t.Helper()
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	return app, scheduleGroupEvent(t, admin, gid, "Picnic")
+}
+
+func guestThanksBody(t *testing.T) string {
+	t.Helper()
+	b, err := json.Marshal(noticeResponseJSON{Message: signupThanks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func requireThanks(t *testing.T, label string, r httpResult) {
+	t.Helper()
+	if r.code != http.StatusOK || r.body != guestThanksBody(t) {
+		t.Fatalf("%s answered %d %s, want the uniform thanks", label, r.code, r.body)
+	}
+}
+
+// guestSubmitHeld submits once from a fresh client that leaves jobs queued.
+func guestSubmitHeld(t *testing.T, app *App, ip string, eventID uint, email string, want int) string {
+	t.Helper()
+	c := anonClient(t, app, ip)
+	c.holdNotices = true
+	return guestSubmit(t, c, eventID, guestBody("Gail", email, true), want)
+}
+
+// Four parallel submissions for one address: the first holds the address lock
+// after its count, the other three wait on it. Counted one at a time, only the
+// three the hour allows are stored and mailed.
+func TestGuestVerificationLimitHoldsUnderConcurrency(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	logs := captureLog(t)
+	const email = "gail@example.com"
+	h := holdGuestVerify(t, app, ev.ID)
+	a := h.start("10.26.3.1", email)
+	h.waitReached(t)
+	b := h.start("10.26.3.2", email)
+	c := h.start("10.26.3.3", email)
+	d := h.start("10.26.3.4", email)
+	if !waitForGuestVerifyWaiters(t, app, 3, b, c, d) {
+		t.Fatal("the other submissions finished without waiting on the address lock")
+	}
+	h.release()
+	for i, call := range []*guestCall{a, b, c, d} {
+		requireThanks(t, fmt.Sprintf("submission %d", i), call.await(t))
+	}
+	if n := guestSignupCount(t, app, email); n != guestVerifyPerHour {
+		t.Fatalf("stored %d signups, want %d", n, guestVerifyPerHour)
+	}
+	if n := len(mailJobsOfKind(t, app, kindGuestVerifyMail)); n != guestVerifyPerHour {
+		t.Fatalf("queued %d verification mails, want %d", n, guestVerifyPerHour)
+	}
+	if strings.Contains(logs.String(), email) {
+		t.Fatal("the log names the address")
+	}
+}
+
+func TestGuestVerificationTimestampFollowsLockWait(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	const email = "waiter@example.com"
+	h := holdGuestVerify(t, app, ev.ID)
+	a := h.start("10.26.11.1", email)
+	h.waitReached(t)
+	b := h.start("10.26.11.2", email)
+	if !waitForGuestVerifyWaiters(t, app, 1, b) {
+		t.Fatal("the second submission did not wait for the address lock")
+	}
+	released := time.Now().UTC().Truncate(time.Microsecond)
+	h.release()
+	requireThanks(t, "first submission", a.await(t))
+	requireThanks(t, "waiting submission", b.await(t))
+	var rows []models.GuestSignup
+	if err := app.DB.Where("email = ?", email).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("stored %d signups, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.CreatedAt.Before(released) {
+			t.Errorf("signup %d was stamped %s before lock release %s", row.ID, row.CreatedAt, released)
+		}
+	}
+}
+
+// Nine signups earlier today leave room for one more: of three parallel
+// submissions only the first is stored.
+func TestGuestVerificationDayLimitHoldsUnderConcurrency(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	const email = "daily@example.com"
+	var occ models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < guestVerifyPerDay-1; i++ {
+		s := models.GuestSignup{
+			Name: "Daily", Email: email, OccurrenceID: occ.ID,
+			TokenHash: fmt.Sprintf("seeded-%d", i),
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}
+		if err := app.DB.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+		// default:now() stamps the row at create; move it out of the hour.
+		if err := app.DB.Model(&s).Update("created_at", time.Now().UTC().Add(-2*time.Hour)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := holdGuestVerify(t, app, ev.ID)
+	a := h.start("10.26.4.1", email)
+	h.waitReached(t)
+	b := h.start("10.26.4.2", email)
+	c := h.start("10.26.4.3", email)
+	if !waitForGuestVerifyWaiters(t, app, 2, b, c) {
+		t.Fatal("the other submissions finished without waiting on the address lock")
+	}
+	h.release()
+	for i, call := range []*guestCall{a, b, c} {
+		requireThanks(t, fmt.Sprintf("submission %d", i), call.await(t))
+	}
+	if n := guestSignupCount(t, app, email); n != guestVerifyPerDay {
+		t.Fatalf("stored %d signups, want %d", n, guestVerifyPerDay)
+	}
+	if n := len(mailJobsOfKind(t, app, kindGuestVerifyMail)); n != 1 {
+		t.Fatalf("queued %d verification mails, want 1", n)
+	}
+}
+
+// Spacing and case do not make a new address: variants of one address share a
+// lock and a budget, and are stored in the normalized form. This covers spaces
+// and ASCII case only; the lock key itself is proven by
+// TestGuestVerifyLockMatchesCitextEquality.
+func TestGuestVerificationLockFollowsNormalizedAddress(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	const email = "gail@example.com"
+	h := holdGuestVerify(t, app, ev.ID)
+	a := h.start("10.26.5.1", email)
+	h.waitReached(t)
+	b := h.start("10.26.5.2", "  Gail@EXAMPLE.com ")
+	c := h.start("10.26.5.3", "GAIL@example.com")
+	d := h.start("10.26.5.4", "gail@EXAMPLE.com")
+	if !waitForGuestVerifyWaiters(t, app, 3, b, c, d) {
+		t.Fatal("the variants finished without waiting on the address lock")
+	}
+	h.release()
+	for i, call := range []*guestCall{a, b, c, d} {
+		requireThanks(t, fmt.Sprintf("submission %d", i), call.await(t))
+	}
+	var exact int64
+	if err := app.DB.Raw("SELECT count(*) FROM guest_signups WHERE email::text = ?", email).Scan(&exact).Error; err != nil {
+		t.Fatal(err)
+	}
+	if exact != guestVerifyPerHour || guestSignupCount(t, app, email) != guestVerifyPerHour {
+		t.Fatalf("stored %d normalized signups (%d in all), want %d", exact, guestSignupCount(t, app, email), guestVerifyPerHour)
+	}
+	if n := len(mailJobsOfKind(t, app, kindGuestVerifyMail)); n != guestVerifyPerHour {
+		t.Fatalf("queued %d verification mails, want %d", n, guestVerifyPerHour)
+	}
+}
+
+// A held address does not block a different one.
+func TestGuestVerificationLockIsPerAddress(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	h := holdGuestVerify(t, app, ev.ID)
+	a := h.start("10.26.6.1", "first@example.com")
+	h.waitReached(t)
+	b := h.start("10.26.6.2", "second@example.com")
+	requireThanks(t, "the other address", b.await(t))
+	if n := guestSignupCount(t, app, "second@example.com"); n != 1 {
+		t.Fatalf("the other address stored %d signups while the first was held, want 1", n)
+	}
+	h.release()
+	requireThanks(t, "the held address", a.await(t))
+	if n := guestSignupCount(t, app, "first@example.com"); n != 1 {
+		t.Fatalf("the held address stored %d signups, want 1", n)
+	}
+}
+
+// A lock that cannot be taken is a failure before any write: the usual thanks,
+// nothing stored or queued, a log line without the address, and the next
+// submission works.
+func TestGuestVerificationLockFailureAnswersThanks(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	logs := captureLog(t)
+	const email = "gail@example.com"
+	name := fmt.Sprintf("test:fail_guest_lock:%d", queryCounterSeq.Add(1))
+	if err := app.DB.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.SQL.String(), "SELECT pg_advisory_xact_lock(") && len(tx.Statement.Vars) > 0 {
+			if class, ok := tx.Statement.Vars[0].(int32); ok && class == guestVerifyLockClass {
+				tx.AddError(&pgconn.PgError{Code: "XX000"})
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var removeOnce sync.Once
+	remove := func() { removeOnce.Do(func() { _ = app.DB.Callback().Raw().Remove(name) }) }
+	t.Cleanup(remove)
+
+	body := guestSubmitHeld(t, app, "10.26.7.1", ev.ID, email, http.StatusOK)
+	if body != guestThanksBody(t) {
+		t.Fatalf("lock failure answered %s, want the uniform thanks", body)
+	}
+	if guestSignupCount(t, app, email) != 0 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 0 {
+		t.Fatal("a failed lock must store nothing and queue nothing")
+	}
+	if !strings.Contains(logs.String(), "guest verification count") || strings.Contains(logs.String(), email) {
+		t.Fatalf("the log must name the failure and not the address: %q", logs.String())
+	}
+	remove()
+	guestSubmitHeld(t, app, "10.26.7.2", ev.ID, email, http.StatusOK)
+	if guestSignupCount(t, app, email) != 1 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 1 {
+		t.Fatal("the next submission did not store one signup and one job")
+	}
+}
+
+// A write that fails after the count rolls back with the lock and spends no
+// budget: the address still gets its three.
+func TestGuestVerificationRollbackSpendsNoBudget(t *testing.T) {
+	const email = "gail@example.com"
+	t.Run("job enqueue fails", func(t *testing.T) {
+		app, ev := guestLimitFixture(t)
+		stop := failJobEnqueueWith(t, app.DB, kindGuestVerifyMail, &pgconn.PgError{Code: "XX000"})
+		if body := guestSubmitHeld(t, app, "10.26.8.1", ev.ID, email, http.StatusInternalServerError); body != serverErrorBody {
+			t.Fatalf("failed enqueue answered %s", body)
+		}
+		if guestSignupCount(t, app, email) != 0 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 0 {
+			t.Fatal("a failed enqueue must leave no signup and no job")
+		}
+		// The rolled-back transaction released the address lock.
+		tx := app.DB.Begin()
+		t.Cleanup(func() { tx.Rollback() })
+		if err := tx.Exec("SET LOCAL lock_timeout = '500ms'").Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := lockGuestVerifyAddress(tx, email); err != nil {
+			t.Fatalf("the address lock outlived the failed submission: %v", err)
+		}
+		tx.Rollback()
+		stop()
+		for i := 1; i <= guestVerifyPerHour; i++ {
+			guestSubmitHeld(t, app, fmt.Sprintf("10.26.8.%d", 10+i), ev.ID, email, http.StatusOK)
+		}
+		if guestSignupCount(t, app, email) != guestVerifyPerHour || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != guestVerifyPerHour {
+			t.Fatal("the failed attempt spent budget")
+		}
+		if body := guestSubmitHeld(t, app, "10.26.8.99", ev.ID, email, http.StatusOK); body != guestThanksBody(t) {
+			t.Fatalf("fourth submission answered %s", body)
+		}
+		if guestSignupCount(t, app, email) != guestVerifyPerHour || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != guestVerifyPerHour {
+			t.Fatal("the fourth submission stored something")
+		}
+	})
+	t.Run("insert rejected", func(t *testing.T) {
+		app, ev := guestLimitFixture(t)
+		rejectInsertsByName(t, app.DB, "guest_signups")
+		c := anonClient(t, app, "10.26.9.1")
+		c.holdNotices = true
+		if body := guestSubmit(t, c, ev.ID, guestBody("Reject Me", email, true), http.StatusOK); body != guestThanksBody(t) {
+			t.Fatalf("rejected insert answered %s", body)
+		}
+		if guestSignupCount(t, app, email) != 0 {
+			t.Fatal("a rejected insert stored a signup")
+		}
+		for i := 1; i <= guestVerifyPerHour; i++ {
+			guestSubmitHeld(t, app, fmt.Sprintf("10.26.9.%d", 10+i), ev.ID, email, http.StatusOK)
+		}
+		if n := guestSignupCount(t, app, email); n != guestVerifyPerHour {
+			t.Fatalf("stored %d signups after the rejection, want %d", n, guestVerifyPerHour)
+		}
+	})
+}
+
+// The issue's burst: ten submissions for one address in immediate succession.
+// This is a probabilistic backstop; the hook tests above are the proof.
+func TestGuestVerificationBurstStoresAtMostTheCap(t *testing.T) {
+	app, ev := guestLimitFixture(t)
+	const email = "gail@example.com"
+	var calls []*guestCall
+	for i := 1; i <= 10; i++ {
+		c := anonClient(t, app, fmt.Sprintf("10.26.10.%d", i))
+		c.holdNotices = true
+		calls = append(calls, &guestCall{ch: bgDo(c, "POST", fmt.Sprintf("/api/v1/events/%d/guest-registrations", ev.ID), guestBody("Gail", email, true))})
+	}
+	for i, call := range calls {
+		requireThanks(t, fmt.Sprintf("submission %d", i), call.await(t))
+	}
+	if n := guestSignupCount(t, app, email); n != guestVerifyPerHour {
+		t.Fatalf("stored %d signups, want %d", n, guestVerifyPerHour)
+	}
+	if n := len(mailJobsOfKind(t, app, kindGuestVerifyMail)); n != guestVerifyPerHour {
+		t.Fatalf("queued %d verification mails, want %d", n, guestVerifyPerHour)
 	}
 }

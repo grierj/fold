@@ -13,6 +13,7 @@ func TestAdvisoryLockIDsAreUnique(t *testing.T) {
 		"contactLockID":           contactLockID,
 		"invitationEmailLockSeed": invitationEmailLockSeed,
 		"inviteSendLockClass":     int64(inviteSendLockClass),
+		"guestVerifyLockClass":    int64(guestVerifyLockClass),
 		"migrations.LockID":       migrations.LockID,
 		"eventdates.LockID":       eventdates.LockID,
 	}

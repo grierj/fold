@@ -203,7 +203,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   deadline the server may hold the gate until D + `contactServerCap` + the idle timeout, and no test equates the two.
   `internal/testdb/pgproxy.go` is the test-only fault proxy for these cases; production code may not import it.
 - Accounts (A1): capabilities live in `tokens.go` only (find, `claimAccountToken`, rotate, revoke; lock order contact gate →
-  user → token) and every rate limit in `throttle.go` (`countThrottleHit`, plus the audit-counted `inviteSendAllowed`);
+  user → token) and every rate limit in `throttle.go` (`countThrottleHit`, the audit-counted `inviteSendAllowed`, and the row-counted `guestVerifyAllowedIn`);
   advisory lock ids are the one block in `advisory_locks.go`. An existing account's status changes only through
   `setAccountStatusIn` (`account_status.go`, which documents the order) and a new one starts in `newAccountStatus`. Profile
   fields are validated by `fields.go` (trimmed, counted in characters). A pending item is decided with `decidePendingIn`.
@@ -343,7 +343,11 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   `CanRegisterEvent` to a nil person, and never load a guest row as an actor (`asPerson` would
   treat it as signed in). A submit stores only a `guest_signups` row; the guest `User`
   (`status=guest`) and `Registration` exist only after the emailed link is redeemed. Public
-  answers stay uniform; verification emails cap at 3/hour and 10/day per address. Until a guest
+  answers stay uniform; verification emails cap at 3/hour and 10/day per address. The cap counts
+  `guest_signups` under a per-address advisory lock in its own two-key class, keyed by the citext
+  fold, in the same transaction as the signup and its `guest.verify` job. The window is read after
+  the lock, and `created_at` is stamped after that wait; a failure before the write answers the
+  usual thanks (#263). Until a guest
   is upgraded to an account (same row), `changeRole` refuses to give them a membership.
 - Forms: state every input requirement next to the field. Every path that sets a password checks
   it with `checkNewPassword` (`password_rules.go`): 10 characters minimum, 72 bytes maximum

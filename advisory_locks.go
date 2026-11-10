@@ -16,4 +16,11 @@ const (
 	// inviteSendLockClass is the first key of the two-key lock that serializes
 	// one actor's invitation sends (inviteSendAllowed); the actor id is the second.
 	inviteSendLockClass int32 = 7316194
+	// guestVerifyLockClass is the first key of the two-key lock that serializes
+	// one address's guest verification count (guestVerifyAllowedIn); the second
+	// key is the address's citext-folded hashtext. Postgres keeps the two-key
+	// space separate from the one-key ids above, so no address, however
+	// crafted, can take setupLockID, contactLockID, migrations.LockID or
+	// eventdates.LockID.
+	guestVerifyLockClass int32 = 7316195
 )

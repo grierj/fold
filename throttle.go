@@ -1,6 +1,6 @@
 package main
 
-// The throttle module: every rate limit in Fold is counted here. Two
+// The throttle module: every rate limit in Fold is counted here. Three
 // mechanisms, each implemented once:
 //
 //   - login_throttles rows (countThrottleHit): per-key counters in Postgres,
@@ -11,6 +11,10 @@ package main
 //   - the audit-counted send limit (inviteSendAllowed): invitation mail is
 //     counted from audit_logs under an advisory lock, because the audit rows
 //     are the durable record of what was sent.
+//   - the row-counted guest verification limit (guestVerifyAllowedIn): guest
+//     verification mail is counted from guest_signups under a per-address
+//     advisory lock, in the same transaction as the signup insert, because the
+//     stored signups are the durable record of what was mailed.
 
 import (
 	"context"
@@ -19,6 +23,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -193,6 +198,64 @@ func inviteSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) {
 		return false, err
 	}
 	return byEmail < leaderInviteDailyLimit, nil
+}
+
+// lockGuestVerifyAddress takes the transaction-scoped lock that serializes one
+// address's guest verification count. It takes a two-key lock, so it never
+// collides with the one-key ids in advisory_locks.go.
+//
+// Why the key is exact: guest_signups.email is citext, and citext equality
+// compares str_tolower of each side under the database default collation, byte
+// for byte. citext defines no lower(), so lower(x::citext) is lower(text), the
+// same str_tolower under the same default collation. hashtext of a
+// deterministic-collation text (every database default is deterministic)
+// hashes those bytes. So any two addresses the count's `email = ?` treats as
+// equal take the same key, whatever Go's ToLower does. Never add a COLLATE to
+// either side, and never hash the Go string in place of the SQL fold. Two
+// unequal addresses can share a 32-bit key; that only serializes them,
+// because the count still matches by email.
+func lockGuestVerifyAddress(tx *gorm.DB, email string) error {
+	return tx.Exec("SELECT pg_advisory_xact_lock(?, hashtext(lower(?::citext)))",
+		guestVerifyLockClass, mail.NormalizeAddress(email)).Error
+}
+
+// guestVerifyAllowedIn is the guest verification limit: 3 in the last hour and
+// 10 in the last day for one address (10.1). Each stored signup is one
+// verification mail queued in the same transaction, so the rows are the
+// counter. The lock is held until the caller's COMMIT or ROLLBACK. At the
+// database's default READ COMMITTED, a waiter's count, its first data
+// statement after the lock, takes its snapshot after the holder's commit and
+// sees the holder's row; a rolled-back insert spends nothing.
+//
+// The window is read after the lock is taken, on the Go clock the caller uses
+// to stamp CreatedAt, so a waiter judges it as of its serialized count.
+//
+// Lock order: the guest transaction takes exactly this one advisory lock. Its
+// insert then takes FOR KEY SHARE on one event_occurrences row through
+// fk_guest_signups_occurrence, the table's only foreign key. The jobs insert
+// (ON CONFLICT (unique_key) with a NULL key) waits on no domain row. Only
+// guest transactions take this class, and a waiter holds nothing else. Event
+// deletion, account erasure, redemption and mail preparation can hold
+// occurrence or signup locks that this transaction waits on, but none of them
+// waits for this class or for anything this transaction holds: its
+// uncommitted row is invisible to them, and its KEY SHARE is taken last before
+// commit. So the lock adds no wait cycle. Adding a second advisory lock, or an
+// occurrence lock, inside this transaction requires rechecking this. The
+// pre-existing race between this insert's FK check and event deletion is
+// unchanged.
+func guestVerifyAllowedIn(tx *gorm.DB, email string) (bool, error) {
+	email = mail.NormalizeAddress(email)
+	if err := lockGuestVerifyAddress(tx, email); err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	var counts struct{ HourCount, DayCount int64 }
+	if err := tx.Raw(`SELECT count(*) FILTER (WHERE created_at > ?) AS hour_count, count(*) AS day_count
+FROM guest_signups WHERE email = ? AND created_at > ?`,
+		now.Add(-time.Hour), email, now.Add(-24*time.Hour)).Scan(&counts).Error; err != nil {
+		return false, err
+	}
+	return counts.HourCount < guestVerifyPerHour && counts.DayCount < guestVerifyPerDay, nil
 }
 
 // refundLoginAttempts gives each key back the attempt reserveLoginAttempt

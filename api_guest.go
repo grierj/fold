@@ -131,7 +131,11 @@ type guestRegistrationInput struct {
 
 // apiCreateGuestRegistration is the public guest form. Every outcome
 // that could reveal whether an email is registered answers with the
-// same thanks message and lets the email itself carry the difference.
+// same thanks message and lets the email itself carry the difference. The
+// per-address 3/hour, 10/day check runs under the address lock in the same
+// transaction as the signup and its mail job, so parallel submissions for one
+// address are counted one at a time (#263). Any failure before the write
+// answers the usual thanks.
 func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	var body guestRegistrationInput
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -211,11 +215,6 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
 		return
 	}
-	if a.guestVerifyLimited(email, time.Now().UTC()) {
-		log.Printf("guest verification emails to one address limited (DEC-52)")
-		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
-		return
-	}
 	// Only the hash is kept. Delivery rotates it and mints the link the guest
 	// receives, so no capability exists until the mail is about to be sent.
 	_, hash, err := newTokenAndHash()
@@ -231,16 +230,47 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	if _, err := events.LoadZone(body.Timezone); err == nil {
 		signup.Timezone = strings.TrimSpace(body.Timezone)
 	}
-	// The signup and its mail job commit together, so an accepted submission
-	// always has a delivery duty. No request context: a disconnect cannot abort
-	// the durable write. The job carries the signup's ID and nothing else.
-	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+	// The count, the signup and its mail job run in one transaction under the
+	// address lock, so an accepted submission always has a delivery duty and
+	// parallel submissions are counted one at a time (#263). No request
+	// context: a disconnect cannot abort the durable write. The job carries the
+	// signup's ID and nothing else.
+	var limited, writing bool
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		ok, err := guestVerifyAllowedIn(tx, email)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			limited = true
+			return nil
+		}
+		if a.hooks.guestVerifyAfterCount != nil {
+			a.hooks.guestVerifyAfterCount(tx)
+		}
+		// PostgreSQL's now() default is the transaction start time, which can
+		// precede a long address-lock wait. Count this signup from its insert.
+		signup.CreatedAt = time.Now().UTC()
+		writing = true
 		if err := tx.Create(&signup).Error; err != nil {
 			return err
 		}
-		_, err := guestVerifyMailType.Enqueue(tx, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "")
+		_, err = guestVerifyMailType.Enqueue(tx, guestVerifyMailJob{GuestSignupID: signup.ID}, time.Now(), "")
 		return err
-	}); err != nil {
+	})
+	if limited {
+		log.Printf("guest verification emails to one address limited (DEC-52)")
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
+		return
+	}
+	if err != nil && !writing {
+		// The lock or the count failed and nothing was written: no email goes
+		// out unmetered, and the answer is the usual thanks.
+		log.Printf("guest verification count: %s", jobs.CleanError(err))
+		c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
+		return
+	}
+	if err != nil {
 		log.Printf("guest registration: %s", jobs.CleanError(err))
 		if pgInputRejected(err) {
 			// Postgres refused the text, not the request (DEC-52).
@@ -251,28 +281,6 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
-}
-
-// guestVerifyLimited reports whether this address has used up its
-// verification emails: 3 in the last hour or 10 in the last day (10.1).
-// Each stored signup is one email sent, so the rows are the counter.
-// A failed count is treated as limited: no email goes out unmetered.
-func (a *App) guestVerifyLimited(email string, now time.Time) bool {
-	var hour, day int64
-	if err := a.DB.Model(&models.GuestSignup{}).
-		Where("email = ? AND created_at > ?", email, now.Add(-time.Hour)).Count(&hour).Error; err != nil {
-		log.Printf("guest verification count: %v", err)
-		return true
-	}
-	if hour >= guestVerifyPerHour {
-		return true
-	}
-	if err := a.DB.Model(&models.GuestSignup{}).
-		Where("email = ? AND created_at > ?", email, now.Add(-24*time.Hour)).Count(&day).Error; err != nil {
-		log.Printf("guest verification count: %v", err)
-		return true
-	}
-	return day >= guestVerifyPerDay
 }
 
 // apiConfirmGuestRegistration redeems a verification link. The SPA
