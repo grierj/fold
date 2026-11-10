@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/mail"
+	"fold/internal/providers"
 	"fold/models"
 )
 
@@ -554,5 +557,415 @@ func TestMessageRetryRechecksItsSnapshot(t *testing.T) {
 	if after.Status != models.MessageSent || !after.ScheduledAt.Equal(*m.ScheduledAt) || jobCountFor(t, f.app, kindMessageSend, m.ID) != 0 ||
 		auditCount(t, f.app, audit.MessageRetried) != 0 {
 		t.Fatalf("a changed message was retried: %+v", after)
+	}
+}
+
+// pickySet refuses (550) every address in bad and passes the rest on.
+type pickySet struct {
+	next mail.Sender
+	bad  map[string]bool
+}
+
+func (s pickySet) SendEmail(ctx context.Context, m mail.Message) (string, error) {
+	if s.bad[m.To] {
+		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 550, Msg: "no"})
+	}
+	return mail.Unwrap(s.next).SendEmail(ctx, m)
+}
+
+func (pickySet) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "picky-set"} }
+
+// failFor sends aud as the leader with every address in bad refused, so
+// those rows fail and the message is partly sent. The mailer is restored.
+func (f composeFixture) failFor(t *testing.T, aud map[string]any, bad ...*models.User) uint {
+	t.Helper()
+	next := f.app.Mailer
+	set := map[string]bool{}
+	for _, u := range bad {
+		set[u.Email] = true
+	}
+	f.app.Mailer = pickySet{next: next, bad: set}
+	id := f.scheduleNow(t, f.leader, "Partly", "<p>Hi</p>", aud)
+	runMessageJobs(t, f.app)
+	f.app.Mailer = next
+	return id
+}
+
+// twoFailures adds members X and Y to the group and sends to it with both
+// addresses refused.
+func (f composeFixture) twoFailures(t *testing.T) (id uint, x, y *models.User) {
+	t.Helper()
+	x = newTestUser(t, f.app, "xavier", "password1234", models.RoleMember)
+	y = newTestUser(t, f.app, "yvonne", "password1234", models.RoleMember)
+	addMember(t, f.app, x, f.group, models.MembershipMember)
+	addMember(t, f.app, y, f.group, models.MembershipMember)
+	id = f.failFor(t, map[string]any{"type": "group", "groupId": f.group.ID}, x, y)
+	rows := recipientsOf(t, f.app, id)
+	if rows[x.Email].Status != models.RecipientFailed || rows[y.Email].Status != models.RecipientFailed {
+		t.Fatalf("setup: %+v", rows)
+	}
+	return id, x, y
+}
+
+func mailsToAddr(t *testing.T, app *App, email string) int64 {
+	t.Helper()
+	var n int64
+	if err := app.DB.Model(&models.MailOutbox{}).Where("lower(to_address) = lower(?)", email).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// batchJobsListing counts message.deliver_batch jobs that name a row id.
+func batchJobsListing(t *testing.T, app *App, rowID uint) int {
+	t.Helper()
+	var n int
+	if err := app.DB.Raw("SELECT count(*) FROM jobs WHERE kind = ? AND payload->'recipientIds' @> to_jsonb(?::bigint)", kindMessageBatch, rowID).Scan(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func (f composeFixture) setMembership(t *testing.T, u *models.User, status string) {
+	t.Helper()
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", u.ID, f.group.ID).Update("status", status).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func retriedPeople(t *testing.T, app *App) []string {
+	t.Helper()
+	var out []string
+	if err := app.DB.Raw("SELECT meta_json->>'people' FROM audit_logs WHERE action = ? ORDER BY id", audit.MessageRetried).Scan(&out).Error; err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A member who was removed or left since the send is skipped on Try
+// again, the one still on the list is sent exactly once, and nobody it
+// already reached gets it twice (#261).
+func TestMessageRetrySkipsWhoLeftTheList(t *testing.T) {
+	for _, status := range []string{models.MembershipRemoved, models.MembershipLeft} {
+		t.Run(status, func(t *testing.T) {
+			f := newComposeFixture(t)
+			id, x, y := f.twoFailures(t)
+			rowX := recipientsOf(t, f.app, id)[x.Email]
+			beforeX := batchJobsListing(t, f.app, rowX.ID)
+			teenMails, leaderMails := mailsToAddr(t, f.app, f.teen.Email), mailsToAddr(t, f.app, f.leaderUser.Email)
+			f.setMembership(t, x, status)
+			if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+				t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+			}
+			rows := recipientsOf(t, f.app, id)
+			if r := rows[x.Email]; r.Status != models.RecipientSuppressed || r.Reason != skipNoLongerOnList || r.Error != "" {
+				t.Fatalf("X: %+v", r)
+			}
+			if rows[y.Email].Status != models.RecipientQueued {
+				t.Fatalf("Y: %+v", rows[y.Email])
+			}
+			if batchJobsListing(t, f.app, rowX.ID) != beforeX {
+				t.Fatal("a batch job lists the dropped row")
+			}
+			runMessageJobs(t, f.app)
+			var m models.Message
+			f.app.DB.First(&m, id)
+			if mailsToAddr(t, f.app, x.Email) != 0 || mailsToAddr(t, f.app, y.Email) != 1 ||
+				mailsToAddr(t, f.app, f.teen.Email) != teenMails || mailsToAddr(t, f.app, f.leaderUser.Email) != leaderMails || m.Status != models.MessageSent {
+				t.Fatalf("X %d, Y %d, teen %d/%d, leader %d/%d, %s", mailsToAddr(t, f.app, x.Email), mailsToAddr(t, f.app, y.Email),
+					mailsToAddr(t, f.app, f.teen.Email), teenMails, mailsToAddr(t, f.app, f.leaderUser.Email), leaderMails, m.Status)
+			}
+			if got := retriedPeople(t, f.app); len(got) != 1 || got[0] != "1" {
+				t.Fatalf("message.retried people: %v", got)
+			}
+		})
+	}
+}
+
+// When every failed row is dropped the retry still answers 200, queues
+// nothing, and the message settles sent with nothing left to retry.
+func TestMessageRetryWithEveryFailedRowDropped(t *testing.T) {
+	f := newComposeFixture(t)
+	id, x, y := f.twoFailures(t)
+	jobs := jobCountFor(t, f.app, kindMessageBatch, id)
+	f.setMembership(t, x, models.MembershipRemoved)
+	f.setMembership(t, y, models.MembershipLeft)
+	if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	if jobCountFor(t, f.app, kindMessageBatch, id) != jobs {
+		t.Fatal("a retry with nobody left queued a batch")
+	}
+	var m models.Message
+	f.app.DB.First(&m, id)
+	rows := recipientsOf(t, f.app, id)
+	if m.Status != models.MessageSent || rows[x.Email].Status != models.RecipientSuppressed || rows[y.Email].Status != models.RecipientSuppressed {
+		t.Fatalf("message %+v, rows %+v", m, rows)
+	}
+	if got := retriedPeople(t, f.app); len(got) != 1 || got[0] != "0" {
+		t.Fatalf("message.retried people: %v", got)
+	}
+	if h, _ := f.history(t, f.leader, id); h.CanRetry {
+		t.Fatal("canRetry with nothing left")
+	}
+	if w := f.retry(f.leader, id); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "message_nothing_to_retry") {
+		t.Fatalf("again: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// An event's announcement follows the registrations: a cancelled registrant
+// is skipped, one still going is sent.
+func TestMessageRetryEventAudience(t *testing.T) {
+	for name, aud := range map[string]func(f composeFixture) map[string]any{
+		"occurrence": func(f composeFixture) map[string]any {
+			return map[string]any{"type": "occurrence", "occurrenceId": f.groupOcc.ID}
+		},
+		"series": func(f composeFixture) map[string]any {
+			return map[string]any{"type": "event_series", "eventId": f.groupEvent.ID}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			x := newTestUser(t, f.app, "xavier", "password1234", models.RoleMember)
+			y := newTestUser(t, f.app, "yvonne", "password1234", models.RoleMember)
+			for _, u := range []*models.User{x, y} {
+				f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing})
+			}
+			id := f.failFor(t, aud(f), x, y)
+			f.app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", f.groupOcc.ID, x.ID).Update("status", models.RegCancelled)
+			if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+				t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+			}
+			rows := recipientsOf(t, f.app, id)
+			if r := rows[x.Email]; r.Status != models.RecipientSuppressed || r.Reason != skipNoLongerOnList {
+				t.Fatalf("X: %+v", r)
+			}
+			if rows[y.Email].Status != models.RecipientQueued {
+				t.Fatalf("Y: %+v", rows[y.Email])
+			}
+			runMessageJobs(t, f.app)
+			if mailsToAddr(t, f.app, x.Email) != 0 || mailsToAddr(t, f.app, y.Email) != 1 {
+				t.Fatalf("X %d, Y %d", mailsToAddr(t, f.app, x.Email), mailsToAddr(t, f.app, y.Email))
+			}
+		})
+	}
+}
+
+// A guardian copy is sent again only while it would still be made: the
+// teen is on the list, the link confirmed, copies on, and the teen would
+// still get the message.
+func TestMessageRetryGuardianCopies(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(t *testing.T, f composeFixture)
+		skip   string // "" means the copy is sent once
+	}{
+		{"nothing changed", func(*testing.T, composeFixture) {}, ""},
+		{"teen removed", func(t *testing.T, f composeFixture) { f.setMembership(t, f.teen, models.MembershipRemoved) }, skipNoLongerOnList},
+		{"link revoked", func(t *testing.T, f composeFixture) {
+			f.app.DB.Model(&models.GuardianLink{}).Where("teen_user_id = ?", f.teen.ID).Update("status", "revoked")
+		}, skipNoGuardianCopy},
+		{"copies turned off", func(t *testing.T, f composeFixture) {
+			f.app.DB.Model(&models.Setting{}).Where("key = ?", settingGuardianCopies).Update("value", "false")
+		}, skipNoGuardianCopy},
+		{"teen turned off messages from leaders", func(t *testing.T, f composeFixture) {
+			if w := loginAPI(t, f.app, "teen", "password1234").do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true}, true); w.Code != http.StatusOK {
+				t.Fatalf("opt out: %d %s", w.Code, w.Body.String())
+			}
+		}, skipNoGuardianCopy},
+		{"teen no longer a teen account", func(t *testing.T, f composeFixture) {
+			f.app.DB.Model(&models.User{}).Where("id = ?", f.teen.ID).Update("account_type", models.AccountAdult)
+		}, skipNoGuardianCopy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+			f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+			f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+			id := f.failFor(t, map[string]any{"type": "group", "groupId": f.group.ID}, parent)
+			key := "copy:" + parent.Email
+			if r := recipientsOf(t, f.app, id)[key]; r.Status != models.RecipientFailed {
+				t.Fatalf("setup copy: %+v", r)
+			}
+			tc.change(t, f)
+			if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+				t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+			}
+			r := recipientsOf(t, f.app, id)[key]
+			runMessageJobs(t, f.app)
+			if tc.skip == "" {
+				if r.Status != models.RecipientQueued || mailsToAddr(t, f.app, parent.Email) != 1 {
+					t.Fatalf("copy: %+v, mails %d", r, mailsToAddr(t, f.app, parent.Email))
+				}
+				return
+			}
+			if r.Status != models.RecipientSuppressed || r.Reason != tc.skip || r.Error != "" || mailsToAddr(t, f.app, parent.Email) != 0 {
+				t.Fatalf("copy: %+v, mails %d", r, mailsToAddr(t, f.app, parent.Email))
+			}
+		})
+	}
+}
+
+func TestMessageRetryDropsGuardianCopiesWhenGuardianJoinsAudience(t *testing.T) {
+	f := newComposeFixture(t)
+	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	teen := newTestUser(t, f.app, "second-teen", "password1234", models.RoleMember)
+	if err := f.app.DB.Model(teen).Update("account_type", models.AccountTeen).Error; err != nil {
+		t.Fatal(err)
+	}
+	addMember(t, f.app, teen, f.group, models.MembershipMember)
+	for _, child := range []*models.User{f.teen, teen} {
+		if err := f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &child.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	id := f.failFor(t, map[string]any{"type": "group", "groupId": f.group.ID}, parent)
+	var copies []models.MessageRecipient
+	if err := f.app.DB.Where("message_id = ? AND user_id = ? AND copy_of_user_id IS NOT NULL", id, parent.ID).Find(&copies).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(copies) != 2 {
+		t.Fatalf("wanted two copies, got %+v", copies)
+	}
+	before := make(map[uint]int, len(copies))
+	for _, row := range copies {
+		if row.Status != models.RecipientFailed {
+			t.Fatalf("copy did not fail: %+v", row)
+		}
+		before[row.ID] = batchJobsListing(t, f.app, row.ID)
+	}
+	addMember(t, f.app, parent, f.group, models.MembershipMember)
+	if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	if err := f.app.DB.Where("message_id = ? AND user_id = ? AND copy_of_user_id IS NOT NULL", id, parent.ID).Find(&copies).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range copies {
+		if row.Status != models.RecipientSuppressed || row.Reason != skipNoGuardianCopy || row.Error != "" || batchJobsListing(t, f.app, row.ID) != before[row.ID] {
+			t.Fatalf("copy after retry: %+v", row)
+		}
+	}
+	runMessageJobs(t, f.app)
+	if n := mailsToAddr(t, f.app, parent.Email); n != 0 {
+		t.Fatalf("sent %d emails to guardian", n)
+	}
+}
+
+// The audience is read inside the transaction, after the locks: a removal
+// that commits while the press waits for the author's row is honored.
+func TestMessageRetryHonorsARemovalDuringTheLock(t *testing.T) {
+	f := newComposeFixture(t)
+	id, x, y := f.twoFailures(t)
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", "/api/v1/messages/"+itoa(id)+"/retry", nil)
+	waitForAuthorLock(t, f.app)
+	f.setMembership(t, x, models.MembershipRemoved)
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusOK {
+		t.Fatalf("retry: %d %s", r.code, r.body)
+	}
+	rows := recipientsOf(t, f.app, id)
+	if rows[x.Email].Status != models.RecipientSuppressed || rows[x.Email].Reason != skipNoLongerOnList || rows[y.Email].Status != models.RecipientQueued {
+		t.Fatalf("rows: %+v", rows)
+	}
+	runMessageJobs(t, f.app)
+	if mailsToAddr(t, f.app, x.Email) != 0 || mailsToAddr(t, f.app, y.Email) != 1 {
+		t.Fatalf("X %d, Y %d", mailsToAddr(t, f.app, x.Email), mailsToAddr(t, f.app, y.Email))
+	}
+}
+
+// The author's rights are read inside the transaction too: demoted while
+// the press waits, the retry is refused and nothing changes.
+func TestMessageRetryRefusesADemotionDuringTheLock(t *testing.T) {
+	f := newComposeFixture(t)
+	id, x, y := f.twoFailures(t)
+	var before models.Message
+	f.app.DB.First(&before, id)
+	jobs := jobCountFor(t, f.app, kindMessageBatch, id)
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", "/api/v1/messages/"+itoa(id)+"/retry", nil)
+	waitForAuthorLock(t, f.app)
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.leaderUser.ID, f.group.ID).Update("role", models.MembershipMember).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusForbidden || !strings.Contains(r.body, "message_retry_refused") {
+		t.Fatalf("retry: %d %s", r.code, r.body)
+	}
+	var after models.Message
+	f.app.DB.First(&after, id)
+	rows := recipientsOf(t, f.app, id)
+	if rows[x.Email].Status != models.RecipientFailed || rows[y.Email].Status != models.RecipientFailed ||
+		after.Status != before.Status || !after.UpdatedAt.Equal(before.UpdatedAt) ||
+		jobCountFor(t, f.app, kindMessageBatch, id) != jobs || auditCount(t, f.app, audit.MessageRetried) != 0 {
+		t.Fatalf("a refused retry changed things: %+v, rows %+v", after, rows)
+	}
+}
+
+// An admin pressing Try again checks in the author's name, not their own.
+func TestMessageRetryByAnAdminChecksTheAuthorsAudience(t *testing.T) {
+	f := newComposeFixture(t)
+	id, x, y := f.twoFailures(t)
+	f.setMembership(t, x, models.MembershipRemoved)
+	if w := f.retry(f.admin, id); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	rows := recipientsOf(t, f.app, id)
+	if rows[x.Email].Reason != skipNoLongerOnList || rows[y.Email].Status != models.RecipientQueued {
+		t.Fatalf("rows: %+v", rows)
+	}
+}
+
+// The skip reason is counted for a leader and named only for an admin; a
+// guardian copy's reason and the guardian's name never reach a leader.
+func TestMessageRetrySkipReasonPrivacy(t *testing.T) {
+	f := newComposeFixture(t)
+	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	f.app.DB.Model(parent).Update("display_name", "Gail Guardian")
+	parent.DisplayName = "Gail Guardian"
+	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+	x := newTestUser(t, f.app, "xavier", "password1234", models.RoleMember)
+	addMember(t, f.app, x, f.group, models.MembershipMember)
+	id := f.failFor(t, map[string]any{"type": "group", "groupId": f.group.ID}, x, parent)
+	f.setMembership(t, x, models.MembershipRemoved)
+	f.app.DB.Model(&models.GuardianLink{}).Where("teen_user_id = ?", f.teen.ID).Update("status", "revoked")
+	if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	lead, body := f.history(t, f.leader, id)
+	if strings.Contains(body, "@") || strings.Contains(body, parent.PublicName()) || strings.Contains(body, skipNoGuardianCopy) {
+		t.Fatalf("private detail in the leader's history: %s", body)
+	}
+	if lead.SkippedBy[skipNoLongerOnList] != 1 {
+		t.Fatalf("skippedBy: %+v", lead.SkippedBy)
+	}
+	if r := historyRow(lead, x.PublicName()); r.Status != historyMissed || r.Reason != "" {
+		t.Fatalf("leader's row for X: %+v", r)
+	}
+	for _, r := range lead.Recipients {
+		if r.CopyOf != "" {
+			t.Fatalf("a leader sees a guardian copy: %+v", r)
+		}
+	}
+	adm, body := f.history(t, f.admin, id)
+	if strings.Contains(body, "@") || historyRow(adm, x.PublicName()).Reason != skipNoLongerOnList {
+		t.Fatalf("admin's history: %s", body)
+	}
+	copied := false
+	for _, r := range adm.Recipients {
+		copied = copied || (r.Name == parent.PublicName() && r.CopyOf != "" && r.Reason == skipNoGuardianCopy)
+	}
+	if !copied {
+		t.Fatalf("an admin sees no copy reason: %+v", adm.Recipients)
 	}
 }

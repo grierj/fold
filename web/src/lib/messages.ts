@@ -114,6 +114,7 @@ const REASONS: Record<string, [one: string, many: string]> = {
   "no email address": ["has no email address", "have no email address"],
   "email not working": ["has an email address that isn't working", "have email addresses that aren't working"],
   "not active": ["isn't active", "aren't active"],
+  "no longer on the list": ["is no longer on the list", "are no longer on the list"],
   "guest, hasn't asked for updates": ["is a guest who hasn't asked for updates", "are guests who haven't asked for updates"],
 };
 

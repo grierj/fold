@@ -109,6 +109,13 @@ describe("history", () => {
     expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), sent)).toBe("No one was on the list.");
   });
 
+  it("words people who left the list since the send", () => {
+    const h = (by: Record<string, number>, skipped: number) => recipients({ counts: counts({ sent: 5, skipped }), skippedBy: by });
+    expect(historyLine(h({ "no longer on the list": 1 }, 1), sent)).toBe("Sent to 5 people · 1 skipped (1 is no longer on the list)");
+    expect(historyLine(h({ "no longer on the list": 2 }, 2), sent)).toBe("Sent to 5 people · 2 skipped (2 are no longer on the list)");
+    expect(historyLine(h({ "no longer on the list": 1, "turned off messages from leaders": 2 }, 3), sent)).toBe("Sent to 5 people · 3 skipped (2 turned off messages from leaders, 1 is no longer on the list)");
+  });
+
   it("counts the way while it sends", () => {
     expect(historyLine(recipients({ counts: counts({ sent: 38, failed: 2, queued: 92, skipped: 9 }) }), sending)).toBe("Sending… 40 of 132 so far");
     expect(historyLine(recipients({ counts: counts({ sent: 128, queued: 4 }) }), { status: "sending", sentAt: "2026-11-02T16:00:00Z" })).toBe("Sending again… 128 of 132 so far");
