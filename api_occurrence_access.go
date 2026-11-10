@@ -52,6 +52,54 @@ func (a *App) scopedOccurrenceReads(viewer *models.User, q *gorm.DB, now time.Ti
 	return out, nil
 }
 
+// scopedInviteProbeBatch bounds one statement of the hidden-series existence
+// probe below: at most this many occurrence ids are listed, and at most this
+// many of the viewer's own live grants are validated, per round.
+const scopedInviteProbeBatch = 50
+
+// hasScopedUntitledRead reports whether any scheduled occurrence of eventID
+// with no title of its own is visible to viewer through an exact-date
+// invitation. It pages only the viewer's live-grant candidates by date id and validates
+// each page with scopedOccurrenceReads, the same loader and policy the date
+// page uses, stopping at the first page with a hit. A load error is returned,
+// never read as "not visible". Paging the dates (never capping the grants)
+// keeps every statement bounded however many dates the event keeps, and every
+// candidate is still fully validated, so an invalid earlier grant never hides
+// a valid later one; only exhausting every page answers false. Like the other
+// read loaders here, it claims no transaction or snapshot: a grant committed
+// while the pages load may or may not affect the answer, and the next load
+// rechecks.
+func (a *App) hasScopedUntitledRead(viewer *models.User, eventID uint, now time.Time) (bool, error) {
+	if viewer == nil {
+		return false, nil
+	}
+	var lastID uint
+	for {
+		var ids []uint
+		grants := a.DB.Model(&models.Registration{}).Select("occurrence_id").
+			Where("registrations.user_id = ? AND "+registrationAccessLiveSQL, viewer.ID)
+		if err := a.DB.Model(&models.EventOccurrence{}).
+			Where("event_id = ? AND status = ? AND title_override IS NULL AND id > ? AND id IN (?)", eventID, models.OccurrenceScheduled, lastID, grants).
+			Order("id").Limit(scopedInviteProbeBatch).Pluck("id", &ids).Error; err != nil {
+			return false, err
+		}
+		if len(ids) == 0 {
+			return false, nil
+		}
+		scoped, err := a.scopedOccurrenceReads(viewer, a.DB.Where("id IN ?", ids), now)
+		if err != nil {
+			return false, err
+		}
+		if len(scoped) > 0 {
+			return true, nil
+		}
+		lastID = ids[len(ids)-1]
+		if len(ids) < scopedInviteProbeBatch {
+			return false, nil
+		}
+	}
+}
+
 // occurrenceInvitationReadsIn batches current exact-date authority. Its keys are
 // registration IDs, so a collection of different recipients never shares
 // authority. The rows are registrations carrying live provenance; event and
