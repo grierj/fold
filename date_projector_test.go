@@ -176,7 +176,14 @@ func (f *projectorFixture) normalize(s string) string {
 		if err != nil {
 			return m
 		}
-		return fmt.Sprintf("D%+d", int(d.Sub(f.base).Hours()/24))
+		days := int(d.Sub(f.base).Hours() / 24)
+		// A date far from today is a constant of the output (the VTIMEZONE
+		// onset 19700101), not a moving fixture date; rewriting it would
+		// change the golden every midnight.
+		if days < -3650 || days > 3650 {
+			return m
+		}
+		return fmt.Sprintf("D%+d", days)
 	})
 }
 
