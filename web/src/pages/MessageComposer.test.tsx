@@ -265,6 +265,19 @@ describe("MessageComposerPage", () => {
     expect(Messages.get).toHaveBeenCalledTimes(2);
   });
 
+  it("reads a message again when its people changed under the schedule press", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.schedule).mockRejectedValueOnce(new ApiError(409, "this message was changed somewhere else", { code: "message_changed" }));
+    open("/messages/5");
+    await editorReady();
+    await user.click(screen.getByRole("button", { name: "Send now" }));
+    const ask = await screen.findByRole("group", { name: "Send to 2 people now?" });
+    vi.mocked(Messages.get).mockClear();
+    await user.click(within(ask).getByRole("button", { name: "Send now" }));
+    expect(await screen.findByText(ERROR_COPY.message_changed)).toBeInTheDocument();
+    expect(Messages.get).toHaveBeenCalledWith(5);
+  });
+
   it("waits for the church's zone before filling a scheduled time", async () => {
     const user = userEvent.setup();
     let answer!: (v: unknown) => void;
@@ -442,6 +455,20 @@ describe("a sent message's history", () => {
     expect(document.querySelector(".sr-only[role=status]")?.textContent).toBe("");
     expect(screen.queryByText("This message didn't go out")).toBeNull();
     ask.mockRestore();
+  });
+
+  it("shows the retry limit beside Try again", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, failedCount: 4 }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 0, failed: 4 }), canRetry: true }));
+    vi.mocked(Messages.retry).mockRejectedValueOnce(new ApiError(400, "daily limit", { code: "message_retry_daily_limit" }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    open("/messages/5");
+    await user.click(await screen.findByRole("button", { name: "Try again" }));
+    const error = await screen.findByText(ERROR_COPY.message_retry_daily_limit);
+    const button = screen.getByRole("button", { name: "Try again" });
+    expect(button.parentElement).toContainElement(error);
+    confirm.mockRestore();
   });
 
   it("counts a partly sent message's people and guardian copies apart, in the banner and the confirm", async () => {

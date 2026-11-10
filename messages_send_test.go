@@ -1113,3 +1113,376 @@ func TestBatchChoiceReadFailureKeepsTheRowQueued(t *testing.T) {
 		t.Fatalf("failed read changed row: %+v", got)
 	}
 }
+
+// holdUserRow takes a user's row FOR NO KEY UPDATE in a transaction of its
+// own, which conflicts with lockActorIn but lets a foreign key's FOR KEY SHARE
+// through. The caller ends the hold with Commit or Rollback; a test that fails
+// first rolls it back.
+func holdUserRow(t *testing.T, app *App, userID uint) *gorm.DB {
+	t.Helper()
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", userID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}
+
+// waitForAuthorLock waits until a request is blocked on a users row it takes
+// FOR NO KEY UPDATE (lockActorIn).
+func waitForAuthorLock(t *testing.T, app *App) {
+	t.Helper()
+	waitForLockedUsersQuery(t, app, "%users%FOR NO KEY UPDATE%")
+}
+
+// countedOn counts the leader's scheduled, sending and sent messages for a
+// group on the church day of when: what dailyLimitReached counts.
+func (f composeFixture) countedOn(t *testing.T, gid uint, when time.Time) int64 {
+	t.Helper()
+	loc := churchZoneOrUTC(f.app.DB)
+	local := when.In(loc)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	var n int64
+	if err := f.app.DB.Model(&models.Message{}).Where("author_id = ? AND status IN ? AND audience->>'groupId' = ? AND scheduled_at >= ? AND scheduled_at < ?",
+		f.leaderUser.ID, []string{models.MessageScheduled, models.MessageSending, models.MessageSent}, itoa(gid), start, start.AddDate(0, 0, 1)).
+		Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// scheduleAt drafts a message to the group and schedules it for when.
+func (f composeFixture) scheduleAt(t *testing.T, c *apiClient, gid uint, when time.Time) uint {
+	t.Helper()
+	path := f.draft(t, c, "Later", "<p>Hi</p>", map[string]any{"type": "group", "groupId": gid})
+	if w := c.do("POST", path+"/schedule", map[string]any{"scheduledAt": when}, true); w.Code != http.StatusOK {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	return idOfPath(t, path)
+}
+
+// idOfPath is the message id at the end of a draft's path.
+func idOfPath(t *testing.T, path string) uint {
+	t.Helper()
+	n, err := strconv.ParseUint(strings.TrimPrefix(path, "/api/v1/messages/"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uint(n)
+}
+
+// jobIDsOf are the message ids of the queued jobs of one kind.
+func jobIDsOf(t *testing.T, app *App, kind string) []string {
+	t.Helper()
+	var ids []string
+	if err := app.DB.Raw("SELECT payload->>'messageId' FROM jobs WHERE kind = ? ORDER BY id", kind).Scan(&ids).Error; err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func jobCountFor(t *testing.T, app *App, kind string, id uint) int {
+	t.Helper()
+	n := 0
+	for _, got := range jobIDsOf(t, app, kind) {
+		if got == itoa(id) {
+			n++
+		}
+	}
+	return n
+}
+
+func auditCountFor(t *testing.T, app *App, action string, id uint) int64 {
+	t.Helper()
+	var n int64
+	if err := app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'message' AND target_id = ?", action, id).Count(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Eight schedules by one author race for the three slots left: the author's
+// users row serializes each count with its write, so exactly three win (#260).
+func TestMessageDailyLimitSerializesConcurrentSchedules(t *testing.T) {
+	f := newComposeFixture(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range 2 {
+		f.scheduleNow(t, f.leader, "Early", "<p>Hi</p>", aud)
+	}
+	const n = 8
+	paths := make([]string, n)
+	clients := make([]*apiClient, n)
+	for i := range n {
+		paths[i] = f.draft(t, f.leader, "Race", "<p>Hi</p>", aud)
+	}
+	for i := range n {
+		clients[i] = loginAPI(t, f.app, "leader", "password1234")
+	}
+	results := make([]httpResult, n)
+	slots := make(inFlight, maxRaceInFlight)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer slots.enter()()
+			w := clients[i].do("POST", paths[i]+"/schedule", map[string]any{}, true)
+			results[i] = httpResult{w.Code, w.Body.String()}
+		}()
+	}
+	wg.Wait()
+	ok, full := 0, 0
+	for i, r := range results {
+		switch {
+		case r.code == http.StatusOK:
+			ok++
+		case r.code == http.StatusBadRequest && strings.Contains(r.body, "message_daily_limit"):
+			full++
+		default:
+			t.Fatalf("request %d: %d %s", i, r.code, r.body)
+		}
+	}
+	if ok != 3 || full != 5 {
+		t.Fatalf("answers: %d ok, %d refused", ok, full)
+	}
+	if got := f.countedOn(t, f.group.ID, time.Now()); got != int64(dailyMessagesPerGroup) {
+		t.Fatalf("counted messages = %d, want %d", got, dailyMessagesPerGroup)
+	}
+	var counted []uint
+	if err := f.app.DB.Model(&models.Message{}).Where("author_id = ? AND status IN ?", f.leaderUser.ID,
+		[]string{models.MessageScheduled, models.MessageSending, models.MessageSent}).Pluck("id", &counted).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, id := range counted {
+		want[itoa(id)] = true
+	}
+	got := jobIDsOf(t, f.app, kindMessageSend)
+	if len(got) != dailyMessagesPerGroup {
+		t.Fatalf("message.send jobs = %v, want one for each of %v", got, counted)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Fatalf("a message.send job for message %s, which is not counted: %v", id, counted)
+		}
+	}
+}
+
+// A schedule waits for the author's row while another schedule holds it, and
+// then counts what that one committed.
+func TestMessageDailyLimitWaitsForTheAuthorLock(t *testing.T) {
+	f := newComposeFixture(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Early", "<p>Hi</p>", aud)
+	}
+	pathA := f.draft(t, f.leader, "A", "<p>Hi</p>", aud)
+	pathB := f.draft(t, f.leader, "B", "<p>Hi</p>", aud)
+	other := loginAPI(t, f.app, "leader", "password1234")
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.app.hooks.messageLimitAfterCount = func(*gorm.DB) {
+		once.Do(func() { close(reached) })
+		<-release
+	}
+	a := bgDo(f.leader, "POST", pathA+"/schedule", map[string]any{})
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("request A never reached its count")
+	}
+	b := bgDo(other, "POST", pathB+"/schedule", map[string]any{})
+	waitForAuthorLock(t, f.app)
+	close(release)
+	if r := awaitResult(t, a); r.code != http.StatusOK {
+		t.Fatalf("A: %d %s", r.code, r.body)
+	}
+	if r := awaitResult(t, b); r.code != http.StatusBadRequest || !strings.Contains(r.body, "message_daily_limit") {
+		t.Fatalf("B: %d %s", r.code, r.body)
+	}
+	if got := f.countedOn(t, f.group.ID, time.Now()); got != int64(dailyMessagesPerGroup) {
+		t.Fatalf("counted messages = %d", got)
+	}
+}
+
+// secondGroup is another approved group the leader leads, with a member who
+// can get email.
+func (f composeFixture) secondGroup(t *testing.T) models.Group {
+	t.Helper()
+	g := activeGroup(t, f.app, f.leaderUser, "Second", models.VisibilityPublic, "")
+	member := newTestUser(t, f.app, "second-member", "password1234", models.RoleMember)
+	addMember(t, f.app, member, &g, models.MembershipMember)
+	return g
+}
+
+// An edit that moves a scheduled message into a full group and a new schedule
+// into the same group race for the last slot: one wins, whichever starts first.
+func TestMessageDailyLimitEditAndScheduleRace(t *testing.T) {
+	f := newComposeFixture(t)
+	second := f.secondGroup(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Early", "<p>Hi</p>", aud)
+	}
+	moving := f.scheduleNow(t, f.leader, "Moving", "<p>Hi</p>", map[string]any{"type": "group", "groupId": second.ID})
+	path := f.draft(t, f.leader, "New", "<p>Hi</p>", aud)
+	editor := loginAPI(t, f.app, "leader", "password1234")
+	edit := bgDo(editor, "PUT", "/api/v1/messages/"+itoa(moving), map[string]any{"subject": "Moving", "bodyHtml": "<p>Hi</p>", "audience": aud})
+	schedule := bgDo(f.leader, "POST", path+"/schedule", map[string]any{})
+	results := []httpResult{awaitResult(t, edit), awaitResult(t, schedule)}
+	ok, full := 0, 0
+	for _, r := range results {
+		switch {
+		case r.code == http.StatusOK:
+			ok++
+		case r.code == http.StatusBadRequest && strings.Contains(r.body, "message_daily_limit"):
+			full++
+		default:
+			t.Fatalf("answer: %d %s", r.code, r.body)
+		}
+	}
+	if ok != 1 || full != 1 {
+		t.Fatalf("answers: %+v", results)
+	}
+	if got := f.countedOn(t, f.group.ID, time.Now()); got != int64(dailyMessagesPerGroup) {
+		t.Fatalf("counted messages = %d, want %d", got, dailyMessagesPerGroup)
+	}
+}
+
+// A schedule whose audience changed between its load and its lock is refused
+// rather than counted against the wrong people.
+func TestMessageScheduleRefusesAudienceChangedUnderLock(t *testing.T) {
+	f := newComposeFixture(t)
+	second := f.secondGroup(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Early", "<p>Hi</p>", aud)
+	}
+	path := f.draft(t, f.leader, "Fifth", "<p>Hi</p>", aud)
+	id := idOfPath(t, path)
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", path+"/schedule", map[string]any{})
+	waitForAuthorLock(t, f.app)
+	if err := f.app.DB.Exec(`UPDATE messages SET audience = ?::jsonb WHERE id = ?`,
+		`{"type":"group","groupId":`+itoa(second.ID)+`}`, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusConflict || !strings.Contains(r.body, "message_changed") {
+		t.Fatalf("schedule: %d %s", r.code, r.body)
+	}
+	var m models.Message
+	if err := f.app.DB.First(&m, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if m.Status != models.MessageDraft || m.ScheduledAt != nil {
+		t.Fatalf("message: %+v", m)
+	}
+	if jobCountFor(t, f.app, kindMessageSend, m.ID) != 0 || auditCountFor(t, f.app, audit.MessageScheduled, m.ID) != 0 {
+		t.Fatal("a refused schedule left a job or an audit row")
+	}
+}
+
+// A scheduled message's edit counts again under the lock, with the status and
+// the date it finds there.
+func TestMessageEditRecountsUnderLock(t *testing.T) {
+	body := func(gid uint) map[string]any {
+		return map[string]any{"subject": "Edited", "bodyHtml": "<p>Hi</p>", "audience": map[string]any{"type": "group", "groupId": gid}}
+	}
+	t.Run("cancelled meanwhile", func(t *testing.T) {
+		f := newComposeFixture(t)
+		id := f.scheduleNow(t, f.leader, "Later", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+		hold := holdUserRow(t, f.app, f.leaderUser.ID)
+		res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "PUT", "/api/v1/messages/"+itoa(id), body(f.group.ID))
+		waitForAuthorLock(t, f.app)
+		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/cancel", nil, true); w.Code != http.StatusOK {
+			t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+		}
+		if err := hold.Rollback().Error; err != nil {
+			t.Fatal(err)
+		}
+		if r := awaitResult(t, res); r.code != http.StatusConflict || !strings.Contains(r.body, "message_locked") {
+			t.Fatalf("edit: %d %s", r.code, r.body)
+		}
+		var m models.Message
+		f.app.DB.First(&m, id)
+		if m.Status != models.MessageCancelled || auditCountFor(t, f.app, audit.MessageEdited, id) != 0 {
+			t.Fatalf("message %+v", m)
+		}
+	})
+	t.Run("moved to a full day", func(t *testing.T) {
+		f := newComposeFixture(t)
+		second := f.secondGroup(t)
+		tomorrow := time.Now().Add(24 * time.Hour)
+		for range dailyMessagesPerGroup {
+			f.scheduleAt(t, f.leader, f.group.ID, tomorrow)
+		}
+		moving := f.scheduleNow(t, f.leader, "Moving", "<p>Hi</p>", map[string]any{"type": "group", "groupId": second.ID})
+		hold := holdUserRow(t, f.app, f.leaderUser.ID)
+		res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "PUT", "/api/v1/messages/"+itoa(moving), body(f.group.ID))
+		waitForAuthorLock(t, f.app)
+		if err := f.app.DB.Exec("UPDATE messages SET scheduled_at = scheduled_at + interval '24 hours' WHERE id = ?", moving).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := hold.Rollback().Error; err != nil {
+			t.Fatal(err)
+		}
+		if r := awaitResult(t, res); r.code != http.StatusBadRequest || !strings.Contains(r.body, "message_daily_limit") {
+			t.Fatalf("edit: %d %s", r.code, r.body)
+		}
+		var m models.Message
+		f.app.DB.First(&m, moving)
+		if !strings.Contains(m.Audience, `"groupId": `+itoa(second.ID)+`}`) && !strings.Contains(m.Audience, `"groupId": `+itoa(second.ID)+`,`) {
+			t.Fatalf("audience changed: %s", m.Audience)
+		}
+	})
+}
+
+// The 401 comes from lockActorIn inside the transaction: the session was
+// still current when the middleware read it, and ended while the request
+// waited for the author's row.
+func TestMessageScheduleStaleActorUnderLock(t *testing.T) {
+	f := newComposeFixture(t)
+	path := f.draft(t, f.leader, "Stale", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", path+"/schedule", map[string]any{})
+	waitForAuthorLock(t, f.app)
+	if err := hold.Exec("UPDATE users SET session_version = session_version + 1 WHERE id = ?", f.leaderUser.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusUnauthorized {
+		t.Fatalf("schedule: %d %s", r.code, r.body)
+	}
+	var m models.Message
+	f.app.DB.First(&m, idOfPath(t, path))
+	if m.Status != models.MessageDraft || len(jobIDsOf(t, f.app, kindMessageSend)) != 0 || auditCount(t, f.app, audit.MessageScheduled) != 0 {
+		t.Fatalf("a stale session scheduled: %+v", m)
+	}
+}
+
+// The retry's refusal names the limit and says it can go out tomorrow.
+func TestRetryDailyLimitCopyMatches(t *testing.T) {
+	b, err := os.ReadFile("web/src/lib/errors.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, "message_retry_daily_limit:") {
+			line = l
+		}
+	}
+	n := strconv.Itoa(dailyMessagesPerGroup)
+	if line == "" || !strings.Contains(line, "already sent "+n+" messages") || strings.Contains(line, "Schedule this one for tomorrow") ||
+		!strings.Contains(errMessageRetryDailyLimit.Message, n) {
+		t.Fatalf("the message_retry_daily_limit copy doesn't match dailyMessagesPerGroup: %q", line)
+	}
+}

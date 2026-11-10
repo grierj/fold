@@ -197,12 +197,13 @@ export function MessageComposerPage() {
   }
 
   // place shows a server error under its field, or with the buttons. A
-  // message that started sending meanwhile is read again and shown read only.
+  // message that started sending meanwhile (message_locked), or whose people
+  // changed under the schedule press (message_changed), is read again.
   function place(err: unknown, fallback: string, where: keyof Errors = "form") {
     const code = errorCode(err);
     const field = code ? FIELD_OF[code] : undefined;
     const text = errorText(err, fallback);
-    if (code === "message_locked" && message && options) {
+    if ((code === "message_locked" || code === "message_changed") && message && options) {
       Messages.get(message.id)
         .then(({ message: m }) => {
           markSaved();

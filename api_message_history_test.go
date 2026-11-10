@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -313,5 +314,245 @@ func TestMessageFailsAtOnceWithNoEmailService(t *testing.T) {
 	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindMessageBatch).Pluck("attempts", &attempts)
 	if m.Status != models.MessageFailed || m.Error != whyNoSender || attempts != 1 {
 		t.Fatalf("message %+v after %d attempts", m, attempts)
+	}
+}
+
+// neverPrepared inserts a failed leader message that never got its recipients,
+// for the group, the way TestMessageRetryWhenItNeverGotReady does.
+func (f composeFixture) neverPrepared(t *testing.T) models.Message {
+	t.Helper()
+	at := time.Now().Add(-2 * time.Hour)
+	m := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageFailed, Subject: "Again", BodyHTML: "<p>Hi</p>", BodyText: "Hi",
+		Audience: `{"type":"group","groupId":` + itoa(f.group.ID) + `,"roles":["member","leader"]}`, ScheduledAt: &at, Error: whyNotPreparedM35a}
+	if err := f.app.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.First(&m, m.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// fillToday inserts n scheduled leader messages for the group, today, as rows
+// the daily limit counts.
+func (f composeFixture) fillToday(t *testing.T, n int) {
+	t.Helper()
+	now := time.Now()
+	for range n {
+		m := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageScheduled, Subject: "Filler", ScheduledAt: &now,
+			Audience: `{"type":"group","groupId":` + itoa(f.group.ID) + `}`}
+		if err := f.app.DB.Create(&m).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (f composeFixture) retry(c *apiClient, id uint) *httptest.ResponseRecorder {
+	return c.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true)
+}
+
+// A never-prepared message goes back into today's slots, so the limit judges
+// its retry; an admin has no limit.
+func TestMessageRetryDailyLimitNeverPrepared(t *testing.T) {
+	f := newComposeFixture(t)
+	m := f.neverPrepared(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup {
+		f.scheduleNow(t, f.leader, "Counted", "<p>Hi</p>", aud)
+	}
+	w := f.retry(f.leader, m.ID)
+	if w.Code != http.StatusBadRequest || errorCodeOf(w) != "message_retry_daily_limit" || strings.Contains(w.Body.String(), "Schedule this one for tomorrow") {
+		t.Fatalf("leader retry: %d %s", w.Code, w.Body.String())
+	}
+	var after models.Message
+	f.app.DB.First(&after, m.ID)
+	if after.Status != models.MessageFailed || after.Error != m.Error || after.ScheduledAt == nil || !after.ScheduledAt.Equal(*m.ScheduledAt) ||
+		jobCountFor(t, f.app, kindMessageSend, m.ID) != 0 || auditCountFor(t, f.app, audit.MessageRetried, m.ID) != 0 {
+		t.Fatalf("a refused retry changed the message: %+v", after)
+	}
+	if w := f.retry(f.admin, m.ID); w.Code != http.StatusOK {
+		t.Fatalf("admin retry: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.First(&after, m.ID)
+	if after.Status != models.MessageScheduled || after.ScheduledAt == nil || time.Since(*after.ScheduledAt) > time.Minute ||
+		jobCountFor(t, f.app, kindMessageSend, m.ID) != 1 {
+		t.Fatalf("admin retry left: %+v", after)
+	}
+}
+
+// A retry to the people a send failed for is refused only when the author's
+// other messages already fill the day.
+func TestMessageRetryDailyLimitFailedRows(t *testing.T) {
+	f := newComposeFixture(t)
+	id := f.sendWithOneFailure(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Counted", "<p>Hi</p>", aud)
+	}
+	if w := f.retry(f.leader, id); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"sending"`) {
+		t.Fatalf("retry with room: %d %s", w.Code, w.Body.String())
+	}
+	if rows := recipientsOf(t, f.app, id); rows[f.leaderUser.Email].Status != models.RecipientQueued {
+		t.Fatalf("rows: %+v", rows)
+	}
+	if auditCount(t, f.app, audit.MessageRetried) != 1 {
+		t.Fatal("the retry wasn't audited")
+	}
+
+	g := newComposeFixture(t)
+	id = g.sendWithOneFailure(t)
+	g.fillToday(t, dailyMessagesPerGroup)
+	batches := len(jobIDsOf(t, g.app, kindMessageBatch))
+	w := g.retry(g.leader, id)
+	if w.Code != http.StatusBadRequest || errorCodeOf(w) != "message_retry_daily_limit" {
+		t.Fatalf("retry of a full day: %d %s", w.Code, w.Body.String())
+	}
+	var m models.Message
+	g.app.DB.First(&m, id)
+	if m.Status != models.MessageSent || recipientsOf(t, g.app, id)[g.leaderUser.Email].Status != models.RecipientFailed ||
+		len(jobIDsOf(t, g.app, kindMessageBatch)) != batches || auditCount(t, g.app, audit.MessageRetried) != 0 {
+		t.Fatalf("a refused retry changed things: %+v", m)
+	}
+}
+
+// A retry is charged to the day it goes out on: a message first sent
+// yesterday takes one of today's five slots when it is retried today.
+func TestMessageRetryDailyLimitFailedRowsPriorDay(t *testing.T) {
+	prior := func(f composeFixture, id uint) {
+		t.Helper()
+		if err := f.app.DB.Exec("UPDATE messages SET scheduled_at = scheduled_at - interval '24 hours' WHERE id = ?", id).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := newComposeFixture(t)
+	id := f.sendWithOneFailure(t)
+	prior(f, id)
+	var before models.Message
+	f.app.DB.First(&before, id)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Counted", "<p>Hi</p>", aud)
+	}
+	if w := f.retry(f.leader, id); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	var m models.Message
+	f.app.DB.First(&m, id)
+	if m.Status != models.MessageSending || recipientsOf(t, f.app, id)[f.leaderUser.Email].Status != models.RecipientQueued ||
+		m.ScheduledAt == nil || time.Since(*m.ScheduledAt) > time.Minute || m.SentAt == nil || !m.SentAt.Equal(*before.SentAt) {
+		t.Fatalf("after retry: %+v", m)
+	}
+	path := f.draft(t, f.leader, "One more", "<p>Hi</p>", aud)
+	if w := f.leader.do("POST", path+"/schedule", map[string]any{}, true); w.Code != http.StatusBadRequest || errorCodeOf(w) != "message_daily_limit" {
+		t.Fatalf("a further schedule: %d %s", w.Code, w.Body.String())
+	}
+	if got := f.countedOn(t, f.group.ID, time.Now()); got != int64(dailyMessagesPerGroup) {
+		t.Fatalf("counted today = %d, including the retried one", got)
+	}
+
+	g := newComposeFixture(t)
+	id = g.sendWithOneFailure(t)
+	prior(g, id)
+	g.app.DB.First(&before, id)
+	g.fillToday(t, dailyMessagesPerGroup)
+	batches := len(jobIDsOf(t, g.app, kindMessageBatch))
+	if w := g.retry(g.leader, id); w.Code != http.StatusBadRequest || errorCodeOf(w) != "message_retry_daily_limit" {
+		t.Fatalf("retry of a full day: %d %s", w.Code, w.Body.String())
+	}
+	g.app.DB.First(&m, id)
+	if m.Status != models.MessageSent || !m.ScheduledAt.Equal(*before.ScheduledAt) || recipientsOf(t, g.app, id)[g.leaderUser.Email].Status != models.RecipientFailed ||
+		len(jobIDsOf(t, g.app, kindMessageBatch)) != batches || auditCount(t, g.app, audit.MessageRetried) != 0 {
+		t.Fatalf("a refused retry changed things: %+v", m)
+	}
+}
+
+// A retry and a schedule by one author race for the last slot: one wins.
+func TestMessageRetryAndScheduleSerialize(t *testing.T) {
+	f := newComposeFixture(t)
+	aud := map[string]any{"type": "group", "groupId": f.group.ID}
+	for range dailyMessagesPerGroup - 1 {
+		f.scheduleNow(t, f.leader, "Counted", "<p>Hi</p>", aud)
+	}
+	stuck := f.neverPrepared(t)
+	path := f.draft(t, f.leader, "Draft", "<p>Hi</p>", aud)
+	other := loginAPI(t, f.app, "leader", "password1234")
+	retry := bgDo(f.leader, "POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil)
+	schedule := bgDo(other, "POST", path+"/schedule", map[string]any{})
+	r, s := awaitResult(t, retry), awaitResult(t, schedule)
+	retried, scheduled := r.code == http.StatusOK, s.code == http.StatusOK
+	if retried == scheduled {
+		t.Fatalf("retry %d %s, schedule %d %s", r.code, r.body, s.code, s.body)
+	}
+	if !retried && (r.code != http.StatusBadRequest || !strings.Contains(r.body, "message_retry_daily_limit")) ||
+		!scheduled && (s.code != http.StatusBadRequest || !strings.Contains(s.body, "message_daily_limit")) {
+		t.Fatalf("refusal: retry %d %s, schedule %d %s", r.code, r.body, s.code, s.body)
+	}
+	if got := f.countedOn(t, f.group.ID, time.Now()); got != int64(dailyMessagesPerGroup) {
+		t.Fatalf("counted today = %d", got)
+	}
+	var lost models.Message
+	if retried {
+		f.app.DB.First(&lost, idOfPath(t, path))
+		if lost.Status != models.MessageDraft || lost.ScheduledAt != nil {
+			t.Fatalf("the losing schedule changed: %+v", lost)
+		}
+	} else {
+		f.app.DB.First(&lost, stuck.ID)
+		if lost.Status != models.MessageFailed || !lost.ScheduledAt.Equal(*stuck.ScheduledAt) || auditCountFor(t, f.app, audit.MessageRetried, stuck.ID) != 0 {
+			t.Fatalf("the losing retry changed: %+v", lost)
+		}
+	}
+}
+
+// The 401 comes from lockActorIn inside the retry's transaction: the session
+// was current when the middleware read it and ended while the press waited.
+func TestMessageRetryStaleActorUnderLock(t *testing.T) {
+	f := newComposeFixture(t)
+	m := f.neverPrepared(t)
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil)
+	waitForAuthorLock(t, f.app)
+	if err := hold.Exec("UPDATE users SET session_version = session_version + 1 WHERE id = ?", f.leaderUser.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusUnauthorized {
+		t.Fatalf("retry: %d %s", r.code, r.body)
+	}
+	var after models.Message
+	f.app.DB.First(&after, m.ID)
+	if after.Status != models.MessageFailed || !after.UpdatedAt.Equal(m.UpdatedAt) || jobCountFor(t, f.app, kindMessageSend, m.ID) != 0 ||
+		auditCount(t, f.app, audit.MessageRetried) != 0 {
+		t.Fatalf("a stale session retried: %+v", after)
+	}
+}
+
+// The press is judged on the snapshot its counts came from: a message that
+// changed while it waited answers as if someone else had pressed first.
+func TestMessageRetryRechecksItsSnapshot(t *testing.T) {
+	f := newComposeFixture(t)
+	m := f.neverPrepared(t)
+	hold := holdUserRow(t, f.app, f.leaderUser.ID)
+	res := bgDo(loginAPI(t, f.app, "leader", "password1234"), "POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil)
+	waitForAuthorLock(t, f.app)
+	if err := f.app.DB.Exec("UPDATE messages SET status = ?, updated_at = updated_at + interval '1 second' WHERE id = ?", models.MessageSent, m.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Create(&models.MessageRecipient{MessageID: m.ID, UserID: f.teen.ID, Status: models.RecipientFailed, Address: f.teen.Email}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if r := awaitResult(t, res); r.code != http.StatusConflict || !strings.Contains(r.body, "message_nothing_to_retry") {
+		t.Fatalf("retry: %d %s", r.code, r.body)
+	}
+	var after models.Message
+	f.app.DB.First(&after, m.ID)
+	if after.Status != models.MessageSent || !after.ScheduledAt.Equal(*m.ScheduledAt) || jobCountFor(t, f.app, kindMessageSend, m.ID) != 0 ||
+		auditCount(t, f.app, audit.MessageRetried) != 0 {
+		t.Fatalf("a changed message was retried: %+v", after)
 	}
 }

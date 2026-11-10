@@ -798,19 +798,31 @@ const dailyMessagesPerGroup = 5
 
 var errMessageDailyLimit = apiErr(http.StatusBadRequest, "message_daily_limit", fmt.Sprintf("you've sent %d messages to these people today", dailyMessagesPerGroup))
 
-func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when time.Time) (bool, error) {
+// errMessageRetryDailyLimit refuses "Try again" on an announcement when its
+// author has already reached the daily limit for those people.
+var errMessageRetryDailyLimit = apiErr(http.StatusBadRequest, "message_retry_daily_limit", fmt.Sprintf("you've sent %d messages to these people today, so this one can't go out again until tomorrow", dailyMessagesPerGroup))
+
+// dailyLimitReached says whether me already has dailyMessagesPerGroup other
+// scheduled, sending or sent messages for au's people on when's church day.
+// Every read uses db. The caller holds the actor's users row (lockActorIn
+// with actorNoKeyUpdate) in db's transaction: for a non-admin that actor is
+// the message's author (loadOwnMessage for schedule and edit, loadMessage for
+// an announcement's retry), so at READ COMMITTED the count's snapshot includes
+// every schedule committed by an earlier holder of the lock. me is the freshly
+// locked row; admins have no limit.
+func (a *App) dailyLimitReached(db *gorm.DB, me *models.User, id uint, au audienceJSON, when time.Time) (bool, error) {
 	if policy.IsAdmin(asPerson(me)) {
 		return false, nil
 	}
-	keys, err := a.audienceKeys(au)
+	keys, err := a.audienceKeys(db, au)
 	if err != nil || len(keys) == 0 {
 		return false, err
 	}
-	loc := churchZoneOrUTC(a.DB)
+	loc := churchZoneOrUTC(db)
 	local := when.In(loc)
 	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 	var others []models.Message
-	if err := a.DB.Select("id, audience").Where("author_id = ? AND id <> ? AND status IN ? AND scheduled_at >= ? AND scheduled_at < ?",
+	if err := db.Select("id, audience").Where("author_id = ? AND id <> ? AND status IN ? AND scheduled_at >= ? AND scheduled_at < ?",
 		me.ID, id, []string{models.MessageScheduled, models.MessageSending, models.MessageSent}, start, start.AddDate(0, 0, 1)).
 		Find(&others).Error; err != nil {
 		return false, err
@@ -819,7 +831,7 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 	for _, o := range others {
 		var oau audienceJSON
 		_ = json.Unmarshal([]byte(o.Audience), &oau)
-		oks, err := a.audienceKeys(oau)
+		oks, err := a.audienceKeys(db, oau)
 		if err != nil {
 			return false, err
 		}
@@ -837,16 +849,16 @@ func (a *App) dailyLimitReached(me *models.User, id uint, au audienceJSON, when 
 
 // audienceKeys names whose people an audience reaches, for the limit: a
 // group ("g<id>", including its events) or a church-wide event ("e<id>").
-func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
+func (a *App) audienceKeys(db *gorm.DB, au audienceJSON) ([]string, error) {
 	if au.Type == policy.AudienceGroup {
 		return []string{"g" + idString(au.GroupID)}, nil
 	}
-	ids, err := a.audienceEventIDs(a.DB, au)
+	ids, err := a.audienceEventIDs(db, au)
 	if err != nil || len(ids) == 0 {
 		return nil, nil
 	}
 	var evs []models.Event
-	if err := a.DB.Unscoped().Select("id, group_id").Where("id IN ?", ids).Find(&evs).Error; err != nil {
+	if err := db.Unscoped().Select("id, group_id").Where("id IN ?", ids).Find(&evs).Error; err != nil {
 		return nil, err
 	}
 	out := []string{}

@@ -456,6 +456,13 @@ func TestReminderRetryForManagers(t *testing.T) {
 	if w := retry(f.leader); w.Code != http.StatusOK {
 		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
 	}
+	var afterRetry models.Message
+	if err := f.app.DB.First(&afterRetry, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.ScheduledAt == nil || afterRetry.ScheduledAt == nil || !saved.ScheduledAt.Equal(*afterRetry.ScheduledAt) {
+		t.Fatalf("reminder schedule changed on retry: before %v, after %v", saved.ScheduledAt, afterRetry.ScheduledAt)
+	}
 	runMessageJobs(t, f.app)
 	if n := len(reminderMails(t, f.app, outsider.Email)); n != 1 {
 		t.Fatalf("outsider got %d", n)
