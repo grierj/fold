@@ -108,7 +108,7 @@ type ctgRun struct {
 // parser resolves within one file only; a name declared in another file has no
 // object and is never bound.
 //
-//lint:ignore SA1019 Parse-only guard uses parser-local bindings, not type identity; unresolved flows are documented in ctgLimits and AGENTS.md.
+//lint:ignore SA1019 Parse-only guard uses parser-local bindings, not type identity; unresolved flows are documented in ctgLimits.
 type ctgObject = ast.Object
 
 // ctgObj returns the object an identifier declares or refers to, or nil.

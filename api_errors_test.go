@@ -287,8 +287,8 @@ var (
 
 // The answers clients and the SPA act on by status as well as code: sign-in
 // lockout and the leader's invitation limit are the only 429s (DEC-52), a stale
-// session is 401, and the deletion outcomes keep the statuses AGENTS.md
-// "Account deletion outcomes" and the restore barrier specify.
+// session is 401, and the deletion outcomes keep the statuses docs/agents/erasure.md
+// ("Deletion outcomes" and "Restore barrier") specifies.
 func TestCriticalAnswersKeepTheirStatus(t *testing.T) {
 	for _, c := range []struct {
 		err    *apiError

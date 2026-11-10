@@ -476,6 +476,17 @@ Slice R6-4 — password reset, then the direct-mail table.
   not durably stored is descoped in the PR description with its name,
   not forced. The composer test send stays synchronous (section 4).
 
+  Accepted departures from this table, as built (moved from `AGENTS.md`, Nov 10, 2026):
+  invitation delivery rotates only the hash, preserving its deadline, and says "expires within
+  24 hours"; email verification queues `{accountTokenId}` and preserves the original
+  verify/cancel lifetime rather than reminting a pair; approved setup consent wording follows the
+  locked user's current state rather than approval-time state; direct jobs reuse the 60-second
+  `deliverSendTimeout` instead of the old 30-second reset timeout. These preserve closed requests
+  and cancellation windows, avoid stale consent instructions, and share the existing send bound.
+  The email change notice (`App.sendEmailChangeNotice`) and the guest confirmation
+  (`App.sendGuestConfirmationEmail`) stay synchronous: the first needs the old address and
+  cancellation capability, the second shares its manage capability with the browser.
+
 ### 6. Handler semantics and data shapes
 
 `deliverOneNotification(ctx, id)` (slices 1–2), in order. One run must

@@ -18,7 +18,7 @@ import (
 // The throttle guards are parse-only analysis (go/parser and go/ast, through
 // guardkit), not a type checker. The key-position rules read package main, where
 // throttleKey lives; the login_throttles SQL rule reads the whole production tree. Their limits, stated
-// here, in the T19 note and in the AGENTS.md row:
+// here and in the T19 note:
 //
 //   - Identifiers match by name, so shadowing and same-named locals are
 //     approximated: a local const named like a key variable would make a call

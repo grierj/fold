@@ -7,14 +7,13 @@ This directory is the maintained source for verifying Fold's user-facing behavio
 - Start the instance with `.cursor/skills/verify-fold/verify-fold up` and keep its `RUN_ID`.
 - Run `.cursor/skills/verify-fold/verify-fold doctor "$RUN_ID"` and require `ok`, the printed URL, and a database name that starts with `fold_verify_`.
 - A fresh database opens on `/setup`. Complete that wizard before any feature that needs an account. The packaged sign-in drive does this itself.
-- Do not drive a server you did not start with `up`. Do not use the dev database named `fold`, and do not use `make e2e`.
-- Load `eval "$(.cursor/skills/verify-fold/verify-fold env "$RUN_ID")"` before a one-off Playwright script. Load Playwright with `createRequire` from `$FOLD_ROOT/web/package.json`, as the skill's Drive section shows. `NODE_PATH` does not resolve an ESM import.
+- The isolation rules (never the dev database `fold`, `make dev` or `make e2e`; only a server you started with `up`) and how to load Playwright in a one-off script are in `../SKILL.md` and apply to every recipe.
 
 ## Driving conventions
 
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Prefer ARIA roles and accessible names. Use the setup form's `name` attributes, which the existing browser tests use.
-- The directory search box has no accessible name. Use the placeholder `Search groups…` (one ellipsis character).
+- The directory search box is labelled `Search groups`: use `getByLabel("Search groups")`.
 - Secondary actions live in a `More` menu (DEC-63). Open it with `getByRole("button", { name: /^More for/ })` (a date, a member, an admin user row) or `{ name: "More group actions" }` (the group header), then choose `getByRole("menuitem", { name })`.
 - Treat every command as literal. Keep quoted names and flags unchanged.
 - Run the packaged sign-in proof with `verify-fold drive "$RUN_ID" sign-in`.

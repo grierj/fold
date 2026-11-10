@@ -169,7 +169,7 @@ make e2e    # Playwright browser tests in parallel shards (first run: cd web && 
 - [Documentation review](docs/plan/DOCUMENTATION-REVIEW.md): unresolved conflicts and implementation gaps.
 - [API contract](docs/API.md), [member guide](docs/MEMBERS.md), and
   [DigitalOcean deployment](docs/DEPLOY-DIGITALOCEAN.md).
-- [AGENTS.md](AGENTS.md): development and review rules.
+- [AGENTS.md](AGENTS.md): development and review rules, with topic detail in [docs/agents/](docs/agents/).
 
 Set `FOLD_SMTP_URL` and `FOLD_EMAIL_FROM` in `.env`, then recreate the app
 with `docker compose up -d` to enable transactional email. Follow the deployment

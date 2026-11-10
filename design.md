@@ -67,7 +67,7 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - One primary action per view; selected RSVP and chips remain explicit in text and state.
 - New copy has no uppercase/tracked labels, glued arrows, decorative dots or middle-dot strings.
   Product-approved event/date wording remains (PLAN DEC-92). The user authorized fixing
-  the three deferred copy findings; `.hallmark/verification.md` records the before/after wording.
+  the three deferred copy findings (before/after wording: PR #225 and its follow-ups).
 - Preserve all content facts, handlers, ids, URLs, test hooks, consent and legal language.
 - Keep all loading, empty, error, full and permission-dependent states. No invented states.
 - Never weaken behavior assertions to accept styling. When the user authorizes a copy change,
@@ -82,8 +82,5 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 
 ## Exports
 - `web/src/index.css`, `web/src/tokens.css`, `web/src/base.css`; existing Tailwind role names.
-- Baseline and route inventory: `.hallmark/preflight.json`, `.hallmark/routes.md`.
-- Verification, remaining flags and independent review: `.hallmark/verification.md`.
-- Historical directory implementation and scale experiment: `.hallmark/busy-church.md`.
-- Delivered roster/calendar/admin/message/room list patterns and proof: `.hallmark/busy-lists.md`.
-- PR #225 review issues #226–#229 and CI follow-up: `.hallmark/pr225-followup.md`.
+- The Hallmark redesign evidence (baseline, routes, verification, reviews, PR #225 follow-ups)
+  was removed from the tree on Nov 10, 2026; it is in git history before that date.

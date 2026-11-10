@@ -160,6 +160,11 @@ func TestHouseholdRetryStopsWithTheWindowAndTheContext(t *testing.T) {
 // one erasure both the admin deletion and the tombstone sweep run, takes its
 // households once, NOWAIT, after the identity sets and before its first
 // write. A new caller fails here until a person has classified it.
+//
+// Limits (parse-only): it does not check the census's classifications or lock
+// orders (inventory 9.6.1, kept by review), does not see SQL sent around GORM or
+// a lock taken inside a helper it does not parse, and does not prove deadlock
+// freedom, which the erasure does not have (inventory 9.5).
 func TestErasureHouseholdLockCensus(t *testing.T) {
 	sources := guardkit.Production(t)
 	for _, p := range erasureHouseholdLockProblems(sources) {
