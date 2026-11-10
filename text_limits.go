@@ -1,7 +1,10 @@
 package main
 
 import (
+	"errors"
+	"net/http"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -10,19 +13,35 @@ import (
 type textField struct {
 	max     int
 	tooLong *apiError
+	// singleLine refuses every control character and the line and paragraph
+	// separators, for a name or a phone number. Every field refuses NUL, the one
+	// character Postgres cannot store. The multi-line fields allow the rest on
+	// purpose: they may already hold pasted tabs, and saving a record again must
+	// not start refusing them.
+	singleLine bool
 }
 
+// errTextCharacters answers a value with a character that can't be saved. It
+// is the same refusal for every address on the public doors (DEC-52), because
+// it is decided before any account is looked up.
+var errTextCharacters = apiErr(http.StatusBadRequest, "text_characters", "the text has a character that can't be saved")
+
 var (
-	groupNameField   = textField{200, errNameTooLong}
-	eventTitleField  = textField{200, errTitleTooLong}
-	descriptionField = textField{5000, errDescriptionTooLong}
-	locationField    = textField{300, errLocationTooLong}
-	tagsField        = textField{500, errTagsTooLong}
+	groupNameField   = textField{max: 200, tooLong: errNameTooLong}
+	eventTitleField  = textField{max: 200, tooLong: errTitleTooLong}
+	descriptionField = textField{max: 5000, tooLong: errDescriptionTooLong}
+	locationField    = textField{max: 300, tooLong: errLocationTooLong}
+	tagsField        = textField{max: 500, tooLong: errTagsTooLong}
 )
 
 func (f textField) check(s string) error {
 	if utf8.RuneCountInString(s) > f.max {
 		return f.tooLong
+	}
+	for _, r := range s {
+		if r == 0 || (f.singleLine && (unicode.IsControl(r) || r == '\u2028' || r == '\u2029')) {
+			return errTextCharacters
+		}
 	}
 	return nil
 }
@@ -65,11 +84,11 @@ const (
 )
 
 var (
-	personNameField  = textField{maxNameChars, errNameTooLong100}
-	displayNameField = textField{maxNameChars, errDisplayNameTooLong}
-	phoneField       = textField{maxPhoneChars, errPhoneTooLong}
-	addressField     = textField{maxAddressChars, errAddressTooLong}
-	careNotesField   = textField{maxCareNotesChars, errCareNotesTooLong}
+	personNameField  = textField{max: maxNameChars, tooLong: errNameTooLong100, singleLine: true}
+	displayNameField = textField{max: maxNameChars, tooLong: errDisplayNameTooLong, singleLine: true}
+	phoneField       = textField{max: maxPhoneChars, tooLong: errPhoneTooLong, singleLine: true}
+	addressField     = textField{max: maxAddressChars, tooLong: errAddressTooLong}
+	careNotesField   = textField{max: maxCareNotesChars, tooLong: errCareNotesTooLong}
 )
 
 func (f textField) clean(s string) (string, error) {
@@ -79,6 +98,9 @@ func (f textField) clean(s string) (string, error) {
 
 func requiredName(s string) (string, error) {
 	name, err := personNameField.clean(s)
+	if errors.Is(err, errTextCharacters) {
+		return "", err
+	}
 	if name == "" || err != nil {
 		return "", errNameRequired100
 	}

@@ -78,6 +78,7 @@ export const ERROR_COPY = {
   job_handled: "Someone already handled this task. Refresh to see the latest.",
   church_address_long: "Keep the address to 6 lines and 300 characters.",
   church_address_characters: "Take out any special characters, like tabs or symbols that don't print, and try again.",
+  text_characters: "Take out any special characters, like symbols that don't print, and try again.",
   message_subject: "Add a subject on one line, up to 200 characters.",
   message_body: "Write your message first. If you already have, it's too long: shorten it to under about 50,000 characters.",
   message_nobody: "No one would get this yet. Choose people who can get email.",

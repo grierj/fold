@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"fold/internal/audit"
 	"fold/internal/notify"
 	"fold/models"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
@@ -883,4 +886,126 @@ func TestAccountRequestNoticeSerializesWithAdminErasure(t *testing.T) {
 			},
 		}
 	})
+}
+
+// #259: a character Postgres cannot store is refused during validation, before
+// any account is looked up, so the answer cannot say whether the address has one.
+func TestAccountRequestNULFieldsAnswerTheSameForEveryAddress(t *testing.T) {
+	app := testApp(t)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	if app.selfSignupMode() != selfSignupRequest {
+		t.Fatal("self-signup should be on by default")
+	}
+	known, unknown := member.Email, "nobody@example.com"
+	var n int
+	post := func(body map[string]any) (int, string) {
+		n++
+		c := anonClient(t, app, fmt.Sprintf("10.9.3.%d", n))
+		c.holdNotices = true
+		w := c.do("POST", "/api/v1/account-requests", body, true)
+		return w.Code, w.Body.String()
+	}
+	with := func(email, key string, value any) map[string]any {
+		body := signupBody("Probe", email, "adult", "")
+		body[key] = value
+		return body
+	}
+	teen := func(email, guardian string) map[string]any {
+		body := signupBody("Probe", email, "teen", teenBirthDate())
+		body["guardianEmail"] = guardian
+		return body
+	}
+	for _, tc := range []struct {
+		name string
+		body func(email string) map[string]any
+		code string
+	}{
+		{"name", func(e string) map[string]any { return with(e, "name", "Probe\x00") }, `"code":"text_characters"`},
+		{"name in the middle", func(e string) map[string]any { return with(e, "name", "Pro\x00be") }, `"code":"text_characters"`},
+		{"name with a control character", func(e string) map[string]any { return with(e, "name", "Pro\tbe") }, `"code":"text_characters"`},
+		{"phone", func(e string) map[string]any { return with(e, "phone", "555\x00") }, `"code":"text_characters"`},
+		{"message", func(e string) map[string]any { return with(e, "message", "hi\x00") }, `"code":"text_characters"`},
+		{"guardian email", func(e string) map[string]any { return teen(e, "g\x00@example.com") }, `"code":"` + errInvalidGuardianEmail.Code + `"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kc, kb := post(tc.body(known))
+			uc, ub := post(tc.body(unknown))
+			if kc != http.StatusBadRequest || uc != kc || kb != ub || !strings.Contains(kb, tc.code) {
+				t.Fatalf("known %d %s\nunknown %d %s", kc, kb, uc, ub)
+			}
+		})
+	}
+	for _, email := range []string{known, unknown} {
+		if requestCount(t, app, email) != 0 || mailsTo(app, email) != 0 {
+			t.Fatalf("a refused request left a row or an email for %s", email)
+		}
+	}
+	if len(mailJobsOfKind(t, app, kindAccountExistsMail)) != 0 || len(mailJobsOfKind(t, app, kindAccountRequestMail)) != 0 {
+		t.Fatal("a refused request queued mail")
+	}
+
+	// A message of 1000 characters counts by character, not by byte.
+	if c, b := post(with(unknown, "message", strings.Repeat("é", 1000))); c != http.StatusOK {
+		t.Fatalf("1000 multibyte characters: %d %s", c, b)
+	}
+	if c, b := post(with("another@example.com", "message", strings.Repeat("é", 1001))); c != http.StatusBadRequest || !strings.Contains(b, `"code":"too_long"`) {
+		t.Fatalf("1001 characters: %d %s", c, b)
+	}
+}
+
+// #259: when Postgres refuses the submitted text on a durable write, the door
+// answers its usual thanks for a known and an unknown address alike, logs
+// nothing the visitor typed, and still reports an outage honestly.
+func TestAccountRequestDoorAnswersStoreRejectionsUniformly(t *testing.T) {
+	app := testApp(t)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	rejectInsertsByName(t, app.DB, "account_requests")
+	logs := captureLog(t)
+	var n int
+	post := func(name, email string, want int) string {
+		n++
+		c := anonClient(t, app, fmt.Sprintf("10.9.4.%d", n))
+		c.holdNotices = true
+		body := signupBody(name, email, "adult", "")
+		body["phone"] = "555-0100"
+		w := c.do("POST", "/api/v1/account-requests", body, true)
+		if w.Code != want {
+			t.Fatalf("%s: %d %s, want %d", email, w.Code, w.Body.String(), want)
+		}
+		return w.Body.String()
+	}
+	normal := post("Fine", "fine@example.com", http.StatusOK)
+
+	// Stored path.
+	rejectedNew := post("Reject Me", "nobody@example.com", http.StatusOK)
+	rejectedKnown := post("Reject Me", member.Email, http.StatusOK)
+	if rejectedNew != normal || rejectedKnown != normal {
+		t.Fatalf("answers differ:\nnormal %s\nnew    %s\nknown  %s", normal, rejectedNew, rejectedKnown)
+	}
+	if requestCount(t, app, "nobody@example.com") != 0 || requestCount(t, app, member.Email) != 0 {
+		t.Fatal("a rejected request was stored")
+	}
+	if got := post("Break Me", "nobody@example.com", http.StatusInternalServerError); got != serverErrorBody {
+		t.Fatalf("outage answer: %s", got)
+	}
+
+	// Hint path.
+	hintsBefore := len(mailJobsOfKind(t, app, kindAccountExistsMail))
+	failJobEnqueueWith(t, app.DB, kindAccountExistsMail, &pgconn.PgError{Code: "22021", Message: `invalid byte sequence for encoding "UTF8": 0x00`})
+	if hint := post("Visitor Name", member.Email, http.StatusOK); hint != normal {
+		t.Fatalf("hint rejection answered differently:\n%s\n%s", normal, hint)
+	}
+	if len(mailJobsOfKind(t, app, kindAccountExistsMail)) != hintsBefore {
+		t.Fatal("a rejected hint left a job")
+	}
+	for _, secret := range []string{"Reject Me", "Visitor Name", "555-0100", "nobody@example.com", member.Email} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("the log carries %q:\n%s", secret, logs.String())
+		}
+	}
+
+	failJobEnqueueWith(t, app.DB, kindAccountExistsMail, &pgconn.PgError{Code: "XX000", Message: "internal"})
+	if got := post("Visitor Name", member.Email, http.StatusInternalServerError); got != serverErrorBody {
+		t.Fatalf("hint outage answer: %s", got)
+	}
 }

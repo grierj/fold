@@ -36,6 +36,10 @@ const (
 // already-registered self-signup (10.1: no account enumeration).
 const signupThanks = "Thanks — check your email for next steps."
 
+// requestMessageField is the free-text note on a request. It counts characters,
+// not bytes, and refuses a NUL like every other text field.
+var requestMessageField = textField{max: maxRequestMessageLen, tooLong: errMessageTooLong1000}
+
 const (
 	accountRequestIPLimit = 10 // per IP per hour (M1.3 acceptance)
 	accountRequestIPWarn  = 5  // at this many in the hour the request is flagged (DEC-44)
@@ -142,9 +146,9 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 		fail(c, err)
 		return validatedRequest{}, false
 	}
-	message := strings.TrimSpace(body.Message)
-	if len(message) > maxRequestMessageLen {
-		fail(c, errMessageTooLong1000)
+	message, err := requestMessageField.clean(body.Message)
+	if err != nil {
+		fail(c, err)
 		return validatedRequest{}, false
 	}
 	accountType, birth, ok := a.classifyAccountInput(c, body.AgeBand, body.BirthDate)
@@ -222,6 +226,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 			// cannot turn the durable write into a failure.
 			if _, err := accountExistsMailType.Enqueue(a.DB, userMailJob{UserID: existing.ID}, time.Now(), ""); err != nil {
 				log.Printf("account-exists hint: %s", jobs.CleanError(err))
+				if pgInputRejected(err) {
+					// Postgres refused the text, not the request (DEC-52).
+					a.answerAccountRequest(c, source)
+					return false
+				}
 				jsonError(c, http.StatusInternalServerError, "could not save your request")
 				return false
 			}
@@ -270,6 +279,12 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		return nil
 	})
 	if err != nil {
+		log.Printf("account request: source=%s %s", source, jobs.CleanError(err))
+		if pgInputRejected(err) {
+			// Postgres refused the text, not the request (DEC-52).
+			a.answerAccountRequest(c, source)
+			return false
+		}
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return false
 	}
