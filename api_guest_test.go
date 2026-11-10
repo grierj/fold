@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -1898,5 +1899,124 @@ func TestGuestRedemptionAfterErasureOfRotatedSignup(t *testing.T) {
 	}
 	if n := countRows(t, db, "users", "email = ?", f.address); n != 0 {
 		t.Errorf("%d users at the erased address", n)
+	}
+}
+
+// #259: a character Postgres cannot store is refused before any account is
+// looked up, so the answer cannot say whether the address has one.
+func TestGuestNULFieldsAnswerTheSameForEveryAddress(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	newTestUser(t, app, "taken", "password1234", models.RoleMember)
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	known, unknown := "taken@example.com", "nobody@example.com"
+	var n int
+	// A fresh address per submission, so no per-IP or per-address limit can
+	// turn a refusal into a quiet 200.
+	submit := func(body map[string]any, want int) string {
+		n++
+		c := anonClient(t, app, fmt.Sprintf("10.9.1.%d", n))
+		c.holdNotices = true
+		return guestSubmit(t, c, ev.ID, body, want)
+	}
+	for _, name := range []string{"Probe\x00", "Pro\x00be", "\x00", "Pro\tbe"} {
+		a := submit(guestBody(name, known, true), http.StatusBadRequest)
+		b := submit(guestBody(name, unknown, true), http.StatusBadRequest)
+		if a != b || !strings.Contains(a, `"code":"text_characters"`) {
+			t.Fatalf("name %q answered differently:\n%s\n%s", name, a, b)
+		}
+	}
+	for _, email := range []string{known, unknown} {
+		if guestSignupCount(t, app, email) != 0 || guestEmailCount(t, app, email) != 0 {
+			t.Fatalf("a refused submission left a signup or an email for %s", email)
+		}
+	}
+	if len(mailJobsOfKind(t, app, kindAccountExistsMail)) != 0 || len(mailJobsOfKind(t, app, kindGuestVerifyMail)) != 0 {
+		t.Fatal("a refused submission queued mail")
+	}
+
+	// An email with a NUL fails the address check the same way for both.
+	a := submit(guestBody("Probe", "taken\x00@example.com", true), http.StatusBadRequest)
+	b := submit(guestBody("Probe", "nobody\x00@example.com", true), http.StatusBadRequest)
+	if a != b || !strings.Contains(a, `"code":"`+errEnterValidEmail.Code+`"`) {
+		t.Fatalf("email with a NUL answered differently:\n%s\n%s", a, b)
+	}
+
+	// A time zone that is no zone is dropped, not stored and not refused.
+	for _, email := range []string{known, unknown} {
+		body := guestBody("Probe", email, true)
+		body["timezone"] = "America/Denver\x00"
+		if got := submit(body, http.StatusOK); !strings.Contains(got, signupThanks) {
+			t.Fatalf("zone with a NUL for %s: %s", email, got)
+		}
+	}
+	if guestSignupCount(t, app, known) != 0 || guestSignupCount(t, app, unknown) != 1 {
+		t.Fatal("signup counts after the zone submissions")
+	}
+	var signup models.GuestSignup
+	if err := app.DB.Where("email = ?", unknown).First(&signup).Error; err != nil || signup.Timezone != "" {
+		t.Fatalf("stored zone %q, %v", signup.Timezone, err)
+	}
+}
+
+// #259: when Postgres refuses the submitted text on a durable write, the door
+// answers its usual thanks for a known and an unknown address alike, logs
+// nothing the visitor typed, and still reports an outage honestly.
+func TestGuestDoorAnswersStoreRejectionsUniformly(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	member := newTestUser(t, app, "taken", "password1234", models.RoleMember)
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	rejectInsertsByName(t, app.DB, "guest_signups")
+	logs := captureLog(t)
+	var n int
+	submit := func(body map[string]any, want int) string {
+		n++
+		c := anonClient(t, app, fmt.Sprintf("10.9.2.%d", n))
+		c.holdNotices = true
+		return guestSubmit(t, c, ev.ID, body, want)
+	}
+	normal := submit(guestBody("Fine", "fine@example.com", true), http.StatusOK)
+
+	// Stored path: the unknown address hits the trigger; the known one never
+	// reaches the table. Both answer exactly the usual thanks.
+	rejectedNew := submit(guestBody("Reject Me", "nobody@example.com", true), http.StatusOK)
+	rejectedKnown := submit(guestBody("Reject Me", member.Email, true), http.StatusOK)
+	if rejectedNew != normal || rejectedKnown != normal {
+		t.Fatalf("answers differ:\nnormal %s\nnew    %s\nknown  %s", normal, rejectedNew, rejectedKnown)
+	}
+	if guestSignupCount(t, app, "nobody@example.com") != 0 || guestSignupCount(t, app, member.Email) != 0 {
+		t.Fatal("a rejected submission stored a signup")
+	}
+	// The control: an outage on the same path is not hidden.
+	if got := submit(guestBody("Break Me", "nobody@example.com", true), http.StatusInternalServerError); got != serverErrorBody {
+		t.Fatalf("outage answer: %s", got)
+	}
+
+	hintsBefore := len(mailJobsOfKind(t, app, kindAccountExistsMail))
+	// Hint path: the known address's durable write is refused for its text.
+	failJobEnqueueWith(t, app.DB, kindAccountExistsMail, &pgconn.PgError{Code: "22021", Message: `invalid byte sequence for encoding "UTF8": 0x00`})
+	hint := submit(guestBody("Visitor Name", member.Email, true), http.StatusOK)
+	if hint != normal {
+		t.Fatalf("hint rejection answered differently:\n%s\n%s", normal, hint)
+	}
+	if len(mailJobsOfKind(t, app, kindAccountExistsMail)) != hintsBefore {
+		t.Fatal("a rejected hint left a job")
+	}
+	for _, secret := range []string{"Reject Me", "Visitor Name", "nobody@example.com", member.Email} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("the log carries %q:\n%s", secret, logs.String())
+		}
+	}
+
+	// Any other failure of the hint write is still an honest 500, the same as
+	// the stored path's.
+	failJobEnqueueWith(t, app.DB, kindAccountExistsMail, &pgconn.PgError{Code: "XX000", Message: "internal"})
+	if got := submit(guestBody("Visitor Name", member.Email, true), http.StatusInternalServerError); got != serverErrorBody {
+		t.Fatalf("hint outage answer: %s", got)
 	}
 }

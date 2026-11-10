@@ -199,6 +199,11 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 			// cannot abort the durable write, as in the stored path.
 			if _, err := accountExistsMailType.Enqueue(a.DB, userMailJob{UserID: existing.ID}, time.Now(), ""); err != nil {
 				log.Printf("account-exists hint: %s", jobs.CleanError(err))
+				if pgInputRejected(err) {
+					// Postgres refused the text, not the request (DEC-52).
+					c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
+					return
+				}
 				jsonError(c, http.StatusInternalServerError, "could not save your registration")
 				return
 			}
@@ -237,6 +242,11 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		return err
 	}); err != nil {
 		log.Printf("guest registration: %s", jobs.CleanError(err))
+		if pgInputRejected(err) {
+			// Postgres refused the text, not the request (DEC-52).
+			c.JSON(http.StatusOK, noticeResponseJSON{Message: signupThanks})
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
 	}

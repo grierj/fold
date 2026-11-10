@@ -899,12 +899,19 @@ func drainNotices(t *testing.T, app *App) {
 // during cleanup, including when an assertion stops the test early.
 func failJobEnqueue(t *testing.T, db *gorm.DB, kind string) func() {
 	t.Helper()
+	return failJobEnqueueWith(t, db, kind, errors.New("injected job enqueue failure"))
+}
+
+// failJobEnqueueWith is failJobEnqueue with the error the insert fails with, for
+// a test that needs a particular SQLSTATE.
+func failJobEnqueueWith(t *testing.T, db *gorm.DB, kind string, failure error) func() {
+	t.Helper()
 	name := fmt.Sprintf("test:fail_enqueue:%d", queryCounterSeq.Add(1))
 	if err := db.Callback().Raw().Before("gorm:raw").Register(name, func(tx *gorm.DB) {
 		if strings.HasPrefix(tx.Statement.SQL.String(), "INSERT INTO jobs ") {
 			for _, arg := range tx.Statement.Vars {
 				if value, ok := arg.(string); ok && value == kind {
-					tx.AddError(errors.New("injected job enqueue failure"))
+					tx.AddError(failure)
 					return
 				}
 			}
@@ -1290,3 +1297,32 @@ func membersIn(db *gorm.DB, groupID uint) int {
 	}
 	return n
 }
+
+// rejectInsertsByName installs a BEFORE INSERT trigger on table that fails an
+// insert by its name column: "Reject Me" with SQLSTATE 22021 (Postgres refusing
+// the text) and "Break Me" with XX000 (an outage). Cleanup drops the trigger and
+// its function, so a later test sees a plain table.
+func rejectInsertsByName(t *testing.T, db *gorm.DB, table string) {
+	t.Helper()
+	fn := "test_reject_by_name_" + table
+	create := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.name = 'Reject Me' THEN RAISE EXCEPTION 'test rejection' USING ERRCODE = '22021'; END IF;
+  IF NEW.name = 'Break Me' THEN RAISE EXCEPTION 'test outage' USING ERRCODE = 'XX000'; END IF;
+  RETURN NEW;
+END $$`, fn)
+	if err := db.Exec(create).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON %s", fn, table)).Error
+		_ = db.Exec(fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", fn)).Error
+	})
+	if err := db.Exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE INSERT ON %s FOR EACH ROW EXECUTE FUNCTION %s()", fn, table, fn)).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// serverErrorBody is the public wire body of an unexplained 5xx (errorBody in
+// api_errors.go).
+const serverErrorBody = `{"code":"server_error","error":"server error"}`
