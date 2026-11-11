@@ -113,9 +113,11 @@ func (a *App) apiReadMessage(c *gin.Context) {
 	}})
 }
 
-// readerEventValues is the reader's whole merge map for the read page. It
-// applies the event and date pages' own rules to the reader and never
-// authorizes the message (CanReadMessage does that). Every read goes through
+// readerEventValues is the reader's whole merge map for the read page, and
+// for an email row or announcement push as it goes out
+// (message_event_visibility.go). It applies the event and date pages' own
+// rules to the reader and never authorizes the message (CanReadMessage does
+// that). Every read goes through
 // a.DB, like loadOccurrenceDate, so no transaction or snapshot is claimed: a
 // change committed while one response loads may or may not affect it, and the
 // next load rechecks. A failed read is returned, never treated as "not
