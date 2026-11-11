@@ -486,30 +486,137 @@ func TestEmailEventFieldsNeedOnlyTheClaimedConnection(t *testing.T) {
 	})
 }
 
-// A guest registrant is personalized as themselves but sees what a signed-out
-// visitor sees (C5): once the event, or the one date, is no longer public,
-// the reminder prepared while it was public goes out without the title, the
-// time or either page, however the date was renamed. A member of the group
-// beside them still sees it, so the same delivery tells the two apart.
-func TestGuestReminderEmailSeesOnlyWhatAVisitorSees(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		change func(t *testing.T, f composeFixture)
-		title  string
-	}{
-		{"the event made private", func(t *testing.T, f composeFixture) {
-			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).
-				Updates(map[string]any{"title": "Renamed night", "visibility": models.VisibilityPrivate}).Error; err != nil {
-				t.Fatal(err)
-			}
-		}, "Renamed night"},
-		{"one date made private", func(t *testing.T, f composeFixture) {
-			if err := f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).
-				Updates(map[string]any{"title_override": "Special night", "visibility_override": models.VisibilityPrivate}).Error; err != nil {
-				t.Fatal(err)
-			}
-		}, "Special night"},
-	} {
+// reminderPlace stands for the date's own place. A reminder carries it as
+// literal text written when the reminder was prepared, not as a merge field,
+// so it is what someone who can no longer see the date must never be sent.
+const reminderPlace = "12 Hidden Lane"
+
+// sentTo is how many emails went to addr.
+func (s *deliverySender) sentTo(addr string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, m := range s.msgs {
+		if m.To == addr {
+			n++
+		}
+	}
+	return n
+}
+
+// prepareReminder gives the group event a place, registers going, runs the
+// real reminder job while the date is still public and returns the reminder
+// with the queued email row of each of rowUsers by user id (a guardian copy's
+// row is its guardian's).
+func prepareReminder(t *testing.T, f composeFixture, going []*models.User, rowUsers ...*models.User) (uint, map[uint]models.MessageRecipient) {
+	t.Helper()
+	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("location", reminderPlace).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range going {
+		if err := f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := f.groupOcc.StartsAt.Add(-24 * time.Hour)
+	if err := f.app.sendReminder(context.Background(), reminderJob{OccurrenceID: f.groupOcc.ID, StartsAt: f.groupOcc.StartsAt.Unix(), Minutes: 1440}, at); err != nil {
+		t.Fatal(err)
+	}
+	var m models.Message
+	if err := f.app.DB.Where("category = ? AND occurrence_id = ?", models.MessageCategoryReminder, f.groupOcc.ID).First(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.BodyHTML, reminderPlace) {
+		t.Fatalf("the prepared reminder lost its place: %q", m.BodyHTML)
+	}
+	ids := make([]uint, 0, len(rowUsers))
+	for _, u := range rowUsers {
+		ids = append(ids, u.ID)
+	}
+	var rows []models.MessageRecipient
+	if err := f.app.DB.Where("message_id = ? AND channel = ? AND user_id IN ?", m.ID, models.DeliveryEmail, ids).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	out := map[uint]models.MessageRecipient{}
+	for _, r := range rows {
+		if r.Status != models.RecipientQueued {
+			t.Fatalf("a prepared reminder row: %+v", r)
+		}
+		out[r.UserID] = r
+	}
+	if len(out) != len(rowUsers) {
+		t.Fatalf("the prepared reminder rows: %+v", rows)
+	}
+	return m.ID, out
+}
+
+// reminderTighteners make the date private after its reminder was prepared:
+// the whole event, and then one date alone, each renamed so a reminder that
+// borrowed the live title would show it.
+var reminderTighteners = []struct {
+	name  string
+	apply func(t *testing.T, f composeFixture)
+	title string
+}{
+	{"the event made private", func(t *testing.T, f composeFixture) {
+		if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).
+			Updates(map[string]any{"title": "Renamed night", "visibility": models.VisibilityPrivate}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}, "Renamed night"},
+	{"one date made private", func(t *testing.T, f composeFixture) {
+		if err := f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).
+			Updates(map[string]any{"title_override": "Special night", "visibility_override": models.VisibilityPrivate}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}, "Special night"},
+}
+
+func leaveGroup(t *testing.T, f composeFixture, u *models.User) {
+	t.Helper()
+	if err := f.app.DB.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", f.group.ID, u.ID).Update("status", models.MembershipLeft).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireSkippedCantSee asserts a reminder row was never sent: it is
+// suppressed with the can't-see-the-date reason, and nothing went to addr.
+func requireSkippedCantSee(t *testing.T, f composeFixture, s *deliverySender, label string, row models.MessageRecipient) {
+	t.Helper()
+	if n := s.sentTo(row.Address); n != 0 {
+		t.Errorf("%s: %d emails went to someone who may not see the date", label, n)
+	}
+	var got models.MessageRecipient
+	if err := f.app.DB.First(&got, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.RecipientSuppressed || got.Reason != skipCantSeeDate {
+		t.Errorf("%s: the row is %q (%q), want it suppressed as %q", label, got.Status, got.Reason, skipCantSeeDate)
+	}
+}
+
+// requireReminderSeen asserts the reminder reached addr with the live title
+// and the date's place, the control that tells delivery from suppression.
+func requireReminderSeen(t *testing.T, s *deliverySender, label, addr, title string) {
+	t.Helper()
+	got := s.to(t, addr)
+	if !strings.Contains(got.Subject, title) {
+		t.Errorf("%s: subject %q lacks %q", label, got.Subject, title)
+	}
+	for part, text := range map[string]string{"text": got.Text, "html": got.HTML} {
+		if !strings.Contains(text, reminderPlace) {
+			t.Errorf("%s: the %s lost the place a reader who may see the date is given: %q", label, part, text)
+		}
+	}
+}
+
+// A reminder's text carries the date's place, so someone who can no longer
+// see the date (a guest once it is no longer public, a former member of its
+// group) is sent no reminder at all, not one with its fields blanked, while a
+// member of the group beside them still gets the live title and the place
+// (C5, M1.13).
+func TestReminderEmailSkipsWhoCanNoLongerSeeTheDate(t *testing.T) {
+	for _, tc := range reminderTighteners {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newComposeFixture(t)
 			f.admin.holdNotices, f.leader.holdNotices = true, true
@@ -517,48 +624,106 @@ func TestGuestReminderEmailSeesOnlyWhatAVisitorSees(t *testing.T) {
 			if err := f.app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
 				t.Fatal(err)
 			}
-			for _, u := range []*models.User{guest, f.teen} {
-				if err := f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing}).Error; err != nil {
-					t.Fatal(err)
-				}
-			}
-			at := f.groupOcc.StartsAt.Add(-24 * time.Hour)
-			if err := f.app.sendReminder(context.Background(), reminderJob{OccurrenceID: f.groupOcc.ID, StartsAt: f.groupOcc.StartsAt.Unix(), Minutes: 1440}, at); err != nil {
-				t.Fatal(err)
-			}
-			var m models.Message
-			if err := f.app.DB.Where("category = ? AND occurrence_id = ?", models.MessageCategoryReminder, f.groupOcc.ID).First(&m).Error; err != nil {
-				t.Fatal(err)
-			}
-			var rows []models.MessageRecipient
-			if err := f.app.DB.Where("message_id = ? AND channel = ? AND user_id IN ?", m.ID, models.DeliveryEmail, []uint{guest.ID, f.teen.ID}).Order("id").Find(&rows).Error; err != nil {
-				t.Fatal(err)
-			}
-			if len(rows) != 2 || rows[0].Status != models.RecipientQueued || rows[1].Status != models.RecipientQueued {
-				t.Fatalf("the prepared reminder rows: %+v", rows)
-			}
-			var ev models.Event
-			if err := f.app.DB.First(&ev, f.groupEvent.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			when := formatWhen(f.groupOcc.StartsAt, eventZone(ev.TZID))
-			tc.change(t, f)
+			former := newTestUser(t, f.app, "reminder-former", "password1234", models.RoleMember)
+			addMember(t, f.app, former, f.group, models.MembershipMember)
+			id, rows := prepareReminder(t, f, []*models.User{guest, former, f.teen}, guest, former, f.teen)
+			tc.apply(t, f)
+			leaveGroup(t, f, former)
 			s := &deliverySender{}
-			if err := deliverRows(f.app, s, m.ID, []uint{rows[0].ID, rows[1].ID}); err != nil {
+			if err := deliverRows(f.app, s, id, []uint{rows[guest.ID].ID, rows[former.ID].ID, rows[f.teen.ID].ID}); err != nil {
 				t.Fatal(err)
 			}
-			if got := s.to(t, f.teen.Email); !strings.Contains(got.Subject, tc.title) {
-				t.Errorf("a member of the group no longer sees the date: %q", got.Subject)
-			}
-			got := s.to(t, guest.Email)
-			for _, bad := range []string{tc.title, "Renamed night", "Special night", "Book night", when, f.app.emailLink("/events/" + itoa(ev.ID))} {
-				for part, text := range map[string]string{"subject": got.Subject, "text": got.Text, "html": got.HTML} {
-					if strings.Contains(text, bad) {
-						t.Errorf("%q reached the %s of a guest who may not see the date: %q", bad, part, text)
-					}
-				}
+			requireSkippedCantSee(t, f, s, "a guest", rows[guest.ID])
+			requireSkippedCantSee(t, f, s, "a former member", rows[former.ID])
+			requireReminderSeen(t, s, "a member of the group", rows[f.teen.ID].Address, tc.title)
+			if s.count() != 1 {
+				t.Errorf("%d emails went out, want the member's alone", s.count())
 			}
 		})
+	}
+}
+
+// A delivery that failed for a transient reason and runs again after the date
+// was made private is rechecked at that send: the retry sends the person who
+// lost the date nothing.
+func TestReminderEmailRetryRechecksTheDate(t *testing.T) {
+	for _, tc := range reminderTighteners {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			f.admin.holdNotices, f.leader.holdNotices = true, true
+			guest := newTestUser(t, f.app, "reminder-guest", "password1234", models.RoleMember)
+			if err := f.app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
+				t.Fatal(err)
+			}
+			id, rows := prepareReminder(t, f, []*models.User{guest, f.teen}, guest, f.teen)
+			ids := []uint{rows[guest.ID].ID, rows[f.teen.ID].ID}
+			failing := &deliverySender{fail: 1}
+			if err := deliverRows(f.app, failing, id, ids); !errors.Is(err, errStopBatch) {
+				t.Fatalf("the first attempt: %v, want it to stop for a retry", err)
+			}
+			tc.apply(t, f)
+			s := &deliverySender{}
+			if err := deliverRows(f.app, s, id, ids); err != nil {
+				t.Fatal(err)
+			}
+			requireSkippedCantSee(t, f, s, "a guest on the retry", rows[guest.ID])
+			requireReminderSeen(t, s, "a member of the group on the retry", rows[f.teen.ID].Address, tc.title)
+			if s.count() != 1 {
+				t.Errorf("%d emails went out on the retry, want the member's alone", s.count())
+			}
+		})
+	}
+}
+
+// A guardian copy of a reminder is the teen's own: it follows what the teen
+// may see of the date, not the guardian, so a copy to an administrator who
+// could still see everything is not sent once the teen lost the date, and a
+// copy to a guardian who could not is, while the teen still sees it.
+func TestReminderGuardianCopyFollowsTheTeensDate(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		guardianRole string
+		teenLeaves   bool
+	}{
+		{"the teen can still see the date", models.RoleMember, false},
+		{"the teen lost the date", models.RoleAdmin, true},
+	} {
+		for _, tight := range reminderTighteners {
+			t.Run(tc.name+"/"+tight.name, func(t *testing.T) {
+				f := newComposeFixture(t)
+				f.admin.holdNotices, f.leader.holdNotices = true, true
+				guardian := newTestUser(t, f.app, "reminder-guardian", "password1234", tc.guardianRole)
+				if err := f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := f.app.DB.Create(&models.GuardianLink{GuardianUserID: guardian.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+					t.Fatal(err)
+				}
+				id, rows := prepareReminder(t, f, []*models.User{f.teen}, f.teen, guardian)
+				copyRow := rows[guardian.ID]
+				if copyRow.CopyOfUserID == nil || *copyRow.CopyOfUserID != f.teen.ID {
+					t.Fatalf("the guardian's row is not a copy of the teen's: %+v", copyRow)
+				}
+				tight.apply(t, f)
+				if tc.teenLeaves {
+					leaveGroup(t, f, f.teen)
+				}
+				s := &deliverySender{}
+				if err := deliverRows(f.app, s, id, []uint{rows[f.teen.ID].ID, copyRow.ID}); err != nil {
+					t.Fatal(err)
+				}
+				if tc.teenLeaves {
+					requireSkippedCantSee(t, f, s, "the teen", rows[f.teen.ID])
+					requireSkippedCantSee(t, f, s, "the guardian's copy", copyRow)
+					if s.count() != 0 {
+						t.Errorf("%d emails went out, want none", s.count())
+					}
+					return
+				}
+				requireReminderSeen(t, s, "the teen", rows[f.teen.ID].Address, tight.title)
+				requireReminderSeen(t, s, "the guardian's copy", copyRow.Address, "Copy: Reminder: "+tight.title)
+			})
+		}
 	}
 }
 
@@ -591,8 +756,8 @@ func TestEmailExactDateInvitation(t *testing.T) {
 }
 
 // A reminder email, first or retried, is filled by the same rules: the
-// registrant who lost the date, or whose date was renamed or cancelled, gets
-// only what the read page would give them.
+// registrant whose date was renamed or cancelled gets only what the read page
+// would give them, and one who lost the date gets no reminder.
 func TestReminderEmailRechecksEventFields(t *testing.T) {
 	for _, retry := range []bool{false, true} {
 		name := "first send"
@@ -619,14 +784,7 @@ func TestReminderEmailRechecksEventFields(t *testing.T) {
 			if got := s.to(t, rows[0].Address); !strings.Contains(got.Subject, "Renamed night") || !strings.Contains(got.Subject, when) {
 				t.Errorf("the leader still sees the date: %q", got.Subject)
 			}
-			lost := s.to(t, rows[1].Address)
-			for _, bad := range []string{"Renamed night", "Book night", when, f.app.emailLink("/events/" + itoa(ev.ID))} {
-				for part, text := range map[string]string{"subject": lost.Subject, "text": lost.Text, "html": lost.HTML} {
-					if strings.Contains(text, bad) {
-						t.Errorf("%q reached the %s of a registrant who lost the date: %q", bad, part, text)
-					}
-				}
-			}
+			requireSkippedCantSee(t, f, s, "a registrant who lost the date", rows[1])
 		})
 		t.Run(name+"/cancelled", func(t *testing.T) {
 			f, id, rows, _ := prepareChoiceBatch(t, true, retry, false)

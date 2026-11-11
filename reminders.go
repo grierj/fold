@@ -317,6 +317,29 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 	return out, nil
 }
 
+// reminderRowMaySee is whether the person a claimed reminder email row
+// shows the date to may still see it: the recipient, or for a guardian copy
+// the teen whose reminder it copies. It runs on the row's own transaction
+// and answers a failed read as an error, never as "may not". A date that is
+// gone, or a reminder with no date, shows nothing to anyone.
+func (a *App) reminderRowMaySee(tx *gorm.DB, m *models.Message, row models.MessageRecipient, now time.Time) (bool, error) {
+	if m.OccurrenceID == nil {
+		return false, nil
+	}
+	subject := row.UserID
+	if row.CopyOfUserID != nil {
+		subject = *row.CopyOfUserID
+	}
+	can, err := a.reminderReaders(tx, *m.OccurrenceID, []uint{subject}, now)
+	if errors.Is(err, errAudienceGone) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return can[subject], nil
+}
+
 // messageCategory is the email settings kind a message follows: event
 // updates for reminders (DEC-133), messages from leaders otherwise
 // (DEC-119).

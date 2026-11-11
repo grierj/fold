@@ -542,6 +542,18 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			if off.Off(row.UserID, row.Address, optOut) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
 			}
+			// A reminder's own text carries the date's place, written when it
+			// was prepared, so someone who can no longer see the date gets no
+			// reminder at all, not one with the fields blanked.
+			if m.Category == models.MessageCategoryReminder {
+				may, err := a.reminderRowMaySee(tx, &m, row, time.Now())
+				if err != nil {
+					return err
+				}
+				if !may {
+					return markRecipient(tx, row.ID, models.RecipientSuppressed, skipCantSeeDate, "", "")
+				}
+			}
 			values, err := a.rowValues(tx, row, readers, au, time.Now())
 			if err != nil {
 				return err
