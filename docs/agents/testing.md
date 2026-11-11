@@ -75,9 +75,35 @@ it, since the process peak could not be told from the fixtures' own.
 
 `TestRestoreFence*` and `TestReasonReviewRestoreWithOpenPanel` need `pg_dump` and `pg_restore` of
 the server's major version, because a newer client sends settings an older server rejects. They
-use `FOLD_PG_BIN` (a directory of tools), else a matching one on `PATH`, else
+use `FOLD_PG_BIN` (a directory of tools, alone, no fallback), else a matching one on `PATH`, else
 `scripts/pg-client.sh` (Docker, `postgres:<major>`). A mismatched client fails the test, it never
-skips; with no client and no Docker the test skips locally and fails under `CI`.
+skips. With no client and no usable Docker (not installed, or the daemon is stopped) the test
+skips locally and fails under `CI`; a Docker that works but cannot pull or run the image, or
+cannot reach the database, fails everywhere.
+
+The wrapper (Bash 3.2 compatible; a test reads it for what that Bash lacks) checks each stage and
+names the one that failed, without printing the connection arguments. Its exit codes: 70 no
+runtime on `PATH`, 71 daemon silent or stopped, 72 image unusable (pull failed or timed out, tool
+missing), 73 database unreachable from the container, 74 arguments it cannot run (a colon in a
+mounted path, a connection with no host, a socket directory that is missing).
+
+- **Image.** The test process resolves the image once (`scripts/pg-client.sh --resolve <major>`),
+  logs its local ID, and runs every tool by that ID (`FOLD_PG_IMAGE_ID`). A pull is bounded
+  (`FOLD_PG_PULL_TIMEOUT`, 180s), as are the daemon check (`FOLD_PG_INFO_TIMEOUT`, 20s) and
+  `<tool> --version` (`FOLD_PG_DISCOVERY_TIMEOUT`, 60s). `FOLD_PG_IMAGE` picks another image; a
+  `name@sha256:...` digest is kept as given. The wrapper never invents a digest for a tag.
+- **Connections.** A TCP host runs on `--network host` after a `pg_isready` probe, which is what
+  works on native Linux Docker. A Unix-socket directory (`host=/dir`, `?host=/dir`, `-h /dir`) is
+  mounted at the same path with no network. When the probe gets no answer the error says to use a
+  native client (`FOLD_PG_BIN`) or a connection the container can reach.
+- **Tests.** The argument-level tests (`TestPGClientWrapper*`, in `restore_fence_test.go` beside
+  `pgClients`) run the real script against a fake `docker`: paths with spaces, each directory
+  mounted once, a stopped daemon, a bounded pull, a failed pull, an unreachable database, image-ID
+  use, a mismatched major, and each connection form. They show the wrapper builds the right
+  commands, not that any Docker variant behaves as assumed.
+- **Not covered.** Nothing here was exercised on Docker Desktop, rootless Docker, Podman or a real
+  macOS Bash 3.2; treat `--network host` there as unverified and use `FOLD_PG_BIN`. Evidence for
+  a change to the wrapper names the environments it actually ran on.
 
 ### Source guards
 

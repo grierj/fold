@@ -599,7 +599,93 @@ func TestRestoreFenceNoFalseDetection(t *testing.T) {
 // scripts/pg-client.sh running it from the server's own image.
 var pgClients = map[string][]string{}
 
+// pgFallbackImageID is the local image ID scripts/pg-client.sh resolved for this
+// process; every container run of the tests uses that one image.
+var pgFallbackImageID string
+
 var pgMajorRE = regexp.MustCompile(`\) (\d+)(?:\.\d+)?`)
+
+// pgDiscoveryLimit stops a wrapper that hangs outside its own bounds (its
+// stages add up to about five minutes in the worst case).
+const pgDiscoveryLimit = 6 * time.Minute
+
+// The wrapper's exit codes for "no usable container runtime" (see
+// scripts/pg-client.sh). Locally these read as "Docker is not available" and skip,
+// like a missing docker; under CI they fail.
+const (
+	pgWrapperNoRuntime = 70
+	pgWrapperNoDaemon  = 71
+)
+
+func pgWrapperPath() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "scripts", "pg-client.sh")
+}
+
+// pgCandidates lists the commands to try for one tool, in order. FOLD_PG_BIN
+// (bin) stands alone, with no fallback.
+func pgCandidates(tool string, major int, wrapper, bin string, lookPath func(string) (string, error)) [][]string {
+	if bin != "" {
+		return [][]string{{filepath.Join(bin, tool)}}
+	}
+	var candidates [][]string
+	if p, err := lookPath(tool); err == nil {
+		candidates = append(candidates, []string{p})
+	}
+	if _, err := lookPath("docker"); err == nil {
+		candidates = append(candidates, []string{wrapper, strconv.Itoa(major), tool})
+	}
+	return candidates
+}
+
+// pgFallbackArgv runs the wrapper on one image ID, so the whole run uses the
+// image that was recorded rather than whatever its tag points at later.
+func pgFallbackArgv(wrapper string, major int, tool, imageID string) []string {
+	return []string{"env", "FOLD_PG_IMAGE_ID=" + imageID, wrapper, strconv.Itoa(major), tool}
+}
+
+func exitCodeOf(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// resolvePGImage asks the wrapper for the local ID of the image it would use,
+// pulling it (bounded) when it is not there.
+func resolvePGImage(wrapper string, major int) (id, note string, unavailable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), pgDiscoveryLimit)
+	defer cancel()
+	var stdout, stderr strings.Builder
+	cmd := exec.CommandContext(ctx, wrapper, "--resolve", strconv.Itoa(major))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		code := exitCodeOf(err)
+		return "", fmt.Sprintf("%s --resolve %d: %v: %s", wrapper, major, err, strings.TrimSpace(stderr.String())),
+			code == pgWrapperNoRuntime || code == pgWrapperNoDaemon
+	}
+	return strings.TrimSpace(stdout.String()), "", false
+}
+
+// checkPGClient runs `<argv> --version` and accepts it only when it reports
+// the server's major version. unavailable is set when the wrapper says there is
+// no container runtime to run it with.
+func checkPGClient(argv []string, major int, fromWrapper bool) (note string, ok, unavailable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), pgDiscoveryLimit)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, argv[0], append(argv[1:len(argv):len(argv)], "--version")...).CombinedOutput()
+	m := pgMajorRE.FindSubmatch(out)
+	switch {
+	case err != nil:
+		code := exitCodeOf(err)
+		return fmt.Sprintf("%s: %v: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out))),
+			false, fromWrapper && (code == pgWrapperNoRuntime || code == pgWrapperNoDaemon)
+	case m == nil || string(m[1]) != strconv.Itoa(major):
+		return fmt.Sprintf("%s reports %q, not PostgreSQL %d", strings.Join(argv, " "), strings.TrimSpace(string(out)), major), false, false
+	}
+	return "", true, false
+}
 
 // fenceTools finds a pg_dump and a pg_restore of the SERVER's major version. A
 // newer client writes settings an older server rejects (a PostgreSQL 18
@@ -607,11 +693,13 @@ var pgMajorRE = regexp.MustCompile(`\) (\d+)(?:\.\d+)?`)
 // then fails. The errors stay errors: the tests never ignore them. Order:
 //   - FOLD_PG_BIN, a directory of tools (alone, no fallback);
 //   - the tool on PATH, if its major matches;
-//   - scripts/pg-client.sh, which runs the tool from the postgres:<major> image
-//     (needs Docker, which CI and make dev already use for Postgres).
+//   - scripts/pg-client.sh, which runs the tool from the postgres:<major> image,
+//     by the image's local ID (needs a running Docker, which CI and make dev
+//     already use for Postgres).
 //
-// With nothing usable the test skips locally and fails under CI; a client that
-// exists but does not match always fails, with what to do.
+// With no client and no running Docker the test skips locally and fails under
+// CI; a client that exists but does not match, or an image that cannot be
+// pulled or run, always fails, with what to do.
 func fenceTools(t *testing.T) {
 	t.Helper()
 	var num int
@@ -619,46 +707,50 @@ func fenceTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	major := num / 10000
-	_, thisFile, _, _ := runtime.Caller(0)
-	wrapper := filepath.Join(filepath.Dir(thisFile), "scripts", "pg-client.sh")
+	wrapper := pgWrapperPath()
 	for _, tool := range []string{"pg_dump", "pg_restore"} {
 		if pgClients[tool] != nil {
 			continue // found by an earlier test of this process
 		}
-		var candidates [][]string
-		if dir := os.Getenv("FOLD_PG_BIN"); dir != "" {
-			candidates = append(candidates, []string{filepath.Join(dir, tool)})
-		} else {
-			if p, err := exec.LookPath(tool); err == nil {
-				candidates = append(candidates, []string{p})
-			}
-			if _, err := exec.LookPath("docker"); err == nil {
-				candidates = append(candidates, []string{wrapper, strconv.Itoa(major), tool})
-			}
-		}
+		candidates := pgCandidates(tool, major, wrapper, os.Getenv("FOLD_PG_BIN"), exec.LookPath)
 		var notes []string
+		unusable := 0 // candidates that only say "no container runtime"
 		for _, argv := range candidates {
-			out, err := exec.Command(argv[0], append(argv[1:len(argv):len(argv)], "--version")...).CombinedOutput()
-			m := pgMajorRE.FindSubmatch(out)
-			switch {
-			case err != nil:
-				notes = append(notes, fmt.Sprintf("%s: %v: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out))))
-			case m == nil || string(m[1]) != strconv.Itoa(major):
-				notes = append(notes, fmt.Sprintf("%s reports %q, not PostgreSQL %d", strings.Join(argv, " "), strings.TrimSpace(string(out)), major))
-			default:
-				pgClients[tool] = argv
+			fromWrapper := argv[0] == wrapper
+			if fromWrapper {
+				if pgFallbackImageID == "" {
+					id, note, unavailable := resolvePGImage(wrapper, major)
+					if id == "" {
+						notes = append(notes, note)
+						if unavailable {
+							unusable++
+						}
+						continue
+					}
+					pgFallbackImageID = id
+					t.Logf("restore tests: PostgreSQL %d client tools run from container image %s", major, id)
+				}
+				argv = pgFallbackArgv(wrapper, major, tool, pgFallbackImageID)
 			}
-			if pgClients[tool] != nil {
+			note, ok, unavailable := checkPGClient(argv, major, fromWrapper)
+			if ok {
+				pgClients[tool] = argv
+				t.Logf("restore tests: %s is %s", tool, strings.Join(argv, " "))
 				break
+			}
+			notes = append(notes, note)
+			if unavailable {
+				unusable++
 			}
 		}
 		if pgClients[tool] != nil {
 			continue
 		}
-		if len(candidates) == 0 && os.Getenv("CI") == "" {
-			t.Skipf("%s is not installed and Docker is not available; the restore tests need PostgreSQL %d client tools", tool, major)
+		if unusable == len(candidates) && os.Getenv("CI") == "" {
+			t.Skipf("no %s of PostgreSQL %d is installed and Docker is not usable; the restore tests need PostgreSQL %d client tools:\n%s",
+				tool, major, major, strings.Join(notes, "\n"))
 		}
-		t.Fatalf("no %s of PostgreSQL %d (the server's version) is usable; set FOLD_PG_BIN to a directory of PostgreSQL %d client tools, or make Docker available for scripts/pg-client.sh:\n%s",
+		t.Fatalf("no %s of PostgreSQL %d (the server's version) is usable; set FOLD_PG_BIN to a directory of PostgreSQL %d client tools, or make a running Docker available for scripts/pg-client.sh:\n%s",
 			tool, major, major, strings.Join(notes, "\n"))
 	}
 }
@@ -1187,4 +1279,545 @@ func TestRestoreFenceFencedIdAcrossARestart(t *testing.T) {
 func isRestoreFenceStatement(sql string) bool {
 	return strings.Contains(sql, "restore_fence") || strings.Contains(sql, "(value::bigint + 1)::text") ||
 		strings.Contains(sql, "INSERT INTO settings (key, value) VALUES (")
+}
+
+// fakeDockerScript stands in for docker in the wrapper's argument-level tests.
+// It logs every call (a "---" line, then one argument per line) and answers from
+// FAKE_* variables: FAKE_DOCKER_INFO (ok, down, hang), FAKE_DOCKER_PULL (ok,
+// fail, hang), FAKE_DOCKER_PRESENT=1 (the image is already local),
+// FAKE_DOCKER_ID, FAKE_PGREADY_RC, FAKE_TOOL_RC, FAKE_PG_MAJOR.
+const fakeDockerScript = `#!/usr/bin/env bash
+{ echo "---"; for a in "$@"; do printf '%s\n' "$a"; done; } >>"$FAKE_DOCKER_DIR/log"
+id=${FAKE_DOCKER_ID:-sha256:feedbeef}
+case $1 in
+info)
+	case ${FAKE_DOCKER_INFO:-ok} in
+	down) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
+	hang) exec sleep 30 ;;
+	esac
+	;;
+image)
+	if [[ ${FAKE_DOCKER_PRESENT:-} == 1 || -e $FAKE_DOCKER_DIR/pulled || ${@: -1} == "$id" ]]; then
+		[[ ${@: -1} == "$id" && -n ${FAKE_DOCKER_GONE:-} ]] && { echo "Error: No such image" >&2; exit 1; }
+		echo "$id"
+	else
+		echo "Error: No such image: ${@: -1}" >&2
+		exit 1
+	fi
+	;;
+pull)
+	case ${FAKE_DOCKER_PULL:-ok} in
+	fail) echo "Error response from daemon: manifest unknown" >&2; exit 1 ;;
+	hang) exec sleep 30 ;;
+	esac
+	: >"$FAKE_DOCKER_DIR/pulled"
+	;;
+run)
+	shift
+	while [[ $1 != --entrypoint ]]; do shift; done
+	entry=$2
+	shift 3 # --entrypoint, its value, the image
+	if [[ $entry == pg_isready ]]; then exit "${FAKE_PGREADY_RC:-0}"; fi
+	if [[ ${FAKE_TOOL_RC:-0} != 0 ]]; then exit "$FAKE_TOOL_RC"; fi
+	if [[ ${1:-} == --version ]]; then echo "$entry (PostgreSQL) ${FAKE_PG_MAJOR:-16}.4"; fi
+	;;
+esac
+`
+
+type dockerCall []string
+
+type fakeDocker struct {
+	dir  string
+	path string // PATH for the wrapper
+}
+
+// newFakeDocker returns a PATH holding the fake docker (when withDocker) and
+// just the tools the wrapper uses, so a missing docker is really missing.
+func newFakeDocker(t *testing.T, withDocker bool) *fakeDocker {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"bash", "env", "id", "dirname", "mktemp", "rm", "tail", "head", "cut", "cat", "sleep"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("the wrapper tests need %s: %v", tool, err)
+		}
+		if err := os.Symlink(p, filepath.Join(bin, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if withDocker {
+		if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fakeDockerScript), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &fakeDocker{dir: dir, path: bin}
+}
+
+// wrap runs scripts/pg-client.sh with env (KEY=value pairs) and returns its
+// combined output, its exit code and the docker calls it made.
+func (f *fakeDocker) wrap(t *testing.T, env []string, args ...string) (string, int, []dockerCall) {
+	t.Helper()
+	cmd := exec.Command(pgWrapperPath(), args...)
+	cmd.Env = []string{"PATH=" + f.path, "TMPDIR=" + f.dir, "FAKE_DOCKER_DIR=" + f.dir}
+	cmd.Env = append(cmd.Env, env...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		if code = exitCodeOf(err); code < 0 {
+			t.Fatalf("running the wrapper: %v", err)
+		}
+	}
+	return string(out), code, f.calls(t)
+}
+
+func (f *fakeDocker) calls(t *testing.T) []dockerCall {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.dir, "log"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []dockerCall
+	for _, block := range strings.Split(string(b), "---\n")[1:] {
+		calls = append(calls, dockerCall(strings.Split(strings.TrimSuffix(block, "\n"), "\n")))
+	}
+	return calls
+}
+
+// has reports whether the call carries these arguments next to each other.
+func (c dockerCall) has(seq ...string) bool {
+	for i := 0; i+len(seq) <= len(c); i++ {
+		if strings.Join(c[i:i+len(seq)], "\x00") == strings.Join(seq, "\x00") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c dockerCall) count(arg string) int {
+	n := 0
+	for _, a := range c {
+		if a == arg {
+			n++
+		}
+	}
+	return n
+}
+
+// entrypoint is the tool a `docker run` call starts, "" for any other call.
+func (c dockerCall) entrypoint() string {
+	for i, a := range c {
+		if a == "--entrypoint" && i+1 < len(c) {
+			return c[i+1]
+		}
+	}
+	return ""
+}
+
+// afterImage is what follows the image in a `docker run` call: the tool's arguments.
+func (c dockerCall) afterImage() []string {
+	for i, a := range c {
+		if a == "--entrypoint" && i+3 <= len(c) {
+			return c[i+3:]
+		}
+	}
+	return nil
+}
+
+func callsFor(calls []dockerCall, verb string) []dockerCall {
+	var out []dockerCall
+	for _, c := range calls {
+		if c[0] == verb {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// toolRun is the last container call, the one that runs the tool itself.
+func toolRun(t *testing.T, calls []dockerCall, tool string) dockerCall {
+	t.Helper()
+	for i := len(calls) - 1; i >= 0; i-- {
+		if calls[i][0] == "run" && calls[i].entrypoint() == tool {
+			return calls[i]
+		}
+	}
+	t.Fatalf("no container run of %s in %v", tool, calls)
+	return nil
+}
+
+func TestPGClientWrapperMountsEachDirectoryOnceAndKeepsSpaces(t *testing.T) {
+	f := newFakeDocker(t, true)
+	root := t.TempDir()
+	spaced := filepath.Join(root, "a b")
+	other := filepath.Join(root, "c  d")
+	for _, d := range []string{spaced, other} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"-Fc", "-f", filepath.Join(spaced, "one.dump"), "--file=" + filepath.Join(spaced, "two.dump"),
+		filepath.Join(other, "three.dump"), filepath.Join(spaced, "four.dump"), "name with spaces"}
+	out, code, calls := f.wrap(t, nil, append([]string{"16", "pg_dump"}, args...)...)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	run := toolRun(t, calls, "pg_dump")
+	mounts := 0
+	for i, a := range run {
+		if a == "-v" {
+			mounts++
+			if run[i+1] != spaced+":"+spaced && run[i+1] != other+":"+other {
+				t.Errorf("unexpected mount %q", run[i+1])
+			}
+		}
+	}
+	if mounts != 2 || !run.has("-v", spaced+":"+spaced) || !run.has("-v", other+":"+other) {
+		t.Errorf("want each directory mounted once, got %d mounts in %v", mounts, run)
+	}
+	if got := run.afterImage(); strings.Join(got, "\x00") != strings.Join(args, "\x00") {
+		t.Errorf("the tool's arguments changed: %q, want %q", got, args)
+	}
+	if !run.has("--network", "host") {
+		t.Errorf("no connection in the arguments should keep --network host: %v", run)
+	}
+}
+
+func TestPGClientWrapperWithoutMountsRuns(t *testing.T) {
+	f := newFakeDocker(t, true)
+	out, code, calls := f.wrap(t, nil, "16", "pg_dump", "--version")
+	if code != 0 || !strings.Contains(out, "pg_dump (PostgreSQL) 16.4") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if run := toolRun(t, calls, "pg_dump"); run.count("-v") != 0 {
+		t.Errorf("no path among the arguments, yet mounts: %v", run)
+	}
+}
+
+func TestPGClientWrapperRefusesAColonInAMountedPath(t *testing.T) {
+	f := newFakeDocker(t, true)
+	dir := filepath.Join(t.TempDir(), "a:b")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code, calls := f.wrap(t, nil, "16", "pg_dump", "-f", filepath.Join(dir, "x.dump"))
+	if code != 74 || !strings.Contains(out, "colon") {
+		t.Errorf("exit %d, want 74 naming the colon: %s", code, out)
+	}
+	if len(callsFor(calls, "run")) != 0 {
+		t.Error("the tool ran despite the bad path")
+	}
+}
+
+// TestPGClientWrapperIsBash32Compatible: macOS ships Bash 3.2, which has no
+// associative arrays and fails on an empty array under `set -u`. No Bash 3.2 runs
+// in CI, so this reads the script for what that Bash lacks.
+func TestPGClientWrapperIsBash32Compatible(t *testing.T) {
+	b, err := os.ReadFile(pgWrapperPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			code = append(code, line)
+		}
+	}
+	src := strings.Join(code, "\n")
+	for _, bad := range []*regexp.Regexp{
+		regexp.MustCompile(`\b(declare|typeset|local)\s+-[a-zA-Z]*[AnN]`),
+		regexp.MustCompile(`\b(mapfile|readarray|coproc)\b`),
+		regexp.MustCompile(`\$\{[^}]*(,,|\^\^)[^}]*\}`),
+		regexp.MustCompile(`&>>|\|&|;;&|;&|\[\[\s+-v\b`),
+	} {
+		if m := bad.FindString(src); m != "" {
+			t.Errorf("scripts/pg-client.sh uses %q, which Bash 3.2 does not have", m)
+		}
+	}
+	// An array may be expanded only as ${a[@]+"${a[@]}"}: a bare "${a[@]}" is an
+	// unbound variable under `set -u` when the array is empty.
+	guarded := regexp.MustCompile(`\$\{(\w+)\[@\]\+"\$\{(\w+)\[@\]\}"\}`)
+	for _, m := range guarded.FindAllStringSubmatch(src, -1) {
+		if m[1] != m[2] {
+			t.Errorf("%s guards a different array than it expands", m[0])
+		}
+	}
+	rest := guarded.ReplaceAllString(src, "")
+	for _, m := range regexp.MustCompile(`"?\$\{(\w+)\[@\]\}"?`).FindAllStringSubmatch(rest, -1) {
+		if m[1] != "net" { // net always holds --network and its value
+			t.Errorf("%s can be empty under set -u: expand it as ${%s[@]+\"${%s[@]}\"}", m[0], m[1], m[1])
+		}
+	}
+	if out, err := exec.Command("bash", "-n", pgWrapperPath()).CombinedOutput(); err != nil {
+		t.Errorf("bash -n: %v\n%s", err, out)
+	}
+}
+
+func TestPGClientWrapperDiagnosesEachStage(t *testing.T) {
+	const password = "s3cretpw"
+	url := "postgres://app:" + password + "@localhost:5433/db"
+	for _, tc := range []struct {
+		name       string
+		noDocker   bool
+		env        []string
+		args       []string
+		wantCode   int
+		wantText   string
+		wantNoTool bool // the tool itself must not have run
+		wantMax    time.Duration
+	}{
+		{name: "no container runtime", noDocker: true, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 70, wantText: "no container runtime", wantNoTool: true},
+		{name: "daemon stopped", env: []string{"FAKE_DOCKER_INFO=down"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 71, wantText: "daemon is not reachable", wantNoTool: true},
+		{name: "daemon silent", env: []string{"FAKE_DOCKER_INFO=hang", "FOLD_PG_INFO_TIMEOUT=1"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 71, wantText: "did not answer within 1s", wantNoTool: true, wantMax: 15 * time.Second},
+		{name: "pull fails", env: []string{"FAKE_DOCKER_PULL=fail"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 72, wantText: "pulling image postgres:16 failed (Error response from daemon: manifest unknown)", wantNoTool: true},
+		{name: "pull is bounded", env: []string{"FAKE_DOCKER_PULL=hang", "FOLD_PG_PULL_TIMEOUT=1"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 72, wantText: "pulling image postgres:16 did not finish within 1s", wantNoTool: true, wantMax: 15 * time.Second},
+		{name: "tool missing from the image", env: []string{"FAKE_TOOL_RC=127"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 72, wantText: "could not start pg_dump"},
+		{name: "database unreachable", env: []string{"FAKE_PGREADY_RC=2"}, args: []string{"16", "pg_dump", url},
+			wantCode: 73, wantText: "localhost port 5433 does not answer from inside the container", wantNoTool: true},
+		{name: "bad timeout", env: []string{"FOLD_PG_PULL_TIMEOUT=soon"}, args: []string{"16", "pg_dump", "--version"},
+			wantCode: 74, wantText: "FOLD_PG_PULL_TIMEOUT must be a whole number", wantNoTool: true},
+		{name: "no host", args: []string{"16", "pg_dump", "postgres://app:" + password + "@/db"},
+			wantCode: 74, wantText: "names no host", wantNoTool: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, !tc.noDocker)
+			start := time.Now()
+			out, code, calls := f.wrap(t, tc.env, tc.args...)
+			if code != tc.wantCode || !strings.Contains(out, tc.wantText) {
+				t.Errorf("exit %d: %s\nwant exit %d containing %q", code, out, tc.wantCode, tc.wantText)
+			}
+			if tc.wantMax > 0 && time.Since(start) > tc.wantMax {
+				t.Errorf("took %v, want under %v", time.Since(start), tc.wantMax)
+			}
+			if strings.Contains(out, password) {
+				t.Errorf("the output carries the password: %s", out)
+			}
+			if tc.wantNoTool {
+				for _, c := range callsFor(calls, "run") {
+					if c.entrypoint() == "pg_dump" {
+						t.Errorf("pg_dump ran despite the failure: %v", c)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPGClientWrapperUsesTheLocalImageWithoutPulling(t *testing.T) {
+	f := newFakeDocker(t, true)
+	out, code, calls := f.wrap(t, []string{"FAKE_DOCKER_PRESENT=1"}, "16", "pg_dump", "--version")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if n := len(callsFor(calls, "pull")); n != 0 {
+		t.Errorf("pulled %d times although the image is local", n)
+	}
+}
+
+func TestPGClientWrapperRunsByImageID(t *testing.T) {
+	t.Run("pulls once and runs the ID, not the tag", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		_, code, calls := f.wrap(t, nil, "16", "pg_dump", "--version")
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		pulls := callsFor(calls, "pull")
+		if len(pulls) != 1 || !pulls[0].has("postgres:16") {
+			t.Errorf("pulls %v, want one of postgres:16", pulls)
+		}
+		run := toolRun(t, calls, "pg_dump")
+		if !run.has("--entrypoint", "pg_dump", "sha256:feedbeef") || run.count("postgres:16") != 0 {
+			t.Errorf("the tool should run on the image ID: %v", run)
+		}
+	})
+	t.Run("--resolve prints the ID", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, calls := f.wrap(t, nil, "--resolve", "16")
+		if code != 0 || !strings.Contains(out, "sha256:feedbeef") {
+			t.Fatalf("exit %d: %s", code, out)
+		}
+		for _, c := range callsFor(calls, "run") {
+			t.Errorf("--resolve started a container: %v", c)
+		}
+	})
+	t.Run("a recorded ID is used as it is", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		_, code, calls := f.wrap(t, []string{"FOLD_PG_IMAGE_ID=sha256:feedbeef"}, "16", "pg_dump", "--version")
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if n := len(callsFor(calls, "pull")); n != 0 {
+			t.Errorf("pulled %d times although an ID was recorded", n)
+		}
+		if run := toolRun(t, calls, "pg_dump"); !run.has("--entrypoint", "pg_dump", "sha256:feedbeef") {
+			t.Errorf("the recorded ID is not the image run: %v", run)
+		}
+	})
+	t.Run("a recorded ID that is gone is an error, not a pull", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, calls := f.wrap(t, []string{"FOLD_PG_IMAGE_ID=sha256:feedbeef", "FAKE_DOCKER_GONE=1"}, "16", "pg_dump", "--version")
+		if code != 72 || !strings.Contains(out, "is not available locally") {
+			t.Errorf("exit %d: %s", code, out)
+		}
+		if len(callsFor(calls, "pull")) != 0 {
+			t.Error("pulled instead of failing")
+		}
+	})
+	t.Run("an explicit digest is kept as given", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		digest := "postgres@sha256:" + strings.Repeat("ab", 32)
+		_, code, calls := f.wrap(t, []string{"FOLD_PG_IMAGE=" + digest}, "16", "pg_dump", "--version")
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if pulls := callsFor(calls, "pull"); len(pulls) != 1 || !pulls[0].has(digest) {
+			t.Errorf("pulls %v, want the digest %s exactly", pulls, digest)
+		}
+	})
+}
+
+func TestPGClientWrapperConnectionForms(t *testing.T) {
+	root := t.TempDir()
+	sock := filepath.Join(root, "sock")
+	spacedSock := filepath.Join(root, "sock dir")
+	for _, d := range []string{sock, spacedSock} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type probe struct{ host, port string }
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		network string // the container network, for the probe and the tool
+		mount   string // the one directory mounted, "" for none
+		probe   probe
+	}{
+		{name: "TCP URL", args: []string{"postgres://u:p@localhost:5433/db"}, network: "host", probe: probe{"localhost", "5433"}},
+		{name: "TCP URL default port", args: []string{"postgres://u@127.0.0.1/db"}, network: "host", probe: probe{"127.0.0.1", "5432"}},
+		{name: "TCP IPv6", args: []string{"postgres://u@[::1]:5434/db"}, network: "host", probe: probe{"::1", "5434"}},
+		{name: "TCP -h and -p", args: []string{"-h", "db.internal", "-p", "5435", "dbname"}, network: "host", probe: probe{"db.internal", "5435"}},
+		{name: "TCP conninfo", args: []string{"-d", "host=db.internal port=5436 dbname=x"}, network: "host", probe: probe{"db.internal", "5436"}},
+		{name: "socket in the URL query", args: []string{"postgres://u@localhost/db?host=" + sock}, network: "none", mount: sock, probe: probe{sock, "5432"}},
+		{name: "socket in the URL authority", args: []string{"postgres://u@" + strings.ReplaceAll(sock, "/", "%2F") + ":5437/db"}, network: "none", mount: sock, probe: probe{sock, "5437"}},
+		{name: "socket with -h", args: []string{"-h", spacedSock, "-p", "5438", "dbname"}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5438"}},
+		{name: "socket conninfo", args: []string{"-d", "host=" + sock + " dbname=x"}, network: "none", mount: sock, probe: probe{sock, "5432"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			out, code, calls := f.wrap(t, nil, append([]string{"16", "pg_dump"}, tc.args...)...)
+			if code != 0 {
+				t.Fatalf("exit %d: %s", code, out)
+			}
+			ready := toolRun(t, calls, "pg_isready")
+			run := toolRun(t, calls, "pg_dump")
+			for name, c := range map[string]dockerCall{"probe": ready, "tool": run} {
+				if !c.has("--network", tc.network) {
+					t.Errorf("%s: want --network %s in %v", name, tc.network, c)
+				}
+				if tc.mount == "" && c.count("-v") != 0 {
+					t.Errorf("%s: unexpected mount in %v", name, c)
+				}
+				if tc.mount != "" && (c.count("-v") != 1 || !c.has("-v", tc.mount+":"+tc.mount)) {
+					t.Errorf("%s: want only %s mounted, got %v", name, tc.mount, c)
+				}
+			}
+			if !ready.has("-h", tc.probe.host, "-p", tc.probe.port) {
+				t.Errorf("probe asked the wrong place: %v, want -h %s -p %s", ready, tc.probe.host, tc.probe.port)
+			}
+			if got := run.afterImage(); strings.Join(got, "\x00") != strings.Join(tc.args, "\x00") {
+				t.Errorf("the tool's arguments changed: %q, want %q", got, tc.args)
+			}
+		})
+	}
+
+	t.Run("a socket directory that is not there", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, _ := f.wrap(t, nil, "16", "pg_dump", "-h", filepath.Join(root, "missing"), "dbname")
+		if code != 74 || !strings.Contains(out, "does not exist") {
+			t.Errorf("exit %d: %s", code, out)
+		}
+	})
+}
+
+func TestPGCandidatesOrder(t *testing.T) {
+	found := func(string) (string, error) { return "/usr/bin/pg_dump", nil }
+	missing := func(string) (string, error) { return "", exec.ErrNotFound }
+	only := func(name string) func(string) (string, error) {
+		return func(n string) (string, error) {
+			if n == name {
+				return "/usr/bin/" + n, nil
+			}
+			return "", exec.ErrNotFound
+		}
+	}
+	const wrapper = "/repo/scripts/pg-client.sh"
+	join := func(c [][]string) string {
+		var parts []string
+		for _, argv := range c {
+			parts = append(parts, strings.Join(argv, " "))
+		}
+		return strings.Join(parts, " | ")
+	}
+	for _, tc := range []struct {
+		name string
+		bin  string
+		find func(string) (string, error)
+		want string
+	}{
+		{"FOLD_PG_BIN stands alone", "/opt/pg16/bin", found, "/opt/pg16/bin/pg_dump"},
+		{"native then the container", "", found, "/usr/bin/pg_dump | /repo/scripts/pg-client.sh 16 pg_dump"},
+		{"container only", "", only("docker"), "/repo/scripts/pg-client.sh 16 pg_dump"},
+		{"native only", "", only("pg_dump"), "/usr/bin/pg_dump"},
+		{"nothing", "", missing, ""},
+	} {
+		if got := join(pgCandidates("pg_dump", 16, wrapper, tc.bin, tc.find)); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestCheckPGClientKeepsTheMajorStrict(t *testing.T) {
+	script := func(t *testing.T, body string) []string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "client")
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return []string{p}
+	}
+	if note, ok, _ := checkPGClient(script(t, `echo "pg_dump (PostgreSQL) 16.4"`), 16, false); !ok {
+		t.Errorf("a matching client was refused: %s", note)
+	}
+	note, ok, unavailable := checkPGClient(script(t, `echo "pg_dump (PostgreSQL) 18.1"`), 16, false)
+	if ok || unavailable || !strings.Contains(note, "not PostgreSQL 16") {
+		t.Errorf("a PostgreSQL 18 client passed for a 16 server: ok=%v unavailable=%v note=%q", ok, unavailable, note)
+	}
+	note, ok, unavailable = checkPGClient(script(t, `echo "boom" >&2; exit 3`), 16, false)
+	if ok || unavailable || !strings.Contains(note, "boom") {
+		t.Errorf("a failing client passed or counted as unavailable: ok=%v unavailable=%v note=%q", ok, unavailable, note)
+	}
+	// Only the wrapper's own "no runtime" codes read as unavailable, and a native
+	// client that happens to exit 71 does not.
+	if _, ok, unavailable = checkPGClient(script(t, `echo "no daemon" >&2; exit 71`), 16, true); ok || !unavailable {
+		t.Errorf("the wrapper's exit 71 should read as unavailable: ok=%v unavailable=%v", ok, unavailable)
+	}
+	if _, ok, unavailable = checkPGClient(script(t, `exit 71`), 16, false); ok || unavailable {
+		t.Errorf("a native client's exit 71 must stay a failure: ok=%v unavailable=%v", ok, unavailable)
+	}
+	if _, ok, unavailable = checkPGClient(script(t, `echo "pulling failed" >&2; exit 72`), 16, true); ok || unavailable {
+		t.Errorf("an unusable image must fail, not skip: ok=%v unavailable=%v", ok, unavailable)
+	}
 }
