@@ -1278,8 +1278,8 @@ ask):
      (`go test -run 'TestContactConcurrent|TestContactAuthority|TestContactUnrelated' -count=10 .`)
      to shake out order-dependent flakes before asking review.
 5. Review requirement (house rule): this PR touches identity-of-teen
-   data paths, so it gets the four-concern separate-agent review before
-   merge, with the security reviewer specifically signing the
+   data paths, so it gets the separate-agent review of the concerns `AGENTS.md`
+   lists before merge, with the security reviewer specifically signing the
    guarantee-by-guarantee argument in the PR body. No DEC-31 semantics
    change is being made; if review finds one is needed, stop — the
    freeze DEC forbids smuggling it in here.
@@ -1407,7 +1407,7 @@ ask):
   coarser gate.
 - **A gate site classified (b) "defensive" that actually mattered.** The
   per-site accounting in the PR body is the mitigation, and the
-  four-concern review re-checks each classification against
+  separate-agent review re-checks each classification against
   `reconcileContacts`' scoping (`contact_lifecycle.go:335`). When in
   doubt, treat as (a) and make reconcile cover it.
 - **Reveal linearizing before a demotion** can return a teen's field
