@@ -63,7 +63,7 @@ successful sign-in clears the email's counter but not the IP's.
 ```
 PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial update)
 POST   /api/v1/me/password  → 200 {}  (auth)
-POST   /api/v1/me/avatar    → 200 {avatarUrl} | 401 | 403 teen_avatar  (auth; multipart, field "avatar")
+POST   /api/v1/me/avatar    → 200 {avatarUrl} | 401 | 403 teen_avatar | 503 upload_busy  (auth; multipart, field "avatar")
 DELETE /api/v1/me/avatar    → 200 {} | 401  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public capability; CSRF required)
 POST   /api/v1/me/email/cancel  {token} → 200 {cancelled: true} | 400 link_expired  (public capability; CSRF required)
@@ -347,6 +347,29 @@ lives under `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in the
 compose stack, persisted on the `/data` volume). See AGENTS.md for the
 S3-replacement seam.
 
+Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
+
+- Pictures are copied, decoded and re-encoded in memory, so the process allows
+  `images.MaxConcurrentProcessing` (2) at once across both routes. A request
+  takes a slot only after sign-in, CSRF and its own permission check
+  (`teen_avatar`, leader or admin for a cover) have passed. It never waits:
+  when both slots are taken it answers `503 upload_busy`, nothing is saved, and
+  the client may try again. The slot is held until the picture has been
+  normalized and is released before the file is stored or any row changes, on
+  every path including errors and a client that went away (`408 upload_canceled`
+  if it had gone before reading began).
+- Before decoding, from the header, an estimate of the memory the decoders need
+  (bytes per pixel of the PNG or JPEG color model, the orientation copy of a
+  turned JPEG, two bytes per pixel of every GIF frame, plus the encoded buffers)
+  is compared with 128 MiB. Over it answers `400 image_too_large`, as the
+  pixel and frame caps do. A 5000 x 5000 16-bit PNG, a few hundred KB on the
+  wire, needs about 200 MB and is refused. The figure is an estimate from the
+  decoders' pixel formats, sized for the smallest recommended droplet.
+- Not covered: the request body is capped at 5 MB plus 1 MiB of multipart
+  overhead per request, and the CSRF check reads that body before sign-in, so
+  concurrent uploads still buffer one request each ahead of the slot check.
+  There is no per-user quota and no whole-server memory cap.
+
 ### Groups
 
 ```
@@ -355,7 +378,7 @@ GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; g
 POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
 GET  /api/v1/groups/:id?cursor=&limit=    → {group, members, upcomingEvents, truncated, hasMore, nextCursor, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
-POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
+POST   /api/v1/groups/:id/cover           → 200 {imageUrl} | 503 upload_busy (group leader or admin; multipart, field "cover")
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
 ```
 

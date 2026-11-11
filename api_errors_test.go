@@ -254,7 +254,7 @@ func TestErrorBody(t *testing.T) {
 var reviewedServerErrors = map[string]bool{
 	"attempt_busy": true, "reason_review_busy": true, "delete_outcome_unknown": true,
 	"delete_timed_out": true, "restore_detected": true, "message_test_failed": true,
-	"server_error": true,
+	"server_error": true, "upload_busy": true,
 }
 
 func TestServerErrorsCarryNoRuntimeDetail(t *testing.T) {

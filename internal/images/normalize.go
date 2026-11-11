@@ -34,6 +34,18 @@ const (
 	maxGIFPixels = 100_000_000
 	// jpegQuality is the quality of re-encoded JPEGs.
 	jpegQuality = 85
+	// maxWorkingBytes is the most memory one Normalize call may be expected to
+	// hold (estimateWorking). The pixel caps alone are not enough: a 25 MP
+	// 16-bit PNG decodes to 200 MB although its file is a few hundred KB.
+	// Admit allows MaxConcurrentProcessing calls at once, so the worst case
+	// is that many of these on a 1 GB droplet beside Postgres. The figure is
+	// an estimate from the decoders' pixel formats, not a measurement; it
+	// leaves 25 MP of 8-bit color (100 MB) and an upright 12 MP phone photo
+	// accepted.
+	maxWorkingBytes = 128 << 20
+	// scratchBytes covers what the estimate does not count per pixel: row
+	// buffers, flate and LZW state, Huffman tables.
+	scratchBytes = 8 << 20
 )
 
 // allowedTypes maps sniffed MIME types to canonical extensions. The
@@ -87,9 +99,9 @@ func Normalize(f *os.File, mime string) (string, string, error) {
 	var out bytes.Buffer
 	switch mime {
 	case "image/jpeg":
-		err = normalizeJPEG(&out, data)
+		err = normalizeJPEG(&out, data, cfg)
 	case "image/png":
-		err = normalizePNG(&out, data)
+		err = normalizePNG(&out, data, cfg)
 	case "image/gif":
 		err = normalizeGIF(&out, data)
 	}
@@ -111,8 +123,53 @@ func Normalize(f *os.File, mime string) (string, string, error) {
 	return ext, mime, nil
 }
 
-func normalizeJPEG(out *bytes.Buffer, data []byte) error {
+// bufferBytes is what the encoded sides of a call hold: the file as read (a
+// growing read can reserve twice its size), and room for the re-encoded
+// output, which is assumed to stay near the upload limit.
+func bufferBytes(dataLen int) int64 {
+	return 2*int64(dataLen) + MaxUploadBytes + scratchBytes
+}
+
+// bytesPerPixel is what the standard decoder holds per pixel for a color
+// model from DecodeConfig. A 16-bit PNG is 8 (RGBA64) or 2 (Gray16); an
+// unknown model is counted as the largest.
+func bytesPerPixel(m color.Model) int64 {
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	switch m {
+	case color.GrayModel:
+		return 1
+	case color.Gray16Model:
+		return 2
+	case color.YCbCrModel:
+		return 3 // a 4:4:4 JPEG; subsampled ones are smaller
+	case color.RGBAModel, color.NRGBAModel, color.CMYKModel:
+		return 4
+	}
+	return 8
+}
+
+// refuseHeavy returns ErrTooLarge when the estimated memory for decoding and
+// encoding exceeds maxWorkingBytes. It runs from the header, before any pixel
+// is decoded.
+func refuseHeavy(decoded, extra int64, dataLen int) error {
+	if decoded+extra+bufferBytes(dataLen) > maxWorkingBytes {
+		return ErrTooLarge
+	}
+	return nil
+}
+
+func normalizeJPEG(out *bytes.Buffer, data []byte, cfg image.Config) error {
 	orientation := jpegOrientation(data)
+	pixels := int64(cfg.Width) * int64(cfg.Height)
+	var copied int64
+	if orientation >= 2 && orientation <= 8 {
+		copied = pixels * 4 // applyOrientation's RGBA copy, alive beside the decoded image
+	}
+	if err := refuseHeavy(pixels*bytesPerPixel(cfg.ColorModel), copied, len(data)); err != nil {
+		return err
+	}
 	img, err := jpeg.Decode(bytes.NewReader(data))
 	if err != nil {
 		return ErrUnreadable
@@ -121,7 +178,10 @@ func normalizeJPEG(out *bytes.Buffer, data []byte) error {
 	return jpeg.Encode(out, img, &jpeg.Options{Quality: jpegQuality})
 }
 
-func normalizePNG(out *bytes.Buffer, data []byte) error {
+func normalizePNG(out *bytes.Buffer, data []byte, cfg image.Config) error {
+	if err := refuseHeavy(int64(cfg.Width)*int64(cfg.Height)*bytesPerPixel(cfg.ColorModel), 0, len(data)); err != nil {
+		return err
+	}
 	img, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return ErrUnreadable
@@ -136,6 +196,11 @@ func normalizeGIF(out *bytes.Buffer, data []byte) error {
 	}
 	if frames > MaxGIFFrames || pixels > maxGIFPixels {
 		return ErrTooLarge
+	}
+	// DecodeAll holds one palette index per pixel of every frame at once, and
+	// EncodeAll works on the same frames; count two bytes to stay conservative.
+	if err := refuseHeavy(int64(pixels)*2, 0, len(data)); err != nil {
+		return err
 	}
 	g, err := gif.DecodeAll(bytes.NewReader(data))
 	if err != nil {

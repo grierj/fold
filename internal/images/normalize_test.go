@@ -5,6 +5,7 @@ import (
 	"compress/lzw"
 	"encoding/binary"
 	"errors"
+	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
@@ -342,5 +343,87 @@ func TestJPEGOrientationAcceptsLong(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[entry+8:], 0x00010006) // high bytes set: not a valid value
 	if got := jpegOrientation(imagetest.WithEXIF(base, payload)); got != 1 {
 		t.Errorf("oversized LONG orientation read as %d, want 1", got)
+	}
+}
+
+func png16Header(w, h uint32, colorType byte) []byte {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], w)
+	binary.BigEndian.PutUint32(ihdr[4:], h)
+	ihdr[8], ihdr[9] = 16, colorType
+	return append([]byte("\x89PNG\r\n\x1a\n"), imagetest.PNGChunk("IHDR", ihdr)...)
+}
+
+// A 5000 x 5000 16-bit PNG is a few hundred KB on the wire but decodes to
+// 200 MB. The header is enough to refuse it; the same canvas at 8 bits, which
+// needs half that, gets past the estimate and fails only when the (absent)
+// pixels are read.
+func TestNormalizeRefusesSixteenBitPNGByMemoryEstimate(t *testing.T) {
+	for name, hdr := range map[string][]byte{
+		"16-bit RGBA": png16Header(5000, 5000, 6),
+		"16-bit RGB":  png16Header(5000, 5000, 2),
+	} {
+		if _, _, err := normalizeBytes(t, hdr, "image/png"); !errors.Is(err, ErrTooLarge) {
+			t.Errorf("%s: %v, want ErrTooLarge", name, err)
+		}
+	}
+	// 16-bit gray is 2 bytes a pixel: 50 MB, inside the budget.
+	if _, _, err := normalizeBytes(t, png16Header(5000, 5000, 0), "image/png"); errors.Is(err, ErrTooLarge) {
+		t.Errorf("16-bit gray at 25 MP is inside the budget, got %v", err)
+	}
+	if _, _, err := normalizeBytes(t, imagetest.PNGHeaderOnly(5000, 5000), "image/png"); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("8-bit RGBA at 25 MP: %v, want it to pass the estimate and fail as unreadable", err)
+	}
+}
+
+func TestBytesPerPixel(t *testing.T) {
+	for _, tc := range []struct {
+		m    color.Model
+		want int64
+	}{
+		{color.RGBA64Model, 8}, {color.NRGBA64Model, 8}, {color.RGBAModel, 4}, {color.NRGBAModel, 4},
+		{color.Gray16Model, 2}, {color.GrayModel, 1}, {color.YCbCrModel, 3}, {color.CMYKModel, 4},
+		{color.Palette{color.Black}, 1}, {nil, 8},
+	} {
+		if got := bytesPerPixel(tc.m); got != tc.want {
+			t.Errorf("bytesPerPixel(%v) = %d, want %d", tc.m, got, tc.want)
+		}
+	}
+}
+
+// A turned JPEG holds a second, RGBA copy beside the decoded image, so the same
+// canvas is refused with an orientation tag and accepted without one. The
+// config is passed in, so the estimate is what is under test, not a 25 MP file.
+func TestNormalizeJPEGCountsTheOrientationCopy(t *testing.T) {
+	upright := imagetest.JPEGBytes(t, imagetest.BlockImage(2, 3, imagetest.GridColors))
+	turned := imagetest.WithEXIF(upright, imagetest.ExifBlock(6))
+	big := image.Config{ColorModel: color.YCbCrModel, Width: 5000, Height: 5000}
+
+	var out bytes.Buffer
+	if err := normalizeJPEG(&out, turned, big); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("turned 25 MP JPEG: %v, want ErrTooLarge", err)
+	}
+	out.Reset()
+	if err := normalizeJPEG(&out, upright, big); err != nil {
+		t.Errorf("upright 25 MP JPEG is inside the budget, got %v", err)
+	}
+	phone := image.Config{ColorModel: color.YCbCrModel, Width: 4000, Height: 3000}
+	out.Reset()
+	if err := normalizeJPEG(&out, turned, phone); err != nil {
+		t.Errorf("turned 12 MP phone photo should be accepted, got %v", err)
+	}
+}
+
+// Four full-screen 5000 x 5000 frames are exactly the old pixel budget, so
+// only the memory estimate (two bytes a pixel, 200 MB) refuses them; an invalid
+// body would otherwise fail as unreadable.
+func TestNormalizeGIFRefusesAggregateFramesByMemoryEstimate(t *testing.T) {
+	in := gifHeader(5000, 5000)
+	for i := 0; i < 4; i++ {
+		in = append(in, gifFrame(5000, 5000, []byte{0x4C, 0x01})...)
+	}
+	in = append(in, 0x3B)
+	if _, _, err := normalizeBytes(t, in, "image/gif"); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("100 million pixels of frames: %v, want ErrTooLarge", err)
 	}
 }
