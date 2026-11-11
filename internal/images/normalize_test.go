@@ -937,6 +937,146 @@ func TestNormalizeGIFRefusesAggregateFramesByMemoryEstimate(t *testing.T) {
 	}
 }
 
+// framesAreInOrder checks every frame of g against InterlacedGIFIndex: row y of
+// frame f must hold that index across its width, which is only so when the
+// interlaced rows were put back in order.
+func framesAreInOrder(t *testing.T, g *gif.GIF, frames, w, h int) {
+	t.Helper()
+	if len(g.Image) != frames {
+		t.Fatalf("%d frames, want %d", len(g.Image), frames)
+	}
+	for f, m := range g.Image {
+		if m.Bounds().Dx() != w || m.Bounds().Dy() != h {
+			t.Fatalf("frame %d is %v, want %d x %d", f, m.Bounds(), w, h)
+		}
+		for y := 0; y < h; y++ {
+			for _, x := range []int{0, w / 2, w - 1} {
+				if got, want := m.ColorIndexAt(x, y), imagetest.InterlacedGIFIndex(f, y); got != want {
+					t.Fatalf("frame %d row %d column %d holds index %d, want %d", f, y, x, got, want)
+				}
+			}
+		}
+	}
+}
+
+// The interlaced fixture is a real interlaced GIF: its frames say so, image/gif
+// reads it back in order, and the scan counts its frames and pixels.
+func TestInterlacedGIFFixtureIsValid(t *testing.T) {
+	const frames, w, h = 5, 9, 21 // 21 rows is not a multiple of 8
+	in := imagetest.InterlacedGIF(t, frames, w, h)
+	g, err := gif.DecodeAll(bytes.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	framesAreInOrder(t, g, frames, w, h)
+	if n, p, ok := scanGIF(in); !ok || n != frames || p != frames*w*h {
+		t.Errorf("scanGIF counted %d frames, %d pixels (ok %v), want %d and %d", n, p, ok, frames, frames*w*h)
+	}
+	if n := bytes.Count(in, []byte{0x2C, 0, 0, 0, 0, w, 0, h, 0, 0x40}); n != frames {
+		t.Errorf("%d image descriptors say interlaced, want %d", n, frames)
+	}
+	big := imagetest.InterlacedGIF(t, MaxGIFFrames, 270, 270)
+	if n, p, ok := scanGIF(big); !ok || n != MaxGIFFrames || p != MaxGIFFrames*270*270 {
+		t.Errorf("scanGIF counted %d frames, %d pixels (ok %v)", n, p, ok)
+	}
+	if len(big) > MaxUploadBytes/4 {
+		t.Errorf("the 200-frame fixture is %d bytes, it should be far under the upload limit", len(big))
+	}
+}
+
+// The GIF estimate adds gifFrameBytes of decoder and encoder state for every
+// frame to two bytes a pixel, and the budget it is held to is maxWorkingBytes
+// exactly: the most pixels a 200-frame animation of a given file size may have
+// are accepted and one more is refused, and the same pixels in few frames are
+// not charged the frames' share.
+func TestGIFEstimateBoundary(t *testing.T) {
+	const dataLen = 1 << 20
+	room := int64(maxWorkingBytes) - bufferBytes(dataLen) - MaxGIFFrames*gifFrameBytes
+	most := int(room / 2)
+	if err := refuseHeavy(gifBytes(MaxGIFFrames, most), dataLen); err != nil {
+		t.Errorf("%d pixels in %d frames: %v, want it accepted", most, MaxGIFFrames, err)
+	}
+	if err := refuseHeavy(gifBytes(MaxGIFFrames, most+1), dataLen); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("%d pixels in %d frames: %v, want ErrTooLarge", most+1, MaxGIFFrames, err)
+	}
+	if err := refuseHeavy(gifBytes(1, most+1), dataLen); err != nil {
+		t.Errorf("%d pixels in one frame: %v, want it accepted (no frame overhead to count)", most+1, err)
+	}
+	// Two bytes a pixel alone let 200 frames of 375 x 375 (28 million pixels) in,
+	// a little under the budget; the frames' own state does not fit.
+	pixels := MaxGIFFrames * 375 * 375
+	if err := refuseHeavy(int64(pixels)*2, dataLen); err != nil {
+		t.Fatalf("the pixel count alone should have accepted it: %v", err)
+	}
+	if err := refuseHeavy(gifBytes(MaxGIFFrames, pixels), dataLen); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("200 frames of 375 x 375: %v, want ErrTooLarge", err)
+	}
+}
+
+// The largest animation the estimate admits is normalized whole, and what the
+// call allocates in all, the decode that undoes the interlace and the encode that
+// writes every frame again with an LZW table of its own, stays within the
+// estimate. Without the per-frame term it would not: 200 frames add about 20 MB
+// of decoder and encoder state to the 29 MB of pixels.
+func TestNormalizeAllocationIsCoveredForInterlacedGIF(t *testing.T) {
+	const w, h = 270, 270
+	in := imagetest.InterlacedGIF(t, MaxGIFFrames, w, h)
+	frames, pixels, ok := scanGIF(in)
+	if !ok || frames != MaxGIFFrames {
+		t.Fatalf("scanGIF: %d frames, ok %v", frames, ok)
+	}
+	estimate := gifBytes(frames, pixels) + bufferBytes(len(in))
+	if got := float64(estimate) / float64(maxWorkingBytes); got < 0.8 || got > 1 {
+		t.Fatalf("the fixture's estimate is %.0f%% of the budget, it should be near it and under it", got*100)
+	}
+	got := allocatedByNormalize(t, in, "image/gif")
+	if want := gifBytes(frames, pixels) + int64(len(in)) + normalizeOverhead; got > want {
+		t.Errorf("Normalize allocated %d bytes, the estimate is %d", got, want)
+	}
+	if pixelsOnly := int64(pixels)*2 + int64(len(in)) + normalizeOverhead; got <= pixelsOnly {
+		t.Errorf("Normalize allocated %d bytes, no more than the %d a pixel count alone gives: the fixture does not show the per-frame state", got, pixelsOnly)
+	}
+	out, mime, err := normalizeBytes(t, in, "image/gif")
+	if err != nil || mime != "image/gif" {
+		t.Fatalf("%v (mime %q)", err, mime)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	framesAreInOrder(t, g, MaxGIFFrames, w, h)
+}
+
+// Just over the budget is refused from the header: 200 frames of 290 x 290 are
+// 2% over, and the 375 x 375 animation that two bytes a pixel let through is far
+// over. Both are valid interlaced GIFs that image/gif would decode, and neither
+// is decoded.
+func TestNormalizeRefusesInterlacedGIFOverTheBudgetBeforeDecoding(t *testing.T) {
+	for _, side := range []int{290, 375} {
+		in := imagetest.InterlacedGIF(t, MaxGIFFrames, side, side)
+		if len(in) > MaxUploadBytes {
+			t.Fatalf("%d x %d: the fixture is %d bytes, over the upload limit", side, side, len(in))
+		}
+		frames, pixels, ok := scanGIF(in)
+		if !ok || frames != MaxGIFFrames || pixels > maxGIFPixels {
+			t.Fatalf("%d x %d: scanGIF counted %d frames, %d pixels (ok %v): only the memory estimate should refuse it", side, side, frames, pixels, ok)
+		}
+		if gifBytes(frames, pixels)+bufferBytes(len(in)) <= maxWorkingBytes {
+			t.Fatalf("%d x %d: the estimate is not over the budget", side, side)
+		}
+		got := allocatedBy(func() {
+			if _, _, err := normalizeBytes(t, in, "image/gif"); !errors.Is(err, ErrTooLarge) {
+				t.Errorf("%d x %d: %v, want ErrTooLarge", side, side, err)
+			}
+		})
+		// Decoding would allocate tens of MB of pixels; a refusal reads the input
+		// and the header.
+		if got > 8<<20 {
+			t.Errorf("%d x %d: the refusal allocated %d bytes, so the file was decoded", side, side, got)
+		}
+	}
+}
+
 // The re-encoded picture may not pass its allowance, and the allowance is exact:
 // a picture whose output is n bytes is accepted at n and refused at n-1, for
 // every format, with the upload left as it was and no output file left behind.

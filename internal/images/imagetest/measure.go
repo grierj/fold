@@ -38,9 +38,12 @@ type Case struct {
 // one for each way the estimate adds up: plain and interlaced PNG, PNGs of 16
 // bits a channel (which are written back a pixel at a time) and one whose
 // transparency widens it, baseline JPEG that needs turning, progressive JPEG in
-// each color layout, one whose Adobe segment comes after every scan, and a long
-// GIF. Each is sized so its estimate is within a few percent of the budget
-// (NearBudget); the measurement refuses one that has drifted below it.
+// each color layout, one whose Adobe segment comes after every scan, a GIF of a
+// few big frames, and a GIF of the most frames the cap allows, interlaced (each
+// frame has LZW state of its own in the decoder and the encoder, and undoing the
+// interlace copies its pixels). Each is sized so its estimate is within a few
+// percent of the budget (NearBudget); the measurement refuses one that has
+// drifted below it.
 func WorstCases() []Case {
 	progressive := func(w, h int, ids, hv []byte, adobe int) func(*testing.T) []byte {
 		return func(*testing.T) []byte { return ProgressiveJPEG(w, h, ids, hv, adobe) }
@@ -98,6 +101,7 @@ func WorstCases() []Case {
 			}
 			return b.Bytes()
 		}},
+		{"gif-200-frames-interlaced-270", "image/gif", func(t *testing.T) []byte { return InterlacedGIF(t, 200, 270, 270) }},
 	}
 }
 

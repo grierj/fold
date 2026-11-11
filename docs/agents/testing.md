@@ -25,7 +25,7 @@ setup, a source guard or the e2e harness is what you are changing or debugging.
 `FOLD_UPLOAD_MEASURE=1 go test ./internal/images -run '^TestMeasureNormalize$' -count=1 -v` and
 `FOLD_UPLOAD_MEASURE=1 go test . -run '^TestMeasureUploadRequests$' -count=1 -v`. Each runs every
 `imagetest.WorstCases` picture (sized so its estimate is 80% to 100% of the budget, one for each way
-the estimate adds up) in a process of its own (`FOLD_UPLOAD_MEASURE_CASE=<name>` runs one) and logs a
+the estimate adds up, a 200-frame interlaced GIF for the per-frame decoder and encoder state among them) in a process of its own (`FOLD_UPLOAD_MEASURE_CASE=<name>` runs one) and logs a
 `MEASURE {...}` JSON line. Run them alone: they are about memory, so other work on the machine skews
 them. They need Linux with `/proc/self/clear_refs` writable (a container is fine) and fail without
 it, since the process peak could not be told from the fixtures' own.

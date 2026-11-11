@@ -5,6 +5,7 @@ package imagetest
 
 import (
 	"bytes"
+	"compress/lzw"
 	"compress/zlib"
 	"encoding/binary"
 	"hash/crc32"
@@ -254,6 +255,63 @@ func ProgressiveJPEG(w, h int, ids, hv []byte, adobe int) []byte {
 	mxx, myy := (w+8*maxH-1)/(8*maxH), (h+8*maxV-1)/(8*maxV)
 	b.Write(make([]byte, (mxx*myy*perMCU+7)/8+8)) // a 0 bit per block, then padding
 	b.Write([]byte{0xFF, 0xD9})
+	return b.Bytes()
+}
+
+// InterlacedGIFIndex is the palette index InterlacedGIF gives row y of frame f.
+// Only four values a frame, one for each y mod 4, so each pass of the interlace
+// is a few long runs and the file stays a few KB a frame however many frames
+// there are, yet a reader that does not put the rows back in order gets the
+// wrong index for most rows.
+func InterlacedGIFIndex(f, y int) uint8 { return uint8(f*4 + y%4) }
+
+// InterlacedGIF is a valid animated GIF of frames frames, each w x h and stored
+// interlaced (image descriptor flag 0x40, rows in the order image/gif undoes:
+// every 8th from 0, every 8th from 4, every 4th from 2, every 2nd from 1), with
+// a 256-entry gray global color table. Row y of frame f holds
+// InterlacedGIFIndex(f, y) across its whole width.
+func InterlacedGIF(t *testing.T, frames, w, h int) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	b.WriteString("GIF89a")
+	b.Write([]byte{byte(w), byte(w >> 8), byte(h), byte(h >> 8), 0xF7, 0, 0}) // a global table of 256 colors
+	for i := 0; i < 256; i++ {
+		b.Write([]byte{byte(i), byte(i), byte(i)})
+	}
+	var rows []int
+	for _, pass := range [][2]int{{0, 8}, {4, 8}, {2, 4}, {1, 2}} { // start, step
+		for y := pass[0]; y < h; y += pass[1] {
+			rows = append(rows, y)
+		}
+	}
+	row := make([]byte, w)
+	var lz bytes.Buffer
+	for f := 0; f < frames; f++ {
+		b.Write([]byte{0x21, 0xF9, 4, 0, 10, 0, 0, 0}) // graphic control: no transparency, 100 ms
+		b.Write([]byte{0x2C, 0, 0, 0, 0, byte(w), byte(w >> 8), byte(h), byte(h >> 8), 0x40})
+		b.WriteByte(8) // LZW minimum code size
+		lz.Reset()
+		zw := lzw.NewWriter(&lz, lzw.LSB, 8)
+		for _, y := range rows {
+			for x := range row {
+				row[x] = InterlacedGIFIndex(f, y)
+			}
+			if _, err := zw.Write(row); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for data := lz.Bytes(); len(data) > 0; {
+			n := min(len(data), 255)
+			b.WriteByte(byte(n))
+			b.Write(data[:n])
+			data = data[n:]
+		}
+		b.WriteByte(0)
+	}
+	b.WriteByte(0x3B)
 	return b.Bytes()
 }
 

@@ -123,8 +123,8 @@ func measureEstimate(t *testing.T, mime string, data []byte) int64 {
 		decode, encode := pngBytes(data, cfg)
 		return decode + encode + bufferBytes(len(data))
 	}
-	_, pixels, _ := scanGIF(data)
-	return int64(pixels)*2 + bufferBytes(len(data))
+	frames, pixels, _ := scanGIF(data)
+	return gifBytes(frames, pixels) + bufferBytes(len(data))
 }
 
 // processFile copies src as ReadUpload does and normalizes the copy.

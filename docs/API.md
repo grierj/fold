@@ -380,12 +380,19 @@ Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
     APP14 or an APP0 marker after its frame header, because the decoder
     decides RGB only after the last scan (a later APP0 that is not JFIF
     clears the JFIF flag an earlier one set) and `DecodeConfig` does not see it.
-  - GIF: two bytes per pixel of every frame.
+  - GIF: two bytes per pixel of every frame (the frame's indexes, and the
+    second copy that puts an interlaced frame's rows back in order; the flag is
+    per frame, so every frame is charged for it), and 128 KiB for every frame
+    for the LZW state the decoder and the encoder each allocate anew for it (the
+    encoder's alone is a 64 KiB table), so many small frames count for more than
+    their pixels.
 
   So, roughly: 8-bit color PNG up to about 14 megapixels (7 interlaced, 3.5
   at 16 bits a channel), baseline JPEG up to the 25 megapixel cap upright and
   about 10 megapixels when it must be turned, progressive JPEG up to about 7
-  megapixels, and about 28 million pixels of GIF frames in all. A 5000 x 5000 16-bit
+  megapixels, and about 29 million pixels of GIF frames in all for a few frames,
+  falling to about 16 million (200 frames of about 280 x 280) at the 200-frame
+  cap. A 5000 x 5000 16-bit
   PNG (a few hundred KB on the wire, 200 MB to decode) is refused. The figure
   comes from the allocations of the pinned Go toolchain's decoders and
   encoders, and tests hold it against what they really allocate; it is not a

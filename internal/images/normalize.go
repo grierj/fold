@@ -39,8 +39,7 @@ const (
 	// worked out from the header before any pixel is decoded: the encoded input
 	// (bufferBytes), what the standard decoder allocates for the picture, the
 	// copy that turns it upright, and what the standard encoder allocates to
-	// write it again (jpegDecodeBytes, jpegAfterBytes, pngBytes, two bytes a
-	// pixel of every GIF frame). It counts allocation, not what is live at one
+	// write it again (jpegDecodeBytes, jpegAfterBytes, pngBytes, gifBytes). It counts allocation, not what is live at one
 	// moment, so it is above what the call holds; the collector still lets the
 	// heap grow past what is live, which ProcessAllowanceBytes covers. The pixel
 	// caps alone are not enough: a 25 MP 16-bit PNG decodes to 200 MB from a few
@@ -51,8 +50,18 @@ const (
 	// against real runs and fail when a call allocates more than it.
 	maxWorkingBytes = 64 << 20
 	// scratchBytes covers what the estimate does not count per pixel: row
-	// buffers, flate and LZW state, Huffman tables, the output chunk buffer.
+	// buffers, flate state, Huffman tables, the output chunk buffer. A GIF's LZW
+	// state is not here: it grows with the frames and is counted by gifBytes.
 	scratchBytes = 8 << 20
+	// gifFrameBytes is what decoding and encoding one GIF frame allocate beyond
+	// its pixels, whatever its size: in image/gif and compress/lzw of the pinned
+	// toolchain, the decoder's LZW reader (about 21 KiB of tables and output
+	// buffer), the frame's color table, the cloned palette a transparent index
+	// makes and its boxed colors (about 10 KiB), and the encoder's LZW writer,
+	// a fresh 64 KiB hash table for every frame (about 72 KiB as the runtime
+	// rounds a large object). About 104 KiB in all; 128 KiB leaves room for the
+	// frame, delay and disposal slices growing.
+	gifFrameBytes = 128 << 10
 	// maxOutputBytes is the most a re-encoded picture may be. Re-encoding does
 	// not keep the compressed size (a PNG can grow, a GIF loses its
 	// interlacing), so the output has its own allowance, twice the upload
@@ -501,6 +510,18 @@ func normalizePNG(out io.Writer, data []byte, cfg image.Config) error {
 	return png.Encode(out, img)
 }
 
+// gifBytes is what normalizing a GIF of frames frames and pixels pixels
+// allocates (scanGIF's counts): DecodeAll keeps one palette index per pixel of
+// every frame, and a frame stored interlaced is read into one array and then
+// copied into a second in order (uninterlace), so two bytes a pixel, counted
+// for every frame because the flag is per frame; EncodeAll writes the frames it
+// was given without copying their pixels. On top of that, every frame costs
+// gifFrameBytes of LZW state in the decoder and the encoder, which a many-frame
+// animation of small frames would otherwise hide from a pixel count.
+func gifBytes(frames, pixels int) int64 {
+	return int64(pixels)*2 + int64(frames)*gifFrameBytes
+}
+
 func normalizeGIF(out io.Writer, data []byte) error {
 	frames, pixels, ok := scanGIF(data)
 	if !ok {
@@ -509,9 +530,7 @@ func normalizeGIF(out io.Writer, data []byte) error {
 	if frames > MaxGIFFrames || pixels > maxGIFPixels {
 		return ErrTooLarge
 	}
-	// DecodeAll holds one palette index per pixel of every frame at once, and
-	// EncodeAll works on the same frames; count two bytes to stay conservative.
-	if err := refuseHeavy(int64(pixels)*2, len(data)); err != nil {
+	if err := refuseHeavy(gifBytes(frames, pixels), len(data)); err != nil {
 		return err
 	}
 	g, err := gif.DecodeAll(bytes.NewReader(data))
