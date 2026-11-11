@@ -1,12 +1,12 @@
 # Design R4-4b: bounded conversion-IP minimization (option P2)
 
-**Design revision r2.** Design only. This file changes no production code, migration, sweep
+**Design revision r3.** Design only. This file changes no production code, migration, sweep
 version, test, audit row or owner decision. It is the input to the independent review that
 issue #303 requires (DG-9 item 3), and to the implementation in #305, which stays deferred
 until that review approves this exact revision. **No review verdict is recorded in this
 revision** (section 12), so nothing here is approved. Revision r1 received combined
-independent findings R303-01, R303-02, F-COUNT, F-GAP, F-RESIDUE and F-LOCK; r2 addresses
-them below and needs a fresh review of this exact revision.
+independent findings R303-01, R303-02, F-COUNT, F-GAP, F-RESIDUE and F-LOCK. A review of
+r2 left R303-02, F-COUNT and F-RESIDUE open; r3 addresses them and needs a fresh review.
 
 Sources: `docs/plan/M7.4-ERASURE-INVENTORY.md` (sections 1, 3, 6.5.1, 6.5.2, 6.9, 12.1),
 `docs/agents/erasure.md`, `account_erasure_audit.go`, `account_erasure_tombstones.go`,
@@ -246,8 +246,9 @@ never change a different kind of row. Everything else about the statement is a c
 of `RowsAffected`); `BlankedByClass[auditIPConversion]` and `IPsBlanked` take the same number,
 so the existing totals stay consistent. New meaning of `Conversion.Retained`: **distinct
 discovered rows that are not in the cleared set**, whatever their current `ip`. Therefore
-`Retained + |cleared| = Discovered`, an identified group contributes `0` to `Retained` on
-every run (also when its addresses were already empty, e.g. an age-job completion), and a rerun
+`Retained + |cleared| = Discovered`. An identified group contributes zero retained rows only
+when none of its ids is excluded by the overlap subtraction, even when addresses were already
+empty (e.g. an age-job completion). A rerun
 reports `Blanked = 0` with the same `Retained`. `activityEntriesKept` (the sum of RETAIN_* counts
 and `Conversion.Retained`, `newErasureReport`) falls by `|cleared|` relative to today's
 `Retained = Discovered`; it still describes
@@ -264,8 +265,9 @@ once in every total); totals count each actual row once
 `cleared` is the section-5 id set.
 
 - **Per-group `Details[i]`**: `ConvertedRetained`/`TransfersRetained` = that group's found
-  rows minus the group's rows that are in `cleared` (an identified group reports `0`/`0`;
-  a retained group reports its found counts, overlap included, as today). Per-group
+  rows minus the group's rows that are in `cleared`. An identified group reports `0`/`0`
+  only when all its ids survive overlap subtraction; a non-identified group reports its
+  found counts, overlap included, as today. Per-group
   `Blanked` = the number of that group's rows actually changed, attributed from the
   statement's per-row result (`UPDATE ... RETURNING id`, mapped back to groups; when one
   chunked `UPDATE` spans groups, the `RETURNING` ids allocate the count, never an
@@ -283,16 +285,19 @@ once in every total); totals count each actual row once
 - **`Blanked` (total)** = rows actually changed (sum of `RowsAffected`), so `Blanked <=
   |cleared|`, with strict inequality when some cleared rows already had an empty `ip`.
 - **Rerun**: discovery is id-only and reads no `ip`, and every selector key survives
-  erasure, so a second run (or erasing a second candidate of the same conversion)
+  erasure, so a second run for the same subject
   discovers the same groups and the same `cleared` set; the statement matches no row
   (`ip <> ''` is false everywhere in it), so the rerun reports `Blanked = 0` with
-  `Retained`, `Discovered`, `ByReason` and every detail field unchanged.
+  zero for total `Blanked`, every `Details[i].Blanked`, and the conversion contributions
+  to `IPsBlanked` and `BlankedByClass`; `Retained`, `Discovered`, `ByReason` and the
+  other detail fields are unchanged.
 
 **Worked example.** L1 adult approval with `C` + 2 `T` rows, all holding an address, erased
 by `D`: `Groups = 1`, `Discovered = 3`, `cleared` = all 3 ids, `Retained = 0`,
 `Blanked = 3`, `Details[0] = {ConvertedRetained: 0, TransfersRetained: 0, Blanked: 3}`,
-`ByReason = {history_unestablished: 3}` (diagnostic only). Rerun: `Blanked = 0`, everything
-else identical. L3 age-job completion (addresses already `""`): first run `Discovered = 3`,
+`ByReason = {history_unestablished: 3}` (diagnostic only). Rerun: total and detail `Blanked`
+and the conversion contributions to `IPsBlanked` and `BlankedByClass` are zero; other
+fields are identical. L3 age-job completion (addresses already `""`): first run `Discovered = 3`,
 `Retained = 0`, `Blanked = 0`, `ByReason = {history_unestablished: 3}`. With two
 conversions where `U` is a candidate of `R1` only: `R1`'s group contributes its cleared
 ids, `R2`'s valid group is retained whole with its found counts, and totals follow the
@@ -430,8 +435,13 @@ labelled fallback fixtures, each marked as a simulated anomaly. A "before/after"
   `Discovered`, `Retained`, `Blanked`, `ByReason`, each group's `ConvertedRetained`,
   `TransfersRetained` and `Blanked`, the `Retained + |cleared| = Discovered` arithmetic,
   per-group `Blanked` summing to total `Blanked`, and `activityEntriesKept`. It asserts
-  the cleared rows are exactly the `RETURNING` ids named per group, reruns report
-  `Blanked = 0` with all other fields unchanged, and any implementation that leaves a
+  actual changed rows are exactly the `RETURNING` ids named per group. On a rerun total
+  and per-group `Blanked` and conversion contributions to `IPsBlanked` and `BlankedByClass`
+  are zero; other fields are unchanged. Include a fully linked identified request and a
+  second approved request with the same person id, `approved_user_id = NULL` and the same
+  decider: the latter is non-identified, so their overlapping ids are excluded from `cleared`,
+  retained in both details but counted once in the aggregate, and absent from `RETURNING`.
+  Any implementation that leaves a
   cleared row counted as retained (or drops a retained row from the counts) fails.
 
 **Idempotence, order and sweep**
@@ -508,8 +518,9 @@ exist or none are discoverable); any person whose request link is missing (G5).
 and conversion-shaped `registration.changed` are class CONVERSION, not RETAIN_*, and are the
 only rows P2 can change. **P2 reaches none of the actions below**; each row stays a Q3
 residue needing the owner's disposition in #304, not an approved retention. Shapes are the
-6.9 shapes, reproduced here so this design stands alone (the 6.9 enumeration stays
-normative if they ever differ):
+6.9 shapes, reproduced here so this design stands alone. The action census in 6.9 is
+incomplete at this HEAD; the current attribution registry also has the six actions named
+below, whose anomalous residue requires the same Q3 disposition.
 
 | Action | Retained shape (all with a non-empty `ip`) |
 |---|---|
@@ -523,18 +534,20 @@ normative if they ever differ):
 | `registration.changed` (non-conversion) | without a valid event target or actor (conversion shapes stay in CONVERSION) |
 | `registration.cancelled` | inconsistent or malformed actor-null subject identities or target |
 | `password.reset_requested` | a non-user target |
+| `contact.reason_kept`, `contact.reason_removed`, `add.reason_kept`, `add.reason_removed` | unexpected missing actor on an ordinary ACTOR action |
+| `user.erasure_reasons_viewed`, `user.erasure_swept` | unexpected non-empty `ip` on a system action |
 | every ordinary ACTOR action with an unexpected missing actor | the writer's `actor_id` is absent, so no ACTOR rule fires; residue on each registered action in the code list below |
 | every system-only action with an unexpected non-empty `ip` | a writer that should store no address stored one; residue on each registered action in the code list below |
 | any unregistered historical action | any other stored action code with a non-empty `ip`; reported internally by actual code, without treating it as a known writer |
 
-Registered action codes the last three rows can occur on (inventory 6.9 list, reproduced
-exactly): `account.approved`, `account.expired`, `account.rejected`, `account.requested`,
+Registered action codes covered by the general shapes (inventory 6.9 list plus the six
+current-registry additions above): `account.approved`, `account.expired`, `account.rejected`, `account.requested`,
 `account.setup_completed`; `add.completed`, `add.decision`, `add.ended`, `add.expired`,
-`add.refused`, `add.requested`, `add.withdrawn`; `calendar_token.regenerated`,
+`add.refused`, `add.requested`, `add.withdrawn`, `add.reason_kept`, `add.reason_removed`; `calendar_token.regenerated`,
 `calendar_token.revoked`, `calendar_token.scope_changed`; `contact.decision`,
 `contact.ended`, `contact.expired`, `contact.granted`, `contact.privacy_changed`,
 `contact.refused`, `contact.requested`, `contact.reveal`, `contact.revoked`,
-`contact.withdrawn`; `contact_history.exported`; `email.change_cancelled`,
+`contact.withdrawn`, `contact.reason_kept`, `contact.reason_removed`; `contact_history.exported`; `email.change_cancelled`,
 `email.change_requested`, `email.changed`, `email.suppression_cleared`; `event.created`,
 `event.dates_restored`, `event.deleted`, `event.host_added`, `event.host_removed`,
 `event.visibility_changed`, `event.visibility_override`; `group.approved`, `group.deleted`,
@@ -561,7 +574,7 @@ exactly): `account.approved`, `account.expired`, `account.rejected`, `account.re
 `setting.guardian_copies_changed`, `setting.push_enabled_changed`,
 `setting.reply_to_changed`, `setting.room_approval_changed`,
 `setting.rooms_enabled_changed`, `setting.self_signup_changed`; `teen_consent.granted`,
-`teen_consent.revoked`; `user.created`, `user.deleted`, `user.disabled`,
+`teen_consent.revoked`; `user.created`, `user.deleted`, `user.disabled`, `user.erasure_reasons_viewed`, `user.erasure_swept`,
 `user.email_changed`, `user.enabled`, `user.role_changed`, `user.turned_18`.
 (`household.person_converted` is always CONVERSION and is listed under IR-1 to IR-4, not
 here.)
@@ -596,7 +609,8 @@ Any scope or over-clearing finding blocks. Approval of an exact revision covers 
 only; a later change to this file needs a new review of what changed.
 
 **Review record: r1 received two independent combined reviews with findings (R303-01,
-R303-02, F-COUNT, F-GAP, F-RESIDUE, F-LOCK) and no approval. No reviewer has read r2.
+R303-02, F-COUNT, F-GAP, F-RESIDUE, F-LOCK) and no approval. The r2 review left three
+findings open. No reviewer has read r3.
 Nothing here is approved.**
 
 What an approval would not do: approve #305's code, change a sweep version or a migration,
